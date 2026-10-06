@@ -11,7 +11,33 @@
 
 소스 대조 기준일: 2026-10-06. 이 절의 anchor는 날짜 변경에도 유지한다.
 
-후속 상태 확인 시 main `4a5b59ef`는 clean이지만 기존 Root 실행 세션67824/82122는
+### 최신 정적 감사 및 수정
+
+정적 감사 기준은 `06bf178a` 이후 main의 소유 변경과 dirty overlay다. 병렬 자동 commit으로
+HEAD가 이동하므로 아래의565·492·4a는 각 실행의 고정 소스이며 최신 main 전체 결과가 아니다.
+사용자 요청에 따라 이 감사에서는 새 Cargo 빌드·Rust 행동 테스트·제품 실행을 등록하지 않는다.
+
+| 확인한 결함 | 수정 및 현재 상태 | 검증 경계 |
+| --- | --- | --- |
+| 업로드 최종 EOF 읽기 중 취소 누락 | EOF 뒤 canonical budget checkpoint 추가. 시간 의존 deadline fixture 대신 결정적 EOF 취소 및 기존 만료 deadline 회귀 유지 | Rust 회귀 소스·정적 대조 완료, 실행 `NOT_RUN` |
+| 메모리 예산 오버플로 은폐 | canonical 합계·config 곱셈/덧셈을 checked 연산과 동일 typed refusal로 통일. `declared_bytes` Result 호출처와 API 선언2곳 반영 | 경계 회귀 소스·호출처 대조 완료, Rust/API 실행 `NOT_RUN` |
+| IPC dispatch deadline 이중 생성 | DispatchContext가 admitted RequestBudget의 동일 Instant를 사용 | 거대 duration 회귀 소스·생성 경로 대조 완료, Rust 실행 `NOT_RUN` |
+| F15 할당 뒤 scratch/resident 검사 | term/ID 삽입과 posting materialization을 할당 전에 검사. 정규화 출력 및 canonical Unicode iterator/sort scratch의 사전 admission을 통합·검토 중 | 논리적 메모리 예산 범위. Rust 실행·실제 RSS 상한 증명 `NOT_RUN` |
+| causal capture 바이너리 TOCTOU | 실행 전·후·replay·성공 발행까지 executable epoch와 동일 RawFile bytes 결속. 변경 시 FAILED 및 자체 profile 제거 | Python synthetic 회귀19개 `VERIFIED`; 실제 scale capture `NOT_RUN` |
+| portable validator 바이너리 TOCTOU | 최초 binary role의 file epoch를 종료 직전 다시 검증. 재배치 입력의 원래 provenance 유지 | Python fixture 회귀129개 `VERIFIED`; 새 제품 실행 `NOT_RUN` |
+
+검증은 정상 허용과 한도 초과·취소·파일 교체 거절을 함께 확인한다. Python fixture 통과는
+검증 제어의 동작 증거이며 최신 Rust 엔진의 컴파일·E2E·성능 결과가 아니다.
+
+### 별도 고정 소스의 실행 복구
+
+Scale 복구 경로는 `/Users/songmin/.codex/task-evidence/quanta-scale-recovery-20261006-01a10d0b`다.
+`xl-result.json`의 frozen492+query600000ms XL 게시·삭제·실제 daemon 재시작은 exit0·287.843s이며
+전후 source/binary 동일, 새 build 없이 `VERIFIED`다. Main4a5b59ef의 canonical debug SDK는
+실제27/27·20.287s와 portable replay exit0로 `VERIFIED`다. Whole-unit은 별도 진행 중이며
+종료 결과는 아직 없다. 두 실행은 위 후속 Rust 수정의 검증을 대신하지 않는다.
+
+이전 복구 전 상태 확인 시 main `4a5b59ef`는 clean이지만 기존 Root 실행 세션67824/82122는
 `Unknown process id`이며, 선택565 Contract/SDK·configured XL·Ready9 제어의 `/private/tmp`
 출력이 현재 존재하지 않는다. Scale의 `source-publication-scale/quanta-index` 작업트리도 없다.
 담당 채팅에는 whole-unit의 dep-info/작업트리 경로 없음 실패와 SDK27passed 결과가 남아 있다.
@@ -25,8 +51,9 @@ Configured XL·최종 SDK portable verify·Ready9 실제 집계 완료를 추정
 
 ### 코드 잔여와 실행 잔여
 
-- 현재 main4a5b59ef에는 bounded manifest/source-upload·Large/XL admission·공유 scale/open-loop
-  profile·release 회귀 등록 수리가 반영됐다. 이번 대조에서 추가로 확정한 검색 엔진 미구현 건은 없다.
+- Main4a5b59ef의 bounded manifest/source-upload·Large/XL admission·공유 scale/open-loop
+  profile·release 회귀 등록 수리 뒤 위6범주의 결함을 추가 확인했다.5범주는 수정 및 집중 검증이
+  끝났고 F15 정규화의 canonical native scratch 통합·정적 검토가 남는다.
   전체 Rust/CI 성공 또는 제품 qualification을 뜻하지 않는다.
 - Ready9 Python3.13/3.12 interpreter 분리 final-v6는 담당 채팅의43control PASS·55bindings 유지
   기록이 있다. 수정본은 기존 임시 경로에만 있었고 현재 부재하므로 복구·새 delta 검토·인계가 남는다.
@@ -34,7 +61,8 @@ Configured XL·최종 SDK portable verify·Ready9 실제 집계 완료를 추정
 - 조건부 운영 코드 P11의 typed 배포·활성화·restore-forward 실행기, 독립 전후 관측,
   parser/checker/aggregate·recipes 연결은 아직 미구현이다. Registry는 staged이며 실제 대상·명령·
   관측 계약 입력은 `BLOCKED`다. 검색 엔진의 XL/SDK 기능 검증과 별도 운영 배포 범위다.
-- SDK 최종 증명·XL/전체 Rust/CI·native capacity/fuzz·Ready9 capture/replay/join은 실행 잔여다.
+- Frozen492 configured XL 및 main4a SDK 최종 증명은 위 복구에서 완료됐다. 최신 Rust 수정의
+  집중 행동 회귀·전체 Rust/CI·native capacity/fuzz·Ready9 capture/replay/join은 실행 잔여다.
   Scale 공유 profile의 집중 Rust 검증은 담당 채팅에 `VERIFIED`/exit0로 회수됐으나 기존 raw가
   현재 없으며 전체 native lifecycle 또는 전체 main 검증으로 승격하지 않는다.
 

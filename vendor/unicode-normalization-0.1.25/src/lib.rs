@@ -54,9 +54,9 @@ extern crate tinyvec;
 
 pub use crate::decompose::Decompositions;
 pub use crate::quick_check::{
-    is_nfc, is_nfc_quick, is_nfc_stream_safe, is_nfc_stream_safe_quick, is_nfd, is_nfd_quick,
-    is_nfd_stream_safe, is_nfd_stream_safe_quick, is_nfkc, is_nfkc_quick, is_nfkd, is_nfkd_quick,
-    IsNormalized,
+    IsNormalized, is_nfc, is_nfc_quick, is_nfc_stream_safe, is_nfc_stream_safe_quick, is_nfd,
+    is_nfd_quick, is_nfd_stream_safe, is_nfd_stream_safe_quick, is_nfkc, is_nfkc_quick, is_nfkd,
+    is_nfkd_quick,
 };
 pub use crate::recompose::Recompositions;
 pub use crate::replace::Replacements;
@@ -68,9 +68,9 @@ mod decompose;
 mod native_scratch_v1;
 #[cfg(feature = "quanta-native-scratch-v1")]
 pub use crate::native_scratch_v1::{
-    try_for_each_nfc_with_native_admission_v1, try_is_nfc_with_native_admission_v1, NativeNormalizationAdmissionV1,
-    NativeNormalizationErrorV1, NativeNormalizationScratchDemandV1,
-    NativeNormalizationScratchOwnerV1,
+    NativeNormalizationAdmissionV1, NativeNormalizationErrorV1, NativeNormalizationScratchDemandV1,
+    NativeNormalizationScratchOwnerV1, try_for_each_nfc_with_native_admission_v1,
+    try_is_nfc_with_native_admission_v1,
 };
 mod lookups;
 mod normalize;

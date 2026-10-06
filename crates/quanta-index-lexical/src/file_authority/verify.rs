@@ -275,7 +275,7 @@ where
                 scratch_current,
                 scratch_ceiling,
             )
-            .map_err(|error| corrupt(&format!("normalization plan: {error:?}")))?;
+            .map_err(|error| corrupt(&format!("normalization plan: {error}")))?;
             let (indexed_path_bytes, folded_path_bytes, indexed_text_bytes, folded_text_bytes) =
                 plan.lengths();
             let file_charge = resident_file_charge(
@@ -298,7 +298,7 @@ where
             }
             let (indexed_path, folded_path, indexed_text, folded_text) = plan
                 .build_with_budget(scratch_current, scratch_ceiling)
-                .map_err(|error| corrupt(&format!("normalization build: {error:?}")))?;
+                .map_err(|error| corrupt(&format!("normalization build: {error}")))?;
             let path_count = add_source(
                 folded_path.as_bytes(),
                 row.source_id,

@@ -5,7 +5,20 @@
 아래는 **Quanta에서 남은 실행 순서**다. [작업표](tickets/INDEX.md#quanta에서-할-작업)가
 현재 범위를 소유하며 외부 producer 연동은 아래 별도 기록에 보존한다.
 
-## 코드 우선
+## 최신 검증 순서 — 2026-10-06 정적 감사 후속
+
+| 웨이브 | 작업 | 현재 판정 |
+| --- | --- | --- |
+| S0 정적 수리 | EOF interruption, checked memory envelope, 동일 dispatch deadline, F15 할당 전 admission, causal capture/portable validator executable custody |5범주 수정 완료. F15 canonical normalization output/iterator/sort scratch 통합과 정적 검토 진행 중 |
+| S1 변경 소스 집중 검증 | 고정 Unicode 출력·scratch 초과 거절, posting 경계·독립 census, EOF 취소·기존 만료 deadline, u64 overflow·거대 dispatch duration 회귀 | Python capture19/portable129 fixture `VERIFIED`. 최신 Rust 컴파일·행동 회귀 `NOT_RUN` |
+| S2 실제 제품 회귀 | 동일 소스 daemon SDK 경로, 게시·delta/delete·재시작, 취소 뒤 복구 | 별도 frozen492 XL+query600000ms exit0·287.843s, main4a SDK27/27·20.287s 및 portable replay exit0. S0 후속 Rust 수정의 결과가 아님 |
+| S3 전체 판정 | whole Rust/strict/API/hosted CI, native capacity/fuzz, Ready9 actual capture/replay/join 및 독립 성능 판정 | 별도 main4a whole-unit 진행 중; 최신 수정의 전체 종료 결과 없음. 기능 회귀를 RSS/latency qualification으로 승격하지 않음 |
+
+S0 요청은 정적 감사→구조적 수정→정적 검증이다. Root와 병렬 감사 에이전트는 새 Rust build나
+제품 실행을 등록하지 않는다. 기존 Scale 채팅 실행은 자기 고정 소스의 별도 검증이며 최신 main의
+후속 수정에 소급하지 않는다. 상세 결함/수정/명령 결과는 [잔여 인덱스](tickets/INDEX.md#최신-정적-감사-및-수정)에 둔다.
+
+## 앞선 코드 우선 체크포인트
 
 - Manifest allocation bound·staged upload cancellation 및 open-loop artifact/CLI의 stale Scale gold를
   main에 반영했다. Manifest3paths는 patch6c039748의 guards로 통합했으며 collection count·행별 node
@@ -74,12 +87,13 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
-- 현재 main4a5b59ef의 엔진 수리는 통합돼 있다. 추가로 확정한 검색 엔진 미구현 건은 없으며
-  전체 Rust/CI·XL·SDK 최종 증명·Ready9 실제 집계는 실행 잔여다. Ready9 final-v6 runtime 분리는
+- Main4a5b59ef 이후 추가로 확인한6범주의 결함과 수리는 위S0 및 잔여 인덱스가 소유한다.
+  Frozen492 configured XL·main4a SDK27/portable proof 복구는 `VERIFIED`이며 최신 Rust 수정의
+  행동 회귀·전체 Rust/CI·Ready9 실제 집계는 실행 잔여다. Ready9 final-v6 runtime 분리는
   담당43control PASS·55bindings 유지 기록이 있으나 임시 수정본 부재로 복구·새 delta 검토·인계가
   남는다. Scale 공유 profile 집중 Rust의 담당 `VERIFIED`/exit0 기록도 회수했다. 운영 P11 실행기·
   독립 관측·parser/checker/aggregate/recipes는 별도 조건부 코드 잔여이며 대상 입력은 `BLOCKED`다.
-- 후속 확인 시 main4a5b59ef는 clean이다. Root 세션67824/82122는 존재하지 않으며
+- 복구 전 확인 시 main4a5b59ef는 clean이었다. Root 세션67824/82122는 존재하지 않으며
   Contract/SDK/configured XL/Ready9 제어의 기존 `/private/tmp` 출력과 Scale 선택565 작업트리도
   현재 없다. 담당 채팅에는 whole-unit의 dep-info/작업트리 경로 없음 실패 및 SDK27passed 결과가
   남아 있다. 이전 결과는 보존하되 최신 terminal 결과·증빙 재생은 입력 부재로 `BLOCKED`다.

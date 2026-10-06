@@ -1,16 +1,16 @@
 //! Admission policy for the original canonical normalization iterator.
 
 use crate::recompose::Recompositions;
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 use core::{
     convert::{Infallible, TryFrom},
     fmt,
     mem::size_of,
 };
-use tinyvec::{Array, TinyVec};
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
+use tinyvec::{Array, TinyVec};
 
 /// Actual scratch owner within one synchronous normalization call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,14 +250,22 @@ impl<P: NativeNormalizationAdmissionV1> NormalizationPolicyV1
         buffer_v1: &mut TinyVec<[(u8, char); 4]>,
         value_v1: (u8, char),
     ) -> Result<(), Self::Error> {
-        self.push_v1(NativeNormalizationScratchOwnerV1::Decomposition, buffer_v1, value_v1)
+        self.push_v1(
+            NativeNormalizationScratchOwnerV1::Decomposition,
+            buffer_v1,
+            value_v1,
+        )
     }
     fn push_recomposition_v1(
         &mut self,
         buffer_v1: &mut TinyVec<[char; 4]>,
         value_v1: char,
     ) -> Result<(), Self::Error> {
-        self.push_v1(NativeNormalizationScratchOwnerV1::Recomposition, buffer_v1, value_v1)
+        self.push_v1(
+            NativeNormalizationScratchOwnerV1::Recomposition,
+            buffer_v1,
+            value_v1,
+        )
     }
     fn sort_v1(&mut self, pending_v1: &mut [(u8, char)]) -> Result<(), Self::Error> {
         if self.streaming_v1 && pending_v1.len() > 512 {
@@ -334,8 +342,10 @@ impl<P: NativeNormalizationAdmissionV1> NormalizationPolicyV1
         // eight-byte pairs. Unicode 17 canonical pending suffixes consume no
         // more scalars than their input UTF8 bytes. No native sort birth occurs
         // on this <=512-byte identity rail; the ordinary sort is unchanged.
-        if !cfg!(all(target_pointer_width = "64", any(target_os = "linux", target_os = "macos")))
-            || size_of::<(u8, char)>() != 8
+        if !cfg!(all(
+            target_pointer_width = "64",
+            any(target_os = "linux", target_os = "macos")
+        )) || size_of::<(u8, char)>() != 8
             || pending_v1.len() > 512
         {
             return Err(NativeNormalizationErrorV1::UnsupportedNativeSortBacking);

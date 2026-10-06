@@ -36,6 +36,7 @@ from tools.benchmark.retrieval.tool_custody import (
     resolve_tool_paths,
     validate_environment,
 )
+
 ROOT = Path(__file__).resolve().parents[3]
 PROOF_COMMAND_TIMEOUT_SECONDS = 7200
 TOOL_TIMEOUT_SECONDS = 30

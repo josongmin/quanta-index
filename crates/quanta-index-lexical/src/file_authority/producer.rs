@@ -228,7 +228,7 @@ fn normalized_updated(
         scratch_current,
         scratch_max,
     )
-    .map_err(|error| ProducerError::limit(format!("normalization plan: {error:?}")))?;
+    .map_err(|error| ProducerError::limit(format!("normalization plan: {error}")))?;
     let (indexed_path_bytes, folded_path_bytes, indexed_text_bytes, folded_text_bytes) =
         plan.lengths();
     let resident_charge = resident_file_charge(
@@ -259,7 +259,7 @@ fn normalized_updated(
     let _peak = admit_peak(scratch_current, temporary, scratch_max)?;
     let (_indexed_path, folded_path, _indexed_text, folded_content) = plan
         .build_with_budget(scratch_current, scratch_max)
-        .map_err(|error| ProducerError::limit(format!("normalization build: {error:?}")))?;
+        .map_err(|error| ProducerError::limit(format!("normalization build: {error}")))?;
     Ok((folded_path, folded_content, resident_charge))
 }
 
@@ -627,7 +627,11 @@ fn insert_membership(
         return Ok(false);
     }
     let additional = SCRATCH_MEMBERSHIP_BYTES
-        .checked_add(if existing.is_none() { SCRATCH_TERM_BYTES } else { 0 })
+        .checked_add(if existing.is_none() {
+            SCRATCH_TERM_BYTES
+        } else {
+            0
+        })
         .ok_or_else(|| ProducerError::limit("posting membership charge overflow"))?;
     charge(scratch, additional, max_scratch)?;
     let inserted = postings.entry(gram).or_default().insert(id);
@@ -727,8 +731,8 @@ fn encode_postings(
             })?)
             .ok_or_else(|| ProducerError::limit("posting membership sum"))
     })?;
-    let encoded_len = posting_block_encoded_len(terms, entries, context.limits)
-        .map_err(codec_input)?;
+    let encoded_len =
+        posting_block_encoded_len(terms, entries, context.limits).map_err(codec_input)?;
     let map_charge = terms
         .checked_mul(SCRATCH_TERM_BYTES)
         .and_then(|bytes| {
@@ -738,53 +742,64 @@ fn encode_postings(
                 .and_then(|memberships| bytes.checked_add(memberships))
         })
         .ok_or_else(|| ProducerError::limit("posting map charge overflow"))?;
-    let owned_bytes = terms
+    let owned_rows_bytes = terms
         .checked_mul(std::mem::size_of::<([u8; 3], Vec<u64>)>())
-        .and_then(|bytes| {
-            usize::try_from(entries)
-                .ok()
-                .and_then(|count| count.checked_mul(std::mem::size_of::<u64>()))
-                .and_then(|memberships| bytes.checked_add(memberships))
-        })
+        .ok_or_else(|| ProducerError::limit("posting row vector charge overflow"))?;
+    let owned_ids_bytes = usize::try_from(entries)
+        .ok()
+        .and_then(|count| count.checked_mul(std::mem::size_of::<u64>()))
         .ok_or_else(|| ProducerError::limit("posting ID vector charge overflow"))?;
     let input_bytes = terms
         .checked_mul(std::mem::size_of::<PostingInput<'_>>())
         .ok_or_else(|| ProducerError::limit("posting input vector charge overflow"))?;
-    let temporary_bytes = owned_bytes
-        .checked_add(input_bytes)
-        .ok_or_else(|| ProducerError::limit("posting temporary charge overflow"))?;
-    let _materialization_peak = admit_peak(
-        *context.scratch,
-        temporary_bytes,
-        context.max_scratch,
-    )?;
-    let after_map_release = context
-        .scratch
+    let mut live = admit_peak(*context.scratch, owned_rows_bytes, context.max_scratch)?;
+    let after_map_release = (*context.scratch)
         .checked_sub(map_charge)
         .ok_or_else(|| ProducerError::limit("posting map charge missing"))?;
-    let after_conversion = admit_peak(after_map_release, temporary_bytes, context.max_scratch)?;
-    let _encoding_peak = admit_peak(after_conversion, encoded_len, context.max_scratch)?;
 
     let mut owned = Vec::new();
-    owned.try_reserve_exact(terms).map_err(|error| {
-        ProducerError::limit(format!("posting rows allocation: {error}"))
-    })?;
+    owned
+        .try_reserve_exact(terms)
+        .map_err(|error| ProducerError::limit(format!("posting rows allocation: {error}")))?;
     for (gram, ids) in postings {
+        let id_count = ids.len();
+        let id_bytes = id_count
+            .checked_mul(std::mem::size_of::<u64>())
+            .ok_or_else(|| ProducerError::limit("posting ID vector charge overflow"))?;
+        live = admit_peak(live, id_bytes, context.max_scratch)?;
         let mut values = Vec::new();
-        values.try_reserve_exact(ids.len()).map_err(|error| {
-            ProducerError::limit(format!("posting ID allocation: {error}"))
-        })?;
+        values
+            .try_reserve_exact(id_count)
+            .map_err(|error| ProducerError::limit(format!("posting ID allocation: {error}")))?;
         values.extend(ids);
         owned.push((gram, values));
+        let released = id_count
+            .checked_mul(SCRATCH_MEMBERSHIP_BYTES)
+            .and_then(|bytes| bytes.checked_add(SCRATCH_TERM_BYTES))
+            .ok_or_else(|| ProducerError::limit("posting map release charge overflow"))?;
+        live = live
+            .checked_sub(released)
+            .ok_or_else(|| ProducerError::limit("posting map release charge underflow"))?;
     }
+    let owned_bytes = owned_rows_bytes
+        .checked_add(owned_ids_bytes)
+        .ok_or_else(|| ProducerError::limit("posting owned vector charge overflow"))?;
+    let expected_live = after_map_release
+        .checked_add(owned_bytes)
+        .ok_or_else(|| ProducerError::limit("posting converted charge overflow"))?;
+    if live != expected_live {
+        return Err(ProducerError::limit("posting converted charge mismatch"));
+    }
+    live = admit_peak(live, input_bytes, context.max_scratch)?;
     let mut input = Vec::new();
-    input.try_reserve_exact(terms).map_err(|error| {
-        ProducerError::limit(format!("posting input allocation: {error}"))
-    })?;
+    input
+        .try_reserve_exact(terms)
+        .map_err(|error| ProducerError::limit(format!("posting input allocation: {error}")))?;
     input.extend(owned.iter().map(|(gram, ids)| PostingInput {
         gram: *gram,
         source_ids: ids,
     }));
+    let _encoding_peak = admit_peak(live, encoded_len, context.max_scratch)?;
     let encoded = encode_posting_block(surface, &input, context.limits).map_err(codec_input)?;
     if encoded.len() != encoded_len {
         return Err(ProducerError::corrupt(
@@ -964,9 +979,9 @@ fn produce_posting_buckets(
                         &row.language,
                         update.bytes,
                         update.text_admitted,
-                        resident_charge.checked_add(term_directory_charge).ok_or_else(|| {
-                            ProducerError::limit("resident heap charge overflow")
-                        })?,
+                        resident_charge
+                            .checked_add(term_directory_charge)
+                            .ok_or_else(|| ProducerError::limit("resident heap charge overflow"))?,
                         policy.resident_file_heap_bytes,
                         scratch,
                         bucket_scratch_bytes,

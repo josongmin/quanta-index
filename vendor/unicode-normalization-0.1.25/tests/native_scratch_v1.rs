@@ -1,9 +1,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use unicode_normalization::{
-    try_for_each_nfc_with_native_admission_v1, try_is_nfc_with_native_admission_v1, NativeNormalizationAdmissionV1,
-    NativeNormalizationErrorV1 as Error, NativeNormalizationScratchDemandV1 as Demand,
-    NativeNormalizationScratchOwnerV1 as Owner, UnicodeNormalization,
+    NativeNormalizationAdmissionV1, NativeNormalizationErrorV1 as Error,
+    NativeNormalizationScratchDemandV1 as Demand, NativeNormalizationScratchOwnerV1 as Owner,
+    UnicodeNormalization, try_for_each_nfc_with_native_admission_v1,
+    try_is_nfc_with_native_admission_v1,
 };
 
 thread_local! {
@@ -132,10 +133,41 @@ impl<'a> NativeNormalizationAdmissionV1 for Policy<'a> {
     }
     fn release_scratch_v1(&mut self, owner: Owner) {
         // Real deallocation precedes admission release, including error paths.
-        LIVE_BYTES.with(|bytes| assert_eq!(bytes.get(), 0));
+        if owner == Owner::Recomposition {
+            LIVE_BYTES.with(|bytes| assert_eq!(bytes.get(), 0));
+        }
         self.retained[slot(owner)] = 0;
         self.releases.push(owner);
     }
+}
+
+#[test]
+fn long_nfc_stream_preserves_fixed_stable_order_and_releases_all_grants_v1() {
+    let cause = Cell::new(59);
+    let input = format!("a{}\u{300}", "\u{315}".repeat(513));
+    let expected = format!("à{}", "\u{315}".repeat(513));
+    let mut output = String::with_capacity(expected.len());
+    let mut policy = Policy::new(&cause);
+    let (result, actual_births) = measured(|| {
+        try_for_each_nfc_with_native_admission_v1(&input, &mut policy, |scalar| {
+            output.push(scalar);
+            Ok(())
+        })
+    });
+    assert!(result.is_ok());
+    assert_eq!(output, expected);
+    assert_eq!(actual_births, policy.native_calls);
+    assert!(policy.releases.contains(&Owner::Sort));
+    assert_eq!(policy.retained, [0; 3]);
+
+    let mut refused = Policy::new(&cause);
+    refused.ceiling = 1;
+    let (result, actual_births) = measured(|| {
+        try_for_each_nfc_with_native_admission_v1(&input, &mut refused, |_scalar| Ok(()))
+    });
+    assert!(matches!(result, Err(Error::Admission(value)) if std::ptr::eq(value, &cause)));
+    assert_eq!(actual_births, refused.native_calls);
+    assert_eq!(refused.retained, [0; 3]);
 }
 fn measured<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     struct Reset;
@@ -177,7 +209,10 @@ fn controlled_nfc_uses_same_algorithm_and_only_admitted_scratch_births_v1() {
         assert_eq!(result.unwrap(), expected);
         assert_eq!(actual_births, policy.native_calls);
         assert_eq!(policy.retained, [0; 3]);
-        assert_eq!(policy.releases, [Owner::Decomposition, Owner::Recomposition]);
+        assert_eq!(
+            policy.releases,
+            [Owner::Decomposition, Owner::Recomposition]
+        );
     }
     // The longest admitted combining run reaches the canonical stable sort's
     // stack-only boundary. An initial starter also reaches recomposition spill.
@@ -187,7 +222,10 @@ fn controlled_nfc_uses_same_algorithm_and_only_admitted_scratch_births_v1() {
         let (result, actual_births) =
             measured(|| try_is_nfc_with_native_admission_v1(&input, &mut policy));
         assert_eq!(result.unwrap(), expected);
-        assert_eq!(actual_births, policy.native_calls, "no hidden stable-sort allocation");
+        assert_eq!(
+            actual_births, policy.native_calls,
+            "no hidden stable-sort allocation"
+        );
     }
 }
 

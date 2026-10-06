@@ -1,6 +1,7 @@
 //! The normalization form and the case fold (see the crate doc).
 
 use std::borrow::Cow;
+use std::fmt;
 
 use unicode_normalization::{
     IsNormalized, NativeNormalizationAdmissionV1, NativeNormalizationErrorV1,
@@ -14,6 +15,18 @@ pub enum NfcAdmissionError {
     ScratchExceeded,
     InvalidScratchState,
 }
+
+impl fmt::Display for NfcAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ArithmeticOverflow => "normalization scratch arithmetic overflow",
+            Self::ScratchExceeded => "normalization scratch exceeds policy",
+            Self::InvalidScratchState => "normalization scratch custody mismatch",
+        })
+    }
+}
+
+impl std::error::Error for NfcAdmissionError {}
 
 struct NfcScratchAdmission {
     base: usize,
@@ -95,6 +108,29 @@ pub enum NfcFoldBuildError {
     LengthChanged,
     ScratchExceeded,
     Native(NativeNormalizationErrorV1<NfcAdmissionError>),
+}
+
+impl fmt::Display for NfcFoldBuildError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LengthOverflow => formatter.write_str("normalization output length overflow"),
+            Self::Allocation => formatter.write_str("normalization output allocation refused"),
+            Self::LengthChanged => formatter.write_str("normalization output length changed"),
+            Self::ScratchExceeded => {
+                formatter.write_str("normalization output exceeds scratch policy")
+            }
+            Self::Native(error) => fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl std::error::Error for NfcFoldBuildError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Native(error) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 impl<'a> NfcFoldPlan<'a> {
@@ -295,6 +331,9 @@ mod tests {
         let plan = NfcFoldPlan::new("İ").expect("census");
         assert_eq!(plan.nfc_bytes(), 2);
         assert_eq!(plan.folded_bytes(), 3);
-        assert_eq!(plan.build_with_budget(0, 4), Err(NfcFoldBuildError::ScratchExceeded));
+        assert_eq!(
+            plan.build_with_budget(0, 4),
+            Err(NfcFoldBuildError::ScratchExceeded)
+        );
     }
 }

@@ -1141,13 +1141,15 @@ def test_relocated_custody_preserves_commands_and_paths(fake_execution, rail, mo
         ("sdk", "searchd", "alias"),
     ],
 )
-def test_validation_rechecks_each_binary_epoch(
-    fake_execution, monkeypatch, rail, role, mutation
-):
+def test_validation_rechecks_each_binary_epoch(fake_execution, monkeypatch, rail, role, mutation):
     out, _, _ = fake_execution
     receipt = portable_proof.produce(rail, out)
     binaries = json.loads(receipt.read_text())["binaries"]
-    name = next(name for name in binaries if name not in {"runner", "searchd"}) if role == "compiled" else role
+    name = (
+        next(name for name in binaries if name not in {"runner", "searchd"})
+        if role == "compiled"
+        else role
+    )
     binary = Path(binaries[name]["path"])
     proof = portable_proof.contract_proof if rail == "contract" else portable_proof.sdk_proof
     method = "nextest_summary" if rail == "contract" else "build_summary_from_evidence"
@@ -1193,11 +1195,11 @@ def test_relocated_validation_rechecks_frozen_binary_epoch(fake_execution, monke
         replacement.replace(frozen_runner)
         return result
 
-    monkeypatch.setattr(portable_proof.sdk_proof, "build_summary_from_evidence", replace_frozen_runner)
+    monkeypatch.setattr(
+        portable_proof.sdk_proof, "build_summary_from_evidence", replace_frozen_runner
+    )
     with pytest.raises(ValueError, match="proof binary changed during validation: runner"):
-        portable_proof.validate(
-            copied / receipt.name, execution_root=out, binary_files=frozen_bins
-        )
+        portable_proof.validate(copied / receipt.name, execution_root=out, binary_files=frozen_bins)
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
