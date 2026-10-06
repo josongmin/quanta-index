@@ -70,6 +70,16 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- Source886 focused owner46/46·3.600s와 open-loop full20/20·13.758s가 실제 exit0/lease release로
+  `VERIFIED`다. Old controller를 두 leaf 뒤143으로 정리하고 raw를 보존했다. Body 불변인565에
+  Scale broad unit/strict/runtime/integration/fuzz4/native 및 Root OS3 원본3/Contract/fresh SDK를 연결한다.
+  Root3 rail은 실제 등록됐고 OS3는 admission 후 release 컴파일 중이다. Contract/SDK closure는
+  1500files/digest58d62e6c로 일치하며 Python793 collection·새 SDK target 준비를 마쳤다.
+  Context/portable result는 미발행이다. Ready9 final consumer는 PREP-v3의55-binding epoch 검사를
+  통과했고 PREP-v2의54-binding은 audit-only로 유지한다. 실제 stage/final slot은 아직 미발행이다.
+- Main98 Rust1111은372.012s/exit101로 동시 추가된 API 테스트 `redundant_clone`1건에서 `FAILED`다.
+  비교값의 불필요한 clone만 제거했고 제품/API 본문·선택565는 불변이다. 새 whole CI actual은 남는다.
+
 - Main2c Python1107 전체 job은 `VERIFIED`:4190passed/30skipped·869.04s,
   P00300passed·34.97s와 source-bound manifest/pre-commit actual exit0다.
   Main d192 Rust1110 strict는 `FAILED`(350.112s):manifest `cfg(test)` 모듈 뒤 제품 item1건.
@@ -201,8 +211,8 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Staged-upload 취소 처리는 mainba06fc12에 통합됐고 이 source의 hosted1104 strict는 doc 길이·Option
   match2건에서 exit101/87.747s로 실패했다. Main451908e5에서 의미 동일한 doc/map_or로 고친 뒤
   fmt/diff 및 fallback19/577/179parsed는 exit0다. 실제 owner Rust/Clippy와 whole CI는 남는다.
-  Native47e는 receipt7/9까지 발행됐고 SG/CS capture0이다. Admitted native leaf는 유지하며 종료/lease
-  release 뒤 다음 capture/replay를 일반 admission으로 등록한다. 최종 join은 matching source proof와
+  당시 Native47e receipt7/9 관측 뒤 native leaf9/9가 종료/lease release까지 완료됐다(위 최신 checkpoint).
+  SG/CS capture/replay는 별도 일반 admission으로 실행한다. 최종 join은 matching source proof와
   명시적 slot handoff 뒤 판정한다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며

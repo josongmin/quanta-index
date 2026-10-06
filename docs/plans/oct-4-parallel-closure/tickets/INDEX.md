@@ -21,17 +21,32 @@ Main에 병렬 추가된 NativeIdentityCopy public API3경로는 이 선택 소�
 
 | 범위 | 담당 | 실제 잔여 |
 | --- | --- | --- |
-| Manifest 복호화 메모리 경계 | I0 / E4 | Sealed/text manifest의 전체 generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. Fixed count·행별 node 한도·기존 tag·indefinite framing 회귀의 실제 Rust 실행이 남는다 |
-| Workspace 검사·단위 테스트 | Scale / hosted CI | Source886의 IPC/manifest owner 회귀는 admission 후 컴파일 중이다. Open-loop bin 회귀 뒤565로 연결해 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 검증한다. Main2c Python1107 전체는 `VERIFIED`; main d192 Rust1110 strict의 테스트 모듈 순서1건을 수리했다 |
-| Medium/Large/XL 실제 프로세스 재시작 | I0 | 원본256/4096/32768·same seed/caps release/no-fail-fast3개를 선택565에서 실행한다. Dispatcher 준비 완료, focused 회귀 뒤 등록 전 `NOT_RUN` |
+| Manifest 복호화 메모리 경계 | I0 / E4 | 전체 generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. Source886의 IPC/CBOR/manifest owner46개가 actual PASS이며565의 whole/strict/integration 소비 검증이 남는다 |
+| Workspace 검사·단위 테스트 | Scale / hosted CI | Source886 owner46/46·3.600s와 open-loop bin20/20·13.758s가 실제 exit0다. 테스트 모듈 위치만 바꾼565에서 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 이어간다. Main2c Python1107과 d192 Python1109 전체는 `VERIFIED`; whole Rust는 아직 실패 상태다 |
+| Medium/Large/XL 실제 프로세스 재시작 | I0 | 원본256/4096/32768·same seed/caps release/no-fail-fast3개를 선택565에서 실제 등록했다. Admission/source guard를 통과해 release 컴파일 중이며 tests/result는 아직 미발행이다 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
-| Final Contract/SDK | I0 | 선택565의 canonical Contract·fresh SDK·portable verify가 남는다. Focused 회귀 뒤 등록 전 `NOT_RUN`; canceled731 v6 partial·receipt0을 proof로 재사용하지 않는다 |
+| Final Contract/SDK | I0 | 선택565의 canonical Contract·fresh SDK를 실제 등록했다. 두 source closure1500files의 digest가 일치하고 Contract Python793 collection·새 SDK target 준비를 마쳤다. Behavioral 결과/최종 context/portable verify는 미완료이며 canceled731 v6 partial은 재사용하지 않는다 |
 
 위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이
 선행 입력이며, 외부 provider·승인·Linux 운영·Semantica 연동은 아래 조건부 범위와 구분한다.
 
 ### Sidebar 실행 결과 회수
+
+- Source886의 owner46/46·3.600s와 `open_loop_matrix` full20/20·13.758s는 실제 exit0/lease release로
+  `VERIFIED`다. 후자는 실제 runtime smoke·history seal·artifact/CLI 고정 oracle을 포함한다.
+  Old controller는 두 leaf 종료 뒤143으로 정리해 broad 자동 실행을 막고 원본 결과를 보존했다.
+  Source565는 제품/테스트 본문 불변인 위치 수리만 포함한다. 그 소스의 OS3 release 원본3 및
+  Contract/fresh SDK를 신규 output에 등록했으며 두 closure1500files/digest58d62e6c가 일치한다.
+  `/private/tmp/qi-scale-os3-release-5658b953-20261006-v8`,
+  `/private/tmp/qi-f15-contract-5658b953-20261006-v8`, `/private/tmp/qi-f15-sdk-5658b953-20261006-v8`.
+  Contract Python793은 collection일 뿐 behavioral PASS가 아니며 context/portable result는 아직 없다.
+  Ready9 final consumer는 PREP-v3의55-binding epoch을 실제 검사해 통과했다. PREP-v2의54-binding
+  파일은 audit-only이며 final 입력으로 쓰지 않는다. 기존75controls/3manifests 및 raw는 불변이다.
+- Main98의 Rust1111 strict는372.012s/exit101로 동시 추가된 NativeIdentityCopy 테스트의
+  `redundant_clone`1건에서 `FAILED`다. 비교값의 `Ok(revision.clone())`만 `Ok(revision)`으로 바꿨고
+  제품/API 본문 불변·owned fmt/diff exit0를 확인했다. 이 변경은 선택565에 포함하지 않는다.
+  Whole main Rust/API 성공을 뜻하지 않으며 별도 CI 결과를 회수한다.
 
 - Main2c의 hosted Python1107은 전체 job `VERIFIED`:4190passed/30skipped·869.04s,
   P00 positive300passed·34.97s 및 source-bound manifest/pre-commit이 실제 exit0다.
@@ -199,7 +214,8 @@ Main에 병렬 추가된 NativeIdentityCopy public API3경로는 이 선택 소�
   waiting-only leaf3개를 source/argv/parent/no-child/stopped-state guards 뒤 취소했다. OS3는
   actual143/3184.926s/0Cargo·tests이며 Contract/SDK도 producer143/controller1/0behavior·receipt0다.
   V6 source closure/793 Python collection·빈 fresh target 및 모든 원본 로그를 보존했다.
-  Native47e batch는 계속 실행하며 실제 receipt7/9, SG/CS capture0이다. 전체 batch/final join 완료로 세지 않는다.
+  당시 native receipt7/9 관측 뒤 native leaf9/9가 완료됐다(위 최신 checkpoint). SG/CS capture와
+  final join 완료로 승격하지 않는다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
