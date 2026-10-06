@@ -331,6 +331,19 @@ macro_rules! validated_identity {
                 }
             }
 
+            /// Validate borrowed wire bytes through the SAME raw predicate/NFC
+            /// producer. No identity copy or new authority is materialized.
+            #[cfg(feature = "quanta-native-identity-v1")]
+            pub fn validate_str_with_native_admission_v1<P>(
+                value: &str,
+                normalization_admission: &mut P,
+            ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>>
+            where
+                P: unicode_normalization::NativeNormalizationAdmissionV1,
+            {
+                validate_native_identity_v1(value, normalization_admission)
+            }
+
             /// Copy these exact private canonical bytes without re-running NFC
             /// or constructing a second identity authority. The caller admits
             /// copy work before this call, admits actual backing before the
