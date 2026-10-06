@@ -16,7 +16,7 @@
   `git apply --check`·통합 뒤 `git diff --check`·owned Rust30paths rustfmt가 `VERIFIED`다.
   SDK caller/binding·daemon staged publication·streaming digest·bounded CBOR scratch·scale profile은 main에 통합됐다.
   F15 sync3곳의 actual 계측도 main에 반영했다. 영향 Rust/runtime·최종 proof는 아직 실행 완료로 세지 않는다.
-- 후속 main은 clean `4cc8f5b94f1a3cca57890d1b4f29687b38cb96cb`다. Digest-fallibility의
+- 후속 code checkpoint는 `4cc8f5b94f1a3cca57890d1b4f29687b38cb96cb`다. Digest-fallibility의
   정책 hash 설명 누락을 문서3줄로 수리했으며 함수 body bytes는 동일하다. Gate는19sites/0violations다.
   Large/XL 실제 OS-child restart 회귀2개와 exact ignored 등록을 추가했고 Medium 기본 profile은 유지했다.
   Test-authority·ignored-policy·owned rustfmt가 `VERIFIED`; 새 OS3 selectors actual은 `NOT_RUN`이다.
@@ -25,6 +25,12 @@
   Main 영향 F15 owner nextest는79passed/527skipped·203.351s다. `file_authority::` unit 및
   `f15_file_authority`·`sealed_commitment_cost`·`sealed_manifest`·`unicode_normalization_goldens`를 선택했다.
   Log `/private/tmp/qi-f15-final-owner-nextest-20261006-v1.log`; 전체 lexical/runtime·formal proof로 승격하지 않는다.
+- Scale sourcec93aa614의 전체 workspace/all-target/all-feature strict Clippy는 새 코드의
+  must-use1건·동일 match arm2건에서 `FAILED`였다. Source23a52737의 동작 동일2-path 수정은
+  patch SHA와 모든 pre/post SHA 대조 뒤 main에 통합했으며 owned rustfmt가 `VERIFIED`다.
+  전체 Clippy 재검사와 controlled fuzz·workspace unit·release·Large/XL actual은 진행 중이다.
+  Main source31828561의 CircleCI verify1741도 동일3건, verify-python1742는 미통합 module baseline에서
+  `FAILED`였다. 새 source의 hosted CI 결과와 앞 단계 뒤의 테스트 성공은 아직 확인되지 않았다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.

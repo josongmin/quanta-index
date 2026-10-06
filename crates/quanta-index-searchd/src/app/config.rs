@@ -916,6 +916,7 @@ impl SearchdConfig {
         Ok(self)
     }
 
+    #[must_use]
     pub const fn process_memory_ceilings(&self) -> ProcessMemoryCeilings {
         self.process_memory_ceilings
     }
