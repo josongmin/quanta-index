@@ -145,7 +145,8 @@ Scanner comparator17cases는10.91s/exit0로 통과했다. 각 negative가 유효
 먼저 비교한 뒤 자기 mutant를 거부하도록 보완했다. Actual two-arm A/B는 `NOT_RUN`이다.
 병렬 소유 경로와 선행은 [병렬 작업 배정](../WAVES.md#병렬-작업-배정--2026-10-06)에 정리했다.
 Scale·Scanner·Ready9 OG 담당의 독립 작업서를 준비했다. OG9 specs는 별도 clean63ac checkout에서
-원본90 inputs·Python10-role/runtime을 결속해 PREPARE 완료했으며 actual capture는 `NOT_RUN`이다.
+원본90 inputs·Python10-role/runtime을 결속한 PREPARE 시점에는 actual capture가 `NOT_RUN`이었다.
+이후 source63ac의 OG9/180 capture·독립 replay 및 sourcef2d의 Scanner diagnostic A/B는 위 회수 결과대로 완료됐다.
 OG 단독과 선택한 clean BASE의 Scanner A/B 진단은 최종 SDK proof를 전역 선행으로 두지 않는다.
 Frozen5796 actual과 아래 current-source owner 회귀를 구분하며 main formal proof로 승격하지 않는다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
@@ -162,6 +163,11 @@ Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중�
 | P1 · 평가 실행 | SQL146/Zellij476·신규742pairs 판단, Tailscale rubric, admissions·required cells·5제품 capture/replay/join·최종 scores | AI quota/rubric 입력은 해당 범위만 `BLOCKED`. Ready cells는 별도로 실행한다. Exact/prefix/infix/components/default·explicit typo/no-answer/NL/ARB/B09 분모와 외부 index scope를 유지한다. [E1](#e1), [E2](#e2) |
 | P1 · 독립 평가 | 독립 holdout/license/exposure/gold 발행과 지원 declaration-name/span·typo 평가 | 실제 미사용 source/query family 및 source-attested gold, critical strata/underfill·supported unit 판정. File hit를 선언 회수로 세지 않는다. [E1-04](#o4-e1-04), [E1-05](#o4-e1-05) |
 | P2 · 운영 코드·릴리스 | Quanta typed deploy/activate/restore-forward producer·recipes·parser/checker/aggregate 연결; 실제 provider 및 installed Linux daemon/state/운영 실행 | 독립 pre/post 관측·actual host/config/state/retention/rollback 입력 뒤 구현·실행. 현재 운영 생산자는 미구현이고 대상 입력은 `BLOCKED`다. 기존 staged pair는 별도 연동 owner가 소비한다. [I0-03](#o4-i0-03) |
+
+조건부 P2 결정도 원본 agent-1의 출처대로 보존한다.
+[OCT-04-002](../../../adr/OCT-04-002-configuration-and-generation-policy.md)의 effective config/generation policy는
+실제 operator 요구, [OCT-04-003](../../../adr/OCT-04-003-source-preparation-sdk.md)의 선택적 preparation SDK는
+실제 producer fixture가 있을 때 결정한다. 두 ADR은 현재 `Proposed`; 즉시 구현이나 승인된 public API로 세지 않는다.
 
 확정된 Quanta 작업은 실패한 capacity/durable source authority 수리와 운영 결과 생산자다.
 Full sync 병목은 아래 actual로 확인했으며 delta/noop의 exclusive residual 원인은 추가 owner 계측이 필요하다.
@@ -323,7 +329,7 @@ Historical transport/worker clocks를 소급 승격하거나 invalid/failed obse
 
 ### O4-E2-02
 
-P1 · W1/W4 · native reader/capture/replay 구현 완료, 전체 서비스 universe qualification 미완료.
+P1 · W1/W4 · selected-project native reader/capture/replay 구현 완료, 전체 서비스 witness는 별도 코드·판정 범위.
 
 - Sourcegraph source97의12repo/13,347files native replay 및 OpenGrok readonly 전후 disk/source/aux/API
   관측은 완료된 scope로 유지한다. 후속 producer/decoder 변경의 affected fresh evidence는 별도로 발행한다.
@@ -381,6 +387,10 @@ P1 · W1/W4 · native reader/capture/replay 구현 완료, 전체 서비스 univ
   Native12repo/17,615live와20개 요청의 segments_4/generation4/readerVersion16/live68/max69가 일치했다.
   현재 ready9repo/180requests의 selected-request attested 범위는 완료다. All-project readers,
   global indexed universe/서비스 전체 권위 및 최종 제품 비교 qualification은 남아 있다.
+- Canonical witness는 `instrumented_search_requests_selected_project_only`이며 all-project/global/loaded-reader
+  flags를false로 고정한다. 같은 selected-request capture를 다시 실행해 전체12project 권위로 승격할 수 없다.
+  전체 서비스가 종료 조건이면 별도 loaded-reader witness/consumer를 구현·검증하고, selected-project만
+  사용하는 비교라면 caller가 요구하는 scope를 명시 판정한다. 현재180requests는 이 추가 코드의 증거가 아니다.
 - 남은 repository/profile의 실제 acquired-reader scope 및 필요한 전수 source-byte/posting 권위를 확정한다.
   `opengrok_query_fixture.py`가 고정 원본→patch→Java→4classes 재현을 제공한다.
   `VERIFIED`: 외부 fresh `/private/tmp/qi-og-query-fixture-repro-20261005-v1`에서

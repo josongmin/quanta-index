@@ -54,7 +54,8 @@ OG 독립 source는 `/Users/songmin/.codex/worktrees/oct6-og-63ac/quanta-index`�
 [Scanner](/private/tmp/qi-parallel-scanner-20261006-v1/WORK_ORDER.md),
 [Ready9 OG](/private/tmp/qi-parallel-ready9-20261006-v1/WORKORDER.md)다.
 OG9 PREPARE는 원본90 input guards·clean exact source·Python10-role before/after와
-resolved Python runtime을 결속했다. Docker/HTTP 신원·native capture·replay는 `NOT_RUN`이다.
+resolved Python runtime을 결속했다. 그 PREPARE 시점에는 Docker/HTTP 신원·native capture·replay가 `NOT_RUN`이었다.
+후속 source63ac의 OG9/180 capture·독립 replay는 아래 회수 결과대로 완료됐다.
 
 Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 않는 별도 검증 작업이다.
 현재 host에서는 I0가 순서대로 실행한다. AI quota·rubric·holdout 승인·provider/Linux 입력은 해당 scope만 대기한다.
@@ -169,6 +170,14 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 | W4 | E2: ready required cells actual capture/independent replay/join·scope별 warmup parity. E4: A/B·capacity·qualified performance | Matching binaries/input/index/clock, 실제 host/schedule. Failed sibling은 ready cells를 막지 않음 |
 | W5 | E1: 마지막 unjudged union→labels/admission→independent scores/CI. E4: holdout 기반 정책 RCA | Qrel-only reuse 허용 여부 확인. Name/NL/no-answer/ARB/B09 분모·human/unseen 범위 별도 |
 | W6 | I0-03: Quanta 운영 producer/recipes·real provider·Linux release/state·P11 actions·aggregate | 실제 target/독립 관측 계약·authorized inputs/results. Registry의 외부 pair는 별도 연동 수용 범위 |
+
+## 조건부 P2 결정
+
+원본 agent-1의 [OCT-04-002](../../adr/OCT-04-002-configuration-and-generation-policy.md)
+(effective config/generation policy)와 [OCT-04-003](../../adr/OCT-04-003-source-preparation-sdk.md)
+(optional preparation SDK)는 `Proposed`다. 실제 operator 요구 또는 producer fixture 입력 뒤 채택 여부를
+결정하며 즉시 구현/API 변경으로 승격하지 않는다. E2의 OG180 selected-project proof는 완료지만
+전체12project loaded-reader 권위가 필요하면 별도 witness/consumer 코드가 필요하다.
 
 ## 현재 dependency
 
