@@ -6,9 +6,19 @@
 
 The Quanta Index copy retains the canonical extension's build sources, tests and
 licenses. The unused upstream `scripts/unicode.py` table generator is omitted;
-the Unicode 17.0.0 table data remains unchanged. `src/tables.rs` uses the
-equivalent `matches!` form for its public assigned-codepoint predicate.
-The local manifest supplies a `text-processing` category for workspace Clippy.
+the Unicode 17.0.0 range and lookup data retain the pinned archive contents.
+The local `is_public_assigned` Rust wrapper uses `matches!` over the same scalar
+patterns; this lint rewrite changes `src/tables.rs` source text.
+
+## Local workspace lint adaptations
+
+- Cargo metadata declares the `text-processing` category.
+- The stable workspace fork exposes its library and explicit native-scratch test target. The retained upstream benchmark source requires nightly libtest and its omitted `benches/long.txt` input, so the local manifest does not register that unsupported target.
+- Allocation-probe TLS unavailability aborts the test process; it cannot produce a successful false/zero observation. The probe uses const `Cell` keys without destructors.
+- Hangul decomposition documents its checked syllable-range safety precondition.
+- Hangul composition uses `is_multiple_of(T_COUNT)` for the same nonzero constant divisor.
+- `is_public_assigned` uses `matches!` with unchanged Unicode scalar patterns.
+- The archive digests below identify upstream files; locally adapted source text has its own repository identity.
 
 ## Local producer extension
 

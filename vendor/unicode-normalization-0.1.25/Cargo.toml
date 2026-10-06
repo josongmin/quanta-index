@@ -60,9 +60,8 @@ std = []
 name = "unicode_normalization"
 path = "src/lib.rs"
 
-[[bench]]
-name = "bench"
-path = "benches/bench.rs"
+# The imported upstream benchmark requires nightly libtest and an omitted
+# long-text fixture; it is not a target of this stable workspace fork.
 
 [dependencies.tinyvec]
 version = "1"

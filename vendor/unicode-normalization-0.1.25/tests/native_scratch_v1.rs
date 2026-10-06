@@ -14,6 +14,17 @@ thread_local! {
     static FAIL_NEXT: Cell<bool> = const { Cell::new(false) };
 }
 
+// Allocation instrumentation must not manufacture a zero/false observation
+// when its thread-local state is unavailable. The probe's const Cell keys
+// have no destructors; unavailability is a fatal instrumentation invariant.
+// Abort rather than unwind through GlobalAlloc.
+fn probe_tls<T>(value: Result<T, std::thread::AccessError>) -> T {
+    match value {
+        Ok(value) => value,
+        Err(_unavailable_probe) => std::process::abort(),
+    }
+}
+
 // Instrumentation only: no original authority, quota, allocator replacement
 // policy or thread-local production control is introduced.
 struct AllocationProbe;
@@ -21,34 +32,28 @@ struct AllocationProbe;
 static ALLOCATOR: AllocationProbe = AllocationProbe;
 unsafe impl GlobalAlloc for AllocationProbe {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if FAIL_NEXT
-            .try_with(|flag| flag.replace(false))
-            .unwrap_or(false)
-        {
+        if probe_tls(FAIL_NEXT.try_with(|flag| flag.replace(false))) {
             return std::ptr::null_mut();
         }
         let value = unsafe { System.alloc(layout) };
-        if !value.is_null() && RECORD.try_with(Cell::get).unwrap_or(false) {
+        if !value.is_null() && probe_tls(RECORD.try_with(Cell::get)) {
             ALLOCATIONS.with(|count| count.set(count.get() + 1));
             LIVE_BYTES.with(|bytes| bytes.set(bytes.get() + layout.size()));
         }
         value
     }
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        if RECORD.try_with(Cell::get).unwrap_or(false) {
+        if probe_tls(RECORD.try_with(Cell::get)) {
             LIVE_BYTES.with(|bytes| bytes.set(bytes.get().checked_sub(layout.size()).unwrap()));
         }
         unsafe { System.dealloc(pointer, layout) };
     }
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if FAIL_NEXT
-            .try_with(|flag| flag.replace(false))
-            .unwrap_or(false)
-        {
+        if probe_tls(FAIL_NEXT.try_with(|flag| flag.replace(false))) {
             return std::ptr::null_mut();
         }
         let value = unsafe { System.realloc(pointer, layout, new_size) };
-        if !value.is_null() && RECORD.try_with(Cell::get).unwrap_or(false) {
+        if !value.is_null() && probe_tls(RECORD.try_with(Cell::get)) {
             ALLOCATIONS.with(|count| count.set(count.get() + 1));
             LIVE_BYTES.with(|bytes| bytes.set(bytes.get() - layout.size() + new_size));
         }

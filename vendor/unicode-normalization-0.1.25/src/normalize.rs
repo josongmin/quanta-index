@@ -141,7 +141,10 @@ pub(crate) fn is_hangul_syllable(c: char) -> bool {
 /// Decompose a precomposed Hangul syllable.
 ///
 /// # Safety
-/// `s` must be a Hangul syllable between U+AC00 and U+D7AF.
+///
+/// `s` must satisfy `is_hangul_syllable(s)`: its code point is at least
+/// `S_BASE` and less than `S_BASE + S_COUNT`. This keeps every emitted
+/// Jamo code point within the Unicode scalar range.
 #[allow(unsafe_code, unused_unsafe)]
 #[inline(always)]
 unsafe fn decompose_hangul<F>(s: char, mut emit_char: F)
