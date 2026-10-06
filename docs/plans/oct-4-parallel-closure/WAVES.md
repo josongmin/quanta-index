@@ -15,7 +15,8 @@
 - 최종 선택 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`다.
   `886673cd`의 admitted IPC/manifest·open-loop 회귀를 보존하고 테스트 모듈 위치만 수정한565에서
   whole unit/strict/runtime/integration/fuzz4/native와 Root OS3/Contract/fresh SDK를 연결한다.
-  병렬 NativeIdentityCopy API3경로는 선택 소스에서 제외해 whole main/API 검증과 구분한다.
+  병렬 NativeIdentityCopy/Admission API3경로와 feature manifest2경로는 선택 소스에서 제외해
+  whole main/API 검증과 구분한다.
 - 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
   실제 actions와 독립 pre/post 성공 판정 계약·authorized target 입력이 필요하다.
 - Frozen5796 Large default timeout과 XL posting admission 거절이 재현됐다.
@@ -71,6 +72,11 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- Main16f37의 exact-source CI는 `FAILED`: Python1120 locked dependency fetch가 exit101·0.809s로
+  unicode-normalization0.1.25에 없는 `quanta-native-scratch-v1` feature를 보고했고,
+  Rust1119 guarded module snapshot 검사는 exit1·4.185s였다. 해당 변경 owner의 dependency 연동
+  수리 후 module/API·whole CI를 재실행한다. 실패한 dependency 해석으로 baseline을 갱신하지 않으며,
+  진행 중인 선택565의 엔진 검증 소스는 그대로 유지한다.
 - Source886 focused owner46/46·3.600s와 open-loop full20/20·13.758s가 실제 exit0/lease release로
   `VERIFIED`다. Old controller를 두 leaf 뒤143으로 정리하고 raw를 보존했다. Body 불변인565에
   Scale broad unit/strict/runtime/integration/fuzz4/native 및 Root OS3 원본3/Contract/fresh SDK를 연결한다.

@@ -14,7 +14,7 @@
 최종 Quanta 검증 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`
 (`oct6-quanta-final-order/quanta-index`)다. `886673cd`에 대한 변경은 manifest의 `cfg(test)`
 모듈을 파일 끝으로 옮긴1경로이며 제품 함수·테스트 본문은 byte 동일하다.
-Main에 병렬 추가된 NativeIdentityCopy public API3경로는 이 선택 소스에서 제외했다.
+Main에 병렬 추가된 NativeIdentityCopy/Admission API3경로와 feature manifest2경로는 이 선택 소스에서 제외했다.
 선택 소스의 검증을 전체 main/API qualification으로 승격하지 않는다.
 
 ### 현재 실행 목록
@@ -27,12 +27,18 @@ Main에 병렬 추가된 NativeIdentityCopy public API3경로는 이 선택 소�
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
 | Final Contract/SDK | I0 | 선택565의 canonical Contract·fresh SDK를 실제 등록했다. 두 source closure1500files의 digest가 일치하고 Contract Python793 collection·새 SDK target 준비를 마쳤다. Behavioral 결과/최종 context/portable verify는 미완료이며 canceled731 v6 partial은 재사용하지 않는다 |
+| Main의 병렬 NativeIdentity feature 연동 | 해당 변경 owner / hosted CI | Main16f37의 Rust1119·Python1120이 실제 실패했다. Locked unicode-normalization0.1.25에 없는 quanta-native-scratch-v1 feature 참조를 해결한 후 dependency fetch·module/API·whole CI를 재검증해야 한다. 선택565의 엔진 검증과 별도 범위다 |
 
 위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이
 선행 입력이며, 외부 provider·승인·Linux 운영·Semantica 연동은 아래 조건부 범위와 구분한다.
 
 ### Sidebar 실행 결과 회수
 
+- Main `16f37d43f7a1c3d136d7843442089bdc04561770`의 exact-source hosted CI는 `FAILED`다.
+  Python1120은 locked dependency fetch에서 exit101·0.809s로 존재하지 않는
+  `unicode-normalization/quanta-native-scratch-v1` feature를 보고했다. Rust1119는 guarded module
+  snapshot 검사에서 exit1·4.185s였다. Dependency 해석이 유효해진 뒤 module 출력을 재검증하며,
+  실패한 해석 결과로 baseline을 갱신하지 않는다. 선택565의 진행 중 검증 소스는 불변이다.
 - Source886의 owner46/46·3.600s와 `open_loop_matrix` full20/20·13.758s는 실제 exit0/lease release로
   `VERIFIED`다. 후자는 실제 runtime smoke·history seal·artifact/CLI 고정 oracle을 포함한다.
   Old controller는 두 leaf 종료 뒤143으로 정리해 broad 자동 실행을 막고 원본 결과를 보존했다.
