@@ -94,6 +94,10 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Clean05bdaeb9/cache exact3 실제 실행은2passed/1failed/82skipped·439.947s로 `FAILED`다.
   Medium256·Large4096은 통과했고 XL32768은 coverage decode residency envelope에서 typed 거절됐다.
   Canonical envelope/profile·writer preflight·cold decode/reopen/runtime charge 정합 수리 뒤 원본XL을 재실행한다.
+  후속e61a31ce의9-path common bound/Arc key 및 capacity/replay 정합을 exact guards로 main에 통합했다.
+  고정64MiB/256MiB 한도는 유지하고 malformed 최대 페이지 예약을 포함한다. Owner coverage/upload39는
+  39passed/989skipped·35.965s, Python causal76은0.18s/exit0다. 새 contract public helper의 API 영향과
+  실제XL/OS3·전체Clippy·final proof는 별도로 실행한다.
   Request-decode fuzz970,826runs/61s는 통과했고 남은 fuzz3은 미입장 취소 후 `NOT_RUN`이다.
   Source2ea release scale_matrix build18m16s/exit0는 `VERIFIED`; 전체 Clippy/unit 재검사와 native Large/XL은 남는다.
   Hosted source31828561의 verify1741도 동일3건, verify-python1742는 module baseline에서 실패했다.

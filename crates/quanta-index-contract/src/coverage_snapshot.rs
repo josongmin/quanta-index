@@ -56,19 +56,28 @@ impl FileCoverageSnapshot {
             let branch = std::mem::size_of::<[K; 16]>()
                 .checked_add(std::mem::size_of::<[usize; 17]>())?
                 .checked_add(std::mem::size_of::<[usize; 8]>())?;
-            entries.checked_mul(u64::try_from(leaf.checked_add(branch)?).ok()?)
+            let Ok(node_bytes) = u64::try_from(leaf.checked_add(branch)?) else {
+                return None;
+            };
+            entries.checked_mul(node_bytes)
         }
         let indexes =
             tree_bytes::<Arc<SourceFileKey>, Arc<SourceFileCoverage>>(row_count)?.checked_mul(2)?;
         let shared = std::mem::size_of::<SourceFileKey>()
             .checked_add(std::mem::size_of::<SourceFileCoverage>())?
             .checked_add(std::mem::size_of::<[usize; 4]>())?;
-        let shared = row_count.checked_mul(u64::try_from(shared).ok()?)?;
+        let Ok(shared) = u64::try_from(shared) else {
+            return None;
+        };
+        let shared = row_count.checked_mul(shared)?;
         let directory = tree_bytes::<u8, Rows>(row_count.min(256))?;
+        let Ok(snapshot_bytes) = u64::try_from(std::mem::size_of::<Self>()) else {
+            return None;
+        };
         indexes
             .checked_add(shared)?
             .checked_add(directory)?
-            .checked_add(u64::try_from(std::mem::size_of::<Self>()).ok()?)
+            .checked_add(snapshot_bytes)
     }
 
     #[must_use]

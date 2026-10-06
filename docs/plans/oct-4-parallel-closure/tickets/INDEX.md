@@ -40,6 +40,13 @@
   `/private/tmp/qi-scale-os3-05bdaeb9-20261006-v2.log`; coverage_pages decode_root의 encoded64MiB/heap256MiB
   envelope가 원인이다. Supported profile·writer preflight·cold decode/reopen·runtime charge의 canonical 계약을 수리한다.
   원본 dispatch 예상 source e56 로그와 실제05 source binding을 보존했으며 fixture/seed를 줄이지 않는다.
+  후속e61a31ce9paths를 모든 pre/post SHA로 main에 통합했다. Shared Arc key/row 및 snapshot owner의
+  구조 상한을 writer/decoder/resident charge에 공통 적용했다. Encoded64MiB·decode256MiB 한도는 그대로이며
+  malformed hint의 최대4096행 임시 예약도 과금한다. `test(coverage)|test(staged_)` owner actual은
+  39passed/989skipped·35.965s다. 32,768행 write/reopen/delta, reader 불변성·overflow·초과 root의
+  target mutation 전 거절을 포함한다. Python causal profile/capture76은0.18s/exit0였다.
+  새 public structural_heap_bytes_bound 때문에 affected API/module 입력과 실제 baseline을 재검증한다.
+  이 source의 actual XL/OS3·전체 Clippy·final Contract/SDK는 아직 종료되지 않았다.
   전체 workspace unit은 앞선 컴파일 실패 뒤 재실행 전 `NOT_RUN`, 전체 Clippy도 마지막 실패 뒤 재실행 전이다.
   Controlled ipc_request_decode는970,826runs/61s/exit0로 `VERIFIED`; 남은 fuzz3은 미입장 취소 뒤 `NOT_RUN`이다.
   Source2ea1408d release scale_matrix build는18m16s/exit0로 `VERIFIED`, native Large/XL 실제 실행은 남는다.
