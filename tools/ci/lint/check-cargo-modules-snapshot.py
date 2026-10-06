@@ -138,7 +138,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    BASELINE_DIR.mkdir(parents=True, exist_ok=True)
 
     # A removed protected crate is a structural change, not a passing snapshot.
     present = workspace_member_names()
@@ -150,17 +149,25 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    bad = bool(missing)
-    if packages:
-        validate_workspace_dependencies()
-    for pkg in packages:
-        current = render_module_tree(pkg)
-        path = baseline_path(pkg)
+    if missing:
+        return 1
 
-        if args.update_baseline:
+    validate_workspace_dependencies()
+    # All selected producers must succeed before an update can touch even the
+    # first baseline. Otherwise a later failure leaves a mixed snapshot set.
+    rendered = {pkg: render_module_tree(pkg) for pkg in packages}
+    if args.update_baseline:
+        BASELINE_DIR.mkdir(parents=True, exist_ok=True)
+        for pkg, current in rendered.items():
+            path = baseline_path(pkg)
             path.write_text(current, encoding="utf-8")
             print(f"baseline updated: {path}")
-            continue
+        return 0
+
+    bad = False
+    for pkg in packages:
+        current = rendered[pkg]
+        path = baseline_path(pkg)
 
         if not path.exists():
             print(

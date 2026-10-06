@@ -47,3 +47,42 @@ def test_public_api_empty_or_wrong_tool_output_is_refused(monkeypatch) -> None:
         )
         with pytest.raises(RuntimeError, match="missing or wrong crate root"):
             MODULE.render_public_api("quanta-index-contract")
+
+
+def test_update_keeps_both_api_baselines_when_second_producer_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import pytest
+
+    contract = tmp_path / "quanta-index-contract.txt"
+    sdk = tmp_path / "quanta-index-sdk.txt"
+    contract.write_text("contract previous\n")
+    sdk.write_text("sdk previous\n")
+    monkeypatch.setattr(MODULE, "BASELINE_DIR", tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--update-baseline"])
+
+    def render(package: str) -> str:
+        if package == "quanta-index-sdk":
+            raise RuntimeError("second API render failed")
+        return "pub mod quanta_index_contract\nnew export\n"
+
+    monkeypatch.setattr(MODULE, "render_public_api", render)
+    with pytest.raises(RuntimeError, match="second API render failed"):
+        MODULE.main()
+    assert contract.read_text() == "contract previous\n"
+    assert sdk.read_text() == "sdk previous\n"
+
+
+def test_update_writes_all_rendered_api_baselines(monkeypatch, tmp_path: Path) -> None:
+    contract = "pub mod quanta_index_contract\nnew export\n"
+    sdk = "pub mod quanta_index_sdk\nnew export\n"
+    monkeypatch.setattr(MODULE, "BASELINE_DIR", tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--update-baseline"])
+    monkeypatch.setattr(
+        MODULE,
+        "render_public_api",
+        lambda package: contract if package == "quanta-index-contract" else sdk,
+    )
+    assert MODULE.main() == 0
+    assert (tmp_path / "quanta-index-contract.txt").read_text() == contract
+    assert (tmp_path / "quanta-index-sdk.txt").read_text() == sdk

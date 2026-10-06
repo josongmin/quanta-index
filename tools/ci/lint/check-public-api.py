@@ -109,17 +109,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    BASELINE_DIR.mkdir(parents=True, exist_ok=True)
+    # Render every selected API before writing any baseline. A later producer
+    # failure must not leave the earlier package's snapshot promoted.
+    rendered = {pkg: render_public_api(pkg) for pkg in args.packages}
+    if args.update_baseline:
+        BASELINE_DIR.mkdir(parents=True, exist_ok=True)
+        for pkg, current in rendered.items():
+            path = baseline_path(pkg)
+            path.write_text(current, encoding="utf-8")
+            print(f"baseline updated: {path}")
+        return 0
 
     bad = False
     for pkg in args.packages:
-        current = render_public_api(pkg)
+        current = rendered[pkg]
         path = baseline_path(pkg)
-
-        if args.update_baseline:
-            path.write_text(current, encoding="utf-8")
-            print(f"baseline updated: {path}")
-            continue
 
         if not path.exists():
             print(

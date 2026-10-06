@@ -174,3 +174,79 @@ def test_resolved_dependencies_reach_the_module_comparison(tmp_path, monkeypatch
         "quanta-index-contract",
         "--no-fns",
     ]
+
+
+def test_update_does_not_promote_first_tree_when_second_producer_fails(
+    tmp_path, monkeypatch
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("modules_multi_update", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    first = tmp_path / "quanta-index-contract.txt"
+    second = tmp_path / "quanta-index-core.txt"
+    first.write_text("contract previous\n")
+    second.write_text("core previous\n")
+    monkeypatch.setattr(module, "BASELINE_DIR", tmp_path)
+    monkeypatch.setattr(
+        module, "workspace_member_names", lambda: {"quanta-index-contract", "quanta-index-core"}
+    )
+    monkeypatch.setattr(module, "validate_workspace_dependencies", lambda: None)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--update-baseline"])
+
+    def render(package):
+        if package == "quanta-index-core":
+            raise RuntimeError("second module tree incomplete")
+        return "crate quanta_index_contract\nnew module\n"
+
+    monkeypatch.setattr(module, "render_module_tree", render)
+    with pytest.raises(RuntimeError, match="second module tree incomplete"):
+        module.main()
+    assert first.read_text() == "contract previous\n"
+    assert second.read_text() == "core previous\n"
+
+
+def test_update_with_missing_protected_crate_does_not_promote_present_tree(
+    tmp_path, monkeypatch
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("modules_mixed_missing", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    first = tmp_path / "quanta-index-contract.txt"
+    first.write_text("contract previous\n")
+    monkeypatch.setattr(module, "BASELINE_DIR", tmp_path)
+    monkeypatch.setattr(module, "workspace_member_names", lambda: {"quanta-index-contract"})
+    monkeypatch.setattr(module, "render_module_tree", lambda _: pytest.fail("producer ran"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT), "--update-baseline", "--packages", "quanta-index-contract", "missing"],
+    )
+    assert module.main() == 1
+    assert first.read_text() == "contract previous\n"
+
+
+def test_update_writes_all_resolved_module_trees(tmp_path, monkeypatch) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("modules_multi_success", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "BASELINE_DIR", tmp_path)
+    monkeypatch.setattr(
+        module, "workspace_member_names", lambda: {"quanta-index-contract", "quanta-index-core"}
+    )
+    monkeypatch.setattr(module, "validate_workspace_dependencies", lambda: None)
+    monkeypatch.setattr(
+        module, "render_module_tree", lambda package: f"crate {package.replace('-', '_')}\n"
+    )
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--update-baseline"])
+    assert module.main() == 0
+    assert (tmp_path / "quanta-index-contract.txt").read_text() == "crate quanta_index_contract\n"
+    assert (tmp_path / "quanta-index-core.txt").read_text() == "crate quanta_index_core\n"
