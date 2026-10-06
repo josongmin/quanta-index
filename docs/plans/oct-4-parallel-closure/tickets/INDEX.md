@@ -110,6 +110,12 @@
   Contract/SDK source는 immutable `oct6-f15-final-v4/quanta-index`의2fb8e0fe이며 각 성공 뒤 portable verify를 실행한다.
   Correct resource wait7200s/jobs1/sccache0/gc0을 사용하며 orchestration 전체에 중첩 lock을 잡지 않는다.
   이 등록은 실제 빌드·테스트 종료와 receipt 발행을 뜻하지 않는다.
+  후속 정적 감사에서 단일 native scope의 receipt `verify` 이후 release 최종 검사 누락을 확인했다.
+  Batch는 outer 후행 검사로 이 경계를 보호하므로 현재 Ready9 batch의 유효성은 유지한다.
+  이 Python producer 수리를 최종 proof source에 포함하도록 Contract/SDK 요청2개만 미입장 안전 취소했다.
+  Producer143/controller1·0Cargo/behavior·`NOT_RUN`; v4 source closure/793collection 및 빈 fresh target을 보존했다.
+  `/private/tmp/qi-f15-contract-2fb8e0fe-20261006-v4/`와 SDK sibling은 receipt가 발행되지 않았다.
+  Rust 입력이 동일한 OS3 release254a 요청은 유지하며 native producer 수리·회귀 뒤 새 proof를 등록한다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
@@ -118,6 +124,9 @@
   9capture+9independent replay batch의 Bat SG는 stale native runtime binding에서 `FAILED`였다.
   Old receipt PID1068/Oct4와 실제 PID1262/Oct5가 달라 현재 runtime의 native scope를 실제 producer로
   새 발행·독립 검증한다. 기존 receipt/raw는 유지하며 전체 batch 완료 및 final5 join은 아직 `NOT_RUN`이다.
+  Actual v4는 Bat native79payload와 scope receipt 발행·검증을 완료하고 cli scope로 진입했다.
+  Producer의 scope당4회 full-release 재해시(1.3GB/53,950files) 중복을 확인했다.
+  Caller/callee의 release 변경 감지 경계를 유지하는 후보와 회귀를 별도로 준비하며 live 실행 소스는 유지한다.
 - Public API 담당의 actual contract/SDK API rendering과 contract/core module gates4개는 reviewed 후보와 byte-exact로
   `VERIFIED`다. SDK public API는 기존 baseline과 동일하다. 독립 external consumer5tests는5passed,
   접근 차단4compile은 기대한 E0004/E0603 거절로 모두 `VERIFIED`다. API255/module194 input guards와
