@@ -108,8 +108,10 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
 - Whole hosted CI는 새 정책 수리 이후 최종 job 결과를 회수한다. 실제 실패가 있으면 owner에서 수리한다.
 - Ready9는 actual capture source `09103820`을 유지해 CS9repos/180tasks를 실행 중이다.
   기존4repos/80tasks와268raw files를 보존하고 guarded resume8개를 통과했다.
-  이후 mocha/nushell까지6/9개를 완료했고 남은3개 capture와 전체9개 독립 replay 결과는 아직 미발행이다.
-  SG/OG recorded endpoints는 연결 거절이며 해당 서비스 입력은 `BLOCKED`다.
+  CS9/9개·180개 요청 capture를 완료했고 전체9개 독립 replay를 실행 중이다.
+  중지된 SG/OG 컨테이너를 확인했다. SG 원본 Zoekt index/관측 자료와 OG 원본 볼륨은 남아 있다.
+  OG readonly clone의 임시 mount는 사라졌다. 원본 신원을 보존하는 복구 가능성을 확인 중이며
+  아직 실제 service capture/replay 성공으로 세지 않는다.
   Historical55-binding/old raw를 최신 SDK나 새 collector epoch로 재결속하지 않는다.
 - P11 공통 코드·Python436개/통합 영향222개는 완료했다. 실제 deploy/activate/restore-forward
   target adapter는 대상·명령·독립 pre/post 성공 계약 입력 부재로 `BLOCKED`다.
@@ -125,7 +127,7 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
 | Workspace/strict/API/CI | Scale / hosted CI | Whole Rust strict·macOS owner strict·API `VERIFIED`; Unicode exact feature 정책 actual `VERIFIED`. 새 whole CI 종료 회수 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Frozen492의 Medium/Large 및 configured XL `VERIFIED`. 최신e371 runtime15개는 별도 범위이며 current Large/XL qualification로 승격하지 않음 |
 | Current native Scale·capacity/cost | Scale | e371 open-loop20개 `VERIFIED`. Matching Large/XL lifecycle/cost·capacity negative·timing/RSS qualification은 `NOT_RUN` |
-| Ready9 native·SG/CS·최종5제품 join | Ready9 | CS6/9 capture 완료, 남은3+독립9 replay 실행 중. SG/OG 서비스 `BLOCKED`; 최종 matching admission/pair/full5는 `NOT_RUN` |
+| Ready9 native·SG/CS·최종5제품 join | Ready9 | CS9/9·180요청 capture 완료, 독립9 replay 실행 중. 중지된 SG/OG의 원본 index/volume 기반 복구 확인 중; 최종 matching admission/pair/full5는 `NOT_RUN` |
 | Final Contract/SDK | I0 | e371 Python793·Rust191·SDK27 actual 및 별도 replay/frozen7role 재배치 검증 모두 `VERIFIED`. 영속 context·raw·binaries 보존 |
 | NativeIdentity feature 연동 | Native owner / hosted CI | 실제 native/Unicode owner·최종 Contract/runtime 및 module/API/whole strict `VERIFIED`; whole CI 최종 종료는 별도 |
 
