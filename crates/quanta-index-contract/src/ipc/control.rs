@@ -45,9 +45,9 @@ impl Serialize for SearchPlaneTrackKind {
     }
 }
 
-struct SearchPlaneTrackKindVisitor;
+struct SearchPlaneTrackKindVisitor<'a>(CorpusDecodeModeV1<'a>);
 
-impl Visitor<'_> for SearchPlaneTrackKindVisitor {
+impl<'de> Visitor<'de> for SearchPlaneTrackKindVisitor<'_> {
     type Value = SearchPlaneTrackKind;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -62,10 +62,9 @@ impl Visitor<'_> for SearchPlaneTrackKindVisitor {
             "Lexical" => Ok(SearchPlaneTrackKind::Lexical),
             "Semantic" => Ok(SearchPlaneTrackKind::Semantic),
             "Structural" => Ok(SearchPlaneTrackKind::Structural),
-            other => Err(de::Error::unknown_variant(
-                other,
-                SearchPlaneTrackKind::VARIANTS,
-            )),
+            other => Err(self
+                .0
+                .semantic_v1(|| de::Error::unknown_variant(other, SearchPlaneTrackKind::VARIANTS))),
         }
     }
 
@@ -82,7 +81,17 @@ impl<'de> Deserialize<'de> for SearchPlaneTrackKind {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_str(SearchPlaneTrackKindVisitor)
+        Self::decode_v1(deserializer, CorpusDecodeModeV1::ordinary_v1())
+    }
+}
+
+impl CorpusDecodeValueV1 for SearchPlaneTrackKind {
+    fn decode_v1<'de, D: Deserializer<'de>>(
+        deserializer: D,
+        mode: CorpusDecodeModeV1<'_>,
+    ) -> Result<Self, D::Error> {
+        mode.work_v1(1)?;
+        deserializer.deserialize_str(SearchPlaneTrackKindVisitor(mode))
     }
 }
 
@@ -3162,6 +3171,12 @@ mod native_corpus_decode_tests_v1 {
         let invalid_identity = wire.replacen("\"repo\"", "\"e\\u0301\"", 1);
         let error = decode_native(&invalid_identity, &Admission::default()).unwrap_err();
         assert!(error.to_string().contains("Identity(NonCanonical)"));
+
+        let invalid_track = wire.replacen("\"Lexical\"", "\"Unknown\"", 1);
+        let error = decode_native(&invalid_track, &Admission::default()).unwrap_err();
+        assert!(error.to_string().contains("InvalidData(Semantic, None)"));
+        let ordinary = serde_json::from_str::<SearchPlaneTrackKind>("\"Unknown\"").unwrap_err();
+        assert!(ordinary.to_string().contains("unknown variant `Unknown`"));
 
         let error = decode_native("{\"unknown\": 1}", &Admission::default()).unwrap_err();
         assert!(error.to_string().contains("UnknownField"));

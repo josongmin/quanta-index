@@ -252,7 +252,19 @@ impl<'de, P: TokenDecodePolicyV1> Visitor<'de> for SearchCorpusActivationTokenV1
                         ));
                     }
                     self.0.work_v1(1)?;
-                    activation_sequence = Some(map.next_value()?);
+                    let sequence: u64 = map.next_value()?;
+                    activation_sequence = Some(NonZeroU64::new(sequence).ok_or_else(|| {
+                        self.0.invalid_v1(
+                            TokenDataFailureV1::Semantic,
+                            Some("activation_sequence"),
+                            || {
+                                de::Error::invalid_value(
+                                    de::Unexpected::Unsigned(0),
+                                    &"a nonzero u64",
+                                )
+                            },
+                        )
+                    })?);
                 }
                 other => {
                     return Err(self
@@ -360,5 +372,72 @@ mod tests {
             .is_err(),
             "duplicate activation sequence must be refused"
         );
+    }
+}
+
+#[cfg(all(test, feature = "quanta-native-identity-v1"))]
+mod native_token_decode_tests_v1 {
+    use super::*;
+    use core::cell::Cell;
+    use serde::de::DeserializeSeed as _;
+
+    #[derive(Default)]
+    struct Admission {
+        invalid: Cell<Option<(NativeActivationTokenDataFailureV1, Option<&'static str>)>>,
+    }
+
+    impl NativeActivationTokenDecodeAdmissionV1 for Admission {
+        type Error = &'static str;
+
+        fn consume_token_work_v1(&self, _units: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn token_invalid_data_v1(
+            &self,
+            cause: NativeActivationTokenDataFailureV1,
+            field: Option<&'static str>,
+        ) -> Self::Error {
+            self.invalid.set(Some((cause, field)));
+            "native token semantic refusal"
+        }
+    }
+
+    #[test]
+    fn native_sequence_boundaries_preserve_semantic_and_ordinary_errors_v1() {
+        fn token_wire(sequence: u64) -> String {
+            format!(
+                r#"{{"root_incarnation":[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7],"activation_sequence":{sequence}}}"#
+            )
+        }
+
+        let wire = token_wire(0);
+        let admission = Admission::default();
+        let mut deserializer = serde_json::Deserializer::from_str(&wire);
+        let error = SearchCorpusActivationTokenV1::native_decode_seed_v1(&admission)
+            .deserialize(&mut deserializer)
+            .unwrap_err();
+        assert!(error.to_string().contains("native token semantic refusal"));
+        assert_eq!(
+            admission.invalid.get(),
+            Some((
+                NativeActivationTokenDataFailureV1::Semantic,
+                Some("activation_sequence")
+            ))
+        );
+        let ordinary = serde_json::from_str::<SearchCorpusActivationTokenV1>(&wire).unwrap_err();
+        assert!(ordinary.to_string().contains("expected a nonzero u64"));
+
+        for sequence in [1, u64::MAX] {
+            let wire = token_wire(sequence);
+            let admission = Admission::default();
+            let mut deserializer = serde_json::Deserializer::from_str(&wire);
+            let token = SearchCorpusActivationTokenV1::native_decode_seed_v1(&admission)
+                .deserialize(&mut deserializer)
+                .expect("nonzero sequence is admitted");
+            deserializer.end().expect("whole token consumed");
+            assert_eq!(token.activation_sequence().get(), sequence);
+            assert_eq!(admission.invalid.get(), None);
+        }
     }
 }

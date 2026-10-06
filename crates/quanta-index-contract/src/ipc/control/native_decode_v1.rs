@@ -159,7 +159,7 @@ macro_rules! scalar_v1 {
         }
     )+};
 }
-scalar_v1!(String, SearchPlaneTrackKind, ManifestGeneration);
+scalar_v1!(String, ManifestGeneration);
 
 macro_rules! identity_v1 {
     ($($type:ty),+ $(,)?) => {$(
