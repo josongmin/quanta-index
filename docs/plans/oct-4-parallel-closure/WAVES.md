@@ -9,7 +9,7 @@
 
 | 웨이브 | 작업 | 현재 판정 |
 | --- | --- | --- |
-| S0 정적 수리 | EOF interruption, checked memory envelope, 동일 dispatch deadline, F15 할당 전 admission, causal capture/portable validator executable custody |5범주 수정 완료. F15 canonical normalization output/iterator/sort scratch 통합과 정적 검토 진행 중 |
+| S0 정적 수리 | EOF interruption, checked memory envelope, 동일 dispatch deadline, F15 할당 전 admission, causal capture/portable validator executable custody |6범주 구조적 수정·정적 검토 완료. 코드 checkpoint86fb23f0; Python 제어 fixture148passed·5.92s |
 | S1 변경 소스 집중 검증 | 고정 Unicode 출력·scratch 초과 거절, posting 경계·독립 census, EOF 취소·기존 만료 deadline, u64 overflow·거대 dispatch duration 회귀 | Python capture19/portable129 fixture `VERIFIED`. 최신 Rust 컴파일·행동 회귀 `NOT_RUN` |
 | S2 실제 제품 회귀 | 동일 소스 daemon SDK 경로, 게시·delta/delete·재시작, 취소 뒤 복구 | 별도 frozen492 XL+query600000ms exit0·287.843s, main4a SDK27/27·20.287s 및 portable replay exit0. S0 후속 Rust 수정의 결과가 아님 |
 | S3 전체 판정 | whole Rust/strict/API/hosted CI, native capacity/fuzz, Ready9 actual capture/replay/join 및 독립 성능 판정 | 별도 main4a whole-unit 진행 중; 최신 수정의 전체 종료 결과 없음. 기능 회귀를 RSS/latency qualification으로 승격하지 않음 |

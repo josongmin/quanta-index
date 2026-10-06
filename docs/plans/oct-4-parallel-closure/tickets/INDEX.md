@@ -13,7 +13,8 @@
 
 ### 최신 정적 감사 및 수정
 
-정적 감사 기준은 `06bf178a` 이후 main의 소유 변경과 dirty overlay다. 병렬 자동 commit으로
+정적 감사 기준은 `06bf178a` 이후 main의 소유 변경과 dirty overlay다. 수리 완료 소스 checkpoint는
+`86fb23f0`이며 이후 문서·별도 CI 도구 변경은 해당 소유 범위로 구분한다. 병렬 자동 commit으로
 HEAD가 이동하므로 아래의565·492·4a는 각 실행의 고정 소스이며 최신 main 전체 결과가 아니다.
 사용자 요청에 따라 이 감사에서는 새 Cargo 빌드·Rust 행동 테스트·제품 실행을 등록하지 않는다.
 
@@ -22,12 +23,22 @@ HEAD가 이동하므로 아래의565·492·4a는 각 실행의 고정 소스이�
 | 업로드 최종 EOF 읽기 중 취소 누락 | EOF 뒤 canonical budget checkpoint 추가. 시간 의존 deadline fixture 대신 결정적 EOF 취소 및 기존 만료 deadline 회귀 유지 | Rust 회귀 소스·정적 대조 완료, 실행 `NOT_RUN` |
 | 메모리 예산 오버플로 은폐 | canonical 합계·config 곱셈/덧셈을 checked 연산과 동일 typed refusal로 통일. `declared_bytes` Result 호출처와 API 선언2곳 반영 | 경계 회귀 소스·호출처 대조 완료, Rust/API 실행 `NOT_RUN` |
 | IPC dispatch deadline 이중 생성 | DispatchContext가 admitted RequestBudget의 동일 Instant를 사용 | 거대 duration 회귀 소스·생성 경로 대조 완료, Rust 실행 `NOT_RUN` |
-| F15 할당 뒤 scratch/resident 검사 | term/ID 삽입과 posting materialization을 할당 전에 검사. 정규화 출력 및 canonical Unicode iterator/sort scratch의 사전 admission을 통합·검토 중 | 논리적 메모리 예산 범위. Rust 실행·실제 RSS 상한 증명 `NOT_RUN` |
+| F15 할당 뒤 scratch/resident 검사 | term/ID 삽입과 posting materialization을 실제 live 순서에 따라 할당 전에 검사. 정규화의 정확한 출력 길이·resident 및 canonical Unicode iterator/sort scratch admission을 staging/producer/cold verifier 모두에 통합 | 논리적 메모리 예산 범위. 고정 Unicode·경계 회귀 소스와 정적 검토 완료; Rust 실행·실제 RSS 상한 증명 `NOT_RUN` |
 | causal capture 바이너리 TOCTOU | 실행 전·후·replay·성공 발행까지 executable epoch와 동일 RawFile bytes 결속. 변경 시 FAILED 및 자체 profile 제거 | Python synthetic 회귀19개 `VERIFIED`; 실제 scale capture `NOT_RUN` |
 | portable validator 바이너리 TOCTOU | 최초 binary role의 file epoch를 종료 직전 다시 검증. 재배치 입력의 원래 provenance 유지 | Python fixture 회귀129개 `VERIFIED`; 새 제품 실행 `NOT_RUN` |
 
 검증은 정상 허용과 한도 초과·취소·파일 교체 거절을 함께 확인한다. Python fixture 통과는
 검증 제어의 동작 증거이며 최신 Rust 엔진의 컴파일·E2E·성능 결과가 아니다.
+
+- `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_causal_cost_capture.py
+  tools/ci/tests/test_portable_proof.py`: `VERIFIED`,148passed·5.92s. 실제 제품 바이너리를 실행하지 않는 제어 fixture 범위다.
+- Owned Rust15files의 `rustfmt --edition 2024 --check --config skip_children=true`, owned Python4files의
+  Ruff check/format, `git diff --check`: `VERIFIED`.
+- `just rust-hexagonal`, `just rust-module-cycles`, `just rust-cargo-toml-hygiene`,
+  `just rust-semantic-outcomes`: `VERIFIED`. 공개 오류 타입 누락으로 처음 실패했던
+  `rust-error-shape`는 canonical Display/Error 및 원인 연결을 추가한 뒤 재검증한다.
+- `lint-doc-paths.py`와 `tools/prompt-manager/pm.py lint`: `VERIFIED`. 공개 API 실제 생성·strict·
+  최신 Rust 회귀·전체 CI·새 제품/성능 검증은 `NOT_RUN`이다.
 
 ### 별도 고정 소스의 실행 복구
 
@@ -52,8 +63,8 @@ Configured XL·최종 SDK portable verify·Ready9 실제 집계 완료를 추정
 ### 코드 잔여와 실행 잔여
 
 - Main4a5b59ef의 bounded manifest/source-upload·Large/XL admission·공유 scale/open-loop
-  profile·release 회귀 등록 수리 뒤 위6범주의 결함을 추가 확인했다.5범주는 수정 및 집중 검증이
-  끝났고 F15 정규화의 canonical native scratch 통합·정적 검토가 남는다.
+  profile·release 회귀 등록 수리 뒤 위6범주의 결함을 추가 확인했다.6범주의 구조적 수정과
+  정적 검토를 완료했다. 최신 Rust 행동 검증 및 전체 판정은 남는다.
   전체 Rust/CI 성공 또는 제품 qualification을 뜻하지 않는다.
 - Ready9 Python3.13/3.12 interpreter 분리 final-v6는 담당 채팅의43control PASS·55bindings 유지
   기록이 있다. 수정본은 기존 임시 경로에만 있었고 현재 부재하므로 복구·새 delta 검토·인계가 남는다.

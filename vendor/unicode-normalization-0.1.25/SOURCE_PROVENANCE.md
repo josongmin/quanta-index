@@ -2,7 +2,7 @@
 
 - Upstream crate: unicode-normalization 0.1.25 (Unicode 17.0.0).
 - Cached crates.io archive SHA256: `5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8`.
-- Original decomposition tables, lookup functions, stable sort and canonical recomposition algorithm retained.
+- Original decomposition tables, lookup functions and canonical recomposition algorithm retained. Ordinary iteration retains the upstream stable sort; controlled long-text iteration uses the stable admitted ordering described below.
 
 The Quanta Index copy retains the canonical extension's build sources, tests and
 licenses. The unused upstream `scripts/unicode.py` table generator is omitted;
@@ -10,15 +10,17 @@ the Unicode 17.0.0 tables above remain byte-identical to the pinned archive.
 
 ## Local producer extension
 
-- SAME Decompositions/Recompositions steps delegate to ordinary or controlled scratch policy; no second NFC validator or normalization output String.
+- The same Decompositions/Recompositions steps delegate to ordinary or controlled scratch policy; no second Unicode table or NFC state machine.
 - `quanta-native-scratch-v1` exposes borrowed `try_is_nfc_with_native_admission_v1` for the existing 512 UTF8-byte identity contract.
+- `try_for_each_nfc_with_native_admission_v1` streams canonical scalars for caller-bounded long text. F15 uses it for exact output-length census and construction, admitting iterator backing and output Strings before birth.
 - Actual TinyVec full-capacity doubling uses fallible reserve under before-birth admission; old/replacement backing is retained across growth. Callback protocol and observed capacity are checked.
 - Original typed caller error, native allocation failure, invalid callback/capacity and unsupported producer are distinct. Scratch release follows both iterator buffer drops on every return.
-- Work is consumed before iterator/state steps, decomposition, emitted scalar, canonical ordering batch, buffer movement and comparison. Ordering units count pending scalars, not hidden standard-library comparisons.
-- Pinned Rust 1.92, 64-bit Linux/macOS: canonical stable sort of at most512 eight-byte pairs uses its existing4096-byte stack scratch. Unicode17 canonical tables bound every nonstarter run by original input UTF8bytes; all2081 entries and algorithmic Hangul have prepared owner coverage. The current producer refuses unsupported sort shape before sort.
+- Work is consumed before iterator/state steps, decomposition, emitted scalar, canonical ordering batch, buffer movement and comparison. Long controlled ordering admits three linear passes before sorting; these are policy units rather than standard-library comparison counts.
+- Pinned Rust 1.92, 64-bit Linux/macOS: canonical stable sort of at most512 eight-byte pairs uses its existing4096-byte stack scratch. The identity rail retains its512-byte limit and unsupported-shape refusal. Unicode17 canonical tables bound every nonstarter run by original input UTF8bytes; all2081 entries and algorithmic Hangul have prepared owner coverage.
+- The controlled streaming rail orders more than512 pending pairs by canonical combining class using256 stack positions and a fallible exact temporary Vec. Equal-class order remains stable. Its Sort grant includes live decomposition/recomposition backing and is released after the sort buffer drops, including failure; iterator grants release after both iterator buffers drop.
 - tinyvec rustc_1_57 feature supplies fallible native reserve; vendored minimum Rust is1.92 for the qualified native sort rail. Ordinary policy keeps original TinyVec push/sort behavior.
 - Explicit native_scratch_v1 test target instruments allocations; test TLS is diagnostic only. No production TLS/global quota/allocator replacement.
-- No workspace patch activation or Rust build/test/qualification at source staging.
+- Workspace feature activation is source state, not behavior qualification. The long-text extension and its fixed-output/refusal regression sources have static checks only; Rust build/tests and runtime qualification are `NOT_RUN` in this audit.
 
 ## Original archive files
 

@@ -68,6 +68,15 @@ def _load_module():
 
 
 def _write_catalog(path: Path, body: str) -> Path:
+    # Fixture package identity is independent of the owner supplied by the catalog.
+    for pattern in ("crates/*/tests/*.rs", "benchmarks/*/tests/*.rs"):
+        for source in path.glob(pattern):
+            manifest = source.parent.parent / "Cargo.toml"
+            if not manifest.exists():
+                manifest.write_text(
+                    f'[package]\nname = "{manifest.parent.name}"\nversion = "0.1.0"\n',
+                    encoding="utf-8",
+                )
     body = body.replace("format_version = 1", "format_version = 2")
     commands = re.findall(r'^\s*command = "([^"]+)"$', body, flags=re.MULTILINE)
     body = body.replace(

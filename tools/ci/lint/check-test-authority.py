@@ -1088,6 +1088,7 @@ def _validate_targets(
 ) -> dict[str, dict[str, str]]:
     targets: dict[str, dict[str, str]] = {}
     paths: set[str] = set()
+    package_owners: dict[Path, str | None] = {}
     for index, entry in enumerate(entries):
         prefix = f"{collection}[{index}]"
         target_id = _string(
@@ -1145,6 +1146,45 @@ def _validate_targets(
             )
         if path not in discovered:
             violations.append(_violation(catalog, f"catalog target does not exist on disk: {path}"))
+        elif (
+            _resolve_test_source(root=root, path=root / path, origin=catalog, violations=violations)
+            is None
+        ):
+            continue
+        if expected_kind == "integration" and path in discovered:
+            manifest = (root / path).parent.parent / "Cargo.toml"
+            if manifest not in package_owners:
+                resolved_manifest = _resolve_test_source(
+                    root=root,
+                    path=manifest,
+                    origin=catalog,
+                    label="test package manifest",
+                    violations=violations,
+                )
+                package_owners[manifest] = None
+                if resolved_manifest is not None:
+                    try:
+                        manifest_data = tomllib.loads(resolved_manifest.read_text(encoding="utf-8"))
+                        package = manifest_data.get("package")
+                        package_name = package.get("name") if isinstance(package, dict) else None
+                        if not isinstance(package_name, str) or not package_name:
+                            violations.append(
+                                _violation(manifest, "test package has no package.name")
+                            )
+                        else:
+                            package_owners[manifest] = package_name
+                    except (OSError, tomllib.TOMLDecodeError) as error:
+                        violations.append(
+                            _violation(manifest, f"cannot parse test package: {error}")
+                        )
+            package_owner = package_owners[manifest]
+            if package_owner is not None and owner != package_owner:
+                violations.append(
+                    _violation(
+                        catalog,
+                        f"target {target_id} owner {owner!r} differs from package.name {package_owner!r}",
+                    )
+                )
         targets[target_id] = {
             "path": path,
             "owner": owner,
@@ -1162,21 +1202,26 @@ def _validate_targets(
     return targets
 
 
-def _resolve_grouped_test_source(
-    *, root: Path, path: Path, origin: Path, violations: list[Violation]
+def _resolve_test_source(
+    *,
+    root: Path,
+    path: Path,
+    origin: Path,
+    violations: list[Violation],
+    label: str = "test source",
 ) -> Path | None:
     """Match the file Rust can open and keep its source inside the checkout."""
     try:
         if not path.is_file():
-            violations.append(_violation(origin, f"grouped source is not a file: {path}"))
+            violations.append(_violation(origin, f"{label} is not a file: {path}"))
             return None
         resolved = path.resolve(strict=True)
         if not resolved.is_relative_to(root.resolve(strict=True)):
-            violations.append(_violation(origin, f"grouped source escapes repository: {path}"))
+            violations.append(_violation(origin, f"{label} escapes repository: {path}"))
             return None
         return resolved
     except (OSError, RuntimeError) as error:
-        violations.append(_violation(origin, f"cannot resolve grouped source {path}: {error}"))
+        violations.append(_violation(origin, f"cannot resolve {label} {path}: {error}"))
         return None
 
 
@@ -1249,10 +1294,11 @@ def _validate_grouped_integration_targets(
                     )
                     line_index = path_index + 2
                     continue
-                resolved_source = _resolve_grouped_test_source(
+                resolved_source = _resolve_test_source(
                     root=root,
                     path=launcher.parent / relative_source,
                     origin=launcher,
+                    label="grouped source",
                     violations=violations,
                 )
                 if resolved_source is None:
@@ -1287,8 +1333,12 @@ def _validate_grouped_integration_targets(
                     )
                 )
                 continue
-            resolved_member = _resolve_grouped_test_source(
-                root=root, path=root / member_path, origin=catalog, violations=violations
+            resolved_member = _resolve_test_source(
+                root=root,
+                path=root / member_path,
+                origin=catalog,
+                label="grouped source",
+                violations=violations,
             )
             if resolved_member is None:
                 continue
