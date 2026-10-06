@@ -16,14 +16,17 @@
 정적 감사 기준은 `06bf178a` 이후 main의 소유 변경과 dirty overlay다. 수리 완료 소스 checkpoint는
 `86fb23f0`이며 이후 문서·별도 CI 도구 변경은 해당 소유 범위로 구분한다. 병렬 자동 commit으로
 HEAD가 이동하므로 아래의565·492·4a는 각 실행의 고정 소스이며 최신 main 전체 결과가 아니다.
-사용자 요청에 따라 이 감사에서는 새 Cargo 빌드·Rust 행동 테스트·제품 실행을 등록하지 않는다.
+앞선 감사는 정적 범위였다. 후속 사용자 요청으로 통합 및 최신 소스의 Rust 행동 검증을 진행한다.
+P11 공통 구현은 `8bd3bad5`와 상태·대상 검증 수리 `6ff327ac`로 main에 통합됐다.
+엔진2개·SDK14개 분기 커밋은 `git cherry`에서 모두 patch-equivalent이며, 이전 manifest3paths도
+현재 main과 동일해 추가 cherry-pick은 필요 없다.
 
 | 확인한 결함 | 수정 및 현재 상태 | 검증 경계 |
 | --- | --- | --- |
-| 업로드 최종 EOF 읽기 중 취소 누락 | EOF 뒤 canonical budget checkpoint 추가. 시간 의존 deadline fixture 대신 결정적 EOF 취소 및 기존 만료 deadline 회귀 유지 | Rust 회귀 소스·정적 대조 완료, 실행 `NOT_RUN` |
-| 메모리 예산 오버플로 은폐 | canonical 합계·config 곱셈/덧셈을 checked 연산과 동일 typed refusal로 통일. `declared_bytes` Result 호출처와 API 선언2곳 반영 | 경계 회귀 소스·호출처 대조 완료, Rust/API 실행 `NOT_RUN` |
-| IPC dispatch deadline 이중 생성 | DispatchContext가 admitted RequestBudget의 동일 Instant를 사용 | 거대 duration 회귀 소스·생성 경로 대조 완료, Rust 실행 `NOT_RUN` |
-| F15 할당 뒤 scratch/resident 검사 | term/ID 삽입과 posting materialization을 실제 live 순서에 따라 할당 전에 검사. 정규화의 정확한 출력 길이·resident 및 canonical Unicode iterator/sort scratch admission을 staging/producer/cold verifier 모두에 통합 | 논리적 메모리 예산 범위. 고정 Unicode·경계 회귀 소스와 정적 검토 완료; Rust 실행·실제 RSS 상한 증명 `NOT_RUN` |
+| 업로드 최종 EOF 읽기 중 취소 누락 | EOF 뒤 canonical budget checkpoint 추가. 시간 의존 deadline fixture 대신 결정적 EOF 취소 및 기존 만료 deadline 회귀 유지 | EOF 취소 및 기존 만료 deadline을 포함한 source-upload actual 회귀 `VERIFIED` |
+| 메모리 예산 오버플로 은폐 | canonical 합계·config 곱셈/덧셈을 checked 연산과 동일 typed refusal로 통일. `declared_bytes` Result 호출처와 API 선언2곳 반영 | Core 합계 overflow·u64 최대 ceiling 회귀 `VERIFIED`; config 실제 회귀는 진행 중 |
+| IPC dispatch deadline 이중 생성 | DispatchContext가 admitted RequestBudget의 동일 Instant를 사용 | 거대 duration의 actual UDS dispatch 회귀 `VERIFIED` |
+| F15 할당 뒤 scratch/resident 검사 | term/ID 삽입과 posting materialization을 실제 live 순서에 따라 할당 전에 검사. 정규화의 정확한 출력 길이·resident 및 canonical Unicode iterator/sort scratch admission을 staging/producer/cold verifier 모두에 통합 | 논리적 메모리 예산 범위. 고정 Unicode·native refusal 및 F15 producer/codec/cold census actual 회귀 `VERIFIED`; 실제 RSS 상한 증명 `NOT_RUN` |
 | causal capture 바이너리 TOCTOU | 실행 전·후·replay·성공 발행까지 executable epoch와 동일 RawFile bytes 결속. 변경 시 FAILED 및 자체 profile 제거 | Python synthetic 회귀19개 `VERIFIED`; 실제 scale capture `NOT_RUN` |
 | portable validator 바이너리 TOCTOU | 최초 binary role의 file epoch를 종료 직전 다시 검증. 재배치 입력의 원래 provenance 유지 | Python fixture 회귀129개 `VERIFIED`; 새 제품 실행 `NOT_RUN` |
 
@@ -41,13 +44,32 @@ HEAD가 이동하므로 아래의565·492·4a는 각 실행의 고정 소스이�
 - `lint-doc-paths.py`와 `tools/prompt-manager/pm.py lint`: `VERIFIED`. 공개 API 실제 생성·strict·
   최신 Rust 회귀·전체 CI·새 제품/성능 검증은 `NOT_RUN`이다.
 
+### 최신 통합 소스의 실행 검증
+
+- `./scripts/cargow --lane test-fast-lane nextest run -p quanta-index-core
+  -p quanta-index-contract-base -p quanta-index-lq-text-normalizer -p quanta-index-ipc
+  --lib --all-features --locked --test-threads 1 -E 'test(process_memory) | test(envelope) | test(unrepresentable) | test(source_upload::tests::) | test(dispatch_context_uses_the_admitted_budget_deadline) | test(planned_nfc) | test(planned_normalization) | test(native)'`:
+  `VERIFIED`,37/37·1.497s. 컴파일13.01s. main1dd3f069의 해당 owner source 범위다.
+- `./scripts/cargow --lane test-fast-lane nextest run -p quanta-index-lexical --lib
+  --all-features --locked --test-threads 1 -E 'test(file_authority::)'`:
+  `VERIFIED`,32/32·0.238s, 컴파일7.14s. main6ff327ac와 owned test overlay 범위다.
+  최초 실행은 새 cold verifier 테스트2곳의 unused-results로 컴파일 `FAILED`였으며,
+  반환된 typed refusal 문자열을 고정 expected 값과 대조하도록 수정 후 통과했다.
+- Hosted1898 Rust는 vendor package의 import ordering fmt2files로 `FAILED`; package edition에
+  맞춰 수정했다. Hosted1897 Python은 실제 공개 API gate의 contract deserialize 표기8lines drift로
+  `FAILED`; SDK는 unchanged다. Generated API/source를 대조해 baseline8lines만 수정·재검증한다.
+  이 실패를 hosted CI 성공으로 바꾸지 않으며 새 source의 실제 job 결과를 확인한다.
+- Config overflow·동일 소스 실제 daemon/runtime/SDK 및 최신 strict/API 종료 결과는 확인 중이다.
+  새 release build는 등록하지 않았다. 논리적 admission 회귀를 실제 RSS/latency qualification으로 세지 않는다.
+
 ### 별도 고정 소스의 실행 복구
 
 Scale 복구 경로는 `/Users/songmin/.codex/task-evidence/quanta-scale-recovery-20261006-01a10d0b`다.
 `xl-result.json`의 frozen492+query600000ms XL 게시·삭제·실제 daemon 재시작은 exit0·287.843s이며
 전후 source/binary 동일, 새 build 없이 `VERIFIED`다. Main4a5b59ef의 canonical debug SDK는
-실제27/27·20.287s와 portable replay exit0로 `VERIFIED`다. Whole-unit은 별도 진행 중이며
-종료 결과는 아직 없다. 두 실행은 위 후속 Rust 수정의 검증을 대신하지 않는다.
+실제27/27·20.287s와 portable replay exit0로 `VERIFIED`다. 같은4a 고정 소스의 workspace
+unit2790개와 runtime unit3개가 통과했다. Strict Clippy는 vendor metadata/lint에서 `FAILED`였고
+담당이 수정 및 최신 main 재검증을 진행한다. 두 실행은 위 후속 Rust 수정의 검증을 대신하지 않는다.
 
 이전 복구 전 상태 확인 시 main `4a5b59ef`는 clean이지만 기존 Root 실행 세션67824/82122는
 `Unknown process id`이며, 선택565 Contract/SDK·configured XL·Ready9 제어의 `/private/tmp`
@@ -70,11 +92,13 @@ Scale 복구 경로는 `/Users/songmin/.codex/task-evidence/quanta-scale-recover
 - Ready9 Python3.13/3.12 interpreter 분리 final-v6는 담당 채팅의43control PASS·55bindings 유지
   기록이 있다. 수정본은 기존 임시 경로에만 있었고 현재 부재하므로 복구·새 delta 검토·인계가 남는다.
   이전 final-v5 검토를 v6의 독립 검토로 재표기하지 않는다.
-- 조건부 운영 코드 P11의 typed 배포·활성화·restore-forward 실행기, 독립 전후 관측,
-  parser/checker/aggregate·recipes 연결은 아직 미구현이다. Registry는 staged이며 실제 대상·명령·
-  관측 계약 입력은 `BLOCKED`다. 검색 엔진의 XL/SDK 기능 검증과 별도 운영 배포 범위다.
+- 조건부 운영 코드 P11의 typed 실행/관측 결과·parser/checker/aggregate·recipes 공통 연결은
+  main6ff327ac에 구현·통합됐다. 담당 Python436개와 통합 후 영향 범위222개가 통과했다.
+  실제 deploy/activate/restore-forward target adapter는 대상·명령·독립 관측 성공 계약 입력이 없어
+  `BLOCKED`다. 검색 엔진의 XL/SDK 기능 검증과 별도 운영 배포 범위다.
 - Frozen492 configured XL 및 main4a SDK 최종 증명은 위 복구에서 완료됐다. 최신 Rust 수정의
-  집중 행동 회귀·전체 Rust/CI·native capacity/fuzz·Ready9 capture/replay/join은 실행 잔여다.
+  집중 행동 회귀·전체 Rust/CI·native capacity·Ready9 capture/replay/join은 실행 잔여다.
+  Fuzz는 wire/decode의 큰 변경 또는 마지막 실행 후2주 경과 때 권고하며 현재 필수 잔여로 세지 않는다.
   Scale 공유 profile의 집중 Rust 검증은 담당 채팅에 `VERIFIED`/exit0로 회수됐으나 기존 raw가
   현재 없으며 전체 native lifecycle 또는 전체 main 검증으로 승격하지 않는다.
 
@@ -92,13 +116,13 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 
 | 범위 | 담당 | 실제 잔여 |
 | --- | --- | --- |
-| Manifest 복호화 메모리 경계 | I0 / E4 | Generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. Source565 owner46개는 actual PASS·1.126s다. 후속 EOF 취소 수리의 Rust 행동 회귀 및 whole/strict/integration 소비 검증은 `NOT_RUN` |
-| Workspace 검사·단위 테스트 | Scale / hosted CI | Source565 owner46/46·1.126s와 open-loop20/20·5.208s는 실제 exit0다. 삭제된 작업트리의 이전 whole-unit 실패와 구분해 main4a 고정 복구 작업트리에서 새 whole-unit을 진행 중이다. 아직 종료 결과가 없으며 후속6범주 수리를 포함한 whole/strict/CI 성공을 주장하지 않는다 |
+| Manifest 복호화 메모리 경계 | I0 / E4 | Generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. Source565 owner46개는 actual PASS·1.126s다. 후속 EOF 취소 회귀는 최신main에서 `VERIFIED`; whole/strict/integration 소비 범위는 별도 확인 |
+| Workspace 검사·단위 테스트 | Scale / hosted CI | Source565 owner46/46·1.126s와 open-loop20/20·5.208s는 실제 exit0다. main4a 고정 복구 소스의 unit2790+runtime3은 `VERIFIED`. 최신6범주 소스의 focused69개가 통과했으며 strict/API/hosted CI는 확인 중이다. 옛 전체 unit 결과를 최신 소스 전체 판정으로 승격하지 않는다 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Source492 Medium14.566s·Large84.191s PASS 및 기본20s XL425.966s typed deadline `FAILED`는 원본 기록이다. 동일492 binary에 query600000ms를 명시한 XL exact1은 exit0·287.843s로 게시·삭제·재시작 `VERIFIED`다. 전후 source/binary 동일·추가 build0·corpus/seed/caps 불변이다. 최신6범주 수리 및 latency/RSS qualification의 결과가 아니다 |
-| Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
+| Current native Scale·runtime | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime을 검증한다. Fuzz는 현재 권고 정책의 조건 충족 때 별도 선택한다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. 후속 final-v5 proof custody32회귀 및 SGCS-v7 actual capture hash12회귀·독립 검토는 PASS다. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
 | Final Contract/SDK | I0 | Source565 Contract Python793·289.98s/Rust191·0.528s 및 당시 context/portable verify는 실제 `VERIFIED`지만 삭제된565 raw 재생은 `BLOCKED`다. 별도 main4a 복구 SDK는 canonical debug27/27·20.287s와 context/portable replay exit0로 `VERIFIED`다. 영속 경로는 위 복구 절에 있다. 두 소스 결과를 최신 Rust 수리나 Ready9의 기존55-binding epoch로 재표기하지 않는다 |
-| Main의 병렬 NativeIdentity feature 연동 | 해당 변경 owner / hosted CI | Main16f37의 feature 누락 실패 뒤 최신38eda80a에 normalization vendor/control42paths가 반영됐다. Locked/offline/all-features metadata는 실제 exit0/28workspace다. Actual Rust·module/API·whole CI가 남으며 선택565의 엔진 검증과 별도 범위다 |
+| Main의 병렬 NativeIdentity feature 연동 | 해당 변경 owner / hosted CI | Main16f37의 feature 누락 실패 뒤 최신38eda80a에 normalization vendor/control42paths가 반영됐다. Locked/offline/all-features metadata는 실제 exit0/28workspace다. Actual native identity/Unicode focused Rust 회귀는 최신main에서 통과했다. Module/API·whole CI는 확인 중이며 선택565의 엔진 검증과 별도 범위다 |
 
 위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이
 선행 입력이며, 외부 provider·승인·Linux 운영·Semantica 연동은 아래 조건부 범위와 구분한다.
@@ -463,14 +487,14 @@ Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중�
 | P1 · 성능 판정 | 완료한 Scanner diagnostic A/B의 범위 판정·Semble phase 비용·1,196-row bootstrap full caller·정식 반복 성능 | Scanner fixed338 diagnostic parity는 완료다. 유지/철회와 qualified speed는 사전 acceptance·지속 host 관측 및 최소5 fresh roots/route1,000 warm observations로 별도 판정. [E4-03](#o4-e4-03), [E4-06](#o4-e4-06), [E2-05](#o4-e2-05), [E1-07](#o4-e1-07) |
 | P1 · 평가 실행 | SQL146/Zellij476·신규742pairs 판단, Tailscale rubric, admissions·required cells·5제품 capture/replay/join·최종 scores | AI quota/rubric 입력은 해당 범위만 `BLOCKED`. Ready cells는 별도로 실행한다. Exact/prefix/infix/components/default·explicit typo/no-answer/NL/ARB/B09 분모와 외부 index scope를 유지한다. [E1](#e1), [E2](#e2) |
 | P1 · 독립 평가 | 독립 holdout/license/exposure/gold 발행과 지원 declaration-name/span·typo 평가 | 실제 미사용 source/query family 및 source-attested gold, critical strata/underfill·supported unit 판정. File hit를 선언 회수로 세지 않는다. [E1-04](#o4-e1-04), [E1-05](#o4-e1-05) |
-| P2 · 운영 코드·릴리스 | Quanta typed deploy/activate/restore-forward producer·recipes·parser/checker/aggregate 연결; 실제 provider 및 installed Linux daemon/state/운영 실행 | 독립 pre/post 관측·actual host/config/state/retention/rollback 입력 뒤 구현·실행. 현재 운영 생산자는 미구현이고 대상 입력은 `BLOCKED`다. 기존 staged pair는 별도 연동 owner가 소비한다. [I0-03](#o4-i0-03) |
+| P2 · 운영 코드·릴리스 | Quanta typed deploy/activate/restore-forward producer·recipes·parser/checker/aggregate 연결; 실제 provider 및 installed Linux daemon/state/운영 실행 | 독립 pre/post 관측·actual host/config/state/retention/rollback 입력 뒤 구현·실행. 공통 실행기·검증·recipes는 구현·통합됐으며 실제 target adapter 입력은 `BLOCKED`다. 기존 staged pair는 별도 연동 owner가 소비한다. [I0-03](#o4-i0-03) |
 
 조건부 P2 결정도 원본 agent-1의 출처대로 보존한다.
 [OCT-04-002](../../../adr/OCT-04-002-configuration-and-generation-policy.md)의 effective config/generation policy는
 실제 operator 요구, [OCT-04-003](../../../adr/OCT-04-003-source-preparation-sdk.md)의 선택적 preparation SDK는
 실제 producer fixture가 있을 때 결정한다. 두 ADR은 현재 `Proposed`; 즉시 구현이나 승인된 public API로 세지 않는다.
 
-확정된 Quanta 작업은 실패한 capacity/durable source authority 수리와 운영 결과 생산자다.
+Capacity/durable source authority와 운영 결과 공통 생산자의 구조적 수리는 구현·통합됐다. 남은 Quanta 작업은 해당 소스의 검증과 실제 입력이 있는 실행이다.
 Full sync 병목은 아래 actual로 확인했으며 delta/noop의 exclusive residual 원인은 추가 owner 계측이 필요하다.
 Bootstrap 추가 최적화, persistent token authority, 검색 정책 변경은
 병목·독립 gold·사전 계약이 성립할 때만 채택한다. Durable barrier 수리는 pack/root crash custody와 함께 검증한다.
@@ -1093,7 +1117,7 @@ frozen `5796a63f` Contract·fresh SDK `VERIFIED`, 후속 source7fb46415 hosted C
 
 ### O4-I0-03
 
-P1 · 코드 입력 먼저, W6 실행 · **P11 operational producer/recipes 미구현**.
+P1 · W6 실제 운영 계약 입력 대기 · **P11 공통 producer/검증/recipes 구현·main 통합 완료**.
 P11 target·관측 계약 입력은 `BLOCKED`이다. R3는 별도 Semantica producer 연동 잔여다.
 
 원본 `agent-1.md`의 Release 범위에서 인계된 Linux 서버 배포·운영 검증이다.
@@ -1130,8 +1154,10 @@ P11 target·관측 계약 입력은 `BLOCKED`이다. R3는 별도 Semantica prod
   정상 lexical-only/unchanged-empty와 omission/duplicate negatives를 producer dispatch 전에 검증한다.
 - 배포·활성화·restore-forward 실제 명령, distinct independent pre/post 성공 관측,
   authorized Linux host/path/config/state/retention/rollback window를 확정한다.
-  현재 parser/schema는 nextest/pytest authority며 staged action을 발행할 수 없다.
-- 입력 뒤 기존 result producer/schema/manifest/checker/aggregate와 Justfile recipes를 함께 구현한다.
+  공통 typed operational result producer/schema/manifest/checker/aggregate와 Justfile recipes는
+  main6ff327ac에 통합됐으며 Python436개 및 최신 영향 범위222개가 `VERIFIED`다.
+  Action 전에 canonical source/state 및 대상 경로/관측 계약을 검증한다.
+- 실제 입력 뒤 target별 실행·독립 관측 adapter를 등록하고 end-to-end 운영 결과를 검증한다.
   Generic shell exit0·caller-written success JSON·빈 test authority로 staged를 실행 가능하게 만들지 않는다.
 - Canonical owner: [S21-12](../../sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md),
   [SEP-21 residual plan](../../sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md),

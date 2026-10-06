@@ -10,12 +10,12 @@
 | 웨이브 | 작업 | 현재 판정 |
 | --- | --- | --- |
 | S0 정적 수리 | EOF interruption, checked memory envelope, 동일 dispatch deadline, F15 할당 전 admission, causal capture/portable validator executable custody |6범주 구조적 수정·정적 검토 완료. 코드 checkpoint86fb23f0; Python 제어 fixture148passed·5.92s |
-| S1 변경 소스 집중 검증 | 고정 Unicode 출력·scratch 초과 거절, posting 경계·독립 census, EOF 취소·기존 만료 deadline, u64 overflow·거대 dispatch duration 회귀 | Python capture19/portable129 fixture `VERIFIED`. 최신 Rust 컴파일·행동 회귀 `NOT_RUN` |
+| S1 변경 소스 집중 검증 | 고정 Unicode 출력·scratch 초과 거절, posting 경계·독립 census, EOF 취소·기존 만료 deadline, u64 overflow·거대 dispatch duration 회귀 | Python capture19/portable129 fixture 및 최신main owner37+F15 32개 actual Rust 회귀 `VERIFIED`; config/runtime/SDK 영향 범위 확인 중 |
 | S2 실제 제품 회귀 | 동일 소스 daemon SDK 경로, 게시·delta/delete·재시작, 취소 뒤 복구 | 별도 frozen492 XL+query600000ms exit0·287.843s, main4a SDK27/27·20.287s 및 portable replay exit0. S0 후속 Rust 수정의 결과가 아님 |
-| S3 전체 판정 | whole Rust/strict/API/hosted CI, native capacity/fuzz, Ready9 actual capture/replay/join 및 독립 성능 판정 | 별도 main4a whole-unit 진행 중; 최신 수정의 전체 종료 결과 없음. 기능 회귀를 RSS/latency qualification으로 승격하지 않음 |
+| S3 전체 판정 | whole Rust/strict/API/hosted CI, native capacity, Ready9 actual capture/replay/join 및 독립 성능 판정 | 별도 main4a unit2790+runtime3 통과; 최신main strict/API/hosted CI 판정 진행 중. 기능 회귀를 RSS/latency qualification으로 승격하지 않음 |
 
-S0 요청은 정적 감사→구조적 수정→정적 검증이다. Root와 병렬 감사 에이전트는 새 Rust build나
-제품 실행을 등록하지 않는다. 기존 Scale 채팅 실행은 자기 고정 소스의 별도 검증이며 최신 main의
+S0 요청은 정적 감사→구조적 수정→정적 검증이었다. 후속 사용자 요청으로 완료 변경을 main에
+통합하고 S1/S2/S3 검증을 실행한다. 기존 debug 캐시를 사용하며 새 release build는 등록하지 않았다. 기존 Scale 채팅 실행은 자기 고정 소스의 별도 검증이며 최신 main의
 후속 수정에 소급하지 않는다. 상세 결함/수정/명령 결과는 [잔여 인덱스](tickets/INDEX.md#최신-정적-감사-및-수정)에 둔다.
 
 ## 앞선 코드 우선 체크포인트
@@ -27,12 +27,12 @@ S0 요청은 정적 감사→구조적 수정→정적 검증이다. Root와 병
   할당 전 거절하며 canonical writer는 이 비정규형을 발행하지 않는다. Focused 회귀를 먼저 실행한다.
 - Contract/SDK·Ready9 선택 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`다.
   `886673cd`의 admitted IPC/manifest·open-loop 회귀를 보존하고 테스트 모듈 위치만 수정한565에서
-  whole unit/strict/runtime/integration/fuzz4/native와 Root OS3/Contract/fresh SDK를 연결한다.
+  whole unit/strict/runtime/integration/native와 Root OS3/Contract/fresh SDK를 연결한다.
   병렬 NativeIdentityCopy/Admission API·feature manifest·normalization vendor/control 변경은
   선택 소스에서 제외해 whole main/API 검증과 구분한다. 최신 main38eda80a의42paths도 별도 범위다.
   OS3 release 등록 수리는 별도 clean492에서 검증한다. Debug 전용 semantic 회귀의 mod cfg1줄만
   변경했고 제품·테스트 본문은 동일하다. 기존565 proof/context를492의 결과로 재표기하지 않는다.
-- 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
+- [I0-03 P11 공통 typed producer/검증/recipes](tickets/INDEX.md#o4-i0-03)는 main6ff327ac에 통합됐다. 실제 target adapter는 대상 경로·명령·독립 관측 계약 부재로 `BLOCKED`다.
   실제 actions와 독립 pre/post 성공 판정 계약·authorized target 입력이 필요하다.
 - Frozen5796 Large default timeout과 XL posting admission 거절이 재현됐다.
   E4-02 F15 source pack/root와 bounded authority 수리를 통합했으며 W2 actual 회귀 중이다.
@@ -153,7 +153,7 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   진행 중인 선택565의 엔진 검증 소스는 그대로 유지한다.
 - Source886 focused owner46/46·3.600s와 open-loop full20/20·13.758s가 실제 exit0/lease release로
   `VERIFIED`다. Old controller를 두 leaf 뒤143으로 정리하고 raw를 보존했다. Body 불변인565에
-  Scale broad unit/strict/runtime/integration/fuzz4/native 및 Root OS3 원본3/Contract/fresh SDK를 연결한다.
+  Scale broad unit/strict/runtime/integration/native 및 Root OS3 원본3/Contract/fresh SDK를 연결한다.
   Root3 rail은 실제 등록됐고565 OS3 compile 실패와492 수리는 위에 분리했다. Contract/SDK closure는
   1500files/digest58d62e6c로 일치하며 Python793 actual PASS·SDK admitted fresh build는 위에 회수했다.
   Contract context/portable verify는 `VERIFIED`, SDK context/portable result는 미발행이다.
@@ -354,7 +354,7 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 | W3 | I0-02: selected source Contract/SDK/CI. E1-03: final revisions 및 남은3repo admission ISSUE | PREPARE→VALIDATE→ISSUE. Frozen old proof를 최신 전체 source로 재표기 금지 |
 | W4 | E2: ready required cells actual capture/independent replay/join·scope별 warmup parity. E4: A/B·capacity·qualified performance | Matching binaries/input/index/clock, 실제 host/schedule. Failed sibling은 ready cells를 막지 않음 |
 | W5 | E1: 마지막 unjudged union→labels/admission→independent scores/CI. E4: holdout 기반 정책 RCA | Qrel-only reuse 허용 여부 확인. Name/NL/no-answer/ARB/B09 분모·human/unseen 범위 별도 |
-| W6 | I0-03: Quanta 운영 producer/recipes·real provider·Linux release/state·P11 actions·aggregate | 실제 target/독립 관측 계약·authorized inputs/results. Registry의 외부 pair는 별도 연동 수용 범위 |
+| W6 | I0-03: 구현·통합된 P11 공통 실행기에 실제 target adapter 연결·provider/Linux 운영 실행 | 실제 target/독립 관측 계약·authorized inputs/results. Registry의 외부 pair는 별도 연동 수용 범위 |
 
 ## 조건부 P2 결정
 
@@ -385,3 +385,5 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 - Raw/input/proof 영향을 받은 범위만 재검증하며 이전 실패/partial와 source identity를 보존한다.
 - Wave 진입은 repository/claim별이다. 모든 labels·최적화·Linux inputs를 기다리는 전역 barrier가 아니다.
 - 실제 명령·입력·완료/거절 조건은 [잔여 인덱스](tickets/INDEX.md)를 따른다.
+
+현재 fuzz는 wire/decode의 큰 변경 또는 마지막 실행 뒤2주 경과 시 권고한다. 기존 fuzz4 실행 계획은 역사적 선택 소스의 기록이며 현재 필수 잔여 건수로 세지 않는다.
