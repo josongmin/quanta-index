@@ -6,7 +6,9 @@
 
 The Quanta Index copy retains the canonical extension's build sources, tests and
 licenses. The unused upstream `scripts/unicode.py` table generator is omitted;
-the Unicode 17.0.0 tables above remain byte-identical to the pinned archive.
+the Unicode 17.0.0 table data remains unchanged. `src/tables.rs` uses the
+equivalent `matches!` form for its public assigned-codepoint predicate.
+The local manifest supplies a `text-processing` category for workspace Clippy.
 
 ## Local producer extension
 

@@ -138,8 +138,10 @@ pub(crate) fn is_hangul_syllable(c: char) -> bool {
     (c as u32) >= S_BASE && (c as u32) < (S_BASE + S_COUNT)
 }
 
-// Decompose a precomposed Hangul syllable
-// Safety: `s` MUST be a valid Hangul Syllable character, between U+AC00..U+D7AF
+/// Decompose a precomposed Hangul syllable.
+///
+/// # Safety
+/// `s` must be a Hangul syllable between U+AC00 and U+D7AF.
 #[allow(unsafe_code, unused_unsafe)]
 #[inline(always)]
 unsafe fn decompose_hangul<F>(s: char, mut emit_char: F)
@@ -201,7 +203,7 @@ fn compose_hangul(a: char, b: char) -> Option<char> {
             Some(unsafe { char::from_u32_unchecked(s) })
         }
         // Compose an LV_Syllable and a trailing consonant into an LVT_Syllable
-        (S_BASE..=S_LAST, T_FIRST..=T_LAST) if (a - S_BASE) % T_COUNT == 0 => {
+        (S_BASE..=S_LAST, T_FIRST..=T_LAST) if (a - S_BASE).is_multiple_of(T_COUNT) => {
             // Safety: a is between 0xAC00 and (0xAC00 + 19 * 21 * 28). b - T_BASE is between 0 and 19.
             // Adding a number 0 to 19 to a number that is at largest 0xD7A4 will not go out of bounds to 0xD800 (where the
             // surrogates start), so this is safe.
