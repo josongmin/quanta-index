@@ -8,6 +8,13 @@ target/
 **/target/
 *.rlib
 
+# cargo-machete metadata for excluded grammar crates generates standalone locks.
+# Workspace builds use the tracked root Cargo.lock, not these inspection outputs.
+/vendor/tree-sitter-go/Cargo.lock
+/vendor/tree-sitter-javascript/Cargo.lock
+/vendor/tree-sitter-python/Cargo.lock
+/vendor/tree-sitter-rust/Cargo.lock
+
 # Local state / runtime artifacts
 /state/
 # Generated benchmark artifacts (baselines live under tools/benchmark/baselines/)

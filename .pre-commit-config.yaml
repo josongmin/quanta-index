@@ -21,8 +21,8 @@ repos:
         # A patch's context lines include a leading space by format.
         exclude: ^vendor/.*\.patch$
       - id: end-of-file-fixer
-        # Preserve generated upstream node-type JSON byte-for-byte.
-        exclude: ^vendor/.*/node-types\.json$
+        # Preserve generated upstream JSON byte-for-byte.
+        exclude: ^vendor/(.*/node-types\.json|unicode-normalization-0\.1\.25/\.cargo_vcs_info\.json)$
       - id: check-yaml
       - id: check-json
       - id: check-toml
