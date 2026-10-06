@@ -382,6 +382,10 @@ fn start_process(
             quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES.to_string(),
         )
         .env(
+            "QUANTA_INDEX_QUERY_DISPATCH_BUDGET_MS",
+            SUPPORTED_PROFILE_TIMEOUT.as_millis().to_string(),
+        )
+        .env(
             "QUANTA_INDEX_PROCESS_MEMORY_CEILING_BYTES",
             (4_u64 * 1024 * 1024 * 1024).to_string(),
         );

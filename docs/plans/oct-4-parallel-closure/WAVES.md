@@ -78,7 +78,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Medium256·14.566s와 Large4096·84.191s는 `VERIFIED`, XL32768·425.966s는 `FAILED`다.
   XL error는 `RequestDeadlineExceeded`(+13ms), checkpoint `lexical:cold-open:file-index`다.
   SDK IO/socket/readiness600s와 서버 query dispatch 기본20s의 불일치를 확인했다.
-  Query owner cold-open 비용 및 supported profile 설정을 함께 수리한다. 원본 corpus/seed/caps와
+  Large/XL supported profile의 서버 query dispatch도600s로 결속하는 test env4줄을 추가했다.
+  Medium·제품 기본 정책·독립 oracle은 불변이며 owned fmt/diff는 `VERIFIED`, 실제 재검증은
+  `NOT_RUN`이다. Query owner cold-open 비용 RCA를 진행한다. 원본 corpus/seed/caps와
   실패 raw는 보존한다. 이는 데이터 보존 회귀이며 indexing latency/timing/RSS qualification이 아니다.
   Debug interruption1개는 정상 admission 대기 중이며 Ready9 stage/final slot은 미발행이다.
 - 최신 main38eda80a에는 normalization vendor/native scratch feature/control 수리42paths가

@@ -27,7 +27,7 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 | --- | --- | --- |
 | Manifest 복호화 메모리 경계 | I0 / E4 | 전체 generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. 최신 Source565의 IPC/CBOR/manifest owner46개가 actual PASS·1.126s이며 whole/strict/integration 소비 검증이 남는다 |
 | Workspace 검사·단위 테스트 | Scale / hosted CI | Source886 owner46/46·3.600s와 open-loop bin20/20·13.758s가 실제 exit0다. 테스트 모듈 위치만 바꾼565에서 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 이어간다. Main2c Python1107과 d192 Python1109 전체는 `VERIFIED`; whole Rust는 아직 실패 상태다 |
-| Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Source492 release 원본3개는 실제 Medium14.566s·Large84.191s PASS, XL425.966s `FAILED`다. XL은 `lexical:cold-open:file-index`에서 typed `RequestDeadlineExceeded`(+13ms)로 종료했다. Large/XL의 SDK IO600s와 서버 query dispatch 기본20s가 불일치한다. Cold-open 비용 및 지원 profile 수리가 남으며 debug interruption1개는 대기 중이다. Corpus/seed/caps는 불변 |
+| Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Source492 release 원본3개는 실제 Medium14.566s·Large84.191s PASS, XL425.966s `FAILED`다. XL은 `lexical:cold-open:file-index`에서 typed `RequestDeadlineExceeded`(+13ms)로 종료했다. Large/XL의 SDK IO600s와 서버 query dispatch 기본20s가 불일치한다. 지원 profile에 서버600s 설정을 추가했고 owned fmt/diff는 PASS다. Cold-open 비용 RCA·실제 XL 재검증과 debug interruption1개가 남는다. Corpus/seed/caps는 불변 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
 | Final Contract/SDK | I0 | 선택565의 canonical Contract Python793개가 actual PASS·289.98s다. Rust191 inventory/build 완료 후 행동 검증이 대기 중이며 fresh SDK daemon release build는29m04s/exit0다. SDK27개·최종 context/portable verify가 남는다. 두 source closure1500files digest는 일치하며 canceled731 v6 partial은 재사용하지 않는다 |
@@ -42,7 +42,10 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
   Medium256은14.566s, Large4096은84.191s로 `VERIFIED`; XL32768은425.966s로 `FAILED`다.
   Error는 `RequestDeadlineExceeded`, checkpoint `lexical:cold-open:file-index`, deadline 초과13ms다.
   Test의 SDK IO/socket/readiness600s는 서버 query dispatch 기본20s를 바꾸지 않는다.
-  Query owner cold-open 비용과 지원 profile의 서버 설정 누락을 조사한다. `SLOW` 표시는 실패 원인이
+  지원 profile의 Large/XL start_process에 서버 query dispatch600s 설정4줄을 추가했다.
+  Medium 및 제품 기본 정책·corpus/seed/caps·독립 결과 oracle은 불변이다. Owned fmt/diff는
+  `VERIFIED`이며 실제 재검증은 `NOT_RUN`이다. Cold-open product 비용 RCA를 별도로 진행한다.
+  `SLOW` 표시는 실패 원인이
   아니며 이 결과는 인덱싱 속도 측정이나 timing/RSS qualification이 아니다. 원본 실패는
   `/private/tmp/qi-scale-os3-release-492d2fdc-20261006-v9/result.json` 및 `run.log`에 보존했다.
   수정 모듈의 debug interruption1개는 정상 admission 대기 중이며 Ready9 slot은 발행하지 않았다.
