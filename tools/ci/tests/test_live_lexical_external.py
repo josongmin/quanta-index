@@ -655,7 +655,7 @@ def test_owned_web_refuses_malformed_supervisor_identity_before_listener(
             raise ValueError("Docker daemon unavailable")
 
     monkeypatch.setattr(scope, "_stop_owned_web", stop)
-    with pytest.raises(ValueError, match="start identity differs") as caught:
+    with pytest.raises(ValueError, match="start identity differs"):
         scope._start_owned_web(
             "c" * 64, "sha256:" + "a" * 64, "/usr/local/bin/zoekt-webserver", "/index", 6071
         )
