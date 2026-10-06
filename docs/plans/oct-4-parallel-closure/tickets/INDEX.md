@@ -17,7 +17,7 @@
 | Medium/Large/XL 실제 프로세스 재시작 | I0 | Clean Scale6385033f의 원본256/4096/32768·same seed/caps release/no-fail-fast를 등록했다. Actual3개 종료는 남는다 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime, 남은 fuzz3이 필요하다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Old47e v4 batch는 live source를 유지한다. Fresh native9/SG-CS9capture+9replay 종료 뒤 reuse와 final admission/pair/full5를 판정한다 |
-| Final Contract/SDK | I0 | Native scope verify-time release custody 수리를 포함한 새 immutable source에서 Contract793/191·fresh SDK27·portable verify를 발행한다. 취소한2fb partial은 재사용 proof가 아니다 |
+| Final Contract/SDK | I0 | Native scope·P00 수리를 포함한 immutable731a39cf에서 Contract793/191·fresh SDK27·portable verify를 등록했다. Actual 종료·새 receipt 발행은 남는다. 취소한2fb partial은 재사용 proof가 아니다 |
 
 위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이
 선행 입력이며, 외부 provider·승인·Linux 운영·Semantica 연동은 아래 조건부 범위와 구분한다.
@@ -156,6 +156,14 @@
   Actual v4는 Bat native79payload와 scope receipt 발행·검증을 완료하고 cli scope로 진입했다.
   Producer의 scope당4회 full-release 재해시(1.3GB/53,950files) 중복을 확인했다.
   Caller/callee의 release 변경 감지 경계를 유지하는 후보와 회귀를 별도로 준비하며 live 실행 소스는 유지한다.
+  후속 native scope 수리는 main에 통합됐다. Callee의 release 소비 전·native 뒤/receipt 전 검사를 유지하고
+  verify 직후 반환 전 전체 release 검사를 추가했다. Batch의 중복 outer2검사만 제거해 scope당4→3회이며
+  batch spec/control 검사는 유지한다. 원본에서 verify 중 selected/unselected 파일 변조2회귀는 실제 실패하고
+  후보에서 통과했다. Main 관련 파일 전체는171passed/1004.84s, Ruff/diff 및 exactpostSHA는 `VERIFIED`다.
+  기존47e live batch/raw/source는 유지한다. 배치 재해시 감소를 실제 latency 향상으로 표시하지 않는다.
+  Native scope·P00 수리를 포함한 clean731a39cf를 `oct6-f15-final-v6/quanta-index`에 고정해
+  canonical Contract793/191·fresh SDK27/성공 뒤 portable verify를 실제 등록했다. Outputs는 각각
+  `/private/tmp/qi-f15-contract-731a39cf-20261006-v6/`와 SDK sibling이며 actual terminal/context는 남는다.
 - Public API 담당의 actual contract/SDK API rendering과 contract/core module gates4개는 reviewed 후보와 byte-exact로
   `VERIFIED`다. SDK public API는 기존 baseline과 동일하다. 독립 external consumer5tests는5passed,
   접근 차단4compile은 기대한 E0004/E0603 거절로 모두 `VERIFIED`다. API255/module194 input guards와

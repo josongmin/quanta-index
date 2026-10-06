@@ -160,6 +160,11 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   P00 registry25/300tests·35.23s 뒤 writer direct import에서 `ModuleNotFoundError: tools`로 job `FAILED`였다.
   Direct-script import 초기화를 수리하고 payload 본문은 유지했다. Main host/CLI 회귀28은28passed/0.68s,
   Ruff/diff도 통과했다. Actual CircleCI P00 manifest 발행·whole job은 새 source에서 확인한다.
+  Native scope는 callee의 소비 전·native 뒤/receipt 전·verify 후 세 경계를 유지하는 수리를 통합했다.
+  Batch spec/control guard를 유지하고 중복 outer2검사만 제거해 scope당4→3full scans다.
+  Main 관련171tests는171passed/1004.84s 및 exactpostSHA/Ruff/diff가 통과했다. 실제 latency 향상은 미측정이다.
+  Clean731a39cf를 immutable `oct6-f15-final-v6/quanta-index`에 고정해 Contract793/191·fresh SDK27 및
+  성공 뒤 portable verify를 새 v6 output에 등록했다. Correctwait7200/jobs1/sccache0/gc0, actual terminal은 남는다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
   exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.
