@@ -11,6 +11,9 @@ workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+quanta-native-identity-v1 = ["quanta-index-contract-base/quanta-native-identity-v1"]
+
 [dependencies]
 ciborium = { workspace = true }
 imbl = { workspace = true }
