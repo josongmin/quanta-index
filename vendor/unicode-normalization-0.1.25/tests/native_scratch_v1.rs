@@ -59,7 +59,7 @@ struct Policy<'a> {
     cause: &'a Cell<u32>,
     remaining_work: u64,
     ceiling: usize,
-    retained: [usize; 2],
+    retained: [usize; 3],
     peak: usize,
     demands: Vec<Demand>,
     releases: Vec<Owner>,
@@ -73,7 +73,7 @@ impl<'a> Policy<'a> {
             cause,
             remaining_work: u64::MAX,
             ceiling: usize::MAX,
-            retained: [0; 2],
+            retained: [0; 3],
             peak: 0,
             demands: Vec::with_capacity(32),
             releases: Vec::with_capacity(2),
@@ -87,6 +87,7 @@ fn slot(owner: Owner) -> usize {
     match owner {
         Owner::Decomposition => 0,
         Owner::Recomposition => 1,
+        Owner::Sort => 2,
     }
 }
 impl<'a> NativeNormalizationAdmissionV1 for Policy<'a> {
@@ -175,7 +176,7 @@ fn controlled_nfc_uses_same_algorithm_and_only_admitted_scratch_births_v1() {
             measured(|| try_is_nfc_with_native_admission_v1(input, &mut policy));
         assert_eq!(result.unwrap(), expected);
         assert_eq!(actual_births, policy.native_calls);
-        assert_eq!(policy.retained, [0; 2]);
+        assert_eq!(policy.retained, [0; 3]);
         assert_eq!(policy.releases, [Owner::Decomposition, Owner::Recomposition]);
     }
     // The longest admitted combining run reaches the canonical stable sort's

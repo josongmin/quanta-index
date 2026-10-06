@@ -774,9 +774,7 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
             "duplicates source" in violation.message
             for violation in module.audit_catalog(tmp_path, catalog)
         )
-        launcher_path.write_text(
-            "#[cfg(debug_assertions)]\n" + alias_module, encoding="utf-8"
-        )
+        launcher_path.write_text("#[cfg(debug_assertions)]\n" + alias_module, encoding="utf-8")
         assert module.audit_catalog(tmp_path, catalog) == []
     launcher_path.write_text(
         debug_launcher + '#[path = "missing.rs"]\nmod missing;\n', encoding="utf-8"

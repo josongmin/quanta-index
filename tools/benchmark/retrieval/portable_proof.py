@@ -36,10 +36,6 @@ from tools.benchmark.retrieval.tool_custody import (
     resolve_tool_paths,
     validate_environment,
 )
-from tools.ci.lint.handoff_validation import (
-    _sha256_repo_regular_file,
-)
-
 ROOT = Path(__file__).resolve().parents[3]
 PROOF_COMMAND_TIMEOUT_SECONDS = 7200
 TOOL_TIMEOUT_SECONDS = 30
@@ -1416,6 +1412,7 @@ def validate(
     if binary_files is not None and set(binary_files) != set(binaries):
         raise ValueError("frozen proof binary inventory mismatch")
     binary_digests: dict[str, str] = {}
+    binary_epochs: dict[str, tuple[Path, RawFile, tuple]] = {}
     for name, binary in binaries.items():
         if (
             not isinstance(binary, dict)
@@ -1427,11 +1424,15 @@ def validate(
         binary_path = (
             binary_files[name] if binary_files is not None else Path(binary["path"])
         ).absolute()
-        binary_digests[name] = _sha256_repo_regular_file(
-            binary_path.parent, binary_path.name, label="portable proof binary"
-        )
-        if binary_digests[name] != binary["sha256"]:
-            raise ValueError("proof binary identity changed")
+        try:
+            expected = RawFile(
+                binary_path, f"sha256:{binary['sha256']}", binary_path.lstat().st_size
+            )
+            epoch = _capture_reuse_input_epoch(binary_path, expected)
+        except (OSError, ValueError) as error:
+            raise ValueError("proof binary identity changed") from error
+        binary_digests[name] = binary["sha256"]
+        binary_epochs[name] = (binary_path, expected, epoch)
     commands = context["commands"]
     if (
         not isinstance(commands, list)
@@ -1633,6 +1634,12 @@ def validate(
     for raw in captured.values():
         if file_digest(raw.path) != (raw.sha256, raw.size):
             raise ValueError("portable proof evidence changed during validation")
+    for name, (binary_path, expected, epoch) in binary_epochs.items():
+        try:
+            if _capture_reuse_input_epoch(binary_path, expected) != epoch:
+                raise ValueError("proof binary epoch changed")
+        except (OSError, ValueError) as error:
+            raise ValueError(f"proof binary changed during validation: {name}") from error
     return context
 
 

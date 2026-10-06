@@ -209,6 +209,10 @@ fn normalized_updated(
     language: &LanguageCode,
     bytes: &[u8],
     text_admitted: bool,
+    resident_current: u64,
+    resident_max: u64,
+    scratch_current: usize,
+    scratch_max: usize,
 ) -> Result<(String, Option<String>, u64), ProducerError> {
     // source_rows already verified the exact bytes and 8 MiB bound.
     let raw = if text_admitted {
@@ -218,18 +222,39 @@ fn normalized_updated(
     } else {
         None
     };
-    let (indexed_path, folded_path, indexed_text, folded_content) =
-        super::normalized_surfaces(source.file.repo_relative_path.as_str(), raw);
+    let plan = super::NormalizedSurfacesPlan::new(source.file.repo_relative_path.as_str(), raw)
+        .map_err(|error| ProducerError::limit(format!("normalization plan: {error:?}")))?;
+    let (indexed_path_bytes, folded_path_bytes, indexed_text_bytes, folded_text_bytes) =
+        plan.lengths();
     let resident_charge = resident_file_charge(
         source,
         language,
         bytes.len(),
-        indexed_path.len(),
-        folded_path.len(),
-        indexed_text.as_ref().map_or(0, String::len),
-        folded_content.as_ref().map_or(0, String::len),
+        indexed_path_bytes,
+        folded_path_bytes,
+        indexed_text_bytes,
+        folded_text_bytes,
     )
     .map_err(ProducerError::limit)?;
+    if resident_current
+        .checked_add(resident_charge)
+        .is_none_or(|charge| charge > resident_max)
+    {
+        return Err(ProducerError::limit("resident heap exceeds policy"));
+    }
+    let temporary = [
+        indexed_path_bytes,
+        folded_path_bytes,
+        indexed_text_bytes,
+        folded_text_bytes,
+    ]
+    .into_iter()
+    .try_fold(0_usize, |sum, len| sum.checked_add(len))
+    .ok_or_else(|| ProducerError::limit("normalized source bytes overflow"))?;
+    let _peak = admit_peak(scratch_current, temporary, scratch_max)?;
+    let (_indexed_path, folded_path, _indexed_text, folded_content) = plan
+        .build()
+        .map_err(|error| ProducerError::limit(format!("normalization build: {error:?}")))?;
     Ok((folded_path, folded_content, resident_charge))
 }
 
@@ -934,6 +959,12 @@ fn produce_posting_buckets(
                         &row.language,
                         update.bytes,
                         update.text_admitted,
+                        resident_charge.checked_add(term_directory_charge).ok_or_else(|| {
+                            ProducerError::limit("resident heap charge overflow")
+                        })?,
+                        policy.resident_file_heap_bytes,
+                        scratch,
+                        bucket_scratch_bytes,
                     )?;
                     row.resident_heap_bytes = file_charge;
                     resident_charge = resident_charge
@@ -944,18 +975,6 @@ fn produce_posting_buckets(
                         .is_none_or(|total| total > policy.resident_file_heap_bytes)
                     {
                         return Err(ProducerError::limit("resident heap exceeds policy"));
-                    }
-                    let temporary = folded_path
-                        .len()
-                        .checked_add(folded_content.as_ref().map_or(0, String::len))
-                        .ok_or_else(|| ProducerError::limit("normalized source bytes overflow"))?;
-                    if scratch
-                        .checked_add(temporary)
-                        .is_none_or(|peak| peak > bucket_scratch_bytes)
-                    {
-                        return Err(ProducerError::limit(
-                            "normalized source scratch ceiling exceeded",
-                        ));
                     }
                     let path_count = add_surface(
                         folded_path.as_bytes(),

@@ -15,6 +15,8 @@ pub enum NativeNormalizationScratchOwnerV1 {
     Decomposition,
     /// Canonical recomposition's pending characters.
     Recomposition,
+    /// Stable ordering's temporary pairs in the unbounded streaming rail.
+    Sort,
 }
 
 /// Heap backing present immediately before and after a native growth.
@@ -157,7 +159,10 @@ impl NormalizationPolicyV1 for OrdinaryNormalizationPolicyV1 {
     }
 }
 
-struct ControlledNormalizationPolicyV1<'a, P>(&'a mut P);
+struct ControlledNormalizationPolicyV1<'a, P> {
+    admission_v1: &'a mut P,
+    streaming_v1: bool,
+}
 
 impl<P: NativeNormalizationAdmissionV1> ControlledNormalizationPolicyV1<'_, P> {
     fn push_v1<A: Array>(
@@ -192,7 +197,7 @@ impl<P: NativeNormalizationAdmissionV1> ControlledNormalizationPolicyV1<'_, P> {
             let mut repeated_v1 = false;
             let mut native_success_v1 = false;
             let admitted_v1 = self
-                .0
+                .admission_v1
                 .native_birth_v1(
                     NativeNormalizationScratchDemandV1 {
                         owner_v1,
@@ -232,7 +237,7 @@ impl<P: NativeNormalizationAdmissionV1> NormalizationPolicyV1
     fn work_v1(&mut self, units_v1: usize) -> Result<(), Self::Error> {
         let units_v1 =
             u64::try_from(units_v1).map_err(|_| NativeNormalizationErrorV1::ArithmeticOverflow)?;
-        self.0
+        self.admission_v1
             .checkpoint_work_v1(units_v1)
             .map_err(NativeNormalizationErrorV1::Admission)
     }
@@ -251,6 +256,76 @@ impl<P: NativeNormalizationAdmissionV1> NormalizationPolicyV1
         self.push_v1(NativeNormalizationScratchOwnerV1::Recomposition, buffer_v1, value_v1)
     }
     fn sort_v1(&mut self, pending_v1: &mut [(u8, char)]) -> Result<(), Self::Error> {
+        if self.streaming_v1 && pending_v1.len() > 512 {
+            // Counting by canonical combining class preserves the original
+            // stable order while making the only large sort backing explicit.
+            // The 256 counters live on the stack; pairs live in admitted Vec.
+            let bytes_v1 = pending_v1
+                .len()
+                .checked_mul(size_of::<(u8, char)>())
+                .ok_or(NativeNormalizationErrorV1::ArithmeticOverflow)?;
+            let work_v1 = pending_v1
+                .len()
+                .checked_mul(3)
+                .ok_or(NativeNormalizationErrorV1::ArithmeticOverflow)?;
+            self.work_v1(work_v1)?;
+            let result_v1 = (|| {
+                let mut ordered_v1 = Vec::new();
+                let mut invoked_v1 = false;
+                let mut repeated_v1 = false;
+                let mut native_success_v1 = false;
+                let admitted_v1 = self
+                    .admission_v1
+                    .native_birth_v1(
+                        NativeNormalizationScratchDemandV1 {
+                            owner_v1: NativeNormalizationScratchOwnerV1::Sort,
+                            current_bytes_v1: 0,
+                            new_bytes_v1: bytes_v1,
+                        },
+                        &mut || {
+                            if invoked_v1 {
+                                repeated_v1 = true;
+                                return false;
+                            }
+                            invoked_v1 = true;
+                            native_success_v1 =
+                                ordered_v1.try_reserve_exact(pending_v1.len()).is_ok();
+                            native_success_v1
+                        },
+                    )
+                    .map_err(NativeNormalizationErrorV1::Admission)?;
+                if !invoked_v1 || repeated_v1 || admitted_v1 != native_success_v1 {
+                    return Err(NativeNormalizationErrorV1::InvalidNativeProducer);
+                }
+                if !native_success_v1 {
+                    return Err(NativeNormalizationErrorV1::NativeAllocationFailed);
+                }
+                if ordered_v1.capacity() != pending_v1.len() {
+                    return Err(NativeNormalizationErrorV1::InvalidNativeCapacity);
+                }
+                ordered_v1.resize(pending_v1.len(), (0, '\0'));
+                let mut positions_v1 = [0_usize; 256];
+                for &(class_v1, _) in pending_v1.iter() {
+                    positions_v1[usize::from(class_v1)] += 1;
+                }
+                let mut next_v1 = 0;
+                for position_v1 in &mut positions_v1 {
+                    let count_v1 = *position_v1;
+                    *position_v1 = next_v1;
+                    next_v1 += count_v1;
+                }
+                for &pair_v1 in pending_v1.iter() {
+                    let position_v1 = &mut positions_v1[usize::from(pair_v1.0)];
+                    ordered_v1[*position_v1] = pair_v1;
+                    *position_v1 += 1;
+                }
+                pending_v1.copy_from_slice(&ordered_v1);
+                Ok(())
+            })();
+            self.admission_v1
+                .release_scratch_v1(NativeNormalizationScratchOwnerV1::Sort);
+            return result_v1;
+        }
         // Pinned Rust 1.92 driftsort uses 4096-byte stack scratch for <=512
         // eight-byte pairs. Unicode 17 canonical pending suffixes consume no
         // more scalars than their input UTF8 bytes. No native sort birth occurs
@@ -279,7 +354,10 @@ pub fn try_is_nfc_with_native_admission_v1<P: NativeNormalizationAdmissionV1>(
     admission_v1: &mut P,
 ) -> Result<bool, NativeNormalizationErrorV1<P::Error>> {
     let result_v1 = (|| {
-        let mut policy_v1 = ControlledNormalizationPolicyV1(&mut *admission_v1);
+        let mut policy_v1 = ControlledNormalizationPolicyV1 {
+            admission_v1: &mut *admission_v1,
+            streaming_v1: false,
+        };
         policy_v1.work_v1(0)?;
         if input_v1.len() > 512 {
             return Err(NativeNormalizationErrorV1::InputTooLong);
@@ -298,6 +376,36 @@ pub fn try_is_nfc_with_native_admission_v1<P: NativeNormalizationAdmissionV1>(
         }
     })();
     // All normalization buffers have dropped before custody is released.
+    admission_v1.release_scratch_v1(NativeNormalizationScratchOwnerV1::Decomposition);
+    admission_v1.release_scratch_v1(NativeNormalizationScratchOwnerV1::Recomposition);
+    result_v1
+}
+
+/// Stream canonical NFC scalars through the same decomposition and
+/// recomposition machines as `.nfc()`, admitting native scratch before birth.
+/// Unlike the borrowed identity rail, this accepts caller-bounded long text.
+#[cfg(feature = "quanta-native-scratch-v1")]
+pub fn try_for_each_nfc_with_native_admission_v1<P, F>(
+    input_v1: &str,
+    admission_v1: &mut P,
+    mut emit_v1: F,
+) -> Result<(), NativeNormalizationErrorV1<P::Error>>
+where
+    P: NativeNormalizationAdmissionV1,
+    F: FnMut(char) -> Result<(), P::Error>,
+{
+    let result_v1 = (|| {
+        let mut policy_v1 = ControlledNormalizationPolicyV1 {
+            admission_v1: &mut *admission_v1,
+            streaming_v1: true,
+        };
+        policy_v1.work_v1(0)?;
+        let mut normalized_v1 = Recompositions::new_canonical(input_v1.chars());
+        while let Some(scalar_v1) = normalized_v1.try_next_with_policy_v1(&mut policy_v1)? {
+            emit_v1(scalar_v1).map_err(NativeNormalizationErrorV1::Admission)?;
+        }
+        Ok(())
+    })();
     admission_v1.release_scratch_v1(NativeNormalizationScratchOwnerV1::Decomposition);
     admission_v1.release_scratch_v1(NativeNormalizationScratchOwnerV1::Recomposition);
     result_v1

@@ -8,15 +8,15 @@ not create a successful causal report. Run tiers serially on the selected host.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
-import stat
 import subprocess
 import time
 from pathlib import Path
 
+from tools.benchmark.evidence import RawFile
 from tools.benchmark.retrieval.causal_cost_profile import replay
 from tools.benchmark.retrieval.conditional_proof import canonical, sha
+from tools.benchmark.retrieval.tool_custody import capture_executable
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -24,16 +24,6 @@ def _git(cwd: Path, *args: str) -> str:
         ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True
     )
     return result.stdout.strip()
-
-
-def _binary_sha(path: Path) -> str:
-    if not stat.S_ISREG(path.lstat().st_mode):
-        raise ValueError("scale binary must be a regular file without a symlink")
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _history_inputs(pair: int | None, total: int | None) -> dict:
@@ -90,14 +80,20 @@ def capture(args: argparse.Namespace) -> dict:
     head = _git(cwd, "rev-parse", "HEAD")
     if head != args.source_revision:
         raise ValueError("source revision does not match the clean checkout")
-    binary_sha = _binary_sha(binary)
+    binary_epoch = capture_executable(binary)
+    binary_input = RawFile.capture(binary)
+    binary_sha = binary_epoch["sha256"]
     if binary_sha != args.binary_sha256:
         raise ValueError("scale binary digest does not match declared input")
+    if binary_input.sha256 != "sha256:" + binary_sha:
+        raise ValueError("scale binary changed while preparing replay input")
     out_root.mkdir(mode=0o700, parents=False, exist_ok=False)
     artifact_dir = out_root / "artifact"
     command = _scale_command(args, binary, artifact_dir)
     environment = os.environ.copy()
     environment["QUANTA_INDEX_CAUSAL_PROFILE_V1"] = "1"
+    if capture_executable(binary) != binary_epoch:
+        raise ValueError("scale executable epoch changed before execution")
     started = time.monotonic()
     with (out_root / "stdout").open("xb") as stdout, (out_root / "stderr").open("xb") as stderr:
         try:
@@ -116,43 +112,61 @@ def capture(args: argparse.Namespace) -> dict:
             exit_code = None
             timed_out = True
     elapsed_seconds = time.monotonic() - started
-    post_head = _git(cwd, "rev-parse", "HEAD")
-    post_dirty = bool(_git(cwd, "status", "--porcelain"))
-    post_binary_sha = _binary_sha(binary)
-    trace_raw = (out_root / "stderr").read_bytes()
-    stdout_raw = (out_root / "stdout").read_bytes()
+    trace_input = RawFile.capture(out_root / "stderr")
+    stdout_input = RawFile.capture(out_root / "stdout")
     execution = {
         "schema_version": 1,
         "status": "FAILED",
         "source_revision": head,
-        "source_revision_after": post_head,
-        "dirty_after": post_dirty,
+        "source_revision_after": None,
+        "dirty_after": None,
         "binary_sha256": binary_sha,
-        "binary_sha256_after": post_binary_sha,
+        "binary_sha256_after": None,
         "command": command,
         "history_policy": history_policy,
         "exit_code": exit_code,
         "timed_out": timed_out,
         "elapsed_seconds": elapsed_seconds,
-        "stdout_sha256": sha(stdout_raw),
-        "stderr_sha256": sha(trace_raw),
+        "stdout_sha256": stdout_input.sha256.removeprefix("sha256:"),
+        "stderr_sha256": trace_input.sha256.removeprefix("sha256:"),
     }
+    profile_path = out_root / "causal-profile.json"
+    profile_created = False
     try:
+        post_head = _git(cwd, "rev-parse", "HEAD")
+        post_dirty = bool(_git(cwd, "status", "--porcelain"))
+        post_binary_epoch = capture_executable(binary)
+        execution.update(
+            source_revision_after=post_head,
+            dirty_after=post_dirty,
+            binary_sha256_after=post_binary_epoch["sha256"],
+        )
         if (
             exit_code != 0
             or timed_out
             or post_head != head
             or post_dirty
-            or post_binary_sha != binary_sha
+            or post_binary_epoch != binary_epoch
         ):
             raise ValueError("producer failed, timed out or source/binary changed")
-        summary_raw = (artifact_dir / "summary.json").read_bytes()
-        manifest_raw = (artifact_dir / "tier_manifest.json").read_bytes()
+        summary_input = RawFile.capture(artifact_dir / "summary.json")
+        manifest_input = RawFile.capture(artifact_dir / "tier_manifest.json")
+        inputs = (binary_input, trace_input, stdout_input, summary_input, manifest_input)
+
+        def verify_inputs() -> None:
+            if _git(cwd, "rev-parse", "HEAD") != head or _git(cwd, "status", "--porcelain"):
+                raise ValueError("source changed during causal replay")
+            if capture_executable(binary) != binary_epoch:
+                raise ValueError("scale executable epoch changed during causal replay")
+            for prepared in inputs:
+                if RawFile.capture(prepared.path) != prepared:
+                    raise ValueError(f"causal replay input changed: {prepared.path}")
+
         profile = replay(
-            summary_raw,
-            trace_raw,
-            binary.read_bytes(),
-            manifest_raw,
+            summary_input.read_control(),
+            trace_input.consume_seekable(lambda stream: stream.read()),
+            binary_input.consume_seekable(lambda stream: stream.read()),
+            manifest_input.read_control(),
             source_revision=head,
             expected_tier=args.tier,
             expected_seed=args.seed,
@@ -165,14 +179,23 @@ def capture(args: argparse.Namespace) -> dict:
         ):
             raise ValueError("captured history policy differs from replayed scale policy")
         profile["scope"]["binary_source_binding"] = (
-            "binary bytes are pinned before and after execution; matching fresh-build source "
+            "executable epoch and replay bytes are pinned through publication; fresh-build source "
             "custody must be established separately"
         )
-        (out_root / "causal-profile.json").write_bytes(canonical(profile) + b"\n")
+        verify_inputs()
+        profile_raw = canonical(profile) + b"\n"
+        with profile_path.open("xb") as stream:
+            profile_created = True
+            stream.write(profile_raw)
+        verify_inputs()
+        if RawFile.capture(profile_path).sha256 != "sha256:" + sha(profile_raw):
+            raise ValueError("causal profile changed during publication")
         execution["status"] = "VERIFIED_DIAGNOSTIC"
-        execution["profile_sha256"] = sha((out_root / "causal-profile.json").read_bytes())
-    except (ValueError, OSError, KeyError, TypeError) as error:
+        execution["profile_sha256"] = sha(profile_raw)
+    except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         execution["reason"] = str(error)
+        if profile_created:
+            profile_path.unlink()
     (out_root / "execution.json").write_bytes(canonical(execution) + b"\n")
     return execution
 

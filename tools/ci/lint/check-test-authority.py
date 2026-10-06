@@ -1229,7 +1229,9 @@ def _validate_grouped_integration_targets(
                     resolved_source = (launcher.parent / relative_source).resolve()
                 except (OSError, RuntimeError) as error:
                     violations.append(
-                        _violation(launcher, f"cannot resolve grouped source {relative_source}: {error}")
+                        _violation(
+                            launcher, f"cannot resolve grouped source {relative_source}: {error}"
+                        )
                     )
                     line_index = path_index + 2
                     continue
@@ -1266,7 +1268,13 @@ def _validate_grouped_integration_targets(
                     )
                 )
                 continue
-            resolved_member = (root / member_path).resolve()
+            try:
+                resolved_member = (root / member_path).resolve()
+            except (OSError, RuntimeError) as error:
+                violations.append(
+                    _violation(catalog, f"cannot resolve grouped source {relative_member}: {error}")
+                )
+                continue
             if resolved_member not in declared_modules:
                 violations.append(
                     _violation(
