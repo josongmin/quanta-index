@@ -155,6 +155,14 @@ fn with_capacity_profile(mut value: Value) -> AnyResult<Value> {
         ("ingest_max_text_bytes", json!(SCALE_INGEST_TEXT_BYTES)),
         ("ingest_max_vector_bytes", json!(SCALE_INGEST_VECTOR_BYTES)),
         (
+            "coverage_max_encoded_bytes",
+            json!(quanta_index_lexical::FILE_COVERAGE_ENCODED_BYTES_LIMIT),
+        ),
+        (
+            "coverage_max_decode_heap_bytes",
+            json!(quanta_index_lexical::FILE_COVERAGE_DECODE_HEAP_BYTES_LIMIT),
+        ),
+        (
             "source_publication_part_bytes",
             json!(quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_PART_BYTES),
         ),
@@ -3526,6 +3534,14 @@ pub fn artifact(
                     ),
                     ("ingest_max_records", SCALE_INGEST_MAX_RECORDS.to_string()),
                     ("ingest_max_text_bytes", SCALE_INGEST_TEXT_BYTES.to_string()),
+                    (
+                        "coverage_max_encoded_bytes",
+                        quanta_index_lexical::FILE_COVERAGE_ENCODED_BYTES_LIMIT.to_string(),
+                    ),
+                    (
+                        "coverage_max_decode_heap_bytes",
+                        quanta_index_lexical::FILE_COVERAGE_DECODE_HEAP_BYTES_LIMIT.to_string(),
+                    ),
                     (
                         "ingest_max_vector_bytes",
                         SCALE_INGEST_VECTOR_BYTES.to_string(),

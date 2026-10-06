@@ -6,7 +6,7 @@
 //! the canonical artifacts under `artifacts/search-quality/scale/latest/`:
 //! `tier_manifest.json` and `summary.json`, the `BenchArtifactV1` (QI-BB-010)
 //! naming the exact head of a clean worktree, the generated corpus digest, the
-//! tier parameters, the host, the process's peak RSS, the build / update /
+//! tier parameters, the host, the whole-process sampled maximum RSS, the build / update /
 //! reclaim phases and the build's disk amplification. The default is small;
 //! `--tier` or `--all-tiers` selects larger scoped source-repository fixtures.
 //! Unselected tiers are advisory in each artifact. Authority behind

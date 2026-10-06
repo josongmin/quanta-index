@@ -177,8 +177,8 @@ pub(crate) fn decode_coverage_at(
 /// Conservative retained-heap admission estimate, not measured allocator use
 /// or RSS.
 ///
-/// Charge a full 16-slot B-tree node per file (including links/header),
-/// both tree indexes and the shared row's source key, all retained strings, and
+/// Use the snapshot owner's structural bound for both trees and shared keys/rows,
+/// then charge all retained strings and
 /// the event's actual String capacities. This intentionally overestimates
 /// partially occupied nodes. Strings include conservative decoder capacity;
 /// this is not a measured allocator ceiling.
@@ -199,19 +199,16 @@ pub(crate) fn coverage_heap_bytes_estimate(
     }
     let mut bytes = 0;
     if let Some(snapshot) = coverage {
-        add(&mut bytes, std::mem::size_of::<CoverageSnapshot>())?;
+        bytes = CoverageSnapshot::structural_heap_bytes_bound(
+            u64::try_from(snapshot.len()).map_err(|error| {
+                CoreError::InvalidContract(format!("lexical: coverage row count width: {error}"))
+            })?,
+        )
+        .ok_or_else(|| {
+            CoreError::InvalidContract("lexical: coverage structural heap estimate overflow".into())
+        })?;
         for (key, entry) in snapshot {
-            for _slot in 0..32 {
-                add(
-                    &mut bytes,
-                    std::mem::size_of::<(SourceFileKey, SourceFileCoverage)>(),
-                )?;
-                add(&mut bytes, std::mem::size_of::<usize>())?;
-            }
-            add(&mut bytes, 128)?;
             for string in [
-                key.source_repo_id.as_str(),
-                key.repo_relative_path.as_str(),
                 key.source_repo_id.as_str(),
                 key.repo_relative_path.as_str(),
                 entry.source.file.source_repo_id.as_str(),
@@ -692,7 +689,7 @@ mod tests {
     )]
     fn one_file_delta_shares_rows_and_inherits_unmodified_pages() -> TestResult {
         use std::os::unix::fs::MetadataExt as _;
-        for files in [1024, 2048, 4096] {
+        for files in [1024, 2048, 4096, 32_768] {
             let directory = tempfile::tempdir()?;
             let base_dir = directory.path().join("base");
             let candidate_dir = directory.path().join("delta");
@@ -766,6 +763,17 @@ mod tests {
                 assert_eq!(reopened.coverage.get(&row.source.file), Some(expected));
             }
             assert_eq!(reopened.coverage.len(), original.len());
+            let retained_charge = super::coverage_heap_bytes_estimate(
+                Some(&reopened.coverage),
+                Some(&reopened.publication),
+            )?;
+            if retained_charge > reopened.read_stats.max_decode_heap_admission_bytes {
+                return Err(format!(
+                    "opened coverage charge escaped decode admission: {retained_charge}/{}",
+                    reopened.read_stats.max_decode_heap_admission_bytes,
+                )
+                .into());
+            }
             assert_eq!(base.get(&changed.source.file), original.first());
             let mut fresh = 0_u64;
             let mut base_bytes = 0_u64;

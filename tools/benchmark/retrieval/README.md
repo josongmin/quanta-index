@@ -73,6 +73,10 @@ files). Its default `scale-supported-v1` profile uses a 600-second client timeou
 two retained generations, 1 GiB per repo/revision pair, 2 GiB total history,
 100,000 ingest records, 128 MiB source/text, 256 MiB vectors, a 512 MiB staged
 body limit and an explicit 4 GiB process memory ceiling.
+Coverage keeps its 64 MiB aggregate encoded-page and 256 MiB decode-admission
+limits. Both indexes share key and row allocations; writer admission, cold/reuse
+decoding and opened-handle charges use the snapshot owner's structural bound.
+These are conservative policy charges, not measured allocator use or RSS.
 These inputs appear in the artifact and config digest; explicit timeout/history
 overrides remain separate diagnostic inputs. The ordinary harness unit fixture
 keeps its 16 MiB retention limit. A profile or limit change never requalifies an

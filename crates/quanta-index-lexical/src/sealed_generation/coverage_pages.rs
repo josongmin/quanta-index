@@ -26,8 +26,8 @@ pub(crate) const MAX_COVERAGE_PAGE_ROWS: usize = 4096;
 pub(crate) const MAX_COVERAGE_ROOT_BYTES_U64: u64 = 32 * 1024;
 const MAX_COVERAGE_PAGE_BYTES_U64: u64 = 1024 * 1024;
 const MAX_COVERAGE_PAGE_ROWS_U32: u32 = 4096;
-const MAX_COVERAGE_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_COVERAGE_DECODE_HEAP: u64 = 256 * 1024 * 1024;
+const MAX_COVERAGE_ENCODED_BYTES: u64 = crate::FILE_COVERAGE_ENCODED_BYTES_LIMIT;
+const MAX_COVERAGE_DECODE_HEAP: u64 = crate::FILE_COVERAGE_DECODE_HEAP_BYTES_LIMIT;
 const PAGE_PREFIX: &str = "source-file-coverage-page-";
 
 // Slot, encoded bytes, content hash, row count. Root ordering is canonical.
@@ -362,32 +362,51 @@ fn decode_root(bytes: &[u8], directory: &Path) -> Result<(CoverageRow, u64), Cor
             .checked_add(u64::from(*rows))
             .ok_or_else(|| resource("coverage row count overflow"))?;
     }
-    // Two derived tree indexes, shared row allocations, decode temporaries and
-    // compacted strings. This is conservative admission, not measured RSS.
-    let row_charge = std::mem::size_of::<quanta_index_contract::SourceFileKey>()
-        .checked_add(std::mem::size_of::<SourceFileCoverage>())
-        .and_then(|size| size.checked_add(32))
-        .and_then(|size| size.checked_mul(32))
-        .ok_or_else(|| resource("coverage row charge overflow"))?;
-    let row_charge = u64::try_from(row_charge).map_err(|error| {
-        resource(&format!(
-            "coverage row charge is not representable: {error}"
-        ))
-    })?;
-    let heap_charge = total_rows
-        .checked_mul(row_charge)
+    let heap_charge = decode_heap_charge(total_rows, total_bytes)?;
+    if total_bytes > MAX_COVERAGE_ENCODED_BYTES || heap_charge > MAX_COVERAGE_DECODE_HEAP {
+        return Err(resource(&format!(
+            "effective coverage exceeds supported decode residency: rows={total_rows}, encoded_bytes={total_bytes}/{MAX_COVERAGE_ENCODED_BYTES}, decode_heap_bytes={heap_charge}/{MAX_COVERAGE_DECODE_HEAP}"
+        )));
+    }
+    Ok((root, heap_charge))
+}
+
+fn decode_heap_charge(total_rows: u64, total_bytes: u64) -> Result<u64, CoreError> {
+    let structural = CoverageSnapshot::structural_heap_bytes_bound(total_rows)
+        .ok_or_else(|| resource("coverage structural heap charge overflow"))?;
+    // Keys and row strings have two owning copies; trees share Arc keys/rows.
+    // Keep the existing 8x encoded-byte charge for string buffers, raw pages and
+    // decoder transients. The bounded page Vec additionally holds inline rows
+    // before they move into shared allocations; reserve two page capacities.
+    // A malformed page can declare MAX rows even when the authenticated root
+    // commits one row. Admission must cover that reservation before the decoder
+    // checks the root count, including indefinite arrays growing to the ceiling.
+    let page_rows = if total_rows == 0 {
+        0
+    } else {
+        u64::from(MAX_COVERAGE_PAGE_ROWS_U32)
+    };
+    let inline_row_bytes = u64::try_from(std::mem::size_of::<SourceFileCoverage>())
+        .map_err(|error| resource(&format!("coverage row width: {error}")))?;
+    let page_rows = page_rows
+        .checked_mul(inline_row_bytes)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .ok_or_else(|| resource("coverage page row charge overflow"))?;
+    structural
+        .checked_add(page_rows)
+        // The bounded root retains its publication strings and page inventory
+        // while one page is decoded. Its fixed maximum is separate from pages.
+        .and_then(|charge| {
+            MAX_COVERAGE_ROOT_BYTES_U64
+                .checked_mul(8)
+                .and_then(|bytes| charge.checked_add(bytes))
+        })
         .and_then(|charge| {
             total_bytes
                 .checked_mul(8)
                 .and_then(|bytes| charge.checked_add(bytes))
         })
-        .ok_or_else(|| resource("coverage decode charge overflow"))?;
-    if total_bytes > MAX_COVERAGE_ENCODED_BYTES || heap_charge > MAX_COVERAGE_DECODE_HEAP {
-        return Err(resource(
-            "effective coverage exceeds supported decode residency",
-        ));
-    }
-    Ok((root, heap_charge))
+        .ok_or_else(|| resource("coverage decode charge overflow"))
 }
 
 pub(crate) fn root_page_commitments(
@@ -806,6 +825,119 @@ pub(crate) fn write_coverage_pages(
 #[cfg(test)]
 mod tests {
     use super::{BoundedRows, MAX_COVERAGE_PAGE_BYTES, read_bounded};
+
+    #[test]
+    fn small_root_admission_covers_a_forged_maximum_page_reservation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::SourceFileCoverage;
+        let row_bytes = u64::try_from(std::mem::size_of::<SourceFileCoverage>())?;
+        let maximum_page_bytes = u64::from(super::MAX_COVERAGE_PAGE_ROWS_U32) * row_bytes * 2;
+        let structural = super::CoverageSnapshot::structural_heap_bytes_bound(1)
+            .ok_or("structural bound overflow")?;
+        let charge = super::decode_heap_charge(1, 6)?;
+        assert_eq!(
+            charge,
+            structural + maximum_page_bytes + super::MAX_COVERAGE_ROOT_BYTES_U64 * 8 + 6 * 8
+        );
+        // Three-field page tuple: format 2, slot 0, declared array length 4096,
+        // no row bodies. It reserves the maximum before detecting EOF even
+        // though a root could commit only one row. That allocation is charged.
+        let malformed = [0x83, 0x02, 0x00, 0x99, 0x10, 0x00];
+        assert!(ciborium::from_reader::<super::DecodedPage, _>(&malformed[..]).is_err());
+        assert!(charge <= super::MAX_COVERAGE_DECODE_HEAP);
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_xl_root_is_admitted_and_larger_decode_claim_is_refused_before_page_reads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::{
+            GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneErrorCodeV2,
+            SourcePublicationEvent,
+        };
+        use quanta_index_core::CoreError;
+        use sha2::Digest as _;
+        let identity = GenerationSnapshot {
+            repo_id: RepoId::new("coverage-owner")?,
+            revision_id: RevisionId::new("coverage-revision")?,
+            track: quanta_index_contract::SearchPlaneTrackKind::Lexical,
+            manifest_generation: ManifestGeneration::new(1),
+            manifest_digest: "coverage-manifest".into(),
+        };
+        let publication = SourcePublicationEvent {
+            stream_id: "coverage-stream".into(),
+            event_id: "coverage-event".into(),
+            expected_base_event_id: None,
+            payload_sha256: [7; 32],
+        };
+        // Independent wire claim: 256 pages, 128 rows and 64 KiB each.
+        // Total 32,768 rows / 16 MiB; no page allocation or file I/O is needed.
+        let admitted: Vec<_> = (0_u8..=255)
+            .map(|slot| (slot, 65_536_u64, [9_u8; 32], 128_u32))
+            .collect();
+        let raw = super::encode(
+            &(super::COVERAGE_FORMAT, &identity, &publication, admitted),
+            super::MAX_COVERAGE_ROOT_BYTES,
+        )?;
+        let (_, charge) = super::decode_root(&raw, std::path::Path::new("missing-pages"))?;
+        if charge > 256 * 1024 * 1024 {
+            return Err(format!("fixed XL claim escaped the decode envelope: {charge}").into());
+        }
+        let over_limit: Vec<_> = (0_u8..=255)
+            .map(|slot| (slot, 65_536_u64, [9_u8; 32], 4096_u32))
+            .collect();
+        let raw = super::encode(
+            &(super::COVERAGE_FORMAT, &identity, &publication, over_limit),
+            super::MAX_COVERAGE_ROOT_BYTES,
+        )?;
+        match super::decode_root(&raw, std::path::Path::new("missing-pages")) {
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                message,
+            }) if message.contains("decode_heap_bytes=") => {}
+            Err(error) => {
+                return Err(format!(
+                    "oversized effective root returned the wrong failure: {error}"
+                )
+                .into());
+            }
+            Ok(_) => return Err("oversized effective root was admitted".into()),
+        }
+        let directory = tempfile::tempdir()?;
+        let base = directory.path().join("base");
+        std::fs::create_dir(&base)?;
+        std::fs::write(base.join(super::SOURCE_FILE_COVERAGE_FILE_NAME), &raw)?;
+        let target = directory.path().join("candidate");
+        let write_base = super::CoverageWriteBase {
+            directory: base,
+            root: quanta_index_core::SealedArtifactCommitmentV1 {
+                name: super::SOURCE_FILE_COVERAGE_FILE_NAME.into(),
+                bytes: u64::try_from(raw.len())?,
+                sha256: <[u8; 32]>::from(sha2::Sha256::digest(&raw)),
+            },
+        };
+        let result = super::write_coverage_pages(
+            &target,
+            &identity,
+            &publication,
+            &super::CoverageSnapshot::new(),
+            Some(&write_base),
+            &std::collections::BTreeSet::new(),
+        );
+        if !matches!(
+            result,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                ..
+            })
+        ) || target.exists()
+        {
+            return Err(
+                "writer did not refuse the inherited decode envelope before target mutation".into(),
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn oversized_committed_page_is_corruption_on_both_read_paths()

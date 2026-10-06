@@ -53,6 +53,12 @@
 /// the canonical F15 file authority. Scale preflight uses the same bound.
 pub const FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT: u32 = 20_000_000;
 
+/// Aggregate immutable coverage-page bytes admitted by writer and reader.
+pub const FILE_COVERAGE_ENCODED_BYTES_LIMIT: u64 = 64 * 1024 * 1024;
+
+/// Conservative effective-coverage decode admission, independent of measured RSS.
+pub const FILE_COVERAGE_DECODE_HEAP_BYTES_LIMIT: u64 = 256 * 1024 * 1024;
+
 mod analyzer;
 
 mod authority_doc_set;
