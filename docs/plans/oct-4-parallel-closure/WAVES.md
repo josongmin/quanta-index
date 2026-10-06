@@ -15,8 +15,8 @@
 - Contract/SDK·Ready9 선택 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`다.
   `886673cd`의 admitted IPC/manifest·open-loop 회귀를 보존하고 테스트 모듈 위치만 수정한565에서
   whole unit/strict/runtime/integration/fuzz4/native와 Root OS3/Contract/fresh SDK를 연결한다.
-  병렬 NativeIdentityCopy/Admission API3경로와 feature manifest2경로는 선택 소스에서 제외해
-  whole main/API 검증과 구분한다.
+  병렬 NativeIdentityCopy/Admission API·feature manifest·normalization vendor/control 변경은
+  선택 소스에서 제외해 whole main/API 검증과 구분한다. 최신 main38eda80a의42paths도 별도 범위다.
   OS3 release 등록 수리는 별도 clean492에서 검증한다. Debug 전용 semantic 회귀의 mod cfg1줄만
   변경했고 제품·테스트 본문은 동일하다. 기존565 proof/context를492의 결과로 재표기하지 않는다.
 - 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
@@ -74,6 +74,10 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- 최신 main38eda80a에는 normalization vendor/native scratch feature/control 수리42paths가
+  반영됐다. Canonical `cargow metadata --locked --offline --all-features --no-deps`는 실제
+  exit0/28workspace로 dependency 해석 `VERIFIED`다. 새 Rust·module/API·whole CI는 별도 actual이
+  필요하며 진행 중인 선택565 proof를 이 main의 결과로 재표기하지 않는다.
 - 최신 Source565의 affected owner46개는 실제46/46·1.126s/exit0로 `VERIFIED`다.
   SDK565 daemon fresh release build도29m04s/exit0다. Whole workspace 및 SDK27개/portable
   proof의 실제 결과는 아직 남는다.

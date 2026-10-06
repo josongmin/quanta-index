@@ -14,7 +14,8 @@
 Contract/SDK·Ready9의 최종 Quanta 검증 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`
 (`oct6-quanta-final-order/quanta-index`)다. `886673cd`에 대한 변경은 manifest의 `cfg(test)`
 모듈을 파일 끝으로 옮긴1경로이며 제품 함수·테스트 본문은 byte 동일하다.
-Main에 병렬 추가된 NativeIdentityCopy/Admission API3경로와 feature manifest2경로는 이 선택 소스에서 제외했다.
+Main에 병렬 추가된 NativeIdentityCopy/Admission API·feature manifest·normalization vendor/control 변경은
+이 선택 소스에서 제외했다. 최신 main38eda80a의 병렬 변경42paths도 별도 검증 범위다.
 선택 소스의 검증을 전체 main/API qualification으로 승격하지 않는다.
 OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da19db7833ecbf032ea`에서
 검증한다. Delta는 debug 전용 semantic 회귀 모듈에 producer와 같은 cfg 조건을 붙인1줄이며
@@ -30,13 +31,18 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
 | Final Contract/SDK | I0 | 선택565의 canonical Contract Python793개가 actual PASS·289.98s다. Rust191 inventory/build 완료 후 행동 검증이 대기 중이며 fresh SDK daemon release build는29m04s/exit0다. SDK27개·최종 context/portable verify가 남는다. 두 source closure1500files digest는 일치하며 canceled731 v6 partial은 재사용하지 않는다 |
-| Main의 병렬 NativeIdentity feature 연동 | 해당 변경 owner / hosted CI | Main16f37의 Rust1119·Python1120이 실제 실패했다. Locked unicode-normalization0.1.25에 없는 quanta-native-scratch-v1 feature 참조를 해결한 후 dependency fetch·module/API·whole CI를 재검증해야 한다. 선택565의 엔진 검증과 별도 범위다 |
+| Main의 병렬 NativeIdentity feature 연동 | 해당 변경 owner / hosted CI | Main16f37의 feature 누락 실패 뒤 최신38eda80a에 normalization vendor/control42paths가 반영됐다. Locked/offline/all-features metadata는 실제 exit0/28workspace다. Actual Rust·module/API·whole CI가 남으며 선택565의 엔진 검증과 별도 범위다 |
 
 위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이
 선행 입력이며, 외부 provider·승인·Linux 운영·Semantica 연동은 아래 조건부 범위와 구분한다.
 
 ### Sidebar 실행 결과 회수
 
+- 최신 main `38eda80a5688c6b8de6ccd0faef886179c9ddb0f`에는 normalization vendor와
+  native scratch admission feature 및 별도 control-plane 수리가 반영됐다(42paths).
+  `./scripts/cargow --lane metadata-native-feature-lane metadata --locked --offline --all-features
+  --format-version 1 --no-deps`는 실제 exit0/28workspace로 `VERIFIED`다. 이는 dependency 해석
+  범위이며 새 Rust 테스트·module/API·whole CI 성공을 뜻하지 않는다. 선택565는 불변이다.
 - 최신 Source565 owner46개는 실제46/46·1.126s/exit0·lease release로 `VERIFIED`다.
   SDK565 daemon의 fresh release build도29m04s/exit0다. 두 결과를 전체 workspace 검사나
   SDK27개/portable proof 성공으로 승격하지 않는다.
