@@ -58,7 +58,9 @@
   checked predecessor 및 원본 payload 보존형 ThreadPanic으로 수리·통합했고 포맷/guards는 통과했다.
   후속07c5fed9 verify1759는 socket UID 테스트의 singleton iterator1건에서 exit101이었다.
   같은1UID 집합을 std::iter::once로 수리했고 guards/포맷은 통과했다.
-  실제 strict Clippy·전체 테스트 재검사는 남는다. Python1753/1760은 확인 시 실행 중이었다.
+  실제 strict Clippy·전체 테스트 재검사는 남는다. Python1753은 source080568c7에서3723passed/30skipped 뒤
+  required Python inventory791vs793로 `FAILED`였다. 이는 아래 +2 manifest 수리의 동일 원인이며 새 소스의
+  hosted Python 결과는 별도로 확인한다. Python1760은 마지막 확인 시 실행 중이었다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
