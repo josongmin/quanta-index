@@ -149,7 +149,7 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Correct wait7200s/jobs1/sccache0/gc0이며 actual terminal/새 receipt 발행은 아직 남는다.
   후속 단일 native scope의 verify-time release 변경 감지 누락 수리를 포함하기 위해 Contract/SDK2요청만
   미입장 안전 취소했다: producer143/controller1/0Cargo·behavior/`NOT_RUN`, v4partial 보존·receipt0.
-  현재 Ready9 batch는 outer 후행 검사로 해당 경계를 보호한다. Rust OS3 release254a 요청은 유지한다.
+  현재 Ready9 batch는 outer 후행 검사로 해당 경계를 보호한다. 당시 Rust OS3 release254a 요청은 유지했으며 아래 수리 뒤6385033f로 대체했다.
   후속1076 nextest는3567passed/1failed/29skipped·380.582s,606미실행 fail-fast로 `FAILED`다.
   Stale harness256MiB oracle만 fixed Scale2GiB/explicit512MiB equality/+1·zero refusal로 수리했고
   real one-byte seal typed거절을 유지했다. Production prefix 동일·포맷·fallback19/577는 통과했다.
@@ -160,6 +160,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   P00 registry25/300tests·35.23s 뒤 writer direct import에서 `ModuleNotFoundError: tools`로 job `FAILED`였다.
   Direct-script import 초기화를 수리하고 payload 본문은 유지했다. Main host/CLI 회귀28은28passed/0.68s,
   Ruff/diff도 통과했다. Actual CircleCI P00 manifest 발행·whole job은 새 source에서 확인한다.
+  후속 source593 Python1090도4187passed/30skipped·880.73s 및 policy step935.449s/exit0,
+  P00 300passed/34.62s 뒤 동일 direct import로 job `FAILED`였다. Source731 hosted1094 strict는
+  exit0/367.310s이며1093 Python·1094 Rust whole job의 terminal은 아직 남는다.
   Native scope는 callee의 소비 전·native 뒤/receipt 전·verify 후 세 경계를 유지하는 수리를 통합했다.
   Batch spec/control guard를 유지하고 중복 outer2검사만 제거해 scope당4→3full scans다.
   Main 관련171tests는171passed/1004.84s 및 exactpostSHA/Ruff/diff가 통과했다. 실제 latency 향상은 미측정이다.

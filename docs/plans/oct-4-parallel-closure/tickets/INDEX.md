@@ -13,7 +13,7 @@
 
 | 범위 | 담당 | 실제 잔여 |
 | --- | --- | --- |
-| Workspace 검사·단위 테스트 | Scale / hosted CI | Strict Clippy는 main2fb Linux에서 exit0다. Open-loop의 stale256MiB oracle를 fixed2GiB/512MiB 경계로 수리했다. 수정 fixture actual 및 whole unit `--no-fail-fast`/1thread가 남는다 |
+| Workspace 검사·단위 테스트 | Scale / hosted CI | Strict Clippy는 source731a39cf의 Linux hosted1094에서 exit0/367.310s다. Open-loop의 stale256MiB oracle를 fixed2GiB/512MiB 경계로 수리했다. 수정 fixture actual 및 whole unit `--no-fail-fast`/1thread가 남는다 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 | Clean Scale6385033f의 원본256/4096/32768·same seed/caps release/no-fail-fast를 등록했다. Actual3개 종료는 남는다 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime, 남은 fuzz3이 필요하다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Old47e v4 batch는 live source를 유지한다. Fresh native9/SG-CS9capture+9replay 종료 뒤 reuse와 final admission/pair/full5를 판정한다 |
@@ -128,7 +128,7 @@
   이 Python producer 수리를 최종 proof source에 포함하도록 Contract/SDK 요청2개만 미입장 안전 취소했다.
   Producer143/controller1·0Cargo/behavior·`NOT_RUN`; v4 source closure/793collection 및 빈 fresh target을 보존했다.
   `/private/tmp/qi-f15-contract-2fb8e0fe-20261006-v4/`와 SDK sibling은 receipt가 발행되지 않았다.
-  Rust 입력이 동일한 OS3 release254a 요청은 유지하며 native producer 수리·회귀 뒤 새 proof를 등록한다.
+  이 시점의 Rust 입력이 동일한 OS3 release254a 요청은 유지했다. 아래 owner cfg(test) 수리 뒤 해당 대기를 취소하고6385033f로 새 등록했다.
   후속 hosted1076은 nextest exit100/`FAILED`:3568/4174actual 중3567passed/1failed/29skipped,
   fail-fast로606개는 `NOT_RUN`이다. Test380.582s/action1400.687s이며 sole observed failure는
   `open_loop::tests::history_budget_uses_scale_policy_bounds_and_reaches_real_seal`의 오래된 기대값이다.
@@ -145,6 +145,10 @@
   root를 import 경로에 먼저 등록하도록 수리했으며 payload 생성 본문은 동일하다.
   Isolated direct CLI·module CLI·실제 args의 observed-host 거절을 포함한 `test_proof_host.py`28개는
   main actual28passed/0.68s, Ruff check/format 및 diff 통과다. 실제 CircleCI host의 manifest 발행은 남는다.
+  후속 source593의 Python1090도4187passed/30skipped/2warnings·880.73s 및 policy step935.449s/exit0,
+  P00 300passed/34.62s 뒤 같은 미수리 direct import에서 job exit1이었다. 새 source731의
+  hosted1094 strict Clippy는367.310s/exit0다. Hosted1093 Python·1094 Rust 전체 job은 진행 중이며
+  이 부분 결과를 전체 CI 종료로 승격하지 않는다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
