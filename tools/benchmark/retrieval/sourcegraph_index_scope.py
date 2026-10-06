@@ -683,7 +683,7 @@ def _start_owned_web(
             raise ValueError("native Zoekt translator process identity differs")
         _image_guest_binary(container_id, image_id, binary_path)
         return process, {**identity, "listener": listener, "guest": guest, "image_id": image_id}
-    except BaseException:
+    except BaseException as error:
         cleanup_identity = (
             identity
             if isinstance(identity, dict)
@@ -698,15 +698,20 @@ def _start_owned_web(
             )
             else None
         )
-        _stop_owned_web(
-            container_id,
-            process,
-            invocation,
-            binary_path,
-            index_path,
-            port,
-            cleanup_identity,
-        )
+        try:
+            _stop_owned_web(
+                container_id,
+                process,
+                invocation,
+                binary_path,
+                index_path,
+                port,
+                cleanup_identity,
+            )
+        except BaseException as cleanup_error:
+            error.add_note(
+                f"Owned Zoekt service cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}"
+            )
         raise
 
 
@@ -1166,16 +1171,21 @@ def _native_stored_content(
             control_sha256=control_sha256,
             owned_service=owned,
         )
-    except BaseException:
-        _stop_owned_web(
-            container_id,
-            process,
-            owned["invocation_id"],
-            native_binary_path,
-            snapshot["runtime"]["mount_destination"],
-            native_port,
-            owned,
-        )
+    except BaseException as error:
+        try:
+            _stop_owned_web(
+                container_id,
+                process,
+                owned["invocation_id"],
+                native_binary_path,
+                snapshot["runtime"]["mount_destination"],
+                native_port,
+                owned,
+            )
+        except BaseException as cleanup_error:
+            error.add_note(
+                f"Owned Zoekt service cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}"
+            )
         raise
     stopped = _stop_owned_web(
         container_id,

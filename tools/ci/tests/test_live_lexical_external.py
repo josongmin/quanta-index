@@ -619,7 +619,10 @@ def test_owned_web_refuses_image_mount_shadow_before_start(monkeypatch):
         scope._image_guest_binary(container_id, image_id, "/usr/local/bin/zoekt-webserver")
 
 
-def test_owned_web_refuses_malformed_supervisor_identity_before_listener(monkeypatch):
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_owned_web_refuses_malformed_supervisor_identity_before_listener(
+    monkeypatch, cleanup_fails
+):
     scope = live.sourcegraph_index_scope
     original_popen = subprocess.Popen
     local = "import json,time;print(json.dumps({'kind':'wrong'}),flush=True);time.sleep(5)"
@@ -648,12 +651,66 @@ def test_owned_web_refuses_malformed_supervisor_identity_before_listener(monkeyp
         process.wait(timeout=2)
         process.stdin.close()
         process.stdout.close()
+        if cleanup_fails:
+            raise ValueError("Docker daemon unavailable")
 
     monkeypatch.setattr(scope, "_stop_owned_web", stop)
-    with pytest.raises(ValueError, match="start identity differs"):
+    with pytest.raises(ValueError, match="start identity differs") as caught:
         scope._start_owned_web(
             "c" * 64, "sha256:" + "a" * 64, "/usr/local/bin/zoekt-webserver", "/index", 6071
         )
+    if cleanup_fails:
+        assert caught.value.__notes__ == [
+            "Owned Zoekt service cleanup failed: ValueError: Docker daemon unavailable"
+        ]
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_native_body_failure_survives_owned_service_cleanup(monkeypatch, tmp_path, cleanup_fails):
+    scope = live.sourcegraph_index_scope
+    primary = ValueError("native body differs from independent corpus")
+    process = object()
+    owned = {"invocation_id": "e" * 32}
+    stopped = []
+    monkeypatch.setattr(scope, "_start_owned_web", lambda *_args: (process, owned))
+
+    def fail(*_args, **_kwargs):
+        raise primary
+
+    def stop(*args):
+        stopped.append(args)
+        if cleanup_fails:
+            raise ValueError("Docker daemon unavailable")
+
+    monkeypatch.setattr(scope, "_native_stored_content_running", fail)
+    monkeypatch.setattr(scope, "_stop_owned_web", stop)
+    with pytest.raises(ValueError, match="native body differs") as caught:
+        scope._native_stored_content(
+            tmp_path,
+            config={},
+            manifest_path=tmp_path / "manifest.json",
+            manifest_raw=b"{}",
+            files=[],
+            repository="example",
+            release_digest="a" * 64,
+            snapshot={
+                "runtime": {
+                    "container_id": "c" * 64,
+                    "image_sha256": "a" * 64,
+                    "mount_destination": "/index-attestation",
+                }
+            },
+            native_port=6071,
+            native_binary_path="/usr/local/bin/zoekt-webserver",
+            control_sha256={},
+        )
+    assert caught.value is primary
+    assert len(stopped) == 1
+    assert stopped[0][1] is process
+    if cleanup_fails:
+        assert primary.__notes__ == [
+            "Owned Zoekt service cleanup failed: ValueError: Docker daemon unavailable"
+        ]
 
 
 @pytest.mark.parametrize(

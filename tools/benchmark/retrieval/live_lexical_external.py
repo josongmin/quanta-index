@@ -1212,7 +1212,7 @@ def _process(argv: list[str], timeout: int) -> tuple[int, bytes, bytes, float]:
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ValueError("cs process timed out")
+                    raise ValueError("external process timed out")
                 for key, _ in selector.select(remaining):
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if not chunk:
@@ -1220,10 +1220,10 @@ def _process(argv: list[str], timeout: int) -> tuple[int, bytes, bytes, float]:
                         continue
                     buffers[key.fileobj].extend(chunk)
                     if sum(map(len, buffers.values())) > MAX_PROCESS_BYTES:
-                        raise ValueError("cs process output exceeds 16 MiB limit")
+                        raise ValueError("external process output exceeds 16 MiB limit")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise ValueError("cs process timed out")
+            raise ValueError("external process timed out")
         process.wait(timeout=remaining)
     except BaseException as error:
         try:
@@ -1232,7 +1232,7 @@ def _process(argv: list[str], timeout: int) -> tuple[int, bytes, bytes, float]:
             pass
         process.wait()
         if isinstance(error, subprocess.TimeoutExpired):
-            raise ValueError("cs process timed out") from error
+            raise ValueError("external process timed out") from error
         raise
     finally:
         for stream in buffers:
