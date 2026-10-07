@@ -3,8 +3,10 @@
 Status: `ACTIVE`. Completed implementation/RCA/terminal chronology has been
 consolidated into [SEP-27-004](../../../adr/SEP-27-004-benchmark-capture-and-resource-custody.md).
 Code-search contracts are in [SEP-27-003](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md).
-Registry/source/test authority remains executable; this is the single common
-execution and acceptance ledger. Historical counts are not required inventories.
+Registry/source/test authority remains executable. The
+[OCT-04 ledger](../../oct-4-parallel-closure/tickets/INDEX.md) owns the live execution
+queue; this index routes MISC-specific resource/recovery acceptance.
+Historical counts are not required inventories.
 
 ## Remaining root-cause union
 

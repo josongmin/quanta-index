@@ -22,6 +22,11 @@ external backup identities for May–Oct-05 records. In particular, dirty/untrac
 SEP-27 preimages need their named external content backup; Git does not recover
 bytes that were never committed. Restore into a separate directory.
 
+The follow-up Oct-07 cleanup uses pre-edit revision `a5e87614bee79bf9d67c8358df01313242548798`
+for the former OCT-04 completed-status detail and B07 execution chronology.
+Recover those committed bodies with `git show a5e87614:<repository-relative-path>`.
+Their accepted contracts and completed checkpoints now live in the ADRs below.
+
 The Oct-07 pre-edit content, including concurrent dirty benchmark/CI updates,
 is saved outside the checkout at `/tmp/qi-oct7-doc-consolidation-xz1fej2f/before`;
 `manifest.json` identifies each SHA-256. This temporary backup is not durable Git
@@ -34,6 +39,8 @@ history. The archived baseline below is the recovery source for committed bodies
 | O4-E3-01–06 | [Runtime contract and completed scope disposition](adr/OCT-05-003-active-query-and-runtime-lifecycle.md#completed-execution-scopes); E3-02 was unadopted/NOT_APPLICABLE |
 | O4-E2-01 | [Completed-clock contract](adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-clock-scope); repeated performance remains E4-06 |
 | O4-I0-01 | [Shared-source validation](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#shared-source-validation); source validation remains a standing rule |
+| O4-E2-04 completed capacity RCA and source-bound checks | [Paged term directory](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#paged-term-directory) and [Ready9 completed capture](adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope); TypeORM and independent judgments remain live |
+| S30-B07 execution chronology and stale F15 repair queue | [Cost/capacity checkpoints](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints); the ticket retains measurement/host acceptance only |
 | SEP-21 `CURRENT-RESIDUAL-2026-09-26.md` | [R0–R6 execution/acceptance](plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md); S21-11/12/13 retain detailed acceptance |
 | `docs/plans/ARCHIVE-INDEX.md` and repetitive archive chronology | This single recovery index; prior exact mappings remain in the two Git bodies above |
 

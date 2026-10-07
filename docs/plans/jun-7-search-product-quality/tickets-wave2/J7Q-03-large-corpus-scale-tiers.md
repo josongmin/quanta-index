@@ -6,10 +6,18 @@ Implemented lifecycle/resource/refusal decisions are in
 [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md).
 Current execution is owned by [OCT-04 E4-05](../../oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
 
+Fixed8642 matching-release Medium256 causal cost/RSS and same-process reopen
+completed as a shared macOS diagnostic. Source/binary binding, observations and
+limits are retained in the [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints).
+That completed capture is not awaiting execution. OS-child restart, offered-load,
+Linux physical I/O and admitted-host qualification are separate scopes.
+
 ## Remaining acceptance
 
-- Execute current release medium 4 × 64 = 256, large 16 × 256 = 4,096 and XL
-  64 × 512 = 32,768 files in fresh external roots. Each has distinct source
+- Execute matching-release large 16 × 256 = 4,096 and XL 64 × 512 = 32,768
+  files in fresh external roots. Medium 4 × 64 = 256 requires another diagnostic
+  only when affected runtime/profile inputs change; admitted-host qualification
+  remains separate for every selected tier. Each has distinct source
   repositories under one serving owner; independent owner generations need a
   separate public publish/CAS/pin concurrency test.
 - Freeze tier/seed/repo identities, same-path source keys, file/byte/digest

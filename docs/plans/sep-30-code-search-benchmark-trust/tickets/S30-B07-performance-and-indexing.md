@@ -15,9 +15,9 @@ cost, capacity and optimization stopping rules are in
 | E4-06 / benchmark | Admit a quiet supported host with continuous frequency, thermal, power and load observations; execute randomized paired repetitions | Missing observations remain unavailable. Apply at least five fresh roots and 1,000 route-local warm observations under the selected protocol. Busy-host diagnostics cannot acquire `PERF_QUALIFIED`. |
 | E4-03 / search | Decide keep/modify/withdraw for the ASCII scanner from repeated whole-request comparisons | Independent byte/token/OSA1 parity, IDs, scores, spans, totals, cursor pages, budgets and cancellation must hold. Observation-on/off is a separate experiment; backend clocks still execute in both observation arms. |
 | E4-04 / search | Consider token authority only if repeated source-token scanning dominates the complete caller | Preserve exhaustive short-name/Unicode fallback and generation/digest authority; include index-build and residency costs. No bottleneck means no new persistent index. |
-| E4-02 / indexing | Attribute full/no-op/update/delete/open costs, including both preflights, coverage build, hashing and durable publication | Independent fresh-rebuild equality, inherited-file custody and corruption/crash/reopen controls. Sync batching requires isolated sync cost; full tree/base verification must not disappear to improve timing. |
-| E3 / SDK/runtime | Use request-local SDK/IPC and daemon events to locate a repeated complete-call bottleneck | Join exact request/connection identities with no dropped events. Independent client/server subtraction and idle sleep do not measure transport. Connection reuse or fusion needs causal evidence plus generation, deadline, credential, cap and shutdown parity. |
-| E4-05 / scale/load | Repair the frozen5796 large default timeout and XL posting admission failure, then execute matching-release offered-load/OS-process restart rails | [J7Q-03](../../jun-7-search-product-quality/tickets-wave2/J7Q-03-large-corpus-scale-tiers.md) and [J7Q-04](../../jun-7-search-product-quality/tickets-wave2/J7Q-04-latency-tail-hardening.md) retain resource/lifecycle and route-tail acceptance. An explicit timeout/retention diagnostic does not close default capacity. A later affected source epoch needs matching proof; quiet-host repetitions are separate. Synthetic source repositories under one owner do not prove multi-owner CAS concurrency. |
+| E4-05 / indexing costs | Attribute remaining full/no-op/update/delete/open costs, including both preflights, coverage build, hashing and durable publication | F15 fault/query/clone-retry verification is complete under the cost ADR. Further optimization requires a measured bottleneck and independent fresh-rebuild equality, inherited-file custody and corruption/crash/reopen controls. Sync batching requires isolated sync cost; full tree/base verification must not disappear to improve timing. |
+| E4-06 / SDK/runtime cost | Use the implemented request-local SDK/IPC and daemon events to locate a repeated complete-call bottleneck | Join exact request/connection identities with no dropped events. Independent client/server subtraction and idle sleep do not measure transport. Connection reuse or fusion needs causal evidence plus generation, deadline, credential, cap and shutdown parity. |
+| E4-05 / scale/load | Execute matching-release Large/XL resource/lifecycle and selected offered-load/OS-process restart rails | [J7Q-03](../../jun-7-search-product-quality/tickets-wave2/J7Q-03-large-corpus-scale-tiers.md) and [J7Q-04](../../jun-7-search-product-quality/tickets-wave2/J7Q-04-latency-tail-hardening.md) retain acceptance. Frozen5796 timeout/posting refusals remain historical failures; current F15/profile implementation is complete. An explicit timeout/retention diagnostic does not close default capacity. A later affected source epoch needs matching proof; quiet-host repetitions are separate. Synthetic source repositories under one owner do not prove multi-owner CAS concurrency. |
 | E2-04 / capture, E1-06 / scoring | Complete the declared product × repository × lane × mode inventory and independent joins | [OCT-04 ledger](../../oct-4-parallel-closure/tickets/INDEX.md) owns current cells. Exact, prefix, infix, components, four typo edits, no-answer, NL and ARB are separate cohorts. Repeated Gin queries do not enlarge its source corpus. |
 
 Further candidate intersection, bounded top-k, preview copying, shard streaming
@@ -56,27 +56,14 @@ existing `run.py`, `query_timing_overhead.py`, canonical `host_monitor.py` and
 registered scale/tail/open-loop producers. Heavy runs share one admitted host
 slot. Extend an owner only for a demonstrated missing boundary; no second harness.
 
-F14 frozen5796 fresh SDK27 and Contract791/191 have completed actual and portable
-verification. A separate matching release `scale_matrix` build and small16/medium256
-causal runs are scoped diagnostics under [E4-05](../../oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
-Frozen5796 default large failed at the 30s build/seal client timeout; XL refused
-before daemon startup at the first exceeded 4M posting count. An independent
-large300s/256MiB diagnostic completed in127.612s, with full seal68.733s and
-explicit sync49.778s. Source file/parent barriers dominate that full envelope.
-Delta/noop/delete seal12.711/14.733/14.393s have only0.265/0.153/0.205s explicit
-sync; their exclusive residual stages remain unmeasured. Current F15 source
-reuses unchanged committed bucket objects and publishes durable pack/root
-authority. Cold independently verifies the complete census, retains bounded
-term/range/hash directories, and queries read selected posting ranges under one
-work budget. The logical resident admission is not measured RSS. Owner checks
-are in progress; old-or-complete-new crash custody and matching Large/XL/default
-retention still require actual execution. Exact commands, roots and scope are in
-[E4-01/02/05](../../oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
-These diagnostics do not qualify later source epochs, OS-child restart,
-scanner A/B or quiet-host performance. A separate current78d2474 Medium256
-OS-child stop/reap/restart owner regression passed (1 selected/82 unselected,
-31.805s); Large/XL restart and resource qualification remain `NOT_RUN`.
-Scanner source/build/capture custody owner tests passed49 selected cases;
-the actual two-arm build/capture and whole-call decision remain `NOT_RUN`.
-Exact old commands/results are recoverable through
-[the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).
+Completed F15 fault/query/clone-retry and Medium restart controls, paged-directory
+repair, and matching8642 Medium causal cost/RSS are owned by
+[the cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints).
+Their implementation and focused checks are not open repairs. The Mac Medium
+capture is diagnostic and covers same-process reopen; OS-child restart,
+offered-load and qualified performance retain their own selected acceptance.
+
+The [OCT-04 ledger](../../oct-4-parallel-closure/tickets/INDEX.md#e4) owns current
+Large/XL and Scanner two-arm execution. Earlier F14 timings, default refusals,
+source-bound owner counts and commands are recoverable from the pre-cleanup
+Git body named in [the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).

@@ -138,6 +138,13 @@ Rechecked 2026-10-07 against the original result files. External source
 `09103820` completed CS/SG/OG capture and independent replay for all nine roots:
 180 requests per product, 540 total. Selected-project OpenGrok reader evidence
 retains that scope; all-project/global loaded-reader flags remain false.
+Original replay roots are
+`/Users/songmin/.codex/task-evidence/ready9-native-recovery-20261006-01a10d0b-v3`
+and `/Users/songmin/.codex/task-evidence/ready9-sgog-recovery-20261006-01a10d0b-v5`.
+Replay retains the ten-role producer closure and Python3.13.9 executable;
+SG/OG Java reader argv/cwd bind the original `p11-operation-authority` path.
+The archived-source path was refused; replay at the original byte-matching
+producer/reader path passed. Native raw bytes were not changed.
 
 Quanta/Semble source `6a3f6afc` attempted every Ready9 repository and all 180
 original NL file tasks. Bat, lo, Mocha, Uvicorn and Zustand completed pair capture
@@ -155,6 +162,12 @@ payload conversion covered ten payloads and 200 rows. Bat's full canonical
 five-product replay and score-only projections agree; projection does not
 reissue completed-boundary latency or relabel external091 bytes as native6a3.
 
+The separately recorded source49 workflow/matrix/five-product/fresh-join/default
+decision fixture run passed 110 tests (6.70s):
+`PYTHONDONTWRITEBYTECODE=1 uv run --frozen --extra dev python -m pytest tools/ci/tests/test_code_search_workflow.py tools/ci/tests/test_code_search_matrix.py tools/ci/tests/test_lexical_five_product_oracle.py tools/ci/tests/test_identifier_robustness_fresh_join.py tools/ci/tests/test_retrieval_default_decision.py -q -p no:cacheprovider`.
+Missing/duplicate cells, source/query/profile drift and raw/report mismatch
+refusals are fixture coverage, not additional native samples or qualification.
+
 CLI, Django, Nushell and TypeORM capture failed at the fixed 32MiB term-directory
 policy. No native record or promoted root was issued for those failures. Final
 `completed-summary.json`, `capacity-failures.json` and
@@ -162,5 +175,20 @@ policy. No native record or promoted root was issued for those failures. Final
 and 72 tasks / 191 unique task-file pairs requiring independent judgments.
 Original native input/commands/raw/results remain at
 `/Users/songmin/.codex/task-evidence/ready9-native-pair-20261007-01a10d0b`.
-Capacity repair/re-execution and final independent judgments stay with
+The capacity repair is implemented in `b262925b`; its paged term-directory
+contract and focused verification are retained in
+[OCT-05-004](OCT-05-004-cost-capacity-and-qualification-boundaries.md#paged-term-directory).
+Follow-up CLI, Django and Nushell capture and independent replay each passed
+40/40 at that fixed source. Their five-product distinct-file projections reuse the original
+CS/SG/OG bytes, preserving external091 versus nativeb262 identities. Their
+result status is `diagnostic_unqualified`; no qualified latency or independent
+gold is issued. Native and join result files are under
+`/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b/{native-execution,reused-joins}/{cli,django,nushell}/result.json`.
+
+The original five completed repositories plus these three follow-ups leave
+TypeORM capture/replay unfinished. The blind-review summary contains
+CLI/Django/Nushell blank inputs with zero assigned reviewer identities and zero label
+changes. The original 72-task/191-pair judgment gap belongs to the earlier
+five-repository packet, not the complete later union. Latest independent
+judgments, admission and remaining cells stay with
 [E2-04](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e2-04) and E1.

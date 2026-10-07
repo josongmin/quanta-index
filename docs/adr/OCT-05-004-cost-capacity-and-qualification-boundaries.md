@@ -112,6 +112,35 @@ Retain fixed untouched-file/component and byte gates, independent fresh-rebuild
 score bits and cursor oracles, consecutive delta/delete/no-op/reopen fixtures,
 empty-generation cases and mandatory-sidecar corruption/refusal tests.
 
+## Paged term directory
+
+Main `b262925b` replaces the retained per-term offset/count/hash directory with
+one fence and authenticated table-page identity per 128 terms. Queries verify
+the selected table page and posting-list range/hash; producer, root admission
+and cold verifier use the same page-based charge. The 32 MiB directory ceiling
+remains unchanged. Posting wire v2 and the changed policy identity reject old
+roots as rebuild-required. Encoded/resident admission is not measured RSS.
+
+The original Ready9 fixed-directory failures accumulated roughly 520,000 term
+rows across source-key buckets. There was no observed defect in the old
+64-byte-per-term plus 128-byte-per-block charge; the retained structure itself
+exceeded its ceiling. This repair changes that structure rather than raising
+the ceiling or exposing a new startup override.
+
+Owner verification completed: `./scripts/cargow --lane test-fast-lane nextest run
+-p quanta-index-lexical --lib --test f15_file_authority --all-features --locked
+-E 'test(file_authority::) | binary(f15_file_authority)'` passed 41/41;
+`./scripts/cargow --lane clippy-lane clippy -p quanta-index-lexical --all-targets
+--all-features --locked -- -D warnings` passed. Fixedb262 daemon verification
+`just rust-test-e2e test-fast-lane` passed 214 across four binaries, one skipped
+(Nextest `3d7dac7a-73f7-4c10-bc18-a4d421dfb7ac`). Debug runner/searchd build and
+the 1,529-file source closure passed; the copied binaries are pinned in
+`ready9-native-paged-20261007-01a10d0b/binary-pins.json` under task evidence.
+Actual CLI/Django/Nushell follow-ups are retained in the
+[capture ADR](OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope).
+Remaining repository capture, independent judgments and release qualification
+retain their own acceptance; owner regressions do not substitute for them.
+
 ## Coverage decoding and base custody
 
 One adapter-local cache retains at most one decoded coverage root under an 8 MiB
@@ -294,6 +323,7 @@ later source changes and new measurement profiles require affected checks.
 | F15 candidate integrated as main `8599f2e8` | Five publication tests passed (72.842s), exercising 32 I/O and 32 SIGKILL cuts. Selected mutation/seal/cost integration tests: 73 passed. Strict lexical all-target Clippy: exit0 | Owner worktree execution preceded integration. Later recovered-query assertions and daemon/scale execution are separate |
 | F15 follow-ups `b09c4aa7` / `70521514` | Recovered-query parity and interrupted delta clone retry implemented. Owner reports 36 I/O + 36 SIGKILL cuts, corrected partial-clone controls, 73 storage regressions and strict lexical Clippy passing. Fixed705 daemon214 also passed | Complete focused code/recovery scope; latest hosted and Large/XL cost/RSS retain their own source binding |
 | `eb97e7c2` restart custody | Medium OS-process restart/delete and release-binary identity controls: 2 passed. The process harness checks daemon SHA-256 before each restart | Existing fixture and selected binary; not Large/XL or real-provider cache proof |
+| `8642fa9b` Medium causal capture | Registered matching-release capture exited0 in22.062s; source and binary identities match before/after, with no dirty overlay. 256 files across four source repositories, 367,801 source bytes; sampled phase RSS max101,580,800bytes, largest RSS observation gap116.192ms within500ms. Full/delta/no-op/delete retained bytes and same-process reopen are recorded in `/Users/songmin/.codex/task-evidence/scale-final-20261007-8642fa9b-f8xdnze5/medium-causal/{execution.json,artifact/summary.json}` | Shared macOS `VERIFIED_DIAGNOSTIC`; sampled maxima are not true peaks. No Linux physical-I/O, quiet-host qualification, Large/XL or OS-child restart result is issued by this capture |
 | CI admission integrated as main `9def97ac` | Config and test-authority preflight admit supported receipt tier/context combinations and reject unsupported ones | Implementation is present; the new source's hosted result is separate from C6 |
 | Frozen `492d2fdccc0fc42ec42e4da19db7833ecbf032ea` XL lifecycle | Original `xl-result.json`: exit0, `VERIFIED`, 287.843s, existing frozen binary, `query_dispatch_budget_ms=600000` | Functional publish/delete/restart scope. Latest main Large/XL cost/RSS and qualified performance remain separate |
 

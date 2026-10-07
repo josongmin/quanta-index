@@ -9,18 +9,10 @@ Status: `ACTIVE_RESIDUAL`
 
 ## 현재 코드 잔여
 
-최초 소스 대조: 2026-10-07, `6a3f6afc8c286176962e722ce75524aefcfa7607`.
-후속 main checkpoint: `3e5294ce` current RSS, `c6a9120d` meter drain/검사 구간,
-`49a02c15` NL file pair 변환, `9def97ac` CI receipt admission,
-`8599f2e8` F15 publication barrier 복구·fault matrix. 2026-10-07 재대조에서
-C6의 필수 hosted CI 완료와 F15 구현·집중 회귀를 확인했다.
-완료 범위는 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)가 소유한다.
-후속 query/restart·paged directory 수리는 `b09c4aa7`·`70521514`·`b262925b`로 main에 반영됐다.
-해당 focused 회귀와 daemon214 검증 및 `8642fa9b` hosted6jobs는 완료됐다.
-추가 cache matrix4/4와 normal-library strict는 완료됐다. 새 cache-test 코드의 `--lib --tests` strict도 lint3개 수정 후 통과했으며, Large/XL 및 별도 release 수용은 잔여다.
-F14/F15, staged upload, EOF cancellation, checked memory/deadline, scanner custody,
-P11 공통 producer/parser/checker/recipes 및 hosted CI 분할은 구현돼 있다.
-같은 구현을 다시 만드는 티켓은 제거했다. 추가 수리는 실제 비용·반례 또는 target 계약으로 결정한다.
+2026-10-07 코드 대조 기준은 main `a80eb83d`다. 완료된 F15/query/restart·paged directory,
+SDK lifecycle/cache 및 hosted checkpoint의 source·명령·범위는 아래 ADR가 소유한다.
+Staged upload, EOF cancellation, checked memory/deadline, scanner custody와 P11 공통
+producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비용·반례 또는 target 계약으로 결정한다.
 
 ### 코드·테스트 대조 결과
 
@@ -32,10 +24,9 @@ P11 공통 producer/parser/checker/recipes 및 hosted CI 분할은 구현돼 있
 | E1 review/admission | `holdout_review.py`의 blind prepare·frozen validation·finalize, `run.py`의 실행/replay admission 검증, `corpus_binding.py`의 source split 검사 | 실제 reviewer/adjudicator raw·최종 labels·license/gold/holdout·admission 발행 |
 | E1 bootstrap | `evaluator.py::mean_ci`의 10,000 draws·16-key/256KiB bounded cache와 `test_bootstrap_cache.py`의 독립 고정 golden·validation controls | 추가 최적화는 actual paired full-caller 비용·parity를 보고 판정 |
 | E2 reader/inventory | `live_lexical_external.py`의 selected-project acquired-reader 검증, `opengrok_query_witness.py`, workflow/matrix/ready-drain | 미실행 required cells·actual replay/join; caller가 요구할 경우에만 전체 loaded-reader witness 구현 |
-| E4 F15 | full-build/cold-refusal·replay barrier, fresh 복구 query, interrupted delta clone 수리. main70521514까지 반영했고 owner의 36 I/O·36 SIGKILL cuts 및 저장소 회귀 통과. Medium 실제 restart/delete·release binary custody 및 fixed705 daemon214도 완료. `8642fa9b` hosted도 완료 | Large/XL lifecycle 비용/RSS. 기존 fault/query/daemon matrix 재구현 없음 |
-| QIT lifecycle | 기존 6 generated Build traces에 반복 unsealed append/replace/restart가 이미 있음. Corpus/kind/owner 독립 키·Symbol/Module Clear·과거 pin 혼합 adapter 모델 3tests·strict Clippy `VERIFIED`. 새 SDK/실제 daemon의 source 삭제/append/old replay/pin/중복·stale CAS/조기 publication 거절·exact retry/rollback/restart와 독립 row/head checker는 최종 8/8·affected strict 통과. coverage-bound SDK의 독립 Chunk/Symbol clear 금지는 유지 | 구현·focused oracle은 잔여에서 제외. 선언된 generated/repeat inventory·native race detector는 별도 `NOT_RUN` |
-| QIT concurrency | 기존 race/CAS/sync-delay 회귀와 새 invocation/response·real-time history checker. 복합 duplicate/reorder/caller-delay/rollback/restart 및 고정 음성 반례는 최종 8/8·affected strict 통과 | 선언된 generated/repeat inventory·native race detector 실행은 별도이며 100,000 search-node 한도는 nightly transition 실행이 아님 |
-| Semantic | SDK/UDS→production provider/cache/storage의 FooBar/foobar/foo_bar/foo bar semantic/hybrid cold/warm·uncached parity, model-id/revision/dimension rotation/restoration 및 실제 OS-process cache reopen matrix4/4 `VERIFIED` (lint 수정 후 재실행14.674s)·normal-library strict 통과(19.01s). 새 cache-test 코드의 corrected `--lib --tests` strict도 lint3개 수정 후 통과(4.46s). 기존 composition3tests·이전 cfg(test) strict도 통과. 완료 범위는 [ADR](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)이 소유 | 기존 OpenAI paraphrase rail(ignored)의 실제 API 입력/실행, installed CLI/live-provider release 및 upstream producer 검증은 별도 잔여 |
+| E4 F15 | Fault/query/clone-retry/daemon 검증은 [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)로 완료 이관 | Large/XL lifecycle 비용/RSS. 기존 fault/query/daemon matrix 재구현 없음 |
+| QIT lifecycle/concurrency | Mixed-corpus lifecycle 모델·독립 SDK history checker 및 focused8/8·strict는 [coverage ADR](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#implemented-lifecycle-tests-and-remaining-coverage)로 완료 이관 | 선언된 generated/repeat inventory·native race detector 실행. Search-node 한도는 nightly transition 실행이 아님 |
+| Semantic | Exact-text semantic/hybrid·OS-process cache·model/revision/dimension matrix4/4와 corrected lib-test strict는 [semantic ADR](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)로 완료 이관 | 기존 OpenAI paraphrase rail(ignored)의 실제 API 입력/실행, installed CLI/live-provider release 및 upstream producer 검증 |
 | I0 operations | 공통 typed action producer·pre-state refusal·checker/aggregate, optional paired caller/kernel archive | concrete target adapter·독립 observer 계약 구현, authorized target 입력 및 exact-pair/action 실행 |
 
 완료된 foundation은 [review ADR](../../../adr/OCT-05-001-review-admission-and-result-identity.md#owners-and-regressions),
@@ -52,7 +43,7 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 
 | 우선·owner | 실제 잔여 | 종료 조건 |
 | --- | --- | --- |
-| P0 · I0-02 / CI/integration | 추가 cache 테스트 source의 hosted 결과 및 선택된 SDK/Contract·PR/release 결과 회수 | 같은 source의 terminal·inventory·receipt. cache focused4/4·corrected library-test strict 및 `8642fa9b` regular main6jobs는 완료이며 기존 CI/F15 수리는 잔여가 아님 |
+| P0 · I0-02 / CI/integration | 후속 main의 영향 hosted 결과 및 선택된 SDK/Contract·PR/release 결과 회수 | 같은 source의 terminal·inventory·receipt. cache focused4/4·corrected library-test strict 및 `8642fa9b` regular main6jobs는 완료이며 기존 CI/F15 수리는 잔여가 아님 |
 | P1 · E4 / Scale | matching Large4,096·XL32,768 lifecycle/capacity/cost·OS restart | 원래 fixture, 명시된 profile, live/RSS/retained bytes·typed over-limit refusal |
 | P1 · E4 / performance | 전체 sync/read/hash/metadata·segment fanout 비용, scanner·Semble·bootstrap 판정 | 원인별 실제 관측 및 독립 parity. 정식 속도는 admitted host·사전 기준·반복 표본 |
 | P1 · E1/E2 / quality | labels/admissions·matching Quanta/Semble pair·native replay/full5·독립 채점 | required cells 및 query/unit/source/index scope, 미판단·실패·제외 분모 설명 |
@@ -61,53 +52,22 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 
 ### 벤치 실행 잔여 — 2026-10-07 소스·입력 대조
 
-- CS·SG·OG ready9는 원래 source091의 capture/replay가 완료됐다. 영속 raw는
-  `/Users/songmin/.codex/task-evidence/ready9-native-recovery-20261006-01a10d0b-v3`와
-  `/Users/songmin/.codex/task-evidence/ready9-sgog-recovery-20261006-01a10d0b-v5`에 있다.
-  Producer10roles·Python3.13.9 executable 및 원 corpus 전체 replay를 대조했고 일치했다.
-  `VERIFIED` · CS9roots 및 SG/OG9roots의 canonical 재생을 완료했다. 각 제품180tasks,
-  총540개 응답이며 모두 diagnostic_unqualified다. SG/OG의 Java reader argv/cwd는 원
-  p11-operation-authority 경로에도 결속돼 있다. 옮긴 archived-source 경로는 실제로 거절됐으며,
-  동일 producer10roles·Java reader bytes를 가진 원 경로에서 재검증했다. Native raw/실행 기록은
-  변경하지 않았다. 새 검색·성능 표본이나 최신 main qualification이 아니며 허용된 reuse만 join한다.
-  Ready9의20tasks/repo는 NL file 검색이며 bare-symbol workflow와 다른 계약이다.
-  지원되는 Quanta code_search_file/Semble lexical-file pair를 사용한다.
-- Quanta/Semble Ready9는 source6a3f6afc의9repo/180tasks를 **모두 시도 완료**했다.
-  Bat·lo·Mocha·Uvicorn·Zustand는 native pair·독립 replay·5제품 file score projection 완료,
-  CLI·Django·Nushell·TypeORM은 고정 term-directory32MiB에서 actual capture가 실패했다.
-  `completed-summary.json`과 `capacity-failures.json`을 직접 대조했다. 원본은
-  `/Users/songmin/.codex/task-evidence/ready9-native-pair-20261007-01a10d0b`다.
-  Main49a02c15의 공통 adapter 수리도 완료됐다. 통과한5repo의10payload/200rows를 변환했으며
-  `unjudged-native-union.json`에는72tasks·191개 task/file 독립 판단 공백이 남는다.
-  Paged directory 수리는 `b262925b`로 main에 반영됐고 focused41·strict Clippy·daemon214가 통과했다.
-  기존 term64B+block128B 계수의 counting defect는 확인되지 않았다.
-  후속 fixed `b262925b`에서 CLI capture·독립 replay40/40과 기존 외부 raw를 재사용한5제품 file projection이 완료됐다.
-  원본은 `/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b`다.
-  이 결과는 diagnostic이며 독립 판단/admission 완료가 아니다. 실패 후속 실행은 Django·Nushell·TypeORM3repo가 잔여다.
-  독립 판단·final admission도 잔여이며, 완료된5repo 및 CLI capture를 다시 대기 상태로 세지 않는다.
-  accepted55/PREP·5796 재발행 packet의 명시된 임시 root는 부재하여 원본 replay는 `BLOCKED`다.
+- Ready9: TypeORM capture/replay와 최신 union의 독립 판단·final admission이 잔여다.
+  Source6a3의5repo, fixedb262의 CLI·Django·Nushell 및 외부091 capture/replay는 완료됐다.
+  Source별 raw·완료 범위·허용 reuse는 [Ready9 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope)이 소유한다.
+  NL file20tasks/repo·distinct-file 계약이며 bare-symbol workflow와 구분한다.
+- accepted55/PREP·5796 재발행 packet의 명시된 임시 root는 부재하여 원본 replay는 `BLOCKED`다.
   원본 byte 동일 복구 또는 새 source-bound 준비가 선행한다.
 - 신규742pairs ledger와 historical Scanner A/B 실행 root는 현재 부재해 해당 원본 replay는 `BLOCKED`다.
   Scanner의 durable Bat79files/338queries suite·blind pack은 복구해 current validator/parity를 통과했다.
   새 source의 two-arm build/capture는 E4-03 잔여다. 기록된 SHA나 과거 수치로 입력을 재구성하지 않는다.
-- Scale 담당은 fixed source의 matching release로 Large/XL 실행을 진행한다. 중복 build를 등록하지 않는다.
-  C6의 docs/static/Python/tests/bench/verify 필수 hosted contexts는 모두 성공했다.
-  원 nextest/inventory의 SHA-256을 receipt와 대조했고 terminal4,241 tests 통과를 확인했다.
-  Aux PR coverage의 pending은 완료된 main 필수 CI와 별도 scope다.
-  CI9def97ac·F15 8599f2e8 및 후속 clone/query/restart 수리는 main 반영 완료다.
-  Fixed70521514의 daemon214와 Medium restart/delete 회귀2개도 완료됐다.
-  `8642fa9b` regular main6jobs와4268 Rust tests·receipt 대조 및 후속 cache4/4·normal-library strict도 완료됐다.
-  새 cache-test 코드의 corrected `--lib --tests` strict도 lint3개 수정 후 통과했다.
-  새 cache 테스트 source의 hosted 결과는 이전4268 결과와 별도로 회수한다.
-  Frozen492d2fdc의 XL lifecycle 기능 proof도 완료돼 있다. 최신 profile의 Large/XL 비용/RSS 종료는 별도 잔여다.
-  선택한 Linux 정식 rail은 macOS에서 unsupported_host로 거절됐다. Foreign Rust/Scale도
-  실행 중이므로 로컬 진단을 Linux 성능 판정으로 세지 않는다. 실행 전에 host를 다시 확인한다.
+- Scale: matching Large/XL 비용/RSS·lifecycle 및 선택한 OS-child restart·offered-load가 잔여다.
+  Fixed8642 Medium causal 비용/RSS·same-process reopen과 이전 기능/CI checkpoint는
+  [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)이 소유한다.
+  이 Mac diagnostic은 Linux physical-I/O·qualified performance를 대신하지 않는다.
+  Linux 정식 rail은 macOS에서 unsupported_host로 거절됐으며 admitted host가 필요하다.
 - `source-split-prepare/validated.json`은 source split만 검증한다. License/gold/acceptance가 아니다.
   Workflow/matrix/join/decision fixture 통과도 actual product search나 benchmark samples를 대신하지 않는다.
-- `VERIFIED` · 수리 후 main49a02c15에서 workflow/matrix/five-product oracle/fresh join/default decision의
-  집중 회귀 110개 통과(6.70s). 실행: `PYTHONDONTWRITEBYTECODE=1 uv run --frozen --extra dev python -m pytest tools/ci/tests/test_code_search_workflow.py tools/ci/tests/test_code_search_matrix.py tools/ci/tests/test_lexical_five_product_oracle.py tools/ci/tests/test_identifier_robustness_fresh_join.py tools/ci/tests/test_retrieval_default_decision.py -q -p no:cacheprovider`.
-  누락·중복 cell, source/query/profile drift 및 raw/report 불일치 거절의 fixture 검증 범위다.
-  Source9221d771의 hosted `just rust-bench-build` 52 executables는 `--no-run` 컴파일 결과이며 성능 표본이 아니다.
 
 ## 실행 순서
 
@@ -224,29 +184,16 @@ missing/output 경합은 success가 아니다. 완료: 누락 없는 terminal/in
 
 ### O4-E2-04
 
-부분 완료 · Ready9 전체9repo capture 시도·5repo pair/replay/projection은 `VERIFIED`.
-용량 코드 수리는 main `b262925b`에 반영·push됐다. 실패4repo의 새 source 재실행과191개 독립 판단이 잔여다.
+부분 완료 · Ready9 source6a3의5repo와 fixedb262의 CLI·Django·Nushell capture/replay/projection은 완료됐다.
+잔여는 TypeORM 실제 capture/replay 및 최신 unjudged union의 독립 판단·final admission이다.
+완료 범위·원 실패·source별 raw는 [Ready9 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope),
+용량 수리·집중 검증은 [paged-directory ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#paged-term-directory)가 소유한다.
+새 실행·review 입력은 `/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b`에 있다.
+원191-pair 판단 공백은 최초5repo packet의 수치다. CLI·Django·Nushell blank review도 준비돼 있으며
+reviewer identity와 label 변경은 아직0이다. 최종 union을 실제 판단·인계한다.
 별도 C3의 남은3repo 및 다른 lanes는 이9repo와 구분한다.
-CS/SG/OG ready9 source091 capture/replay는 완료돼 있다. Ready9 NL file20tasks/repo는
-`natural_language_file`/Semble `lexical-file`의 distinct-file pair로 실행한다.
-`code_search_file` atoms·bare-symbol workflow는 이 NL query 계약의 실행 경로가 아니다.
-완료된5repo capture/replay/projection 및 main49a02c15 adapter 수리는
-[Ready9 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope)가 소유한다.
-원 source `6a3f6afc`의 CLI·Django·Nushell·TypeORM actual capture는 `FAILED`: lexical-file authority의 고정 `term_directory_bytes=32MiB`를 초과했다.
-Native runner에 해당 정책을 바꾸는 startup/spec 옵션은 없다. 4개 실패는 native record와
-promoted root가 없고, failure descriptor의 stderr/resource 해시까지 확인했다. 원본 입력/명령/raw/결과는
-`/Users/songmin/.codex/task-evidence/ready9-native-pair-20261007-01a10d0b`에 보존한다.
-RCA: source-key bucket마다 같은 trigram의 offset/count/hash를 모두 상주시키면서 실패 직전 약52만 term 행이 누적됐다.
-수리: 128term마다 fence/table SHA만 보관하고, 조회는 인증한 table page와 선택한 posting list의 별도 range/SHA를 검증한다.
-생산자/root/cold verifier가 같은 page 단위 산식을 사용한다. 32MiB 한도는 유지하며, posting wire v2와 새 policy identity가 구형 root를 rebuild-required로 거절한다.
-`VERIFIED`: `./scripts/cargow --lane test-fast-lane nextest run -p quanta-index-lexical --lib --test f15_file_authority --all-features --locked -E 'test(file_authority::) | binary(f15_file_authority)'` 41/41;
-`./scripts/cargow --lane clippy-lane clippy -p quanta-index-lexical --all-targets --all-features --locked -- -D warnings` 통과.
-고정 source `b262925b`의 daemon scope도 `VERIFIED`: `just rust-test-e2e test-fast-lane` 4binary·214/214 통과·1 skipped, Nextest `3d7dac7a-73f7-4c10-bc18-a4d421dfb7ac`.
-같은 source의 debug runner/searchd build와1529file source closure 재검증은 통과했고, binary copies/SHA는 새 실행 root의 `binary-pins.json`에 고정했다. 최신 main 전체/release qualification은 아니다.
-새 source 실제 재실행은 `/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b`에서 진행한다. Owner 회귀는 실제4repo 용량 proof를 대신하지 않는다.
-최종 `completed-summary.json` 및 `unjudged-native-union.json`에72tasks·191개 task/file 독립 판단 공백을 결속해 E1 입력으로 남겼다.
-원191개에 대한 두 blank review 입력은 `/Users/songmin/.codex/task-evidence/ready9-unjudged-review-inputs-20261007-01a10d0b`에 원문·해시/threshold를 결속했고 grade/reviewer ID는 null이다.
-Ready9 전체 성공·quality/speed qualification은 아니다. 잔여는4repo 실제 재실행 gate, 독립 판단 및 아직 실행하지 않은 inventory다.
+Ready9 NL file20tasks/repo는 `natural_language_file`/Semble `lexical-file` distinct-file pair다.
+Bare-symbol workflow와 다르며, diagnostic capture/replay/projection은 quality/speed qualification이 아니다.
 원 runtime/input/producer bytes 및 허용 reuse를
 검증해 결합하며 source97/5796/091 raw를 새 소스로 재표기하지 않는다.
 Required lanes: exact1,196; prefix/infix/components; default/explicit typo; no-answer; C3 NL240;
@@ -323,7 +270,9 @@ cold-open/build/residency/cap/cancel 독립 수용이 필요하다.
 
 ### O4-E4-05
 
-후속 측정 잔여 · 현재 변경 source/profile의 Medium256/Large4,096/XL32,768 비용/RSS·open-loop·실제 OS restart.
+후속 측정 잔여 · matching Large4,096/XL32,768 비용/RSS 및 선택한 tier의 open-loop·실제 OS restart.
+Fixed8642의 Medium256 causal 비용/RSS·same-process reopen은 완료돼 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)가 소유한다.
+Medium OS-child restart·offered-load와 새 runtime/profile 영향 검증은 이 완료 범위와 구분한다.
 Frozen `492d2fdc`의 XL 기능 proof는 `VERIFIED`이며 기존e371 runtime/open-loop도 완료다.
 이는 최신 F15/RSS source의 측정을 대체하지 않으며 완료된 기능 proof를 미실행으로 재표기하지 않는다.
 Scale-supported-v1은 pair1GiB/total2GiB·client600s·source128MiB/100,000records·vector256MiB·
@@ -354,7 +303,7 @@ Contract: [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-b
 
 ### O4-I0-02
 
-추가 cache 테스트 source의 hosted 결과 및 selected SDK/Contract·PR/release proof 회수가 잔여다.
+후속 main의 영향 hosted 결과 및 selected SDK/Contract·PR/release proof 회수가 잔여다.
 Cache focused4/4·normal-library strict 및 lint3개 수정 후 corrected `--lib --tests` strict는 완료됐다. 같은 focused 실행을 다시 잔여로 등록하지 않는다.
 `8642fa9b` regular main6jobs는 완료됐고,4268 Rust tests·30 skipped 및 receipt의
 source/command/inventory/raw/result 대조를 Scale/Scanner owner가 확인했다.
