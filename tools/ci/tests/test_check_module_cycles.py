@@ -181,6 +181,53 @@ def test_commented_path_module_does_not_require_a_source(tmp_path: Path):
     assert keys(root) == []
 
 
+def test_cfg_test_subtree_can_declare_fixture_outside_src(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "#[cfg(test)]\nmod owner;\nmod peer;\n",
+            "owner.rs": "mod tests;\n",
+            "owner/tests.rs": '#[path = "../../tests/support/fixture.rs"]\nmod fixture;\n',
+            "../tests/support/fixture.rs": "fn edge() { crate::peer::edge(); }\n",
+            "peer.rs": "fn edge() {}\n",
+        },
+    )
+    assert keys(root) == []
+
+
+def test_production_path_outside_src_keeps_its_dependency_edges(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\nmod peer;\n",
+            "owner.rs": '#[path = "../shared/rows.rs"]\nmod rows;\n',
+            "../shared/rows.rs": "pub(crate) fn edge() { crate::peer::edge(); }\n",
+            "peer.rs": "pub(crate) fn edge() { crate::owner::rows::edge(); }\n",
+        },
+    )
+    assert keys(root) == ["demo: owner::rows, peer"]
+
+
+def test_missing_external_path_source_is_refused(tmp_path: Path):
+    import pytest
+
+    root = crate(tmp_path, {"lib.rs": '#[path = "../tests/missing.rs"]\nmod fixture;\n'})
+    with pytest.raises(ValueError, match="declared Rust path module has no source"):
+        keys(root)
+
+
+def test_path_source_cannot_escape_crate_inventory(tmp_path: Path):
+    import pytest
+
+    root = crate(
+        tmp_path,
+        {"lib.rs": '#[path = "../../outside.rs"]\nmod fixture;\n'},
+    )
+    (tmp_path / "outside.rs").write_text("fn edge() {}\n")
+    with pytest.raises(ValueError, match="declared Rust path module has no source"):
+        keys(root)
+
+
 def test_the_baseline_tolerates_exactly_its_cycles(tmp_path: Path):
     root = crate(
         tmp_path,

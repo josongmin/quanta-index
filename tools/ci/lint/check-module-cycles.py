@@ -297,13 +297,23 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
             if code[match.start() : match.start() + 2] != "#[":
                 continue
             target = (file.parent / match.group(1)).resolve()
-            if not target.is_relative_to(src.resolve()) or not target.is_file():
+            if not target.is_relative_to(crate_dir.resolve()) or not target.is_file():
                 raise ValueError(
                     f"declared Rust path module has no source: {file}:{match.group(1)}"
                 )
-            source_key = module_path_of(src, target)
+            source_key = (
+                module_path_of(src, target) if target.is_relative_to(src.resolve()) else None
+            )
             child = f"{parent}::{match.group(2)}" if parent else match.group(2)
-            if source_key is None or source_key not in raw:
+            if source_key is None:
+                # A declared fixture can live in tests/support outside src.
+                # Keep its declaration's ownership; cfg(test) subtree removal
+                # below remains the sole production-edge exclusion.
+                if child in raw:
+                    raise ValueError(f"duplicate Rust path module source: {crate.name}::{child}")
+                raw[child] = blank_non_code(target.read_text(encoding="utf-8"))
+                continue
+            if source_key not in raw:
                 raise ValueError(
                     f"declared Rust path module has no source: {file}:{match.group(1)}"
                 )
