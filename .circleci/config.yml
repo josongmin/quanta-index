@@ -228,9 +228,10 @@ jobs:
   verify-rust-bench:
     machine:
       image: ubuntu-2404:2026.05.1
-    resource_class: medium
+    # The optimized whole-workspace build exceeds the 1h job cap on two CPUs.
+    resource_class: large
     environment:
-      CARGO_BUILD_JOBS: "2"
+      CARGO_BUILD_JOBS: "4"
       CARGO_TERM_COLOR: always
       UV_PYTHON: "3.12.12"
       CI_EVENT_NAME: << pipeline.event.name >>

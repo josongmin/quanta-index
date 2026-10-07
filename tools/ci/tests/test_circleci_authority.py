@@ -258,6 +258,28 @@ def test_pr_coverage_uses_exact_base_and_fails_closed():
     )
 
 
+def test_bench_capacity_matches_worker_without_changing_compile_scope():
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    bench = config["jobs"]["verify-rust-bench"]
+    assert bench["resource_class"] == "large"
+    assert bench["environment"]["CARGO_BUILD_JOBS"] == "4"
+    command = next(
+        step["run"]["command"]
+        for step in bench["steps"]
+        if isinstance(step, dict)
+        and step.get("run", {}).get("name") == "Rust benchmark compilation"
+    )
+    assert command.splitlines()[-1] == "just rust-bench-build"
+    justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
+    recipe = justfile.split("rust-bench-build:\n", 1)[1].split("\n\n", 1)[0]
+    assert recipe.strip() == (
+        "{{cargo}} --lane bench-lane bench --workspace --all-features --locked --no-run"
+    )
+    for name in ("verify-rust-static", "verify-rust-tests", "verify-rust-docs"):
+        assert config["jobs"][name]["resource_class"] == "medium"
+        assert config["jobs"][name]["environment"]["CARGO_BUILD_JOBS"] == "2"
+
+
 def test_regular_workflow_keeps_standard_rust_and_precommit_gates():
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     rust_workers = (
