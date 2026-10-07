@@ -14,6 +14,17 @@ identity and common query gating are implemented under
 [MAY-31-001](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity).
 They are not new implementation tasks.
 
+Follow-up main `48140a8d` executes the SDK/UDS semantic cache matrix through
+production provider/cache/storage composition with only HTTP I/O replaced.
+The original two focused tests and three composition controls passed; runtime
+library/test strict Clippy passed. The following four-test matrix also passed
+(14.841s): semantic/hybrid exact-text cold/warm/uncached parity,
+model/revision/dimension rotation/restoration and actual OS-process cache reopen.
+Its affected library-test strict Clippy also passed (19.01s).
+Completed scope and exact commands are owned by the ADR. Repeating their
+implementation or focused execution is not remaining work. Installed CLI,
+live-provider and upstream-pair qualification retain their own acceptance.
+
 Daemon composition registers provider retry/HTTP/transport counters, raw-vector
 normalization tallies, cache hit/miss/retention counters and cache-open reports.
 `e2e_metrics_scrape.rs` checks their boot-time presence under the OpenAI profile
@@ -28,7 +39,6 @@ exports before selecting an additional metric; do not recreate these counters.
 | Producer + SDK/search-plane | Typed-source ReplaceGeneration and Delta, explicit no-op/tombstone membership, no legacy vector or implicit chunk-text ingress; actual paired producer/consumer source binding |
 | Producer aggregate publication | Bind authoritative prior semantic state for deltas; verify resolver/aggregate/outbox retained state and paired restart against both current repositories before repair or closure |
 | Search-plane + semantic adapter | Restart after partial derivation, delete/tombstone/membership replacement, complete sealing, provider/model/dimension refusal and blocked activation, under one fresh source-bound integration rail |
-| Query/embedding owner | Execute public semantic/hybrid text-policy and model/revision/dimension/normalization rotation cases against independent expected cache/provider observations, including `FooBar`, `foobar`, `foo_bar`, `foo bar`; existing unit model/cache refusals do not cover this integrated matrix |
 | Provider + operator owner | Observe real requests, failures and cache behavior through existing exports. Decide the required request-latency, pending-work/seal-lag, active model/manifest, policy-drift and blocked-reason projection from actual available fields; boot-time counter presence does not establish their live semantics |
 | Release/integration owner | Contract round trips, real typed producer → derived semantic seal → text semantic/hybrid search, restart/delete and blocked-generation tests; attach exact raw inventories and source/dependency/model/runtime binding |
 
@@ -40,8 +50,9 @@ The current release/cross-repository obligations are owned by the
 
 ## Deferred design and measurement leads
 
-- Shared batched/async corpus-query provider wiring, including provisioning
-  symmetry; decide lifecycle/retry/recovery before adopting a worker/job store.
+- Shared corpus/query provider wiring and model/cache provisioning symmetry are
+  implemented and covered by composition tests. A batched/async worker redesign
+  is conditional; decide lifecycle/retry/recovery before adopting a worker/job store.
   Provider burst limits, retryable/terminal failures, long-downtime backlog and
   partial-work recovery need measured acceptance if that design is selected.
 - Stable producer semantic-owner identities are required for incremental reuse;

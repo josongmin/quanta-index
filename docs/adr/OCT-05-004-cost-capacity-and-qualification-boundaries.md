@@ -252,9 +252,13 @@ The regression exposed a replay durability defect: absence of staging after an
 interrupted unlink did not prove its parent directory had been synchronized.
 Replay now reissues that barrier and retires nested atomic-root temporaries
 before sealing. Already sealed generations still refuse extra temporaries.
-Follow-up recovered-query parity and daemon assertions are owned by
-[E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02); the fault
-matrix itself is implemented. Process-kill testing does not qualify power loss.
+Follow-up `b09c4aa7` recovered-query parity, `70521514` interrupted clone retry
+and the 36 I/O + 36 SIGKILL matrix are implemented and their focused owner
+checks passed. The fixed705 daemon scope passed 214 tests; `eb97e7c2` Medium
+restart/delete and release-binary custody passed 2. Their completion is retained
+below; [E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) directs
+new hosted and Large/XL qualification to their owners. Process-kill testing
+does not qualify power loss.
 
 ## Proof execution and CI
 
@@ -281,12 +285,15 @@ Owners: [causal capture](../../tools/benchmark/retrieval/causal_cost_capture.py)
 
 Rechecked on 2026-10-07 against current main, owned worktrees, actual terminal
 output and original artifacts. These completions retain their consumed source;
-later dirty assertions and new measurement profiles require affected checks.
+later source changes and new measurement profiles require affected checks.
 
 | Source / scope | Observed completion | Boundary |
 | --- | --- | --- |
 | `c6a9120dc71d9878ea62e37384a289535191b42f` hosted main | Required docs/static/Python/tests/bench/verify GitHub contexts succeeded. [CircleCI tests job2011 artifacts](https://circleci.com/api/v2/project/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/2011/artifacts): receipt revision matches; raw/inventory SHA-256 matches; 159 terminal suites, 4,241 passed, zero failed | Auxiliary PR coverage was pending; it is separate from this completed main scope. Bench is compilation. This is not a receipt for later source |
+| `8642fa9b3b47ac58e4b3d9f2feaea66c599be29d` hosted main | Scale/Scanner owners checked all six terminal jobs in [workflow1019](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1019/workflows/a9eb1372-fe07-468c-a8b0-f809cff35b7c). Rust: 4,268 passed, zero failed, 30 skipped; source SHA, command, inventory and raw/result digests matched the receipt. F15 selected9 also passed | Complete regular main CI at this source; bench is compilation. Later cache test-only extensions and their hosted result remain separate |
 | F15 candidate integrated as main `8599f2e8` | Five publication tests passed (72.842s), exercising 32 I/O and 32 SIGKILL cuts. Selected mutation/seal/cost integration tests: 73 passed. Strict lexical all-target Clippy: exit0 | Owner worktree execution preceded integration. Later recovered-query assertions and daemon/scale execution are separate |
+| F15 follow-ups `b09c4aa7` / `70521514` | Recovered-query parity and interrupted delta clone retry implemented. Owner reports 36 I/O + 36 SIGKILL cuts, corrected partial-clone controls, 73 storage regressions and strict lexical Clippy passing. Fixed705 daemon214 also passed | Complete focused code/recovery scope; latest hosted and Large/XL cost/RSS retain their own source binding |
+| `eb97e7c2` restart custody | Medium OS-process restart/delete and release-binary identity controls: 2 passed. The process harness checks daemon SHA-256 before each restart | Existing fixture and selected binary; not Large/XL or real-provider cache proof |
 | CI admission integrated as main `9def97ac` | Config and test-authority preflight admit supported receipt tier/context combinations and reject unsupported ones | Implementation is present; the new source's hosted result is separate from C6 |
 | Frozen `492d2fdccc0fc42ec42e4da19db7833ecbf032ea` XL lifecycle | Original `xl-result.json`: exit0, `VERIFIED`, 287.843s, existing frozen binary, `query_dispatch_budget_ms=600000` | Functional publish/delete/restart scope. Latest main Large/XL cost/RSS and qualified performance remain separate |
 

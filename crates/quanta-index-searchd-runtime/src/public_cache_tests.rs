@@ -9,6 +9,7 @@
 )]
 
 use std::path::Path;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -16,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, ensure};
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, MetricsSnapshotV1, RepoId,
-    RepoRelativePath, RevisionId, SearchCorpusActiveHeadV1, SemanticQueryRequest,
+    ChunkId, ChunkRecord, GenerationPin, HybridLaneV1, ManifestGeneration, MetricsSnapshotV1,
+    RepoId, RepoRelativePath, RevisionId, SearchCorpusActiveHeadV1, SemanticQueryRequest,
     SemanticQueryResponse, SourceFileKey, SourcePublicationEvent, lex::LanguageCode,
 };
 use quanta_index_core::CoreError;
@@ -48,6 +49,7 @@ const WAIT: Duration = Duration::from_secs(10);
 #[derive(Clone)]
 struct FixedTransport {
     model: &'static str,
+    dimension: usize,
     rotated: bool,
     calls: Arc<Mutex<Vec<Vec<String>>>>,
 }
@@ -80,12 +82,14 @@ impl EmbeddingTransport for FixedTransport {
         let invalid = |message: String| CoreError::InvalidContract(message);
         let request: serde_json::Value =
             serde_json::from_str(body).map_err(|error| invalid(error.to_string()))?;
+        let dimension =
+            u64::try_from(self.dimension).map_err(|error| invalid(error.to_string()))?;
         if url != "https://api.openai.com/v1/embeddings"
             || request.get("model").and_then(serde_json::Value::as_str) != Some(self.model)
             || request
                 .get("dimensions")
                 .and_then(serde_json::Value::as_u64)
-                != Some(3)
+                != Some(dimension)
         {
             return Err(invalid("unexpected provider request identity".into()));
         }
@@ -107,6 +111,8 @@ impl EmbeddingTransport for FixedTransport {
                     (EAST, _) => [0.0, 5.0, 0.0],
                     _ => return Err(invalid(format!("unexpected provider text: {text}"))),
                 };
+                let mut vector = vector.to_vec();
+                vector.resize(self.dimension, 0.0);
                 Ok(serde_json::json!({"index": index, "embedding": vector}))
             })
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -135,15 +141,26 @@ impl Running {
         revision: &str,
         cache_enabled: bool,
     ) -> Result<Self> {
+        Self::start_with_dimension(root, model, revision, cache_enabled, 3)
+    }
+
+    fn start_with_dimension(
+        root: &Path,
+        model: &'static str,
+        revision: &str,
+        cache_enabled: bool,
+        dimension: usize,
+    ) -> Result<Self> {
         let transport = FixedTransport {
             model,
-            rotated: model != BASE_MODEL || revision != BASE_REVISION,
+            dimension,
+            rotated: model != BASE_MODEL || revision != BASE_REVISION || dimension != 3,
             calls: Arc::new(Mutex::new(Vec::new())),
         };
         let profile = SemanticEmbedderProfile::OpenAi {
             model: model.into(),
             model_revision: revision.into(),
-            dimension: 3,
+            dimension,
             api_key: "fixture-key".into(),
             tuning: OpenAiEmbedderTuning {
                 cache_enabled,
@@ -430,22 +447,31 @@ fn sdk_cache_is_text_scoped_and_survives_reopen() -> Result<()> {
 }
 
 #[test]
-fn sdk_cache_model_and_revision_rotation_preserve_separate_namespaces() -> Result<()> {
-    for (model, revision) in [(BASE_MODEL, "r2"), ("fixture-other-model", BASE_REVISION)] {
+fn sdk_cache_model_revision_and_dimension_rotation_preserve_separate_namespaces() -> Result<()> {
+    for (model, revision, dimension, expected_refusal) in [
+        (BASE_MODEL, "r2", 3, "SEM_MODEL_MISMATCH"),
+        (
+            "fixture-other-model",
+            BASE_REVISION,
+            3,
+            "SEM_MODEL_MISMATCH",
+        ),
+        (BASE_MODEL, BASE_REVISION, 4, "SEM_DIM_MISMATCH"),
+    ] {
         let root = private_tempdir()?;
         let original = Running::start(root.path(), BASE_MODEL, BASE_REVISION, true)?;
         let active = publish(&original, 1, None)?;
         let old = cached_query(&original, NORTH, 1, true, "north")?;
         original.stop()?;
 
-        let rotated = Running::start(root.path(), model, revision, true)?;
+        let rotated = Running::start_with_dimension(root.path(), model, revision, true, dimension)?;
         match rotated.query(NORTH, 1) {
             Err(SdkError::Remote { code, .. }) => {
-                assert_eq!(code.as_wire_str(), "SEM_MODEL_MISMATCH");
+                assert_eq!(code.as_wire_str(), expected_refusal);
             }
             other => {
                 return Err(anyhow!(
-                    "old pin must refuse a different model/revision: {other:?}"
+                    "old pin must refuse a different model/revision/dimension: {other:?}"
                 ));
             }
         }
@@ -476,7 +502,8 @@ fn sdk_cache_model_and_revision_rotation_preserve_separate_namespaces() -> Resul
         assert_ne!(signature(&old), signature(&rotated_north));
         rotated.stop()?;
 
-        let reopened = Running::start(root.path(), model, revision, true)?;
+        let reopened =
+            Running::start_with_dimension(root.path(), model, revision, true, dimension)?;
         assert_eq!(
             signature(&cached_query(&reopened, NORTH, 2, false, "east")?),
             signature(&rotated_north)
@@ -495,6 +522,198 @@ fn sdk_cache_model_and_revision_rotation_preserve_separate_namespaces() -> Resul
             "rotating back must reuse only the old namespace"
         );
         restored.stop()?;
+    }
+    Ok(())
+}
+
+fn hybrid_query(running: &Running, text: &str, first: &str) -> Result<Vec<(String, u64)>> {
+    let response = running
+        .client
+        .search()
+        .hybrid()
+        .sourcegraph("absentlexicalfixturetoken")
+        .semantic_text(text)
+        .pinned(pin(1))
+        .top_k(2)
+        .execute()?;
+    assert_eq!(response.generation, pin(1));
+    assert_eq!(response.results.len(), 2);
+    let second = match first {
+        "north" => "east",
+        "east" => "north",
+        other => return Err(anyhow!("unknown hybrid fixture ranking: {other}")),
+    };
+    for (row, (expected_id, rank, raw_score)) in response
+        .results
+        .iter()
+        .zip([(first, 1_u32, 1.0_f32), (second, 2, 0.0_f32)])
+    {
+        assert_eq!(row.candidate.candidate_id, expected_id);
+        assert_eq!(row.contributions.len(), 1);
+        let dense = &row.contributions[0];
+        assert_eq!(dense.lane, HybridLaneV1::Dense);
+        assert_eq!(dense.rank, rank);
+        assert_eq!(dense.raw_score.to_bits(), raw_score.to_bits());
+        assert_eq!(
+            row.fused_score.to_bits(),
+            (1.0_f64 / (60.0 + f64::from(rank))).to_bits()
+        );
+    }
+    Ok(response
+        .results
+        .iter()
+        .map(|row| {
+            (
+                row.candidate.candidate_id.clone(),
+                row.fused_score.to_bits(),
+            )
+        })
+        .collect())
+}
+
+#[test]
+fn sdk_hybrid_and_semantic_share_only_exact_text_cache_entries() -> Result<()> {
+    let root = private_tempdir()?;
+    let running = Running::start(root.path(), BASE_MODEL, BASE_REVISION, true)?;
+    let _active = publish(&running, 1, None)?;
+    for (text, first) in QUERY_CASES {
+        let before = running.client.observability().metrics_snapshot()?;
+        let calls = running.transport.call_count()?;
+        let cold = hybrid_query(&running, text, first)?;
+        assert_eq!(running.transport.call_count()?, calls + 1);
+        let warm = hybrid_query(&running, text, first)?;
+        assert_eq!(cold, warm);
+        assert_eq!(running.transport.call_count()?, calls + 1);
+        let _semantic = cached_query(&running, text, 1, false, first)?;
+        let after = running.client.observability().metrics_snapshot()?;
+        assert_eq!(
+            counter(&after, "embedding_cache_misses_total")?,
+            counter(&before, "embedding_cache_misses_total")? + 1
+        );
+        assert_eq!(
+            counter(&after, "embedding_cache_hits_total")?,
+            counter(&before, "embedding_cache_hits_total")? + 2
+        );
+    }
+    running.stop()?;
+
+    let uncached_root = private_tempdir()?;
+    let uncached = Running::start(uncached_root.path(), BASE_MODEL, BASE_REVISION, false)?;
+    let _active = publish(&uncached, 1, None)?;
+    for (text, first) in QUERY_CASES {
+        for _ in 0..2 {
+            let _response = hybrid_query(&uncached, text, first)?;
+        }
+        assert_eq!(
+            uncached
+                .transport
+                .texts()?
+                .iter()
+                .filter(|input| input.as_str() == text)
+                .count(),
+            2
+        );
+    }
+    uncached.stop()
+}
+
+const PROCESS_ROOT_ENV: &str = "QUANTA_INDEX_CACHE_PROCESS_ROOT";
+const PROCESS_PHASE_ENV: &str = "QUANTA_INDEX_CACHE_PROCESS_PHASE";
+const PROCESS_DONE_ENV: &str = "QUANTA_INDEX_CACHE_PROCESS_DONE";
+
+struct CacheChild(Option<Child>);
+
+impl CacheChild {
+    fn await_success(&mut self) -> Result<()> {
+        let started = Instant::now();
+        loop {
+            let child = self
+                .0
+                .as_mut()
+                .ok_or_else(|| anyhow!("cache child reaped"))?;
+            if let Some(status) = child.try_wait()? {
+                let _reaped = self.0.take();
+                ensure!(
+                    status.success(),
+                    "cache process exited unsuccessfully: {status}"
+                );
+                return Ok(());
+            }
+            ensure!(
+                started.elapsed() < Duration::from_secs(120),
+                "cache process timed out"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for CacheChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _killed = child.kill();
+            }
+            let _reaped = child.wait();
+        }
+    }
+}
+
+fn run_cache_process_phase(root: &Path, phase: &str) -> Result<()> {
+    let running = Running::start(root, BASE_MODEL, BASE_REVISION, true)?;
+    match phase {
+        "seed" => {
+            let _active = publish(&running, 1, None)?;
+            for (text, first) in QUERY_CASES {
+                let cold = cached_query(&running, text, 1, true, first)?;
+                let warm = cached_query(&running, text, 1, false, first)?;
+                assert_eq!(signature(&cold), signature(&warm));
+            }
+        }
+        "reopen" => {
+            for (text, first) in QUERY_CASES {
+                let _response = cached_query(&running, text, 1, false, first)?;
+            }
+            assert_eq!(running.transport.call_count()?, 0);
+        }
+        other => return Err(anyhow!("unknown cache process phase: {other}")),
+    }
+    running.stop()
+}
+
+/// Each phase runs the actual runtime in a fresh OS process with no inherited
+/// provider/cache objects. The parent waits for the seed process to exit before
+/// reopening its persisted corpus and query-vector cache in another process.
+#[test]
+fn sdk_cache_survives_os_process_restart() -> Result<()> {
+    if let Some(root) = std::env::var_os(PROCESS_ROOT_ENV) {
+        let phase = std::env::var(PROCESS_PHASE_ENV)?;
+        run_cache_process_phase(Path::new(&root), &phase)?;
+        let done = std::env::var_os(PROCESS_DONE_ENV)
+            .ok_or_else(|| anyhow!("cache process completion path absent"))?;
+        std::fs::write(done, std::process::id().to_string())?;
+        return Ok(());
+    }
+
+    let fixture = private_tempdir()?;
+    let root = fixture.path().join("state");
+    for phase in ["seed", "reopen"] {
+        let done = fixture.path().join(format!("{phase}.done"));
+        let child = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "public_cache_tests::sdk_cache_survives_os_process_restart",
+                "--nocapture",
+            ])
+            .env(PROCESS_ROOT_ENV, &root)
+            .env(PROCESS_PHASE_ENV, phase)
+            .env(PROCESS_DONE_ENV, &done)
+            .spawn()?;
+        let pid = child.id();
+        let mut child = CacheChild(Some(child));
+        child.await_success()?;
+        // An empty libtest selection cannot pass as completed cache proof.
+        assert_eq!(std::fs::read_to_string(done)?, pid.to_string());
     }
     Ok(())
 }

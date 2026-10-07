@@ -30,7 +30,7 @@ history. The archived baseline below is the recovery source for committed bodies
 | Retired or compacted record | Current authority |
 | --- | --- |
 | `docs/plans/oct-4-parallel-closure/WAVES.md` | [One execution order](plans/oct-4-parallel-closure/tickets/INDEX.md#실행-순서); latest input/ownership updates retained there |
-| OCT-04 `tickets/INDEX.md` completed checkpoints, sidebar history and duplicate status | [OCT-05 ADRs](adr/README.md#oct-05-implemented-contracts); residual21 IDs remain live |
+| OCT-04 `tickets/INDEX.md` completed checkpoints, sidebar history and duplicate status | [OCT-05 ADRs](adr/README.md#oct-05-implemented-contracts); unfinished acceptance remains in the ledger and completed anchors point to ADRs |
 | O4-E3-01–06 | [Runtime contract and completed scope disposition](adr/OCT-05-003-active-query-and-runtime-lifecycle.md#completed-execution-scopes); E3-02 was unadopted/NOT_APPLICABLE |
 | O4-E2-01 | [Completed-clock contract](adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-clock-scope); repeated performance remains E4-06 |
 | O4-I0-01 | [Shared-source validation](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#shared-source-validation); source validation remains a standing rule |
@@ -48,7 +48,8 @@ consolidation did not execute their Rust/benchmark commands:
 | `e37123eb` selected runtime/open-loop | Runtime15 and open-loop20; complete source/commands/exclusions in the Git baseline OCT-04 index |
 | `9221d771` hosted CI | [Required verify1268](https://circleci.com/gh/josongmin/quanta-index/1268): regular jobs completed; bench is compilation, not samples |
 | `c6a9120d` hosted CI | Rechecked2026-10-07: required docs/static/Python/tests/bench/verify contexts succeeded, original nextest/inventory hashes match receipt; 4,241 passed, zero failed. [Completed checkpoint](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints) separates auxiliary PR coverage and later-source gates |
-| F15 main `8599f2e8` | Implemented barrier recovery and 32 I/O + 32 SIGKILL cases; five owner tests, 73 lexical integration tests and strict lexical Clippy passed before integration. Follow-up query/daemon checks remain E4-02; [ADR](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#publication-test-boundary) |
+| `8642fa9b` hosted CI | Scale/Scanner owners rechecked all six regular main jobs and source/command/inventory/raw/result receipt binding; 4,268 passed, zero failed, 30 skipped. [Completed checkpoint](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints) retains this source; later cache-test extensions are separate |
+| F15 main `8599f2e8` and follow-ups | Barrier recovery and the original 32 I/O + 32 SIGKILL matrix passed. `b09c4aa7` adds recovered-query parity; `70521514` repairs interrupted clone retry and passes 36 I/O + 36 SIGKILL cuts, 73 storage regressions and strict lexical Clippy. Fixed705 daemon214 and `eb97e7c2` Medium restart/delete/binary custody2 also passed. Latest hosted and Large/XL remain separate; [ADR](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#publication-test-boundary) |
 | Frozen `492d2fdc` XL lifecycle | Existing frozen binary, explicit600s query profile, publish/delete/restart function proof completed. Latest-main cost/RSS is separate; [ADR](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints) |
 | `09103820` CS/SG/OG ready9 | CS180 and SG/OG each180 requests, separate replay9/9. Durable native-v3 and SG/OG-v5 roots are named in the active ledger. Earlier Docker failure and missing OG historical commit remain separate failures/blocked history |
 

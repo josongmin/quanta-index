@@ -145,12 +145,22 @@ uses SDK/UDS, production daemon composition, the persistent cache and real
 catalog/lexical/semantic adapters. The daemon-owned `test-provider-transport`
 feature substitutes only HTTP I/O with fixed orthogonal vectors; production
 assembly has no command or environment selector for this test seam.
-The matrix sends all four exact text forms through cold/warm queries, checks
+The matrix sends all four exact text forms through semantic and true-hybrid
+cold/warm queries, checks
 provider inputs and hit/miss counters, and compares exact ranked IDs and score
-bits with an independently uncached run. Reopening the same root must retain
-cache entries. Changing either model ID or revision must use a separate
+bits with an independently uncached run. The hybrid oracle has no lexical hits:
+two fixed dense ranks must carry their exact cosine scores and independent
+`1 / (60 + rank)` RRF contributions. Both query routes share an exact-text entry;
+the four distinct text forms never share a key.
+Reopening the same root must retain cache entries. A separate process test
+finishes the seed OS process before starting another runtime process over its
+root, then requires zero provider calls, cache-hit increments and fixed results.
+Each child must exit successfully and write its PID after completing the SDK
+checks; an empty child test selection cannot issue a passing result.
+Changing model ID, revision or dimension must use a separate
 namespace; rotating back must recover only the original namespace. Old pins
-retain model-mismatch refusal and provider-error precedence. Identical vectors
+retain typed model/revision or dimension mismatch refusal and provider-error
+precedence. Identical vectors
 for `foo_bar` and `foo bar` do not merge their cache entries.
 
 `VERIFIED` on 2026-10-07: `./scripts/cargow --lane test-daemon-lane test
@@ -162,6 +172,20 @@ passed all three composition regressions (4.08s), covering query/corpus model
 coupling and enabled/disabled cache-directory branches.
 Runtime `clippy -p quanta-index-searchd-runtime --lib --tests --all-features
 --locked -- -D warnings` also passed, including the library test configuration.
+
+The follow-up focused matrix passed 4/4 on 2026-10-07 (14.841 seconds execution;
+three other library tests excluded):
+`./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --lib --all-features --locked --no-tests fail --test-threads 1 --no-fail-fast -E 'test(/^public_cache_tests::/)'`.
+This includes dimension rotation/restoration, hybrid/semantic cache reuse and
+fresh OS-process reopen, with fixed expected IDs, scores and provider/cache
+observations. The process test runs the real runtime with test HTTP transport;
+it is not the separately installed CLI or live-provider release rail.
+Affected library-test strict Clippy also passed (exit0, 19.01 seconds):
+`./scripts/cargow --lane test-daemon-lane clippy -p quanta-index-searchd-runtime --lib --all-features --locked -- -D warnings`.
+The command reused the existing external Cargo target with
+`QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR=1`, explicit `CARGO_TARGET_DIR`,
+`QUANTA_INDEX_TARGET_GC=0`, `QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200` and
+`CARGO_BUILD_JOBS=2`, under canonical resource admission.
 The fixed transport does not qualify real-provider relevance, live egress or
 the upstream producer path; the ignored live-provider rail remains separate.
 

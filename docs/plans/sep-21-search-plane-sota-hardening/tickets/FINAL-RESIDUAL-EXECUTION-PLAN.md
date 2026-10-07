@@ -97,6 +97,13 @@ expected replace/tombstone/unchanged partition comparison. That is the remaining
 verification-code seam, not a missing semantic planner or an observed omission.
 No upstream source was edited or its tests executed by this documentation audit.
 
+Rechecked on 2026-10-07 at sibling main
+`2d535c3adbf7a65e2fe43d30322fc81b49c63b0e`: `aggregate_prepare.rs`,
+`semantic_state.rs` and `lexical_batch.rs` are unchanged from that comparison
+and have no dirty overlay. The builder still assembles the shadow plan and
+cluster mutations directly before preparation; this verification seam remains
+upstream work. No upstream Rust execution was performed in this recheck.
+
 Producer source-plan/shadow policy/prior sealed owner/cluster plan must independently
 enumerate replace/tombstone/unchanged scope before dispatch. Bind that expected
 partition/digest to the existing batch/terminal chain and reject omissions or

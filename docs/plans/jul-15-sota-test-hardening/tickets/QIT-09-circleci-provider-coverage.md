@@ -17,8 +17,12 @@ revision; downloaded raw/inventory SHA-256 matches and terminal suites total
 [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints).
 Aux PR coverage was pending in a separate workflow. Do not reopen completed main
 CI because that auxiliary status or a later source is pending.
-Main `9def97ac` also contains the receipt context/tier preflight implementation;
-its affected hosted result and new F15/capacity sources retain separate acceptance.
+Main `9def97ac` contains the receipt context/tier preflight implementation.
+The following `8642fa9b` regular main scope also completed: owners rechecked all
+six terminal jobs, 4,268 passed/zero failed/30 skipped, and matching source,
+command, inventory and raw/result digests. This closes the existing CI/F15
+follow-up at that SHA. Later cache-test extensions and separately selected
+PR/release scopes retain their own acceptance.
 
 ## Remaining hosted acceptance
 
