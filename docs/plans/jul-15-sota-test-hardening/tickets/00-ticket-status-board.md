@@ -11,9 +11,9 @@ cleanup; source presence or historical tests are not current qualification.
 | --- | --- | --- |
 | QIT-00 / tools CI | Revalidate completeness of the declared P0/P1 universe and semantic independence of positive/negative/recovery/consumer roles; actual current selected/executed nonzero inventories at each required tier | Current catalog and workflow binding |
 | QIT-01 / contract, IPC, SDK | Complete current public-envelope golden/negative/canonical re-encode and consumer matrix, including unknown/missing/duplicate/malformed fields and intentional legacy refusal; current storage/wire reproduction boundaries | QIT-00 |
-| QIT-02 / semantic | Extend the existing reference model with corpus/surface-aware Clear, repeated unsealed append/replacement, historical pinned observations and existing process-CAS outcomes in one trace. Individual clear/append-failure/pin tests, concurrent CAS, child restart/rollback and active-selection retirement are already implemented; reuse them rather than recreating APIs or regressions | QIT-00 |
-| QIT-03 / storage | Broader selected storage/marker/CAS acceptance beyond the existing eight-point daemon matrix. F15's 32 I/O + 32 SIGKILL cases and barrier recovery are implemented in main8599f2e8; [E4-02](../../oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) owns follow-up query/daemon checks. Only prior committed or complete new generation may serve | QIT-02 |
-| QIT-04 / semantic/searchd | Add an independent invocation/completion-history checker with real-time ordering and combined duplicate/reorder/delay/rollback/restart schedules. Existing SDK/UDS complete-result race, concurrent catalog CAS, delayed-sync visibility and real child restart/rollback/pin scenarios remain controls. Native race-detector execution is separate | QIT-02 |
+| QIT-02 / semantic | Declared generated/repeat inventories beyond the focused mixed-corpus and SDK histories. The durable-adapter mixed-corpus/kind/owner model, selective Clear and historical pins passed 3/3 and strict Clippy; the public SDK coherent source-deletion/append/replay/CAS/retry/rollback/restart history and independent controls passed 8/8 on 2026-10-07. Independent Chunk/Symbol clear is forbidden for coverage-bound SDK generations; canonical file and semantic-source tombstones already implement deletion. Repeated unsealed append/replacement is also implemented; no new append/clear API is pending | QIT-00 |
+| QIT-03 / storage | Broader selected storage/marker/CAS acceptance beyond the existing eight-point daemon matrix. F15 publication/recovered-query/clone-retry checks are implemented through main70521514; the owner reports 36 I/O + 36 SIGKILL cuts passing. [E4-02](../../oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) records the focused checkpoints; current hosted and Large/XL qualification remain separate. Only prior committed or complete new generation may serve | QIT-02 |
+| QIT-04 / semantic/searchd | Declared generated/repeat scopes and native race-detector execution beyond the focused bounded history. The enrolled checker and its fixed positive/negative controls passed 8/8; duplicate CAS, old-event replay, out-of-order publication refusal/exact retry, caller delay, rollback and real daemon restart are combined. Existing race, CAS, delayed-sync and child restart controls remain | QIT-02 |
 | QIT-05 / query owners | Complete independent lexical/ANN/fusion/filter and metamorphic corpora at each owning scope; retain exact oracles and detect bad rank/filter mutants. ANN fixture/oracle code is not closure for all routes | QIT-00 |
 | QIT-06 / SDK/daemon | SDK-only ingest/query/lifecycle/crash/recovery matrix; exercise public front door rather than internal harness controls | QIT-01, QIT-02, QIT-05 |
 | QIT-07 / correctness tooling | Risk-owner quantitative coverage/mutation/fuzz gates, survivor exceptions, seed/minimized-input retention and actual target selection; source guards are not execution | QIT-01, QIT-02, QIT-05 |
@@ -43,10 +43,11 @@ Current model/concurrency/crash test scope is recorded in
 [the ADR coverage boundary](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#implemented-lifecycle-tests-and-remaining-coverage).
 These rows retain missing coverage or execution, not observed production defects.
 
-2026-10-07 source/selector reconciliation narrowed QIT-02/04 to combined model
-and history oracles. Existing library tests and semantic/runtime integration
-targets are already enrolled in `test-authority.toml`; no duplicate registration
-or fresh Rust execution was performed by the documentation audit.
+2026-10-07 source/selector reconciliation retired stale implementation labels.
+The subsequent mixed-corpus model extension and SDK history are implemented and
+focused execution passed 3/3 and 8/8 respectively. The new history is enrolled
+in `test-authority.toml`; remaining generated/repeat/native acceptance is separate
+from those completed oracles.
 
 Keep owner-local positive/negative oracles and recovery/consumer proof distinct.
 A wire/lifecycle semantic change requires a coordinated current-contract decision;

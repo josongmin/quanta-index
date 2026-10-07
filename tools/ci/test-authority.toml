@@ -305,6 +305,7 @@ targets = [
   "searchd-runtime-e2e-boot-quarantine",
   "searchd-runtime-predicate-authority-lifecycle",
   "searchd-runtime-generation-activation-concurrency",
+  "searchd-runtime-lifecycle-history",
   "searchd-runtime-active-selection-process-v1",
   "searchd-runtime-dsl-scenarios",
   "searchd-runtime-restart-replay-determinism",
@@ -1334,6 +1335,13 @@ id = "searchd-runtime-restart-replay-determinism"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs"
 owner = "quanta-index-searchd-runtime"
 target = "runtime_risk_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-lifecycle-history"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_lifecycle_history.rs"
+owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

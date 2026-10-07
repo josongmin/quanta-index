@@ -29,6 +29,8 @@ mod e2e_ingest_resource_envelope;
 mod e2e_integrity_scrub;
 #[path = "e2e_lexical_sealed_overlays.rs"]
 mod e2e_lexical_sealed_overlays;
+#[path = "e2e_lifecycle_history.rs"]
+mod e2e_lifecycle_history;
 #[path = "e2e_long_state_root_sockets.rs"]
 mod e2e_long_state_root_sockets;
 #[path = "e2e_metrics_scrape.rs"]

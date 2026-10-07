@@ -30,10 +30,10 @@ P11 공통 producer/parser/checker/recipes 및 hosted CI 분할은 구현돼 있
 | E1 review/admission | `holdout_review.py`의 blind prepare·frozen validation·finalize, `run.py`의 실행/replay admission 검증, `corpus_binding.py`의 source split 검사 | 실제 reviewer/adjudicator raw·최종 labels·license/gold/holdout·admission 발행 |
 | E1 bootstrap | `evaluator.py::mean_ci`의 10,000 draws·16-key/256KiB bounded cache와 `test_bootstrap_cache.py`의 독립 고정 golden·validation controls | 추가 최적화는 actual paired full-caller 비용·parity를 보고 판정 |
 | E2 reader/inventory | `live_lexical_external.py`의 selected-project acquired-reader 검증, `opengrok_query_witness.py`, workflow/matrix/ready-drain | 미실행 required cells·actual replay/join; caller가 요구할 경우에만 전체 loaded-reader witness 구현 |
-| E4 F15 | full-build/cold-refusal 및 `publication_faults`의 32 I/O·32 실제 SIGKILL cuts, replay directory barrier 수리. main8599f2e8 반영 | 후속 복구 query/restart assertion의 검증 및 실제 lifecycle 비용/RSS. 기존 fault matrix 재구현 없음 |
-| QIT lifecycle | 독립 owner map·6 generated traces 및 개별 Clear/append-failure/pin 회귀. Catalog concurrent CAS·delayed sync·실제 child restart/rollback/pinned·selected-G1 retirement도 구현·등록됨 | Clear/반복 unsealed append/과거 pin/process-CAS 결과를 하나의 독립 reference trace로 검증. 기존 API/개별 회귀 재구현 없음 |
-| QIT concurrency | SDK/UDS G1→G2 complete-result race, catalog CAS winner·sync-delay 및 child restart/rollback 회귀 | invocation/completion·real-time order를 검사하는 독립 history checker와 복합 duplicate/reorder/delay/rollback/restart schedule. Native race detector 실행은 별도 |
-| Semantic | SDK semantic/hybrid·hash text derivation, shared provider/model identity, exact-text cache·rotation/invalid-hit unit 회귀 및 boot scrape. 실제 OpenAI paraphrase rail도 존재(ignored) | SDK/daemon의 FooBar/foobar/foo_bar/foo bar cold/warm cache·같은 root reopen/model rotation 통합 matrix. 기존 live-provider rail은 실제 입력/실행 및 upstream producer 검증이 잔여 |
+| E4 F15 | full-build/cold-refusal·replay barrier, fresh 복구 query, interrupted delta clone 수리. main70521514까지 반영했고 owner의 36 I/O·36 SIGKILL cuts 및 저장소 회귀 통과. Medium 실제 restart/delete·release binary custody도 완료 | 최신 소스의 hosted/runtime 후속 결과 및 Large/XL lifecycle 비용/RSS. 기존 fault/query matrix 재구현 없음 |
+| QIT lifecycle | 기존 6 generated Build traces에 반복 unsealed append/replace/restart가 이미 있음. Corpus/kind/owner 독립 키·Symbol/Module Clear·과거 pin 혼합 adapter 모델 3tests·strict Clippy `VERIFIED`. 새 SDK/실제 daemon의 source 삭제/append/old replay/pin/중복·stale CAS/조기 publication 거절·exact retry/rollback/restart와 독립 row/head checker는 최종 8/8·affected strict 통과. coverage-bound SDK의 독립 Chunk/Symbol clear 금지는 유지 | 구현·focused oracle은 잔여에서 제외. 선언된 generated/repeat inventory·native race detector는 별도 `NOT_RUN` |
+| QIT concurrency | 기존 race/CAS/sync-delay 회귀와 새 invocation/response·real-time history checker. 복합 duplicate/reorder/caller-delay/rollback/restart 및 고정 음성 반례 구현 | 집중 Rust 실행 대기. 선언된 generated/repeat inventory·native race detector 실행은 별도이며 100,000 search-node 한도는 nightly transition 실행이 아님 |
+| Semantic | SDK semantic/hybrid·hash text derivation, shared provider/model identity, exact-text cache·rotation/invalid-hit unit 회귀 및 boot scrape. 2026-10-07 SDK/UDS→production provider/cache/storage의 FooBar/foobar/foo_bar/foo bar cold/warm·uncached parity, persisted root reopen·model-id/revision rotation/restoration matrix도 owner의 focused 2tests `VERIFIED`. Provider composition3tests와 runtime cfg(test) strict도 통과 | 기존 OpenAI paraphrase rail(ignored)의 실제 API 입력/실행, OS-process cache 재시작 qualification 및 upstream producer 검증은 별도 잔여 |
 | I0 operations | 공통 typed action producer·pre-state refusal·checker/aggregate, optional paired caller/kernel archive | concrete target adapter·독립 observer 계약 구현, authorized target 입력 및 exact-pair/action 실행 |
 
 완료된 foundation은 [review ADR](../../../adr/OCT-05-001-review-admission-and-result-identity.md#owners-and-regressions),
@@ -83,8 +83,9 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
   실패4repo 재실행·독립 판단·final admission이 잔여이며, 완료된5repo capture를 다시 대기 상태로 세지 않는다.
   accepted55/PREP·5796 재발행 packet의 명시된 임시 root는 부재하여 원본 replay는 `BLOCKED`다.
   원본 byte 동일 복구 또는 새 source-bound 준비가 선행한다.
-- 신규742pairs ledger 및 Scanner original A/B root도 현재 부재해 원본 replay는 `BLOCKED`다.
-  기록된 SHA나 과거 수치로 입력을 재구성하지 않는다. 각 active ticket에 복구·새 준비 조건을 남겼다.
+- 신규742pairs ledger와 historical Scanner A/B 실행 root는 현재 부재해 해당 원본 replay는 `BLOCKED`다.
+  Scanner의 durable Bat79files/338queries suite·blind pack은 복구해 current validator/parity를 통과했다.
+  새 source의 two-arm build/capture는 E4-03 잔여다. 기록된 SHA나 과거 수치로 입력을 재구성하지 않는다.
 - Scale 담당은 main에서 F15 후속 query/restart 검증을 진행한다. 중복 build를 등록하지 않는다.
   C6의 docs/static/Python/tests/bench/verify 필수 hosted contexts는 모두 성공했다.
   원 nextest/inventory의 SHA-256을 receipt와 대조했고 terminal4,241 tests 통과를 확인했다.
@@ -275,23 +276,32 @@ regular-file st_size이며 restart gauge0·st_blocks·physical I/O/true peak와 
 
 ### O4-E4-02
 
-후속 검증 진행 중 · 32 I/O 오류·32 실제 child SIGKILL matrix와 독립 raw root/source-pack/posting oracle은
-main `8599f2e8`에 구현·반영됐다. Replay가 staging 부재를 durability 성공으로 오인하던 barrier도 수리했다.
+집중 수리 완료 · F15 publication·replay barrier는 main `8599f2e8`, fresh 복구 query oracle은
+`b09c4aa7`, interrupted delta clone 재시도 수리는 `70521514`에 반영됐다.
+Scale owner의 36 I/O 오류·36 실제 child SIGKILL cuts와 수정한 partial-clone 회귀,
+저장소 mutation/seal/cost 회귀73개 및 lexical strict Clippy가 통과했다.
 기존 source/fault 회귀5개, lexical mutation/seal/cost 회귀73개 및 strict lexical all-target Clippy의
 완료는 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)에 보존한다.
-Scale owner는 main의 `publication_faults/tests.rs`에 복구 후 fresh-query parity를 추가하고
-`e2e_scale_process_restart.rs`의 실제 daemon 검증을 진행한다. 이 후속 dirty 범위의 terminal은 아직 미회수다.
-완료: 수정/삭제/옛 본문 검색 oracle, 실제 restart 및 새 source에 영향받는 회귀 결과.
+`eb97e7c2`는 process restart마다 release daemon SHA-256을 확인하며,
+Medium restart/delete·binary custody 회귀2개가 통과했다. 최신 hosted/runtime 후속 결과 및
+matching Large/XL 비용·RSS·restart는 별도 잔여다. 수정/삭제/옛 본문 검색 oracle과
+실제 restart 코드를 미구현으로 세지 않는다.
 Encoded/resident/global work 한도는 실제 XL/RSS 보장이 아니다. Power-loss proof는 별도 storage scope다.
 
 ### O4-E4-03
 
-`BLOCKED` · historical Scanner A-B original `/private/tmp/qis.utp62qk5` 부재.
-Fixed338/79files·ParseFailed6의 과거 diagnostic은 원 scope의 기록이며 speed/adoption verdict가 아니다.
-Source49a02c15의 새 Unicode-control patch/overlay는 canonical prepare 및 git apply --check를 통과했으며
-`/Users/songmin/.codex/task-evidence/scanner-oct7-residual-49a02c15/`에 있다. 이전6a3 준비도 별도 보존했다.
-이는 source 준비이며 fixed338 복구·실제 build/capture가 아니다.
-원 custody/input/binary byte 동일 복구 또는 fresh two-arm capture 후 source→binary build provenance,
+입력 복구 완료·새 빌드 중단 · historical Scanner A-B original `/private/tmp/qis.utp62qk5`와
+옛 binary는 부재하여 그 실행의 원본 replay는 `BLOCKED`다. Fixed338/79files·ParseFailed6의 과거
+diagnostic은 원 scope의 기록이며 speed/adoption verdict가 아니다.
+Durable `qi-b08-closeout-20261004-2i72kj91/mechanical-c4-amended-f3d2ae29/bat/declaration_name_osa1_casefold/`
+suite·blind pack 및 frozen Bat revision `4608fc959aa8abf80d32198836511a570b7ae9ea` 입력을 찾았다.
+Current suite validation·derived blind-pack exact parity와 source `d03bfdc365bac8705f7a658868acfdf6eb42e0db`의
+canonical Unicode-control/ASCII pair identity 검증은 완료됐다. 새 실행 root는
+`/Users/songmin/.codex/task-evidence/scanner-ab-20261007-current-main-01a10d0b-v1`다.
+Baseline fresh release build는 lifecycle/cache 코드 검증을 우선해 중단했다. v1의 build는 미완료이고,
+candidate build/capture·비교 결과는 `NOT_RUN`이다. 중단된 build를 성공 receipt로 사용하지 않는다.
+이는 복구된 입력의 fresh two-arm 진단이며 historical binary 결과 재생이 아니다.
+두 arm의 source→binary build provenance,
 independent tokenizer/full-DP·bytes/span/case/order/status/cursor/work/config parity를 대조한다.
 `query_timing_overhead.py --scanner-ab`는 항상 diagnostic_unqualified이며 observer on/off와 다른 비교다.
 완료: 사전 whole-caller 기준의 keep/modify/withdraw. Child 개선은 whole-call 악화를 상쇄하지 않는다.

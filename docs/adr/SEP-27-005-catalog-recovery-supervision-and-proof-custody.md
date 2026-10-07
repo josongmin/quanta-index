@@ -187,13 +187,18 @@ root; external trust anchors and root/daemon fencing are separate obligations.
 ### Implemented lifecycle tests and remaining coverage
 
 The [semantic lifecycle model](../../crates/quanta-index-semantic/tests/semantic_generation_lifecycle_model.rs)
-uses an independent owner-to-record map and the real durable adapter. Its
+uses an independent corpus/kind/owner-to-record map and the real durable adapter. Its
 deterministic case and six generated seed/base traces cover replacement, delta,
 tombstones, unsealed-open refusal, selection/rollback and restart recovery.
 Sealing is carried by Build; selection/rollback changes the model's selected
-generation, not the process-wide active-head CAS. The current command enum has
-no independent Append, Clear or QueryPinned operation. This is a limit of the
-generated model, not missing production APIs or an absence of individual tests:
+generation, not the process-wide active-head CAS. Repeated unsealed replacement
+and append already occur through Build, including retry and restart in the six
+generated traces; a separately named Append enum was never a missing API.
+Clear and QueryPinned now have explicit model operations. The mixed-corpus
+trace shares owner ID/path across SymbolCard, ModuleCard and raw Symbol/Callsite/
+Module/Chunk rows, repeats unsealed delivery, selectively clears Symbol/Module
+and checks fixed historical membership after seal, selection, rollback and
+restart. Existing individual tests remain controls:
 
 - `build/tests.rs::clear_symbol_surface_removes_exact_and_fallback_rows_only_v1`
   independently checks that clearing Symbol removes exact/fallback rows while
@@ -208,31 +213,91 @@ generated model, not missing production APIs or an absence of individual tests:
   retention. `active_selection_process_v1.rs` gates a selected G1 query across
   G2/G3 activation and physical retirement, requiring refusal before old-view open.
 
-The remaining model extension combines corpus/surface-aware clear, repeated
-unsealed append/replacement, historical pinned observations and process-wide
-CAS outcomes against an independent reference state. Reuse the existing
-catalog/SDK operations and individual regressions; do not recreate them.
+The [SDK lifecycle history rail](../../crates/quanta-index-searchd-runtime/tests/e2e_lifecycle_history.rs)
+combines sealed delta append, coverage-coherent source-file and semantic-scope
+deletion to an empty corpus, exact old source-event replay, historical
+lexical/semantic pins, duplicate CAS contenders and a stale-head contender,
+out-of-order publication refusal with exact retry, caller-delayed query,
+rollback, real daemon restart and stale-token ABA refusal.
+Its [reference model](../../crates/quanta-index-searchd-runtime/tests/lifecycle_history/model.rs)
+uses generation-to-row sets and generation/incarnation/sequence heads; expected
+rows come from fixed fixture inputs, not production query output. Each SDK call
+has invocation/response events. The checker searches legal serial orders while
+enforcing completion-before-invocation precedence. It preserves duplicate
+results and rejects empty, missing, duplicate/orphan terminal events and search
+exhaustion. The bounds are 64 operations and 100,000 search nodes, not 100,000
+executed lifecycle transitions or nightly qualification.
+Fixed [oracle counterexamples](../../crates/quanta-index-searchd-runtime/tests/lifecycle_history/oracle_tests.rs)
+reject stale reads after completed activation, double CAS winners, missing clear,
+duplicated append results, foreign pins, ABA token reuse, sequence/incarnation
+drift, restart head loss and sealing past an older staged source publication. A
+publication-order refusal is valid only while a predecessor remains unaccepted;
+fixed controls reject unnecessary refusal after accepting it and changed-payload
+retry of the refused event. A separate control retains already-accepted source
+activation refusal after rollback. An old read overlapping activation remains legal
+even if its response arrives later. Caller gates guarantee overlapping CAS
+invocations; they do not claim a gate inside the server's storage transaction.
+The public trace publishes and activates each delta predecessor on one producer
+stream before the next event. The physical delta base must carry that same
+stream and its declared parent event. Independent streams start full replacements
+but cannot bypass the pair-wide history-retention refusal to seal past an older
+unaccepted source publication. The trace observes typed `NOT_READY` for early G5
+publication while G4 is staged, then retries that exact batch/event after G4
+activates. It races two duplicate G4 requests against the complete G3 head and a
+third G4 request against the stale complete G1 head; exactly one matching caller
+may win. It does not manufacture two simultaneously sealed unresolved candidates.
+Coverage-bound SDK generations forbid independent Chunk/Symbol clear. The
+empty-corpus step uses the existing `tombstone_scope` and
+`tombstone_semantic_scope` APIs together, preserving coverage/source ownership;
+it does not weaken that refusal or introduce a new clear API. Exact event replay
+is also checked. The existing adapter
+model and its mixed-corpus extension cover repeated unsealed delivery and
+surface-selective clear. Canonical SDK/catalog operations remain the production
+owners; there is no new activation or publication API.
 
 The [runtime concurrency test](../../crates/quanta-index-searchd-runtime/tests/e2e_generation_activation_concurrency.rs)
 uses the SDK over UDS with an in-process `E2eRuntime`. A querying thread overlaps
 one G1-to-G2 activation and checks complete, unmixed predicate-authority result
-sets. It is not an independent operation-history linearizability checker or a
-duplicate/reorder/delay/rollback/restart schedule matrix.
+sets. That single-race test remains distinct from the independent bounded
+operation-history checker above.
 Individual concurrent-CAS, sync-delay, source-event refusal and child restart/
-rollback regressions above cover parts of that schedule. The missing checker
-must consume operation invocation/completion history, enforce real-time order
-and find a legal sequence in an independent model across combined schedules;
-per-response complete-result membership alone cannot issue that claim.
+rollback regressions above cover parts of that schedule. The new history rail
+combines those operation kinds through actual public front doors; its bounded
+trace does not replace declared generated-case/repeat inventories or native
+race-detector execution.
 The [dispatcher selector regressions](../../crates/quanta-index-search-plane/src/query_dispatcher/tests/semantic.rs)
 already reject resolved-selector A-to-B-to-A ABA and mismatched explicit pins;
-retain those controls while extending the operation-history oracle.
+retain those controls alongside the operation-history oracle.
 
 The lifecycle model and persisted scenarios are registered integration targets
 in `tools/ci/test-authority.toml`. Runtime concurrency uses `runtime_risk_suite`,
 composite restart uses `runtime_extended_suite`, and active selection is the
 standalone `active_selection_process_v1` target. Semantic build and activation
 catalog regressions are library tests. Their implementation is enrolled already;
-this source audit did not run Rust or native race detection.
+the SDK lifecycle history target is also enrolled in `runtime_extended_suite`
+and the local daemon scope. `VERIFIED` on 2026-10-07: `./scripts/cargow --lane test-scale-f15-lane nextest run -p quanta-index-semantic --test semantic_generation_lifecycle_model --all-features --locked --no-tests fail --test-threads 1 --no-fail-fast`
+passed all three tests (deterministic, six generated traces and the mixed-corpus
+trace; 6.966 seconds execution), integrated as main `50a30b09`. Its strict target Clippy also passed:
+`./scripts/cargow --lane test-scale-f15-lane clippy -p quanta-index-semantic --test semantic_generation_lifecycle_model --all-features --locked -- -D warnings`.
+The corrected public trace and all seven SDK checker controls passed on
+2026-10-07 (8/8, 9.681 seconds execution; real daemon trace 9.461 seconds):
+`./scripts/cargow --lane test-scale-f15-lane nextest run -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked --no-tests fail --test-threads 1 --no-fail-fast -E 'test(/^e2e_lifecycle_history::/)'`.
+Earlier failed fixtures violated source staging, delta-parent, coverage-bound
+clear or history-retention contracts; they are historical refused inputs, not
+evidence of new production defects. The clear-membership counterexample is now
+paired with a valid empty-result history so an unrelated publication-order
+refusal cannot satisfy its negative assertion. That final control refinement
+is included in the 8/8 result. Its affected integration strict check also passed:
+`./scripts/cargow --lane test-daemon-lane clippy -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked -- -D warnings`.
+Runtime strict Clippy with `--lib --tests --all-features` passed after fixing
+cache-test lints; the current history integration target is verified separately.
+The focused commands reused existing Cargo targets with
+`QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR=1`, explicit `CARGO_TARGET_DIR`,
+`QUANTA_INDEX_TARGET_GC=0`, `QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200` and
+`CARGO_BUILD_JOBS=2`; the lane still uses canonical resource admission.
+Static registration, formatting and document-link checks passed. Native race
+detection, declared long generated/repeat scopes and full-suite qualification
+remain `NOT_RUN`; 87 other integration cases were excluded by the history filter.
 
 The [daemon crash matrix](../../crates/quanta-index-searchd-runtime/tests/e2e_crash_matrix.rs)
 starts and restarts real child daemons. It requires a case for every declared
@@ -241,13 +306,22 @@ currently eight, and checks convergence/retention. Those track-level points do
 not inject failure at each inner F15 write, object link, file/directory sync,
 root rename or cleanup operation. The narrower publication matrix is now
 implemented in main `8599f2e8`: 32 I/O and 32 actual SIGKILL cases with independent
-raw-object/source oracles. Its completed owner runs are recorded in
+raw-object/source oracles. The follow-up `b09c4aa7` adds fresh recovered-query
+assertions; `70521514` repairs interrupted delta cloning before writer admission
+and expands the matrix to 36 I/O and 36 SIGKILL cuts. The owner reports those
+cuts, the corrected partial-clone regression, 73 storage mutation/seal/cost
+regressions and strict lexical Clippy passing. `eb97e7c2` pins release-daemon
+bytes across process restarts; its Medium restart/delete and binary-custody
+regressions passed. These focused owner results are not current hosted or
+Large/XL qualification. Original completed owner runs are recorded in
 [OCT-05-004](OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints).
-[O4-E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) owns only
-the follow-up recovered-query/daemon checks; QIT-03 retains broader selected
-storage-boundary acceptance. The F15 matrix is not missing implementation.
+[O4-E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) records
+these follow-up checkpoints; QIT-03 retains broader selected storage-boundary
+acceptance. The F15 matrix and recovered-query assertions are not missing
+implementation.
 
-These are source/test-coverage statements, not fresh Rust execution results.
+Source coverage and explicitly reported focused executions above have separate
+scopes; they are not repository-wide qualification.
 Full SDK-only recovery, native race detection, long mutation/fuzz and
 release/platform execution retain their independent oracles and scope.
 
