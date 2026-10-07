@@ -254,26 +254,37 @@ regular-file st_size이며 restart gauge0·st_blocks·physical I/O/true peak와 
 
 ### O4-E4-03
 
-입력 복구 완료·fresh capture 재실행 필요 · historical Scanner A-B original `/private/tmp/qis.utp62qk5`와
+입력 복구·baseline 진단 완료, candidate 잔여 · historical Scanner A-B original `/private/tmp/qis.utp62qk5`와
 옛 binary는 부재하여 그 실행의 원본 replay는 `BLOCKED`다. Fixed338/79files·ParseFailed6의 과거
 diagnostic은 원 scope의 기록이며 speed/adoption verdict가 아니다.
 Durable `qi-b08-closeout-20261004-2i72kj91/mechanical-c4-amended-f3d2ae29/bat/declaration_name_osa1_casefold/`
 suite·blind pack 및 frozen Bat revision `4608fc959aa8abf80d32198836511a570b7ae9ea` 입력을 찾았다.
-Current suite validation·derived blind-pack exact parity와 source
-`8642fa9b3b47ac58e4b3d9f2feaea66c599be29d`의 canonical Unicode-control/ASCII pair identity
+Current suite validation·derived blind-pack exact parity와 canonical Unicode-control/ASCII pair identity
 검증은 완료됐다. v1은 코드 검증 우선으로 중단한 미완료 build이며 성공 receipt가 아니다.
-후속 v2 root는 `/Users/songmin/.codex/task-evidence/scanner-ab-20261007-current-main-01a10d0b-v2`다.
-v2 baseline fresh release build는 `VERIFIED`(42m58s)지만 capture는 UDS path155bytes가
-macOS103bytes limit을 초과해 `FAILED`다. Capture receipt와 candidate/comparison 결과는 없다.
+v2 baseline release build는 `VERIFIED`(42m58s)지만 capture는 UDS path155bytes가
+macOS103bytes limit을 초과해 `FAILED`다.
 `scanner_build_custody.py`가 expensive build 전에 기존 runner의 socket-path preflight를
 호출하도록 수리했다. ASCII·다중바이트·parent symlink 경로의 build 전 거절을 포함한 custody/source
-회귀47/47 및 기존 runner path 회귀2/2가 통과했다. 짧은 외부 output root에서 fixed two-arm을
-fresh 재실행한다. Candidate build/capture와 비교는 아직 `NOT_RUN`이다.
+회귀47/47 및 기존 runner path 회귀2/2가 통과했다. UTF-8 byte 길이와 resolved-parent 경로를
+구분한 추가 회귀3/3도 통과했다(`a5e87614`·`a80eb83d`, main push).
+짧은 v3 root `/Users/songmin/.codex/sab7v3`는 frozen source
+`a5e87614bee79bf9d67c8358df01313242548798`를 사용한다. Unicode/ASCII source identity는 각각
+`221118289b91942f420053fb347dc0b32f9e60dab86d46d04de5ddb6a6fbaa77` /
+`8870872d6e69f854b2dcc95247158ef31f2c6cc3902f23f8474f44d145111e1d`다.
+v3 baseline release build는 `VERIFIED`(30m37s)이나 default `require-complete` capture는
+ParseFailed6/79로 `FAILED`다. 별도 explicit `allow-incomplete` exploratory capture는
+338 queries·79 files·incomplete6·warmup1/repetitions3를 유지하며 exit0으로 완료했다.
+전후 source/binary/tool/input 일치와 실제 output digest는 `baseline-diagnostic-observed.json`에 있다.
+이는 관측한 local build/live capture이며 완료된 `scanner_build_custody` combined receipt가 아니다.
+Candidate fresh build는 코드 집중 검증에 slot을 양보하기 위해 14m16s에 exit143으로 중단했다.
+동일 소유 target의 source-checked resume가 필요하며 candidate capture·비교는 `NOT_RUN`이다.
+Canonical `query_timing_overhead.py --scanner-ab`의 two closed-receipt 검증도 `NOT_RUN`이다.
+Frozen a5 진단은 후속 lazy-reader/deadline 수정 source의 성능 검증을 대신하지 않는다.
 이는 복구된 입력의 fresh two-arm 진단이며 historical binary 결과 재생이 아니다.
-두 arm의 source→binary build provenance,
+두 arm의 관측한 source→binary build 상태와
 independent tokenizer/full-DP·bytes/span/case/order/status/cursor/work/config parity를 대조한다.
 `query_timing_overhead.py --scanner-ab`는 항상 diagnostic_unqualified이며 observer on/off와 다른 비교다.
-완료: 사전 whole-caller 기준의 keep/modify/withdraw. Child 개선은 whole-call 악화를 상쇄하지 않는다.
+채택 판단은 사전 whole-caller keep/modify/withdraw 기준을 따른다. Child 개선은 whole-call 악화를 상쇄하지 않는다.
 
 ### O4-E4-04
 
