@@ -9,6 +9,8 @@ use crate::index_store::{
     require_current_unsealed_index_format_if_materialized, sealed_identity_entry_present,
     write_atomic_durable,
 };
+#[cfg(test)]
+use crate::publication_faults::{Side, inherited_cut_core};
 use crate::sealed_generation::{
     LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME,
     LEXICAL_SEALED_MANIFEST_FILE_NAME,
@@ -150,13 +152,18 @@ pub(crate) fn inherit_generation_entry(source: &Path, target: &Path) -> Result<(
     // Both paths live under one state root, so they are always on one device.
     // A failure here is a real storage fault, not a reason to quietly fall back
     // to a full byte copy and drop the incremental guarantee without saying so.
+    #[cfg(test)]
+    inherited_cut_core(Side::Before, source)?;
     std::fs::hard_link(source, target).map_err(|err| {
         CoreError::Storage(format!(
             "lexical: link inherited entry {} -> {}: {err}",
             source.display(),
             target.display()
         ))
-    })
+    })?;
+    #[cfg(test)]
+    inherited_cut_core(Side::After, source)?;
+    Ok(())
 }
 
 /// Refuse a delta base this build could not serve.

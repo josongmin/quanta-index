@@ -7,6 +7,8 @@
 
 use crate::analyzer::register_analyzers;
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
+#[cfg(test)]
+use crate::publication_faults::{Cut, Side, authority_cut_core, root_cut_core};
 use crate::{
     DURABLE_WRITE_TEMPORARY_MARKER, LEXICAL_SEALED_IDENTITY_FILE_NAME, SchemaFields,
     TANTIVY_INDEX_META_FILE_NAME,
@@ -276,19 +278,29 @@ pub(crate) fn write_atomic_durable(
                 temporary.display()
             ))
         })?;
+    #[cfg(test)]
+    root_cut_core(Cut::RootWrite, Side::Before, path)?;
     file.write_all(bytes).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: write {label} temporary {}: {error}",
             temporary.display()
         ))
     })?;
+    #[cfg(test)]
+    root_cut_core(Cut::RootWrite, Side::After, path)?;
+    #[cfg(test)]
+    root_cut_core(Cut::RootFileSync, Side::Before, path)?;
     crate::causal_profile::timed_sync("atomic_file", || file.sync_all()).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: fsync {label} temporary {}: {error}",
             temporary.display()
         ))
     })?;
+    #[cfg(test)]
+    root_cut_core(Cut::RootFileSync, Side::After, path)?;
     drop(file);
+    #[cfg(test)]
+    root_cut_core(Cut::RootRename, Side::Before, path)?;
     std::fs::rename(&temporary, path).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: rename {label} temporary {} to {}: {error}",
@@ -296,6 +308,10 @@ pub(crate) fn write_atomic_durable(
             path.display()
         ))
     })?;
+    #[cfg(test)]
+    root_cut_core(Cut::RootRename, Side::After, path)?;
+    #[cfg(test)]
+    root_cut_core(Cut::RootDirectorySync, Side::Before, path)?;
     File::open(parent)
         .and_then(|directory| {
             crate::causal_profile::timed_sync("atomic_parent", || directory.sync_all())
@@ -305,7 +321,71 @@ pub(crate) fn write_atomic_durable(
                 "lexical: fsync {label} parent {}: {error}",
                 parent.display()
             ))
-        })
+        })?;
+    #[cfg(test)]
+    root_cut_core(Cut::RootDirectorySync, Side::After, path)?;
+    Ok(())
+}
+
+/// Remove the temporary files an interrupted durable write left behind.
+///
+/// `write_atomic_durable` names its temporaries `.<file>.tmp-<pid>-<n>`
+/// and renames them into place only once fsynced, so any such file at seal
+/// time is a crash's leftover with no owner. The caller must own the
+/// directory's publication boundary; this must never run against active writers.
+pub(crate) fn remove_publish_leftovers(
+    directory: &Path,
+    sync_domain: &'static str,
+) -> Result<(), CoreError> {
+    let mut removed_any = false;
+    for entry in std::fs::read_dir(directory).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: list {} before sealing: {error}",
+            directory.display()
+        ))
+    })? {
+        let entry = entry.map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: read entry of {} before sealing: {error}",
+                directory.display()
+            ))
+        })?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !is_durable_write_temporary(name) {
+            continue;
+        }
+        #[cfg(test)]
+        authority_cut_core(Cut::RootTemporaryCleanup, Side::Before, directory)?;
+        std::fs::remove_file(entry.path()).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: remove interrupted publish leftover {}: {error}",
+                entry.path().display()
+            ))
+        })?;
+        #[cfg(test)]
+        authority_cut_core(Cut::RootTemporaryCleanup, Side::After, directory)?;
+        removed_any = true;
+    }
+    if removed_any {
+        #[cfg(test)]
+        authority_cut_core(Cut::RootTemporaryDirectorySync, Side::Before, directory)?;
+        File::open(directory)
+            .and_then(|directory| {
+                crate::causal_profile::timed_sync(sync_domain, || directory.sync_all())
+            })
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: fsync {} after removing publish leftovers: {error}",
+                    directory.display()
+                ))
+            })?;
+        #[cfg(test)]
+        authority_cut_core(Cut::RootTemporaryDirectorySync, Side::After, directory)?;
+    }
+    Ok(())
 }
 
 /// Publish a receipt inside the generation whose directory descriptor was

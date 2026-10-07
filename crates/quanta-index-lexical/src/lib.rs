@@ -131,6 +131,9 @@ mod writer_cache;
 #[cfg(test)]
 mod test_support;
 
+#[cfg(test)]
+mod publication_faults;
+
 /// The one text normalization contract (QI-BB-011), shared with the query DSL
 /// and the search plane; every text surface of this crate lowers through it.
 pub(crate) use quanta_index_lq_text_normalizer as normalize;

@@ -24,6 +24,11 @@ use crate::channel_payloads::{decode_replace_scope_payload, decode_tombstone_sco
 
 mod codec;
 mod producer;
+
+#[cfg(test)]
+use crate::publication_faults::{
+    Cut, Side, reach as publication_cut, reach_core as publication_cut_core,
+};
 mod reader;
 pub(crate) mod root;
 mod verify;
@@ -509,13 +514,23 @@ fn write_object(
             Err(error) => return Err(format!("create object temporary: {error}")),
         }
     };
+    #[cfg(test)]
+    publication_cut(Cut::ObjectWrite, Side::Before).map_err(|error| error.to_string())?;
     file.write_all(bytes)
         .map_err(|error| format!("write object temporary: {error}"))?;
+    #[cfg(test)]
+    publication_cut(Cut::ObjectWrite, Side::After).map_err(|error| error.to_string())?;
+    #[cfg(test)]
+    publication_cut(Cut::ObjectFileSync, Side::Before).map_err(|error| error.to_string())?;
     crate::causal_profile::timed_sync("file_authority_object", || file.sync_all())
         .map_err(|error| format!("sync object temporary: {error}"))?;
+    #[cfg(test)]
+    publication_cut(Cut::ObjectFileSync, Side::After).map_err(|error| error.to_string())?;
     drop(file);
     // link(2) cannot replace a published object if another writer won the
     // digest name. Its bytes are checked before accepting that race.
+    #[cfg(test)]
+    publication_cut(Cut::ObjectLink, Side::Before).map_err(|error| error.to_string())?;
     match std::fs::hard_link(&temp, &path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -526,7 +541,14 @@ fn write_object(
         }
         Err(error) => return Err(format!("publish object: {error}")),
     }
+    #[cfg(test)]
+    publication_cut(Cut::ObjectLink, Side::After).map_err(|error| error.to_string())?;
+    #[cfg(test)]
+    publication_cut(Cut::ObjectTemporaryCleanup, Side::Before)
+        .map_err(|error| error.to_string())?;
     std::fs::remove_file(&temp).map_err(|error| format!("retire object temporary: {error}"))?;
+    #[cfg(test)]
+    publication_cut(Cut::ObjectTemporaryCleanup, Side::After).map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -534,7 +556,12 @@ fn sync_object_dir(generation_dir: &Path) -> Result<(), CoreError> {
     let path = generation_dir.join(DIR).join(OBJECTS);
     std::fs::File::open(&path)
         .and_then(|dir| {
-            crate::causal_profile::timed_sync("file_authority_directory", || dir.sync_all())
+            #[cfg(test)]
+            publication_cut(Cut::ObjectDirectorySync, Side::Before)?;
+            crate::causal_profile::timed_sync("file_authority_directory", || dir.sync_all())?;
+            #[cfg(test)]
+            publication_cut(Cut::ObjectDirectorySync, Side::After)?;
+            Ok(())
         })
         .map_err(|error| {
             CoreError::Storage(format!(
@@ -723,6 +750,12 @@ pub(crate) fn build_for_seal(
     let object_dir = generation_dir.join(DIR).join(OBJECTS);
     ensure_local_dir(&generation_dir.join(DIR))?;
     ensure_local_dir(&object_dir)?;
+    // Interrupted root writes leave temporaries beside the root, below the
+    // generation-level cleanup. Retire them before replay or publication.
+    crate::index_store::remove_publish_leftovers(
+        &generation_dir.join(DIR),
+        "file_authority_directory",
+    )?;
     let root = match read_root(generation_dir)? {
         Some(existing) if root_matches_coverage(&existing, coverage) => {
             replay_reads = audit_replayed_objects(generation_dir, base_dir, &existing)?;
@@ -896,24 +929,39 @@ pub(crate) fn build_for_seal(
             .map_err(|error| CoreError::Storage(format!("lexical: F15 object entry: {error}")))?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if !expected.keys().any(|digest| file_name(digest) == name) {
+            #[cfg(test)]
+            publication_cut_core(Cut::ObsoleteObjectCleanup, Side::Before)?;
             std::fs::remove_file(entry.path()).map_err(|error| {
                 CoreError::Storage(format!("lexical: retire F15 object {name}: {error}"))
             })?;
+            #[cfg(test)]
+            publication_cut_core(Cut::ObsoleteObjectCleanup, Side::After)?;
         }
     }
     sync_object_dir(generation_dir)?;
     let staging_dir = generation_dir.join(DIR).join("staging");
     if staging_dir.exists() {
+        #[cfg(test)]
+        publication_cut_core(Cut::StagingCleanup, Side::Before)?;
         std::fs::remove_dir_all(&staging_dir)
             .map_err(|error| CoreError::Storage(format!("lexical: retire F15 staging: {error}")))?;
-        std::fs::File::open(generation_dir.join(DIR))
-            .and_then(|dir| {
-                crate::causal_profile::timed_sync("file_authority_directory", || dir.sync_all())
-            })
-            .map_err(|error| {
-                CoreError::Storage(format!("lexical: sync F15 authority directory: {error}"))
-            })?;
+        #[cfg(test)]
+        publication_cut_core(Cut::StagingCleanup, Side::After)?;
     }
+    // A prior attempt may have unlinked staging before its directory barrier
+    // failed. Absence on replay does not establish that the unlink is durable.
+    std::fs::File::open(generation_dir.join(DIR))
+        .and_then(|dir| {
+            #[cfg(test)]
+            publication_cut(Cut::AuthorityDirectorySync, Side::Before)?;
+            crate::causal_profile::timed_sync("file_authority_directory", || dir.sync_all())?;
+            #[cfg(test)]
+            publication_cut(Cut::AuthorityDirectorySync, Side::After)?;
+            Ok(())
+        })
+        .map_err(|error| {
+            CoreError::Storage(format!("lexical: sync F15 authority directory: {error}"))
+        })?;
     let mut names = vec![format!("{DIR}/{ROOT}")];
     names.extend(expected.keys().map(object_name));
     names.sort();

@@ -25,7 +25,6 @@
 //! that shape with an inode oracle instead of a clock.
 
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -368,7 +367,7 @@ pub(crate) fn seal_generation(
     base_dir: Option<&Path>,
     prepared_coverage_root: &SealedArtifactCommitmentV1,
 ) -> Result<(LexicalSealCommitmentStats, u64), CoreError> {
-    remove_publish_leftovers(generation_dir)?;
+    crate::index_store::remove_publish_leftovers(generation_dir, "sealed_leftover_directory")?;
     let mut measurer = Measurer {
         generation_dir: generation_dir.to_path_buf(),
         base: BaseCommitments::read(base_dir)?,
@@ -655,58 +654,6 @@ fn commit_text_authority(
     }
     files.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(files)
-}
-
-/// Remove the temporary files an interrupted durable write left behind.
-///
-/// `write_atomic_durable` names its temporaries `.<file>.tmp-<pid>-<n>`
-/// and renames them into place only once fsynced, so any such file at seal
-/// time is a crash's leftover with no owner; the seal commits to the file
-/// set it measures and must not seal a directory it does not own outright.
-fn remove_publish_leftovers(generation_dir: &Path) -> Result<(), CoreError> {
-    let mut removed_any = false;
-    for entry in std::fs::read_dir(generation_dir).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: list {} before sealing: {error}",
-            generation_dir.display()
-        ))
-    })? {
-        let entry = entry.map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: read entry of {} before sealing: {error}",
-                generation_dir.display()
-            ))
-        })?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if !crate::index_store::is_durable_write_temporary(name) {
-            continue;
-        }
-        std::fs::remove_file(entry.path()).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: remove interrupted publish leftover {}: {error}",
-                entry.path().display()
-            ))
-        })?;
-        removed_any = true;
-    }
-    if removed_any {
-        File::open(generation_dir)
-            .and_then(|directory| {
-                crate::causal_profile::timed_sync("sealed_leftover_directory", || {
-                    directory.sync_all()
-                })
-            })
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "lexical: fsync {} after removing publish leftovers: {error}",
-                    generation_dir.display()
-                ))
-            })?;
-    }
-    Ok(())
 }
 
 /// How many live text documents the committed index holds.
