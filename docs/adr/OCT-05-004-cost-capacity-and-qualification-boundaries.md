@@ -141,6 +141,66 @@ Actual CLI/Django/Nushell follow-ups are retained in the
 Remaining repository capture, independent judgments and release qualification
 retain their own acceptance; owner regressions do not substitute for them.
 
+## Paged text authority and query deadlines
+
+Main `5c2b6843` retains compact document/source identities and authenticated
+immutable shard descriptors instead of every decoded text posting. Cold open
+still verifies every shard's length, digest, decoded rows and extrema. Raw/phrase
+queries decode and verify one shard at a time under the existing request budget;
+native candidate checks use compact indexed-source identities. Regex preserves
+its aggregate candidate admission across shards. Fixture shapes, formats and
+declared source/history/query ceilings are unchanged.
+
+Each nonempty shard pins its opened file. Positioned reads preserve the admitted
+inode across path replacement, unlink, generation retirement and concurrent
+queries; an open directory alone would not preserve a collected shard. Request
+scratch is excluded from snapshot resident accounting. One decoded shard and
+regex candidate strings can still occupy request memory, and sparse generations
+can retain many file descriptors. There is no declared query-byte or descriptor
+service envelope: the fixed Native scale fixture does not qualify those other
+input distributions. No memory/RLIMIT limit was raised to obtain this repair.
+
+The harness preserves one absolute query deadline across readiness retries and
+I/O. The readiness window limits new retries, while an admitted request retains
+its original response deadline. The former 15-second readiness window must not
+truncate a declared 600-second scale query. Bounded socket fixtures independently
+check late valid responses, terminal read timeout and non-refreshed deadlines.
+
+Owners: [text reader](../../crates/quanta-index-lexical/src/text_authority/reader.rs),
+[candidate integrity](../../crates/quanta-index-lexical/src/searcher/candidates.rs),
+[snapshot accounting](../../crates/quanta-index-lexical/src/adapter_open.rs) and
+[harness deadline](../../crates/quanta-index-searchd-harness/src/harness.rs).
+Retain fixed raw/phrase/regex result sets, aggregate candidate refusals, pinned
+old-reader GC/unlink/concurrency controls and corruption/cancellation outcomes.
+
+The first paged XL diagnostic at `5c2b6843` still exceeded the snapshot registry
+admission. Its actual sealed g1 source rows retained raw, NFC and folded bodies
+separately. File authority (364,146,926 bytes), unique native mappings
+(124,864,778 bytes) and the coverage structural lower bound (49,348,608 bytes)
+alone sum to 538,360,312 bytes, above the unchanged 536,870,912-byte registry
+ceiling, before other snapshot components. This is a source/immutable-input
+lower bound, not a captured runtime cache gauge or physical RSS measurement.
+The fixed `scale_needle_token` query lowers to a native Standard keyword and
+does not traverse text-authority shards. Repeated uncached snapshot opening is
+therefore a distinct remaining cause; text paging alone does not close XL.
+
+After full ingest/seal/activation, the owner interrupted that diagnostic with
+SIGTERM to repair retention. Its execution is `FAILED` (exit -15, 1,149.223s,
+not a timeout), not completed capacity evidence. Immutable RCA inputs and the
+three original release executables remain preserved under
+`/Users/songmin/.codex/task-evidence/scale-paged-final-20261007-5c2b6843-mwatpufl`.
+Main `5bf6b152` now aliases byte-identical verified raw/NFC/folded surfaces with
+`Arc` backing allocations and charges each distinct retained allocation. Binary
+sources retain byte buffers and acquire no text view. Sealed logical row charges,
+formats and policy validation remain unchanged. Fixed cold-open tests cover
+ASCII, NFD, lower-case NFD, mixed case and invalid UTF-8, including pointer
+identity and independent normalized byte expectations. Matching-release Large
+and XL execution, independent causal replay, XL offered-load and selected
+release-daemon OS restart/delete completed at this source. The original XL
+corpus and all declared ceilings were retained; no smaller fixture or cap
+increase was used. These are shared-macOS diagnostic and functional results,
+with qualified-host performance remaining under E4-06.
+
 ## Coverage decoding and base custody
 
 One adapter-local cache retains at most one decoded coverage root under an 8 MiB
@@ -320,10 +380,18 @@ later source changes and new measurement profiles require affected checks.
 | --- | --- | --- |
 | `c6a9120dc71d9878ea62e37384a289535191b42f` hosted main | Required docs/static/Python/tests/bench/verify GitHub contexts succeeded. [CircleCI tests job2011 artifacts](https://circleci.com/api/v2/project/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/2011/artifacts): receipt revision matches; raw/inventory SHA-256 matches; 159 terminal suites, 4,241 passed, zero failed | Auxiliary PR coverage was pending; it is separate from this completed main scope. Bench is compilation. This is not a receipt for later source |
 | `8642fa9b3b47ac58e4b3d9f2feaea66c599be29d` hosted main | Scale/Scanner owners checked all six terminal jobs in [workflow1019](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1019/workflows/a9eb1372-fe07-468c-a8b0-f809cff35b7c). Rust: 4,268 passed, zero failed, 30 skipped; source SHA, command, inventory and raw/result digests matched the receipt. F15 selected9 also passed | Complete regular main CI at this source; bench is compilation. Later cache test-only extensions and their hosted result remain separate |
+| `888c434dc4891f8db79ab495e66595df015cc5e8` hosted main | All six terminal jobs in [workflow1031](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1031/workflows/bc9b8b80-5178-4881-8288-1b3e9974652a) succeeded with matching job revisions. Rust receipt/inventory/raw digests independently agree: 4,280 selected/executed/passed, zero failed, 30 ignored. Python: 4,321 passed, 30 skipped; Ruff check/format passed | Complete regular main CI at this source; bench is compilation. Later SourceFile buffer sharing requires its own source-bound result |
 | F15 candidate integrated as main `8599f2e8` | Five publication tests passed (72.842s), exercising 32 I/O and 32 SIGKILL cuts. Selected mutation/seal/cost integration tests: 73 passed. Strict lexical all-target Clippy: exit0 | Owner worktree execution preceded integration. Later recovered-query assertions and daemon/scale execution are separate |
 | F15 follow-ups `b09c4aa7` / `70521514` | Recovered-query parity and interrupted delta clone retry implemented. Owner reports 36 I/O + 36 SIGKILL cuts, corrected partial-clone controls, 73 storage regressions and strict lexical Clippy passing. Fixed705 daemon214 also passed | Complete focused code/recovery scope; latest hosted and Large/XL cost/RSS retain their own source binding |
 | `eb97e7c2` restart custody | Medium OS-process restart/delete and release-binary identity controls: 2 passed. The process harness checks daemon SHA-256 before each restart | Existing fixture and selected binary; not Large/XL or real-provider cache proof |
 | `8642fa9b` Medium causal capture | Registered matching-release capture exited0 in22.062s; source and binary identities match before/after, with no dirty overlay. 256 files across four source repositories, 367,801 source bytes; sampled phase RSS max101,580,800bytes, largest RSS observation gap116.192ms within500ms. Full/delta/no-op/delete retained bytes and same-process reopen are recorded in `/Users/songmin/.codex/task-evidence/scale-final-20261007-8642fa9b-f8xdnze5/medium-causal/{execution.json,artifact/summary.json}` | Shared macOS `VERIFIED_DIAGNOSTIC`; sampled maxima are not true peaks. No Linux physical-I/O, quiet-host qualification, Large/XL or OS-child restart result is issued by this capture |
+| `5c2b6843` text/deadline repair | Focused 15/15, lexical 417/417 and `just rust-profile test-daemon` 300/300 passed; lexical and harness strict Clippy, format, hexagonal and Cargo-module checks passed. The daemon scope includes independent Large4,096 OS-child restart and ranked-page assertions | These selections overlap and are not additive unique-test counts. Ten daemon extras were skipped, including separately selected scale-restart tests; these owner checks do not issue capacity or speed qualification |
+| `5bf6b152` verified source-surface sharing | Stable owned changes passed lexical/harness `./scripts/cargow --lane test-scale-f15-lane clippy -p quanta-index-lexical -p quanta-index-searchd-harness --lib --tests --all-features --locked -- -D warnings`, lexical library plus resident/sealed/regex/preview integration selection 418/418 (one skipped, 127.751s), and `just rust-profile test-daemon` 300/300 (ten skipped, 413.285s). Format and staged diff checks passed before the three-path checkpoint was pushed | Selections overlap; this is code/query/storage/restart regression proof. Matching-release XL cache admission, sampled RSS, offered-load and selected OS-restart remain separate executions |
+| `5bf6b152` Large causal capture | Matching preserved release exit0 in59.592s; original4,096files/16repos and corpus digest `6c51fe0d9c33679eb6b5e5687b5e5a0c16aab5acbc8bfcefc48a71ac79a085ca`. Registry resident30,246,387bytes; sampled RSS max730,087,424bytes and observation gap109.087ms. Full/delta/no-op/delete retained bytes88,348,385/108,065,497/88,560,752/90,429,887. Independent replay plus the capture producer's fixed binary-source annotation reproduces the stored canonical profile bytes | Shared macOS `VERIFIED_DIAGNOSTIC`; same-process reopen and fixed query/probe assertions passed. Historical5c and new5bf runs are not randomized paired speed/RSS comparisons |
+| `5bf6b152` XL causal capture | Matching preserved release exit0 in518.054s; original32,768files/64repos,113,023,546raw source bytes and corpus digest `dbc4b0d39b458aa4fd838a28e01caf95c0146601b1fae50bfc5d3b197dd59821`. All ten lifecycle phase endings passed, including same-process reopen. Registry resident326,772,711bytes is below unchanged536,870,912-byte admission. Sampled RSS max3,167,567,872bytes and gap114.778ms; full/delta/no-op/delete retained bytes923,860,540/960,956,447/924,117,321/939,220,849. Independent replay plus the same fixed producer annotation reproduces the stored canonical profile bytes | Shared macOS `VERIFIED_DIAGNOSTIC`; samples are not true RSS peaks, physical-I/O attribution or qualified Linux performance. Registry accounting, retained files and process RSS are distinct measurements |
+| `5bf6b152` XL open-loop | Matching preserved release exit0 in191.424s. Default25/50/100/200QPS ladder,10s/point, seeded Poisson,32 client workers,256 queue and2s request timeout; offered=served3,743 with zero drops, timeouts, typed/transport errors or invalid results. Independent JSON/hash/accounting checks passed | Shared macOS `VERIFIED_DIAGNOSTIC`. Target200QPS was saturated: offered195.8/s, achieved180.039/s, p99 latency1,089.176ms. This does not qualify stable200QPS service |
+| `5bf6b152` selected XL OS-process restart/delete | Original Nextest process exit0; exactly one selected ignored test passed in284.838s using the SHA-bound preserved release daemon. Original inventory95cases/9ignored, six raw events, stderr summary, source and executable identities independently agree. Separate `xlarge-restart-verification-v2.json` is `VERIFIED_DIAGNOSTIC`; 13 missing/additional/altered-input controls were rejected, including integer-type and duplicate-JSON-key controls | The external execution wrapper remains `FAILED` because its generic Nextest parser rejected ignored-test reporter counters. The original wrapper record is preserved; the actual test ran once. Inventory was collected after execution at the same frozen source/selector; this is not a pre-run required-CI receipt or performance result |
+| `5c2b6843` Large causal capture | Matching release exit0 in97.888s; clean source and executable epoch agree before/after. Original4,096files/16repos and corpus digest `6c51fe0d9c33679eb6b5e5687b5e5a0c16aab5acbc8bfcefc48a71ac79a085ca` are unchanged. Sampled phase RSS max518,455,296bytes, largest RSS gap117.495ms; full/delta/no-op/delete retained bytes are88,365,586/108,082,699/88,577,959/90,435,321. Artifacts: `/Users/songmin/.codex/task-evidence/scale-paged-final-20261007-5c2b6843-mwatpufl/large-causal/{execution.json,causal-profile.json,artifact/summary.json}` | Shared macOS `VERIFIED_DIAGNOSTIC`; one instrumented run, no paired speed claim, true peak or Linux physical-I/O claim. Profile defaults and same-process reopen remain distinct from the XL/open-loop/release OS-restart scopes |
 | CI admission integrated as main `9def97ac` | Config and test-authority preflight admit supported receipt tier/context combinations and reject unsupported ones | Implementation is present; the new source's hosted result is separate from C6 |
 | Frozen `492d2fdccc0fc42ec42e4da19db7833ecbf032ea` XL lifecycle | Original `xl-result.json`: exit0, `VERIFIED`, 287.843s, existing frozen binary, `query_dispatch_budget_ms=600000` | Functional publish/delete/restart scope. Latest main Large/XL cost/RSS and qualified performance remain separate |
 
@@ -339,6 +407,14 @@ The 73-test run selected `l2_file_mutation`, `sealed_manifest` and
 These are observed prior owner terminals, not Rust runs performed by the doc edit.
 The original XL result remains at
 `/Users/songmin/.codex/task-evidence/quanta-scale-recovery-20261006-01a10d0b/xl-result.json`.
+The matching `5bf6b152` execution and replay inputs remain under
+`/Users/songmin/.codex/task-evidence/scale-shared-final-20261007-1bl40iuo`:
+`build-binding.json`, `preserved-release/`,
+`{large,xlarge}-causal/{execution.json,causal-profile.json,artifact/summary.json}`,
+`xlarge-open-loop/{summary.json}`, `xlarge-open-loop-execution.json` and
+`xlarge-restart-verification-v2.json`. The failed original restart-wrapper record
+and the interrupted5c XL attempt remain separately preserved. Product parser
+required-test admission was not relaxed for this selected ignored diagnostic.
 
 ## Observed scanner two-arm diagnostic
 

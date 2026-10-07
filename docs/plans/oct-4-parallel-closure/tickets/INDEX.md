@@ -24,7 +24,7 @@ Semantica는 외부 producer이며 fact resolution/join/completion은 그 저장
 
 ## 현재 코드 잔여
 
-2026-10-07 문서 통합 기준은 main `4f07c3c5`다. 완료된 F15/query/restart·paged directory,
+2026-10-07 코드 대조 기준은 main `5bf6b152`다. 완료된 F15/query/restart·paged directory,
 SDK lifecycle/cache 및 hosted checkpoint의 source·명령·범위는 아래 ADR가 소유한다.
 Staged upload, EOF cancellation, checked memory/deadline, scanner custody와 P11 공통
 producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비용·반례 또는 target 계약으로 결정한다.
@@ -39,7 +39,7 @@ producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비
 | E1 review/admission | `holdout_review.py`의 blind prepare·frozen validation·finalize, `run.py`의 실행/replay admission 검증, `corpus_binding.py`의 source split 검사 | 실제 reviewer/adjudicator raw·최종 labels·license/gold/holdout·admission 발행 |
 | E1 bootstrap | `evaluator.py::mean_ci`의 10,000 draws·16-key/256KiB bounded cache와 `test_bootstrap_cache.py`의 독립 고정 golden·validation controls | 추가 최적화는 actual paired full-caller 비용·parity를 보고 판정 |
 | E2 reader/inventory | `live_lexical_external.py`의 selected-project acquired-reader 검증, `opengrok_query_witness.py`, workflow/matrix/ready-drain | 미실행 required cells·actual replay/join; caller가 요구할 경우에만 전체 loaded-reader witness 구현 |
-| E4 F15 | Fault/query/clone-retry/daemon 검증은 [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)로 완료 이관 | Large/XL lifecycle 비용/RSS. 기존 fault/query/daemon matrix 재구현 없음 |
+| E4 F15 / Scale | Fault/query/clone-retry/daemon 및 fixed5bf Large·XL causal/replay·XL offered-load·release OS restart는 [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)로 완료 이관 | E4-06 admitted Linux 반복 성능. 완료된 matrix·capture 재구현/재실행 없음 |
 | QIT lifecycle/concurrency | Mixed-corpus lifecycle 모델·독립 SDK history checker 및 focused8/8·strict는 [coverage ADR](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#implemented-lifecycle-tests-and-remaining-coverage)로 완료 이관 | 선언된 generated/repeat inventory·native race detector 실행. Search-node 한도는 nightly transition 실행이 아님 |
 | Semantic | Exact-text semantic/hybrid·OS-process cache·model/revision/dimension matrix4/4와 corrected lib-test strict는 [semantic ADR](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)로 완료 이관 | 기존 OpenAI paraphrase rail(ignored)의 실제 API 입력/실행, installed CLI/live-provider release 및 upstream producer 검증 |
 | I0 operations | 공통 typed action producer·pre-state refusal·checker/aggregate, optional paired caller/kernel archive | concrete target adapter·독립 observer 계약 구현, authorized target 입력 및 exact-pair/action 실행 |
@@ -59,7 +59,6 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 | 우선·owner | 실제 잔여 | 종료 조건 |
 | --- | --- | --- |
 | P0 · I0-02 / CI/integration | 후속 main의 영향 hosted 결과 및 선택된 SDK/Contract·PR/release 결과 회수 | 같은 source의 terminal·inventory·receipt. cache focused4/4·corrected library-test strict 및 `8642fa9b` regular main6jobs는 완료이며 기존 CI/F15 수리는 잔여가 아님 |
-| P1 · E4 / Scale | matching Large4,096·XL32,768 lifecycle/capacity/cost·OS restart | 원래 fixture, 명시된 profile, live/RSS/retained bytes·typed over-limit refusal |
 | P1 · E4 / performance | 전체 sync/read/hash/metadata·segment fanout 비용, scanner·Semble·bootstrap 판정 | 원인별 실제 관측 및 독립 parity. 정식 속도는 admitted host·사전 기준·반복 표본 |
 | P1 · E1/E2 / quality | labels/admissions·matching Quanta/Semble pair·native replay/full5·독립 채점 | required cells 및 query/unit/source/index scope, 미판단·실패·제외 분모 설명 |
 | P1 · E1 / holdout | 실제 미사용 corpus/query/family·license/gold/name-span·typo 평가 | 독립 truth·critical strata·exposure/underfill, file hit와 declaration recovery 구분 |
@@ -78,8 +77,11 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
   Scanner의 durable Bat79files/338queries 입력·frozen a5 관측 캡처/parity는
   [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#observed-scanner-two-arm-diagnostic)로 완료 이관했다.
   Closed combined-receipt·후속 source 비교는 [E4-03](#o4-e4-03) 잔여다.
-- Scale: matching Large/XL 비용/RSS·lifecycle 및 선택한 OS-child restart·offered-load가 잔여다.
-  Fixed8642 Medium causal 비용/RSS·same-process reopen과 이전 기능/CI checkpoint는
+- Scale: fixed5bf의 Large4,096·XL32,768 causal 비용/RSS·lifecycle·독립 replay,
+  XL release OS-child restart/delete 및 offered-load3,743건은 완료됐다.
+  원래 fixture와 cap을 유지했고 registry resident326,772,711bytes로512MiB 안에 들어왔다.
+  Target200QPS는 포화로 달성180.039QPS이며 정식 성능 합격이 아니다.
+  Fixed8642 Medium·fixed5c Large 및 소스별 기능/CI checkpoint는
   [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)이 소유한다.
   이 Mac diagnostic은 Linux physical-I/O·qualified performance를 대신하지 않는다.
   Linux 정식 rail은 macOS에서 unsupported_host로 거절됐으며 admitted host가 필요하다.
@@ -268,8 +270,12 @@ cold-open/build/residency/cap/cancel 독립 수용이 필요하다.
 
 ### O4-E4-05
 
-후속 측정 잔여 · matching Large4,096/XL32,768 비용/RSS 및 선택한 tier의 open-loop·실제 OS restart.
-Fixed8642의 Medium256 causal 비용/RSS·same-process reopen은 완료돼 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)가 소유한다.
+완료 이관 · fixed5bf matching release의 Large4,096·XL32,768 causal/replay,
+XL open-loop 및 release daemon의 실제 OS restart/delete 진단·기능 scope는
+[cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)가 소유한다.
+원래 fixture·cap을 유지한 이 완료 실행은 잔여가 아니다. 정식 반복 성능은 [E4-06](#o4-e4-06)에 남긴다.
+Text paging·source Arc sharing·absolute query deadline과 lexical418·daemon300·strict 검증도
+같은 ADR로 이관했다. 선택들은 중복 집계하지 않는다.
 Medium OS-child restart·offered-load와 새 runtime/profile 영향 검증은 이 완료 범위와 구분한다.
 Frozen `492d2fdc`의 XL 기능 proof는 `VERIFIED`이며 기존e371 runtime/open-loop도 완료다.
 이는 최신 F15/RSS source의 측정을 대체하지 않으며 완료된 기능 proof를 미실행으로 재표기하지 않는다.
@@ -302,6 +308,10 @@ Contract: [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-b
 ### O4-I0-02
 
 후속 main의 영향 hosted 결과 및 selected SDK/Contract·PR/release proof 회수가 잔여다.
+Source5bf의 [workflow1033](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1033/workflows/35192a12-61e0-4be6-b485-5c587a415019)는
+2026-10-07 21:30KST 기준 docs/Python/static 성공, Rust tests·bench compilation 진행 중,
+final verify는 dependency 대기다. Python4,321passed/30skipped를 확인했으며
+Rust terminal inventory/receipt와 전체 성공은 아직 회수하지 않았다. 이전888 CI 성공을 대체 증거로 쓰지 않는다.
 완료된 regular main CI/F15·query/restart·cache focused/strict·SDK/runtime checkpoint는
 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)와
 [cache 계약](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)이 소유한다.
