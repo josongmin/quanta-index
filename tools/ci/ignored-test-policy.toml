@@ -130,6 +130,14 @@ cadence = "release"
 review_by = "2026-12-31"
 
 [[exceptions]]
+path = "crates/quanta-index-lexical/src/publication_faults/tests.rs"
+test = "publication_crash_child"
+reason = "private subprocess entrypoint; parent matrix supplies the exact fixture and kills this process"
+owner = "quanta-index-lexical"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
 path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
 test = "total_delta_pipeline_cost_128_files"
 reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
