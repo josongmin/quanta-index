@@ -190,6 +190,8 @@ fn cases() -> Vec<Case> {
     let mut result = Vec::new();
     for cut in [
         Cut::InheritedObjectLink,
+        Cut::DeltaCloneIntentCleanup,
+        Cut::DeltaCloneDirectorySync,
         Cut::ObjectWrite,
         Cut::ObjectFileSync,
         Cut::ObjectLink,
@@ -859,6 +861,205 @@ fn f15_replay_reissues_the_directory_barrier_after_interrupted_staging_cleanup()
         drop(adapter);
         recover(root.path(), &base_tree)?;
     }
+    Ok(())
+}
+
+#[test]
+fn f15_partial_clone_with_materialized_metadata_replays_before_writer_admission() -> TestResult {
+    for linked_metadata in [false, true] {
+        let root = tempfile::tempdir()?;
+        let base_tree = setup(root.path())?;
+        let base = generation(root.path(), false)?;
+        let target = generation(root.path(), true)?;
+        let adapter = LexicalAdapter::with_state_root(root.path().to_path_buf());
+        let guard = Guard::install(
+            Case {
+                cut: Cut::InheritedObjectLink,
+                side: Side::Before,
+                occurrence: 1,
+            },
+            Mode::Error,
+        );
+        assert!(adapter.build_batch(&batch(true)?).is_err());
+        assert!(guard.fired());
+        drop(guard);
+        drop(adapter);
+        assert_eq!(
+            crate::generation_dir::read_delta_clone_intent(&target)?,
+            Some(ManifestGeneration::new(1))
+        );
+        let meta = target.join(crate::TANTIVY_INDEX_META_FILE_NAME);
+        if linked_metadata {
+            // Atomic recopy must replace this inode, never truncate the base.
+            if meta.exists() {
+                std::fs::remove_file(&meta)?;
+            }
+            std::fs::hard_link(base.join(crate::TANTIVY_INDEX_META_FILE_NAME), &meta)?;
+        } else {
+            std::fs::write(&meta, b"interrupted private metadata copy")?;
+        }
+        let error =
+            crate::index_store::open_or_create_index(&crate::SchemaFields::build(), &target)
+                .err()
+                .ok_or("pending clone admitted a writer")?;
+        assert!(matches!(
+            error,
+            quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseUnresolved,
+                ..
+            }
+        ));
+        assert_eq!(file_tree(&base)?, base_tree);
+        recover(root.path(), &base_tree)?;
+        assert_eq!(
+            crate::generation_dir::read_delta_clone_intent(&target)?,
+            None
+        );
+        assert_eq!(
+            crate::generation_dir::read_lexical_delta_base(&target)?,
+            Some(ManifestGeneration::new(1))
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn f15_clone_intent_conflicts_and_completed_cleanup_never_overwrite_target_metadata() -> TestResult
+{
+    let root = tempfile::tempdir()?;
+    let base_tree = setup(root.path())?;
+    let target = generation(root.path(), true)?;
+    crate::index_store::ensure_current_unsealed_index_format_for_writer(&target)?;
+    let key = crate::GenKey {
+        repo_id: repo()?,
+        revision_id: revision()?,
+        generation: ManifestGeneration::new(2),
+    };
+    let adapter = LexicalAdapter::with_state_root(root.path().to_path_buf());
+    crate::generation_dir::persist_delta_clone_intent(&target, ManifestGeneration::new(17))?;
+    let before = file_tree(&target)?;
+    let error = adapter
+        .prepare_generation_from_base(&key, Some(ManifestGeneration::new(1)))
+        .expect_err("different pending base must conflict");
+    assert!(matches!(
+        error,
+        quanta_index_core::CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
+            ..
+        }
+    ));
+    assert_eq!(file_tree(&target)?, before);
+    crate::generation_dir::persist_delta_clone_intent(&target, ManifestGeneration::new(1))?;
+    adapter.prepare_generation_from_base(&key, Some(ManifestGeneration::new(1)))?;
+    // Model a crash after durable completion but before intent unlink/fsync.
+    crate::generation_dir::persist_delta_clone_intent(&target, ManifestGeneration::new(1))?;
+    std::fs::write(
+        target.join(crate::TANTIVY_INDEX_META_FILE_NAME),
+        b"target-owned metadata",
+    )?;
+    adapter.prepare_generation_from_base(&key, Some(ManifestGeneration::new(1)))?;
+    assert_eq!(
+        std::fs::read(target.join(crate::TANTIVY_INDEX_META_FILE_NAME))?,
+        b"target-owned metadata"
+    );
+    assert_eq!(
+        crate::generation_dir::read_delta_clone_intent(&target)?,
+        None
+    );
+    assert_eq!(file_tree(&generation(root.path(), false)?)?, base_tree);
+    Ok(())
+}
+
+#[test]
+fn f15_interrupted_delta_of_delta_never_inherits_the_bases_completion_marker() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let base_tree = setup(root.path())?;
+    recover(root.path(), &base_tree)?;
+    let adapter = LexicalAdapter::with_state_root(root.path().to_path_buf());
+    let key = crate::GenKey {
+        repo_id: repo()?,
+        revision_id: revision()?,
+        generation: ManifestGeneration::new(3),
+    };
+    let target = GenerationStorageKeyV1::for_repo_revision(&repo()?, &revision()?)
+        .generation_dir(root.path(), ManifestGeneration::new(3));
+    let guard = Guard::install(
+        Case {
+            cut: Cut::InheritedObjectLink,
+            side: Side::Before,
+            occurrence: 1,
+        },
+        Mode::Error,
+    );
+    assert!(
+        adapter
+            .prepare_generation_from_base(&key, Some(ManifestGeneration::new(2)))
+            .is_err()
+    );
+    assert!(guard.fired());
+    drop(guard);
+    assert_eq!(
+        crate::generation_dir::read_lexical_delta_base(&target)?,
+        None
+    );
+    assert_eq!(
+        crate::generation_dir::read_delta_clone_intent(&target)?,
+        Some(ManifestGeneration::new(2))
+    );
+    adapter.prepare_generation_from_base(&key, Some(ManifestGeneration::new(2)))?;
+    assert_eq!(
+        crate::generation_dir::read_lexical_delta_base(&target)?,
+        Some(ManifestGeneration::new(2))
+    );
+    assert_eq!(
+        crate::generation_dir::read_delta_clone_intent(&target)?,
+        None
+    );
+    assert_eq!(file_tree(&generation(root.path(), false)?)?, base_tree);
+    Ok(())
+}
+
+#[test]
+fn f15_completed_clone_replays_the_unlink_barrier_without_a_remaining_intent() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let base_tree = setup(root.path())?;
+    let target = generation(root.path(), true)?;
+    let key = crate::GenKey {
+        repo_id: repo()?,
+        revision_id: revision()?,
+        generation: ManifestGeneration::new(2),
+    };
+    let adapter = LexicalAdapter::with_state_root(root.path().to_path_buf());
+    for _attempt in 0..2 {
+        let guard = Guard::install(
+            Case {
+                cut: Cut::DeltaCloneDirectorySync,
+                side: Side::Before,
+                occurrence: 1,
+            },
+            Mode::Error,
+        );
+        assert!(
+            adapter
+                .prepare_generation_from_base(&key, Some(ManifestGeneration::new(1)))
+                .is_err()
+        );
+        assert!(
+            guard.fired(),
+            "missing intent suppressed an unproved unlink barrier"
+        );
+        drop(guard);
+        assert_eq!(
+            crate::generation_dir::read_delta_clone_intent(&target)?,
+            None
+        );
+        assert_eq!(
+            crate::generation_dir::read_lexical_delta_base(&target)?,
+            Some(ManifestGeneration::new(1))
+        );
+    }
+    adapter.prepare_generation_from_base(&key, Some(ManifestGeneration::new(1)))?;
+    assert_eq!(file_tree(&generation(root.path(), false)?)?, base_tree);
     Ok(())
 }
 

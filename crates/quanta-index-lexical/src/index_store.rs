@@ -212,6 +212,20 @@ pub(crate) fn is_durable_write_temporary(name: &str) -> bool {
 /// holding a reference to the adapter (which would require re-entering the
 /// cache mutex).
 pub(crate) fn open_or_create_index(fields: &SchemaFields, path: &Path) -> Result<Index, CoreError> {
+    match std::fs::symlink_metadata(path.join(crate::LEXICAL_DELTA_CLONE_INTENT_FILE_NAME)) {
+        Ok(_) => {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseUnresolved,
+                message: "lexical: finish the pending delta clone before opening a writer".into(),
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(CoreError::Storage(format!(
+                "lexical: inspect delta clone intent: {error}"
+            )));
+        }
+    }
     std::fs::create_dir_all(path).map_err(|err| {
         CoreError::Storage(format!(
             "lexical: create generation directory {}: {err}",
@@ -248,6 +262,35 @@ pub(crate) fn write_atomic_durable(
     bytes: &[u8],
     label: &str,
 ) -> Result<(), CoreError> {
+    write_atomic_durable_with(path, label, |file| file.write_all(bytes))
+}
+
+/// Replacing an interrupted metadata copy never writes through a base inode
+/// or destination symlink. Copy through a fresh private file before rename.
+pub(crate) fn copy_atomic_durable(source: &Path, target: &Path) -> Result<(), CoreError> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| CoreError::Storage("clone source has no parent".into()))?;
+    let name = source
+        .file_name()
+        .ok_or_else(|| CoreError::Storage("clone source has no name".into()))?;
+    let mut source = crate::sealed_generation::open_regular_nofollow(parent, Path::new(name))
+        .map_err(|error| CoreError::Storage(format!("lexical: open cloned metadata: {error}")))?;
+    write_atomic_durable_with(target, "cloned metadata", |target| {
+        let expected_bytes = source.metadata()?.len();
+        let copied = std::io::copy(&mut source, target)?;
+        if copied != expected_bytes || source.metadata()?.len() != expected_bytes {
+            return Err(std::io::Error::other("clone source length changed"));
+        }
+        Ok(())
+    })
+}
+
+fn write_atomic_durable_with(
+    path: &Path,
+    label: &str,
+    write: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> Result<(), CoreError> {
     let parent = path.parent().ok_or_else(|| {
         CoreError::Storage(format!(
             "lexical: {label} path has no parent: {}",
@@ -280,7 +323,7 @@ pub(crate) fn write_atomic_durable(
         })?;
     #[cfg(test)]
     root_cut_core(Cut::RootWrite, Side::Before, path)?;
-    file.write_all(bytes).map_err(|error| {
+    write(&mut file).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: write {label} temporary {}: {error}",
             temporary.display()

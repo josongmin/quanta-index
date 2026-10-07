@@ -170,6 +170,8 @@ const LEXICAL_SEALED_IDENTITY_FILE_NAME: &str = "search-corpus-generation-identi
 /// so a sidecar published before the lexical delta would otherwise make the
 /// base clone look already done. This marker is the authority instead.
 const LEXICAL_DELTA_BASE_FILE_NAME: &str = "search-corpus-delta-base.cbor";
+/// A delta clone in progress; it is not evidence that inheritance completed.
+const LEXICAL_DELTA_CLONE_INTENT_FILE_NAME: &str = "search-corpus-delta-clone-intent.cbor";
 
 /// Tantivy writes this on every commit; its presence proves index content exists.
 const TANTIVY_INDEX_META_FILE_NAME: &str = "meta.json";

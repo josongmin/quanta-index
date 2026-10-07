@@ -14,8 +14,9 @@ use crate::documents::{
 };
 use crate::generation_dir::ensure_unsealed;
 use crate::generation_dir::{
-    clone_generation_directory_preserving_existing, ensure_base_generation_is_servable,
-    lexical_index_content_exists, persist_lexical_delta_base, read_lexical_delta_base,
+    clone_generation_directory_replaying_intent, ensure_base_generation_is_servable,
+    finish_delta_clone_intent, lexical_index_content_exists, persist_delta_clone_intent,
+    persist_lexical_delta_base, read_delta_clone_intent, read_lexical_delta_base,
 };
 use crate::index_store::{
     ensure_current_unsealed_index_format_for_writer, read_lexical_sealed_identity,
@@ -390,9 +391,18 @@ impl LexicalAdapter {
             return Ok(());
         };
         let target_path = self.index_path(key);
+        let pending_base = read_delta_clone_intent(&target_path)?;
+        if pending_base.is_some_and(|pending| pending != requested_base) {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
+                message: "lexical: interrupted delta clone names a different base".into(),
+            });
+        }
         if let Some(recorded_base) = read_lexical_delta_base(&target_path)? {
             if recorded_base == requested_base {
-                return Ok(());
+                // Missing intent can mean unlink succeeded but its directory
+                // barrier failed. Replay the barrier without re-cloning.
+                return finish_delta_clone_intent(&target_path);
             }
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
@@ -404,7 +414,7 @@ impl LexicalAdapter {
                 ),
             });
         }
-        if lexical_index_content_exists(&target_path) {
+        if pending_base.is_none() && lexical_index_content_exists(&target_path) {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseUnresolved,
                 message: format!(
@@ -425,8 +435,12 @@ impl LexicalAdapter {
         // format. Stamp the empty delta target before copying its index commit;
         // a crash after the copy must never relabel an unproved old index.
         ensure_current_unsealed_index_format_for_writer(&target_path)?;
-        clone_generation_directory_preserving_existing(&base_path, &target_path)?;
-        persist_lexical_delta_base(&target_path, requested_base)
+        if pending_base.is_none() {
+            persist_delta_clone_intent(&target_path, requested_base)?;
+        }
+        clone_generation_directory_replaying_intent(&base_path, &target_path)?;
+        persist_lexical_delta_base(&target_path, requested_base)?;
+        finish_delta_clone_intent(&target_path)
     }
 
     pub(crate) fn delete_scope_docs(

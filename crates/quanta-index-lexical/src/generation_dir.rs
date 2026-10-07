@@ -6,18 +6,19 @@
 )]
 
 use crate::index_store::{
-    require_current_unsealed_index_format_if_materialized, sealed_identity_entry_present,
-    write_atomic_durable,
+    copy_atomic_durable, require_current_unsealed_index_format_if_materialized,
+    sealed_identity_entry_present, write_atomic_durable,
 };
 #[cfg(test)]
-use crate::publication_faults::{Side, inherited_cut_core};
+use crate::publication_faults::{Cut, Side, inherited_cut_core, reach_core};
 use crate::sealed_generation::{
     LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME,
     LEXICAL_SEALED_MANIFEST_FILE_NAME,
 };
 use crate::{
-    LEXICAL_DELTA_BASE_FILE_NAME, LEXICAL_SEALED_IDENTITY_FILE_NAME, TANTIVY_INDEX_META_FILE_NAME,
-    TANTIVY_LOCK_FILE_PREFIX, TANTIVY_MANAGED_FILE_NAME, sealed_generation,
+    LEXICAL_DELTA_BASE_FILE_NAME, LEXICAL_DELTA_CLONE_INTENT_FILE_NAME,
+    LEXICAL_SEALED_IDENTITY_FILE_NAME, TANTIVY_INDEX_META_FILE_NAME, TANTIVY_LOCK_FILE_PREFIX,
+    TANTIVY_MANAGED_FILE_NAME, sealed_generation,
 };
 use quanta_index_contract::ManifestGeneration;
 use quanta_index_core::{CoreError, unique_inode_tree_bytes_below_track};
@@ -34,11 +35,21 @@ pub(crate) fn lexical_delta_base_path(generation_dir: &Path) -> PathBuf {
 pub(crate) fn read_lexical_delta_base(
     generation_dir: &Path,
 ) -> Result<Option<ManifestGeneration>, CoreError> {
-    let path = lexical_delta_base_path(generation_dir);
-    let mut file = match sealed_generation::open_regular_nofollow(
-        generation_dir,
-        Path::new(LEXICAL_DELTA_BASE_FILE_NAME),
-    ) {
+    read_generation_marker(generation_dir, LEXICAL_DELTA_BASE_FILE_NAME)
+}
+
+pub(crate) fn read_delta_clone_intent(
+    generation_dir: &Path,
+) -> Result<Option<ManifestGeneration>, CoreError> {
+    read_generation_marker(generation_dir, LEXICAL_DELTA_CLONE_INTENT_FILE_NAME)
+}
+
+fn read_generation_marker(
+    generation_dir: &Path,
+    name: &str,
+) -> Result<Option<ManifestGeneration>, CoreError> {
+    let path = generation_dir.join(name);
+    let mut file = match sealed_generation::open_regular_nofollow(generation_dir, Path::new(name)) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
@@ -69,6 +80,23 @@ pub(crate) fn persist_lexical_delta_base(
     generation_dir: &Path,
     base_generation: ManifestGeneration,
 ) -> Result<(), CoreError> {
+    persist_generation_marker(&lexical_delta_base_path(generation_dir), base_generation)
+}
+
+pub(crate) fn persist_delta_clone_intent(
+    generation_dir: &Path,
+    base_generation: ManifestGeneration,
+) -> Result<(), CoreError> {
+    persist_generation_marker(
+        &generation_dir.join(LEXICAL_DELTA_CLONE_INTENT_FILE_NAME),
+        base_generation,
+    )
+}
+
+fn persist_generation_marker(
+    path: &Path,
+    base_generation: ManifestGeneration,
+) -> Result<(), CoreError> {
     let mut bytes = Vec::new();
     ciborium::into_writer(&base_generation.get(), &mut bytes).map_err(|error| {
         CoreError::Storage(format!(
@@ -76,11 +104,30 @@ pub(crate) fn persist_lexical_delta_base(
             base_generation.get()
         ))
     })?;
-    write_atomic_durable(
-        &lexical_delta_base_path(generation_dir),
-        &bytes,
-        "delta base marker",
-    )
+    write_atomic_durable(path, &bytes, "delta base marker")
+}
+
+/// Called only after the completed-base marker has been published durably.
+pub(crate) fn finish_delta_clone_intent(generation_dir: &Path) -> Result<(), CoreError> {
+    #[cfg(test)]
+    reach_core(Cut::DeltaCloneIntentCleanup, Side::Before)?;
+    match std::fs::remove_file(generation_dir.join(LEXICAL_DELTA_CLONE_INTENT_FILE_NAME)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(CoreError::Storage(format!(
+                "lexical: remove completed delta clone intent: {error}"
+            )));
+        }
+    }
+    #[cfg(test)]
+    reach_core(Cut::DeltaCloneIntentCleanup, Side::After)?;
+    #[cfg(test)]
+    reach_core(Cut::DeltaCloneDirectorySync, Side::Before)?;
+    sync_generation_directory(generation_dir)?;
+    #[cfg(test)]
+    reach_core(Cut::DeltaCloneDirectorySync, Side::After)?;
+    Ok(())
 }
 
 /// Whether this directory already holds a materialized lexical index.
@@ -125,6 +172,8 @@ pub(crate) fn is_seal_marker_entry(file_name: &str) -> bool {
                 | LEXICAL_SCRUB_RECEIPT_FILE_NAME
                 | LEXICAL_QUARANTINE_RECEIPT_FILE_NAME
                 | crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME
+                | LEXICAL_DELTA_CLONE_INTENT_FILE_NAME
+                | LEXICAL_DELTA_BASE_FILE_NAME
         )
 }
 
@@ -140,14 +189,7 @@ pub(crate) fn inherit_generation_entry(source: &Path, target: &Path) -> Result<(
             ))
         })?;
     if is_generation_local_entry(file_name) {
-        let _bytes_copied: u64 = std::fs::copy(source, target).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: copy generation-local entry {} -> {}: {err}",
-                source.display(),
-                target.display()
-            ))
-        })?;
-        return Ok(());
+        return copy_atomic_durable(source, target);
     }
     // Both paths live under one state root, so they are always on one device.
     // A failure here is a real storage fault, not a reason to quietly fall back
@@ -197,10 +239,27 @@ pub(crate) fn ensure_base_generation_is_servable(base_dir: &Path) -> Result<(), 
 /// gate rationale is recoverable with
 /// `git show eff53181:docs/bugbash/sep-16/adr/G0-L-tantivy-snapshot-reuse.md`;
 /// current qualification still requires a fresh source-bound receipt.
+#[cfg(test)]
 pub(crate) fn clone_generation_directory_preserving_existing(
     src: &Path,
     dst: &Path,
 ) -> Result<(), CoreError> {
+    clone_generation_directory(src, dst, false)
+}
+
+/// Resume inheritance before any writer can open the target.
+///
+/// Recopy private Tantivy metadata on retry: an interrupted copy can leave an existing but
+/// incomplete file. Immutable links and generation-owned overlays retain
+/// their existing precedence.
+pub(crate) fn clone_generation_directory_replaying_intent(
+    src: &Path,
+    dst: &Path,
+) -> Result<(), CoreError> {
+    clone_generation_directory(src, dst, true)
+}
+
+fn clone_generation_directory(src: &Path, dst: &Path, replaying: bool) -> Result<(), CoreError> {
     if !src.exists() {
         return Err(CoreError::NotReady(format!(
             "lexical: base generation missing at {}",
@@ -234,7 +293,16 @@ pub(crate) fn clone_generation_directory_preserving_existing(
             ))
         })?;
         if file_type.is_dir() {
-            clone_generation_directory_preserving_existing(&entry_path, &target_path)?;
+            clone_generation_directory(&entry_path, &target_path, replaying)?;
+            continue;
+        }
+        if replaying
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(is_generation_local_entry)
+        {
+            inherit_generation_entry(&entry_path, &target_path)?;
             continue;
         }
         if target_path.exists() {
@@ -248,6 +316,9 @@ pub(crate) fn clone_generation_directory_preserving_existing(
             continue;
         }
         inherit_generation_entry(&entry_path, &target_path)?;
+    }
+    if replaying {
+        sync_generation_directory(dst)?;
     }
     Ok(())
 }

@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Cut {
     InheritedObjectLink,
+    DeltaCloneIntentCleanup,
+    DeltaCloneDirectorySync,
     ObjectWrite,
     ObjectFileSync,
     ObjectLink,
