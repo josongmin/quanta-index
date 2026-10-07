@@ -75,8 +75,11 @@ def _cross_repo_custody_windows(source: str) -> dict[str, tuple[int, int]]:
         "resolution_drift_end": "  printf 'resolved cross-repo dependency identities changed during proof\\n' >&2\n  exit 1\nfi\n",
         "final_output": "printf 'paired-daemon-sha256:",
     }
-    positions = {name: source.index(marker) for name, marker in markers.items()}
-    assert list(positions.values()) == sorted(positions.values())
+    positions = {}
+    start = source.index('export QUANTA_INDEX_SEARCHD_BIN="$custody_binary"')
+    for name, marker in markers.items():
+        positions[name] = source.index(marker, start)
+        start = positions[name] + len(marker)
     boundaries = (
         ("r5-producer", "paired_source", "r5_producer"),
         ("after-resolution", "r5_end", "resolution_after"),
@@ -117,13 +120,16 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     # The typed runner owns the exact list/run selectors. Its independent
     # literal and behavior oracles live in test_paired_r5_result.py.
     target = 'python3 "$quanta_root/tools/ci/paired_r5_result.py"'
-    assert source.count(target) == 1
+    assert source.count(target) == 2
+    assert source.index("--verify-resolution-only") < source.index(
+        "just rust-build-release-daemon-fresh"
+    )
     assert '--qbc-lane "$r5_lane"' in source
     assert "-- --list" not in source and "-- --exact --nocapture" not in source
     build = source.index("just rust-build-release-daemon-fresh")
     compare = source.index('binary_digest="$(python3')
     assert source.index('require_frozen_source "$quanta_root"') < build
-    assert build < compare < source.index(target)
+    assert build < compare < source.index(target, compare)
     assert 'QUANTA_INDEX_SEARCHD_BIN="$custody_binary"' in source
     _assert_cross_repo_custody(source)
 

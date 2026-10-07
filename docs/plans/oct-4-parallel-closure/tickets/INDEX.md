@@ -399,10 +399,18 @@ b2599 원격 Python CI는 Linux에 없는 `/private/tmp` 기본 경로로 `FAILE
 main48fd의 수리는 OS 임시 경로 정규화·3파일/4경계 변조 거절·typed runner 및 observed harness
 호출 경로 대조를 포함한다. Focused128과 full 실패 이후 source-contract tail276은 `VERIFIED`다.
 Local full 실행의4,058passed/1failed는 수리 전 결과로 보존하며 최신 full-suite 성공으로 합산하지 않는다.
-후속 원격 Python CI의 terminal 결과는 별도로 회수한다.
+48fd 원격 Python1576은 동일 source에서4,355passed/30skipped·Ruff check/406-file format으로
+`VERIFIED`다. 별도 P00 selection386은 중첩하며 합산하지 않는다. 후속 tooling 수정과 Rust CI는 별도 scope다.
 QBC metadata completion probe는 별도로 `verification source changed during QBC execution`로
 `FAILED`다. 원인은 미확정이며 실제 Nextest 실행 실패로 재표기하지 않는다.
-Current paired caller/kernel build/test는 `NOT_RUN`이며 clean Quanta source 준비 후 실행한다.
+Clean Quanta c38/fixed77bc의 첫 actual paired recipe는 새 all-feature release build를13m08s에
+완료한 뒤 dependency_lock 경로 기준을 nested workspace에 중복 적용해 `FAILED`였다.
+실제 caller/kernel Nextest list/run은 시작하지 않았다. 원 controller log·fresh daemon을
+`/private/tmp/qna7vj2zq6/r5-c38-failure.json`과 연결해 보존했다. 검증기는 producer와 같은
+paired-checkout 상대 경로를 사용하도록 수리했고, 동일 file guard를 expensive build 전에 실행한다.
+Actual resolver 출력의 현재 manifest/lock 대조와 producer→runner 경로 roundtrip·pre-build refusal·custody
+focused133은 `VERIFIED`다. Current paired caller/kernel
+build/test는 아직 `NOT_RUN`이며 수리된 clean source에서 실행한다.
 Resolution preflight로 이 테스트를 대체하지 않는다.
 외부 작업을 reset/stage하거나 dirty pair를 qualified로 발행하지 않는다.
 외부 Semantica R3 expected semantic partition/omission 검증은 producer owner의 별도 연동 잔여다.

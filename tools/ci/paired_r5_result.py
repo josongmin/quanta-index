@@ -334,8 +334,11 @@ def _verify_resolution_files(root: Path, semantica: Path, resolutions: dict[str,
             raise ValueError("paired resolver lacks the selected caller/kernel feature authority")
         if item.get("workspace") != "packages/analysis/quanta-v2":
             raise ValueError("paired resolver workspace identity changed")
+        lock = item.get("dependency_lock")
+        if not isinstance(lock, dict) or lock.get("path") != item["workspace"] + "/Cargo.lock":
+            raise ValueError("paired resolver lock must be relative to the paired checkout")
         for parent, field, base in (
-            (item.get("dependency_lock"), "sha256", semantica / item["workspace"]),
+            (lock, "sha256", semantica),
             (
                 {"path": "Cargo.toml", "sha256": item.get("quanta_workspace_manifest_sha256")},
                 "sha256",
@@ -378,19 +381,39 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--quanta-root", required=True, type=Path)
     parser.add_argument("--semantica-root", required=True, type=Path)
-    parser.add_argument("--evidence-root", required=True, type=Path)
-    parser.add_argument("--quanta-head", required=True)
-    parser.add_argument("--semantica-head", required=True)
-    parser.add_argument("--daemon-digest", required=True)
-    parser.add_argument("--built-binary", required=True, type=Path)
-    parser.add_argument("--provided-binary", required=True, type=Path)
-    parser.add_argument("--custody-binary", required=True, type=Path)
+    parser.add_argument("--verify-resolution-only", action="store_true")
+    parser.add_argument("--evidence-root", type=Path)
+    parser.add_argument("--quanta-head")
+    parser.add_argument("--semantica-head")
+    parser.add_argument("--daemon-digest")
+    parser.add_argument("--built-binary", type=Path)
+    parser.add_argument("--provided-binary", type=Path)
+    parser.add_argument("--custody-binary", type=Path)
     parser.add_argument("--runtime-resolution", required=True)
     parser.add_argument("--kernel-resolution", required=True)
-    parser.add_argument("--qbc-lane", required=True)
+    parser.add_argument("--qbc-lane")
     args = parser.parse_args()
     root = args.quanta_root.resolve(strict=True)
     semantica = args.semantica_root.resolve(strict=True)
+    resolutions = {
+        "runtime": json.loads(args.runtime_resolution),
+        "kernel": json.loads(args.kernel_resolution),
+    }
+    _verify_resolution_files(root, semantica, resolutions)
+    if args.verify_resolution_only:
+        return 0
+    for field in (
+        "evidence_root",
+        "quanta_head",
+        "semantica_head",
+        "daemon_digest",
+        "built_binary",
+        "provided_binary",
+        "custody_binary",
+        "qbc_lane",
+    ):
+        if getattr(args, field) is None:
+            parser.error("--" + field.replace("_", "-") + " is required for runner execution")
     output = args.evidence_root
     if not output.is_absolute() or output.exists() or output.is_symlink():
         raise ValueError("R5 evidence root must be a fresh absolute external directory")
@@ -402,10 +425,6 @@ def main() -> int:
         raise ValueError("daemon digest is invalid")
     _frozen(root, args.quanta_head)
     _frozen(semantica, args.semantica_head)
-    resolutions = {
-        "runtime": json.loads(args.runtime_resolution),
-        "kernel": json.loads(args.kernel_resolution),
-    }
     # Admit the complete canonical resolver pair before any selected runner.
     # The post-run repetition below rejects source or lock drift during proof.
     _verify_resolution_files(root, semantica, resolutions)

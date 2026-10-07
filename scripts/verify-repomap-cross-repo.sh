@@ -47,6 +47,10 @@ kernel_resolution="$(resolved_pair quanta-runtime-retrieval-kernel index-sdk-ing
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
 
+PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" python3 "$quanta_root/tools/ci/paired_r5_result.py" \
+  --verify-resolution-only --quanta-root "$quanta_root" --semantica-root "$semantica_root" \
+  --runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution"
+
 cd -- "$quanta_root"
 just rust-build-release-daemon-fresh
 target_dir="$(./scripts/cargow --lane release-daemon-bin-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"

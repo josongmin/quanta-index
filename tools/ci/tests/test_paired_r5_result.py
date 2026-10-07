@@ -439,7 +439,10 @@ def _complete_resolution_fixture(tmp_path: Path) -> tuple[Path, Path, dict]:
     base = {
         "version": 1,
         "workspace": "packages/analysis/quanta-v2",
-        "dependency_lock": {"path": "Cargo.lock", "sha256": digest(workspace / "Cargo.lock")},
+        "dependency_lock": {
+            "path": "packages/analysis/quanta-v2/Cargo.lock",
+            "sha256": digest(workspace / "Cargo.lock"),
+        },
         "quanta_workspace_manifest_sha256": digest(root / "Cargo.toml"),
         "packages": packages,
     }
@@ -468,6 +471,46 @@ def test_complete_minimal_pair_file_and_feature_custody(tmp_path: Path) -> None:
         _require_exact_resolution(resolutions["runtime"], resolutions["runtime"], "caller") is None
     )
     assert _require_exact_resolution(resolutions["kernel"], resolutions["kernel"], "kernel") is None
+
+
+@pytest.mark.parametrize("lock_path", ["Cargo.lock", "/Cargo.lock", "../Cargo.lock"])
+def test_paired_lock_path_refuses_another_anchor(tmp_path: Path, lock_path: str) -> None:
+    root, paired, resolutions = _complete_resolution_fixture(tmp_path)
+    resolutions["runtime"]["dependency_lock"]["path"] = lock_path
+    with pytest.raises(ValueError, match="relative to the paired checkout"):
+        _verify_resolution_files(root, paired, resolutions)
+
+
+def test_resolution_preflight_cli_checks_nested_lock_without_runner(tmp_path: Path) -> None:
+    root, paired, resolutions = _complete_resolution_fixture(tmp_path)
+    # A different root lock cannot stand in for the nested Cargo resolver's lock.
+    (paired / "Cargo.lock").write_bytes(b"unrelated root lock\n")
+    command = [
+        sys.executable,
+        str(Path(RUNNER.__file__)),
+        "--verify-resolution-only",
+        "--quanta-root",
+        str(root),
+        "--semantica-root",
+        str(paired),
+        "--runtime-resolution",
+        json.dumps(resolutions["runtime"]),
+        "--kernel-resolution",
+        json.dumps(resolutions["kernel"]),
+    ]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(Path(RUNNER.__file__).resolve().parents[2])
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    result = subprocess.run(
+        command, cwd=tmp_path, env=environment, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    (paired / "packages/analysis/quanta-v2/Cargo.lock").write_bytes(b"changed nested lock\n")
+    result = subprocess.run(
+        command, cwd=tmp_path, env=environment, capture_output=True, text=True, check=False
+    )
+    assert result.returncode != 0
+    assert "paired resolver file identity changed" in result.stderr
 
 
 @pytest.mark.parametrize("version", [False, True, 1.0])

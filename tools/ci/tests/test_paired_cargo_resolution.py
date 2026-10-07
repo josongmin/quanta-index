@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools.ci import binary_custody
+from tools.ci.paired_r5_result import _verify_resolution_files
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "paired_cargo_resolution.py"
 SPEC = importlib.util.spec_from_file_location("paired_cargo_resolution", MODULE_PATH)
@@ -115,8 +116,9 @@ def test_binary_custody_refuses_symlink_and_nonprivate_destination(tmp_path):
 
 @pytest.mark.parametrize("mutate", [False, True])
 @pytest.mark.parametrize("temporary", ["default", "custom", "alias"])
+@pytest.mark.parametrize("preflight_failure", [False, True])
 def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
-    resolution, tmp_path, monkeypatch, mutate, temporary
+    resolution, tmp_path, monkeypatch, mutate, temporary, preflight_failure
 ):
     quanta, paired, _, _ = resolution
     repo_root = Path(__file__).resolve().parents[3]
@@ -159,12 +161,15 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     built.chmod(0o700)
     evidence_parent_record = tmp_path / "evidence-parent.txt"
     (quanta / "tools/ci/paired_r5_result.py").write_text(
-        "import argparse, os, pathlib, subprocess\n"
+        "import argparse, os, pathlib, subprocess, sys\n"
         "p=argparse.ArgumentParser()\n"
+        "p.add_argument('--verify-resolution-only', action='store_true')\n"
         "for k in ('quanta-root','semantica-root','evidence-root','qbc-lane','quanta-head',"
         "'semantica-head','daemon-digest','built-binary','provided-binary','custody-binary',"
         "'runtime-resolution','kernel-resolution'): p.add_argument('--'+k)\n"
-        "a=p.parse_args(); pinned=pathlib.Path(a.custody_binary)\n"
+        "a=p.parse_args()\n"
+        f"if a.verify_resolution_only: sys.exit({7 if preflight_failure else 0})\n"
+        "pinned=pathlib.Path(a.custody_binary)\n"
         "assert pinned != pathlib.Path(a.built_binary)\n"
         "assert subprocess.check_output([str(pinned)]) == b'original'\n"
         "evidence=pathlib.Path(a.evidence_root)\n"
@@ -179,7 +184,8 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     (quanta / "scripts/cargow").chmod(0o700)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "just").write_text("#!/bin/sh\nexit 0\n")
+    build_marker = tmp_path / "build-called.txt"
+    (bin_dir / "just").write_text(f'#!/bin/sh\ntouch "{build_marker}"\nexit 0\n')
     (bin_dir / "just").chmod(0o700)
     for root in (quanta, paired):
         (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
@@ -210,7 +216,11 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         evidence_parent = Path(evidence_parent_record.read_text())
         assert evidence_parent.parent == temporary_root
         evidence_parent.rmdir()
-    if mutate:
+    if preflight_failure:
+        assert completed.returncode == 7
+        assert not build_marker.exists()
+        assert not evidence_parent_record.exists()
+    elif mutate:
         assert completed.returncode != 0
         assert "release daemon bytes changed" in completed.stderr
     else:
@@ -233,6 +243,30 @@ def test_exact_root_binds_nested_resolver_lock_and_no_local_paths(resolution):
     )
     assert set(item["name"] for item in result["packages"]) == MODULE.REQUIRED_QUANTA_PACKAGES
     assert str(resolution[0].parent) not in json.dumps(result)
+
+
+def test_actual_resolver_output_roundtrips_into_paired_runner(resolution):
+    quanta, paired, consumer, metadata = resolution
+    metadata["resolve"]["nodes"][-1]["features"].append("retrieval-authority-contract-surface")
+    runtime = validate(resolution)
+    kernel = "quanta-runtime-retrieval-kernel"
+    kernel_manifest = paired / "packages/analysis/quanta-v2/crates" / kernel / "Cargo.toml"
+    kernel_manifest.parent.mkdir()
+    kernel_manifest.write_text(f'[package]\nname = "{kernel}"\nversion = "0.1.0"\n')
+    kernel_metadata = copy.deepcopy(metadata)
+    kernel_metadata["packages"][-1].update(
+        id=kernel, name=kernel, manifest_path=str(kernel_manifest)
+    )
+    kernel_metadata["resolve"]["nodes"][-1].update(
+        id=kernel, features=["index-sdk-ingress-surface"]
+    )
+    kernel_result = MODULE.validate_resolution(
+        kernel_metadata, quanta_root=quanta, paired_root=paired, consumer=kernel
+    )
+    assert (
+        _verify_resolution_files(quanta, paired, {"runtime": runtime, "kernel": kernel_result})
+        is None
+    )
 
 
 def test_wrong_checkout_same_name_same_bytes_is_refused(resolution, tmp_path):
