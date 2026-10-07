@@ -66,6 +66,13 @@ impl<'a> CorpusDecodeModeV1<'a> {
     pub(super) fn ordinary_v1() -> Self {
         Self::Ordinary(PhantomData)
     }
+    #[cfg_attr(
+        not(feature = "quanta-native-identity-v1"),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "ordinary and native visitors share the fallible work-admission API"
+        )
+    )]
     pub(super) fn work_v1<E: de::Error>(self, units: u64) -> Result<(), E> {
         match self {
             Self::Ordinary(_) => {
@@ -76,6 +83,13 @@ impl<'a> CorpusDecodeModeV1<'a> {
             Self::Native(owner) => owner.consume_corpus_work_v1(units).map_err(E::custom),
         }
     }
+    #[cfg_attr(
+        not(feature = "quanta-native-identity-v1"),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "ordinary and native visitors share the fallible byte-admission API"
+        )
+    )]
     pub(super) fn bytes_v1<E: de::Error>(self, bytes: usize) -> Result<(), E> {
         match self {
             Self::Ordinary(_) => {
