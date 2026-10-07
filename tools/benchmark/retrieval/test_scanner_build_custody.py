@@ -1,8 +1,11 @@
 """Scanner owner producer boundaries with fixed fixture bytes; root runs later."""
 
 import copy
+import fcntl
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -86,7 +89,7 @@ def admitted(tmp_path, monkeypatch):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(role.encode())
             return subprocess.CompletedProcess(argv, 0, b"build", b"")
-        if argv == custody._capture_argv(repo, out / "run-spec.json"):
+        if argv == custody._capture_argv(repo, out / "run-spec.json", kwargs["env"]):
             for role, relative in custody.CAP_RELPATHS.items():
                 path = out / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,7 +106,11 @@ def test_canonical_build_capture_and_replay(admitted, monkeypatch):
     receipt = custody.capture(spec, receipt_path)
     assert receipt["build_argv"] == custody._build_argv(Path(spec["repo"]))
     assert receipt["capture_argv"] == custody._capture_argv(
-        Path(spec["repo"]), Path(spec["output_root"]) / "run-spec.json"
+        Path(spec["repo"]),
+        Path(spec["output_root"]) / "run-spec.json",
+        custody._effective_env(
+            Path(spec["repo"]), Path(spec["output_root"]), spec["env_overrides"]
+        ),
     )
     assert custody.verify(receipt) == receipt["binaries"]
     monkeypatch.setenv("UNRELATED_SHELL_CHANGE", "ignored by closed execution environment")
@@ -130,6 +137,66 @@ def test_fixed_build_controls_cannot_be_overridden(admitted, key):
     assert custody._effective_env(repo, out, {})[key] in ("0", "1")
     with pytest.raises(CustodyError, match="unsupported|cannot be overridden"):
         custody._effective_env(repo, out, {key: "8"})
+
+
+def test_capture_waits_for_build_slot_before_starting_leaf(tmp_path):
+    repo = Path(__file__).resolve().parents[3]
+    cache = tmp_path / "cache"
+    lock = cache / "resource-admission/build-test.lock"
+    lock.parent.mkdir(parents=True)
+    env = {
+        "HOME": str(tmp_path),
+        "PATH": os.environ["PATH"],
+        "QUANTA_INDEX_CACHE_ROOT": str(cache),
+        "QUANTA_INDEX_RESOURCE_WAIT_SECONDS": "1",
+        "QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS": "5",
+    }
+    argv = custody._capture_argv(repo, tmp_path / "run-spec.json", env)
+    marker = tmp_path / "leaf-started"
+    leaf = [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"]
+    argv = argv[: argv.index("--") + 1] + leaf
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        refused = subprocess.run(argv, env=env, capture_output=True, timeout=10, check=False)
+        assert refused.returncode == 124
+        assert not marker.exists()
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        admitted = subprocess.run(argv, env=env, capture_output=True, timeout=10, check=False)
+        assert admitted.returncode == 0
+        assert marker.is_file()
+    finally:
+        os.close(fd)
+
+
+def test_default_capture_lock_matches_cargow_cache_layout(tmp_path):
+    repo = Path(__file__).resolve().parents[3]
+    env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"]}
+    root = subprocess.check_output(
+        ["bash", str(repo / "scripts/quanta-index-env.sh")], env=env, text=True
+    ).strip()
+    argv = custody._capture_argv(repo, tmp_path / "run-spec.json", env)
+    assert Path(argv[argv.index("--lock") + 1]) == (
+        Path(root) / "resource-admission/build-test.lock"
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"QUANTA_INDEX_CACHE_ROOT": "relative/cache"},
+        {"QUANTA_INDEX_RESOURCE_WAIT_SECONDS": "0"},
+        {"QUANTA_INDEX_RESOURCE_WAIT_SECONDS": "-1"},
+        {"QUANTA_INDEX_RESOURCE_WAIT_SECONDS": "invalid"},
+        {"QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS": "0"},
+    ],
+)
+def test_capture_refuses_invalid_admission_before_build(admitted, overrides):
+    spec, receipt_path = admitted
+    spec["env_overrides"].update(overrides)
+    with pytest.raises(CustodyError, match="scanner resource"):
+        custody.capture(spec, receipt_path)
+    assert not Path(spec["output_root"]).exists()
 
 
 def test_reused_target_and_arbitrary_capture_command_refused(admitted):

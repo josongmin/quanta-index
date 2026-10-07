@@ -402,8 +402,41 @@ def _build_argv(repo: Path) -> list[str]:
     ]
 
 
-def _capture_argv(repo: Path, run_spec: Path) -> list[str]:
+def _capture_argv(repo: Path, run_spec: Path, env: dict[str, str]) -> list[str]:
+    # Capture is a leaf execution of already built binaries. Share Cargo's
+    # admission slot without recursively reserving it around the build.
+    cache = env.get("QUANTA_INDEX_CACHE_ROOT")
+    if cache:
+        cache_root = Path(cache)
+    else:
+        home = Path(env["HOME"])
+        cache_root = home / (
+            "Library/Caches/quanta-index" if sys.platform == "darwin" else ".cache/quanta-index"
+        )
+    if not cache_root.is_absolute():
+        raise CustodyError("scanner resource cache root must be absolute")
+    bounds = []
+    for key, default in (
+        ("QUANTA_INDEX_RESOURCE_WAIT_SECONDS", "300"),
+        ("QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS", "7200"),
+    ):
+        try:
+            bound = int(env.get(key, default))
+        except ValueError as error:
+            raise CustodyError(f"scanner resource bound is invalid: {key}") from error
+        if bound < 1:
+            raise CustodyError(f"scanner resource bound must be positive: {key}")
+        bounds.append(str(bound))
     return [
+        sys.executable,
+        str(repo / "tools/ci/resource_admission.py"),
+        "--lock",
+        str(cache_root / "resource-admission/build-test.lock"),
+        "--wait-seconds",
+        bounds[0],
+        "--timeout-seconds",
+        bounds[1],
+        "--",
         sys.executable,
         "-m",
         "tools.benchmark.retrieval.run",
@@ -447,6 +480,7 @@ def capture(spec: dict, receipt_path: Path) -> dict:
     ):
         raise CustodyError("input and output roots must be disjoint")
     env = _effective_env(repo, out, spec["env_overrides"])
+    _capture_argv(repo, out / "run-spec.json", env)
     before_source = source_capture(repo, spec["base_git_revision"], overlay, env=env)
     before_inputs = _input_inventory(roots)
     out.mkdir(parents=True)
@@ -472,7 +506,7 @@ def capture(spec: dict, receipt_path: Path) -> dict:
     run_spec = out / "run-spec.json"
     run_spec.write_bytes(_canonical(_run_spec(template, out, binaries)) + b"\n")
     _assert_run_spec(out, template, binaries)
-    capture_argv = _capture_argv(repo, run_spec)
+    capture_argv = _capture_argv(repo, run_spec, env)
     observed = subprocess.run(capture_argv, cwd=repo, env=env, capture_output=True, check=False)
     (out / "capture.stdout").write_bytes(observed.stdout)
     (out / "capture.stderr").write_bytes(observed.stderr)
@@ -577,7 +611,7 @@ def verify(receipt: dict) -> dict:
     if receipt["capture_outputs"] != _capture_inventory(out, CAP_RELPATHS):
         raise CustodyError("scanner capture output drifted")
     if (
-        receipt["capture_argv"] != _capture_argv(repo, out / "run-spec.json")
+        receipt["capture_argv"] != _capture_argv(repo, out / "run-spec.json", env)
         or receipt["capture_stdout_sha256"] != _file(out / "capture.stdout")
         or receipt["capture_stderr_sha256"] != _file(out / "capture.stderr")
     ):
