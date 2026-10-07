@@ -340,6 +340,48 @@ These are observed prior owner terminals, not Rust runs performed by the doc edi
 The original XL result remains at
 `/Users/songmin/.codex/task-evidence/quanta-scale-recovery-20261006-01a10d0b/xl-result.json`.
 
+## Observed scanner two-arm diagnostic
+
+On 2026-10-07 the recovered Bat corpus (revision
+`4608fc959aa8abf80d32198836511a570b7ae9ea`) was captured in both actual scanner arms:
+79 files, 338 queries, six incomplete files, warmup1 and measurement repetitions3.
+The frozen source is `a5e87614bee79bf9d67c8358df01313242548798`; Unicode-control/ASCII
+source identities are `221118289b91942f420053fb347dc0b32f9e60dab86d46d04de5ddb6a6fbaa77`
+and `8870872d6e69f854b2dcc95247158ef31f2c6cc3902f23f8474f44d145111e1d`.
+Socket-path preflight repairs `a5e87614`/`a80eb83d` precede expensive builds and
+refuse excessive UTF-8 byte lengths and resolved-parent paths. Custody/source47,
+existing runner-path2 and additional byte-versus-character/symlink3 regressions passed.
+
+Baseline v3 release build completed in30m37s, but its default `require-complete`
+capture refused ParseFailed6/79. A separate explicit `allow-incomplete` capture
+exited0. Candidate's initial fresh build was interrupted at14m16s with exit143
+to yield to code validation. Normal resume of that owned target then exited0
+in1793.091s including resource admission wait, and candidate live capture exited0.
+The strict failure and interrupted build remain separate from these completions.
+Earlier v2's42m58s build and failed155-byte macOS socket path are not replay success.
+
+Actual pre/post source inventories, binaries, tool bytes/versions, inputs and
+capture-output digests were rechecked; the pair differs only by the approved
+scanner source overlay. Individual environment fingerprints remained stable;
+two-arm execution-path differences are `CARGO_TARGET_DIR`, `PATH` and `PYTHONPATH`.
+The existing `compare_scanner` component verified338 rows with matching status,
+path/order/score bits, completed responses, cursor, work counts and configuration.
+Both arms retain325 success and13 capped outcomes; capped is not successful coverage.
+Result: `diagnostic_unqualified`, with no speed/adoption decision. Evidence stays
+outside the checkout at `/Users/songmin/.codex/sab7v3/`, including
+`baseline-diagnostic-observed.json`, `candidate-diagnostic-observed.json` and
+`observed-scanner-comparison.json`. Executed comparison command:
+`PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B /Users/songmin/.codex/sab7v3/compare-observed.py`.
+
+These are observed local builds/captures and external identity rechecks, not
+completed `scanner_build_custody` combined receipts. Canonical
+`query_timing_overhead.py --scanner-ab` two closed-receipt validation is `NOT_RUN`.
+Frozen a5 does not qualify later lazy-reader/deadline or buffer-sharing source,
+and this fresh diagnostic does not recover the absent historical binary replay.
+Admitted-host inputs, declared repetitions and whole-caller acceptance retain
+[E4-03](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-03)/
+[E4-06](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-06) boundaries.
+
 ## Operational actions
 
 The existing canonical producer/result grammar executes separate tracked

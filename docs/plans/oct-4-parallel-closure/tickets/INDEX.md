@@ -75,8 +75,9 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
   원본 byte 동일 복구 또는 새 source-bound 준비가 선행한다.
 - Historical supplemental742pairs ledger와 historical Scanner A/B 실행 root는 현재 부재해 해당 원본 replay는 `BLOCKED`다.
   현재 source별151tasks·742pairs union과 review 입력은 보존돼 있으며 historical ledger와 다른 입력이다.
-  Scanner의 durable Bat79files/338queries suite·blind pack은 복구해 current validator/parity를 통과했다.
-  새 source의 two-arm build/capture는 E4-03 잔여다. 기록된 SHA나 과거 수치로 입력을 재구성하지 않는다.
+  Scanner의 durable Bat79files/338queries 입력·frozen a5 관측 캡처/parity는
+  [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#observed-scanner-two-arm-diagnostic)로 완료 이관했다.
+  Closed combined-receipt·후속 source 비교는 [E4-03](#o4-e4-03) 잔여다.
 - Scale: matching Large/XL 비용/RSS·lifecycle 및 선택한 OS-child restart·offered-load가 잔여다.
   Fixed8642 Medium causal 비용/RSS·same-process reopen과 이전 기능/CI checkpoint는
   [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)이 소유한다.
@@ -246,37 +247,17 @@ regular-file st_size이며 restart gauge0·st_blocks·physical I/O/true peak와 
 
 ### O4-E4-03
 
-입력 복구·baseline 진단 완료, candidate 잔여 · historical Scanner A-B original `/private/tmp/qis.utp62qk5`와
-옛 binary는 부재하여 그 실행의 원본 replay는 `BLOCKED`다. Fixed338/79files·ParseFailed6의 과거
-diagnostic은 원 scope의 기록이며 speed/adoption verdict가 아니다.
-Durable `qi-b08-closeout-20261004-2i72kj91/mechanical-c4-amended-f3d2ae29/bat/declaration_name_osa1_casefold/`
-suite·blind pack 및 frozen Bat revision `4608fc959aa8abf80d32198836511a570b7ae9ea` 입력을 찾았다.
-Current suite validation·derived blind-pack exact parity와 canonical Unicode-control/ASCII pair identity
-검증은 완료됐다. v1은 코드 검증 우선으로 중단한 미완료 build이며 성공 receipt가 아니다.
-v2 baseline release build는 `VERIFIED`(42m58s)지만 capture는 UDS path155bytes가
-macOS103bytes limit을 초과해 `FAILED`다.
-`scanner_build_custody.py`가 expensive build 전에 기존 runner의 socket-path preflight를
-호출하도록 수리했다. ASCII·다중바이트·parent symlink 경로의 build 전 거절을 포함한 custody/source
-회귀47/47 및 기존 runner path 회귀2/2가 통과했다. UTF-8 byte 길이와 resolved-parent 경로를
-구분한 추가 회귀3/3도 통과했다(`a5e87614`·`a80eb83d`, main push).
-짧은 v3 root `/Users/songmin/.codex/sab7v3`는 frozen source
-`a5e87614bee79bf9d67c8358df01313242548798`를 사용한다. Unicode/ASCII source identity는 각각
-`221118289b91942f420053fb347dc0b32f9e60dab86d46d04de5ddb6a6fbaa77` /
-`8870872d6e69f854b2dcc95247158ef31f2c6cc3902f23f8474f44d145111e1d`다.
-v3 baseline release build는 `VERIFIED`(30m37s)이나 default `require-complete` capture는
-ParseFailed6/79로 `FAILED`다. 별도 explicit `allow-incomplete` exploratory capture는
-338 queries·79 files·incomplete6·warmup1/repetitions3를 유지하며 exit0으로 완료했다.
-전후 source/binary/tool/input 일치와 실제 output digest는 `baseline-diagnostic-observed.json`에 있다.
-이는 관측한 local build/live capture이며 완료된 `scanner_build_custody` combined receipt가 아니다.
-Candidate fresh build는 코드 집중 검증에 slot을 양보하기 위해 14m16s에 exit143으로 중단했다.
-동일 소유 target의 source-checked resume가 필요하며 candidate capture·비교는 `NOT_RUN`이다.
-Canonical `query_timing_overhead.py --scanner-ab`의 two closed-receipt 검증도 `NOT_RUN`이다.
-Frozen a5 진단은 후속 lazy-reader/deadline 수정 source의 성능 검증을 대신하지 않는다.
-이는 복구된 입력의 fresh two-arm 진단이며 historical binary 결과 재생이 아니다.
-두 arm의 관측한 source→binary build 상태와
-independent tokenizer/full-DP·bytes/span/case/order/status/cursor/work/config parity를 대조한다.
-`query_timing_overhead.py --scanner-ab`는 항상 diagnostic_unqualified이며 observer on/off와 다른 비교다.
-채택 판단은 사전 whole-caller keep/modify/withdraw 기준을 따른다. Child 개선은 whole-call 악화를 상쇄하지 않는다.
+`BLOCKED` · historical Scanner A-B original `/private/tmp/qis.utp62qk5`와 옛 binary가
+부재하여 그 실행의 원본 replay는 불가능하다. 기록된 SHA나 과거 수치로 입력을 재구성하지 않는다.
+복구된 Bat79files/338queries 입력과 frozen a5의 두 실제 캡처·관측 parity는
+[cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#observed-scanner-two-arm-diagnostic)가 소유한다.
+
+`NOT_RUN` · canonical `query_timing_overhead.py --scanner-ab`의 two closed combined-receipt
+검증 및 후속 source에 결속한 비교. 완료된 관측 비교는 중단 target의 normal resume를 포함하므로
+closed fresh-build/capture receipt로 승격하지 않는다. Frozen a5 진단을 lazy-reader/deadline·
+후속 buffer-sharing source의 성능 검증으로 재표기하지 않는다.
+정식 speed/adoption은 [E4-06](#o4-e4-06)의 host·반복 입력과 사전 whole-caller
+keep/modify/withdraw 기준이 필요하다. Child 개선은 whole-call 악화를 상쇄하지 않는다.
 
 ### O4-E4-04
 
