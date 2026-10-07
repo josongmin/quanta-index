@@ -286,3 +286,39 @@ Do not relabel these artifacts as clean `5e15` or current-main formal receipts.
 Bat is an A/A repetition control, not an alternative-implementation A/B or reuse
 adoption result. Zustand closes only the selected non-Bat warmup parity cell;
 default warmup remains one and other repositories need their own selected checks.
+
+## Selected fresh release Bat pair diagnostic
+
+On 2026-10-08, a fresh exploratory Quanta/Semble lexical-file pair used the
+unchanged Bat commit `4608fc959aa8abf80d32198836511a570b7ae9ea`, 79-file
+manifest and original 20-task suite/query pack/AI-reviewed labels. Quanta used
+the three-binary-bound fresh SDK release build at clean source
+`b9c058e15d7349ed76adaa408abbd43f123aa65a`; runner SHA-256 is
+`f19e81f584e0b81f8aae36f595bd8a4353fd9c1ec43bae3bacf0c27241f3a6bd`, daemon
+SHA-256 is `c9ee82af6815481415b123102b4270186f3a1c035f0f00a4eb560c91e2b307aa`.
+Semble retained pinned 0.6.0/Python 3.13.9, lock and cached model assets.
+
+The original natural-language-file UCD17 profile and Semble lexical-file profile
+were unchanged: seed7, top-k10, one fresh root, one warmup and one measured
+schedule per system. Quanta returned ten distinct files for each task with
+`capped` outcome20; Semble recorded `success`20. The verdict's accepted40/failed0
+counts include capped windows and do not assert Quanta exhaustion. All 20 tasks
+were common eligible. Diagnostic MRR@10 was 0.9375/0.8416666666666666;
+nDCG@10 was 0.606856383265772/0.6143293951848603, candidate-minus-baseline
+delta -0.007473011919088557 with bootstrap 95% interval
+[-0.05268058916227, 0.04162469927667926]. These retained-label observations
+do not establish a qualified quality improvement.
+
+`run.py pair --spec` completed and `run.py verdict` independently replayed the
+manifest/native records/scoring; original and replayed verdict bytes matched.
+Corpus, suite, query pack, lock, source closure and binary hashes stayed fixed
+before/after. Raw capture and replay remain at `/private/tmp/q9qa8kwhvg/`.
+The first preflight refused a 104-byte UDS path before capture; its original
+spec/failure remains at `/private/tmp/qib9-xyv4xf0n/`. The retry changed only
+the external output/profile paths to fit the 103-byte limit.
+
+The report remains `diagnostic_unqualified`, `PAIR_VALID=pass`; all qualification
+claims are false. The pair manifest contains no Contract/SDK qualification
+receipts, so its `CONTRACT_GREEN`/`SDK_PATH_GREEN` remain `not_run` despite the
+separate fresh SDK proof. T01–T09 inputs, operational portability, independent
+human review, quiet-host performance and other required lanes are not closed.

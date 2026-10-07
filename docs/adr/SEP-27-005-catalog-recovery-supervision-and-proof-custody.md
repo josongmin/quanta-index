@@ -368,6 +368,30 @@ commands, receipt bytes and source provenance. Originals remain at
 rail, not the SDK's separately required fresh release build or an installed
 consumer/Linux target result. Later document revisions do not rename its source.
 
+### Selected fresh release SDK execution
+
+On 2026-10-08, `just retrieval-sdk-proof-fresh` completed on clean main
+`b9c058e15d7349ed76adaa408abbd43f123aa65a`. The source-controlled SDK inventory
+selected, executed and passed all 27 tests, with zero failures. The daemon,
+retrieval runner and SDK roundtrip test binary were built under the same initially
+empty external release target, Rust 1.92.0, two build workers and canonical
+resource admission; compiler wrappers and sccache were disabled. Execution
+context schema v3 retains `build_profile: release-fresh`, exact commands, source
+closure, raw inventory/events and all three binary identities.
+
+Canonical `portable_proof.py verify --receipt` passed. Relocated validation via
+`portable_proof.validate(..., execution_root=original, binary_files=frozen)` also
+passed with three frozen binaries and byte-identical original context, SDK
+receipt, summary, inventory, events and runner record. Originals remain at
+`/private/tmp/qi-sdk-fresh-20261008-b9c058e1-r0w5dty7/`; relocated custody remains
+at `/private/tmp/qi-sdk-relocated-b9-f4rwfcjc/`.
+
+This closes the selected fresh release SDK rail, including real separate-process
+daemon roundtrips and refusal/lifecycle controls. It does not issue installed
+CLI, actual provider, Linux, producer-pair, broader QIT or final release proof.
+Later documentation retains this source identity; the debug Contract execution
+above remains independently bound to `0d`.
+
 ### Test fixture and wait invariants
 
 The completed MISC test-optimization contracts retain these independent oracles.

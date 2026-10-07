@@ -24,7 +24,7 @@ Semantica는 외부 producer이며 fact resolution/join/completion은 그 저장
 
 ## 현재 코드 잔여
 
-2026-10-07 코드 대조 기준은 main `0d0eaa93`다. 완료된 F15/query/restart·paged directory,
+2026-10-08 코드·실행 대조 기준은 clean main `b9c058e1`다. 완료된 F15/query/restart·paged directory,
 SDK lifecycle/cache 및 hosted checkpoint의 source·명령·범위는 아래 ADR가 소유한다.
 Staged upload, EOF cancellation, checked memory/deadline, scanner custody와 P11 공통
 producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비용·반례 또는 target 계약으로 결정한다.
@@ -36,7 +36,7 @@ producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비
 
 | 범위 | 실제 코드·기존 테스트 | 남길 작업 |
 | --- | --- | --- |
-| E1 review/admission | `holdout_review.py`의 blind prepare·frozen validation·finalize, `run.py`의 실행/replay admission 검증, `corpus_binding.py`의 source split 검사 | 실제 reviewer/adjudicator raw·최종 labels·license/gold/holdout·admission 발행 |
+| E1 review/admission | `holdout_review.py`의 blind prepare·frozen validation·finalize, `run.py`의 실행/replay admission 검증, `corpus_binding.py`의 source split 검사; retained Ready9 AI license9repo/9,741files custody 대조 완료 | 실제 reviewer/adjudicator raw·최종 labels·새 holdout license/gold/acceptance·admission 발행 |
 | E1 bootstrap | `evaluator.py::mean_ci`의 10,000 draws·16-key/256KiB bounded cache와 `test_bootstrap_cache.py`의 독립 고정 golden·validation controls | 추가 최적화는 actual paired full-caller 비용·parity를 보고 판정 |
 | E2 reader/inventory | `live_lexical_external.py`의 selected-project acquired-reader 검증, `opengrok_query_witness.py`, workflow/matrix/ready-drain | 미실행 required cells·actual replay/join; caller가 요구할 경우에만 전체 loaded-reader witness 구현 |
 | E4 F15 / Scale | Fault/query/clone-retry/daemon 및 fixed5bf Large·XL causal/replay·XL offered-load·release OS restart는 [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)로 완료 이관 | E4-06 admitted Linux 반복 성능. 완료된 matrix·capture 재구현/재실행 없음 |
@@ -58,7 +58,7 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 
 | 우선·owner | 실제 잔여 | 종료 조건 |
 | --- | --- | --- |
-| P0 · I0-02 / CI/integration | 별도 selected fresh SDK·PR/release; 후속 코드 변경의 영향 rail | 동일 source terminal·inventory·receipt. 0d regular CI6jobs·Rust4,281/Python4,323 및 Contract191Rust/802Python·relocated replay는 ADR로 완료 이관 |
+| P0 · I0-02 / CI/integration | 선택된 PR/release·broader inventory; 후속 코드 변경의 영향 rail | 동일 source terminal·inventory·receipt. b9 regular CI 및 fresh release SDK27/original·relocated replay, 0d Contract191Rust/802Python·Darwin TSan4는 ADR로 완료 이관 |
 | P1 · E4 / performance | 전체 sync/read/hash/metadata·segment fanout 비용, scanner·Semble·bootstrap 판정 | 원인별 실제 관측 및 독립 parity. 정식 속도는 admitted host·사전 기준·반복 표본 |
 | P1 · E1/E2 / quality | labels/admissions·matching Quanta/Semble pair·native replay/full5·독립 채점 | required cells 및 query/unit/source/index scope, 미판단·실패·제외 분모 설명 |
 | P1 · E1 / holdout | 실제 미사용 corpus/query/family·license/gold/name-span·typo 평가 | 독립 truth·critical strata·exposure/underfill, file hit와 declaration recovery 구분 |
@@ -68,21 +68,27 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 
 | 잔여 | 현재 입력·실행 상태 | 다음 조치 |
 | --- | --- | --- |
-| E1 judgments/admission/holdout | `BLOCKED`: 151tasks/742pairs의 reviewer 배정·최종 판단0; license/gold/acceptance 부재 | 실제 독립 reviewer/adjudicator raw·승인 입력을 받은 뒤 finalizer/admission/scoring. Blank form을 labels로 채우지 않음 |
+| E1 judgments/admission/holdout | `BLOCKED`: 151tasks/742pairs의 reviewer 배정·최종 판단0; 새 holdout license/gold/acceptance 부재. Retained Ready9 AI license custody는 완료 | 실제 독립 reviewer/adjudicator raw·해당 승인 입력을 받은 뒤 finalizer/admission/scoring. Blank form을 labels로 채우지 않음 |
 | E2 other required native lanes | `NOT_RUN`: Ready9 완료와 다른 selector/input inventory | 기존 issued spec·source·raw별 reuse 또는 실행. Ready9 9repo를 재캡처하지 않음 |
 | E2 Semble A/B adoption | `NOT_RUN`: Bat A/A 반복·Zustand0/1 selected parity 완료 | 대체 구현/모드와 사전 whole-caller 기준·고정 source 입력을 선택한 뒤 실제 A/B |
 | E4 formal performance | `BLOCKED`: qualified Linux/host timeline·사전 효과/불확실성 기준 부재 | 대상 host·config·동일 boundary와 사전 paired schedule 입력 |
 | E4 Scanner closed/historical replay | `BLOCKED`: 옛 root/binary 및 기존 두 closed custody receipts 부재 | 원본 bytes 복구 또는 별도 새 source의 실제 closed capture. 기존 관측 결과는 ADR에 보존 |
-| QIT/SDK/pair/release | `NOT_RUN`: 선택된 broader inventory·fresh SDK·matching producer pair | 선언된 scope만 실행.0d Contract·Darwin TSan4개를 다시 실행하거나 전체 scope로 승격하지 않음 |
+| QIT/pair/release | `NOT_RUN`: 선택된 broader inventory·matching producer pair/release; clean producer pair 입력은 `BLOCKED` | b9 fresh SDK27은 완료. 선언된 scope만 실행; 완료된 Contract·SDK·Darwin TSan을 다시 실행하거나 전체 scope로 승격하지 않음 |
 | I0 Linux actions/installed provider | `BLOCKED`: target 경로·독립 observer/rollback 계약·설치된 CLI/API grant 부재 | 실제 대상 입력 후 adapter 계약과 action 구현/실행. 현 staged registry로 deploy 완료를 발행하지 않음 |
 | Conditional token/regex/bootstrap/policy | 측정·consumer 계약·독립 truth가 선행 | 병목/반례/선택된 정책 없이 새 캐시·API·범용 adapter를 추가하지 않음 |
 
-### 벤치 실행 잔여 — 2026-10-07 소스·입력 대조
+### 벤치 실행 잔여 — 2026-10-08 소스·입력 대조
 
 - Ready9: 최신151tasks·742pairs union의 독립 판단·final admission이 잔여다.
   Source6a3의5repo, fixedb262의 CLI·Django·Nushell·TypeORM 및 외부091 capture/replay는 완료됐다.
   Source별 raw·완료 범위·허용 reuse는 [Ready9 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope)이 소유한다.
   NL file20tasks/repo·distinct-file 계약이며 bare-symbol workflow와 구분한다.
+  b9 fresh release Bat20tasks/79files의 actual Quanta/Semble pair와 byte-identical
+  verdict replay도 [진단 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-fresh-release-bat-pair-diagnostic)로 완료 이관했다.
+  Quanta capped20/Semble success20이며 정식 품질·속도·다른 required lanes의 완료가 아니다.
+  9repo/9,741files와106notice pairs의 retained AI license custody는
+  [review ADR](../../../adr/OCT-05-001-review-admission-and-result-identity.md#retained-ready9-license-custody)로 완료 이관했다.
+  이 scope를 새 holdout 승인·human review·redistribution clearance로 재표기하지 않는다.
 - accepted55/PREP·5796 재발행 packet의 명시된 임시 root는 부재하여 원본 replay는 `BLOCKED`다.
   원본 byte 동일 복구 또는 새 source-bound 준비가 선행한다.
 - Historical supplemental742pairs ledger와 historical Scanner A/B 실행 root는 현재 부재해 해당 원본 replay는 `BLOCKED`다.
@@ -325,12 +331,17 @@ Contract: [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-b
 
 ### O4-I0-02
 
-별도 selected fresh SDK·PR/release와 후속 코드 변경의 영향 rail이 잔여다.
+선택된 PR/release·broader inventory와 후속 코드 변경의 영향 rail이 잔여다.
+b9 fresh release SDK27/27 및 original/relocated portable replay는
+[coverage ADR](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#selected-fresh-release-sdk-execution)로 완료 이관했다.
 0d Contract191Rust/802Python 및 original/relocated portable replay는
 [coverage ADR](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#selected-darwin-tsan-and-contract-execution)로 완료 이관했다.
 Source0d의 regular CI6jobs 및 Rust4,281passed/0failed/30ignored·Python4,323passed/30skipped는
 실제 terminal·inventory·receipt·모든 job source SHA 대조로 완료됐고 아래 ADR로 이관했다.
 Bench 성공은 컴파일이다. 이후 docs-only checkpoint를0d CI source로 재표기하지 않는다.
+b9의 원 final verify2275는 executor 시작 전 infrastructure_fail이며 원 workflow는 failed로 보존됐다.
+실패 final만 재시도한 verify2277은 실제 checkout/source command exit0이고 기존5workers를 상속해
+regular CI가 완료됐다. Rust4,281/Python4,323은 원 worker 횟수이며 재시도에서 중복 실행되지 않았다.
 후속 코드 변경은 영향 hosted rail을 회수한다.
 완료된 regular main CI/F15·query/restart·cache focused/strict·SDK/runtime checkpoint는
 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)와
@@ -345,6 +356,8 @@ compiler/focused/local/full/release를 구분하고 과거 결과를 최신 sour
 실제 Linux host/config/state/retention/rollback 입력은 `BLOCKED`이며 dependent action은 미실행이다.
 공통 typed producer/parser/checker/recipes는 완료됐다.
 별도 exact-pair caller/kernel build/test/daemon custody는 `NOT_RUN`; runner-candidate-only는 operational receipt가 아니다.
+2026-10-08 확인한 Semantica `d74365f505dc63c80c475b6a7ade14ff69f410d3`는1,251dirty paths로
+현재 clean pair 입력이 `BLOCKED`다. 외부 작업을 reset/stage하거나 dirty pair를 qualified로 발행하지 않는다.
 외부 Semantica R3 expected semantic partition/omission 검증은 producer owner의 별도 연동 잔여다.
 기존 producer의 prior-state binding·plan assembly와 독립 expected-partition 검증을 구분한다.
 Target/Linux 입력 부족이 upstream 검증 코드 구현의 선행은 아니다.
@@ -381,7 +394,7 @@ Owner: I0 + 실제 test/adapter owner. Contract:
 | QIT-06 / installed · J7Q-02 | 실제 설치된 SDK/CLI/daemon·consumer lifecycle/recovery·operator/preview/explain wire proof. Local/scripted peer 결과는 별도 |
 | QIT-07 | 선택된 risk-owner mutation/fuzz/coverage·survivor disposition/expiry·minimized input. 옛 미승인 비율·횟수 목표는 Git history로 퇴역 |
 | MISC-03 | 모든 선택 adapter의 실제 large success/failure stdout/stderr·many-entry metadata/archive/JSONL·interrupt·heap/bounded I/O |
-| MISC-04/05 / QIT-09 | 완료된0d regular Rust/Python/hosted·Contract/relocated replay·선택TSan을 제외한 추가 SDK/native/installed/Linux scope의 canonical nonzero inventory/terminal·replay. API/model 및 조건부 diagnostics는 선택한 범위만 판정 |
+| MISC-04/05 / QIT-09 | 완료된 b9 regular CI·fresh SDK27/original·relocated replay 및0d Contract·선택TSan을 제외한 추가 native/installed/Linux scope의 canonical nonzero inventory/terminal·replay. API/model 및 조건부 diagnostics는 선택한 범위만 판정 |
 | MISC-06 / QIT-08 | 같은 selector·assertions의 paired test cost 및 query-observer/deadline/fetch parity. 정식 latency/scale/relevance는 E4/E1에 한 번만 실행 |
 | MISC-07 | 선택된 registry profile·actual command/input/native capability/replay/exclusion 정합성. 지원하는 실제 multi-repo/product pilot; 작은 fixture로 all-language/full-platform을 승격하지 않음 |
 

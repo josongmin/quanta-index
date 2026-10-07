@@ -174,6 +174,27 @@ optimization remains conditional on actual paired-call cost and parity.
   [native span tests](../../tools/ci/tests/test_retrieval_native_span_projection.py)
   and [source oracle tests](../../tools/ci/tests/test_source_oracle_suite.py).
 
+## Retained Ready9 license custody
+
+On 2026-10-08, the existing source-scoped AI license receipts were rechecked
+against the retained Ready9 inputs for Bat, CLI, Django, Lo, Mocha, Nushell,
+TypeORM, Uvicorn and Zustand. Canonical `_validate_license_receipt` bound each
+recorded approved decision to its declared AI reviewer, repository commit and
+exact corpus-manifest hash. All nine checkouts remained clean at the pinned
+commits; all 9,741 source-file hashes and 106 tracked/resolved notice pairs
+(212 retained blobs) matched. No new review decision was issued.
+
+Original receipts and notice custody remain under
+`/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/license-scoped-review-xuozw4ln/`.
+Their scope is local ingestion/search and internal metrics over those exact
+inputs. They retain AI provenance, `human_review=false`,
+`redistribution_clearance=false` and `qualified=false`; validation establishes
+recorded custody/scope, not legal correctness or public redistribution approval.
+Do not report these retained Ready9 licenses as absent, or reuse them to approve
+the different unseen-holdout candidate. Independent relevance judgments,
+final admission, new-corpus license approval and gold/acceptance remain separate
+inputs.
+
 ## Corpus, gold and holdout acceptance
 
 These are standing admission boundaries consolidated from CS-BENCH-01/03 and
