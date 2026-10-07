@@ -1408,7 +1408,7 @@ fn scanned_bytes(file: &SourceFile, scope: Scope, case: CaseMode) -> usize {
         CaseMode::Sensitive => file.indexed_text.as_ref(),
         CaseMode::Folded => file.folded_text.as_ref(),
     }
-    .map_or(0, String::len);
+    .map_or(0, |text| text.len());
     let path = match case {
         CaseMode::Sensitive => file.indexed_path.len(),
         CaseMode::Folded => file.folded_path.len(),
@@ -3220,7 +3220,7 @@ mod tests {
         };
         let file = SourceFile {
             source,
-            bytes: text.as_bytes().to_vec(),
+            bytes: text.as_bytes().to_vec().into(),
             text_admitted: true,
             language: LanguageCode::new("rust").expect("language"),
             indexed_text: None,
@@ -3356,11 +3356,11 @@ mod tests {
                 revision_id: RevisionId::new("revision").expect("revision"),
                 source_sha256: <sha2::Sha256 as sha2::Digest>::digest(raw.as_bytes()).into(),
             },
-            bytes: raw.into_bytes(),
+            bytes: raw.into_bytes().into(),
             text_admitted: true,
             language: LanguageCode::new("rust").expect("language"),
-            indexed_text: Some(indexed),
-            folded_text: Some(folded),
+            indexed_text: Some(indexed.into()),
+            folded_text: Some(folded.into()),
             indexed_path: "large.rs".into(),
             folded_path: "large.rs".into(),
             expected_postings: 0,
@@ -3403,7 +3403,7 @@ mod tests {
                 revision_id: RevisionId::new("revision").expect("revision"),
                 source_sha256: [0; 32],
             },
-            bytes: text.as_bytes().to_vec(),
+            bytes: text.as_bytes().to_vec().into(),
             text_admitted: true,
             language: LanguageCode::new("rust").expect("language"),
             indexed_text: Some(text.into()),
@@ -3566,7 +3566,7 @@ mod tests {
                         source_sha256: <sha2::Sha256 as sha2::Digest>::digest(value.as_bytes())
                             .into(),
                     },
-                    bytes: value.as_bytes().to_vec(),
+                    bytes: value.as_bytes().to_vec().into(),
                     text_admitted: true,
                     language: if index == 0 { go.clone() } else { txt.clone() },
                     indexed_text: None,
@@ -3643,7 +3643,7 @@ mod tests {
                     revision_id: revision.clone(),
                     source_sha256: <sha2::Sha256 as sha2::Digest>::digest(text.as_bytes()).into(),
                 },
-                bytes: text.as_bytes().to_vec(),
+                bytes: text.as_bytes().to_vec().into(),
                 text_admitted: true,
                 language: language.clone(),
                 indexed_text: None,
@@ -3704,7 +3704,7 @@ mod tests {
         let authority = from_test_files(
             vec![SourceFile {
                 source,
-                bytes: "İ".as_bytes().to_vec(),
+                bytes: "İ".as_bytes().to_vec().into(),
                 text_admitted: true,
                 language: LanguageCode::new("go").expect("language"),
                 indexed_text: None,
@@ -3770,7 +3770,7 @@ mod tests {
         let authority = from_test_files(
             vec![SourceFile {
                 source,
-                bytes: Vec::new(),
+                bytes: Vec::new().into(),
                 text_admitted: false,
                 language: LanguageCode::new("go").expect("language"),
                 indexed_text: None,

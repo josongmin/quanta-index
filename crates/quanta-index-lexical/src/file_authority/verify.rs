@@ -328,9 +328,11 @@ where
             if total != row.posting_memberships {
                 return Err(corrupt("source posting count differs from bytes"));
             }
+            let (bytes, indexed_text, folded_text) =
+                super::share_verified_surfaces(source, raw, indexed_text, folded_text);
             files.push(SourceFile {
                 source: row.source.clone(),
-                bytes: source.to_vec(),
+                bytes,
                 text_admitted: row.text_admitted,
                 language: row.language.clone(),
                 indexed_text,

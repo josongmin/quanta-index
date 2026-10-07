@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use quanta_index_contract::channel::LexicalChannelOp;
@@ -71,17 +72,98 @@ const TRIGRAM_BITMAP_BYTES: usize = 2 * 1024 * 1024;
 // count from committed bytes before the source can serve a query.
 pub(crate) type FileManifestRow = (SourceFileRevision, u32);
 
+/// Raw bytes share their allocation with normalized text only when the proved
+/// byte sequences are identical. Binary sources never acquire a text view.
+#[derive(Clone, Debug)]
+pub(crate) enum SourceBytes {
+    Text(Arc<str>),
+    Binary(Arc<[u8]>),
+}
+
+impl std::ops::Deref for SourceBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Text(text) => text.as_bytes(),
+            Self::Binary(bytes) => bytes,
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<Vec<u8>> for SourceBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::Binary(bytes.into())
+    }
+}
+
+fn share_verified_surfaces(
+    source: &[u8],
+    raw: Option<&str>,
+    indexed: Option<String>,
+    folded: Option<String>,
+) -> (SourceBytes, Option<Arc<str>>, Option<Arc<str>>) {
+    let raw = raw.map(Arc::<str>::from);
+    let indexed = indexed.map(|text| {
+        raw.as_ref()
+            .filter(|raw| raw.as_bytes() == text.as_bytes())
+            .map_or_else(|| Arc::<str>::from(text), Arc::clone)
+    });
+    let folded = folded.map(|text| {
+        raw.as_ref()
+            .filter(|raw| raw.as_bytes() == text.as_bytes())
+            .or_else(|| {
+                indexed
+                    .as_ref()
+                    .filter(|indexed| indexed.as_bytes() == text.as_bytes())
+            })
+            .map_or_else(|| Arc::<str>::from(text), Arc::clone)
+    });
+    let bytes = raw.map_or_else(|| SourceBytes::Binary(Arc::from(source)), SourceBytes::Text);
+    (bytes, indexed, folded)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct SourceFile {
     pub(crate) source: SourceFileRevision,
-    pub(crate) bytes: Vec<u8>,
+    pub(crate) bytes: SourceBytes,
     pub(crate) text_admitted: bool,
     pub(crate) language: LanguageCode,
-    pub(crate) indexed_text: Option<String>,
-    pub(crate) folded_text: Option<String>,
+    pub(crate) indexed_text: Option<Arc<str>>,
+    pub(crate) folded_text: Option<Arc<str>>,
     pub(crate) indexed_path: String,
     pub(crate) folded_path: String,
     pub(crate) expected_postings: u32,
+}
+
+impl SourceFile {
+    fn retained_body_bytes(&self) -> u64 {
+        // Charge one payload and Arc header per distinct backing allocation.
+        // The sealed row's logical charge deliberately remains independent of
+        // this representation and continues to count every logical surface.
+        let mut bytes = saturating_usize_to_u64(self.bytes.len()).saturating_add(32);
+        let raw = match &self.bytes {
+            SourceBytes::Text(raw) => Some(raw),
+            SourceBytes::Binary(_) => None,
+        };
+        let mut add = |surface: &Arc<str>, prior: Option<&Arc<str>>| {
+            if !raw.is_some_and(|raw| Arc::ptr_eq(raw, surface))
+                && !prior.is_some_and(|prior| Arc::ptr_eq(prior, surface))
+            {
+                bytes = bytes
+                    .saturating_add(saturating_usize_to_u64(surface.len()))
+                    .saturating_add(32);
+            }
+        };
+        if let Some(indexed) = &self.indexed_text {
+            add(indexed, None);
+        }
+        if let Some(folded) = &self.folded_text {
+            add(folded, self.indexed_text.as_ref());
+        }
+        bytes
+    }
 }
 
 pub(crate) struct FileAuthority {
@@ -152,17 +234,7 @@ impl FileAuthority {
                 .saturating_add(saturating_usize_to_u64(
                     key.repo_relative_path.as_str().len(),
                 ))
-                .saturating_add(saturating_usize_to_u64(file.bytes.len()))
-                .saturating_add(
-                    file.indexed_text
-                        .as_ref()
-                        .map_or(0, |text| saturating_usize_to_u64(text.len())),
-                )
-                .saturating_add(
-                    file.folded_text
-                        .as_ref()
-                        .map_or(0, |text| saturating_usize_to_u64(text.len())),
-                )
+                .saturating_add(file.retained_body_bytes())
                 .saturating_add(saturating_usize_to_u64(
                     file.indexed_path
                         .len()
@@ -189,8 +261,8 @@ impl FileAuthority {
                 file.bytes.len(),
                 file.indexed_path.len(),
                 file.folded_path.len(),
-                file.indexed_text.as_ref().map_or(0, String::len),
-                file.folded_text.as_ref().map_or(0, String::len),
+                file.indexed_text.as_ref().map_or(0, |text| text.len()),
+                file.folded_text.as_ref().map_or(0, |text| text.len()),
             )
             .map_err(|reason| invalid(&reason))?;
             if charge != row.resident_heap_bytes {
@@ -1655,14 +1727,15 @@ pub(crate) fn from_test_files(
 #[cfg(test)]
 mod tests {
     use super::{
-        TRIGRAM_BITMAP_BYTES, decode_verified_manifest, file_name, normalized_surfaces,
-        source_posting_memberships,
+        SourceBytes, SourceFile, TRIGRAM_BITMAP_BYTES, decode_verified_manifest, file_name,
+        from_test_files, normalized_surfaces, source_posting_memberships,
     };
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
         RepoId, RepoRelativePath, RevisionId, SourceFileKey, SourceFileRevision,
     };
     use sha2::{Digest as _, Sha256};
+    use std::sync::Arc;
 
     fn source() -> SourceFileRevision {
         SourceFileRevision {
@@ -1673,6 +1746,124 @@ mod tests {
             revision_id: RevisionId::new("revision").expect("revision"),
             source_sha256: [7; 32],
         }
+    }
+
+    #[test]
+    fn cold_verified_source_views_share_only_identical_bytes() {
+        let fixtures: [(&str, &[u8], bool); 5] = [
+            ("ascii.rs", b"lower ascii\n", true),
+            ("nfd.rs", "Cafe\u{301}\n".as_bytes(), true),
+            ("lower_nfd.rs", "cafe\u{301}\n".as_bytes(), true),
+            ("mixed.rs", b"MiXeD\n", true),
+            ("binary.bin", &[0xff, 0], false),
+        ];
+        let mut files = Vec::new();
+        for (path, raw, admitted) in fixtures {
+            let source = SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: RepoId::new("repo").expect("repo"),
+                    repo_relative_path: RepoRelativePath::new(path),
+                },
+                revision_id: RevisionId::new("revision").expect("revision"),
+                source_sha256: Sha256::digest(raw).into(),
+            };
+            let memberships = source_posting_memberships(
+                &source,
+                raw,
+                admitted,
+                &mut vec![0; TRIGRAM_BITMAP_BYTES],
+            )
+            .expect("fixture memberships");
+            files.push(SourceFile {
+                source,
+                bytes: raw.to_vec().into(),
+                text_admitted: admitted,
+                language: LanguageCode::new("rust").expect("language"),
+                indexed_text: None,
+                folded_text: None,
+                indexed_path: String::new(),
+                folded_path: String::new(),
+                expected_postings: memberships,
+            });
+        }
+        let dir = tempfile::tempdir().expect("generation directory");
+        let authority = from_test_files(files, dir.path()).expect("sealed cold verification");
+        let get = |path: &str| {
+            let key = SourceFileKey {
+                source_repo_id: RepoId::new("repo").expect("repo"),
+                repo_relative_path: RepoRelativePath::new(path),
+            };
+            authority.files.get(&key).expect("verified fixture")
+        };
+
+        let ascii = get("ascii.rs");
+        let SourceBytes::Text(ascii_raw) = &ascii.bytes else {
+            panic!("ASCII lost text admission")
+        };
+        let ascii_nfc = ascii.indexed_text.as_ref().expect("ASCII NFC");
+        let ascii_folded = ascii.folded_text.as_ref().expect("ASCII folded");
+        assert_eq!(ascii_raw.as_ref(), "lower ascii\n");
+        assert!(Arc::ptr_eq(ascii_raw, ascii_nfc));
+        assert!(Arc::ptr_eq(ascii_raw, ascii_folded));
+        assert_eq!(ascii.retained_body_bytes(), 12 + 32);
+
+        let nfd = get("nfd.rs");
+        let SourceBytes::Text(nfd_raw) = &nfd.bytes else {
+            panic!("NFD lost text admission")
+        };
+        let nfd_nfc = nfd.indexed_text.as_ref().expect("NFD NFC");
+        let nfd_folded = nfd.folded_text.as_ref().expect("NFD folded");
+        assert_eq!(
+            (nfd_raw.as_ref(), nfd_nfc.as_ref(), nfd_folded.as_ref()),
+            ("Cafe\u{301}\n", "Café\n", "café\n")
+        );
+        assert!(!Arc::ptr_eq(nfd_raw, nfd_nfc));
+        assert!(!Arc::ptr_eq(nfd_raw, nfd_folded));
+        assert!(!Arc::ptr_eq(nfd_nfc, nfd_folded));
+        assert_eq!(nfd.retained_body_bytes(), 7 + 6 + 6 + 3 * 32);
+
+        let lower_nfd = get("lower_nfd.rs");
+        let SourceBytes::Text(lower_nfd_raw) = &lower_nfd.bytes else {
+            panic!("lower NFD lost text admission")
+        };
+        let lower_nfd_nfc = lower_nfd.indexed_text.as_ref().expect("lower NFD NFC");
+        let lower_nfd_folded = lower_nfd.folded_text.as_ref().expect("lower NFD folded");
+        assert_eq!(
+            (
+                lower_nfd_raw.as_ref(),
+                lower_nfd_nfc.as_ref(),
+                lower_nfd_folded.as_ref()
+            ),
+            ("cafe\u{301}\n", "café\n", "café\n")
+        );
+        assert!(!Arc::ptr_eq(lower_nfd_raw, lower_nfd_nfc));
+        assert!(Arc::ptr_eq(lower_nfd_nfc, lower_nfd_folded));
+        assert_eq!(lower_nfd.retained_body_bytes(), 7 + 6 + 2 * 32);
+
+        let mixed = get("mixed.rs");
+        let SourceBytes::Text(mixed_raw) = &mixed.bytes else {
+            panic!("mixed case lost text admission")
+        };
+        let mixed_nfc = mixed.indexed_text.as_ref().expect("mixed NFC");
+        let mixed_folded = mixed.folded_text.as_ref().expect("mixed folded");
+        assert_eq!(
+            (mixed_raw.as_ref(), mixed_folded.as_ref()),
+            ("MiXeD\n", "mixed\n")
+        );
+        assert!(Arc::ptr_eq(mixed_raw, mixed_nfc));
+        assert!(!Arc::ptr_eq(mixed_raw, mixed_folded));
+        assert_eq!(mixed.retained_body_bytes(), 6 + 6 + 2 * 32);
+
+        let binary = get("binary.bin");
+        assert!(matches!(&binary.bytes, SourceBytes::Binary(_)));
+        assert_eq!(&*binary.bytes, &[0xff, 0]);
+        assert!(binary.indexed_text.is_none() && binary.folded_text.is_none());
+        assert_eq!(binary.retained_body_bytes(), 2 + 32);
+
+        let mut falsely_admitted = binary.clone();
+        falsely_admitted.text_admitted = true;
+        let rejected = tempfile::tempdir().expect("rejected generation directory");
+        assert!(from_test_files(vec![falsely_admitted], rejected.path()).is_err());
     }
 
     #[test]
