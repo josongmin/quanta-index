@@ -21,13 +21,15 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, GenerationSnapshot, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchCorpusTombstoneScope, SearchPlaneTrackKind, SourceFileKey, SourceFileRevision,
+    BatchIngestMode, ChunkId, ChunkRecord, GenerationSnapshot, LQ_VERSION_TAG, LqExpr, LqFilter,
+    LqLeaf, LqOptions, LqPatternType, LqQuery, LqSelect, LqSpan, ManifestGeneration,
+    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchPlaneTrackKind, SourceFileKey,
+    SourceFileRevision,
 };
 use quanta_index_core::{
-    GenerationIdentityValidatePort, GenerationStorageKeyV1, LexicalIndexOpenPort, RequestBudgetV1,
-    SearchCorpusBatchBuildPort,
+    GenerationIdentityValidatePort, GenerationStorageKeyV1, LexicalIndexOpenPort, LexicalPageSpec,
+    RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -271,8 +273,8 @@ fn source_pack(raw: &[u8]) -> Result<BTreeMap<[u8; 32], Vec<u8>>, Box<dyn Error>
 
 fn posting_block(raw: &[u8], surface: u8) -> Result<Postings, Box<dyn Error>> {
     let mut reader = Cursor::new(raw);
-    assert_eq!(&word::<8>(&mut reader)?, b"QIPOST01");
-    assert_eq!(u16::from_le_bytes(word(&mut reader)?), 1);
+    assert_eq!(&word::<8>(&mut reader)?, b"QIPOST02");
+    assert_eq!(u16::from_le_bytes(word(&mut reader)?), 2);
     assert_eq!(word::<2>(&mut reader)?, [surface, 0]);
     let count = usize::try_from(u32::from_le_bytes(word(&mut reader)?))?;
     assert!(
@@ -290,20 +292,23 @@ fn posting_block(raw: &[u8], surface: u8) -> Result<Postings, Box<dyn Error>> {
             gram,
             usize::try_from(u64::from_le_bytes(word(&mut reader)?))?,
             usize::try_from(u32::from_le_bytes(word(&mut reader)?))?,
+            word::<32>(&mut reader)?,
         ));
     }
     let start = usize::try_from(reader.position())?;
     assert_eq!(start.checked_add(payload), Some(raw.len()));
     let mut result = BTreeMap::new();
     let mut next_offset = 0;
-    for (gram, offset, length) in rows {
+    for (gram, offset, length, digest) in rows {
         assert_eq!(offset, next_offset);
         assert!(length > 0 && length <= 3);
         let from = start.checked_add(offset).ok_or("posting offset overflow")?;
         let to = from
             .checked_add(length.checked_mul(8).ok_or("ID length overflow")?)
             .ok_or("ID range overflow")?;
-        let mut ids = Cursor::new(raw.get(from..to).ok_or("posting IDs are truncated")?);
+        let encoded_ids = raw.get(from..to).ok_or("posting IDs are truncated")?;
+        assert_eq!(<[u8; 32]>::from(Sha256::digest(encoded_ids)), digest);
+        let mut ids = Cursor::new(encoded_ids);
         let mut values = BTreeSet::new();
         let mut previous = None;
         for _ in 0..length {
@@ -537,6 +542,7 @@ fn recover(root: &Path, base_tree: &CustodyTree) -> TestResult {
             )
             .is_ok()
     );
+    assert_recovered_queries_match_fresh(&adapter)?;
     let base = generation(root, false)?;
     let target = generation(root, true)?;
     assert_eq!(&file_tree(&base)?, base_tree);
@@ -605,6 +611,80 @@ fn recover(root: &Path, base_tree: &CustodyTree) -> TestResult {
         inherited_pages > 0,
         "untouched committed coverage page was not inherited"
     );
+    Ok(())
+}
+
+fn assert_recovered_queries_match_fresh(adapter: &LexicalAdapter) -> TestResult {
+    let fresh_root = tempfile::tempdir()?;
+    let fresh = LexicalAdapter::with_state_root(fresh_root.path().to_path_buf());
+    let mut full = batch(false)?;
+    full.generation = ManifestGeneration::new(2);
+    full.manifest_digest = "publication-manifest-2".to_string();
+    full.replace_scopes = vec![
+        source_scope(KEEP, KEEP_BODY)?,
+        source_scope(EDIT, NEW_BODY)?,
+    ];
+    current_source_fixture::finish_batch(&mut full)?;
+    assert!(fresh.build_batch(&full)?.is_some());
+    let budget = RequestBudgetV1::unbounded();
+    let recovered = adapter.open(&repo()?, &revision()?, ManifestGeneration::new(2), &budget)?;
+    let rebuilt = fresh.open(&repo()?, &revision()?, ManifestGeneration::new(2), &budget)?;
+    for (needle, expected_path) in [
+        ("keepneedle", Some(KEEP)),
+        ("newneedle", Some(EDIT)),
+        ("oldneedle", None),
+        ("retiredneedle", None),
+    ] {
+        for file_surface in [false, true] {
+            let mut options = LqOptions::defaults();
+            if file_surface {
+                options.pattern_type = LqPatternType::CodeSearch;
+            }
+            let request = LqQuery {
+                lq_version: LQ_VERSION_TAG,
+                expr: LqExpr::Leaf(if file_surface {
+                    LqLeaf::RawString(needle.to_string())
+                } else {
+                    LqLeaf::Keyword(needle.to_string())
+                }),
+                filters: if file_surface {
+                    vec![LqFilter::Select {
+                        dim: LqSelect::File,
+                    }]
+                } else {
+                    Vec::new()
+                },
+                options,
+                directives: Vec::new(),
+                source_span: LqSpan::eof(0),
+            };
+            let observed = recovered
+                .search_constrained(
+                    &request,
+                    &QueryConstraintSetV1::default(),
+                    &LexicalPageSpec::first(10),
+                    &budget,
+                )?
+                .candidates;
+            let reference = rebuilt
+                .search_constrained(
+                    &request,
+                    &QueryConstraintSetV1::default(),
+                    &LexicalPageSpec::first(10),
+                    &budget,
+                )?
+                .candidates;
+            assert_eq!(observed.len(), usize::from(expected_path.is_some()));
+            assert_eq!(reference.len(), usize::from(expected_path.is_some()));
+            for (actual, expected) in observed.iter().zip(&reference) {
+                assert_eq!(Some(actual.repo_relative_path.as_str()), expected_path);
+                assert_eq!(actual.source_repo_id.as_str(), "source");
+                assert_eq!(actual.candidate_id, expected.candidate_id);
+                assert_eq!(actual.source, expected.source);
+                assert_eq!(actual.score.to_bits(), expected.score.to_bits());
+            }
+        }
+    }
     Ok(())
 }
 
