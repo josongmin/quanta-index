@@ -140,6 +140,9 @@ lancedb = { version = "0.30", default-features = false }
 # its statistics, which lancedb does not surface (QI-BB-027).
 lance = { version = "=7.0.0", default-features = false }
 memchr = "2.8"
+# Safe Mach task-info access for current process RSS on macOS. Linux keeps
+# the existing /proc probe; this dependency is target-specific in searchd.
+memory-stats = { version = "=1.2.0", default-features = false }
 memmap2 = "0.9.5"
 model2vec-rs = { version = "=0.3.0", default-features = false, features = ["wasm"] }
 # Safe `getpeereid(3)` wrapper for the socket peer-credential check on the

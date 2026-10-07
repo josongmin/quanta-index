@@ -721,7 +721,7 @@ impl MetricSourcePort for MaintenanceMetricSource {
 mod tests {
     use super::{
         ChildExitKind, DiskMeterStop, MaintenanceParts, MaintenanceTallies, MaintenanceTimer,
-        take_disk_meter,
+        refresh_disk_usage, take_disk_meter,
     };
     use quanta_index_core::{
         CoreError, RequestBudgetV1, TrackDiskUsagePort, WriterIdleSweepPort,
@@ -1200,6 +1200,39 @@ mod tests {
         assert!(ticks >= 5, "health timer stalled on disk walk: {ticks}");
         assert!(fresh, "disk walk made the health heartbeat stale");
         assert!(skipped > 0, "bounded queue did not record skipped walks");
+    }
+
+    #[test]
+    fn a_failed_disk_refresh_preserves_last_values_and_failure_history_after_recovery() {
+        let lexical = Arc::new(ScriptedDisk(AtomicU64::new(10)));
+        let semantic = Arc::new(ScriptedDisk(AtomicU64::new(20)));
+        let lexical_port: Arc<dyn TrackDiskUsagePort> = lexical.clone();
+        let semantic_port: Arc<dyn TrackDiskUsagePort> = semantic.clone();
+        let tallies = MaintenanceTallies::default();
+        refresh_disk_usage(
+            &lexical_port,
+            &semantic_port,
+            &tallies,
+            &RequestBudgetV1::unbounded(),
+        );
+        let cancelled = RequestBudgetV1::unbounded();
+        cancelled.cancel_handle().cancel();
+        refresh_disk_usage(&lexical_port, &semantic_port, &tallies, &cancelled);
+        assert_eq!(tallies.lexical_generation_disk_bytes(), 10);
+        assert_eq!(tallies.semantic_generation_disk_bytes(), 20);
+        assert_eq!(tallies.disk_refresh_failures.load(Ordering::Acquire), 2);
+        lexical.0.store(30, Ordering::Release);
+        semantic.0.store(40, Ordering::Release);
+        refresh_disk_usage(
+            &lexical_port,
+            &semantic_port,
+            &tallies,
+            &RequestBudgetV1::unbounded(),
+        );
+        assert_eq!(tallies.lexical_generation_disk_bytes(), 30);
+        assert_eq!(tallies.semantic_generation_disk_bytes(), 40);
+        assert_eq!(tallies.disk_refreshes.load(Ordering::Acquire), 3);
+        assert_eq!(tallies.disk_refresh_failures.load(Ordering::Acquire), 2);
     }
 
     /// The timer measures once at start, sweeps and re-measures on every

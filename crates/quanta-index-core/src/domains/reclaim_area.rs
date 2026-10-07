@@ -587,6 +587,7 @@ pub fn finish_interrupted_reclaims(track_root: &Path) -> Result<FinishedReclaims
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::io;
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
@@ -604,6 +605,48 @@ mod tests {
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn track_walker_refuses_a_directory_renamed_during_the_scan() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let family = root.path().join("family");
+        let detached = root.path().join("detached");
+        std::fs::create_dir_all(family.join("deep"))?;
+        std::fs::write(family.join("deep/file"), b"recovered")?;
+        let rename = RefCell::new(None);
+        let observed = unique_inode_tree_bytes_in_track(
+            root.path(),
+            &|name| {
+                if name == "deep" {
+                    // The family directory is already open. Its deep child
+                    // is admitted through that descriptor, but reopening
+                    // the pinned component path must refuse the rename.
+                    *rename.borrow_mut() = Some(std::fs::rename(&family, &detached));
+                }
+                false
+            },
+            &RequestBudgetV1::unbounded(),
+        );
+        rename
+            .into_inner()
+            .ok_or("the walker did not visit deep")??;
+        if !matches!(observed, Err(CoreError::Storage(_))) {
+            return Err(format!("changing tree produced a partial success: {observed:?}").into());
+        }
+        if family.exists() || !detached.is_dir() {
+            return Err("controlled directory rename did not happen".into());
+        }
+        std::fs::rename(&detached, &family)?;
+        let recovered = unique_inode_tree_bytes_in_track(
+            root.path(),
+            &|_| false,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        if recovered != 9 {
+            return Err(format!("recovered scan measured {recovered}, expected 9").into());
+        }
+        Ok(())
+    }
 
     #[test]
     fn bounded_track_walker_completes_or_refuses_after_cooperative_cancel() -> TestResult {

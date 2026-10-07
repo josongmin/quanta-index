@@ -32,13 +32,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
-#[cfg(target_os = "macos")]
-use std::io::Read as _;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -53,13 +49,11 @@ use quanta_index_contract::{
     LexicalCandidate, ManifestGeneration, MetricsSnapshotV1, QueryConstraintSetV1,
     TextQueryRequest, TextQuerySyntax,
 };
-#[cfg(target_os = "linux")]
-use quanta_index_core::ProcessMemoryProbePort as _;
 use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1};
 use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_search_plane::lower_lexical_text_query;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use quanta_index_searchd::app::KernelResidentMemoryProbe;
 use serde_json::{Value, json};
 
@@ -1626,7 +1620,10 @@ fn summarize_phase_resources(
         anyhow::bail!("scale: long phase has no interior RSS sample");
     }
     if max_gap > PHASE_RSS_MAX_GAP {
-        anyhow::bail!("scale: RSS sampling gap exceeds 500 ms");
+        anyhow::bail!(
+            "scale: RSS sampling gap {:.3} ms exceeds 500 ms",
+            max_gap.as_secs_f64() * 1_000.0
+        );
     }
     Ok(PhaseResourceV1 {
         cpu,
@@ -1693,6 +1690,7 @@ fn observe_phase_at_root<T>(
     observe_phase_at_root_with_marker(root, work, causal_profile_enabled(), |marker| {
         write_causal_phase_marker(name, marker)
     })
+    .map_err(|error| error.context(format!("scale: phase {name}")))
 }
 
 fn observe_phase_at_root_with_marker<T>(
@@ -1771,62 +1769,13 @@ fn record_phase(
 }
 
 fn current_rss_bytes() -> AnyResult<u64> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        let bytes = KernelResidentMemoryProbe.resident_bytes()?;
-        anyhow::ensure!(bytes > 0, "scale: Linux VmRSS is zero");
-        Ok(bytes)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        current_rss_bytes_via_ps()
+        Ok(KernelResidentMemoryProbe.current_resident_bytes()?)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         anyhow::bail!("scale: current RSS observation unsupported on this OS")
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn current_rss_bytes_via_ps() -> AnyResult<u64> {
-    let mut child = Command::new("/bin/ps")
-        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(2))
-        .ok_or_else(|| anyhow::anyhow!("scale: ps RSS probe deadline overflow"))?;
-    loop {
-        let status = match child.try_wait() {
-            Ok(status) => status,
-            Err(error) => {
-                let _killed = child.kill();
-                let _reaped = child.wait();
-                return Err(error.into());
-            }
-        };
-        if let Some(status) = status {
-            anyhow::ensure!(status.success(), "scale: ps RSS probe exited {status}");
-            let mut output = String::new();
-            let _bytes_read = child
-                .stdout
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("scale: ps RSS stdout unavailable"))?
-                .read_to_string(&mut output)?;
-            let kib = output.trim().parse::<u64>()?;
-            anyhow::ensure!(kib > 0, "scale: ps RSS is zero");
-            return kib
-                .checked_mul(1024)
-                .ok_or_else(|| anyhow::anyhow!("scale: ps RSS overflows bytes"));
-        }
-        if Instant::now() >= deadline {
-            let _killed = child.kill();
-            let _reaped = child.wait();
-            anyhow::bail!("scale: ps RSS probe exceeded 2 s deadline");
-        }
-        thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -3334,7 +3283,7 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
                 "rss_end_after_phase_ms": observation.rss_end_after_phase_ms,
                 "sampled_max_rss_bytes": observation.sampled_max_rss_bytes,
                 "sampled_max_is_true_peak": false,
-                "rss_method": if cfg!(target_os = "linux") { "proc_self_status_vmrss" } else { "ps_rss_kib_self" },
+                "rss_method": if cfg!(target_os = "linux") { "proc_self_status_vmrss" } else { "mach_task_basic_info_resident_size" },
                 "sample_interval_ms": PHASE_RSS_INTERVAL.as_millis(),
                 "disk_sample_interval_ms": PHASE_DISK_INTERVAL.as_millis(),
                 "maximum_allowed_gap_ms": PHASE_RSS_MAX_GAP.as_millis(),
@@ -3403,12 +3352,12 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
             "value": measurement.lexical_open_resident_estimate_bytes,
         },
         "cpu_process": {
-            "scope": "RUSAGE_SELF whole process from runtime boot through cleanup: harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded",
+            "scope": "RUSAGE_SELF whole process from runtime boot through cleanup: harness, in-process daemon, RSS sampler thread, and RSS observer management",
             "user_ms": measurement.cpu.map(|cpu| cpu.user_ms),
             "system_ms": measurement.cpu.map(|cpu| cpu.system_ms),
         },
         "phase_resources": phase_resources,
-        "phase_resources_method": "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, disk sampler and parent-side probes; macOS ps child CPU excluded; RSS and allocated-root maxima are sampled, not true peaks; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
+        "phase_resources_method": "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, disk sampler and observer probes; RSS and allocated-root maxima are sampled, not true peaks; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
         "file_count": measurement.file_count,
         "serving_owner_count": 1,
         "source_repo_count": measurement.source_repo_count,
@@ -3771,7 +3720,7 @@ pub fn artifact(
                         if cfg!(target_os = "linux") {
                             "proc_self_status_vmrss"
                         } else {
-                            "ps_rss_kib_self"
+                            "mach_task_basic_info_resident_size"
                         }
                         .to_string(),
                     ),
@@ -4647,9 +4596,13 @@ mod tests {
         ensure_predicate!(summarize(350, &[point(100, 1_024), point(100, 2_048)]).is_err());
         ensure_predicate!(summarize(350, &[point(200, 1_024), point(100, 2_048)]).is_err());
         ensure_predicate!(summarize(350, &[point(100, 0)]).is_err());
+        let gap_failure = summarize(900, &[point(100, 1_024)])
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("large sample gap passed"))?;
         ensure_predicate!(
-            summarize(900, &[point(100, 1_024)]).is_err(),
-            "large sample gap is invalid"
+            gap_failure
+                .to_string()
+                .contains("800.000 ms exceeds 500 ms")
         );
         let short = summarize(80, &[])?;
         ensure_equal!(short.interior_samples, 0);
@@ -4722,6 +4675,28 @@ mod tests {
         ensure_predicate!(
             observed.observed_max_gap_ms <= PHASE_RSS_MAX_GAP.as_secs_f64() * 1_000.0
         );
+        Ok(())
+    }
+
+    #[test]
+    fn phase_context_preserves_the_typed_operation_failure() -> AnyResult<()> {
+        let failure = observe_phase_at_root("delta_preflight", None, || {
+            Err::<(), _>(
+                ScaleStageError::operation(
+                    "source_preflight",
+                    &anyhow::anyhow!("fixed source fault"),
+                )
+                .into(),
+            )
+        })
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("fixed source fault passed"))?;
+        ensure_equal!(failure.to_string(), "scale: phase delta_preflight");
+        let typed = failure
+            .downcast_ref::<ScaleStageError>()
+            .ok_or_else(|| anyhow::anyhow!("phase context hid the typed failure"))?;
+        ensure_equal!(typed.stage, "source_preflight");
+        ensure_equal!(typed.message, "fixed source fault");
         Ok(())
     }
 
@@ -5702,11 +5677,11 @@ mod tests {
         );
         assert_eq!(
             tier["cpu_process"]["scope"],
-            "RUSAGE_SELF whole process from runtime boot through cleanup: harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded"
+            "RUSAGE_SELF whole process from runtime boot through cleanup: harness, in-process daemon, RSS sampler thread, and RSS observer management"
         );
         assert_eq!(
             tier["phase_resources_method"],
-            "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, disk sampler and parent-side probes; macOS ps child CPU excluded; RSS and allocated-root maxima are sampled, not true peaks; observer setup and teardown are outside operation wall timers; physical write I/O is not measured"
+            "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, disk sampler and observer probes; RSS and allocated-root maxima are sampled, not true peaks; observer setup and teardown are outside operation wall timers; physical write I/O is not measured"
         );
         assert_eq!(
             tier["phase_resources"]["full_ingest_seal"]["interior_samples"],

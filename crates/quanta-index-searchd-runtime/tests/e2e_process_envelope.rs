@@ -282,7 +282,7 @@ fn the_generation_disk_gauges_match_an_independent_walk_after_a_seal() -> TestRe
         .tick()
         .saturating_mul(10)
         .saturating_add(Duration::from_secs(5));
-    let scrape = wait_for_scrape(
+    let initial = wait_for_scrape(
         &mut rt,
         bound,
         "the disk gauges matching the independent walk",
@@ -299,8 +299,28 @@ fn the_generation_disk_gauges_match_an_independent_walk_after_a_seal() -> TestRe
                     })
         },
     )?;
-    // Re-walk at assertion time: the tree is quiescent after activation,
-    // so the gauge must equal what the walk sees now.
+    // Walks can overlap publication and refuse a changing directory. The
+    // failure counter is cumulative: bound the assertion to fresh scans of
+    // the quiescent tree instead of treating publication history as zero.
+    // Refreshes count starts. Two subsequent starts on the single meter
+    // worker prove at least one whole new scan completed after convergence.
+    let refreshes = initial
+        .counter("maintenance_disk_refreshes_total")?
+        .checked_add(2)
+        .ok_or("disk refresh counter overflow")?;
+    let failures = initial.counter("maintenance_disk_refresh_failures_total")?;
+    let scrape = wait_for_scrape(
+        &mut rt,
+        bound,
+        "a completed disk refresh after the sealed tree converged",
+        |scrape| {
+            scrape
+                .counter("maintenance_disk_refreshes_total")
+                .is_ok_and(|count| count >= refreshes)
+        },
+    )?;
+    // Re-walk at assertion time: the tree is quiescent and the gauge must
+    // still match both independent walks after a fresh completed scan.
     let lexical_now = walk_bytes(&rt.state_root().join("indexes/lexical"))?;
     let semantic_now = walk_bytes(&rt.state_root().join("indexes/semantic"))?;
     expect_eq(
@@ -313,9 +333,11 @@ fn the_generation_disk_gauges_match_an_independent_walk_after_a_seal() -> TestRe
         &scrape.gauge("search_corpus_semantic_generation_disk_bytes")?,
         &quanta_index_core::count_as_f64(semantic_now),
     )?;
-    if scrape.counter("maintenance_disk_refresh_failures_total")? != 0 {
-        return Err("no walk failed".into());
-    }
+    expect_eq(
+        "no fresh walk failed after the sealed tree converged",
+        &scrape.counter("maintenance_disk_refresh_failures_total")?,
+        &failures,
+    )?;
     Ok(())
 }
 

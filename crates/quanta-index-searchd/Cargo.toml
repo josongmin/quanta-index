@@ -27,6 +27,9 @@ quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
 sha2.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+memory-stats.workspace = true
+
 [dev-dependencies]
 ciborium = { workspace = true }
 tempfile = { workspace = true }
