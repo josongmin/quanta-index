@@ -178,17 +178,32 @@ Original native input/commands/raw/results remain at
 The capacity repair is implemented in `b262925b`; its paged term-directory
 contract and focused verification are retained in
 [OCT-05-004](OCT-05-004-cost-capacity-and-qualification-boundaries.md#paged-term-directory).
-Follow-up CLI, Django and Nushell capture and independent replay each passed
-40/40 at that fixed source. Their five-product distinct-file projections reuse the original
+Follow-up CLI, Django, Nushell and TypeORM capture and independent replay each
+passed 40/40 at that fixed source, with both exit codes zero. Original corpora,
+20-query packs and budgets were retained. Their five-product distinct-file projections reuse the original
 CS/SG/OG bytes, preserving external091 versus nativeb262 identities. Their
 result status is `diagnostic_unqualified`; no qualified latency or independent
 gold is issued. Native and join result files are under
-`/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b/{native-execution,reused-joins}/{cli,django,nushell}/result.json`.
+`/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b/{native-execution,reused-joins}/{cli,django,nushell,typeorm}/result.json`.
 
-The original five completed repositories plus these three follow-ups leave
-TypeORM capture/replay unfinished. The blind-review summary contains
-CLI/Django/Nushell blank inputs with zero assigned reviewer identities and zero label
-changes. The original 72-task/191-pair judgment gap belongs to the earlier
-five-repository packet, not the complete later union. Latest independent
-judgments, admission and remaining cells stay with
+The original five completed repositories plus these four follow-ups complete
+the nine-repository diagnostic inventory. `ready9-checkpoint-inventory.json`
+retains the two native source checkpoints, original failed attempts and original
+external response clocks; `uniform_native_source` is false. This is not
+latest-main/release, native rank-equivalence or speed qualification. Final
+source-closure verification passed for all 1,529 selected files, and both pinned
+binaries plus all four original suite/query-pack hashes still matched.
+
+Fresh common eligible counts are CLI0, Django0, Nushell0 and TypeORM1. The first
+three common scores are `NOT_APPLICABLE`; neither these cohorts nor the prior
+five-repository cohorts establish qualified whole-suite relevance.
+
+`ready9-unjudged-checkpoint-union.json` binds 151 tasks / 742 unique task-file
+pairs: the original 72-task/191-pair packet plus the new 79-task/551-pair packet.
+Its status is `BLOCKED` because independent relevance judgments are absent.
+The blind-review summary contains two blank source-bound forms for each of
+CLI/Django/Nushell/TypeORM, with zero assigned reviewer identities and zero label
+changes. Original 191-pair supplemental review inputs are retained separately;
+blank forms are not completed review or human provenance. Independent
+judgments, admission and remaining required inventory stay with
 [E2-04](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e2-04) and E1.

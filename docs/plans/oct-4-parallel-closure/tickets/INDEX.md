@@ -184,13 +184,18 @@ missing/output 경합은 success가 아니다. 완료: 누락 없는 terminal/in
 
 ### O4-E2-04
 
-부분 완료 · Ready9 source6a3의5repo와 fixedb262의 CLI·Django·Nushell capture/replay/projection은 완료됐다.
-잔여는 TypeORM 실제 capture/replay 및 최신 unjudged union의 독립 판단·final admission이다.
+부분 완료 · Ready9 9repo capture/replay/projection 진단 inventory는 완료됐다.
+원 source6a3의5repo를 보존하고, fixedb262의 CLI·Django·Nushell·TypeORM은 원본 입력으로
+각40/40 capture·독립 replay 및5제품 projection을 완료했다. Native source는 둘이며 uniform-source/
+latest-main/release·quality/speed qualification은 아니다.
+잔여는 최종151tasks·742개 task/file pair의 실제 독립 판단·final admission이다 (`BLOCKED`: 판단 입력 부재).
 완료 범위·원 실패·source별 raw는 [Ready9 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope),
 용량 수리·집중 검증은 [paged-directory ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#paged-term-directory)가 소유한다.
 새 실행·review 입력은 `/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b`에 있다.
-원191-pair 판단 공백은 최초5repo packet의 수치다. CLI·Django·Nushell blank review도 준비돼 있으며
-reviewer identity와 label 변경은 아직0이다. 최종 union을 실제 판단·인계한다.
+`ready9-checkpoint-inventory.json`은 기존5개·새4개 성공과 원 실패를 source별로 보존한다.
+최종 `ready9-unjudged-checkpoint-union.json`은 원72tasks·191pair와 새79tasks·551pair를 결합한다.
+새4repo의 원문·해시 결속 blank review 두 입력씩도 준비돼 있으며 reviewer identity와 label 변경은0이다.
+실제 판단 없이 review/admission 완료로 승격하지 않는다.
 별도 C3의 남은3repo 및 다른 lanes는 이9repo와 구분한다.
 Ready9 NL file20tasks/repo는 `natural_language_file`/Semble `lexical-file` distinct-file pair다.
 Bare-symbol workflow와 다르며, diagnostic capture/replay/projection은 quality/speed qualification이 아니다.
