@@ -107,6 +107,18 @@ Quanta consumes the same locator/receipt and before/after daemon guards.
 Four actual frozen-QBC admission model preflights and137 focused tests passed.
 This adapter correction is separate from executed Nextest and operational proof.
 
+The fourth actual pair, Quanta86b/fixed77bc, completed its fresh daemon build
+in3m17s and reached caller/list's completion stage, but completion
+publication refused the omitted expected-source digest in the explicit completion
+environment. Both checkouts remained clean at their original HEADs; assertions
+and the kernel phase stayed `NOT_RUN`. Original raw and fresh daemon are pinned
+in `/private/tmp/qna7vj2zq6/r5-86b-failure.json`. The correction forwards the same
+canonical source digest to both compile admission and completion publication;
+the producer's source/HEAD equality guard remains intact. The accompanying
+external-helper ShellCheck annotation fixes hosted pre-commit SC1091. At2df,
+Python1594 executed4,388 passing tests/33 skipped, then failed that hook; the
+Python context remains `FAILED` despite its passing test step.
+
 ## Native segment retention and committed live statistics
 
 Sealed manifest format 15 retains the format-14 live-statistics contract and

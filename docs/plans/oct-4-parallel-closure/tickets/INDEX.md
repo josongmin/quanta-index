@@ -446,6 +446,13 @@ caller/kernel 각각의 정확한 list/run4 shapes만 QBC typed command-model ad
 Feature/target/selector/phase drift는 실행 전에 거절하고 lane/source/immutable receipt custody는
 기존 QBC owner가 유지한다. Focused137 및 실제 frozen QBC admission4 shapes의 model 대조는
 `VERIFIED`; actual Nextest와 운영 qualification으로 승격하지 않는다.
+Clean86b/fixed77bc actual4는 fresh daemon3m17s 후 caller/list completion 단계에서
+예상 source digest의 explicit completion environment 누락으로 실패했다. 두 source는 clean/HEAD
+일치였으며 assertions/kernel은 `NOT_RUN`다. 원 controller·daemon은
+`/private/tmp/qna7vj2zq6/r5-86b-failure.json`에 보존했다. Canonical source digest를 compile admission과
+completion 양쪽에 전달하도록 수리했으며 producer equality guard는 유지한다.
+Hosted2df Python1594는4,388passed/33skipped 후 외부 helper ShellCheck SC1091에서 실패했다.
+그 context는 `FAILED`로 보존하고 supplied producer-source annotation으로 hook을 수리했다.
 Resolution preflight로 이 테스트를 대체하지 않는다.
 외부 작업을 reset/stage하거나 dirty pair를 qualified로 발행하지 않는다.
 외부 Semantica R3 expected semantic partition/omission 검증은 producer owner의 별도 연동 잔여다.

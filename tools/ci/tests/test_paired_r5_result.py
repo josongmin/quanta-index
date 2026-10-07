@@ -588,6 +588,7 @@ def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, cas
         LOCATOR_NONCE_ENV_V1="NONCE",
         REQUEST_ENV_DIGEST_ENV_V1="REQUEST",
         EXPECTED_SOURCE_HEAD_ENV_V1="SOURCE",
+        EXPECTED_SOURCE_ENV_V1="COMPLETION_SNAPSHOT",
     )
     control = {name: name.lower() for name in ("LOCATOR", "NONCE", "REQUEST", "SOURCE")}
     environment = {**control, "CODEGRAPH_PERSONA": "agent"}
@@ -605,7 +606,10 @@ def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, cas
         assert kwargs["command"] == command and kwargs["runner"] == "nextest"
         assert kwargs["lane"] == "registered" and kwargs["lane_token"] is None
         assert kwargs["execution_root_v1"] == kwargs["command_cwd_v1"] == tmp_path
-        assert kwargs["verification_completion_environment_v1"] == control
+        assert kwargs["verification_completion_environment_v1"] == {
+            **control,
+            "COMPLETION_SNAPSHOT": "a" * 64,
+        }
         assert kwargs["compile_env_overrides_v1"] == {
             "EXPECTED_SNAPSHOT": "a" * 64,
             "CODEGRAPH_PERSONA": "agent",

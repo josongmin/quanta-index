@@ -260,6 +260,7 @@ def _execute_qbc_phase(
             completion.EXPECTED_SOURCE_HEAD_ENV_V1,
         )
     }
+    completion_environment[completion.EXPECTED_SOURCE_ENV_V1] = source_digest
     return owner._run_lane_command(
         lane=lane,
         runner="nextest",
@@ -337,7 +338,7 @@ def _one(
         )
         if phase == "run":
             environment["NEXTEST_EXPERIMENTAL_LIBTEST_JSON"] = "1"
-        # Hash the actual process environment before adding its own digest.
+        # Hash the caller request environment before adding its own digest.
         # QBC separately binds its prepared child artifact_env_digest.
         request_sha = _sha(
             _canonical(

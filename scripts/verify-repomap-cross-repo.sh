@@ -6,6 +6,8 @@ semantica_root="${1:?Semantica checkout path is required}"
 semantica_root="$(cd -- "$semantica_root" && pwd -P)"
 # Use the same supported interpreter as the producer's QBC front door.
 # The host's python3 may be Xcode Python 3.9 even when QBC has Python 3.12.
+# The supplied producer owns this external helper; import guards validate it.
+# shellcheck source=/dev/null
 source "$semantica_root/scripts/lib/python-env.sh"
 paired_python="$(cg_resolve_python_bin "$semantica_root")"
 provided_binary="${QUANTA_INDEX_SEARCHD_BIN:?QUANTA_INDEX_SEARCHD_BIN is required}"
