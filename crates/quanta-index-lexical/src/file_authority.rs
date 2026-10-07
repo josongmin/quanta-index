@@ -1302,7 +1302,20 @@ pub(crate) fn plan_ops(
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     let row = inherited_root
                         .as_ref()
-                        .and_then(|root| root.sources.iter().find(|row| row.source == *source))
+                        .and_then(|root| {
+                            // read_root proves strict SourceFileKey order. Keep the
+                            // exact revision check while avoiding a whole-root scan
+                            // for every unchanged packed source.
+                            match root
+                                .sources
+                                .binary_search_by(|row| row.source.file.cmp(&source.file))
+                            {
+                                Ok(index) => {
+                                    root.sources.get(index).filter(|row| row.source == *source)
+                                }
+                                Err(_insertion_point) => None,
+                            }
+                        })
                         .ok_or_else(|| {
                             corrupt(
                                 generation_dir,
@@ -1746,6 +1759,156 @@ mod tests {
             revision_id: RevisionId::new("revision").expect("revision"),
             source_sha256: [7; 32],
         }
+    }
+
+    fn packed_planner_fixture(generation_dir: &std::path::Path) -> [SourceFileRevision; 3] {
+        let fixtures: [(&str, &str, &[u8]); 3] = [
+            ("b", "src/same.rs", b"bbbb"),
+            ("a", "src/other.rs", b"aa"),
+            ("a", "src/same.rs", b"a"),
+        ];
+        let mut revisions = Vec::new();
+        let mut files = Vec::new();
+        let mut bitmap = vec![0; TRIGRAM_BITMAP_BYTES];
+        for (repo, path, bytes) in fixtures {
+            let source = SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: RepoId::new(repo).expect("fixture repo"),
+                    repo_relative_path: RepoRelativePath::new(path),
+                },
+                revision_id: RevisionId::new("revision").expect("fixture revision"),
+                source_sha256: Sha256::digest(bytes).into(),
+            };
+            let expected_postings = source_posting_memberships(&source, bytes, false, &mut bitmap)
+                .expect("fixture memberships");
+            revisions.push(source.clone());
+            files.push(SourceFile {
+                source,
+                bytes: bytes.to_vec().into(),
+                text_admitted: false,
+                language: LanguageCode::new("rust").expect("fixture language"),
+                indexed_text: None,
+                folded_text: None,
+                indexed_path: String::new(),
+                folded_path: String::new(),
+                expected_postings,
+            });
+        }
+        let _authority = from_test_files(files, generation_dir).expect("packed fixture");
+        revisions.try_into().expect("three fixture sources")
+    }
+
+    #[test]
+    fn packed_plan_preserves_same_path_source_owners() {
+        let generation = tempfile::tempdir().expect("generation");
+        let generation_dir = generation
+            .path()
+            .canonicalize()
+            .expect("canonical generation");
+        let sources = packed_planner_fixture(generation_dir.as_path());
+        let plan = super::plan_ops(generation_dir.as_path(), &[]).expect("packed unchanged plan");
+        let observed: Vec<_> = plan.sources.iter().map(|row| row.0.clone()).collect();
+        assert_eq!(
+            observed,
+            vec![sources[1].clone(), sources[2].clone(), sources[0].clone()]
+        );
+        assert!(plan.writes.is_empty());
+        assert!(
+            !generation_dir
+                .as_path()
+                .join(super::DIR)
+                .join("staging")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn packed_plan_refuses_unbacked_revision_digest_and_owner() {
+        let generation = tempfile::tempdir().expect("generation");
+        let generation_dir = generation
+            .path()
+            .canonicalize()
+            .expect("canonical generation");
+        let sources = packed_planner_fixture(generation_dir.as_path());
+        std::fs::create_dir(generation_dir.as_path().join(super::DIR).join("staging"))
+            .expect("staging");
+        let mut wrong_revision = sources[2].clone();
+        wrong_revision.revision_id = RevisionId::new("other-revision").expect("revision");
+        let mut wrong_digest = sources[2].clone();
+        wrong_digest.source_sha256 = [9; 32];
+        let mut wrong_owner = sources[2].clone();
+        wrong_owner.file.source_repo_id = RepoId::new("absent").expect("repo");
+        for unbacked in [wrong_revision, wrong_digest, wrong_owner] {
+            let encoded = crate::channel_payloads::encode_cbor(
+                &vec![(unbacked, 0_u32)],
+                "unbacked manifest fixture",
+            )
+            .expect("encode fixture");
+            std::fs::write(super::manifest_path(generation_dir.as_path()), encoded)
+                .expect("manifest fixture");
+            assert!(matches!(
+                super::plan_ops(generation_dir.as_path(), &[]),
+                Err(quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    message,
+                }) if message.contains("source has neither staged bytes nor inherited root row")
+            ));
+        }
+    }
+
+    #[test]
+    fn packed_plan_does_not_hide_staged_size_or_symlink_errors() {
+        let generation = tempfile::tempdir().expect("generation");
+        let generation_dir = generation
+            .path()
+            .canonicalize()
+            .expect("canonical generation");
+        let sources = packed_planner_fixture(generation_dir.as_path());
+        std::fs::create_dir(generation_dir.as_path().join(super::DIR).join("staging"))
+            .expect("staging");
+        let staged = generation_dir
+            .as_path()
+            .join(super::artifact_name(&sources[2]));
+        std::fs::File::create(&staged)
+            .expect("staged file")
+            .set_len(u64::from(super::MAX_TOTAL_SOURCE_BYTES) + 1)
+            .expect("sparse oversized file");
+        assert!(matches!(
+            super::plan_ops(generation_dir.as_path(), &[]),
+            Err(quanta_index_core::CoreError::InvalidContract(reason))
+                if reason.contains("128 MiB source byte admission")
+        ));
+        std::fs::remove_file(&staged).expect("remove oversized file");
+        let external = generation_dir.as_path().join("external");
+        std::fs::write(&external, b"a").expect("external fixture");
+        std::os::unix::fs::symlink(&external, &staged).expect("staged symlink");
+        assert!(matches!(
+            super::plan_ops(generation_dir.as_path(), &[]),
+            Err(quanta_index_core::CoreError::Storage(_))
+        ));
+    }
+
+    #[test]
+    fn packed_plan_requires_a_root_when_staged_bytes_are_absent() {
+        let generation = tempfile::tempdir().expect("generation");
+        let generation_dir = generation
+            .path()
+            .canonicalize()
+            .expect("canonical generation");
+        let _sources = packed_planner_fixture(generation_dir.as_path());
+        let plan = super::plan_ops(generation_dir.as_path(), &[]).expect("initial plan");
+        std::fs::create_dir(generation_dir.as_path().join(super::DIR).join("staging"))
+            .expect("staging");
+        std::fs::write(super::manifest_path(generation_dir.as_path()), plan.encoded)
+            .expect("manifest fixture");
+        std::fs::remove_file(super::root_path(generation_dir.as_path())).expect("remove root");
+        assert!(matches!(
+            super::plan_ops(generation_dir.as_path(), &[]),
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                message,
+            }) if message.contains("source has neither staged bytes nor inherited root row")
+        ));
     }
 
     #[test]

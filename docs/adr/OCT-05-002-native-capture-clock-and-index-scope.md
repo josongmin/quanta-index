@@ -395,6 +395,35 @@ Commands used: `source_oracle_suite`, `identifier_robustness_suite`,
 Capture, new inputs, original refusal and replay remain outside the checkout
 at `/private/tmp/qna7vj2zq6/`. Results are `VERIFIED` for these executed
 diagnostic scopes, with all quality/speed/incremental qualification claims false.
+
+## Selected retained Gin20 hybrid pair
+
+On 2026-10-08, the original Gin20 spec's manifest path was absent. Its retained
+`raw/input-manifest` matched the original evidence's SHA-256
+`46dd79074244ce3d4082a46cf081e40ff12302fe52bed8b038f1be0b99c108b4`.
+All 99 current corpus files matched that manifest at Gin revision
+`d3ffc9985281dcf4d3bef604cce4e662b1a327a6`. The original 20-task suite and
+query pack also matched their recorded digests. An external copy recovered
+those exact bytes; original evidence and missing-path spec were preserved.
+
+A new pair used the frozen f606 ASCII fresh release binaries identified in
+the [closed scanner diagnostic](OCT-05-004-cost-capacity-and-qualification-boundaries.md#closed-scanner-build-and-capture-diagnostic).
+It retained Quanta's native hybrid and Semble's native-default hybrid profiles,
+potion-code model inputs, seed42, top-k10, warmup1, one measured repetition and
+`require-complete` symbol coverage. Quanta recorded 20 capped windows; Semble
+recorded 20 success windows. Observed file recall@10 was 0.85/0.975; this is
+distinct from span/block recall and source-independent quality acceptance.
+
+`run.py pair --spec` and a fresh `run.py verdict --repo --suite --run-manifest
+--out` both exited0. Independent verdict bytes matched SHA-256
+`8270d01f6251b9f951440f28bc1bbeb3929c05bd3ee20288fec3597da70e8619`.
+Original inputs, new specs/native records/report and replay remain at
+`/private/tmp/qgi0_rrtq2r/`. The first preflight refused a 108-byte UDS path
+before capture; `spec-overlong.json` preserves it. The retry shortened only
+the external output path. Status is `VERIFIED` for this diagnostic pair/replay,
+`PAIR_VALID=pass`, with all qualification claims false. Original AI-reviewed
+labels are retained; they are not new independent human judgments. Contract/
+SDK qualification receipts are absent from this pair and remain `not_run`.
 They do not issue independent holdout judgments, external five-product recapture,
 other-repository acceptance or current release qualification.
 

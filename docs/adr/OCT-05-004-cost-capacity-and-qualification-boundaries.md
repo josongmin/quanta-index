@@ -174,6 +174,52 @@ Strict Clippy also passed for lexical, semantic, search-plane and harness
 libraries/tests with all features and `-D warnings`. The first executed checks
 found type/ownership and lint errors; those were repaired before these passes.
 
+### XL repeated validation trace
+
+The clean `82bca2f25a94e8c33bcf73f72bf38c7ed6315efd` source completed one
+instrumented XL execution with the original 32,768 files, 64 repositories,
+113,023,546 source bytes, seed5864059738136528177 and unchanged admission.
+The release executable was built with Rust1.92 and `-C lto=off`; SHA-256 is
+`a428f424ddc426f795993e236868ece95bb5c7e6c7c29d0a9e48e534f18700b3`.
+The matching source and binary before/after, successful phase endings and
+stdout/stderr/profile digests are recorded in
+`/private/tmp/qi-delta-trace-5pgjzkan/xlarge/execution.json`.
+The execution exited0 in492.750s as `VERIFIED_DIAGNOSTIC`.
+
+A single 3,437-byte file replacement took90.610748458s through ingest/seal.
+The nonoverlapping partition was75.644136585s for six whole lexical generation
+proofs,7.093390917s for the remaining lexical build,0.687121541s for semantic
+build,1.274530542s for finalization and5.911568873s for other work. The proof
+calls comprise base and coverage checks before intent, the same two checks
+under the publication lock, build preparation coverage, and the new generation
+proof after build. File-authority reconstruction consumed61.645064999s
+*inside* those six proofs; it must not be added to that partition. No-op seal
+took91.640092666s, including74.690540167s of the same six proofs. Delta
+activation was a separate13.184379875s control operation.
+
+The per-seal carrier observed21.614164333s inside delta ingest, leaving
+68.996584125s unattributed by that carrier. The trace resolves most of that
+remainder to preflight and repeated validation; the two observation domains
+overlap. These are shared macOS diagnostics. The original5bf93.969s result
+had no such trace and used a different source/build configuration. Neither
+speed improvement nor current-main performance is established by this run.
+
+The packed-source planner additionally performed a linear inherited-root
+search for each unchanged source. It now binary-searches the strictly ordered
+`SourceFileKey` rows while retaining complete revision/digest equality and
+the existing byte-size, storage and symlink refusal paths. Owner execution
+with `./scripts/cargow --lane test-scale-f15-lane` passed the four `packed_plan`
+library tests,33 `l2_file_mutation` integration tests and lexical library/test
+Clippy with all features and `-D warnings`. Post-repair XL cost is `NOT_RUN`.
+This lookup repair does not remove the75.644s whole-proof bottleneck.
+
+The remaining structural repair must retain validated decoding/normalization/
+posting ownership within publication, bound to identity, manifest and policy,
+while authenticating current bytes at every existing refusal boundary.
+Prior successful checks or unchanged filesystem metadata cannot replace this
+authentication: the integration contract rejects base tampering after external
+preflight and after lock validation before target creation.
+
 ## Paged term directory
 
 Main `b262925b` replaces the retained per-term offset/count/hash directory with
@@ -451,6 +497,7 @@ later source changes and new measurement profiles require affected checks.
 | `5bf6b15216968afde597606033870cc710cb9bc8` hosted source-sharing checkpoint | All six terminal jobs in [workflow1033](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1033/workflows/35192a12-61e0-4be6-b485-5c587a415019) succeeded: tests2247, bench2248, docs2249, static2250, verify2251 and Python2252. Pipeline and all job revisions match5bf. Rust receipt/inventory/raw digests independently agree: 4,281 selected/executed/passed, zero failed, 30 ignored. Python: 4,321 passed, 30 skipped; subsequent checks passed | Complete regular CI at this code checkpoint. Bench is compilation; matching-release runtime diagnostics are separate rows. Later docs-only revisions retain their own lint/source identity and are not relabeled as this CI run |
 | `0d0eaa9312baf429e836f5a04be4f7364f7fc1c7` hosted capture-refusal checkpoint | All six terminal jobs in [workflow1036](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1036/workflows/548df841-2b6d-4d32-8b1b-b792ff4f7509) succeeded: tests2265, Python2266, docs2267, bench2268, static2269 and verify2270. Pipeline and every job revision match `0d`. Rust source-bound receipt, inventory and raw digests independently agree: 4,281 selected/executed/passed, zero failed, 30 ignored. Python: 4,323 passed, 30 skipped; Ruff check/format passed | Complete regular CI at this code checkpoint, including the two new cleanup-refusal regressions. Bench is compilation. Selected Contract/TSan and runtime diagnostics retain their own scopes; later documentation is not relabeled as this CI source. Superseded docs-only workflows1034/1035 were canceled while preserving their completed job outcomes |
 | `b9c058e15d7349ed76adaa408abbd43f123aa65a` hosted closure checkpoint | Pipeline1037's original workers docs2271, bench2272, static2273, tests2274 and Python2276 succeeded at matching source. Final verify2275 failed before executor start (`infrastructure_fail`), so its checkout/source command was `NOT_RUN`. A failed-only retry in [workflow1037](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1037/workflows/7f0e4a3e-87e3-4846-84ba-3f2d624398b7) succeeded: actual checkout and source-equality command in verify2277 exited0, inheriting the same five successful worker IDs. Original Rust raw/inventory/receipt agree: 4,281 selected/executed/passed, zero failed, 30 ignored; Python4,323 passed/30 skipped and Ruff check/format passed | Regular CI is complete at `b9` through the successful retry; original workflow `03c67383-3d37-4395-979a-b1267b555eaa` remains failed and is preserved. Workers were not rerun or counted twice. Bench remains compilation; SDK and selected Bat runtime capture retain separate scope. Artifacts: `/Users/songmin/.codex/task-evidence/scale-shared-final-20261007-1bl40iuo/ci-b9c058e1/` and its `retry-7f0e4a3e/` subtree |
+| `b2599e70b262d707771a69440f0e9a0f0c587e2b` hosted Rust observation/tooling checkpoint | Rust tests1570 succeeded at matching revision. Original receipt/raw/inventory digests agree: 4,286 selected/executed/passed, zero failed, 30 ignored inventory entries. Rust static/docs/bench and final verify contexts succeeded in [workflow](https://app.circleci.com/workflow/5b689098-0c80-4c51-9952-9dadab89d3d0). Python1569 executed and failed at the default paired-runner temporary directory: `/private/tmp` is absent on Linux | Rust scope is `VERIFIED`; regular CI at this source is `FAILED`. Bench is compilation. The Python failure is a product portability defect and is preserved separately from its later repair; local macOS focused passes cannot replace the Linux result |
 | F15 candidate integrated as main `8599f2e8` | Five publication tests passed (72.842s), exercising 32 I/O and 32 SIGKILL cuts. Selected mutation/seal/cost integration tests: 73 passed. Strict lexical all-target Clippy: exit0 | Owner worktree execution preceded integration. Later recovered-query assertions and daemon/scale execution are separate |
 | F15 follow-ups `b09c4aa7` / `70521514` | Recovered-query parity and interrupted delta clone retry implemented. Owner reports 36 I/O + 36 SIGKILL cuts, corrected partial-clone controls, 73 storage regressions and strict lexical Clippy passing. Fixed705 daemon214 also passed | Complete focused code/recovery scope; latest hosted and Large/XL cost/RSS retain their own source binding |
 | `eb97e7c2` restart custody | Medium OS-process restart/delete and release-binary identity controls: 2 passed. The process harness checks daemon SHA-256 before each restart | Existing fixture and selected binary; not Large/XL or real-provider cache proof |
@@ -521,12 +568,43 @@ outside the checkout at `/Users/songmin/.codex/sab7v3/`, including
 
 These are observed local builds/captures and external identity rechecks, not
 completed `scanner_build_custody` combined receipts. Canonical
-`query_timing_overhead.py --scanner-ab` two closed-receipt validation is `NOT_RUN`.
+`query_timing_overhead.py --scanner-ab` two closed-receipt validation at that
+source is `NOT_RUN`.
 Frozen a5 does not qualify later lazy-reader/deadline or buffer-sharing source,
 and this fresh diagnostic does not recover the absent historical binary replay.
 Admitted-host inputs, declared repetitions and whole-caller acceptance retain
 [E4-03](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-03)/
 [E4-06](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-06) boundaries.
+
+## Closed scanner build and capture diagnostic
+
+On 2026-10-08, a separate clean-build pair at
+`f60609fe2d2882f1193d4ba68deb8704e8972138` completed both fresh release builds
+and native captures with exit0. The Unicode control applies only the declared
+`code_search.rs` overlay; the ASCII candidate uses the unmodified source.
+The same Bat revision, 79 files, 338 queries, six admitted incomplete files,
+top-k10, seed1907, warmup1 and three measured repetitions were retained.
+The original interrupted a5 build is not part of these new receipts.
+
+`python -m tools.benchmark.retrieval.query_timing_overhead --scanner-ab`
+verified the two closed `scanner_build_custody` receipts and all 338 response,
+score-bit, ordering, cursor, configuration and work-counter parity rows.
+Receipt SHA-256 is
+`5367af80a40aa8bb31e9a84fb958c362fe5736d8565936d788d62085674b4b73`
+for Unicode and
+`1c9480c957cebe78c109e5d07f286f4a5a653b3664ae92f8aa8a6b918d2921f4`
+for ASCII. Source inventories, original inputs, tool bytes/versions, execution
+environment, fresh binaries and capture bytes are bound by those receipts.
+Original specs, build/capture logs, both receipts and `closed-comparison.json`
+remain at `/private/tmp/qs1iztd4ov/`; the frozen source worktrees remain available
+for verification. The canonical comparison exited0.
+
+Status remains `diagnostic_unqualified`: local source/build custody is
+`VERIFIED`, while admitted-host performance, repeated schedules and adoption
+criteria remain absent. Orchestrator elapsed time includes lease waiting and
+cannot be used as a build or query latency metric. This scope does not recover
+the missing historical replay, qualify current-main performance, or promote
+the earlier observed a5 capture to a closed receipt.
 
 ## Operational actions
 
