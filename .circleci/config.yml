@@ -147,6 +147,21 @@ jobs:
       CI_EVENT_NAME: << pipeline.event.name >>
     steps:
       - checkout
+      - run:
+          name: Verify verification receipt context
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            if [[ "$CI_EVENT_NAME" == pull_request ]]; then
+              tier=pr
+              rail=pr-workspace-nextest
+            elif [[ "$CI_EVENT_NAME" == push && "${CIRCLE_BRANCH:-}" == main ]]; then
+              tier=main
+              rail=main-workspace-nextest
+            else
+              echo "No PR/main verification receipt for event=$CI_EVENT_NAME branch=${CIRCLE_BRANCH:-unknown}" >&2
+              exit 2
+            fi
       - run: *install_verification_tools
       - run: *verify_tool_versions
       - restore_cache:
@@ -588,7 +603,14 @@ jobs:
 
 workflows:
   regular:
-    unless: << pipeline.parameters.run_heavy >>
+    when:
+      and:
+        - not: << pipeline.parameters.run_heavy >>
+        - or:
+            - equal: [pull_request, << pipeline.event.name >>]
+            - and:
+                - equal: [push, << pipeline.event.name >>]
+                - equal: [main, << pipeline.git.branch >>]
     jobs:
       - verify:
           requires:

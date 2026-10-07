@@ -282,6 +282,56 @@ def _validate_rail_binding(
     )
 
 
+def _circleci_gate_enabled(
+    workflow: dict[str, Any], *, run_heavy: bool, event: str, branch: str
+) -> bool:
+    """Evaluate the documented logic subset used by workflow admission.
+
+    Unknown operators and unresolved pipeline values fail closed. This is a
+    static reachability check, not a substitute for CircleCI config validation.
+    """
+    values = {
+        "<< pipeline.parameters.run_heavy >>": run_heavy,
+        "<< pipeline.event.name >>": event,
+        "<< pipeline.git.branch >>": branch,
+    }
+
+    def scalar(value: object) -> str | bool:
+        if isinstance(value, str):
+            if value in values:
+                return values[value]
+            if "<<" not in value and ">>" not in value:
+                return value
+        elif isinstance(value, bool):
+            return value
+        raise ValueError(f"unsupported CircleCI gate value: {value!r}")
+
+    def evaluate(node: object) -> bool:
+        if not isinstance(node, dict):
+            resolved = scalar(node)
+            if isinstance(resolved, bool):
+                return resolved
+            raise ValueError("CircleCI logical value must be boolean")
+        if len(node) != 1:
+            raise ValueError("CircleCI logic must have one operator")
+        operator, arguments = next(iter(node.items()))
+        if operator == "not":
+            return not evaluate(arguments)
+        if operator in {"and", "or"} and isinstance(arguments, list) and arguments:
+            results = [evaluate(argument) for argument in arguments]
+            return all(results) if operator == "and" else any(results)
+        if operator == "equal" and isinstance(arguments, list) and len(arguments) == 2:
+            left, right = (scalar(argument) for argument in arguments)
+            return type(left) is type(right) and left == right
+        raise ValueError(f"unsupported CircleCI gate operator: {operator!r}")
+
+    gates = [name for name in ("when", "unless") if name in workflow]
+    if len(gates) != 1:
+        raise ValueError("CircleCI workflow requires exactly one admission gate")
+    enabled = evaluate(workflow[gates[0]])
+    return enabled if gates[0] == "when" else not enabled
+
+
 def _validate_circleci_rail_binding(
     *,
     root: Path,
@@ -338,11 +388,28 @@ def _validate_circleci_rail_binding(
         violations.append(_violation(catalog, f"rail {rail_id} must default heavy work off"))
         return
     expected_gate = "<< pipeline.parameters.run_heavy >>"
-    if required_workflow == "regular" and selected.get("unless") != expected_gate:
-        violations.append(
-            _violation(catalog, f"rail {rail_id} regular workflow is not enabled by default")
-        )
-        return
+    if required_workflow == "regular":
+        try:
+            for run_heavy, event, branch in itertools.product(
+                (False, True), ("pull_request", "push", "api", "tag"), ("main", "feature")
+            ):
+                expected = not run_heavy and (
+                    event == "pull_request" or (event == "push" and branch == "main")
+                )
+                if (
+                    _circleci_gate_enabled(
+                        selected, run_heavy=run_heavy, event=event, branch=branch
+                    )
+                    != expected
+                ):
+                    raise ValueError(
+                        f"receipt context mismatch: heavy={run_heavy} event={event} branch={branch}"
+                    )
+        except ValueError as error:
+            violations.append(
+                _violation(catalog, f"rail {rail_id} regular workflow admission: {error}")
+            )
+            return
     if required_workflow == "manual-heavy" and selected.get("when") != expected_gate:
         violations.append(
             _violation(catalog, f"rail {rail_id} heavy workflow is not explicitly gated")

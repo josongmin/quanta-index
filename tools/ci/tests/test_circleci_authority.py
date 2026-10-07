@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import runpy
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -63,7 +66,9 @@ def _config(root: Path):
         },
         "workflows": {
             "regular": {
-                "unless": "<< pipeline.parameters.run_heavy >>",
+                "when": yaml.safe_load(CONFIG.read_text(encoding="utf-8"))["workflows"]["regular"][
+                    "when"
+                ],
                 "jobs": ["verify"],
             }
         },
@@ -112,8 +117,82 @@ def test_circleci_rail_rejects_detached_and_failure_swallowing_steps(tmp_path: P
 def test_heavy_work_is_off_by_default():
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     assert config["parameters"]["run_heavy"]["default"] is False
-    assert config["workflows"]["regular"]["unless"] == "<< pipeline.parameters.run_heavy >>"
+    assert not _checker()._circleci_gate_enabled(
+        config["workflows"]["regular"], run_heavy=True, event="pull_request", branch="main"
+    )
     assert config["workflows"]["manual-heavy"]["when"] == "<< pipeline.parameters.run_heavy >>"
+
+
+@pytest.mark.parametrize(
+    ("event", "branch", "expected_tier"),
+    [
+        ("pull_request", "feature", "pr"),
+        ("pull_request", "main", "pr"),
+        ("push", "main", "main"),
+        ("push", "feature", None),
+        ("push", "", None),
+        ("api", "main", None),
+        ("tag", "main", None),
+        ("", "main", None),
+    ],
+)
+def test_regular_admission_matches_receipt_context_before_cargo(event, branch, expected_tier):
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    regular = config["workflows"]["regular"]
+    module = _checker()
+    assert module._circleci_gate_enabled(regular, run_heavy=False, event=event, branch=branch) is (
+        expected_tier is not None
+    )
+    assert not module._circleci_gate_enabled(regular, run_heavy=True, event=event, branch=branch)
+    steps = config["jobs"]["verify-rust-tests"]["steps"]
+    script = next(
+        step["run"]["command"]
+        for step in steps
+        if "run" in step and step["run"]["name"] == "rust nextest"
+    )
+    preflight = steps[1]["run"]
+    assert preflight["name"] == "Verify verification receipt context"
+    selection = 'if [[ "$CI_EVENT_NAME"' + script.split('if [[ "$CI_EVENT_NAME"', 1)[1]
+    selection = selection.split("fi\n", 1)[0] + "fi\n"
+    for context_script in (preflight["command"], "set -euo pipefail\n" + selection):
+        result = subprocess.run(
+            ["bash", "-c", context_script + 'printf "%s\\n%s\\n" "$tier" "$rail"\n'],
+            env={**os.environ, "CI_EVENT_NAME": event, "CIRCLE_BRANCH": branch},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if expected_tier is None:
+            assert result.returncode == 2
+            assert "No PR/main verification receipt" in result.stderr
+            assert result.stdout == ""
+        else:
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.splitlines() == [
+                expected_tier,
+                f"{expected_tier}-workspace-nextest",
+            ]
+
+
+def test_regular_gate_rejects_unresolved_or_unsupported_logic():
+    module = _checker()
+    for gate in (
+        {"when": {"matches": []}},
+        {"when": "<< pipeline.unknown >>"},
+        {"when": True, "unless": False},
+        {"when": {"and": []}},
+    ):
+        with pytest.raises(ValueError):
+            module._circleci_gate_enabled(gate, run_heavy=False, event="push", branch="main")
+
+
+def test_authority_rejects_old_feature_push_admission(tmp_path: Path):
+    data, path = _config(tmp_path)
+    data["workflows"]["regular"].pop("when")
+    data["workflows"]["regular"]["unless"] = "<< pipeline.parameters.run_heavy >>"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert any("receipt context mismatch" in item for item in _rail_violations(tmp_path))
 
 
 def test_all_job_commands_propagate_failures():
@@ -142,7 +221,8 @@ def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
     assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in gate_steps[1]["run"]["command"]
     for name in workers:
         steps = config["jobs"][name]["steps"]
-        assert steps[:3] == config["jobs"]["verify-python"]["steps"][:3]
+        common_steps = steps[:1] + steps[2:] if name == "verify-rust-tests" else steps
+        assert common_steps[:3] == config["jobs"]["verify-python"]["steps"][:3]
         source_guard = steps[-1]["run"]["command"]
         assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in source_guard
         assert "git diff --exit-code" in source_guard
@@ -151,9 +231,9 @@ def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
     rust_steps = config["jobs"]["verify-rust-tests"]["steps"]
     python_steps = config["jobs"]["verify-python"]["steps"]
     assert rust_steps[0] == python_steps[0] == "checkout"
-    assert rust_steps[1:3] == python_steps[1:3]
-    assert '"$HOME/.zprofile"' in rust_steps[1]["run"]["command"]
-    assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in rust_steps[2]["run"]["command"]
+    assert rust_steps[2:4] == python_steps[1:3]
+    assert '"$HOME/.zprofile"' in rust_steps[2]["run"]["command"]
+    assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in rust_steps[3]["run"]["command"]
     rust_names = {step["run"]["name"] for step in rust_steps if "run" in step}
     python_names = {step["run"]["name"] for step in python_steps if "run" in step}
     assert "rust nextest" in rust_names and "rust nextest" not in python_names
