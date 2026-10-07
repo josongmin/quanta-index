@@ -295,9 +295,10 @@ The focused commands reused existing Cargo targets with
 `QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR=1`, explicit `CARGO_TARGET_DIR`,
 `QUANTA_INDEX_TARGET_GC=0`, `QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200` and
 `CARGO_BUILD_JOBS=2`; the lane still uses canonical resource admission.
-Static registration, formatting and document-link checks passed. Native race
-detection, declared long generated/repeat scopes and full-suite qualification
-remain `NOT_RUN`; 87 other integration cases were excluded by the history filter.
+Static registration, formatting and document-link checks passed. At that history
+checkpoint, native race detection, declared long generated/repeat scopes and
+full-suite qualification were `NOT_RUN`; 87 other integration cases were excluded
+by the history filter. Later selected Darwin TSan results are recorded below.
 
 The [daemon crash matrix](../../crates/quanta-index-searchd-runtime/tests/e2e_crash_matrix.rs)
 starts and restarts real child daemons. It requires a case for every declared
@@ -322,12 +323,50 @@ implementation.
 
 Source coverage and explicitly reported focused executions above have separate
 scopes; they are not repository-wide qualification.
-Full SDK-only recovery, native race detection, long mutation/fuzz and
+Full SDK-only recovery, broader native race detection, long mutation/fuzz and
 release/platform execution retain their independent oracles and scope.
 
 The old QIT progress snapshot/scaffolding is retired. Its unfulfilled acceptance
 is preserved in [the residual board](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform);
 this consolidation asserts implemented authorities, not SOTA/test qualification.
+
+### Selected Darwin TSan and contract execution
+
+On clean main `0d0eaa9312baf429e836f5a04be4f7364f7fc1c7`, native Darwin
+TSan passed four selected tests. All commands used the canonical
+`./scripts/cargow --lane tsan-core-lane test -Z build-std --target aarch64-apple-darwin`
+front door, installed nightly, `--locked`, two build workers, debug=0 profiles,
+incremental/compiler-wrapper cache/target-GC disabled and serial resource admission.
+
+- Core `--lib 'domains::lexical::collection_budget::tests::concurrent_'`
+  passed 2/2 with 120 filtered, covering eight-worker accounting and reservation
+  release under `RUSTFLAGS=-Zsanitizer=thread`.
+- Lexical `--lib text_authority::reader::path_tests::pinned_text_shards_survive_unlink_and_concurrent_positioned_reads -- --exact --test-threads 1`
+  passed 1/1 with 356 filtered: eight threads keep fixed answers after unlink.
+- Lexical `--test generation_delta_base_carryforward delta_keeps_its_proved_base_from_reclaim_until_seal -- --exact --test-threads 1`
+  passed 1/1 with 14 filtered: overlapping builder/reclaimer preserve the base
+  until seal and retain the independently expected delta answer.
+
+The first lexical attempt failed before execution because the installed latest
+nightly deprecated stable `AtomicUsize::fetch_update` under denied warnings.
+The preserved retry used `RUSTFLAGS='-Zsanitizer=thread -A deprecated'`; product
+source and stable-Rust lint policy were unchanged. Test binaries' TSan runtime
+links were verified, source/HEAD stayed clean and unchanged, and no sanitizer
+race was reported in these executions. Logs remain at
+`/private/tmp/quanta-index-tsan-core-1791377176.log` and
+`/private/tmp/qi-tsan-lexical-nightly-deprecation-0d0-54psqgrf/`;
+the initial failed lexical build remains at
+`/private/tmp/qi-tsan-lexical-0d0-uo947fuj/`. Four selected passes are not
+workspace, long-history, Linux or operational qualification.
+
+`just retrieval-contract-proof` at the same `0d` source completed 191 selected
+Rust tests and 802 Python tests with no failures. Original canonical verify and
+relocated replay with four frozen binaries both passed while retaining original
+commands, receipt bytes and source provenance. Originals remain at
+`/private/tmp/quanta-index-contract-0d0eaa93-1791377396/`, relocated custody at
+`/private/tmp/qi-contract-relocated-0d0-qibxwnad/`. This is the selected Contract
+rail, not the SDK's separately required fresh release build or an installed
+consumer/Linux target result. Later document revisions do not rename its source.
 
 ### Test fixture and wait invariants
 

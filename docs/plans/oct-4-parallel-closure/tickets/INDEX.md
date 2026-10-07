@@ -24,7 +24,7 @@ Semantica는 외부 producer이며 fact resolution/join/completion은 그 저장
 
 ## 현재 코드 잔여
 
-2026-10-07 코드 대조 기준은 main `5bf6b152`다. 완료된 F15/query/restart·paged directory,
+2026-10-07 코드 대조 기준은 main `0d0eaa93`다. 완료된 F15/query/restart·paged directory,
 SDK lifecycle/cache 및 hosted checkpoint의 source·명령·범위는 아래 ADR가 소유한다.
 Staged upload, EOF cancellation, checked memory/deadline, scanner custody와 P11 공통
 producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비용·반례 또는 target 계약으로 결정한다.
@@ -40,7 +40,7 @@ producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비
 | E1 bootstrap | `evaluator.py::mean_ci`의 10,000 draws·16-key/256KiB bounded cache와 `test_bootstrap_cache.py`의 독립 고정 golden·validation controls | 추가 최적화는 actual paired full-caller 비용·parity를 보고 판정 |
 | E2 reader/inventory | `live_lexical_external.py`의 selected-project acquired-reader 검증, `opengrok_query_witness.py`, workflow/matrix/ready-drain | 미실행 required cells·actual replay/join; caller가 요구할 경우에만 전체 loaded-reader witness 구현 |
 | E4 F15 / Scale | Fault/query/clone-retry/daemon 및 fixed5bf Large·XL causal/replay·XL offered-load·release OS restart는 [cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)로 완료 이관 | E4-06 admitted Linux 반복 성능. 완료된 matrix·capture 재구현/재실행 없음 |
-| QIT lifecycle/concurrency | Mixed-corpus lifecycle 모델·독립 SDK history checker 및 focused8/8·strict는 [coverage ADR](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#implemented-lifecycle-tests-and-remaining-coverage)로 완료 이관 | 선언된 generated/repeat inventory·native race detector 실행. Search-node 한도는 nightly transition 실행이 아님 |
+| QIT lifecycle/concurrency | Mixed-corpus lifecycle·SDK history8/8 및 Darwin TSan의 core2/lexical2는 [coverage ADR](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#selected-darwin-tsan-and-contract-execution)로 완료 이관 | 더 넓은 generated/repeat/native inventory. Search-node 한도는 nightly transition 실행이 아님 |
 | Semantic | Exact-text semantic/hybrid·OS-process cache·model/revision/dimension matrix4/4와 corrected lib-test strict는 [semantic ADR](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)로 완료 이관 | 기존 OpenAI paraphrase rail(ignored)의 실제 API 입력/실행, installed CLI/live-provider release 및 upstream producer 검증 |
 | I0 operations | 공통 typed action producer·pre-state refusal·checker/aggregate, optional paired caller/kernel archive | concrete target adapter·독립 observer 계약 구현, authorized target 입력 및 exact-pair/action 실행 |
 
@@ -58,11 +58,24 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 
 | 우선·owner | 실제 잔여 | 종료 조건 |
 | --- | --- | --- |
-| P0 · I0-02 / CI/integration | 별도 선택된 SDK/Contract·PR/release 결과 회수; 후속 코드 변경 시 영향 hosted scope | 같은 source의 terminal·inventory·receipt. cache focused4/4·corrected library-test strict 및 `5bf6b152` regular CI6jobs는 완료이며 기존 CI/F15 수리는 잔여가 아님 |
+| P0 · I0-02 / CI/integration | 별도 selected fresh SDK·PR/release; 후속 코드 변경의 영향 rail | 동일 source terminal·inventory·receipt. 0d regular CI6jobs·Rust4,281/Python4,323 및 Contract191Rust/802Python·relocated replay는 ADR로 완료 이관 |
 | P1 · E4 / performance | 전체 sync/read/hash/metadata·segment fanout 비용, scanner·Semble·bootstrap 판정 | 원인별 실제 관측 및 독립 parity. 정식 속도는 admitted host·사전 기준·반복 표본 |
 | P1 · E1/E2 / quality | labels/admissions·matching Quanta/Semble pair·native replay/full5·독립 채점 | required cells 및 query/unit/source/index scope, 미판단·실패·제외 분모 설명 |
 | P1 · E1 / holdout | 실제 미사용 corpus/query/family·license/gold/name-span·typo 평가 | 독립 truth·critical strata·exposure/underfill, file hit와 declaration recovery 구분 |
 | P2 · I0-03 / operations | concrete target adapter·provider·installed Linux/state/actions | 대상·독립 pre/post 계약·actual pair/host/config/state/retention/rollback 입력과 실행 |
+
+### 잔여별 실행 가능 조건
+
+| 잔여 | 현재 입력·실행 상태 | 다음 조치 |
+| --- | --- | --- |
+| E1 judgments/admission/holdout | `BLOCKED`: 151tasks/742pairs의 reviewer 배정·최종 판단0; license/gold/acceptance 부재 | 실제 독립 reviewer/adjudicator raw·승인 입력을 받은 뒤 finalizer/admission/scoring. Blank form을 labels로 채우지 않음 |
+| E2 other required native lanes | `NOT_RUN`: Ready9 완료와 다른 selector/input inventory | 기존 issued spec·source·raw별 reuse 또는 실행. Ready9 9repo를 재캡처하지 않음 |
+| E2 Semble A/B adoption | `NOT_RUN`: Bat A/A 반복·Zustand0/1 selected parity 완료 | 대체 구현/모드와 사전 whole-caller 기준·고정 source 입력을 선택한 뒤 실제 A/B |
+| E4 formal performance | `BLOCKED`: qualified Linux/host timeline·사전 효과/불확실성 기준 부재 | 대상 host·config·동일 boundary와 사전 paired schedule 입력 |
+| E4 Scanner closed/historical replay | `BLOCKED`: 옛 root/binary 및 기존 두 closed custody receipts 부재 | 원본 bytes 복구 또는 별도 새 source의 실제 closed capture. 기존 관측 결과는 ADR에 보존 |
+| QIT/SDK/pair/release | `NOT_RUN`: 선택된 broader inventory·fresh SDK·matching producer pair | 선언된 scope만 실행.0d Contract·Darwin TSan4개를 다시 실행하거나 전체 scope로 승격하지 않음 |
+| I0 Linux actions/installed provider | `BLOCKED`: target 경로·독립 observer/rollback 계약·설치된 CLI/API grant 부재 | 실제 대상 입력 후 adapter 계약과 action 구현/실행. 현 staged registry로 deploy 완료를 발행하지 않음 |
+| Conditional token/regex/bootstrap/policy | 측정·consumer 계약·독립 truth가 선행 | 병목/반례/선택된 정책 없이 새 캐시·API·범용 adapter를 추가하지 않음 |
 
 ### 벤치 실행 잔여 — 2026-10-07 소스·입력 대조
 
@@ -219,7 +232,10 @@ Four typo populations1,192/1,178/1,192/1,192와 ARB original/adapted 분모를 �
 
 ### O4-E2-05
 
-`NOT_RUN` · 고정 Semble package/lock/env/model/assets/input의 parent/worker 반복 A-B 비용·재사용 판정.
+`NOT_RUN` · 대체 구현/모드의 Semble 반복 A-B 및 재사용 채택 판정.
+Bat 전체20tasks/79files·warmup1·3 measured repetitions의 두 A/A 실제 실행과
+parent/worker 비용·rows/status/score-bit parity는 [native ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-semble-repetition-and-warmup-diagnostic)로 완료 이관했다.
+영향 source5개 SHA는 일치하지만 실행별 global HEAD는 관측하지 않았으므로 고정 HEAD qualification이 아니다.
 Query pack의 초기 digest·query hash·manifest universe 결속과 실행 후 drift 거절은
 [입력 계약](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#semble-admitted-input-identity)으로 완료 이관했다.
 Immutable validation·native rows/status parity 및 unattributed residual을 확인한다.
@@ -227,7 +243,9 @@ Immutable validation·native rows/status parity 및 unattributed residual을 확
 
 ### O4-E2-06
 
-`NOT_RUN` · Bat 밖에서 quality warmup0을 선택할 때의0/1 parity.
+Zustand 전체20tasks/50files·동일 cold probe/seed/3 schedules의 실제0/1 parity는
+[native ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-semble-repetition-and-warmup-diagnostic)로 완료 이관했다.
+`NOT_RUN` · 다른 repo에서 quality warmup0을 선택할 때의0/1 parity 및 고정 HEAD 조건.
 같은 task set/cold probe/profile/seed/repetitions와 protocol SHA/schedule/phase ledger,
 task별 rows/status/score bits를 두 actual run에서 대조한다. 그 전에는1을 유지한다.
 Order-sensitive 차이가 있으면0을 채택하지 않으며 speed는 warmup≥1이다.
@@ -307,10 +325,13 @@ Contract: [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-b
 
 ### O4-I0-02
 
-별도 selected SDK/Contract·PR/release proof 회수가 잔여다. 후속 코드 변경은 영향 hosted rail을 회수한다.
-Source5bf의 regular CI6jobs 및 Rust4,281passed/0failed/30ignored·Python4,321passed/30skipped는
-실제 terminal·inventory·receipt·source SHA 대조로 완료됐고 아래 ADR로 이관했다.
-이후 docs-only checkpoint를5bf CI source로 재표기하지 않는다. Bench 성공은 컴파일이다.
+별도 selected fresh SDK·PR/release와 후속 코드 변경의 영향 rail이 잔여다.
+0d Contract191Rust/802Python 및 original/relocated portable replay는
+[coverage ADR](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#selected-darwin-tsan-and-contract-execution)로 완료 이관했다.
+Source0d의 regular CI6jobs 및 Rust4,281passed/0failed/30ignored·Python4,323passed/30skipped는
+실제 terminal·inventory·receipt·모든 job source SHA 대조로 완료됐고 아래 ADR로 이관했다.
+Bench 성공은 컴파일이다. 이후 docs-only checkpoint를0d CI source로 재표기하지 않는다.
+후속 코드 변경은 영향 hosted rail을 회수한다.
 완료된 regular main CI/F15·query/restart·cache focused/strict·SDK/runtime checkpoint는
 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)와
 [cache 계약](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)이 소유한다.
@@ -356,11 +377,11 @@ Owner: I0 + 실제 test/adapter owner. Contract:
 | 남은 scope | 종료 조건 |
 | --- | --- |
 | QIT-00/01/05 | 선택된 catalog의 독립 oracle·public wire negative/re-encode 및 lexical/ANN/fusion/filter/metamorphic 결과. Source registration과 실제 execution을 구분 |
-| QIT-02/03/04 | 기존 lifecycle/F15/history fixture 재구현 없음. 선언된 generated/repeat inventory·native race detector·추가 선택 storage/marker/CAS crash scope의 실제 결과 |
+| QIT-02/03/04 | 기존 lifecycle/F15/history fixture 재구현 없음. Darwin core2/lexical2 TSan 완료를 제외한 broader generated/repeat/native 및 추가 선택 storage/marker/CAS crash 결과 |
 | QIT-06 / installed · J7Q-02 | 실제 설치된 SDK/CLI/daemon·consumer lifecycle/recovery·operator/preview/explain wire proof. Local/scripted peer 결과는 별도 |
 | QIT-07 | 선택된 risk-owner mutation/fuzz/coverage·survivor disposition/expiry·minimized input. 옛 미승인 비율·횟수 목표는 Git history로 퇴역 |
 | MISC-03 | 모든 선택 adapter의 실제 large success/failure stdout/stderr·many-entry metadata/archive/JSONL·interrupt·heap/bounded I/O |
-| MISC-04/05 / QIT-09 | 마지막 영향 source의 canonical nonzero inventory/terminal·production/relocated replay·full selected Rust/Python/hosted/Linux. Native detector/API/model 및 조건부 diagnostics는 선택한 범위만 판정 |
+| MISC-04/05 / QIT-09 | 완료된0d regular Rust/Python/hosted·Contract/relocated replay·선택TSan을 제외한 추가 SDK/native/installed/Linux scope의 canonical nonzero inventory/terminal·replay. API/model 및 조건부 diagnostics는 선택한 범위만 판정 |
 | MISC-06 / QIT-08 | 같은 selector·assertions의 paired test cost 및 query-observer/deadline/fetch parity. 정식 latency/scale/relevance는 E4/E1에 한 번만 실행 |
 | MISC-07 | 선택된 registry profile·actual command/input/native capability/replay/exclusion 정합성. 지원하는 실제 multi-repo/product pilot; 작은 fixture로 all-language/full-platform을 승격하지 않음 |
 

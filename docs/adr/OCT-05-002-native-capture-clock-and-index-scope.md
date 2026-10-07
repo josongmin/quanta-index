@@ -255,3 +255,34 @@ changes. Original 191-pair supplemental review inputs are retained separately;
 blank forms are not completed review or human provenance. Independent
 judgments, admission and remaining required inventory stay with
 [E2-04](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e2-04) and E1.
+
+## Selected Semble repetition and warmup diagnostic
+
+On 2026-10-07, four fresh Semble-only lexical-file captures used the original
+complete Bat (20 tasks, 79 files) and Zustand (20 tasks, 50 files) inputs,
+pinned Semble 0.6.0, Python 3.13.9, package lock and model assets. Seed 7,
+top-k 10 and three measured schedules per run were fixed. Bat's two runs with
+one warmup had 81 events each; Zustand's zero/one-warmup runs had 61/81 events
+with the same cold probe and measurement schedules. All 20 tasks per run
+succeeded. Independent native/normalized row,
+status, ordering, candidate float64-bit and per-task output hash comparisons
+agreed. Parent phase intervals, worker accounting and record/manifest hashes
+were independently checked. Parent/worker totals were 3,005.551/2,009.560 ms
+and 2,432.459/1,619.801 ms for Bat, and 1,295.933/573.024 ms and
+1,140.424/532.682 ms for Zustand's zero/one-warmup runs. These timings are
+shared-Mac diagnostics.
+
+Original commands, protocols and outputs remain outside the checkout at
+`/private/tmp/qi-e2-semble-20261007-xim9rl_i/{bat-a2,bat-b,zustand-warm0,zustand-warm1}`.
+The first `bat-a` controller used Python 3.9 and failed during parent validation;
+its partial worker output is preserved separately and not admitted. The retry
+used the pinned Python 3.13.9 interpreter.
+
+The wrapper's `source_head` is its preflight `5e15` checkpoint, not an observed
+per-run HEAD. Concurrent docs-only main advancement was not sampled per run.
+The five checked affected source files and all fixed corpus/query/lock/model
+inputs stayed unchanged; exact per-run global HEAD binding is `NOT_RUN`.
+Do not relabel these artifacts as clean `5e15` or current-main formal receipts.
+Bat is an A/A repetition control, not an alternative-implementation A/B or reuse
+adoption result. Zustand closes only the selected non-Bat warmup parity cell;
+default warmup remains one and other repositories need their own selected checks.
