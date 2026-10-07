@@ -50,8 +50,10 @@ def registry_fixture():
     return load_registry()
 
 
-def fixture(tmp_path):
-    stage = _pair_stage(tmp_path)
+def fixture(tmp_path, *, file_current=False):
+    stage = _pair_stage(
+        tmp_path, file_current=file_current, diagnostic_version=9 if file_current else 4
+    )
     (stage["stage"] / "verdict.json").write_text(json.dumps(_stage_verdict(stage)))
     return stage
 
@@ -140,6 +142,92 @@ def test_native_owner_replay_and_separate_metric_spaces(tmp_path):
     for payload in payloads.values():
         assert [row["query_id"] for row in payload["rows"]] == ["T1", "T2"]
         assert all(row["value"] is None for row in payload["rows"] if row["state"] == "unsupported")
+
+
+def test_file_pair_bridge_publishes_only_independent_file_judgments(tmp_path):
+    stage = _pair_stage(tmp_path, file_current=True, diagnostic_version=9)
+    (stage["stage"] / "verdict.json").write_text(json.dumps(_stage_verdict(stage)))
+    manifest, verdict = bridge.derive(stage["stage"], stage["repo"])
+    assert verdict["counts"] == {"selected": 40, "executed": 40, "passed": 40, "failed": 0}
+    payloads = bridge.typed_payloads(stage["stage"], manifest)
+    assert len(payloads) == 2
+    for payload in payloads.values():
+        assert payload["metric_space"] == "file"
+        assert payload["judgments"] == "pooled"
+        assert payload["unjudged"] == 0
+        assert len(payload["rows"]) == 20
+        assert {row["metric"] for row in payload["rows"]} == {"file_recall_at_10"}
+
+
+def test_file_pair_bridge_preserves_unjudged_and_no_answer_states(tmp_path):
+    native = tmp_path / "native"
+    native.mkdir()
+    captures = {"q0": {}}
+    record = {
+        "captures": captures,
+        "results": [
+            {"task_id": task, "route": "lexical", "status": status}
+            for task, status in (
+                ("hit", "success"),
+                ("pool-gap", "success"),
+                ("absent", "abstained"),
+            )
+        ],
+    }
+    (native / "record.json").write_text(json.dumps(record))
+    manifest = {"artifacts": {"records": ["record.json"]}}
+    report = {
+        "captures": captures,
+        "judgment_metrics": {
+            "file_judgments": {
+                "per_query": [
+                    {
+                        "task_id": "hit",
+                        "route": "lexical",
+                        "eligible": True,
+                        "scores": {"recall_at_10": 0.5},
+                    },
+                    {
+                        "task_id": "pool-gap",
+                        "route": "lexical",
+                        "eligible": False,
+                        "reason": "unjudged_ranked_file",
+                    },
+                ]
+            }
+        },
+        "no_answer": {"routes": {"lexical": {"task_ids": ["absent"]}}},
+    }
+    rows = bridge.file_report_rows(native, manifest, report)
+    assert rows[0]["file_recall_at_10"] == 0.5
+    assert rows[1]["eligible"] is False and rows[1]["file_recall_at_10"] is None
+    assert bridge.typed_state(rows[2], "file", "file_recall_at_10", None) == ("no_answer", 1.0)
+    report["judgment_metrics"]["file_judgments"]["per_query"].pop()
+    with pytest.raises(bridge.EvidenceError, match="omit or add"):
+        bridge.file_report_rows(native, manifest, report)
+
+
+@pytest.mark.parametrize("disagrees", [False, True])
+def test_file_pair_duplicate_report_observations_are_compared_in_file_unit(tmp_path, disagrees):
+    stage = fixture(tmp_path, file_current=True)
+    native, manifest = stage["stage"], stage["manifest"]
+    original = native / manifest["artifacts"]["reports"][0]
+    report = json.loads(original.read_text())
+    if disagrees:
+        report["judgment_metrics"]["file_judgments"]["per_query"][0]["scores"]["recall_at_10"] = (
+            0.12345
+        )
+    duplicate = native / "duplicate-report.json"
+    duplicate.write_text(json.dumps(report))
+    manifest["artifacts"]["reports"].append(duplicate.name)
+    # The publisher refuses duplicate logical reports at the native verdict
+    # boundary. The typed formatter must also compare repeated observations
+    # without assuming the old chunk-report schema.
+    if disagrees:
+        with pytest.raises(bridge.EvidenceError, match="disagree"):
+            bridge.typed_payloads(native, manifest)
+    else:
+        assert len(bridge.typed_payloads(native, manifest)) == 2
 
 
 def test_owned_temporary_alias_is_canonicalized(tmp_path, monkeypatch):
@@ -806,7 +894,10 @@ def test_pair_validation_binds_one_spec_and_input_inventory(tmp_path, monkeypatc
             bridge.validate(tmp_path, tmp_path / "capture", {})
 
 
-def test_capture_complete_profile_and_replay_with_original_corpus_changed(tmp_path, monkeypatch):
+@pytest.mark.parametrize("file_current", [False, True])
+def test_capture_complete_profile_and_replay_with_original_corpus_changed(
+    tmp_path, monkeypatch, file_current
+):
     import benchctl
 
     calls = {"restore": 0, "derive": 0}
@@ -819,7 +910,7 @@ def test_capture_complete_profile_and_replay_with_original_corpus_changed(tmp_pa
 
         monkeypatch.setattr(bridge, name, counted)
 
-    stage = fixture(tmp_path)
+    stage = fixture(tmp_path, file_current=file_current)
     output = tmp_path / "pair-output"
     searchd = tmp_path / "searchd"
     searchd.write_bytes(b"g0-seed-searchd")
@@ -870,7 +961,8 @@ def test_capture_complete_profile_and_replay_with_original_corpus_changed(tmp_pa
         == 0
     )
     document = bridge.validate(bridge.ROOT, root, registry_fixture())
-    assert len(document["runs"]) == 6
+    case_count = 2 if file_current else 6
+    assert len(document["runs"]) == case_count
     (stage["repo"] / "a.txt").write_bytes(b"original source no longer authoritative")
     shutil.rmtree(output)
     shutil.rmtree(root / "work")
@@ -885,10 +977,10 @@ def test_capture_complete_profile_and_replay_with_original_corpus_changed(tmp_pa
     evidence["payload"]["rows"][0]["value"] = 0.12345
     with pytest.raises(ValueError, match="typed metrics"):
         bridge.replay_run(store, evidence)
-    # Publication and three independent validations still derive all six cases.
+    # Publication and three independent validations derive every declared case.
     # Two per-run replays restore separately; capture also derives once.
     # The summary command advertises presence without claiming validation.
-    assert calls == {"restore": 6, "derive": 27}
+    assert calls == {"restore": 6, "derive": 4 * case_count + 3}
 
     evidence = store.load(document["runs"][0]["run_id"])
     original_derive = bridge.derive

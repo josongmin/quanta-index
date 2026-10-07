@@ -309,6 +309,45 @@ def typed_state(row: dict, space: str, metric: str, span: dict | None) -> tuple[
     return "judged", row.get(metric)
 
 
+def file_report_rows(native: Path, manifest: dict, report: dict) -> list[dict]:
+    """Keep independent file judgments and no-answer outcomes in their own unit."""
+    statuses = {}
+    for ref in manifest["artifacts"]["records"]:
+        record = owner.read_json(owner._resolve_artifact(native, ref, "file pair record"))
+        captures = record["captures"]
+        if not captures or not set(captures) <= set(report["captures"]):
+            continue
+        for row in record["results"]:
+            key = (row["task_id"], row["route"])
+            if key in statuses:
+                raise EvidenceError("file pair native task/route inventory is duplicate")
+            statuses[key] = row["status"]
+    rows = []
+    for row in report["judgment_metrics"]["file_judgments"]["per_query"]:
+        key = (row["task_id"], row["route"])
+        if key not in statuses:
+            raise EvidenceError("file pair judgment lacks its captured task/route")
+        rows.append(
+            {
+                **row,
+                "status": statuses[key],
+                "answerable": True,
+                "file_recall_at_10": row.get("scores", {}).get("recall_at_10"),
+            }
+        )
+    for route, negative in report["no_answer"]["routes"].items():
+        for task in negative["task_ids"]:
+            key = (task, route)
+            if key not in statuses:
+                raise EvidenceError("file pair no-answer task lacks its captured task/route")
+            rows.append(
+                {"task_id": task, "route": route, "status": statuses[key], "answerable": False}
+            )
+    if {(row["task_id"], row["route"]) for row in rows} != set(statuses):
+        raise EvidenceError("file pair judgments omit or add captured task/routes")
+    return rows
+
+
 def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
     artifacts = manifest["artifacts"]
     protocol = owner.read_json(
@@ -320,6 +359,7 @@ def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
         raise EvidenceError("pair task inventory is empty or duplicate")
     strategies = protocol["strategies"]
     routes = [*protocol["quanta_routes"], protocol["semble_route"]]
+    file_pair = protocol["execution_profiles"]["quanta"]["policy"] in owner.qp.FILE_PAIR_POLICIES
     if len(strategies) != len(set(strategies)) or len(routes) != len(set(routes)):
         raise EvidenceError("pair strategy/route inventory is duplicate")
     reports = {}
@@ -336,18 +376,29 @@ def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
         if not candidates:
             raise EvidenceError("pair comparison has no raw scored report")
         for report in candidates:
-            if (
-                strategy in by_strategy
-                and by_strategy[strategy]["per_query"] != report["per_query"]
-            ):
-                raise EvidenceError("pair reports disagree on per-query observations")
+            if strategy in by_strategy:
+                before, after = by_strategy[strategy], report
+                if file_pair:
+                    previous = file_report_rows(native, manifest, before)
+                    current = file_report_rows(native, manifest, after)
+
+                    def observation_key(row):
+                        return row["task_id"], row["route"]
+
+                    agrees = sorted(previous, key=observation_key) == sorted(
+                        current, key=observation_key
+                    )
+                else:
+                    agrees = before["per_query"] == after["per_query"]
+                if not agrees:
+                    raise EvidenceError("pair reports disagree on per-query observations")
             by_strategy[strategy] = report
     if set(by_strategy) != set(strategies):
         raise EvidenceError("pair scored strategy inventory is incomplete")
     result = {}
     for strategy in strategies:
         report = by_strategy[strategy]
-        rows = report["per_query"]
+        rows = file_report_rows(native, manifest, report) if file_pair else report["per_query"]
         indexed = {(row["task_id"], row["route"]): row for row in rows}
         if len(indexed) != len(rows) or set(indexed) != {
             (task, route) for task in tasks for route in routes
@@ -364,11 +415,15 @@ def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
                 if route == protocol["semble_route"]
                 else profile["quanta"]["policy"] == "native"
             )
-            for space, metric in METRICS.items():
+            metrics = {"file": METRICS["file"]} if file_pair else METRICS
+            for space, metric in metrics.items():
                 typed = []
                 for task in tasks:
-                    state, value = typed_state(
-                        indexed[(task, route)], space, metric, spans.get((task, route))
+                    row = indexed[(task, route)]
+                    state, value = (
+                        ("unjudged", None)
+                        if file_pair and row.get("eligible") is False
+                        else typed_state(row, space, metric, spans.get((task, route)))
                     )
                     if state in {"judged", "no_answer"}:
                         if (
@@ -393,8 +448,8 @@ def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
                     "kind": "retrieval",
                     "lane": "native_default" if native_default else "controlled_mechanism",
                     "metric_space": space,
-                    "judgments": "judged",
-                    "unjudged": 0,
+                    "judgments": "pooled" if file_pair else "judged",
+                    "unjudged": sum(row["state"] == "unjudged" for row in typed),
                     "universe_attested": False,
                     "corpus_digest": "sha256:" + manifest["provenance"]["corpus"]["digest"],
                     "query_pack_digest": "sha256:"
