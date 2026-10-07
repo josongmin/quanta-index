@@ -219,7 +219,7 @@ Bat·lo native pair각40/40·독립 `run.py verdict --repo <repo> --suite <suite
 재생은 `VERIFIED`다. 공통 bridge는 file report에 없는 top-level `per_query`를 읽어 실패했고,
 `49a02c15`에서 canonical file judgments·no-answer·unjudged 분모 및 중복 observation 비교로 수리했다.
 `test_pair_capture.py`92개(80.70s), Ruff lint/format은 `VERIFIED`; file pair는 file metric만 발행한다.
-CLI actual capture는 `FAILED`: lexical-file authority의 고정 `term_directory_bytes=32MiB`를 초과했다.
+CLI·Django actual capture는 `FAILED`: lexical-file authority의 고정 `term_directory_bytes=32MiB`를 초과했다.
 Native runner에 해당 정책을 바꾸는 startup/spec 옵션은 없으며, 실패 raw를 유지한다.
 나머지 source6a3 matching pair를 독립 실행하고 있다. 원본 입력/명령/raw/결과는
 `/Users/songmin/.codex/task-evidence/ready9-native-pair-20261007-01a10d0b`에 보존한다.
