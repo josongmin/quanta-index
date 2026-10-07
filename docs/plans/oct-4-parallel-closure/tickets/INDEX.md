@@ -108,8 +108,15 @@ Canonical freeze로 역할 binary SDK3·Contract4개와 raw/log/context를
   bench1255(sourcee8)는 컴파일 오류 없이60분 제한에서 `FAILED`다.
   Bench job만 large(4vCPU/15GB)·`CARGO_BUILD_JOBS=4`로 변경하며 전체 workspace/all-features/
   locked/bench profile/no-run 범위를 유지한다. Focused CI210tests·Ruff·test-authority 및
-  `circleci config validate .circleci/config.yml`는 `VERIFIED`다. 변경 후 hosted bench와
-  필수 verify gate의 terminal은 아직 `NOT_RUN`이다. 새 로컬 전체 Rust·release build는 없다.
+  `circleci config validate .circleci/config.yml`는 `VERIFIED`다.
+- 2026-10-07 source `9221d7715926f5d298d1e8fdcf6d1552753b7c60`의 hosted whole CI는
+  `VERIFIED`다. Python1264는4283passed·30skipped/P00/pre-commit exit0, strict/MSRV1266과
+  docs1265도 exit0다. Nextest1263은4231/4231·1186.407s,29skipped이며 원본 receipt·inventory·
+  evidence digest와 revision을 canonical parser로 검증했다. Bench1267의
+  `just rust-bench-build`는 전체 workspace/all-features/locked/bench profile/no-run을 유지한 채
+  compile48m28.671s·job49m09.451s/exit0다. 실제4CPU·15GB allocation과 unchanged-source guard도
+  확인했다. 동일 workflow의 필수 [verify1268](https://circleci.com/gh/josongmin/quanta-index/1268)와
+  GitHub aggregate status는 success다. CI 종료 회수는 완료했으며 새 로컬 전체 Rust·release build는 없다.
 
 ### 별도 고정 소스의 실행 복구
 
@@ -125,7 +132,7 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
 
 - 요청한6범주 구조적 수정·CI/strict repair·branch 통합 및 최신 Contract/SDK/runtime/open-loop
   selected 회귀는 완료했다. 현재 소스에서 추가로 확정된 엔진 결함은 없다.
-- Whole hosted CI는 bench job의60분 제한을 수리한 뒤 bench 및 필수 verify gate의 종료를 회수한다. Python·strict/MSRV·nextest/receipt·docs는 sourcee8c52628에서 `VERIFIED`다.
+- Whole hosted CI는 source9221d771에서 필수 verify gate까지 `VERIFIED`로 종료했다. CI 코드·실행 잔여는 없다. 이 결과를 Large/XL timing/RSS 또는5제품 비교 qualification으로 확장하지 않는다.
 - Ready9의 CS9repos/180tasks capture와 별도 프로세스 canonical replay9/9는 actual source `09103820`에서 `VERIFIED`/exit0다.
   기존4repos/80tasks와268raw files를 보존하고 guarded resume8개를 통과했다.
   CS9/9개·180개 요청 capture를 완료했다. 실제9개 capture SHA/ordered ledger가 일치하며
