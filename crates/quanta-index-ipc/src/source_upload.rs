@@ -433,10 +433,13 @@ impl SourcePublicationUploadPort for SourcePublicationUploadStore {
         }
         let (slots, total) = self.inventory()?;
         let exists = path.try_exists().map_err(storage)?;
-        if !exists && (part.offset != 0 || slots >= STAGING_SLOTS) {
-            return Err(invalid(
-                "source upload needs its first part or available staging slot",
-            ));
+        if !exists {
+            if part.offset != 0 {
+                return Err(invalid("source upload needs its first part"));
+            }
+            if slots >= STAGING_SLOTS {
+                return Err(busy("source upload staging slot quota exceeded"));
+            }
         }
         // Admit growth before creating a body: refused requests must not
         // consume slots with empty files. The store mutex fences inventory
@@ -965,21 +968,36 @@ mod tests {
                 )
                 .expect("available slot");
         }
-        assert!(
-            store
-                .stage(
-                    &SourcePublicationUploadPart {
-                        identity: SourcePublicationUploadIdentity {
-                            body_sha256: [99; 32],
-                            body_bytes: 8
-                        },
-                        offset: 0,
-                        bytes: vec![1],
-                    },
-                    &budget()
-                )
-                .is_err()
+        let next = SourcePublicationUploadPart {
+            identity: SourcePublicationUploadIdentity {
+                body_sha256: [99; 32],
+                body_bytes: 8,
+            },
+            offset: 0,
+            bytes: vec![1],
+        };
+        let refused = store.stage(&next, &budget()).expect_err("slot quota");
+        assert_eq!(
+            refused.into_search_plane_wire().0,
+            SearchPlaneErrorCodeV2::CatalogBusy,
         );
+        assert!(!store.path(next.identity).expect("path").exists());
+        let gap = SourcePublicationUploadPart {
+            offset: 1,
+            ..next.clone()
+        };
+        let invalid = store
+            .stage(&gap, &budget())
+            .expect_err("missing first part");
+        assert_eq!(
+            invalid.into_search_plane_wire().0,
+            SearchPlaneErrorCodeV2::InvalidRequest
+        );
+        store.discard(identity).expect("release one slot");
+        let _ack = store
+            .stage(&next, &budget())
+            .expect("retry after slot release");
+        assert_eq!(store.inventory().expect("inventory").0, STAGING_SLOTS);
         assert!(
             store
                 .stage(

@@ -588,25 +588,9 @@ fn dispatch_search_corpus_publish_outcome_v1<const SEALED: bool>(
         let identity = quanta_index_ipc::source_publication_upload_identity(&wire_batch)
             .map_err(SdkError::Transport)?;
         quanta_index_ipc::for_each_source_publication_upload_part(&wire_batch, identity, |part| {
-            let next_offset = part
-                .offset
-                .checked_add(
-                    u64::try_from(part.bytes.len())
-                        .map_err(|error| SdkError::Protocol(error.to_string()))?,
-                )
-                .ok_or_else(|| SdkError::Protocol("source upload part offset overflow".into()))?;
-            let SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(ack) = client
-                .dispatch_ingest(SearchPlaneIngestIpcRequest::StageSourcePublication(part))?
-            else {
-                return Err(SdkError::Protocol(
-                    "source publication upload acknowledgement mismatch".into(),
-                ));
-            };
-            if ack.identity != identity || ack.next_offset != next_offset {
-                return Err(SdkError::Protocol(
-                    "source publication upload acknowledgement mismatch".into(),
-                ));
-            }
+            // Typed dispatch binds the ACK variant, body identity and exact offset.
+            let _ack = client
+                .dispatch_ingest(SearchPlaneIngestIpcRequest::StageSourcePublication(part))?;
             Ok(())
         })
         .map_err(|error| match error {

@@ -982,11 +982,17 @@ pub struct TierMeasurement {
     pub source_repo_count: usize,
     /// Bytes of every generated file.
     pub corpus_bytes: u64,
+    /// Exact scoped source demand, including per-file newline framing.
+    pub source_admission: Option<ScopedCorpusAdmission>,
     /// Actual encoded pending IPC envelope, before the timed seal.
     pub ingest_decoded_bytes: Option<u64>,
     pub ingest_wire_bytes: Option<u64>,
     /// Ingest of every file through seal.
     pub build_ms: f64,
+    /// Separate operation clocks for scoped tiers. Small uses one combined
+    /// ingest/seal operation and therefore leaves both split clocks absent.
+    pub full_ingest_ms: Option<f64>,
+    pub full_seal_ms: Option<f64>,
     /// Bytes the state root grew by during the full build.
     pub build_bytes_written: u64,
     /// Activation of the freshly sealed generation (no reclaim).
@@ -1014,6 +1020,15 @@ pub struct TierMeasurement {
     /// fixture has one serving repo/revision pair, so total equals pair bytes.
     /// These are unique-inode regular-file sizes, not sampled allocated blocks.
     pub retained_index_bytes_by_seal: BTreeMap<&'static str, u64>,
+    /// Monotonic product counter differences for each successful seal.
+    /// Admission source reads and durable-root replay reads are logical work;
+    /// hashing and inheritance counters cover manifest commitments separately.
+    pub seal_work_by_seal: BTreeMap<&'static str, BTreeMap<&'static str, u64>>,
+    /// Registry accounting charge after the first query, separate from RSS.
+    pub lexical_registry_resident_bytes: u64,
+    /// The lexical open port's accounting estimate, even when uncached.
+    /// This is neither an observed heap allocation nor a process RSS sample.
+    pub lexical_open_resident_estimate_bytes: u64,
     /// `RUSAGE_SELF` around runtime boot through driver cleanup. The daemon is
     /// an in-process thread; this includes harness and daemon CPU time.
     pub cpu: Option<CpuUsageV1>,
@@ -2163,15 +2178,18 @@ fn require_no_source_file(result: &crate::harness::E2eQueryResult) -> AnyResult<
     Ok(())
 }
 
+struct ScopedDeleteObservation {
+    timing: DeleteReopenMeasurementV1,
+    phase_resources: BTreeMap<&'static str, PhaseResourceV1>,
+    retained_index_bytes: u64,
+    seal_work: BTreeMap<&'static str, u64>,
+}
+
 fn measure_scoped_delete_reopen(
     rt: &mut E2eRuntime,
     oracle: &ScopedOracle,
     file: &ScopedFile,
-) -> AnyResult<(
-    DeleteReopenMeasurementV1,
-    BTreeMap<&'static str, PhaseResourceV1>,
-    u64,
-)> {
+) -> AnyResult<ScopedDeleteObservation> {
     let disk_root = rt.state_root().to_path_buf();
     if file.source_repo_id != "repo0" || file.repo_relative_path != "src/file_0.rs" {
         anyhow::bail!("scale: deletion fixture must be repo0/src/file_0.rs");
@@ -2183,6 +2201,7 @@ fn measure_scoped_delete_reopen(
     let retained_before = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
     require_single_source_file(&retained_before, "repo1", &file.repo_relative_path)?;
 
+    let before_seal = seal_work_snapshot(&rt.metrics_snapshot()?)?;
     let (delete_seal_ms, delete_resource) =
         observe_phase_at_root("delete_seal", Some(&disk_root), || {
             let delete_started = Instant::now();
@@ -2200,7 +2219,9 @@ fn measure_scoped_delete_reopen(
                 .map_err(|error| ScaleStageError::operation("delete_activate", &error))?;
             Ok(elapsed_ms(activation_started))
         })?;
-    let delete_retained = retained_index_bytes_after_seal(rt)?;
+    let after_seal = rt.metrics_snapshot()?;
+    let delete_retained = retained_index_bytes_from_snapshot(&after_seal)?;
+    let delete_work = seal_work_window(&before_seal, &after_seal)?;
     let successor = oracle.without_file("repo0", &file.repo_relative_path)?;
 
     let deleted_after = rt.query_text(TextQuerySyntax::Native, &deleted_token, SCALE_TOP_K);
@@ -2233,16 +2254,17 @@ fn measure_scoped_delete_reopen(
     record_phase(&mut phase_resources, "delete_seal", delete_resource)?;
     record_phase(&mut phase_resources, "delete_activate", activation_resource)?;
     record_phase(&mut phase_resources, "same_process_reopen", reopen_resource)?;
-    Ok((
-        DeleteReopenMeasurementV1 {
+    Ok(ScopedDeleteObservation {
+        timing: DeleteReopenMeasurementV1 {
             delete_seal: delete_seal_ms,
             delete_activation: delete_activation_ms,
             same_process_reopen: same_process_reopen_ms,
             reopened_first_query: reopened_first_query_ms,
         },
         phase_resources,
-        delete_retained,
-    ))
+        retained_index_bytes: delete_retained,
+        seal_work: delete_work,
+    })
 }
 
 /// Open the sealed generation the daemon serves through the lexical
@@ -2250,7 +2272,7 @@ fn measure_scoped_delete_reopen(
 fn measure_adapter_phases(
     rt: &E2eRuntime,
     scoped_oracle: Option<&ScopedOracle>,
-) -> AnyResult<AdapterPhaseTimingV1> {
+) -> AnyResult<(AdapterPhaseTimingV1, u64)> {
     let adapter = LexicalAdapter::with_state_root(rt.state_root().join("indexes/lexical"));
     let sealed = ManifestGeneration::new(rt.current_generation().get().saturating_sub(1));
     let open_started = Instant::now();
@@ -2291,15 +2313,92 @@ fn measure_adapter_phases(
             ));
         }
     }
-    Ok(AdapterPhaseTimingV1 {
-        open_ms,
-        plan_ms: median_ms(&mut plan_samples)?,
-        execute_ms: median_ms(&mut execute_samples)?,
-    })
+    Ok((
+        AdapterPhaseTimingV1 {
+            open_ms,
+            plan_ms: median_ms(&mut plan_samples)?,
+            execute_ms: median_ms(&mut execute_samples)?,
+        },
+        searcher.resident_bytes_estimate(),
+    ))
 }
 
 const MAX_EXACT_GAUGE_INTEGER: f64 = 9_007_199_254_740_992.0;
 const RETAINED_INDEX_BYTES_GAUGE: &str = "search_corpus_retained_index_bytes";
+const SEAL_WORK_COUNTERS: &[&str] = &[
+    "lexical_seals_total",
+    "lexical_seal_files_hashed_total",
+    "lexical_seal_bytes_hashed_total",
+    "lexical_seal_files_inherited_total",
+    "lexical_seal_bytes_inherited_total",
+    "lexical_seal_file_admission_files_read_total",
+    "lexical_seal_file_admission_bytes_read_total",
+    "lexical_seal_file_authority_replay_files_read_total",
+    "lexical_seal_file_authority_replay_bytes_read_total",
+];
+
+fn seal_work_snapshot(snapshot: &MetricsSnapshotV1) -> AnyResult<BTreeMap<&'static str, u64>> {
+    SEAL_WORK_COUNTERS
+        .iter()
+        .map(|&name| {
+            let mut values = snapshot
+                .counters
+                .iter()
+                .filter(|counter| counter.name == name);
+            let value = values
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("scale: missing {name}"))?
+                .value;
+            if values.next().is_some() {
+                anyhow::bail!("scale: duplicate {name}");
+            }
+            Ok((name, value))
+        })
+        .collect()
+}
+
+fn seal_work_window(
+    before: &BTreeMap<&'static str, u64>,
+    after: &MetricsSnapshotV1,
+) -> AnyResult<BTreeMap<&'static str, u64>> {
+    let after = seal_work_snapshot(after)?;
+    let window: BTreeMap<_, _> = after
+        .iter()
+        .map(|(&name, &value)| {
+            let previous = before
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("scale: missing prior {name}"))?;
+            Ok((
+                name,
+                value
+                    .checked_sub(*previous)
+                    .ok_or_else(|| anyhow::anyhow!("scale: decreasing {name}"))?,
+            ))
+        })
+        .collect::<AnyResult<_>>()?;
+    if window.get("lexical_seals_total") != Some(&1) {
+        anyhow::bail!("scale: seal work window must contain exactly one successful seal");
+    }
+    Ok(window)
+}
+
+fn lexical_registry_resident_bytes(snapshot: &MetricsSnapshotV1) -> AnyResult<u64> {
+    let name = "snapshot_registry_lexical_resident_bytes";
+    let mut gauges = snapshot.gauges.iter().filter(|gauge| gauge.name == name);
+    let value = gauges
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("scale: missing {name}"))?
+        .value;
+    if gauges.next().is_some()
+        || !value.is_finite()
+        || value < 0.0
+        || value.fract() != 0.0
+        || value > MAX_EXACT_GAUGE_INTEGER
+    {
+        anyhow::bail!("scale: {name} is not one exact nonnegative accounting charge");
+    }
+    Ok(format!("{value:.0}").parse()?)
+}
 
 fn retained_index_bytes_from_snapshot(snapshot: &MetricsSnapshotV1) -> AnyResult<u64> {
     let mut observed = None;
@@ -2320,10 +2419,6 @@ fn retained_index_bytes_from_snapshot(snapshot: &MetricsSnapshotV1) -> AnyResult
     format!("{value:.0}")
         .parse::<u64>()
         .map_err(|error| anyhow::anyhow!("scale: parse exact retained index bytes gauge: {error}"))
-}
-
-fn retained_index_bytes_after_seal(rt: &mut E2eRuntime) -> AnyResult<u64> {
-    retained_index_bytes_from_snapshot(&rt.metrics_snapshot()?)
 }
 
 /// Change one file, ingest and seal it as a delta, activate (reclaiming the
@@ -2471,6 +2566,7 @@ fn measure_small_tier_with_config(
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
 
+        let before_full = seal_work_snapshot(&rt.metrics_snapshot()?)?;
         let before_build = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?;
         let serving_owner = rt.repo();
@@ -2503,6 +2599,7 @@ fn measure_small_tier_with_config(
             .map_err(|error| stage_or_preserve("query_first", error))?;
         let full_retained = retained_index_bytes_from_snapshot(&scrape_before_first)
             .map_err(|error| stage_or_preserve("retention_full", error))?;
+        let full_work = seal_work_window(&before_full, &scrape_before_first)?;
         let first_started = Instant::now();
         let result_count =
             served_query(&mut rt).map_err(|error| stage_or_preserve("query_first", error))?;
@@ -2512,6 +2609,7 @@ fn measure_small_tier_with_config(
         let scrape_after_first = rt
             .metrics_snapshot()
             .map_err(|error| stage_or_preserve("query_first", error))?;
+        let registry_resident = lexical_registry_resident_bytes(&scrape_after_first)?;
         let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)
             .map_err(|error| stage_or_preserve("query_first", error))?;
         let first_route_ms = histogram_window(
@@ -2539,12 +2637,15 @@ fn measure_small_tier_with_config(
         let warm_query = LatencySummary::from_samples_ms(&warm_samples)
             .ok_or_else(|| anyhow::anyhow!("scale: no warm samples"))?;
 
-        let adapter = measure_adapter_phases(&rt, None)
+        let (adapter, open_resident_estimate) = measure_adapter_phases(&rt, None)
             .map_err(|error| stage_or_preserve("adapter", error))?;
+        let before_delta = seal_work_snapshot(&rt.metrics_snapshot()?)?;
         let (delta, delta_resources) =
             measure_delta(&mut rt, seed).map_err(|error| stage_or_preserve("delta", error))?;
-        let delta_retained = retained_index_bytes_after_seal(&mut rt)
+        let after_delta_seal = rt.metrics_snapshot()?;
+        let delta_retained = retained_index_bytes_from_snapshot(&after_delta_seal)
             .map_err(|error| stage_or_preserve("retention_delta", error))?;
+        let delta_work = seal_work_window(&before_delta, &after_delta_seal)?;
         let before_noop = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         require_result_count(
             before_noop.candidates.len(),
@@ -2552,10 +2653,13 @@ fn measure_small_tier_with_config(
             "before no-op query",
         )
         .map_err(|error| stage_or_preserve("noop_verify", error))?;
+        let before_noop_seal = seal_work_snapshot(&rt.metrics_snapshot()?)?;
         let (noop, noop_resources) =
             measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
-        let noop_retained = retained_index_bytes_after_seal(&mut rt)
+        let after_noop_seal = rt.metrics_snapshot()?;
+        let noop_retained = retained_index_bytes_from_snapshot(&after_noop_seal)
             .map_err(|error| stage_or_preserve("retention_noop", error))?;
+        let noop_work = seal_work_window(&before_noop_seal, &after_noop_seal)?;
         let after_noop = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         require_result_count(after_noop.candidates.len(), expected_results, "no-op query")
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
@@ -2575,9 +2679,12 @@ fn measure_small_tier_with_config(
             corpus_digest,
             source_repo_count: 1,
             corpus_bytes,
+            source_admission: None,
             ingest_decoded_bytes: None,
             ingest_wire_bytes: None,
             build_ms,
+            full_ingest_ms: None,
+            full_seal_ms: None,
             build_bytes_written,
             activation_ms,
             first_query_ms,
@@ -2609,6 +2716,15 @@ fn measure_small_tier_with_config(
             ]
             .into_iter()
             .collect(),
+            seal_work_by_seal: [
+                ("full", full_work),
+                ("delta", delta_work),
+                ("noop", noop_work),
+            ]
+            .into_iter()
+            .collect(),
+            lexical_registry_resident_bytes: registry_resident,
+            lexical_open_resident_estimate_bytes: open_resident_estimate,
             cpu: None,
             phase_resources,
             delete_reopen: None,
@@ -2718,7 +2834,7 @@ pub fn measure_tier_with_runtime_config(
     let corpus_digest = scoped_corpus_digest(DIMENSION, &files);
     let oracle = ScopedOracle::from_source(&files, tier)
         .map_err(|error| stage_or_preserve("source_fixture", error))?;
-    let _admission = preflight_scoped_corpus(&files)
+    let admission = preflight_scoped_corpus(&files)
         .map_err(|error| ScaleStageError::source_admission(&error))?;
     let file_count = files.len();
     let corpus_bytes = files
@@ -2736,6 +2852,7 @@ pub fn measure_tier_with_runtime_config(
     let disk_root = rt.state_root().to_path_buf();
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
+        let before_full = seal_work_snapshot(&rt.metrics_snapshot()?)?;
         let before_build = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?;
         let chunks = files
@@ -2790,6 +2907,7 @@ pub fn measure_tier_with_runtime_config(
             .map_err(|error| stage_or_preserve("query_first", error))?;
         let full_retained = retained_index_bytes_from_snapshot(&scrape_before_first)
             .map_err(|error| stage_or_preserve("retention_full", error))?;
+        let full_work = seal_work_window(&before_full, &scrape_before_first)?;
         let first_started = Instant::now();
         let first = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         let first_query_ms = elapsed_ms(first_started);
@@ -2798,6 +2916,7 @@ pub fn measure_tier_with_runtime_config(
         let scrape_after_first = rt
             .metrics_snapshot()
             .map_err(|error| stage_or_preserve("query_first", error))?;
+        let registry_resident = lexical_registry_resident_bytes(&scrape_after_first)?;
         let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)
             .map_err(|error| stage_or_preserve("query_first", error))?;
         let first_route_ms = histogram_window(
@@ -2831,24 +2950,30 @@ pub fn measure_tier_with_runtime_config(
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("repo_probe", error))?;
 
-        let adapter = measure_adapter_phases(&rt, Some(&oracle))
+        let (adapter, open_resident_estimate) = measure_adapter_phases(&rt, Some(&oracle))
             .map_err(|error| stage_or_preserve("adapter", error))?;
         let delta_file = files
             .first()
             .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
+        let before_delta = seal_work_snapshot(&rt.metrics_snapshot()?)?;
         let (delta, delta_resources) = measure_scoped_delta(&mut rt, delta_file)
             .map_err(|error| stage_or_preserve("delta", error))?;
-        let delta_retained = retained_index_bytes_after_seal(&mut rt)
+        let after_delta_seal = rt.metrics_snapshot()?;
+        let delta_retained = retained_index_bytes_from_snapshot(&after_delta_seal)
             .map_err(|error| stage_or_preserve("retention_delta", error))?;
+        let delta_work = seal_work_window(&before_delta, &after_delta_seal)?;
         let after_delta = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
+        let before_noop_seal = seal_work_snapshot(&rt.metrics_snapshot()?)?;
         let (noop, noop_resources) =
             measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
-        let noop_retained = retained_index_bytes_after_seal(&mut rt)
+        let after_noop_seal = rt.metrics_snapshot()?;
+        let noop_retained = retained_index_bytes_from_snapshot(&after_noop_seal)
             .map_err(|error| stage_or_preserve("retention_noop", error))?;
+        let noop_work = seal_work_window(&before_noop_seal, &after_noop_seal)?;
         let after_noop = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         let _noop_result_count = validate_scoped_response(&oracle, None, &after_noop)
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
@@ -2856,14 +2981,13 @@ pub fn measure_tier_with_runtime_config(
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
-        let (delete_reopen, delete_resources, delete_retained) =
-            measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
-                .map_err(|error| stage_or_preserve("delete_reopen", error))?;
+        let delete = measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
+            .map_err(|error| stage_or_preserve("delete_reopen", error))?;
         let mut phase_resources = delta_resources;
         for (name, observation) in noop_resources {
             record_phase(&mut phase_resources, name, observation)?;
         }
-        for (name, observation) in delete_resources {
+        for (name, observation) in delete.phase_resources {
             record_phase(&mut phase_resources, name, observation)?;
         }
         record_phase(&mut phase_resources, "full_ingest", ingest_resource)?;
@@ -2876,9 +3000,12 @@ pub fn measure_tier_with_runtime_config(
             corpus_digest,
             source_repo_count: oracle.paths_by_repo.len(),
             corpus_bytes,
+            source_admission: Some(admission),
             ingest_decoded_bytes: Some(ingest_decoded_bytes),
             ingest_wire_bytes: Some(ingest_wire_bytes),
             build_ms,
+            full_ingest_ms: Some(ingest_ms),
+            full_seal_ms: Some(seal_ms),
             build_bytes_written,
             activation_ms,
             first_query_ms,
@@ -2907,13 +3034,23 @@ pub fn measure_tier_with_runtime_config(
                 ("full", full_retained),
                 ("delta", delta_retained),
                 ("noop", noop_retained),
-                ("delete", delete_retained),
+                ("delete", delete.retained_index_bytes),
             ]
             .into_iter()
             .collect(),
+            seal_work_by_seal: [
+                ("full", full_work),
+                ("delta", delta_work),
+                ("noop", noop_work),
+                ("delete", delete.seal_work),
+            ]
+            .into_iter()
+            .collect(),
+            lexical_registry_resident_bytes: registry_resident,
+            lexical_open_resident_estimate_bytes: open_resident_estimate,
             cpu: None,
             phase_resources,
-            delete_reopen: Some(delete_reopen),
+            delete_reopen: Some(delete.timing),
         })
     })()
     .map_err(|error| stage_or_preserve("measurement", error));
@@ -3250,6 +3387,21 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
             "scope": "one serving repo/revision pair; exact unique-inode regular-file bytes admitted by each seal; total equals pair; unavailable after daemon restart",
             "by_seal": measurement.retained_index_bytes_by_seal,
         },
+        "seal_work": {
+            "method": "product_monotonic_counter_window_v1",
+            "scope": "one successful seal per window; logical admission source reads and durable-root replay object reads; manifest hash/inheritance bytes are separate; not physical I/O or producer base-bucket reads",
+            "by_seal": measurement.seal_work_by_seal,
+        },
+        "lexical_registry_resident_bytes": {
+            "method": "product_registry_accounting_gauge_v1",
+            "scope": "cached lexical snapshot accounting charge after the first query; zero is allowed for an uncached snapshot; excludes transient opens and harness/daemon memory; not RSS",
+            "value": measurement.lexical_registry_resident_bytes,
+        },
+        "lexical_open_resident_estimate_bytes": {
+            "method": "LexicalSearcher::resident_bytes_estimate",
+            "scope": "adapter-only open accounting estimate, including F15 row/directory charge; recorded even if the daemon registry does not cache this snapshot; not actual heap allocation or RSS",
+            "value": measurement.lexical_open_resident_estimate_bytes,
+        },
         "cpu_process": {
             "scope": "RUSAGE_SELF whole process from runtime boot through cleanup: harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded",
             "user_ms": measurement.cpu.map(|cpu| cpu.user_ms),
@@ -3261,6 +3413,11 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
         "serving_owner_count": 1,
         "source_repo_count": measurement.source_repo_count,
         "corpus_bytes": measurement.corpus_bytes,
+        "source_admission": measurement.source_admission.map(|admission| json!({
+            "source_bytes_including_newline_framing": admission.source_bytes,
+            "distinct_path_content_trigram_memberships": admission.posting_memberships,
+            "posting_membership_limit": scale_posting_membership_limit(),
+        })),
         "ingest_envelope_bytes": {
             "decoded": measurement.ingest_decoded_bytes,
             "wire": measurement.ingest_wire_bytes,
@@ -3269,6 +3426,8 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
         "disk_measurement": "logical_directory_size_delta; hard links may be counted more than once; not physical write I/O",
         "build": {
             "build_ms": measurement.build_ms,
+            "ingest_ms": measurement.full_ingest_ms,
+            "seal_ms": measurement.full_seal_ms,
             "bytes_written": measurement.build_bytes_written,
             "timer_excludes_wire_preflight": measurement.ingest_wire_bytes.is_some(),
         },
@@ -3416,6 +3575,44 @@ pub fn artifact(
             "same_process_reopen",
         ]
     };
+    match (
+        measurement.tier,
+        measurement.full_ingest_ms,
+        measurement.full_seal_ms,
+    ) {
+        (ScaleTier::Small, None, None) => {}
+        (ScaleTier::Small, _, _) | (_, None, _) | (_, _, None) => {
+            anyhow::bail!("scale: invalid split full-build clocks");
+        }
+        (_, Some(ingest), Some(seal)) => {
+            if !ingest.is_finite()
+                || !seal.is_finite()
+                || ingest < 0.0
+                || seal < 0.0
+                || measurement.build_ms.to_bits() != (ingest + seal).to_bits()
+            {
+                anyhow::bail!("scale: split full-build clocks differ from the operation total");
+            }
+        }
+    }
+    match (measurement.tier, measurement.source_admission) {
+        (ScaleTier::Small, None) => {}
+        (ScaleTier::Small, Some(_)) | (_, None) => {
+            anyhow::bail!("scale: invalid scoped source admission presence");
+        }
+        (_, Some(admission)) => {
+            let source_bytes = measurement
+                .corpus_bytes
+                .checked_add(u64::try_from(measurement.file_count)?)
+                .ok_or_else(|| anyhow::anyhow!("scale: source demand overflow"))?;
+            if admission.source_bytes != source_bytes
+                || admission.posting_memberships == 0
+                || admission.posting_memberships > scale_posting_membership_limit()
+            {
+                anyhow::bail!("scale: source admission differs from declared fixture demand");
+            }
+        }
+    }
     let expected_retention: BTreeSet<&str> = if measurement.tier == ScaleTier::Small {
         ["full", "delta", "noop"].into_iter().collect()
     } else {
@@ -3438,6 +3635,22 @@ pub fn artifact(
             })
     {
         anyhow::bail!("scale: invalid product retention bytes for seal phases");
+    }
+    let expected_counters: BTreeSet<_> = SEAL_WORK_COUNTERS.iter().copied().collect();
+    if measurement
+        .seal_work_by_seal
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        != expected_retention
+        || measurement.seal_work_by_seal.values().any(|work| {
+            work.keys().copied().collect::<BTreeSet<_>>() != expected_counters
+                || work.get("lexical_seals_total") != Some(&1)
+        })
+        || measurement.lexical_registry_resident_bytes > (1_u64 << 53)
+        || measurement.lexical_open_resident_estimate_bytes > (1_u64 << 53)
+    {
+        anyhow::bail!("scale: invalid product seal work or registry accounting charge");
     }
     let observed_phases = measurement
         .phase_resources
@@ -4063,8 +4276,10 @@ mod tests {
             .zip(&chunks)
             .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
             .collect::<Vec<_>>();
+        let before_full = seal_work_snapshot(&live.metrics_snapshot()?)?;
         let _ids = live.ingest_text_files_one_batch(&batch)?;
         let _full_generation = live.seal()?;
+        let _full_work = seal_work_window(&before_full, &live.metrics_snapshot()?)?;
         live.activate_last_sealed_generation()?;
         verify_scoped_repositories(&mut live, &oracle)?;
         for (index, file) in files.iter().enumerate() {
@@ -4072,6 +4287,7 @@ mod tests {
         }
 
         let changed = format!("{}// delta {SCALE_QUERY_TOKEN} touched\n", files[0].content);
+        let before_delta = seal_work_snapshot(&live.metrics_snapshot()?)?;
         let _ids = live.ingest_text_chunks(
             "repo0",
             &files[0].repo_relative_path,
@@ -4083,6 +4299,7 @@ mod tests {
             }],
         )?;
         let _delta_generation = live.seal()?;
+        let _delta_work = seal_work_window(&before_delta, &live.metrics_snapshot()?)?;
         live.activate_last_sealed_generation()?;
         let _changed_hash = source_probe(&mut live, 0, &changed)?;
         for (index, file) in files.iter().enumerate().skip(1) {
@@ -4090,7 +4307,9 @@ mod tests {
         }
 
         let before_noop = query_projection(&mut live, &oracle)?;
+        let before_noop_seal = seal_work_snapshot(&live.metrics_snapshot()?)?;
         let _noop_generation = live.seal()?;
+        let _noop_work = seal_work_window(&before_noop_seal, &live.metrics_snapshot()?)?;
         live.activate_last_sealed_generation()?;
         anyhow::ensure!(
             query_projection(&mut live, &oracle)? == before_noop,
@@ -4098,8 +4317,10 @@ mod tests {
         );
         let _hash = source_probe(&mut live, 0, &changed)?;
 
+        let before_delete = seal_work_snapshot(&live.metrics_snapshot()?)?;
         live.delete_chunk_for_source_file("repo0", &files[0].repo_relative_path)?;
         let _delete_generation = live.seal()?;
+        let _delete_work = seal_work_window(&before_delete, &live.metrics_snapshot()?)?;
         live.activate_last_sealed_generation()?;
         let successor = oracle.without_file("repo0", &files[0].repo_relative_path)?;
         let deleted = live.query_text(
@@ -5143,6 +5364,17 @@ mod tests {
             history_policy_id: "scale-supported-v1",
             history_max_total_bytes: SCALE_HISTORY_MAX_TOTAL_BYTES,
             requested_history_max_total_bytes: None,
+            seal_work_by_seal: ["full", "delta", "noop"]
+                .into_iter()
+                .map(|seal| {
+                    (
+                        seal,
+                        SEAL_WORK_COUNTERS.iter().map(|&name| (name, 1)).collect(),
+                    )
+                })
+                .collect(),
+            lexical_registry_resident_bytes: 1234,
+            lexical_open_resident_estimate_bytes: 4321,
             retained_index_bytes_by_seal: [("full", 4_096), ("delta", 5_120), ("noop", 5_000)]
                 .into_iter()
                 .collect(),
@@ -5171,9 +5403,12 @@ mod tests {
             corpus_digest: corpus_digest(DIMENSION, &generate_corpus(ScaleTier::Small, 3)),
             source_repo_count: 1,
             corpus_bytes: 4_096,
+            source_admission: None,
             ingest_decoded_bytes: None,
             ingest_wire_bytes: None,
             build_ms: 1.5,
+            full_ingest_ms: None,
+            full_seal_ms: None,
             build_bytes_written: 8_192,
             activation_ms: 0.5,
             first_query_ms: 0.75,
@@ -5201,6 +5436,31 @@ mod tests {
     }
 
     #[test]
+    fn artifact_carries_per_seal_work_and_separate_residency_estimates() -> AnyResult<()> {
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
+        let host = HostV1 {
+            os: "linux".into(),
+            arch: "x86_64".into(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".into(),
+        };
+        let value = artifact(&sample_measurement(), head, host)?.to_json()?;
+        let tier = &value["detail"]["measured_tiers"][0];
+        for seal in ["full", "delta", "noop"] {
+            ensure_equal!(tier["seal_work"]["by_seal"][seal]["lexical_seals_total"], 1);
+        }
+        ensure_equal!(tier["lexical_registry_resident_bytes"]["value"], 1234);
+        ensure_equal!(tier["lexical_open_resident_estimate_bytes"]["value"], 4321);
+        let build = tier["build"]
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("missing build"))?;
+        ensure_equal!(build.get("ingest_ms"), Some(&Value::Null));
+        ensure_equal!(build.get("seal_ms"), Some(&Value::Null));
+        Ok(())
+    }
+
+    #[test]
     fn artifact_rejects_missing_or_malformed_phase_resource_proof() -> AnyResult<()> {
         let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
         let host = HostV1 {
@@ -5210,6 +5470,18 @@ mod tests {
             mem_bytes: 1 << 30,
             hostname_hash: "sha256:host".to_string(),
         };
+        let complete = sample_measurement();
+        let _artifact = artifact(&complete, head.clone(), host.clone())?;
+        let mut missing_work = sample_measurement();
+        let _removed = missing_work.seal_work_by_seal.remove("delta");
+        ensure_predicate!(artifact(&missing_work, head.clone(), host.clone()).is_err());
+        let mut multiple_seals = sample_measurement();
+        let _previous = multiple_seals
+            .seal_work_by_seal
+            .get_mut("full")
+            .ok_or_else(|| anyhow::anyhow!("missing full window fixture"))?
+            .insert("lexical_seals_total", 2);
+        ensure_predicate!(artifact(&multiple_seals, head.clone(), host.clone()).is_err());
         let mut missing = sample_measurement();
         let _removed = missing.phase_resources.remove("delta_activate");
         ensure_predicate!(artifact(&missing, head.clone(), host.clone()).is_err());
@@ -5278,6 +5550,77 @@ mod tests {
         let mut phases = BTreeMap::new();
         record_phase(&mut phases, "full_activate", observation.clone())?;
         ensure_predicate!(record_phase(&mut phases, "full_activate", observation).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn seal_work_windows_refuse_missing_duplicate_decreasing_and_multiple_seals() -> AnyResult<()> {
+        use quanta_index_contract::MetricCounterV1;
+        let before: BTreeMap<_, _> = SEAL_WORK_COUNTERS.iter().map(|&name| (name, 7)).collect();
+        let mut after = MetricsSnapshotV1 {
+            counters: SEAL_WORK_COUNTERS
+                .iter()
+                .map(|&name| MetricCounterV1 {
+                    name: name.to_string(),
+                    value: if name == "lexical_seals_total" { 8 } else { 10 },
+                })
+                .collect(),
+            ..MetricsSnapshotV1::default()
+        };
+        let work = seal_work_window(&before, &after)?;
+        ensure_equal!(work["lexical_seals_total"], 1);
+        ensure_equal!(work["lexical_seal_file_admission_bytes_read_total"], 3);
+        let duplicate = after.counters[0].clone();
+        after.counters.push(duplicate);
+        ensure_predicate!(seal_work_window(&before, &after).is_err());
+        let _duplicate = after.counters.pop();
+        let hashed = after
+            .counters
+            .iter_mut()
+            .find(|counter| counter.name == "lexical_seal_files_hashed_total")
+            .ok_or_else(|| anyhow::anyhow!("missing hash-work counter fixture"))?;
+        hashed.value = 6;
+        ensure_predicate!(seal_work_window(&before, &after).is_err());
+        after
+            .counters
+            .iter_mut()
+            .find(|counter| counter.name == "lexical_seal_files_hashed_total")
+            .ok_or_else(|| anyhow::anyhow!("missing hash-work counter fixture"))?
+            .value = 10;
+        after.counters[0].value = 6;
+        ensure_predicate!(seal_work_window(&before, &after).is_err());
+        after.counters[0].value = 9;
+        ensure_predicate!(seal_work_window(&before, &after).is_err());
+        let _counter = after.counters.pop();
+        ensure_predicate!(seal_work_snapshot(&after).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn registry_charge_preserves_zero_and_refuses_inexact_or_ambiguous_values() -> AnyResult<()> {
+        use quanta_index_contract::MetricGaugeV1;
+        let mut snapshot = MetricsSnapshotV1::default();
+        ensure_predicate!(lexical_registry_resident_bytes(&snapshot).is_err());
+        snapshot.gauges.push(MetricGaugeV1 {
+            name: "snapshot_registry_lexical_resident_bytes".into(),
+            value: 0.0,
+        });
+        ensure_equal!(lexical_registry_resident_bytes(&snapshot)?, 0);
+        snapshot.gauges[0].value = 1234.0;
+        ensure_equal!(lexical_registry_resident_bytes(&snapshot)?, 1234);
+        for invalid in [
+            -1.0,
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            MAX_EXACT_GAUGE_INTEGER + 2.0,
+        ] {
+            snapshot.gauges[0].value = invalid;
+            ensure_predicate!(lexical_registry_resident_bytes(&snapshot).is_err());
+        }
+        snapshot.gauges[0].value = 1.0;
+        snapshot.gauges.push(snapshot.gauges[0].clone());
+        ensure_predicate!(lexical_registry_resident_bytes(&snapshot).is_err());
         Ok(())
     }
 
