@@ -28,9 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from tools.ci.proof_json import parse_proof_json  # noqa: E402
 
-SCHEMA_PATH = (
-    ROOT / "tools/ci/lane-handoff.schema.json"
-)
+SCHEMA_PATH = ROOT / "tools/ci/lane-handoff.schema.json"
 PROOF_SCHEMA_PATH = ROOT / "tools/ci/proof-manifest.schema.json"
 PROOF_REGISTRY_PATH = ROOT / "tools/ci/proof-authority.toml"
 
