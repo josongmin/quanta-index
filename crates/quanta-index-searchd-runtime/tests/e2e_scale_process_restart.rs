@@ -6,6 +6,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::ffi::OsStr;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use quanta_index_contract::{
@@ -355,10 +359,10 @@ fn start_process(
     state: &std::path::Path,
     tier: ScaleTier,
 ) -> Result<SearchdBinaryProcess, Box<dyn Error>> {
+    let mut command = scale_process_command(state)?;
     if tier == ScaleTier::Medium {
-        return SearchdBinaryProcess::start_with_history_max_generations(state, 2);
+        return SearchdBinaryProcess::start_with_command(state, command);
     }
-    let mut command = crate::searchd_binary_process::searchd_command(state, 2);
     let _configured = command
         .env(
             "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
@@ -390,6 +394,75 @@ fn start_process(
             (4_u64 * 1024 * 1024 * 1024).to_string(),
         );
     SearchdBinaryProcess::start_with_command_and_timeout(state, command, SUPPORTED_PROFILE_TIMEOUT)
+}
+
+// A debug test driver can exercise a freshly built release daemon without
+// rebuilding every test dependency under release's unwind profile. The caller
+// owns fresh-build/source custody; pin the selected bytes before each launch.
+fn scale_process_command(state: &Path) -> Result<Command, Box<dyn Error>> {
+    let binary = std::env::var_os("QUANTA_INDEX_SCALE_RESTART_SEARCHD_BINARY");
+    let digest = std::env::var_os("QUANTA_INDEX_SCALE_RESTART_SEARCHD_SHA256");
+    let Some(binary) = checked_process_binary(binary.as_deref(), digest.as_deref())? else {
+        return Ok(crate::searchd_binary_process::searchd_command(state, 2));
+    };
+    let mut command = Command::new(binary);
+    let _configured = command.arg("serve").arg("--state-root").arg(state);
+    crate::searchd_binary_process::apply_searchd_env(&mut command, 2);
+    Ok(command)
+}
+
+fn checked_process_binary(
+    binary: Option<&OsStr>,
+    digest: Option<&OsStr>,
+) -> Result<Option<PathBuf>, Box<dyn Error>> {
+    let (binary, digest) = match (binary, digest) {
+        (None, None) => return Ok(None),
+        (Some(binary), Some(digest)) => (Path::new(binary), digest.to_str()),
+        _ => return Err("scale restart binary requires both path and SHA256".into()),
+    };
+    let digest = digest.ok_or("scale restart binary SHA256 is not UTF-8")?;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("scale restart binary requires lowercase SHA256".into());
+    }
+    let metadata = std::fs::symlink_metadata(binary)?;
+    if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err("scale restart binary is not a regular executable".into());
+    }
+    if format!("{:x}", Sha256::digest(std::fs::read(binary)?)) != digest {
+        return Err("scale restart binary differs from pinned SHA256".into());
+    }
+    Ok(Some(binary.canonicalize()?))
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "custody predicates are fixed test assertions; I/O setup errors propagate"
+)]
+fn scale_process_binary_selection_refuses_partial_custody_and_changed_bytes() -> TestResult {
+    let root = private_tempdir()?;
+    let binary = root.path().join("daemon");
+    std::fs::write(&binary, b"abc")?;
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+    let digest = OsStr::new("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    assert_eq!(checked_process_binary(None, None)?, None);
+    assert!(checked_process_binary(Some(binary.as_os_str()), None).is_err());
+    assert!(checked_process_binary(None, Some(digest)).is_err());
+    assert!(checked_process_binary(Some(binary.as_os_str()), Some(OsStr::new("bad"))).is_err());
+    assert_eq!(
+        checked_process_binary(Some(binary.as_os_str()), Some(digest))?,
+        Some(binary.canonicalize()?)
+    );
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&binary, &link)?;
+    assert!(checked_process_binary(Some(link.as_os_str()), Some(digest)).is_err());
+    std::fs::write(&binary, b"abd")?;
+    assert!(checked_process_binary(Some(binary.as_os_str()), Some(digest)).is_err());
+    Ok(())
 }
 
 fn connect_process(
