@@ -337,4 +337,4 @@ admitted relevance and performance benchmarks. Exact regex allocation
 admission is deferred under the decision above. This ADR does not qualify any
 physical heap claim.
 Historical bodies are recoverable from `1419f3087f4f09a6ecab4ef39c30a2bf32544d5d`;
-see [the plan archive](../plans/ARCHIVE-INDEX.md).
+see [the plan archive](../ARCHIVE-INDEX.md#historical-record-recovery).

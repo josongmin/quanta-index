@@ -141,5 +141,5 @@ registry/code-owned; operator usage stays in benchmark and CLI READMEs.
 ## Historical record
 
 The hellgate implementation packet and superseded Jun-2 measurement RFC are
-indexed in [the completed-plan archive](../plans/ARCHIVE-INDEX.md). The RFC's
+indexed in [the completed-plan archive](../ARCHIVE-INDEX.md#historical-record-recovery). The RFC's
 old p95-advisory and proposed file-path instructions are not current policy.

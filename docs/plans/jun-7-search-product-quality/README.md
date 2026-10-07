@@ -18,7 +18,7 @@ External comparisons stay restricted to overlapping shipped lexical surfaces;
 semantic/hybrid quality has its own retrieval owner. Current independent-gold,
 corpus and comparator admission is in the
 [code-search benchmark ledger](../sep-27-code-search-remediation/readme.md).
-Historical bodies are recoverable through [the plan archive](../ARCHIVE-INDEX.md).
+Historical bodies are recoverable through [the plan archive](../../ARCHIVE-INDEX.md#historical-record-recovery).
 
 ## Semantic selection acceptance
 
@@ -28,4 +28,4 @@ and resource decision. An opt-in encoder change additionally needs admitted-host
 repeated latency/memory evidence; larger-corpus ANN recall has its own control.
 Exact-symbol success and exposed generated Gin labels do not close these gates.
 Historical Gin controls are recoverable through
-[the plan archive](../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+[the plan archive](../../ARCHIVE-INDEX.md#historical-record-recovery).

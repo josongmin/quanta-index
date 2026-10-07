@@ -7,14 +7,14 @@ Completed repair decisions are in
 [SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
 Implemented Active/runtime/operator behavior is in
 [OCT-05-003](../../../adr/OCT-05-003-active-query-and-runtime-lifecycle.md);
-P11 missing action producers remain explicit in S21-12.
-Owner execution histories are recoverable through the [plan archive](../../ARCHIVE-INDEX.md).
+P11's common operational producer is implemented; concrete target/observer and
+authorized-input acceptance remains explicit in S21-12.
+Owner execution histories are recoverable through the [plan archive](../../../ARCHIVE-INDEX.md#historical-record-recovery).
 No historical count or status is current qualification.
 
 | Active owner | Scope |
 | --- | --- |
-| [Residual ledger](CURRENT-RESIDUAL-2026-09-26.md) | One current R0–R6 root-cause/acceptance union |
-| [Execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md) | Concrete owners, independent negative oracles and dependency order |
+| [R0–R6 execution/acceptance](FINAL-RESIDUAL-EXECUTION-PLAN.md) | One residual union, concrete owners, independent negative oracles and dependency order |
 | [S21-11](S21-11-state-migration-backup-and-restore.md) | Current-format owner/release/authorized-target backup and restore proof |
 | [S21-12](S21-12-cross-repo-terminal-receipt-cutover.md) | Exact producer/dependency/binary receipt and operational action boundaries |
 | [S21-13](S21-13-release-evidence-and-sota-qualification.md) | Trusted proof production and final registered DAG/aggregate |

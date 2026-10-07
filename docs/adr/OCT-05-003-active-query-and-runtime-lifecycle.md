@@ -67,9 +67,19 @@ than an SDK retry, an inferred rollback or a new operator endpoint.
   [socket authorization](../../crates/quanta-index-searchd-runtime/tests/e2e_socket_access.rs)
   and [SDK roundtrip](../../benchmarks/retrieval/tests/sdk_roundtrip.rs) controls.
 
+## Completed execution scopes
+
+O4-E3-01 (retire-before-acquire), E3-03 (seven single-RPC bindings), E3-04
+(slow-disk readiness), E3-05 (admitted timeout/replay) and E3-06 (authorized
+operator projection) are completed implementation/owner scopes. E3-02's stronger
+selection pin was not adopted and is `NOT_APPLICABLE` under the current decision.
+Their individual ticket headings are retired. A later source change uses the
+existing regression owners; installed Linux/release/pair/action acceptance stays
+with I0/SEP-21 rather than reopening the same implementation tickets.
+
 ## Consequences
 
 Requested owner/process scenarios were executed historically. Their exact source,
-commands and failure history remain in the [plan history index](../plans/ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
+commands and failure history remain in the [plan history index](../ARCHIVE-INDEX.md#historical-record-recovery).
 Current shipping-source, hosted CI, Linux release, provider and P11 actions need
 their own inputs/results; they do not reopen completed implementation by default.

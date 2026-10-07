@@ -147,6 +147,21 @@ match the final suite labels. A schema-v1 receipt for a mixed suite is refused.
 
 ## Owners and regressions
 
+Blind-pool preparation, frozen form validation and three-role file-label
+finalization are implemented in `holdout_review.py`. `run.py` validates admission
+receipts at execution/replay entrypoints; `corpus_binding.py` checks actual
+development/holdout source overlap. These programs cannot supply missing actual
+reviewer judgments, license approval or independent gold/acceptance inputs.
+
+`evaluator.py::mean_ci` validates finite deltas and unique task identities before
+pure numeric reuse. It performs 10,000 seeded within-stratum draws, keeps at most
+16 cached keys, and bypasses caching above 256 KiB canonical key bytes. Constant
+strata preserve the original addition and percentile-interpolation order.
+[Frozen bootstrap regressions](../../tools/ci/tests/test_bootstrap_cache.py)
+retain pre-optimization goldens, ordering/signed-zero/identity controls and
+cache bounds. They do not establish whole-caller speedup; any further
+optimization remains conditional on actual paired-call cost and parity.
+
 - [Review producer/issuer](../../tools/benchmark/retrieval/holdout_review.py),
   [corpus/split binding](../../tools/benchmark/corpus_binding.py),
   [source oracle](../../tools/benchmark/retrieval/source_oracle.py).
@@ -163,4 +178,4 @@ match the final suite labels. A schema-v1 receipt for a mixed suite is refused.
 
 Owner regressions establish binding/refusal behavior. They do not complete model
 judgment, final qrels, human review, unseen holdout or product quality. Exact old
-commands and execution bodies remain in the [plan history index](../plans/ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
+commands and execution bodies remain in the [plan history index](../ARCHIVE-INDEX.md#historical-record-recovery).

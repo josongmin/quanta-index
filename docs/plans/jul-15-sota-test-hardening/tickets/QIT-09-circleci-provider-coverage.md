@@ -60,5 +60,5 @@ hierarchy, retention or the complete proof DAG by changing a status label.
 
 Exact pre-start errors, credit rejection, subsequent source failures, pipeline
 IDs/URLs, source SHAs and local replay decisions are recoverable through
-[the plan archive](../../ARCHIVE-INDEX.md#oct-05-residual-owner-clarification).
+[the plan archive](../../../ARCHIVE-INDEX.md#historical-record-recovery).
 They are not current provider state or current-source passing receipts.

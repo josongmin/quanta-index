@@ -13,7 +13,7 @@ performance/default decisions retain separate gates.
 | Current judgments/admissions/cells and remaining code | [OCT-04 residual ledger](../oct-4-parallel-closure/tickets/INDEX.md) |
 | Implemented decisions | [OCT-05 Accepted ADRs](../../adr/README.md#oct-05-implemented-contracts) |
 | Commands and report reading | [Retrieval guide](../../../tools/benchmark/retrieval/README.md), [code-search runbook](../../../tools/benchmark/CODE_SEARCH_RUNBOOK.md) |
-| Historical exact bodies and execution pins | [Plan archive](../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction) |
+| Historical exact bodies and execution pins | [Plan archive](../../ARCHIVE-INDEX.md#historical-record-recovery) |
 
 ## Claim boundaries
 

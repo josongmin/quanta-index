@@ -13,4 +13,4 @@ Source owners: `tools/ci/test-authority.toml`, `check-test-authority.py`,
 GitHub workflows and their actual terminal outputs. A static guard verifies
 registration/wiring; it does not prove semantic independence or execute Rust.
 External ingress/provider, full lifecycle/crash/concurrency and production-scale
-proof remain separate. Historical bodies are in [the plan archive](../ARCHIVE-INDEX.md).
+proof remain separate. Historical bodies are in [the plan archive](../../ARCHIVE-INDEX.md#historical-record-recovery).

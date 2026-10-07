@@ -84,4 +84,4 @@ spellings, not this ADR's prose.
 ## Historical record
 
 The four implementation waves are indexed in
-[the completed-plan archive](../plans/ARCHIVE-INDEX.md).
+[the completed-plan archive](../ARCHIVE-INDEX.md#historical-record-recovery).

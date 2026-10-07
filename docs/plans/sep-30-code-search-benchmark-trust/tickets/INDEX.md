@@ -21,9 +21,9 @@ Historical executions remain diagnostic and retain their original identities.
 
 B02/B03 preparation can proceed after B01; B06 input validation is independent.
 B05 waits for its final labels/native evidence. B07 uses one admitted quiet host;
-B08 remains a distinct generalization gate. The [OCT-04 waves](../../oct-4-parallel-closure/WAVES.md)
+B08 remains a distinct generalization gate. The [OCT-04 waves](../../oct-4-parallel-closure/tickets/INDEX.md#실행-순서)
 own the current dependency schedule and integration handoffs.
 
 Implemented contracts are in [the Accepted ADRs](../../../adr/README.md#oct-05-implemented-contracts).
 Old counters, failures, commands and source-bound receipts are recoverable through
-[the history index](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+[the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).

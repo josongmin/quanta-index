@@ -15,4 +15,4 @@ current release dependency inferred from an old lane name.
 Current final-source qualification is owned by
 [S21-13](../S21-13-release-evidence-and-sota-qualification.md).
 Missing old records cannot be reconstructed from current manifests. Original
-lane execution/custody prose is recoverable through [history](../../../ARCHIVE-INDEX.md#oct-05-repository-wide-history-cleanup).
+lane execution/custody prose is recoverable through [history](../../../../ARCHIVE-INDEX.md#historical-record-recovery).

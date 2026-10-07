@@ -11,9 +11,9 @@ cleanup; source presence or historical tests are not current qualification.
 | --- | --- | --- |
 | QIT-00 / tools CI | Revalidate completeness of the declared P0/P1 universe and semantic independence of positive/negative/recovery/consumer roles; actual current selected/executed nonzero inventories at each required tier | Current catalog and workflow binding |
 | QIT-01 / contract, IPC, SDK | Complete current public-envelope golden/negative/canonical re-encode and consumer matrix, including unknown/missing/duplicate/malformed fields and intentional legacy refusal; current storage/wire reproduction boundaries | QIT-00 |
-| QIT-02 / semantic | Expand generated lifecycle oracle beyond current adapter traces; compare Build/Append/Clear/Seal/Select/QueryPinned/Tombstone/Rollback/Restart/Recover observations. Adapter generation selection does not prove process-wide activation CAS | QIT-00 |
-| QIT-03 / storage | Real child-kill matrix at every relevant write/fsync/dir-fsync/rename/marker/CAS/root boundary; only prior committed or complete new generation, never mixed state | QIT-02 |
-| QIT-04 / semantic/searchd | Owner-local linearization model and deterministic duplicate/reorder/delay schedules for activate/query/rollback/restart; required native race-detector evidence. Broad TSan alone does not prove linearizability | QIT-02 |
+| QIT-02 / semantic | Extend the existing independent durable-adapter model and six generated traces with separate Append/Clear/QueryPinned observations and real active-head CAS. Build-carried seal, replacement/delta/tombstone, unsealed refusal, selection/rollback and restart are already modeled | QIT-00 |
+| QIT-03 / storage | Extend the existing real-daemon eight-point seal/GC matrix to selected inner write/fsync/dir-fsync/rename/marker/CAS/root boundaries. [E4-02](../../oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) owns the F15 implementation/child-kill subset; only prior committed or complete new generation may serve | QIT-02 |
+| QIT-04 / semantic/searchd | Extend the existing SDK/UDS G1-to-G2 complete-result race with an independent operation-history checker and deterministic duplicate/reorder/delay/rollback/restart schedules; required native race-detector execution. The in-process harness race alone does not prove linearizability | QIT-02 |
 | QIT-05 / query owners | Complete independent lexical/ANN/fusion/filter and metamorphic corpora at each owning scope; retain exact oracles and detect bad rank/filter mutants. ANN fixture/oracle code is not closure for all routes | QIT-00 |
 | QIT-06 / SDK/daemon | SDK-only ingest/query/lifecycle/crash/recovery matrix; exercise public front door rather than internal harness controls | QIT-01, QIT-02, QIT-05 |
 | QIT-07 / correctness tooling | Risk-owner quantitative coverage/mutation/fuzz gates, survivor exceptions, seed/minimized-input retention and actual target selection; source guards are not execution | QIT-01, QIT-02, QIT-05 |
@@ -38,6 +38,10 @@ Review the current owners and measurement cost before enforcing a target; no
 unused threshold or configured duration is passing evidence.
 
 ## Execution and closure
+
+Current model/concurrency/crash test scope is recorded in
+[the ADR coverage boundary](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#implemented-lifecycle-tests-and-remaining-coverage).
+These rows retain missing coverage or execution, not observed production defects.
 
 Keep owner-local positive/negative oracles and recovery/consumer proof distinct.
 A wire/lifecycle semantic change requires a coordinated current-contract decision;

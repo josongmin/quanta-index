@@ -71,4 +71,4 @@ replay bytes/terminal state and bounded refusal. No second parser/run store.
 independent gold, denominators and integration. Preserve source-bound registry
 identity for Quanta hits; fixed native expected results cannot come solely from
 the serializer being tested. Historical bodies are recoverable through
-[the history index](../../ARCHIVE-INDEX.md#oct-05-residual-owner-clarification).
+[the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).

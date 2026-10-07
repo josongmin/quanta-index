@@ -7,8 +7,7 @@ Accepted proof parsing, custody, selection and receipt contracts are in
 and [SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
 `tools/ci/proof-authority.toml` owns current proof IDs, dependencies, host classes
 and result modes; the checker keeps an independent required-DAG/verdict oracle.
-[R0/R6](FINAL-RESIDUAL-EXECUTION-PLAN.md) and the
-[residual ledger](CURRENT-RESIDUAL-2026-09-26.md) own unfinished work.
+[R0–R6](FINAL-RESIDUAL-EXECUTION-PLAN.md) owns unfinished work.
 
 ## Remaining release acceptance
 

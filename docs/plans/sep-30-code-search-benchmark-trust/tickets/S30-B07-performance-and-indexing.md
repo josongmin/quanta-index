@@ -79,4 +79,4 @@ OS-child stop/reap/restart owner regression passed (1 selected/82 unselected,
 Scanner source/build/capture custody owner tests passed49 selected cases;
 the actual two-arm build/capture and whole-call decision remain `NOT_RUN`.
 Exact old commands/results are recoverable through
-[the history index](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+[the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).

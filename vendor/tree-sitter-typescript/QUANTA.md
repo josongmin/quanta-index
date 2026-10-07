@@ -54,5 +54,5 @@ Retain both valid minimal forms in TS/TSX and keep malformed syntax erroneous.
 Producer capability/ownership and complete admitted-file census follow
 [SEP-27-003](../../docs/adr/SEP-27-003-code-search-source-and-preview-contract.md).
 Historical component/source/command results are recoverable through the
-[plan archive](../../docs/plans/ARCHIVE-INDEX.md); they do not qualify current
+[plan archive](../../docs/ARCHIVE-INDEX.md#historical-record-recovery); they do not qualify current
 Rust extraction, SDK publication, daemon activation or performance.

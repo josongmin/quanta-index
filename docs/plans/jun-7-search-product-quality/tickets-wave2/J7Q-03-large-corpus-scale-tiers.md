@@ -44,20 +44,12 @@ Current execution is owned by [OCT-04 E4-05](../../oct-4-parallel-closure/ticket
 - Qualified capacity/performance needs an admitted host; portability needs another
   admitted host with matching input/configuration and explicit platform exclusions.
 
-## Large/XL repair boundary
+## Large/XL capacity boundary
 
-The F15 Large failure at the inherited 16 MiB fixture retention cap and the XL
-385,260,565-byte CBOR failure at ordinary 128 MiB request admission are distinct.
-XL reached no daemon in that refusal. The product text envelope is a later
-admission boundary, not evidence of an executed engine OOM.
-
-SDK and harness now stream publications above 64 MiB into bounded 1 MiB parts
-in the private state-root upload store, then commit the unchanged sealed batch.
-Incomplete uploads reserve no event or generation. Complete length/SHA-256,
-guarded CBOR decode and the original publication binding precede the existing
-journal/CAS path. Disk quota, slot count, retry prefix checks, explicit discard
-and admission-time idle cleanup bound staging. Commit still materializes a bounded
-complete DTO; arbitrarily large single-publication streaming is outside this fix.
+Implemented bounded upload/publication and explicit scale-profile limits are in
+[OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#bounded-publication-and-interruption).
+Historical retention/request refusals remain recoverable in Git; neither proves
+an engine OOM or a successful later profile.
 
 Matching-release Large/XL lifecycle execution and qualified quiet-host performance
 are separate acceptance scopes. See the runtime profile and operator configuration
@@ -73,4 +65,4 @@ cannot publish an earlier partial success as the complete run.
 and [CS-BENCH-04](../../sep-27-code-search-remediation/rfcs/CS-BENCH-04-comparators-performance-and-incremental.md)
 own measurement/host acceptance. Historical medium successes, large failures,
 XL refusals, binaries and local checks remain recoverable through
-[the history index](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+[the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).

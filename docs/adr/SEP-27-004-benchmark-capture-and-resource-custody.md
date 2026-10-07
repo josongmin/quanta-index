@@ -212,7 +212,7 @@ BENCH-02-owned; retaining/hash-binding raw alone does not reject a forged result
 
 Exact removed ticket/RCA/terminal bodies are recoverable from
 `1419f3087f4f09a6ecab4ef39c30a2bf32544d5d`; see
-[the plan archive](../plans/ARCHIVE-INDEX.md). This ADR carries no accumulated
+[the plan archive](../ARCHIVE-INDEX.md#historical-record-recovery). This ADR carries no accumulated
 test total or new release claim.
 
 ## Code-search external owner enrollment

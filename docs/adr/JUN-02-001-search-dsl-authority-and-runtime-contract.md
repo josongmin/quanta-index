@@ -82,4 +82,4 @@ typed unsupported boundaries apply before SDK projection.
 ## Historical record
 
 The absorbed packets and exact pre-consolidation revision are listed in
-[the completed-plan archive](../plans/ARCHIVE-INDEX.md).
+[the completed-plan archive](../ARCHIVE-INDEX.md#historical-record-recovery).

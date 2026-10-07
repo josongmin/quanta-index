@@ -20,9 +20,10 @@ Measurements and missing authority remain in the [residual ledger](../plans/oct-
    failures/critical strata and unused holdout; diagnostic misses alone do not
    authorize a global model, RRF, chunking or storage replacement.
 2. Durable artifact publication retains file sync → rename → parent sync and
-   generation/terminal custody. Group barriers are conditional on isolated sync
-   cost, not a timer enclosing other work. Adoption requires old-or-complete-new
-   roots, inherited-file/digest custody and independent fault/crash/reopen tests.
+   generation/terminal custody. F15 uses bounded immutable objects and durable
+   root publication; further barrier changes require isolated sync cost rather
+   than a timer enclosing other work. Retain old-or-complete-new roots,
+   inherited-file/digest custody and independent fault/crash/reopen tests.
    Syscall faults and process kill do not establish storage power-loss guarantees.
 3. Report explicit whole-call and child clock/resource domains. Request-local
    SDK/IPC and parent/worker phases explain attribution, not interchangeable
@@ -55,18 +56,19 @@ Measurements and missing authority remain in the [residual ledger](../plans/oct-
    are distinct scopes. Zero-selected, skipped, missing or staged prerequisites
    cannot issue qualification. Product quality/holdout/performance apply only
    when that claim is requested; they do not universally block code qualification.
-9. P11 deploy/activate/restore-forward recipes and typed operational result mode
-   remain unimplemented. Actual actions, distinct independent pre/post success
-   observers and authorized host/state/rollback inputs must be defined under
-   [S21-12](../plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md)
-   before registry promotion. Shell exit zero or caller-written success JSON is
-   not operational authority. Keep the existing staged refusal.
+9. P11's common deploy/activate/restore-forward producer, recipes and typed
+   operational result/parser/checker/aggregate are implemented. Concrete target
+   adapters, distinct independent pre/post success contracts and authorized
+   host/state/retention/rollback inputs remain required under
+   [S21-12](../plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md).
+   Entries stay staged until that authority is registered and actually executed.
+   Shell exit zero or caller-written success JSON cannot promote them.
 
 The paired caller/kernel component uses the existing cross-repository recipe
 and CLI-owned immutable completion custody. Its optional typed archive binds
 the exact selected tests, source/dependency mapping and daemon bytes; the archive
-is `runner-candidate-only`. This component is separate from the unimplemented
-deploy/activate/restore-forward action authority in decision 9. Owner tests do
+is `runner-candidate-only`. This component is separate from concrete
+operational target/observer acceptance in decision 9. Owner tests do
 not establish an executed clean pair or promote an operational registry node.
 
 ## Native segment retention and committed live statistics
@@ -192,7 +194,104 @@ host and source/binary qualification remain separate.
 - Retain independent scanner/config/clock mutations, lifecycle/fresh-rebuild
   parity, bounded-resource refusals, offered-request reconciliation and staged/
   source-mismatch/forged-terminal negatives. Exact historical executions remain
-  recoverable through the [plan history index](../plans/ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
+  recoverable through the [plan history index](../ARCHIVE-INDEX.md#historical-record-recovery).
+
+## Bounded publication and interruption
+
+Large source publications use bounded disk-staged upload parts and a small
+commit through the existing batch/body/journal identity. Ordinary inline limits
+remain intact. Streaming hash and CBOR preflight/decode preserve typed budget
+interruption, including the checkpoint after the final EOF read. No cancellation
+can be hidden behind an I/O/decode wrapper. The dispatch context uses the same
+absolute deadline admitted by RequestBudgetV1 rather than creating another one.
+
+Staging admission checks disk quota, slot count, retry prefix, explicit discard
+and idle cleanup before the existing journal/CAS path. Incomplete uploads reserve
+no event or generation. Commit still materializes a bounded complete DTO;
+arbitrarily large single-publication streaming is outside this contract.
+
+Memory envelope arithmetic uses checked addition/multiplication and typed refusal.
+F15 admits term/ID/map/set/posting/materialization residency and native NFC
+scratch before allocation. Bounds use actual normalized output and live
+Unicode decomposition/recomposition/sort work. The reviewed Unicode fork retains
+upstream default/std and only the exact version/features permitted by deny.toml;
+workspace default-feature denial remains. These admissions do not measure RSS.
+
+The explicit scale-supported-v1 harness profile and its emitted policy/config
+identity own the larger timeout, history/source/vector/process ceilings. Full,
+delta, delete, no-op and reopen retain separate causal/retention observations.
+Do not call a profile's configured ceiling observed capacity or substitute it
+for the ordinary SDK/inline/default request contract.
+
+Owners: [staged transport](../../crates/quanta-index-ipc/src/source_upload.rs),
+[SDK publication](../../crates/quanta-index-sdk/src/lexical.rs),
+[request budget](../../crates/quanta-index-core/src/request_budget.rs),
+[F15 codec/producer](../../crates/quanta-index-lexical/src/file_authority/codec.rs),
+[scale profile](../../crates/quanta-index-searchd-harness/src/scale.rs) and
+[feature policy](../../deny.toml). Preserve independent EOF/overflow/oversize,
+Unicode/native refusal and original lifecycle/crash oracles.
+
+## Publication test boundary
+
+[F15 owner regressions](../../crates/quanta-index-lexical/tests/f15_file_authority.rs)
+compare delta/delete/no-op/cold-open results to an independent full build and
+refuse corrupted, missing or symlinked committed objects. These tests do not
+inject I/O failure or kill a child at each inner publication syscall.
+`file_authority.rs` syncs immutable objects/directories, publishes the durable
+root through `index_store::write_atomic_durable`, then retires unused objects
+and staging. The root writer uses write → file sync → rename → parent sync.
+The broader daemon matrix covers declared track seal/GC points; it does not
+substitute for cuts inside this sequence. Implement and execute those selected
+old/complete-new and barrier-error oracles under
+[E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02), without claiming
+a known serving defect or storage power-loss qualification from source review.
+
+## Proof execution and CI
+
+Causal capture binds one raw binary identity/epoch before and after execution,
+replay and successful publication. Portable proof rechecks every role's admitted
+executable epoch before completion. Mutation refuses and cannot leave a passing
+profile; relocated replay preserves original receipt provenance.
+
+CircleCI divides strict/MSRV, nextest/receipt, docs and whole-workspace bench
+compilation into separate jobs. The required verify node depends on all Rust
+workers; regular Python has its own terminal status. Bench keeps workspace,
+all-features, locked, bench-profile/no-run scope and uses its declared four-CPU
+resource allocation. Successful compilation is not benchmark execution.
+Dependency caches exclude Cargo target output. Generated vendor lock/EOF
+exceptions are exact paths; tracked lock/manifests and unexpected changes still
+refuse receipt publication. Actual new-source job results remain I0/QIT acceptance.
+
+Owners: [causal capture](../../tools/benchmark/retrieval/causal_cost_capture.py),
+[portable proof](../../tools/benchmark/retrieval/portable_proof.py),
+[CI graph](../../.circleci/config.yml) and
+[receipt writer](../../tools/ci/write-verification-receipt.py).
+
+## Operational actions
+
+The existing canonical producer/result grammar executes separate tracked
+pre/action/post actors, rejects inadmissible pre-state before mutation and binds
+actual Linux host, source pair, binary, config, state format and immutable
+prerequisites. Source archives cannot conceal dirty actor/contract bytes.
+Distinct actor paths/bytes are a custody check; concrete domain observers still
+need independent oracles. Deployment, activation and restore-forward validate
+separate observed transitions with target/config continuity across dependencies.
+Staged entries refuse before action or evidence issuance. Owner fixtures do not
+qualify an actual operation or invent an authorized target.
+
+Owners: [producer](../../tools/ci/operational_proof.py),
+[result grammar](../../tools/ci/proof_operational_result.py),
+[registry](../../tools/ci/proof-authority.toml) and
+[operator usage](../operator/p11-operational-proof.md).
+
+## Shared-source validation
+
+O4-I0-01 coordination/control-plane implementation is complete and its ticket
+is retired. Source/dirty/owner, exact consumed inputs and affected regression
+validation remain standing rules. PREPARE → affected VALIDATE → admission ISSUE
+is scoped per repository/claim; no label/provider/holdout/Linux global barrier
+blocks an independent ready cell. Completed selected SDK/Contract/runtime/CI
+results retain their original source, while I0-02 owns later-source acceptance.
 
 ## Consequences
 

@@ -31,4 +31,4 @@ source tier/resource/lifecycle acceptance; [B07](../../sep-30-code-search-benchm
 and [OCT-04 E4-05/06](../../oct-4-parallel-closure/tickets/INDEX.md#e4) own actual
 measurement and host admission. Existing functional tests and release SDK proof
 do not close these runs. Exact older commands/results are recoverable through
-[the history index](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+[the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).

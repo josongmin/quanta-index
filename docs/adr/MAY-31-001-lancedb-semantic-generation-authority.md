@@ -99,6 +99,39 @@ execution and contribution truth follow
 [SEP-26-001](SEP-26-001-retrieval-query-publication-and-result-proof.md), not the
 historical lexical-scoped/RRF description from the June seam audit.
 
+### Text, vector and cache identity
+
+The daemon's `QueryEmbedderAdapter` forwards the supplied text to the same
+provider instance used for corpus derivation. There is no shared semantic-text
+lowercase, camel-case split or identifier-folding step. Provider tokenization
+remains provider-owned; lexical query planning is a separate policy.
+
+`EmbeddingCacheIdentityV1` binds model ID, revision, dimension and vector
+normalization policy, then keys entries by the exact UTF-8 input bytes.
+`FooBar`, `foobar`, `foo_bar` and `foo bar` therefore have separate cache
+identities. This does not require separate output vectors: the explicit
+development hash provider preserves token case, splits non-alphanumeric
+separators, and can embed `foo_bar` and `foo bar` identically. Real-provider
+equivalence is not inferred from that development tokenizer.
+
+The shared `L2UnitEmbeddingProvider` normalizes vectors before OpenAI/PotionCode
+consumers; the development hash provider normalizes its own result. The selected
+sealed semantic manifest supplies the serving vector-normalization contract.
+The common semantic/hybrid query gate preserves provider-error ordering, checks
+model/revision, then validates the vector against the opened searcher. Cache
+hits also validate dimension, finite components and the declared normalization;
+invalid hits are evicted and recomputed. Model/revision changes cannot reuse the
+old identity's entries.
+
+Owners: [daemon composition](../../crates/quanta-index-searchd/src/app/runtime.rs),
+[shared normalization](../../crates/quanta-index-core/src/domains/semantic/service.rs),
+[cache identity and regressions](../../crates/quanta-index-embed/src/cache.rs),
+[query gate](../../crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs)
+and [serving manifest](../../crates/quanta-index-semantic/src/manifest.rs).
+Existing cache rotation/invalid-hit/mixed-batch and query model/provider-refusal
+tests are implementation foundations. Fresh public-path provider, text-policy,
+rotation and restart execution remains in the semantic residual ledger.
+
 ## Rejected alternatives
 
 - in-memory HNSW plus LanceDB as an optional sidecar;
@@ -119,4 +152,4 @@ historical lexical-scoped/RRF description from the June seam audit.
 ## Historical record
 
 The LDB-00 through LDB-E2E-01 packet is indexed in
-[the completed-plan archive](../plans/ARCHIVE-INDEX.md).
+[the completed-plan archive](../ARCHIVE-INDEX.md#historical-record-recovery).

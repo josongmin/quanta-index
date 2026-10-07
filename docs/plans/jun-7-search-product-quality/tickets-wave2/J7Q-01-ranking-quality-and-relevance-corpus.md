@@ -60,5 +60,5 @@ once by [OCT-04 E1/E2/E4](../../oct-4-parallel-closure/tickets/INDEX.md).
 
 Historical ranking RCA, Zoekt/Blackbird research, completed Explain repairs and
 their exact native/local results are recoverable through
-[the plan archive](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+[the plan archive](../../../ARCHIVE-INDEX.md#historical-record-recovery).
 They do not qualify semantic/hybrid, a product default or current release.

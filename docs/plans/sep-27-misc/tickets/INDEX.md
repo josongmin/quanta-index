@@ -28,7 +28,7 @@ Reopen only a demonstrated regression; actual acceptance remains above. The
 [exact regex cap](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md#deferred-regex-allocation-cap-cs-eng-04)
 is conditional/deferred P3. Historical proof cleanup does not require a new
 per-run repository evidence tree; earlier receipts remain in
-[the plan archive](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+[the plan archive](../../../ARCHIVE-INDEX.md#historical-record-recovery).
 
 ## Execution order and shared boundary
 

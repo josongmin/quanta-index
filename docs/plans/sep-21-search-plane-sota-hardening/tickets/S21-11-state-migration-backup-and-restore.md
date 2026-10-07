@@ -3,7 +3,7 @@
 Status: `ACTIVE — owner, Linux release and authorized-target proof remain separate`.
 Completed CLI/original-manifest/copy-custody decisions are in
 [SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
-[Residual R4](CURRENT-RESIDUAL-2026-09-26.md) owns status;
+[Residual R4](FINAL-RESIDUAL-EXECUTION-PLAN.md) owns status;
 [the operator runbook](../../../operator/state-cutover-runbook.md) owns commands.
 
 ## Remaining acceptance

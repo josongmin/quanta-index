@@ -109,5 +109,5 @@ generation requires a fresh producer process. Old bytes remain immutable.
   their own acceptance; B08 does not close them.
 
 Exact earlier C0–C5 commands, source pins, diagnostics and terminal failures are
-recoverable through [the history index](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+recoverable through [the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).
 This compaction issues no new labels, native run or qualification.

@@ -20,7 +20,7 @@ acceptance, with no duplicate live queue or historical test-total promotion.
 | External producer/readers | Actual Semantica issuer/QBC, paired SDK/consumer migration, installed process, publish/activate, crash/restart, retention/rollback and supported Linux paths on one selected source. Older generations use the current explicit rebuild boundary. Local producer inspection is not execution. |
 | Adapter I/O | Actual prepare/execute/publish/load/replay paths for large successful/failed stdout/stderr, many-entry bounded archives/JSONL and metadata. Record retained/temporary heap and hosted limits; a fixture for one adapter is not all adapters. |
 | Release/CI | Affected registered owner controls then selected full Rust/Python/daemon/hosted inventory on final config/binaries. Resolve actual tests from live collection; selected ignored public process cases require execution, not zero-selected success. |
-| Operational P11 | [S21-12](../../sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md) owns missing typed deploy/activate/restore-forward producers/recipes, actual actions, independent observers and authorized target inputs. Existing CAS and staged proof nodes do not implement that operational producer. |
+| Operational P11 | [S21-12](../../sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md) owns concrete deploy/activate/restore-forward adapters, independent observer contracts, authorized targets and actual actions. The common typed producer/recipes/parser/checker/aggregate are implemented under [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#operational-actions); staged entries still refuse execution. |
 
 ## Integration order
 
@@ -63,4 +63,4 @@ and qualified benchmarks bind their required source/inputs/dependencies/binaries
 environment. Missing labels/products/host/platform block only dependent claims.
 Final-source full/platform proof belongs to MISC-04/05; measurement admission
 belongs to BENCH-01/03/04 and MISC-06/07. Exact prior audits and execution bodies
-are recoverable through [the plan archive](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+are recoverable through [the plan archive](../../../ARCHIVE-INDEX.md#historical-record-recovery).

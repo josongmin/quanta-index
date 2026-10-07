@@ -23,4 +23,4 @@ Consolidated: 2026-09-27
 | PERF-SPLIT-01 | Compile, pure pipeline, warm query and cold query measurements are non-interchangeable | [JUN-08-001](JUN-08-001-verification-hellgate-and-benchmark-separation.md) |
 
 Archived implementation packets and exclusions are listed in
-[the completed-plan archive](../plans/ARCHIVE-INDEX.md).
+[the completed-plan archive](../ARCHIVE-INDEX.md#historical-record-recovery).

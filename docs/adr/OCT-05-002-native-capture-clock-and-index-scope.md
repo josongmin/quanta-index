@@ -117,4 +117,17 @@ changed membership, stale source/cache, missing child and phase-byte mutants.
 A replayable diagnostic can contain complete empty queries and incomplete
 relevance. Disk/API proof is not loaded-reader or whole-universe qualification;
 focused fake-process tests are not Java execution or a fresh service capture.
-Historical exact bodies are in the [plan history index](../plans/ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
+Historical exact bodies are in the [plan history index](../ARCHIVE-INDEX.md#historical-record-recovery).
+
+## Completed clock scope
+
+O4-E2-01's completed-response clock and output binding implementation/selected
+actual scope are complete. Its ticket is retired. New selected runs verify the
+same construction-to-normalized-output boundary and output identity; repeated
+admitted performance belongs to O4-E4-06. Worker/transport/instrumented clocks
+and invalid/failed observations cannot become pristine latency samples.
+
+Native service cleanup preserves the first body/capture exception and original
+cause while logging cleanup traceback separately, including Python 3.10. An
+exception label does not claim which comparator ran. This avoids losing the
+actual failure without turning failed cleanup into a successful capture.

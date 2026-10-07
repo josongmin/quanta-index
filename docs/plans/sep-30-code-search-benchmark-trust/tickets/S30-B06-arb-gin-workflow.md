@@ -53,5 +53,5 @@ request limits; a completed adapter arm does not close the official-text arm.
 Current cross-ticket execution is owned once by the
 [OCT-04 residual ledger](../../oct-4-parallel-closure/tickets/INDEX.md).
 Retain the acceptance above for any new claim; reuse compatible captures.
-Past counts, binaries, failures and commands are recoverable from [historical bodies](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+Past counts, binaries, failures and commands are recoverable from [historical bodies](../../../ARCHIVE-INDEX.md#historical-record-recovery).
 They do not qualify current source.

@@ -19,7 +19,7 @@ Completed L1–L5 contracts are consolidated in
 Completed capture/process/I/O decisions are consolidated in
 [SEP-27-004](../../adr/SEP-27-004-benchmark-capture-and-resource-custody.md).
 Historical tickets, handoffs, RCA and terminal snapshots have been removed;
-exact bodies remain recoverable through the [plan archive](../ARCHIVE-INDEX.md).
+exact bodies remain recoverable through the [plan archive](../../ARCHIVE-INDEX.md#historical-record-recovery).
 
 | Active owner | Remaining scope |
 | --- | --- |
@@ -48,5 +48,5 @@ or worker containment contract is selected. It is not an active implementation
 or release blocker without a numerical requirement or measured regex-driven breach.
 
 The dated research survey and completed/deferred proposal body are retired to
-[history](../ARCHIVE-INDEX.md#oct-05-repository-wide-history-cleanup).
+[history](../../ARCHIVE-INDEX.md#historical-record-recovery).
 The active table above contains remaining work; permanent contracts are ADR-owned.

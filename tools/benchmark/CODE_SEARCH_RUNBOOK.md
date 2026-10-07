@@ -230,7 +230,7 @@ must not be described as a fair product-level file-ranking comparison.
 
 Use only the requested current source/input/capture rows. The Sep-28 20/100-query
 score tables and workflow totals are retired to
-[Git history](../../docs/ARCHIVE-INDEX.md#oct-05-repository-wide-history-cleanup).
+[Git history](../../docs/ARCHIVE-INDEX.md#historical-record-recovery).
 Unadjudicated labels, unequal native rank units, missing external indexed scope
 and unlike timing layers remain explicit qualification limits. Current B01–B09
 and OCT-04 owners retain their unresolved conditions; this guide is execution

@@ -7,7 +7,7 @@ Decided: 2026-09-27
 Consolidates completed SEP-21 repair decisions from the execution chronology.
 Extends SEP-21-002/003/004 and SEP-27-004. Historical runs do not qualify the
 current source; remaining release, producer and operational work stays in the
-[SEP-21 residual ledger](../plans/sep-21-search-plane-sota-hardening/tickets/CURRENT-RESIDUAL-2026-09-26.md).
+[SEP-21 residual ledger](../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md).
 
 ## Decision
 
@@ -181,10 +181,41 @@ root; external trust anchors and root/daemon fencing are separate obligations.
   receipt cannot establish completed proof. Keep the existing guard/parser owner,
   not a second test list or generic boolean promotion API.
 - Adapter lifecycle generation-selection models and independent query fixtures
-  are bounded proof seams. Full activation-CAS/concurrency, durability child-kill,
-  SDK-only recovery, long mutation/fuzz and release/platform proof need their
-  separate oracles. Quantitative targets from the retired Jul-15 plan remain
-  proposals in its residual board until admitted and implemented.
+  are implemented proof seams. Quantitative targets from the retired Jul-15
+  plan remain proposals in its residual board until admitted and implemented.
+
+### Implemented lifecycle tests and remaining coverage
+
+The [semantic lifecycle model](../../crates/quanta-index-semantic/tests/semantic_generation_lifecycle_model.rs)
+uses an independent owner-to-record map and the real durable adapter. Its
+deterministic case and six generated seed/base traces cover replacement, delta,
+tombstones, unsealed-open refusal, selection/rollback and restart recovery.
+Sealing is carried by Build; selection/rollback changes the model's selected
+generation, not the process-wide active-head CAS. The current command enum has
+no independent Append, Clear or QueryPinned operation. Extend those observable
+cases and process-CAS coverage rather than writing a second foundation model.
+
+The [runtime concurrency test](../../crates/quanta-index-searchd-runtime/tests/e2e_generation_activation_concurrency.rs)
+uses the SDK over UDS with an in-process `E2eRuntime`. A querying thread overlaps
+one G1-to-G2 activation and checks complete, unmixed predicate-authority result
+sets. It is not an independent operation-history linearizability checker or a
+duplicate/reorder/delay/rollback/restart schedule matrix.
+The [dispatcher selector regressions](../../crates/quanta-index-search-plane/src/query_dispatcher/tests/semantic.rs)
+already reject resolved-selector A-to-B-to-A ABA and mismatched explicit pins;
+retain those controls while extending the operation-history oracle.
+
+The [daemon crash matrix](../../crates/quanta-index-searchd-runtime/tests/e2e_crash_matrix.rs)
+starts and restarts real child daemons. It requires a case for every declared
+[seal/GC crash point](../../crates/quanta-index-search-plane/src/crash_point.rs),
+currently eight, and checks convergence/retention. Those track-level points do
+not inject failure at each inner F15 write, object link, file/directory sync,
+root rename or cleanup operation. That narrower publication matrix remains
+[O4-E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02)-owned;
+QIT-03 retains the broader selected storage-boundary acceptance.
+
+These are source/test-coverage statements, not fresh Rust execution results.
+Full SDK-only recovery, native race detection, long mutation/fuzz and
+release/platform execution retain their independent oracles and scope.
 
 The old QIT progress snapshot/scaffolding is retired. Its unfulfilled acceptance
 is preserved in [the residual board](../plans/jul-15-sota-test-hardening/tickets/00-ticket-status-board.md);
@@ -253,4 +284,4 @@ in the active ledger. No release, deployment or activation is asserted here.
 
 Historical bodies are recoverable from
 `0b4839a4a8b4cf99e870b4251395b6e3df8f4a21`; see
-[the plan archive](../plans/ARCHIVE-INDEX.md).
+[the plan archive](../ARCHIVE-INDEX.md#historical-record-recovery).

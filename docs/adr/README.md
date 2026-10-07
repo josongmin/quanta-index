@@ -22,8 +22,10 @@ class와 proof authority를 갱신한다. optional compatibility field나 dual l
 
 Oct-04 handoff/implementation history is consolidated into four `Accepted` ADRs.
 They preserve existing contracts; conditional optimization, open proposals and
-staged operational actions remain unimplemented. Current acceptance is owned by
-the [29-scope residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md).
+actual operational targets remain staged. Oct-06/07 completed bounded
+publication, budget, executable-custody, common operational producer and CI
+contracts are consolidated in OCT-05-002/003/004. Current acceptance is owned by
+the [21-scope residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md).
 
 - [Review, admission and result identity](OCT-05-001-review-admission-and-result-identity.md): E1 frozen typed binding, actual judgment, name units and split/gold authority.
 - [Native capture, clock and index scope](OCT-05-002-native-capture-clock-and-index-scope.md): E2 native replay, strict Lucene metadata, disk/reader boundaries and warmup policy.
@@ -31,7 +33,7 @@ the [29-scope residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md)
 - [Cost, capacity and qualification boundaries](OCT-05-004-cost-capacity-and-qualification-boundaries.md): E4/I0 causal/scanner/scale, conditional changes and current-source/release authority.
 
 Exact old bodies and executions remain recoverable through the
-[plan history index](../plans/ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
+[plan history index](../ARCHIVE-INDEX.md#historical-record-recovery).
 Removing detailed plans does not close the active parent or issue qualification.
 
 ## Prior accepted decisions
@@ -75,6 +77,6 @@ May–Jun 2026 accepted set:
 - [Decision registry](MAY-JUN-2026-DECISION-REGISTRY.md)
 
 Historical implementation packets and superseded drafts are indexed in
-[the plan history index](../plans/ARCHIVE-INDEX.md). Historical audits,
+[the plan history index](../ARCHIVE-INDEX.md#historical-record-recovery). Historical audits,
 bugbash records, old SSOTs, and receipts outside plan packets are indexed in
-[the documentation archive](../ARCHIVE-INDEX.md).
+[the documentation archive](../ARCHIVE-INDEX.md#historical-record-recovery).

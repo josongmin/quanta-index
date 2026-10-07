@@ -39,7 +39,7 @@ disk metering/freshness cadence, and admitted timeout-to-durable-terminal replay
 are implemented under [OCT-05-003](../adr/OCT-05-003-active-query-and-runtime-lifecycle.md).
 Selection itself does not create a lifetime lease; acquired views retain handles.
 Stronger pin or resource claims keep their [proposed scope](../adr/OCT-04-001-search-corpus-selection-and-ingest-pressure.md)
-and current E3 owner rather than the retired unexecuted-counterexample wording.
+rather than reopening completed E3 implementation scopes.
 
 [OCT-04](../plans/oct-4-parallel-closure/tickets/INDEX.md) owns conditional
 optimization, missing inputs and remaining execution.
@@ -50,24 +50,25 @@ before the sealed manifest, and reuses unchanged committed objects on delta.
 Cold open independently validates the complete source/posting census and retains
 a bounded term/range/hash directory; queries read admitted posting ranges under
 one request work budget. Logical heap admission does not establish an RSS bound.
-F15 compiler/owner checks are in progress; matching Large/XL, crash/reopen and
-release evidence remain required capacity/cost boundaries under
+F15 implementation/selected owner checks are consolidated in the accepted ADR;
+matching Large/XL, crash/reopen and release evidence remain capacity/cost boundaries under
 [E4-01/02/05](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
 Explicit timeout/retention diagnostic success does not close default capacity.
-[SEP-21](../plans/sep-21-search-plane-sota-hardening/tickets/CURRENT-RESIDUAL-2026-09-26.md)
+[SEP-21](../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)
 owns installed/paired/Linux/provider/release acceptance. Its R3 gap belongs to
 the external Semantica producer's independent expected semantic partition/omission
 check before dispatch. It is a separate producer-integration obligation, not a
 Quanta standalone engine code defect. Supplied-scope duplicate/conflict validation
 is already implemented.
-P11 additionally lacks
-typed deploy/activate/restore-forward producers and recipes under
-[S21-12](../plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md).
-Existing IPC/CAS handlers do not close that operational code/observer contract.
+P11's common typed deploy/activate/restore-forward producer, recipes and
+parser/checker/aggregate are implemented under
+[OCT-05-004](../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#operational-actions).
+[S21-12](../plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md)
+still needs concrete target adapters, independent pre/post contracts and authorized inputs.
 The [existing cross-repo recipe](../../scripts/verify-repomap-cross-repo.sh) and
 [paired component archive](../../tools/ci/paired_r5_result.py) bind caller/kernel
 selection, canonical resolver mapping and CLI-owned completion receipts. Their
 `runner-candidate-only` result is distinct from actual exact-pair qualification
-and the missing operational action authority. Current execution status belongs
+and concrete operational target/observer acceptance. Current execution status belongs
 to [I0-03](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-i0-03).
 Local tests, code presence and documentation cleanup do not issue qualification.

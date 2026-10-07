@@ -2,11 +2,13 @@
 
 Status: `ACTIVE — protocol and operational qualification remain staged`.
 
-Depends on S21-02/04/07/11. The completed resolver, V2 receipt, replay and
+Prerequisites are the accepted catalog/provider/runtime contracts,
+[S21-11 state acceptance](S21-11-state-migration-backup-and-restore.md) and the
+current proof DAG. The completed resolver, V2 receipt, replay and
 activation decisions are in the [SEP-21 registry](../../../adr/SEP-21-DECISION-REGISTRY.md)
 and [SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
 [R5/R6](FINAL-RESIDUAL-EXECUTION-PLAN.md) own remaining implementation order;
-[the residual ledger](CURRENT-RESIDUAL-2026-09-26.md) owns status. Quanta-local
+[the residual ledger](FINAL-RESIDUAL-EXECUTION-PLAN.md) owns status. Quanta-local
 CAS behavior is not Semantica compatibility or a release receipt.
 
 ## Exact-pair entry and terminal chain
@@ -32,15 +34,13 @@ cutover; retired wire/receipt forms refuse before storage/provider mutation.
 
 ## Remaining acceptance
 
-The existing cross-repo recipe now has an optional typed caller/kernel archive
-under `QUANTA_P11_R5_EVIDENCE_ROOT`. Semantica nextest passes through CLI-owned
-immutable completion custody; both required caller features are selected by
-resolver/list/run, and the kernel retains its own required feature. Quanta18 and
-Semantica25 owner tests passed on the integrated owned source. Actual clean-pair
-build/test and daemon custody are `NOT_RUN`; this is a `runner-candidate-only`
-component, not a staged P11 operational result. [OCT-04 I0-03](../../oct-4-parallel-closure/tickets/INDEX.md#o4-i0-03)
-owns source/candidate/main and execution checkpoints. A subsequent source epoch
-rechecks affected proof; frozen5796 SDK bytes do not imply current-pair binary parity.
+The implemented optional caller/kernel archive, selected features and CLI-owned
+completion custody are owned by [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md).
+Actual clean-pair build/test and daemon custody are `NOT_RUN`;
+`runner-candidate-only` cannot issue a staged operational result.
+[I0-03](../../oct-4-parallel-closure/tickets/INDEX.md#o4-i0-03) owns the remaining
+execution. A new source epoch rechecks affected proof; old SDK bytes do not
+establish current-pair binary parity. Exact owner test history remains in Git.
 
 - Bind canonical resolver mapping and nested lock into typed paired receipt
   evidence. Run actual fresh producer/daemon builds and the selected positive/

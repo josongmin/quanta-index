@@ -131,9 +131,9 @@ qualification split:
 ## Active work
 
 - [OCT-04 residual work](docs/plans/oct-4-parallel-closure/tickets/INDEX.md): remaining code, conditional decisions, required inputs and execution.
-- [Execution waves](docs/plans/oct-4-parallel-closure/WAVES.md): dependencies and owner handoffs.
+- [Execution order](docs/plans/oct-4-parallel-closure/tickets/INDEX.md#실행-순서): dependencies and owner handoffs.
 - [All acceptance owners](docs/README.md#start-here): benchmark, engine, semantic, quality, CI, paired and operational scopes.
 
-Historical bodies are recoverable through the [documentation archive](docs/ARCHIVE-INDEX.md)
-and [plan archive](docs/plans/ARCHIVE-INDEX.md). Use current source and actual gate
+Historical documents and tickets are recoverable through the
+[single recovery index](docs/ARCHIVE-INDEX.md#historical-record-recovery). Use current source and actual gate
 results for verification; command/navigation lists are not qualification evidence.

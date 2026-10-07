@@ -9,4 +9,4 @@ history. This directory holds source maps rather than another execution ledger.
 
 Source behavior and actual verification outrank dated counts. For `.expect()`
 reachability, inspect current callers/module boundaries; the retired snapshot is
-recoverable through [the history index](../ARCHIVE-INDEX.md#oct-04-source-count-snapshot-retirement).
+recoverable through [the history index](../ARCHIVE-INDEX.md#historical-record-recovery).

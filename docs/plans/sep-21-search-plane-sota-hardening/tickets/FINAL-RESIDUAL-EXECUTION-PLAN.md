@@ -1,7 +1,8 @@
 # SEP-21 residual execution map
 
-Status: `ACTIVE_RESIDUAL`. [Current R0–R6 ledger](CURRENT-RESIDUAL-2026-09-26.md)
-owns status. Current proof IDs/commands/targets/staging are owned by
+Status: `ACTIVE_RESIDUAL`. This is the single R0–R6 acceptance/execution map;
+S21-11/12/13 retain detailed state/pair/release conditions.
+Current proof IDs/commands/targets/staging are owned by
 [proof authority](../../../../tools/ci/proof-authority.toml),
 [test authority](../../../../tools/ci/test-authority.toml) and their independent
 checkers. Completed process/receipt contracts live in
@@ -21,8 +22,18 @@ forged counts, wrong executable/source/binary, stale/reordered/partial output,
 wrong host/run and tampered evidence. Caller-written success and arbitrary logs
 cannot issue passing proof. Bind qualified host class to trusted runner/inventory
 and CI bundles to their actual producing run. [S21-13](S21-13-release-evidence-and-sota-qualification.md)
-owns final source/dependency/config/binary/host and graph admission. P11 operational
-result mode remains a separate missing producer under R6.
+owns final source/dependency/config/binary/host and graph admission. P11's common
+operational producer/result mode is implemented; R6 retains concrete targets and
+independent observer/authorized-input acceptance.
+
+Execute final source-bound portable/conditional SDK/contract/native production
+and relocated replay, retaining independently collected full-file identities and
+exact sibling consumers, including paired-run/frozen-receipt paths. Run registered
+strict JSON, JUnit/Nextest, shell/argv, no-follow captured-byte, command/tool and
+owned-process controls against live required inventory. Invocation-local DAG
+reuse needs independent aggregate timing before a speedup claim; no second
+parser/cache owner. [MISC](../../sep-27-misc/tickets/INDEX.md) owns common regression,
+retrieval, resource and measurement execution once; do not duplicate heavy rails.
 
 ## R1 — P03–P08 selected release counterexamples
 
@@ -53,7 +64,8 @@ Revalidate existing bounded active-backend identity/freshness probes on the
 selected release process: stale/missing/divergent track roots, responsive control
 with backend loss, supervised child/maintenance loss, zero-active behavior,
 authorized restoration and declared detection cadence. Deep-open/scrub remains
-the separate full-content check. Slow-root metering separation already has a
+the separate full-content check. Retain oversized identity/marker negatives;
+root liveness does not prove full content health. Slow-root metering separation already has a
 deterministic owner test; final resource/load claims keep their actual scope.
 
 Use the existing Admin-authorized bounded IPC ring projection. Retain observer
@@ -73,6 +85,18 @@ code, not an observed omission incident. [The OCT-04 audit](../../oct-4-parallel
 records the source boundary; authorized Linux inputs are not prerequisites for
 this upstream implementation.
 
+Source comparison on 2026-10-07 used the sibling Semantica checkout at
+`0b69971be2892f6119921fe8e2b7c494890850c4`, including its current working tree.
+Within `quanta-runtime/src/retrieval/port_impls/index_projection_writer/`
+`source_bound_projection_assembly/authority_assembly/search_plane_handoff_dispatch/`,
+`aggregate_prepare.rs` resolves the prior shadow state and builds/prepares the
+lexical/semantic batch; `semantic_state.rs` derives replacement/tombstone scopes
+from lexical emissions and the prior state. Their supplied-scope and prior-base
+checks are implemented. This selected call path has no independently derived
+expected replace/tombstone/unchanged partition comparison. That is the remaining
+verification-code seam, not a missing semantic planner or an observed omission.
+No upstream source was edited or its tests executed by this documentation audit.
+
 Producer source-plan/shadow policy/prior sealed owner/cluster plan must independently
 enumerate replace/tombstone/unchanged scope before dispatch. Bind that expected
 partition/digest to the existing batch/terminal chain and reject omissions or
@@ -89,6 +113,12 @@ custody, backup/verify/separate restore, incarnation rotation, attested reopen a
 restore-forward. Execute disposable and separately authorized target scopes with
 actual formats/retained-data policy; no legacy importer or target mutation follows
 from a local pass. Installed/Linux release proof has its own selected target.
+
+Execute actual native append/clear/membership-replace/replace/tombstone exporters
+and independent complete-row/window/delete/commit replay at the selected source.
+Retain the unchanged maximum-page/cursor scenario and reissue matching owner/
+daemon proof. Schema/retained-data inventory and authorized target restoration
+remain separate from disposable-root and exporter tests.
 
 ## R5 — P11 exact pair and terminal build/test
 
@@ -111,11 +141,12 @@ retains the current implementation and actual execution checkpoints.
 
 ## R6 — P11 actions and P12 aggregate
 
-Define typed deploy/activate/restore-forward action producers/recipes and distinct
-independent pre/post success observers under S21-12. Required inputs: authorized
+Use the implemented typed deploy/activate/restore-forward producer/recipes and
+result checker/aggregate. Register concrete target adapters and distinct
+independent pre/post success contracts under S21-12. Required inputs: authorized
 Linux host, install/config/state roots, retention and rollback window. Preserve
-staging until actual producer/parser/observer authority exists. Each action binds
-one shared operational host and attested release; deploy does not imply serving
+staging until concrete target/observer authority is registered and executed.
+Each action binds one shared operational host and attested release; deploy does not imply serving
 activation or an actual P10-compatible restore-forward drill.
 
 After selected integration, execute current P12A and final exact-pair graph/
@@ -125,4 +156,4 @@ records cannot be reconstructed and are not current release dependencies.
 [Execution entrypoints](prompts/README.md) own commands. Relevant source/input
 changes recheck affected proof; no stale/staged/partial receipt issues readiness.
 Exact older creation plans and execution history are recoverable through
-[the history index](../../ARCHIVE-INDEX.md#oct-05-residual-owner-clarification).
+[the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).

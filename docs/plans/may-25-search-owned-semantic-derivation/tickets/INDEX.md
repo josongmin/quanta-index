@@ -6,6 +6,21 @@ Contract authority: [semantic generation ADR](../../../adr/MAY-31-001-lancedb-se
 and [query/publication ADR](../../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md).
 This ledger does not reinstall the superseded SEM-OWN worker/API proposals.
 
+## Current source boundary
+
+Compared with `6a3f6afc8c286176962e722ce75524aefcfa7607` on 2026-10-07.
+Typed-source derivation, manifest model/vector normalization, exact-text cache
+identity and common query gating are implemented under
+[MAY-31-001](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity).
+They are not new implementation tasks.
+
+Daemon composition registers provider retry/HTTP/transport counters, raw-vector
+normalization tallies, cache hit/miss/retention counters and cache-open reports.
+`e2e_metrics_scrape.rs` checks their boot-time presence under the OpenAI profile
+without issuing a real embedding request. This is narrower than live provider
+behavior, request latency or pending-work/seal-lag acceptance. Inspect actual
+exports before selecting an additional metric; do not recreate these counters.
+
 ## Required evidence before closure
 
 | Scope / owner | Remaining acceptance |
@@ -13,8 +28,8 @@ This ledger does not reinstall the superseded SEM-OWN worker/API proposals.
 | Producer + SDK/search-plane | Typed-source ReplaceGeneration and Delta, explicit no-op/tombstone membership, no legacy vector or implicit chunk-text ingress; actual paired producer/consumer source binding |
 | Producer aggregate publication | Bind authoritative prior semantic state for deltas; verify resolver/aggregate/outbox retained state and paired restart against both current repositories before repair or closure |
 | Search-plane + semantic adapter | Restart after partial derivation, delete/tombstone/membership replacement, complete sealing, provider/model/dimension refusal and blocked activation, under one fresh source-bound integration rail |
-| Query/embedding owner | Manifest-authoritative query normalization/cache identity and typed provider failures; record the policy for `FooBar`, `foobar`, `foo_bar`, `foo bar` and prove model changes cannot reuse incompatible entries |
-| Provider + operator owner | Observe request latency/failures, pending work/seal lag, query failures, active model/manifest identity, policy drift, blocked reasons and cache hits/misses; compare actual exported fields to this acceptance before adding a second metric path |
+| Query/embedding owner | Execute public semantic/hybrid text-policy and model/revision/dimension/normalization rotation cases against independent expected cache/provider observations, including `FooBar`, `foobar`, `foo_bar`, `foo bar`; existing unit model/cache refusals do not cover this integrated matrix |
+| Provider + operator owner | Observe real requests, failures and cache behavior through existing exports. Decide the required request-latency, pending-work/seal-lag, active model/manifest, policy-drift and blocked-reason projection from actual available fields; boot-time counter presence does not establish their live semantics |
 | Release/integration owner | Contract round trips, real typed producer → derived semantic seal → text semantic/hybrid search, restart/delete and blocked-generation tests; attach exact raw inventories and source/dependency/model/runtime binding |
 
 The predecessor records do not establish current completeness or missing

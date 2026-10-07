@@ -97,4 +97,4 @@ source or the later semantic-generation ADR.
 ## Historical record
 
 The absorbed packets and exact consolidation boundary are listed in
-[the completed-plan archive](../plans/ARCHIVE-INDEX.md).
+[the completed-plan archive](../ARCHIVE-INDEX.md#historical-record-recovery).

@@ -78,4 +78,4 @@ hand-computed set/range fixtures, retaining metric-definition identity.
 [BENCH-01/02](CS-BENCH-01-corpus-gold-and-holdout.md) supply independent/native
 inputs; [CS-INT-01](CS-INT-01-integration-and-qualification.md#required-controls)
 owns integration. Historical local observations are recoverable through
-[the history index](../../ARCHIVE-INDEX.md#oct-05-residual-owner-clarification).
+[the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).

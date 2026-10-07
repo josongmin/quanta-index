@@ -58,5 +58,5 @@ test authority and source-closure owners.
 
 Completed intake, global-cohort diagnostics, source-locked runtime repairs and
 their exact commands/results are recoverable through
-[the history index](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+[the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).
 No old snapshot/test total is a current-source qualification verdict.

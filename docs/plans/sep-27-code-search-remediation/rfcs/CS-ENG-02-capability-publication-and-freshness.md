@@ -63,4 +63,4 @@ shared state. [CS-BENCH-04](CS-BENCH-04-comparators-performance-and-incremental.
 owns admitted cost measurements and [MISC](../../sep-27-misc/tickets/INDEX.md)
 owns final-source/platform qualification. The source/input-specific older counts,
 RSS values and commands are recoverable through
-[the history index](../../ARCHIVE-INDEX.md#oct-05-residual-owner-clarification).
+[the history index](../../../ARCHIVE-INDEX.md#historical-record-recovery).

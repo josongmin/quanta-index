@@ -533,4 +533,4 @@ Local checks work during edits. Formal proof binds clean source and actual
 selected/executed inventories; [cross-language fixtures](fixtures/README.md)
 supply evaluator/runner inputs. Current commands and runtime inputs remain here;
 older implementation/results are recoverable through
-[history](../../../docs/ARCHIVE-INDEX.md#oct-05-repository-wide-history-cleanup).
+[history](../../../docs/ARCHIVE-INDEX.md#historical-record-recovery).
