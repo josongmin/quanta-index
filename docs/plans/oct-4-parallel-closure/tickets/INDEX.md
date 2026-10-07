@@ -228,6 +228,9 @@ retained external source091과 native source6a3를 구분한다. 원18개 extern
 suite/query/corpus 결속·native raw 해시를 재확인했다. Score-only reuse projection은 Bat의
 full canonical 결과와 모든 file scores가 같으며 completed-boundary latency는 재발행하지 않는다.
 Lo도 원20tasks의 5제품 file score projection을 완료했다.
+Lo의 공통 eligible 분모는5/20이며 Quanta가 새로 반환한15tasks·30개 task/file 판단은 없다.
+Main adapter의 actual Bat·lo file payload80rows 변환도 `VERIFIED`; Lo의15개 `unjudged/null`을 유지한다.
+독립 판단 입력은 evidence root의 `lo-unjudged-handoff.json`에 기록했다.
 전체 ready9 pair/full5 완료나 quality/speed qualification은 아직 아니다.
 원 runtime/input/producer bytes 및 허용 reuse를
 검증해 결합하며 source97/5796/091 raw를 새 소스로 재표기하지 않는다.
