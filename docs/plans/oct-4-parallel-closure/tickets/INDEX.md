@@ -52,13 +52,14 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 
 ### 벤치 실행 잔여 — 2026-10-07 소스·입력 대조
 
-- Ready9: TypeORM capture/replay와 최신 union의 독립 판단·final admission이 잔여다.
-  Source6a3의5repo, fixedb262의 CLI·Django·Nushell 및 외부091 capture/replay는 완료됐다.
+- Ready9: 최신151tasks·742pairs union의 독립 판단·final admission이 잔여다.
+  Source6a3의5repo, fixedb262의 CLI·Django·Nushell·TypeORM 및 외부091 capture/replay는 완료됐다.
   Source별 raw·완료 범위·허용 reuse는 [Ready9 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope)이 소유한다.
   NL file20tasks/repo·distinct-file 계약이며 bare-symbol workflow와 구분한다.
 - accepted55/PREP·5796 재발행 packet의 명시된 임시 root는 부재하여 원본 replay는 `BLOCKED`다.
   원본 byte 동일 복구 또는 새 source-bound 준비가 선행한다.
-- 신규742pairs ledger와 historical Scanner A/B 실행 root는 현재 부재해 해당 원본 replay는 `BLOCKED`다.
+- Historical supplemental742pairs ledger와 historical Scanner A/B 실행 root는 현재 부재해 해당 원본 replay는 `BLOCKED`다.
+  현재 source별151tasks·742pairs union과 review 입력은 보존돼 있으며 historical ledger와 다른 입력이다.
   Scanner의 durable Bat79files/338queries suite·blind pack은 복구해 current validator/parity를 통과했다.
   새 source의 two-arm build/capture는 E4-03 잔여다. 기록된 SHA나 과거 수치로 입력을 재구성하지 않는다.
 - Scale: matching Large/XL 비용/RSS·lifecycle 및 선택한 OS-child restart·offered-load가 잔여다.
@@ -118,10 +119,16 @@ failed/blocked 설명. 미판단 pair는 채점에서 제외하며 AI를 human�
 ### O4-E1-02
 
 `BLOCKED` · 신규151tasks/742pairs의 두 reviewer+adjudicator 판단 및 원 valid labels 병합.
-Bat358+51=409를 재호출하지 않는다. 원 ledger
+현재 union의 모든742pairs는 원 query/source에 결속된 두 blank form에 포함돼 있다.
+새4repo 입력은 `ready9-native-paged-20261007-01a10d0b/blind-review/`, retained
+Lo·Mocha·Uvicorn·Zustand 입력과 전체 대조는
+`/Users/songmin/.codex/task-evidence/ready9-retained-review-20261007-01a10d0b/review-input-coverage.json`이다.
+8repo·160개 form task가151개 판단 대상 task를 포함하며 reviewer identity/label 변경은0이다.
+Bat358+51=409를 재호출하지 않는다. 별도 historical 원 ledger
 `/private/tmp/qi-current-nine-supplemental-pool-97eedd-actual-v1/ledger.json`은 현재 부재하다.
-기록된 SHA `78013ed33e5647bfa5e109fc5edabb422e41dc48d0cbf4f63f713785642818ec`의 동일 원본 복구
-또는 새 actual-native blind pool 준비가 선행한다. 제품명/순위/점수는 review에 노출하지 않는다.
+기록된 SHA `78013ed33e5647bfa5e109fc5edabb422e41dc48d0cbf4f63f713785642818ec`의 동일 원본 없이는
+historical replay를 발행하지 않는다. 현재 union의 review는 준비된 입력으로 진행한다.
+제품명/순위/점수는 review에 노출하지 않는다.
 완료: source/query/rubric/threshold/model에 결속된 labels·독립 raw replay 및 reused/unresolved/excluded 집합.
 
 ### O4-E1-03
@@ -209,6 +216,8 @@ Gin20; ARB original17/88·adapted88; B09 OSA/CLARC/CSN. Four typo populations
 ### O4-E2-05
 
 `NOT_RUN` · 고정 Semble package/lock/env/model/assets/input의 parent/worker 반복 A-B 비용·재사용 판정.
+Query pack의 초기 digest·query hash·manifest universe 결속과 실행 후 drift 거절은
+[입력 계약](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#semble-admitted-input-identity)으로 완료 이관했다.
 Immutable validation·native rows/status parity 및 unattributed residual을 확인한다.
 정식 speed는 [E4-06](#o4-e4-06)의 host/boundary/schedule을 따른다.
 

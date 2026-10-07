@@ -134,6 +134,28 @@ actual failure without turning failed cleanup into a successful capture.
 
 ## Completed Ready9 capture scope
 
+### Semble admitted input identity
+
+The adapter binds its record digest to the canonical query pack validated before
+environment inspection and indexing. Each query must match its submitted-query
+SHA-256; the pack's file universe and digest must exactly match the admitted
+manifest. The worker's requests and record provenance use this same admitted
+pack. After execution, the strict JSON reader rechecks the input and refuses
+query/commitment drift or duplicate keys before publishing a record. Reformatting
+the same JSON preserves its canonical identity.
+
+The previous producer hashed a second, permissively parsed pack after execution.
+A real parent/worker fixture reproduced successful publication after query or
+suite-commitment replacement, duplicate-key insertion, and a pack/manifest
+universe mismatch. Those cases now refuse; matching input still completes.
+The selected Semble, bundle and completed-response regression scope passed
+64 tests with 557 deselected using
+`uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_completed_response_timing.py -q -k 'semble or load_query_pack or runner_bundle or completed'`.
+The worker uses a fixture Semble index: this is input/capture contract verification,
+not another actual product capture or repeated-cost/warmup qualification.
+
+### Source-bound completed captures
+
 Rechecked 2026-10-07 against the original result files. External source
 `09103820` completed CS/SG/OG capture and independent replay for all nine roots:
 180 requests per product, 540 total. Selected-project OpenGrok reader evidence

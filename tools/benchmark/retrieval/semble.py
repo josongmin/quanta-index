@@ -974,6 +974,8 @@ def load_query_pack(path: Path) -> dict:
         for key in ("task_id", "query", "query_sha256"):
             if not isinstance(task.get(key), str) or not task[key]:
                 raise AdapterError(f"query pack task lacks {key}")
+        if task["query_sha256"] != digest(task["query"].encode("utf-8")):
+            raise AdapterError(f"query pack task query hash mismatch: {task['task_id']}")
         if task["task_id"] in seen:
             raise AdapterError(f"query pack holds a duplicate task_id: {task['task_id']!r}")
         seen.add(task["task_id"])
@@ -1908,9 +1910,26 @@ def run_adapter(args: argparse.Namespace) -> int:
     if out_root.exists():
         raise AdapterError(f"output root already exists (refusing reuse): {out_root}")
     out_root.mkdir(parents=True)
-    pack = load_query_pack(Path(args.query_pack))
+    pack_path = Path(args.query_pack)
+    pack = load_query_pack(pack_path)
+    pack_canonical = canonical(pack)
+    pack_sha256 = digest(pack_canonical)
     if pack.get("repository_commit") != commit:
         raise AdapterError("manifest commit differs from query-pack commit")
+    universe = pack["file_universe"]
+    if not isinstance(universe, list) or any(
+        not isinstance(row, dict)
+        or set(row) != {"path", "file_sha256"}
+        or not isinstance(row["path"], str)
+        or not isinstance(row["file_sha256"], str)
+        for row in universe
+    ):
+        raise AdapterError("query-pack file universe differs from admitted manifest")
+    if sorted((row["path"], row["file_sha256"]) for row in universe) != sorted(manifest_rows):
+        raise AdapterError("query-pack file universe differs from admitted manifest")
+    admitted_universe = [{"path": name, "file_sha256": sha} for name, sha in sorted(manifest_rows)]
+    if pack["file_universe_digest"] != digest(canonical(admitted_universe)):
+        raise AdapterError("query-pack file universe digest differs from admitted manifest")
     top_k = _int(args.top_k, "top_k")
     if top_k <= 0:
         raise AdapterError("top_k must be positive")
@@ -2091,13 +2110,10 @@ def run_adapter(args: argparse.Namespace) -> int:
         if hashlib.sha256(data).hexdigest() != sha:
             raise AdapterError(f"pinned source drifted during the run: {name}")
 
-    pack_canonical = json.dumps(
-        json.loads(Path(args.query_pack).read_text(encoding="utf-8")),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    pack_sha256 = digest(pack_canonical.encode("utf-8"))
+    # The digest belongs to the validated pack that supplied the worker's
+    # requests. Re-reading may detect drift, never replace that authority.
+    if canonical(load_query_pack(pack_path)) != pack_canonical:
+        raise AdapterError("query pack changed while the worker was running")
     model_asset = model_asset_digest(materialized_hf, model_id, model_revision)
     if model_asset != source_model_asset:
         raise AdapterError("model snapshot changed while the worker was running")

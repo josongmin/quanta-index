@@ -3928,6 +3928,166 @@ def test_load_query_pack_refuses_smuggled_labels(tmp_path):
     assert semble_adapter.load_query_pack(pack_path)["tasks"]
 
 
+def test_load_query_pack_refuses_a_query_with_another_query_digest(tmp_path):
+    repo, suite, _run, _sp, _rp, _files = fixture_v3(tmp_path, answerable_only=True)
+    _suite, pack, _source = ev.validate_suite(repo, suite)
+    pack["tasks"][0]["query"] = "a different submitted query"
+    path = tmp_path / "pack.json"
+    path.write_text(json.dumps(pack), encoding="utf-8")
+    with pytest.raises(semble_adapter.AdapterError, match="query hash mismatch"):
+        semble_adapter.load_query_pack(path)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        "query",
+        "commitment",
+        "duplicate_key",
+        "manifest_universe",
+        "universe_digest",
+        "universe_duplicate",
+        "universe_malformed",
+    ],
+)
+def test_semble_adapter_binds_the_pack_used_by_the_completed_worker(tmp_path, monkeypatch, change):
+    repo, suite, _run, _sp, _rp, _files = fixture_v3(tmp_path / "source")
+    _suite, pack, _source = ev.validate_suite(repo, suite)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {"repository_commit": suite["repository_commit"], "files": pack["file_universe"]}
+        ),
+        encoding="utf-8",
+    )
+    pack_path = tmp_path / "pack.json"
+    pack_path.write_text(json.dumps(pack), encoding="utf-8")
+    admission_changes = {
+        "manifest_universe",
+        "universe_digest",
+        "universe_duplicate",
+        "universe_malformed",
+    }
+    if change in admission_changes:
+        mismatched = copy.deepcopy(pack)
+        if change == "manifest_universe":
+            mismatched["file_universe"] = mismatched["file_universe"][:1]
+            mismatched["file_universe_digest"] = ev.universe_digest(mismatched["file_universe"])
+        elif change == "universe_digest":
+            mismatched["file_universe_digest"] = "f" * 64
+        elif change == "universe_duplicate":
+            mismatched["file_universe"].append(dict(mismatched["file_universe"][0]))
+        else:
+            mismatched["file_universe"][0]["path"] = []
+        pack_path.write_text(json.dumps(mismatched), encoding="utf-8")
+    lockfile = tmp_path / "lock.txt"
+    lockfile.write_text("semble==0.6.0\n", encoding="utf-8")
+    cache, revision = _pinned_semble_cache(tmp_path)
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    _write_stub_semble(stub)
+    index_stub = stub / "semble" / "index_stub.py"
+    index_stub.write_text(
+        index_stub.read_text(encoding="utf-8")
+        .replace("indexed_files = 1", "indexed_files = 2")
+        .replace("total_chunks = 1", "total_chunks = 2")
+        .replace(
+            "self.chunks = [_Chunk('a.txt', 1, 1)]",
+            "self.chunks = [_Chunk('a.txt', 1, 1), _Chunk('b.txt', 1, 1)]",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(stub))
+    monkeypatch.setattr(
+        semble_adapter,
+        "check_semble_env",
+        lambda _python: {
+            "observed_freeze": "semble==0.6.0\n",
+            "semble_version": "0.6.0",
+            "interpreter": {"fixture": True},
+            "observed_freeze_sha256": ev.digest(lockfile.read_bytes()),
+            "installed_distribution": {"fixture": True},
+        },
+    )
+    real_worker = semble_adapter.run_completed_worker
+    worker_calls = []
+
+    def complete_then_change_pack(command, **kwargs):
+        worker_calls.append(command)
+        result = real_worker(command, **kwargs)
+        if change in admission_changes:
+            return result
+        changed = copy.deepcopy(pack)
+        if change == "query":
+            changed["tasks"][0]["query"] = "a different submitted query"
+            changed["tasks"][0]["query_sha256"] = ev.digest(changed["tasks"][0]["query"].encode())
+        elif change == "commitment":
+            changed["suite_commitment_sha256"] = "f" * 64
+        elif change == "duplicate_key":
+            text = json.dumps(pack)
+            pack_path.write_text('{"suite_id":"ignored",' + text[1:], encoding="utf-8")
+            return result
+        pack_path.write_text(json.dumps(changed, indent=2), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(semble_adapter, "run_completed_worker", complete_then_change_pack)
+    output = tmp_path / "adapter-output"
+    args = semble_adapter.build_parser().parse_args(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--manifest",
+            str(manifest),
+            "--query-pack",
+            str(pack_path),
+            "--top-k",
+            "10",
+            "--python",
+            sys.executable,
+            "--lockfile",
+            str(lockfile),
+            "--lockfile-sha256",
+            ev.digest(lockfile.read_bytes()),
+            "--cache-root",
+            str(cache),
+            "--output-root",
+            str(output),
+            "--model-revision",
+            revision,
+            "--run-id",
+            "pack-binding",
+            "--blinding",
+            "attested",
+            "--isolation-method",
+            "attested",
+            "--access-block-log",
+            "attested",
+            "--semble-profile",
+            "lexical-only",
+        ]
+    )
+    if change is not None:
+        with pytest.raises(
+            semble_adapter.AdapterError,
+            match="query pack changed|duplicate JSON key|query-pack file universe.*differs",
+        ):
+            semble_adapter.run_adapter(args)
+        assert not (output / "record.json").exists()
+        assert not (output / "adapter-manifest.json").exists()
+        if change in admission_changes:
+            assert not worker_calls
+    else:
+        assert semble_adapter.run_adapter(args) == 0
+        record = json.loads((output / "record.json").read_text())
+        assert record["query_pack_sha256"] == ev.digest(ev.canonical(pack))
+        spec = json.loads((output / "spec.json").read_text())
+        assert spec["tasks"] == [
+            {"task_id": task["task_id"], "query": task["query"]} for task in pack["tasks"]
+        ]
+
+
 def _write_stub_semble(root: Path) -> None:
     """A dual-lane stub mirroring the pinned Semble 0.6.0 module layout."""
     resident_bytes = 64 * 1024 * 1024
@@ -5499,21 +5659,18 @@ def test_model_cache_materialization_binds_ref_and_safe_links(tmp_path):
 def test_semble_worker_uses_stage_owned_runtime_cache_and_readonly_model_source(
     tmp_path, monkeypatch
 ):
-    repo, suite, _run, _sp, _rp, files = fixture_v3(tmp_path / "src")
+    repo, suite, _run, _sp, _rp, _files = fixture_v3(tmp_path / "src")
+    _suite, pack, _source = ev.validate_suite(repo, suite)
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
         json.dumps(
             {
                 "repository_commit": suite["repository_commit"],
-                "files": [
-                    {"path": name, "file_sha256": ev.digest(data)}
-                    for name, data in sorted(files.items())
-                ],
+                "files": pack["file_universe"],
             }
         ),
         encoding="utf-8",
     )
-    _suite, pack, _source = ev.validate_suite(repo, suite)
     pack_path = tmp_path / "pack.json"
     pack_path.write_text(json.dumps(pack), encoding="utf-8")
     lock_path = tmp_path / "lock.txt"
