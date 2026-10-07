@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tools.benchmark.retrieval.run import RunError, preflight_daemon_socket_paths
 from tools.benchmark.retrieval.scanner_source_identity import (
     CustodyError,
 )
@@ -481,6 +482,10 @@ def capture(spec: dict, receipt_path: Path) -> dict:
         raise CustodyError("input and output roots must be disjoint")
     env = _effective_env(repo, out, spec["env_overrides"])
     _capture_argv(repo, out / "run-spec.json", env)
+    try:
+        preflight_daemon_socket_paths(out / "capture", template["strategies"])
+    except RunError as error:
+        raise CustodyError(str(error)) from error
     before_source = source_capture(repo, spec["base_git_revision"], overlay, env=env)
     before_inputs = _input_inventory(roots)
     out.mkdir(parents=True)

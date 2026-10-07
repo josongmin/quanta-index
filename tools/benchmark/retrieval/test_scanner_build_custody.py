@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.benchmark.retrieval import run
 from tools.benchmark.retrieval import scanner_build_custody as custody
 from tools.benchmark.retrieval.scanner_source_identity import CustodyError
 
@@ -20,6 +21,9 @@ def _git(root, *args):
 
 @pytest.fixture
 def admitted(tmp_path, monkeypatch):
+    # Fixture paths may exceed the host UDS limit. Dedicated path tests below
+    # restore the platform limit and exercise the real runner preflight.
+    monkeypatch.setattr(run, "_unix_socket_path_limit", lambda: 4096)
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -197,6 +201,44 @@ def test_capture_refuses_invalid_admission_before_build(admitted, overrides):
     with pytest.raises(CustodyError, match="scanner resource"):
         custody.capture(spec, receipt_path)
     assert not Path(spec["output_root"]).exists()
+
+
+@pytest.mark.parametrize("component", ["x" * 120, "é" * 60])
+def test_capture_refuses_long_socket_path_before_build(admitted, monkeypatch, component):
+    spec, receipt_path = admitted
+    out = Path(spec["output_root"]).parent / component
+    spec["output_root"] = str(out)
+    monkeypatch.setattr(run, "_unix_socket_path_limit", lambda: 103)
+
+    def unexpected_build(*_):
+        pytest.fail("socket path refusal must precede build registration")
+
+    monkeypatch.setattr(custody, "_build_argv", unexpected_build)
+    with pytest.raises(CustodyError, match="Unix socket path.*limit 103"):
+        custody.capture(spec, receipt_path)
+    assert not out.exists()
+    assert not receipt_path.exists()
+
+
+def test_capture_resolves_parent_symlink_before_socket_preflight(admitted, monkeypatch):
+    spec, receipt_path = admitted
+    parent = Path(spec["output_root"]).parent
+    target = parent / ("x" * 120)
+    target.mkdir()
+    alias = parent / "short"
+    alias.symlink_to(target, target_is_directory=True)
+    out = alias / "fresh"
+    spec["output_root"] = str(out)
+    monkeypatch.setattr(run, "_unix_socket_path_limit", lambda: 103)
+
+    def unexpected_build(*_):
+        pytest.fail("resolved socket path refusal must precede build registration")
+
+    monkeypatch.setattr(custody, "_build_argv", unexpected_build)
+    with pytest.raises(CustodyError, match="Unix socket path.*limit 103"):
+        custody.capture(spec, receipt_path)
+    assert not out.exists()
+    assert not receipt_path.exists()
 
 
 def test_reused_target_and_arbitrary_capture_command_refused(admitted):

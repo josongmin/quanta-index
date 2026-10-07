@@ -293,16 +293,21 @@ regular-file st_size이며 restart gauge0·st_blocks·physical I/O/true peak와 
 
 ### O4-E4-03
 
-입력 복구 완료·새 빌드 중단 · historical Scanner A-B original `/private/tmp/qis.utp62qk5`와
+입력 복구 완료·fresh capture 재실행 필요 · historical Scanner A-B original `/private/tmp/qis.utp62qk5`와
 옛 binary는 부재하여 그 실행의 원본 replay는 `BLOCKED`다. Fixed338/79files·ParseFailed6의 과거
 diagnostic은 원 scope의 기록이며 speed/adoption verdict가 아니다.
 Durable `qi-b08-closeout-20261004-2i72kj91/mechanical-c4-amended-f3d2ae29/bat/declaration_name_osa1_casefold/`
 suite·blind pack 및 frozen Bat revision `4608fc959aa8abf80d32198836511a570b7ae9ea` 입력을 찾았다.
-Current suite validation·derived blind-pack exact parity와 source `d03bfdc365bac8705f7a658868acfdf6eb42e0db`의
-canonical Unicode-control/ASCII pair identity 검증은 완료됐다. 새 실행 root는
-`/Users/songmin/.codex/task-evidence/scanner-ab-20261007-current-main-01a10d0b-v1`다.
-Baseline fresh release build는 lifecycle/cache 코드 검증을 우선해 중단했다. v1의 build는 미완료이고,
-candidate build/capture·비교 결과는 `NOT_RUN`이다. 중단된 build를 성공 receipt로 사용하지 않는다.
+Current suite validation·derived blind-pack exact parity와 source
+`8642fa9b3b47ac58e4b3d9f2feaea66c599be29d`의 canonical Unicode-control/ASCII pair identity
+검증은 완료됐다. v1은 코드 검증 우선으로 중단한 미완료 build이며 성공 receipt가 아니다.
+후속 v2 root는 `/Users/songmin/.codex/task-evidence/scanner-ab-20261007-current-main-01a10d0b-v2`다.
+v2 baseline fresh release build는 `VERIFIED`(42m58s)지만 capture는 UDS path155bytes가
+macOS103bytes limit을 초과해 `FAILED`다. Capture receipt와 candidate/comparison 결과는 없다.
+`scanner_build_custody.py`가 expensive build 전에 기존 runner의 socket-path preflight를
+호출하도록 수리했다. ASCII·다중바이트·parent symlink 경로의 build 전 거절을 포함한 custody/source
+회귀47/47 및 기존 runner path 회귀2/2가 통과했다. 짧은 외부 output root에서 fixed two-arm을
+fresh 재실행한다. Candidate build/capture와 비교는 아직 `NOT_RUN`이다.
 이는 복구된 입력의 fresh two-arm 진단이며 historical binary 결과 재생이 아니다.
 두 arm의 source→binary build provenance,
 independent tokenizer/full-DP·bytes/span/case/order/status/cursor/work/config parity를 대조한다.
