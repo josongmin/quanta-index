@@ -58,7 +58,7 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 
 | 우선·owner | 실제 잔여 | 종료 조건 |
 | --- | --- | --- |
-| P0 · I0-02 / CI/integration | 후속 main의 영향 hosted 결과 및 선택된 SDK/Contract·PR/release 결과 회수 | 같은 source의 terminal·inventory·receipt. cache focused4/4·corrected library-test strict 및 `8642fa9b` regular main6jobs는 완료이며 기존 CI/F15 수리는 잔여가 아님 |
+| P0 · I0-02 / CI/integration | 별도 선택된 SDK/Contract·PR/release 결과 회수; 후속 코드 변경 시 영향 hosted scope | 같은 source의 terminal·inventory·receipt. cache focused4/4·corrected library-test strict 및 `5bf6b152` regular CI6jobs는 완료이며 기존 CI/F15 수리는 잔여가 아님 |
 | P1 · E4 / performance | 전체 sync/read/hash/metadata·segment fanout 비용, scanner·Semble·bootstrap 판정 | 원인별 실제 관측 및 독립 parity. 정식 속도는 admitted host·사전 기준·반복 표본 |
 | P1 · E1/E2 / quality | labels/admissions·matching Quanta/Semble pair·native replay/full5·독립 채점 | required cells 및 query/unit/source/index scope, 미판단·실패·제외 분모 설명 |
 | P1 · E1 / holdout | 실제 미사용 corpus/query/family·license/gold/name-span·typo 평가 | 독립 truth·critical strata·exposure/underfill, file hit와 declaration recovery 구분 |
@@ -307,11 +307,10 @@ Contract: [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-b
 
 ### O4-I0-02
 
-후속 main의 영향 hosted 결과 및 selected SDK/Contract·PR/release proof 회수가 잔여다.
-Source5bf의 [workflow1033](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1033/workflows/35192a12-61e0-4be6-b485-5c587a415019)는
-2026-10-07 21:30KST 기준 docs/Python/static 성공, Rust tests·bench compilation 진행 중,
-final verify는 dependency 대기다. Python4,321passed/30skipped를 확인했으며
-Rust terminal inventory/receipt와 전체 성공은 아직 회수하지 않았다. 이전888 CI 성공을 대체 증거로 쓰지 않는다.
+별도 selected SDK/Contract·PR/release proof 회수가 잔여다. 후속 코드 변경은 영향 hosted rail을 회수한다.
+Source5bf의 regular CI6jobs 및 Rust4,281passed/0failed/30ignored·Python4,321passed/30skipped는
+실제 terminal·inventory·receipt·source SHA 대조로 완료됐고 아래 ADR로 이관했다.
+이후 docs-only checkpoint를5bf CI source로 재표기하지 않는다. Bench 성공은 컴파일이다.
 완료된 regular main CI/F15·query/restart·cache focused/strict·SDK/runtime checkpoint는
 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)와
 [cache 계약](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)이 소유한다.
