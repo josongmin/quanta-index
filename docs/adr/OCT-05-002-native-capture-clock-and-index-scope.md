@@ -451,10 +451,61 @@ closed capture.
 Frozen-driver recapture preparation independently matched the original bytes
 for CLARC original/neutral-renamed and six CodeSearchNet languages: eight cells,
 1,350 selected tasks and3,798 source files. The original explicit64-token NL
-policy is preserved. Actual execution remains `NOT_RUN`. Original checkout
+policy is preserved. The eight-cell execution is recorded below. Original checkout
 directories for24 OSA cells are absent, so their new recapture is `BLOCKED`;
 retained top-k candidates cannot reconstruct those source universes. Preparation
 and the independent controller are under `/private/tmp/qb09-owmq5d8q/`.
+
+The fresh B09 available-source lane completed 8/8 cells at frozen f606 with
+exit 0 and independent phase/diagnostic/source plus external-snippet score replay:
+CLARC neutral-renamed/original and CSN Go/Java/JavaScript/PHP/Python/Ruby.
+The bound inputs retain 1,350 tasks and 3,798 files, including the original explicit
+64-token query policy. Raw records and replayed scores are under
+`/private/tmp/qb09-owmq5d8q/`. The 24 unavailable OSA source universes remain
+`BLOCKED`. These new eight cells do not restamp the historical 33-cell receipt,
+and their overlapping datasets are not a combined holdout/ranking claim.
+
+## Selected C3 AI review and issuance
+
+The source-bound CLI 2.1.292 executed the original Opus 5.5/Sonnet 5.5/Fable 5.1
+roles with unchanged frozen queries, rubrics and full source files. The bounded
+80,000-source-character/32-pair partition preserves every candidate pair;
+only independently validated original receipts can be reused. Failed original
+CLI-path, context-window and version-admission attempts remain under
+`/private/tmp/qi-c3-oct8-review*`; they do not issue labels.
+
+SQLAlchemy's actual 615.537s attempt and one exact-input 347.302s retry remain
+`FAILED`: an unresolved pair and an invalid source line prevent completion.
+Tailscale's actual 744.631s attempt and one 14.829s retry remain `FAILED` because
+the same pair remains unresolved. Neither issued labels or admission; uncertainty
+was not converted to a grade or human gold.
+
+Zellij's initial 1533.248s unresolved failure is preserved. Its subsequent
+2986.116s attempt completed both blinded reviewers, then stopped at 286 newly
+validated adjudicator pairs with a real 429 session-limit response. The raw error
+reported a 07:00 Asia/Seoul reset, zero usage and no model result. After that
+observed boundary, the same-input resume received normal responses and completed:
+actual review 832.982s, independent cached replay 15.333s, canonical labels 5.770s
+and canonical NL suite 2.294s, all exit 0. Existing 59 adjudicator pairs were reused
+only after their source and complete independent-pass commitments matched;
+95 shared batch receipts supply the other 417 pairs. All three roles cover the
+same 20 tasks/476 pairs. The original failed/429 outputs were not rewritten.
+
+Commands and stage/raw digests are under
+`/private/tmp/qi-c3-oct8-review-v4/quota-resume-zellij/`. Canonical issued artifacts
+are under `qi-b08-closeout-20261004-2i72kj91/ai-review-current/zellij/`; NL
+`validation.json` SHA-256 is
+`16cdf71d0dfb04f7ea42186dc104d132f51df97534c2c6544dc853e4293acc8b`.
+The issuer uses pinned 36970d9f source, not a later-source runtime verdict.
+The 20 unchanged query families, repository commit and full universe also match
+the retained verified NL source-split manifest. That focused binding does not
+reissue the old 22-repository split result or its historical issued-suite count.
+
+Human provenance and qualification remain false. The new labels/NL directory
+and split preparation contain no full admission packet. License/model bindings,
+matching-source contract/SDK receipts and fresh product capture remain required;
+old native records cannot be rebound to the newly issued suite. SQLAlchemy and
+Tailscale keep their incomplete judgment scopes separately.
 
 ## ARB current policy and official file scoring
 
@@ -462,8 +513,8 @@ The frozen88-case official population has three separately prepared arms under
 the current32-token NL policy: original text13 accepted/75 refused, retained
 adapter-v1 27/61 and canonical adapter-v2 88/0. The historical original17 arm
 included four queries now over the token limit and is not the current13 arm.
-All128 accepted case/spec/source/gold bindings passed preflight; their actual
-captures remain `NOT_RUN`. The fresh external copy-spec preparation is
+All 128 accepted case/spec/source/gold bindings passed preflight and their actual
+frozen f606 captures completed with exit 0. The fresh external copy-spec preparation is
 `/private/tmp/qarb-14cw8d1e/preparation.json`; query/budget/gold bytes are unchanged.
 
 The [read-only scorer](../../tools/benchmark/retrieval/arb_official_score.py)
@@ -484,7 +535,46 @@ Git checkout and matching import origins, including refusal of ignored Python
 source. No checkout text substitutes for official corpus text.
 
 Three retained official archives were restored and rehashed for83 release-chunk
-files representing57 unique snapshots. Actual native128 and official score/BCY
-at the final source remain `NOT_RUN`; absence or failure of corpus custody keeps
-BCY `BLOCKED` without zero fill. File relevance, BCY, native capture custody and
-qualified holdout/performance remain separate.
+files representing57 unique snapshots. The original capture controller passed a
+raw manifest where the evaluator requires `SourceSnapshot`; all 128 native
+processes exited0 but its additional replay status remained `FAILED`. The raw
+controller and results were not rewritten. Independent canonical typed-context
+and route-projection replay verified 128/128 records, diagnostics, phases,
+preflight/resource bindings, inputs, source and binary identities under
+`/private/tmp/qarb-14cw8d1e/independent-replay.json`.
+
+The first actual scorer run at e227 then exposed a separate product defect:
+it compared a combined four-route pack directly against each three-route Quanta
+capture, retaining all accepted outcomes as `BLOCKED` with pack-hash mismatch.
+Those three score/replay pairs remain under `/private/tmp/qarb-14cw8d1e/`.
+Main 6c5cda3c uses the existing canonical route projection, requires exactly
+lexical/semantic/hybrid provenance, and validates the pinned record bytes
+against the projected suite/pack without changing gold, source, query or budgets.
+The regression independently accepts a three-route source fixture before
+combining its suite and rejects full-pack digest and route-set substitution.
+The scorer/corpus focused selection passed 45/45; Ruff check/format passed.
+
+All three corrected official score/replay pairs completed at clean 6c5cda3c
+under `/private/tmp/qarb-score-6c5c-8jjktvw6/`. Each pair is equal after excluding
+only its fresh corpus work-root path. All 384 route outcomes completed, with
+independently restored official corpus bytes and complete BCY budgets 4k/8k/16k/32k.
+The scorer leaves native custody as `NOT_ATTESTED_BY_SCORER`; the separate
+128-record replay above supplies that scope. Unsupported preflight cohorts are
+reported separately, with no zero fill.
+
+| Arm | Route | Completed denominator | Recall@20 | MRR@20 | BCY@8000 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| original | hybrid | 13 | 0.230769 | 0.020488 | 0.000000 |
+| original | lexical | 13 | 0.346154 | 0.053936 | 0.038462 |
+| original | semantic | 13 | 0.000000 | 0.000000 | 0.000000 |
+| retained_v1 | hybrid | 27 | 0.253086 | 0.040050 | 0.049383 |
+| retained_v1 | lexical | 27 | 0.308642 | 0.055556 | 0.067901 |
+| retained_v1 | semantic | 27 | 0.209877 | 0.037235 | 0.086420 |
+| current_v2 | hybrid | 88 | 0.369318 | 0.070568 | 0.142045 |
+| current_v2 | lexical | 88 | 0.484848 | 0.102854 | 0.204545 |
+| current_v2 | semantic | 88 | 0.308712 | 0.057861 | 0.125000 |
+
+These are distinct 13/27/88-case accepted cohorts with 75/61/0 unsupported cases
+out of the requested 88. They cannot establish a paired adapter improvement,
+independent holdout rank, later binary relevance or qualified performance.
+File relevance, BCY, native custody and those qualification scopes remain separate.

@@ -119,6 +119,21 @@ external-helper ShellCheck annotation fixes hosted pre-commit SC1091. At2df,
 Python1594 executed4,388 passing tests/33 skipped, then failed that hook; the
 Python context remains `FAILED` despite its passing test step.
 
+The fifth actual pair, Quantae227/fixed77bc, completed a2m45s fresh daemon
+build and correctly published caller/list's immutable QBC completion. Cargo
+returned101: the frozen producer's `quanta-adapters-parser` emitted56 compiler
+diagnostics, including inaccessible/missing retained projection types/functions
+and a missing `first_refusal_v1` trait implementation. Caller assertions remain
+`NOT_RUN`; the full R5 pair is `FAILED`. Failed locator/receipt/raw and the frozen
+daemon are preserved in `/private/tmp/qna7vj2zq6/r5-e227-failure.json`.
+
+The independent kernel exact list/run completed at the same clean pair:
+selected1/executed1/passed1,failed0. Original inventories/events, immutable QBC
+receipts, fresh daemon equality and before/after Cargo resolution were verified
+under `/private/tmp/qna7vj2zq6/r5-kernel-e227/`. This is only the selected
+`repomap_v2_receipts_require_exact_full_bundle_and_transition_v2` kernel test;
+it neither repairs the caller compilation nor qualifies installed operations.
+
 ## Native segment retention and committed live statistics
 
 Sealed manifest format 15 retains the format-14 live-statistics contract and
@@ -246,8 +261,8 @@ search for each unchanged source. It now binary-searches the strictly ordered
 the existing byte-size, storage and symlink refusal paths. Owner execution
 with `./scripts/cargow --lane test-scale-f15-lane` passed the four `packed_plan`
 library tests,33 `l2_file_mutation` integration tests and lexical library/test
-Clippy with all features and `-D warnings`. Post-repair XL cost is `NOT_RUN`.
-This lookup repair does not remove the75.644s whole-proof bottleneck.
+Clippy with all features and `-D warnings`. The lookup repair alone does not
+remove the75.644s whole-proof bottleneck; the coupled repair is measured below.
 
 The structural repair now carries a non-cloneable, non-serialized
 `PublicationValidationOwner` through one publication. Adapter-private typed
@@ -266,7 +281,32 @@ worktree. Main integration preserved exact tested bytes, including the packed
 planner repair. Regressions reject same-inode/size/restored-mtime tampering,
 missing/symlink/orphan objects, lineage/owner mismatches and changed sealed
 manifests; retry, rebuild/query parity and process restart remain covered.
-Matching post-repair XL execution is `NOT_RUN`; tests do not establish its cost.
+The clean main `e227757ab57e680801483e4d443853bfb768d8f2` completed the
+matching post-repair XL execution and independent canonical profile replay.
+`./scripts/cargow --lane test-scale-f15-lane rustc -p quanta-index-searchd-harness
+--bin scale_matrix --all-features --release --locked -- -C lto=off` built the
+Rust1.92 executable in12m35s. SHA-256 is
+`c821b71467bb396cbf687651f4977808887b8b7df2b30825c92253c19c6c5630`.
+The actual capture exited0 in352.747s. Source, binary, all phase endings and
+independent replay are bound under `/private/tmp/qi-publication-proof-xl-e227757a/`.
+The replay equals the canonical capture profile after excluding only its added
+`scope.binary_source_binding` capture metadata.
+
+Original32,768files/64repos/113,023,546bytes, seed5864059738136528177,
+tier-manifest bytes, corpus digest and runtime configuration match the82bc trace.
+Process ceiling4GiB, history1GiB per pair/2GiB total and registry512MiB admission
+were not raised. Full/delta/no-op/delete/query/reopen passed. The3,437-byte delta
+seal took42.517229542s; its exclusive partition is32.596106375s for six proof
+envelopes,5.017497083s for the remaining lexical build,0.712974417s for semantic
+build,1.231631167s for finalization and2.959020500s for other work. Two independent
+cold walks remain12.585253833s and12.393015750s; four repeated authentications are
+1.757–2.298s. Nested file authority23.880954126s overlaps this partition.
+No-op seal45.034310666s and delete seal43.148191166s include six proof envelopes
+of33.357206292s and31.809186999s respectively; delta activation13.215161500s
+remains a separate operation. These are single profiled samples on shared macOS.
+They establish executed diagnostic scope, not qualified speed or a guarantee
+that all validation cost is removed. No broader source-body or mtime cache was
+introduced; cold custody and new-generation validation remain independent.
 
 ## Paged term directory
 
@@ -548,6 +588,8 @@ later source changes and new measurement profiles require affected checks.
 | `b2599e70b262d707771a69440f0e9a0f0c587e2b` hosted Rust observation/tooling checkpoint | Rust tests1570 succeeded at matching revision. Original receipt/raw/inventory digests agree: 4,286 selected/executed/passed, zero failed, 30 ignored inventory entries. Rust static/docs/bench and final verify contexts succeeded in [workflow](https://app.circleci.com/workflow/5b689098-0c80-4c51-9952-9dadab89d3d0). Python1569 executed and failed at the default paired-runner temporary directory: `/private/tmp` is absent on Linux | Rust scope is `VERIFIED`; regular CI at this source is `FAILED`. Bench is compilation. The Python failure is a product portability defect and is preserved separately from its later repair; local macOS focused passes cannot replace the Linux result |
 | `48fdc70045f3edcfc30378c8f9a048adc2cd56f9` hosted Python portability repair | All six regular contexts in [workflow](https://app.circleci.com/workflow/86a9d214-6bf7-4acb-81e7-ae24bd8a105c) succeeded. [Python1576](https://circleci.com/gh/josongmin/quanta-index/1576):4,355 passed,30 skipped; Ruff check/406-file format passed. Overlapping P00 selection386 is separate. [Rust1578](https://circleci.com/gh/josongmin/quanta-index/1578) receipt/source/raw/inventory digests independently agree:4,286 selected/executed/passed,zero failed,30 ignored inventory entries. Docs1575/static1579/bench1577 match source | Regular CI is `VERIFIED`; bench is compilation. Do not sum P00 or qualify later paired-tooling source with this receipt |
 | `c38decbf04bdd9522e5c859423f05dc346cdecaf` hosted packed-source planner checkpoint | All six regular contexts in [workflow](https://app.circleci.com/workflow/3b302ad1-2cc4-419b-bbde-7c05ef71ad67) succeeded at matching source. Rust1584 receipt/raw/inventory/source independently agree:4,290 selected/executed/passed,zero failed,30 ignored. Python1582:4,355 passed,30 skipped; its overlapping P00 selection386 is separate. Docs1581/static1585/bench1583/final1586 succeeded | Regular CI is `VERIFIED` at this source; bench remains compilation and the later paired adapter/ARB scorer need their own affected results |
+| `e227757ab57e680801483e4d443853bfb768d8f2` hosted coupled publication/scorer/R5 checkpoint | All six regular jobs in [workflow](https://app.circleci.com/workflow/24bb4cb4-8663-4e2a-9cdf-41885a015188) succeeded: bench1605/docs1606/Python1607/static1608/Rust1609/final1610. Rust receipt/raw/inventory/source independently agree:4,299 selected/executed/passed,zero failed,30 ignored inventory. Python4,409passed/35skipped; repaired pre-commit hook succeeded | Regular CI is `VERIFIED` at e227. Repeated reporter suite ignored counters are not summed. Bench is compilation; later6c5 scorer projection code has45 focused tests and separate actual corrected score/replay. Its hosted results retain their own source. Artifacts: `/private/tmp/quanta-ci-e227-python/` |
+| `6c5cda3cc0a5051d76ad780ce320ed95e5cc02df` ARB projection correction | All six regular jobs in [workflow](https://app.circleci.com/workflow/124014dc-b8e8-40d1-9c4c-bd9a92f3725c) succeeded at matching source: bench1611/static1612/docs1613/Python1614/Rust1615/final1616. Rust receipt/raw/inventory/source independently agree: 4,299 selected/executed/passed, zero failed, 30 ignored inventory entries. Python: 4,410 passed/35 skipped in 911.82s; pre-commit hooks succeeded. The focused scorer/corpus selection passed 45/45 and all three actual official score/replay pairs agree on 128 captured cases/384 route outcomes | Regular CI and corrected diagnostic scoring are `VERIFIED` at 6c5. Bench is compilation. Rust source, exact inventory/event names and raw/receipt digests are under `/private/tmp/quanta-ci-6c5-rust/`; Python raw/action digests are under `/private/tmp/quanta-ci-6c5-python/`. Later documentation-only publication has its own source and focused lint result |
 | F15 candidate integrated as main `8599f2e8` | Five publication tests passed (72.842s), exercising 32 I/O and 32 SIGKILL cuts. Selected mutation/seal/cost integration tests: 73 passed. Strict lexical all-target Clippy: exit0 | Owner worktree execution preceded integration. Later recovered-query assertions and daemon/scale execution are separate |
 | F15 follow-ups `b09c4aa7` / `70521514` | Recovered-query parity and interrupted delta clone retry implemented. Owner reports 36 I/O + 36 SIGKILL cuts, corrected partial-clone controls, 73 storage regressions and strict lexical Clippy passing. Fixed705 daemon214 also passed | Complete focused code/recovery scope; latest hosted and Large/XL cost/RSS retain their own source binding |
 | `eb97e7c2` restart custody | Medium OS-process restart/delete and release-binary identity controls: 2 passed. The process harness checks daemon SHA-256 before each restart | Existing fixture and selected binary; not Large/XL or real-provider cache proof |

@@ -39,7 +39,7 @@ producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비
 | E1 review/admission | `holdout_review.py`의 blind prepare·frozen validation·finalize, `run.py`의 실행/replay admission 검증, `corpus_binding.py`의 source split 검사; retained Ready9 AI license9repo/9,741files custody 대조 완료 | 실제 reviewer/adjudicator raw·최종 labels·새 holdout license/gold/acceptance·admission 발행 |
 | E1 bootstrap | `evaluator.py::mean_ci`의 10,000 draws·16-key/256KiB bounded cache와 `test_bootstrap_cache.py`의 독립 고정 golden·validation controls | 추가 최적화는 actual paired full-caller 비용·parity를 보고 판정 |
 | E2 reader/inventory | `live_lexical_external.py`의 selected-project acquired-reader 검증, `opengrok_query_witness.py`, workflow/matrix/ready-drain | 미실행 required cells·actual replay/join; caller가 요구할 경우에만 전체 loaded-reader witness 구현 |
-| E4 F15 / Scale | Fault/query/clone-retry/daemon·fixed5bf Large/XL 및 fixed82bc XL 전수 검증6회 원인 추적; packed planner O(N²) 수리와 typed proof/current-byte authentication 통합·library1,035/통합36/daemon300 통과 | E4-01 수정 후 matching XL 실제 측정; E4-06 admitted Linux 반복 성능. 완료된 capture 재실행 없음 |
+| E4 F15 / Scale | Fault/query/clone-retry/daemon·fixed5bf Large/XL 및 fixed82bc XL 전수 검증6회 원인 추적; packed planner O(N²) 수리와 typed proof/current-byte authentication 통합·library1,035/통합36/daemon300 통과; e227 matching XL32,768 실제 실행·독립 replay 완료 | E4-06 admitted Linux 반복 성능. 완료된 capture 재실행 없음 |
 | QIT lifecycle/concurrency | Mixed-corpus lifecycle·SDK history8/8 및 Darwin TSan의 core2/lexical2는 [coverage ADR](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#selected-darwin-tsan-and-contract-execution)로 완료 이관 | 더 넓은 generated/repeat/native inventory. Search-node 한도는 nightly transition 실행이 아님 |
 | Semantic | Exact-text semantic/hybrid·OS-process cache·model/revision/dimension matrix4/4와 corrected lib-test strict는 [semantic ADR](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)로 완료 이관 | 기존 OpenAI paraphrase rail(ignored)의 실제 API 입력/실행, installed CLI/live-provider release 및 upstream producer 검증 |
 | I0 operations | 공통 typed action producer·pre-state refusal·checker/aggregate, optional paired caller/kernel archive | concrete target adapter·독립 observer 계약 구현, authorized target 입력 및 exact-pair/action 실행 |
@@ -69,11 +69,11 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 | 잔여 | 현재 입력·실행 상태 | 다음 조치 |
 | --- | --- | --- |
 | E1 judgments/admission/holdout | `BLOCKED`: 151tasks/742pairs의 reviewer 배정·최종 판단0; 새 holdout license/gold/acceptance 부재. Retained Ready9 AI license custody는 완료 | 실제 독립 reviewer/adjudicator raw·해당 승인 입력을 받은 뒤 finalizer/admission/scoring. Blank form을 labels로 채우지 않음 |
-| E2 other required native lanes | Gin v3 symbol/file·7개 default robust cohort·explicit typo1,189/독립 OSA1 absence99의 actual pair와 replay는 `VERIFIED`; retained B09 diagnostic33은 대조 완료, current phase33은 `FAILED`; 나머지 selected inventory는 별도 | [실행 범위](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-gin-declaration-and-robustness-execution) 및 [원 B09/current replay](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#retained-b09-scope-reconciliation)를 유지. 원본 bytes/source와 미실행 selector를 분리 |
+| E2 other required native lanes | Gin v3 symbol/file·7개 default robust cohort·explicit typo1,189/독립 OSA1 absence99의 actual pair/replay, 새 B09 8cells, ARB 128captures/384route 공식 채점·replay는 `VERIFIED`; historical B09 current phase33은 `FAILED` | 완료 범위는 [native ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md)로 이관. 원 source 없는 B09 OSA24는 `BLOCKED`; C3 새 labels/admission 및 source별 required inventory는 별도 |
 | E2 Semble A/B adoption | `NOT_RUN`: Bat A/A 반복·Zustand0/1 selected parity 완료 | 대체 구현/모드와 사전 whole-caller 기준·고정 source 입력을 선택한 뒤 실제 A/B |
 | E4 formal performance | `BLOCKED`: qualified Linux/host timeline·사전 효과/불확실성 기준 부재 | 대상 host·config·동일 boundary와 사전 paired schedule 입력 |
 | E4 Scanner historical replay/performance | 옛 root/binary replay와 admitted-host speed는 `BLOCKED`; 별도 f606 fresh build/capture 두 closed receipts와338 parity는 `VERIFIED` | [Closed 진단](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#closed-scanner-build-and-capture-diagnostic)을 유지. 정식 speed/adoption은 별도 host·반복 schedule·사전 기준 필요 |
-| QIT/pair/release | `NOT_RUN`: 선택된 broader inventory·matching producer Nextest pair/release; clean77bc producer의 runtime/kernel resolver preflight는 b2599에서 `VERIFIED` | b9 fresh SDK27은 완료. 선언된 scope만 실행; resolver preflight를 실제 list/run 테스트로 승격하지 않음 |
+| QIT/pair/release | 선택된 broader/release는 `NOT_RUN`; e227/fixed77bc caller/list는 producer 컴파일로 `FAILED`, kernel 실제1/1은 `VERIFIED` | b9 fresh SDK27은 완료. Caller 재실행은 완전한 clean producer 수리 후; kernel 결과로 paired/operations 성공을 발행하지 않음 |
 | I0 Linux actions/installed provider | `BLOCKED`: target 경로·독립 observer/rollback 계약·설치된 CLI/API grant 부재 | 실제 대상 입력 후 adapter 계약과 action 구현/실행. 현 staged registry로 deploy 완료를 발행하지 않음 |
 | Conditional token/regex/bootstrap/policy | 측정·consumer 계약·독립 truth가 선행 | 병목/반례/선택된 정책 없이 새 캐시·API·범용 adapter를 추가하지 않음 |
 
@@ -147,18 +147,20 @@ Contract: [OCT-05-001](../../../adr/OCT-05-001-review-admission-and-result-ident
 
 ### O4-E1-01
 
-`BLOCKED` · SQLAlchemy 잔여146pairs·Zellij476pairs 최종 AI 정답 판정 및 Tailscale UDP
-필터 밖 grade1/3 rubric 확정. 원본 SQL334/480·reviewer raw를 보존하고 quota/auth/model을 확인한다.
-재개 입력은 `qi-b08-closeout-20261004-2i72kj91/c3-review-resume-quota-qcshswey`의 frozen
-corpus/suite/query/rubric과 valid raw다. 완료: C3 240tasks의 judgment provenance·issued/excluded/
-failed/blocked 설명. 미판단 pair는 채점에서 제외하며 AI를 human으로 표기하지 않는다.
-원 `actual-review-terminal.json`과 `result.json`은 SQLAlchemy/Zellij/Tailscale 모두 exit1·`FAILED`다.
-`quota-wait.json`의 reset은 2026-10-04 기록이므로 현재 quota 거절의 근거로 재사용하지 않는다.
-2026-10-08 actual 재개는 별도 `/private/tmp/qi-c3-oct8-review*`에 실패 raw를 보존한다.
-원 CLI 경로 부재를 복구한 뒤 전체 파일/판단 쌍을 유지한 request partition을 줄였다.
-현재 인증은 확인됐지만 CLI2.1.259의 Opus5.5 요청은 최소2.1.280 요구로 실제 거부됐다.
-일부 Sonnet raw는 생성됐으며 두 reviewer·adjudicator·독립 replay·canonical ISSUE가 끝나기
-전에는 정답 완료로 승격하지 않는다. 원 source/query/rubric와 requested model은 유지한다.
+`BLOCKED` · SQLAlchemy 잔여 146pairs 최종 AI 정답 판정 및 Tailscale UDP
+필터 밖 grade1/3 rubric 확정. 원본 SQL334/480과 reviewer raw를 보존한다.
+2026-10-08 실제 실행과 한 차례 동일 입력 재시도에서도 SQLAlchemy는 unresolved pair/invalid source line,
+Tailscale은 unresolved pair로 `FAILED`였다. 두 저장소의 labels/admission은 미발행이다.
+원 frozen corpus/suite/query/rubric과 valid raw는
+`qi-b08-closeout-20261004-2i72kj91/c3-review-resume-quota-qcshswey`에 있다.
+새 실행·실패 원본은 `/private/tmp/qi-c3-oct8-review-v4/`에 별도로 보존한다.
+완료 조건: C3 240tasks의 judgment provenance와 issued/excluded/failed/blocked 집합.
+미판단 pair는 채점에서 제외하고 model의 미해결 판단을 grade나 human gold로 강제하지 않는다.
+
+Zellij 20tasks/476pairs의 세 모델 판단·독립 cached replay·canonical AI labels/NL suite 발행은 완료했다.
+[C3 실제 closeout](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-c3-ai-review-and-issuance)이
+원본·명령·실패 이력·retained source split 대조를 소유한다. 완료된 판단을 다시 실행하지 않는다.
+원 source/query/rubric와 requested model은 유지하며 human provenance·qualified verdict는 없다.
 
 ### O4-E1-02
 
@@ -178,6 +180,9 @@ historical replay를 발행하지 않는다. 현재 union의 review는 준비된
 ### O4-E1-03
 
 `NOT_RUN` · ready9 후속 final-source 및 SQLAlchemy/Zellij/Tailscale admission ISSUE.
+Zellij canonical AI labels/NL suite20tasks는 발행됐고 retained split의 commit/universe/20families와 일치한다.
+새 suite에 결속된 full admission·license/model·matching contract/SDK bindings가 없어 actual native는 `BLOCKED`다.
+SQLAlchemy/Tailscale의 미완료 판단은 [E1-01](#o4-e1-01)이 한 번만 소유한다.
 5796 재발행 packet의 임시 경로는 부재해 원본 replay는 `BLOCKED`다. Bat409 merged qrels/suite/pack,
 각 repo source/runtime·split/license/review·matching proof를 동일 bytes로 검증한다.
 CLI20tasks/519pairs의 historical ISSUE와 중단된 remaining batch를 구분한다.
@@ -237,7 +242,8 @@ B09 원33cells/11,272selected rows의 original commitments 및 diagnostics는 �
 Current phase replay33은 producer 증거 부재로 `FAILED`이며 원 완료와 분리한다.
 재캡처 입력 대조에서 CLARC2/CSN6 cells의 1,350selected tasks·3,798source files는
 원 manifest bytes와 대조돼 준비됐다. OSA24 cells의 원 checkout은 없어 `BLOCKED`다.
-준비8 cells의 actual native는 `NOT_RUN`; 원 successful33 결과와 분리한다.
+준비8 cells의 actual native는 f606에서8/8 exit0·phase/diagnostic/source 및 독립 score replay를 완료했다.
+원 successful33 결과와 분리한다. 원본과 재실행은 [ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#retained-b09-scope-reconciliation)이 소유한다.
 원 source와 qrel-only reuse를 구분한다. 살아 있는 process/malformed/wrong-repo terminal/
 missing/output 경합은 success가 아니다. 완료: 누락 없는 terminal/input-byte inventory와 실패 sibling에 독립적인 실행.
 
@@ -251,14 +257,20 @@ content absence/typo content absence7개 cohort와 explicit typo1,189/독립 OSA
 [ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-gin-declaration-and-robustness-execution)로 완료 이관했다.
 Gin20의 original manifest bytes 복구·f606 native hybrid pair20·독립 byte-identical
 verdict replay는 [진단 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-retained-gin20-hybrid-pair)로 완료 이관했다.
-잔여 selected lanes는 C3 NL240;
-ARB current32-token policy의 original13/88·retained adapter-v1 27/88·adapter-v2 88/88 및
-후속 source/producer 조건을 요구하는 B09 cells다. Historical original17과 current13을 구분한다.
+잔여 selected lanes는 C3 NL240 및 원 source 부재 등 후속 조건을 요구하는 B09 cells다.
+ARB current32-token policy의 original13/88·retained adapter-v1 27/88·adapter-v2 88/88은
+actual128 captures와384route 공식 채점·독립 replay를 완료했다. Historical original17과 current13을 구분한다.
 새 read-only ARB scorer는 official raw sample/gold·base/universe·spec·query·record를 결속하며
 top100chunks→20distinct files의 공식 Recall/MRR를 계산한다. 공식 archive/manifest와 descriptor-bound
 parsed bytes·transitive clean official source/import origin을 검증하는 BCY extension까지 통합했다.
 Focused44와 actual128 prepared-spec binding preflight는 `VERIFIED`; official3archives의
-83release-chunk files/57unique snapshots도 복구·rehash했다. Actual capture/score는 `NOT_RUN`이다.
+83release-chunk files/57unique snapshots도 복구·rehash했다. Native128/128 source-bound 독립 검증과
+공식3arm Recall/MRR·BCY4k/8k/16k/32k 및 반복 score bytes가 검증됐다.
+원 controller의 manifest/typed-context 오류와 e227 scorer의 combined/projected pack 거부는 보존했다.
+6c5cda3c의 canonical projection 수리·정확한3route 및 digest 대체 거절 회귀까지45/45 통과했다.
+[공식 진단](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#arb-current-policy-and-official-file-scoring)이
+source/분모/원본 경로를 소유한다. Current-v2 Recall@20 lexical0.484848/semantic0.308712/hybrid0.369318이며
+cohort13/27/88 차이와 기존 노출 입력 때문에 paired improvement/SOTA holdout으로 발행하지 않는다.
 미실행·refusal·failure를 zero score로 채우지 않으며 official corpus custody가 없는 BCY는 `BLOCKED`다.
 원 B09 OSA/CLARC/CSN 캡처33개를 전부 미실행으로 재표기하지 않는다.
 현재 decoder의 phase refusal은 [원 scope 대조](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#retained-b09-scope-reconciliation)를 따른다.
@@ -306,7 +318,11 @@ Packed-source O(N²) 조회는 이분검색으로 수리했고 planner4/통합33
 각 기존 refusal 경계에서 현재 bytes를 다시 인증하며 decode/normalization/posting 결과를 재사용한다.
 완전한 묶음의 library1,035passed/1ignored·파일 변경 통합36passed·daemon300passed/10skipped와
 strict Clippy/format/hexagonal/module 검사는 `VERIFIED`; main 파일은 검증된 bytes와 같다.
-수리 후 XL 비용은 `NOT_RUN`이다. 성공 bool/mtime 재사용으로 변조 거부를 우회하지 않는다.
+e227 matching XL32,768 실제 실행은352.747s exit0이며 canonical profile 독립 replay가 일치한다.
+원82bc와 corpus/seed/tier manifest/runtime config·기본 cap이 같다. Delta42.517s/no-op45.034s/delete43.148s를
+관측했다. Delta proof6회32.596s 중 cold 독립 walk2회12.585/12.393s와 반복 인증4회1.757–2.298s는
+남는다. 공유Mac 단일 profiled 진단이며 qualified speed가 아니다. 성공 bool/mtime 재사용으로
+변조 거부를 우회하지 않는다.
 Remaining: cold 전수 검증·metadata/custody 읽기·hash/fold, delete-mask O(max_doc), correction/
 NoMerge segment fanout, transient peak 및 foreground/maintenance CPU/read/write/fsync 분해.
 Causal producer의 source/binary와 independent markers를 결속한다. Seal retention gauge는 unique-inode
@@ -386,6 +402,9 @@ b9의 원 final verify2275는 executor 시작 전 infrastructure_fail이며 원 
 실패 final만 재시도한 verify2277은 실제 checkout/source command exit0이고 기존5workers를 상속해
 regular CI가 완료됐다. Rust4,281/Python4,323은 원 worker 횟수이며 재시도에서 중복 실행되지 않았다.
 후속 코드 변경은 영향 hosted rail을 회수한다.
+코드 `6c5cda3`의 regular CI 6jobs는 동일 source에서 모두 `VERIFIED`다.
+Rust 4,299selected/executed/passed·0failed·30ignored inventory와 Python 4,410passed/35skipped를
+원 receipt/raw/inventory 및 job source로 대조했다. 이후 문서 전용 커밋은 별도 focused lint 범위다.
 완료된 regular main CI/F15·query/restart·cache focused/strict·SDK/runtime checkpoint는
 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)와
 [cache 계약](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)이 소유한다.
@@ -398,7 +417,8 @@ compiler/focused/local/full/release를 구분하고 과거 결과를 최신 sour
 구현 잔여 · concrete deploy/activate/restore-forward adapters·independent pre/post contract.
 실제 Linux host/config/state/retention/rollback 입력은 `BLOCKED`이며 dependent action은 미실행이다.
 공통 typed producer/parser/checker/recipes는 완료됐다.
-별도 exact-pair caller/kernel build/test/daemon custody는 `NOT_RUN`; runner-candidate-only는 operational receipt가 아니다.
+별도 exact-pair caller는 producer 컴파일 `FAILED`, kernel1/1은 `VERIFIED`; paired/operational acceptance는 `BLOCKED`다.
+Runner-candidate-only는 operational receipt가 아니다.
 2026-10-08 최초 Semantica 확인 시 `77bc829ad70bd32b9c22f92c849a9d6a2aa6b9da`에서
 1,286dirty paths를 확인했다. R5 입력으로 고정한 같은 HEAD의 clean
 `.codex-semantica-oct8-scc-proof` checkout도 존재한다. 이후 움직이는 Semantica main과
@@ -436,8 +456,7 @@ focused133은 `VERIFIED`다. 후속 clean9c0/fixed77bc actual recipe는 fresh bu
 `/private/tmp/qna7vj2zq6/r5-9c0-failure.json`에 결속해 보존했다. 실제 Nextest list/run은 미시작이다.
 현재 shell은 producer의 canonical `python-env.sh` resolver를 모든 Python helper에 사용하며,
 QBC module origin/import를 expensive build 전에 검사한다. Actual Python3.12.12로 frozen77bc
-QBC import·manifest/lock preflight와 focused133은 `VERIFIED`다. Current paired caller/kernel
-build/test는 아직 `NOT_RUN`이며 새 clean source에서 실행한다.
+QBC import·manifest/lock preflight와 focused133은 `VERIFIED`다. 이후 실제 실행은 아래 source별로 분리한다.
 Clean2df/fixed77bc의 세 번째 actual recipe는 fresh release build를5m28s에 완료한 뒤
 caller/list의 raw feature composition이 QBC의 미등록 compile-surface admission에서 `FAILED`였다.
 실제 caller/kernel assertions는 미실행이며 원 controller·daemon bytes는
@@ -453,7 +472,15 @@ Clean86b/fixed77bc actual4는 fresh daemon3m17s 후 caller/list completion 단�
 completion 양쪽에 전달하도록 수리했으며 producer equality guard는 유지한다.
 Hosted2df Python1594는4,388passed/33skipped 후 외부 helper ShellCheck SC1091에서 실패했다.
 그 context는 `FAILED`로 보존하고 supplied producer-source annotation으로 hook을 수리했다.
-Resolution preflight로 이 테스트를 대체하지 않는다.
+Clean e227/fixed77bc actual5는 fresh daemon2m45s 후 caller/list의 실제 Cargo 컴파일에서
+`quanta-adapters-parser`56 diagnostics·exit101로 `FAILED`다. QBC의 explicit completion와
+immutable receipt publication은 완료했으며 caller assertions는 `NOT_RUN`이다.
+원본은 `/private/tmp/qna7vj2zq6/r5-e227-failure.json`과 `r5-clean-pair-v5/`에 보존했다.
+Sibling kernel을 별도 실제 list/run하여 exact-full-bundle/transition-v2 receipt 테스트1/1을
+통과했다(`/private/tmp/qna7vj2zq6/r5-kernel-e227/result.json`). Kernel 성공을 caller/pair/operations로
+승격하지 않는다. 이후 Semantica main f574의 committed parser subtree는 fixed77bc와 같고
+다수 dirty 변경이 있어 clean repaired producer bundle은 아직 없다. Caller 재실행은
+그 완전한 producer 수리 후에만 수행한다. Resolution preflight로 이 테스트를 대체하지 않는다.
 외부 작업을 reset/stage하거나 dirty pair를 qualified로 발행하지 않는다.
 외부 Semantica R3 expected semantic partition/omission 검증은 producer owner의 별도 연동 잔여다.
 기존 producer의 prior-state binding·plan assembly와 독립 expected-partition 검증을 구분한다.
