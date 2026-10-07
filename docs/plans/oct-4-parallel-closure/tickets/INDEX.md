@@ -209,30 +209,30 @@ missing/output 경합은 success가 아니다. 완료: 누락 없는 terminal/in
 
 ### O4-E2-04
 
-`NOT_RUN` · 최신 matching Quanta/Semble pair·full5 join, 남은3repo 및 다른 lanes.
+`NOT_RUN` · 전체 matching Quanta/Semble pair·full5 inventory, 남은3repo 및 다른 lanes.
 CS/SG/OG ready9 source091 capture/replay는 완료돼 있다. Ready9 NL file20tasks/repo는
 `natural_language_file`/Semble `lexical-file`의 distinct-file pair로 실행한다.
 `code_search_file` atoms·bare-symbol workflow는 이 NL query 계약의 실행 경로가 아니다.
 2026-10-07 source `6a3f6afc`의 native runner/searchd debug 빌드는 종료0(7m12s)이며
 9repo/180tasks의 original suite/query-pack·corpus revision/universe·Semble lock/env/model을 확인했다.
-Bat·lo·Mocha native pair각40/40·독립 `run.py verdict --repo <repo> --suite <suite> --run-manifest <manifest> --out <out>`
-재생은 `VERIFIED`다. 공통 bridge는 file report에 없는 top-level `per_query`를 읽어 실패했고,
+Ready9의9개 actual capture는 모두 종료했다. Bat·lo·Mocha·Uvicorn·Zustand는 각40/40·독립
+`run.py verdict --repo <repo> --suite <suite> --run-manifest <manifest> --out <out>` 재생이 `VERIFIED`다.
+공통 bridge는 file report에 없는 top-level `per_query`를 읽어 실패했고,
 `49a02c15`에서 canonical file judgments·no-answer·unjudged 분모 및 중복 observation 비교로 수리했다.
 `test_pair_capture.py`92개(80.70s), Ruff lint/format은 `VERIFIED`; file pair는 file metric만 발행한다.
 CLI·Django·Nushell·TypeORM actual capture는 `FAILED`: lexical-file authority의 고정 `term_directory_bytes=32MiB`를 초과했다.
-Native runner에 해당 정책을 바꾸는 startup/spec 옵션은 없으며, 실패 raw를 유지한다.
-나머지 source6a3 matching pair를 독립 실행하고 있다. 원본 입력/명령/raw/결과는
+Native runner에 해당 정책을 바꾸는 startup/spec 옵션은 없다. 4개 실패는 native record와
+promoted root가 없고, failure descriptor의 stderr/resource 해시까지 확인했다. 원본 입력/명령/raw/결과는
 `/Users/songmin/.codex/task-evidence/ready9-native-pair-20261007-01a10d0b`에 보존한다.
 Bat full5의 canonical old091 replay/scoring도 `VERIFIED`(20tasks, common eligible20)이며
 retained external source091과 native source6a3를 구분한다. 원18개 external capture의
 suite/query/corpus 결속·native raw 해시를 재확인했다. Score-only reuse projection은 Bat의
 full canonical 결과와 모든 file scores가 같으며 completed-boundary latency는 재발행하지 않는다.
-Lo·Mocha도 각각 원20tasks의 5제품 file score projection을 완료했다.
-Lo의 공통 eligible 분모는5/20이며 Quanta가 새로 반환한15tasks·30개 task/file 판단은 없다.
-Main adapter의 actual Bat·lo file payload80rows 변환도 `VERIFIED`; Lo의15개 `unjudged/null`을 유지한다.
-독립 판단 입력은 evidence root의 `lo-unjudged-handoff.json`에 기록했다.
-Mocha는 Quanta3/20·Semble1/20 eligible이나 교집합이0이므로 공통 점수는 `NOT_APPLICABLE`이다.
-전체 ready9 pair/full5 완료나 quality/speed qualification은 아직 아니다.
+통과한5repo는 각각 원20tasks의 5제품 file score projection을 완료했다. 공통 eligible 분모는
+Bat20·lo5·Mocha0·Uvicorn1·Zustand2다. Mocha 공통 점수는 `NOT_APPLICABLE`이며 분모를 합쳐 전체 비교로 발행하지 않는다.
+Main adapter의 actual5repo file payload10개·200rows 변환도 `VERIFIED`; canonical 제외 집합과 `unjudged/null`을 유지한다.
+최종 `completed-summary.json` 및 `unjudged-native-union.json`에72tasks·191개 task/file 독립 판단 공백을 결속해 E1 입력으로 남겼다.
+Ready9 전체 성공·quality/speed qualification은 아니다. 잔여는4repo 용량 gate, 독립 판단 및 아직 실행하지 않은 inventory다.
 원 runtime/input/producer bytes 및 허용 reuse를
 검증해 결합하며 source97/5796/091 raw를 새 소스로 재표기하지 않는다.
 Required lanes: exact1,196; prefix/infix/components; default/explicit typo; no-answer; C3 NL240;
