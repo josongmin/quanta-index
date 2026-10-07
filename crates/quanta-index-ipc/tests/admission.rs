@@ -362,6 +362,10 @@ fn a_full_dispatch_queue_is_refused_with_a_typed_overload_then_serves_again() ->
         counters.connections_accepted == 3 && counters.connections_refused == 0,
         format!("every connection was admitted under the cap of 8: {counters:?}"),
     )?;
+    // Receiving the response does not join the writer: its terminal event is
+    // recorded after the socket write. Join connection threads before taking
+    // the complete event snapshot, including the overload connection.
+    server.stop()?;
     let events = server.uds.counters().recent_request_events_v1()?;
     let refused = events
         .iter()
@@ -392,7 +396,6 @@ fn a_full_dispatch_queue_is_refused_with_a_typed_overload_then_serves_again() ->
         }),
         "queue refusal cannot report backend dispatch",
     )?;
-    server.stop()?;
     ensure(
         server.uds.counters().snapshot().connections_live == 0,
         "no connection is live once the server has joined its threads",
