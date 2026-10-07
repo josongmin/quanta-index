@@ -11,20 +11,19 @@ use sha2::{Digest as _, Sha256};
 
 use super::SourceFile;
 use super::codec::{
-    CodecLimits, PostingBlockView, PostingSurface, PostingTermDescriptor, decode_posting_block,
+    CodecLimits, PostingBlockView, PostingPageDescriptor, PostingSurface, decode_posting_block,
     decode_source_pack,
 };
 use super::root::{
-    AuthorityPolicy, AuthorityRoot, Partition, SourceRow, TERM_DIRECTORY_BLOCK_CHARGE,
-    TERM_DIRECTORY_ROW_CHARGE, resident_file_charge, source_key_digest,
+    AuthorityPolicy, AuthorityRoot, Partition, SourceRow, resident_file_charge, source_key_digest,
 };
 
-const _: () = assert!(std::mem::size_of::<PostingTermDescriptor>() <= 64);
+const _: () = assert!(std::mem::size_of::<PostingPageDescriptor>() <= 64);
 
 #[derive(Debug)]
 pub(crate) struct PostingBucketDirectory {
     pub(crate) partition: Partition,
-    pub(crate) terms: Vec<PostingTermDescriptor>,
+    pub(crate) pages: Vec<PostingPageDescriptor>,
 }
 const _: () = assert!(std::mem::size_of::<PostingBucketDirectory>() <= 128);
 
@@ -147,31 +146,25 @@ fn append_directory(
 ) -> Result<(), String> {
     let terms = usize::try_from(descriptor.terms)
         .map_err(|_count_width_error| corrupt("term directory count width"))?;
-    let block_charge = u64::from(descriptor.terms)
-        .checked_mul(TERM_DIRECTORY_ROW_CHARGE)
-        .and_then(|rows| rows.checked_add(TERM_DIRECTORY_BLOCK_CHARGE))
-        .ok_or_else(|| corrupt("term directory charge overflow"))?;
+    let block_charge = super::root::term_directory_block_charge(u64::from(descriptor.terms))?;
     *charged = charged
         .checked_add(block_charge)
         .ok_or_else(|| corrupt("term directory aggregate charge overflow"))?;
     if *charged > policy.term_directory_bytes {
         return Err(corrupt("term directory exceeds policy"));
     }
-    if view.term_descriptors().len() != terms {
+    if view.iter_terms().len() != terms {
         return Err(corrupt("posting term count differs from root"));
     }
     let mut rows = Vec::new();
-    rows.try_reserve_exact(terms)
+    rows.try_reserve_exact(terms.div_ceil(usize::from(super::codec::DIRECTORY_PAGE_TERMS)))
         .map_err(|_allocation_error| corrupt("term directory allocation refused"))?;
-    for term in view.term_descriptors() {
-        rows.push(term.map_err(|error| corrupt(&format!("term descriptor: {error:?}")))?);
+    for page in view.page_descriptors() {
+        rows.push(page.map_err(|error| corrupt(&format!("page descriptor: {error:?}")))?);
     }
-    target
-        .try_reserve(1)
-        .map_err(|_allocation_error| corrupt("term directory bucket allocation refused"))?;
     target.push(PostingBucketDirectory {
         partition: descriptor.clone(),
-        terms: rows,
+        pages: rows,
     });
     Ok(())
 }
@@ -196,6 +189,16 @@ where
     let mut posting_directory = PostingDirectory::default();
     let mut directory_charge = 0_u64;
     let mut resident_charge = root.term_directory_charge(policy)?;
+    // Admit the complete directory before allocation. Exact capacities keep
+    // geometric Vec growth from exceeding the per-bucket resident charge.
+    posting_directory
+        .path
+        .try_reserve_exact(root.path_postings.len())
+        .map_err(|_allocation_error| corrupt("path directory allocation refused"))?;
+    posting_directory
+        .content
+        .try_reserve_exact(root.content_postings.len())
+        .map_err(|_allocation_error| corrupt("content directory allocation refused"))?;
     files
         .try_reserve(root.sources.len())
         .map_err(|_allocation_error| corrupt("source vector allocation refused"))?;

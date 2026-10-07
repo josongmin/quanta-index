@@ -16,9 +16,19 @@ pub(crate) const DIR_NAME: &str = "file-authority";
 pub(crate) const ROOT_FILE_NAME: &str = "root.cbor";
 pub(crate) const OBJECTS_NAME: &str = "objects";
 pub(super) const PREFIX_BITS: u16 = 8;
-pub(super) const TERM_DIRECTORY_ROW_CHARGE: u64 = 64;
+pub(super) const TERM_DIRECTORY_PAGE_CHARGE: u64 = 64;
 pub(super) const TERM_DIRECTORY_BLOCK_CHARGE: u64 = 128;
 pub(super) const RESIDENT_FILE_ROW_CHARGE: u64 = 1024;
+
+/// A directory retains one fence and authenticated table-page digest, not
+/// one list digest and offset for every duplicated bucket-local trigram.
+pub(super) fn term_directory_block_charge(terms: u64) -> Result<u64, String> {
+    terms
+        .div_ceil(u64::from(super::codec::DIRECTORY_PAGE_TERMS))
+        .checked_mul(TERM_DIRECTORY_PAGE_CHARGE)
+        .and_then(|pages| pages.checked_add(TERM_DIRECTORY_BLOCK_CHARGE))
+        .ok_or_else(|| invalid("term directory block charge overflow"))
+}
 
 /// Canonical object basename accepted by the sealed manifest and inventory.
 pub(crate) fn is_object_file_name(name: &str) -> bool {
@@ -57,11 +67,13 @@ pub(crate) struct AuthorityPolicy {
 
 impl AuthorityPolicy {
     /// Infallible by construction: hashes a fixed domain and seventeen
-    /// fixed-width integers without serialization, allocation, or I/O.
+    /// fixed-width limits and the directory page width without serialization,
+    /// allocation, or I/O.
     /// The digest commits the policy values; it does not validate their limits.
     pub(super) fn digest(self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(b"quanta-file-authority-policy-v15\0");
+        hasher.update(b"quanta-file-authority-policy-v15-paged-posting-v2\0");
+        hasher.update((u64::from(super::codec::DIRECTORY_PAGE_TERMS)).to_le_bytes());
         for value in [
             self.root_bytes,
             self.source_files,
@@ -467,22 +479,10 @@ fn preflight_root(bytes: &[u8], policy: AuthorityPolicy) -> Result<(), String> {
 
 impl AuthorityRoot {
     pub(crate) fn term_directory_charge(&self, policy: AuthorityPolicy) -> Result<u64, String> {
-        let blocks = self
-            .path_postings
-            .len()
-            .checked_add(self.content_postings.len())
-            .ok_or_else(|| invalid("term directory block count overflow"))?;
-        let mut charge = u64::try_from(blocks)
-            .map_err(|error| invalid(&format!("term directory block count width: {error}")))?
-            .checked_mul(TERM_DIRECTORY_BLOCK_CHARGE)
-            .ok_or_else(|| invalid("term directory block charge overflow"))?;
+        let mut charge = 0_u64;
         for partition in self.path_postings.iter().chain(&self.content_postings) {
             charge = charge
-                .checked_add(
-                    u64::from(partition.terms)
-                        .checked_mul(TERM_DIRECTORY_ROW_CHARGE)
-                        .ok_or_else(|| invalid("term directory row charge overflow"))?,
-                )
+                .checked_add(term_directory_block_charge(u64::from(partition.terms))?)
                 .ok_or_else(|| invalid("term directory aggregate charge overflow"))?;
             if charge > policy.term_directory_bytes {
                 return Err(invalid("term directory exceeds policy"));
@@ -839,7 +839,9 @@ mod tests {
         assert!(forged_terms.encode(policy()).is_err());
 
         let mut tight = policy();
-        tight.term_directory_bytes = 383;
+        // One nonempty page (64 bytes) and two retained buckets (128 each).
+        assert_eq!(root().term_directory_charge(policy()).expect("charge"), 320);
+        tight.term_directory_bytes = 319;
         let mut over_directory = root();
         over_directory.policy_sha256 = tight.digest();
         let reason = over_directory
@@ -848,13 +850,34 @@ mod tests {
         assert!(reason.contains("term directory exceeds policy"), "{reason}");
 
         let mut tight_heap = policy();
-        tight_heap.resident_file_heap_bytes = 1480;
+        // The source row costs 1,097 bytes, plus the 320-byte directory.
+        tight_heap.resident_file_heap_bytes = 1416;
         let mut over_heap = root();
         over_heap.policy_sha256 = tight_heap.digest();
         let reason = over_heap
             .encode(tight_heap)
             .expect_err("resident producer admission");
         assert!(reason.contains("resident heap exceeds policy"), "{reason}");
+    }
+
+    #[test]
+    fn paged_directory_admits_many_terms_and_enforces_the_actual_retained_charge() {
+        let mut many = root();
+        many.path_postings.first_mut().expect("path bucket").terms = 262_144;
+        many.content_postings
+            .first_mut()
+            .expect("content bucket")
+            .terms = 262_144;
+        let mut admitted = policy();
+        admitted.term_directory_bytes = 32 * 1024 * 1024;
+        // Two 2,048-page tables, 64 bytes/page plus 128 bytes/bucket.
+        assert_eq!(
+            many.term_directory_charge(admitted)
+                .expect("bounded sparse directory"),
+            262_400
+        );
+        admitted.term_directory_bytes = 262_399;
+        assert!(many.term_directory_charge(admitted).is_err());
     }
 
     #[test]

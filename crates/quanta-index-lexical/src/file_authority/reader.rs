@@ -66,6 +66,22 @@ fn charge_work(
     Ok(())
 }
 
+fn checked_digest(
+    bytes: &[u8],
+    expected: [u8; 32],
+    budget: &RequestBudgetV1,
+) -> Result<(), CoreError> {
+    let mut hasher = Sha256::new();
+    for chunk in bytes.chunks(64 * 1024) {
+        budget.checkpoint("lexical:file-authority-v15-selected-hash")?;
+        hasher.update(chunk);
+    }
+    if <[u8; 32]>::from(hasher.finalize()) != expected {
+        return Err(corrupt("selected posting range digest differs"));
+    }
+    Ok(())
+}
+
 /// Read selected posting lists under the generation lease.
 ///
 /// The owner callback refuses symlinks/devices and checks committed object
@@ -116,7 +132,8 @@ where
         .ok_or_else(|| plan_limit("directory lookup policy overflow"))?;
     for bucket in buckets {
         budget.checkpoint("lexical:file-authority-v15-list-lookup")?;
-        for (index, (gram, ids)) in result.iter_mut().enumerate() {
+        let mut selected_pages: BTreeMap<usize, Vec<[u8; 3]>> = BTreeMap::new();
+        for (index, gram) in grams.iter().enumerate() {
             if index.is_multiple_of(64) {
                 budget.checkpoint("lexical:file-authority-v15-directory-lookup")?;
             }
@@ -127,65 +144,95 @@ where
             if work.directory_probes > max_directory_probes {
                 return Err(plan_limit("global query directory lookup limit exceeded"));
             }
-            let Ok(index) = bucket.terms.binary_search_by_key(gram, |row| row.gram) else {
-                continue;
-            };
-            let row = bucket
-                .terms
-                .get(index)
-                .ok_or_else(|| corrupt("term directory index missing"))?;
-            let count = u64::from(row.count);
-            let length = count
-                .checked_mul(8)
-                .ok_or_else(|| corrupt("term list length overflow"))?;
-            if row
+            let page_index = bucket.pages.partition_point(|page| page.last < *gram);
+            if let Some(page) = bucket.pages.get(page_index)
+                && page.first <= *gram
+            {
+                selected_pages.entry(page_index).or_default().push(*gram);
+            }
+        }
+        for (page_index, selected_grams) in selected_pages {
+            let page = bucket
+                .pages
+                .get(page_index)
+                .ok_or_else(|| corrupt("directory page missing"))?;
+            let length = page
+                .encoded_bytes()
+                .map_err(|error| corrupt(&format!("directory page length: {error:?}")))?;
+            if page
                 .offset
                 .checked_add(length)
                 .is_none_or(|end| end > bucket.partition.bytes)
             {
-                return Err(corrupt("term list range differs from object"));
+                return Err(corrupt("directory page range differs from object"));
             }
-            charge_work(work, policy, count, length)?;
-            budget.checkpoint("lexical:file-authority-v15-list-read")?;
-            let bytes = read_range(
+            charge_work(work, policy, 0, length)?;
+            budget.checkpoint("lexical:file-authority-v15-page-read")?;
+            let table = read_range(
                 bucket.partition.sha256,
                 bucket.partition.bytes,
-                row.offset,
+                page.offset,
                 length,
             )?;
-            if u64::try_from(bytes.len())
-                .map_err(|_length_width_error| corrupt("term list length width"))?
+            if u64::try_from(table.len())
+                .map_err(|_length_width_error| corrupt("directory page length width"))?
                 != length
             {
-                return Err(corrupt("term list short read"));
+                return Err(corrupt("directory page short read"));
             }
-            let mut hasher = Sha256::new();
-            for chunk in bytes.chunks(64 * 1024) {
-                budget.checkpoint("lexical:file-authority-v15-list-hash")?;
-                hasher.update(chunk);
-            }
-            let actual: [u8; 32] = hasher.finalize().into();
-            if actual != row.sha256 {
-                return Err(corrupt("selected posting list digest differs"));
-            }
-            let additional = usize::try_from(count)
-                .map_err(|_count_width_error| plan_limit("term list count width"))?;
-            ids.try_reserve(additional)
-                .map_err(|_allocation_error| plan_limit("term list result allocation refused"))?;
-            let mut previous = None;
-            for (index, word) in bytes.chunks_exact(8).enumerate() {
-                if index.is_multiple_of(1024) {
-                    budget.checkpoint("lexical:file-authority-v15-list-decode")?;
+            checked_digest(&table, page.sha256, budget)?;
+            let view = page
+                .decode(&table, bucket.partition.terms, bucket.partition.bytes)
+                .map_err(|error| corrupt(&format!("directory page decode: {error:?}")))?;
+            for gram in selected_grams {
+                let Some(list) = view
+                    .lookup(gram)
+                    .map_err(|error| corrupt(&format!("directory page lookup: {error:?}")))?
+                else {
+                    continue;
+                };
+                let count = u64::from(list.count);
+                let length = count
+                    .checked_mul(8)
+                    .ok_or_else(|| corrupt("term list length overflow"))?;
+                charge_work(work, policy, count, length)?;
+                budget.checkpoint("lexical:file-authority-v15-list-read")?;
+                let bytes = read_range(
+                    bucket.partition.sha256,
+                    bucket.partition.bytes,
+                    list.offset,
+                    length,
+                )?;
+                if u64::try_from(bytes.len())
+                    .map_err(|_length_width_error| corrupt("term list length width"))?
+                    != length
+                {
+                    return Err(corrupt("term list short read"));
                 }
-                let id = u64::from_le_bytes(
-                    word.try_into()
-                        .map_err(|_id_width_error| corrupt("term list ID width"))?,
-                );
-                if id == 0 || previous.is_some_and(|prior| prior >= id) {
-                    return Err(corrupt("term list IDs not strictly ascending"));
+                checked_digest(&bytes, list.sha256, budget)?;
+                let ids = result
+                    .get_mut(&gram)
+                    .ok_or_else(|| corrupt("requested gram missing"))?;
+                let additional = usize::try_from(count)
+                    .map_err(|_count_width_error| plan_limit("term list count width"))?;
+                ids.try_reserve(additional).map_err(|_allocation_error| {
+                    plan_limit("term list result allocation refused")
+                })?;
+                let mut previous = None;
+                for (index, word) in bytes.chunks_exact(8).enumerate() {
+                    if index.is_multiple_of(1024) {
+                        budget.checkpoint("lexical:file-authority-v15-list-decode")?;
+                    }
+                    let id = u64::from_le_bytes(
+                        word.try_into()
+                            .map_err(|_id_width_error| corrupt("term list ID width"))?,
+                    );
+                    if id == 0 || previous.is_some_and(|prior| prior >= id) {
+                        return Err(corrupt("term list IDs not strictly ascending"));
+                    }
+                    previous = Some(id);
+                    ids.push(id);
                 }
-                previous = Some(id);
-                ids.push(id);
             }
         }
     }
@@ -235,7 +282,7 @@ mod tests {
             resident_file_heap_bytes: 8192,
             query_list_reads: list_reads,
             query_posting_ids: 8,
-            query_decoded_bytes: 64,
+            query_decoded_bytes: 256,
             query_decoded_ids: 8,
         }
     }
@@ -276,9 +323,9 @@ mod tests {
             path: Vec::new(),
             content: vec![PostingBucketDirectory {
                 partition: partition.clone(),
-                terms: view
-                    .term_descriptors()
-                    .map(|term| term.expect("term"))
+                pages: view
+                    .page_descriptors()
+                    .map(|page| page.expect("page"))
                     .collect(),
             }],
         };
@@ -342,7 +389,7 @@ mod tests {
             found.get(b"abc").expect("selected gram listed").as_slice(),
             &[1, 3]
         );
-        assert_eq!(reads, 1);
+        assert_eq!(reads, 2);
     }
 
     #[test]
@@ -393,7 +440,7 @@ mod tests {
         let _first_stage = posting_lists(
             &root,
             &directory,
-            policy(1),
+            policy(2),
             PostingSurface::Content,
             &[*b"abc"],
             &mut shared,
@@ -404,7 +451,7 @@ mod tests {
         let failure = posting_lists(
             &root,
             &directory,
-            policy(1),
+            policy(2),
             PostingSurface::Content,
             &[*b"bcd"],
             &mut shared,
@@ -521,5 +568,139 @@ mod tests {
             }
         ));
         assert_eq!(reads, 0);
+    }
+
+    #[test]
+    fn shared_page_is_read_once_and_only_selected_lists_are_read() {
+        let (root, directory, block) = fixture();
+        let mut ranges = Vec::new();
+        let found = posting_lists(
+            &root,
+            &directory,
+            policy(3),
+            PostingSurface::Content,
+            &[*b"abc", *b"bcd"],
+            &mut QueryWork::default(),
+            &RequestBudgetV1::unbounded(),
+            |_, _, offset, len| {
+                ranges.push((offset, len));
+                let start = usize::try_from(offset).expect("offset");
+                let end = start + usize::try_from(len).expect("length");
+                Ok(block.get(start..end).expect("selected range").to_vec())
+            },
+        )
+        .expect("two terms");
+        assert_eq!(found.get(b"abc").expect("abc list").as_slice(), &[1, 3]);
+        assert_eq!(found.get(b"bcd").expect("bcd list").as_slice(), &[3]);
+        assert_eq!(ranges, [(32, 96), (128, 16), (144, 8)]);
+    }
+
+    #[test]
+    fn authenticated_page_does_not_hide_a_mutated_selected_list() {
+        let (root, directory, block) = fixture();
+        let failure = posting_lists(
+            &root,
+            &directory,
+            policy(2),
+            PostingSurface::Content,
+            &[*b"abc"],
+            &mut QueryWork::default(),
+            &RequestBudgetV1::unbounded(),
+            |_, _, offset, len| {
+                let start = usize::try_from(offset).expect("offset");
+                let end = start + usize::try_from(len).expect("length");
+                let mut bytes = block.get(start..end).expect("selected range").to_vec();
+                if offset == 128 {
+                    *bytes.first_mut().expect("selected list byte") ^= 1;
+                }
+                Ok(bytes)
+            },
+        )
+        .expect_err("list mutation after valid page");
+        assert!(matches!(
+            failure,
+            CoreError::Typed {
+                code: quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn page_bytes_are_admitted_before_read_and_short_pages_refuse() {
+        let (root, directory, block) = fixture();
+        let mut limited = policy(2);
+        limited.query_decoded_bytes = 95;
+        let mut reads = 0;
+        let failure = posting_lists(
+            &root,
+            &directory,
+            limited,
+            PostingSurface::Content,
+            &[*b"abc"],
+            &mut QueryWork::default(),
+            &RequestBudgetV1::unbounded(),
+            |_, _, _, _| {
+                reads += 1;
+                Ok(Vec::new())
+            },
+        )
+        .expect_err("96-byte page exceeds budget");
+        assert!(matches!(
+            failure,
+            CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                ..
+            }
+        ));
+        assert_eq!(reads, 0);
+        let short = posting_lists(
+            &root,
+            &directory,
+            policy(2),
+            PostingSurface::Content,
+            &[*b"abc"],
+            &mut QueryWork::default(),
+            &RequestBudgetV1::unbounded(),
+            |_, _, offset, len| {
+                let start = usize::try_from(offset).expect("offset");
+                let end = start + usize::try_from(len).expect("length") - 1;
+                Ok(block.get(start..end).expect("short range").to_vec())
+            },
+        )
+        .expect_err("short directory page");
+        assert!(matches!(
+            short,
+            CoreError::Typed {
+                code: quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn absent_term_inside_page_fences_reads_only_the_table() {
+        let (root, directory, block) = fixture();
+        let mut ranges = Vec::new();
+        let found = posting_lists(
+            &root,
+            &directory,
+            policy(1),
+            PostingSurface::Content,
+            &[*b"abd"],
+            &mut QueryWork::default(),
+            &RequestBudgetV1::unbounded(),
+            |_, _, offset, len| {
+                ranges.push((offset, len));
+                let start = usize::try_from(offset).expect("offset");
+                let end = start
+                    .checked_add(usize::try_from(len).expect("length"))
+                    .expect("end");
+                Ok(block.get(start..end).expect("table range").to_vec())
+            },
+        )
+        .expect("authenticated page absence");
+        assert!(found.get(b"abd").expect("requested gram").is_empty());
+        assert_eq!(ranges, [(32, 96)]);
     }
 }

@@ -821,21 +821,19 @@ fn charge_term_directory(
     content_terms: u64,
     policy: AuthorityPolicy,
 ) -> Result<(), ProducerError> {
-    let terms = path_terms
-        .checked_add(content_terms)
-        .ok_or_else(|| ProducerError::limit("posting term count overflow"))?;
-    let rows = terms
-        .checked_mul(super::root::TERM_DIRECTORY_ROW_CHARGE)
-        .ok_or_else(|| ProducerError::limit("term directory row charge overflow"))?;
-    let blocks = 2_u64
-        .checked_mul(super::root::TERM_DIRECTORY_BLOCK_CHARGE)
-        .ok_or_else(|| ProducerError::limit("term directory block charge overflow"))?;
+    let path =
+        super::root::term_directory_block_charge(path_terms).map_err(ProducerError::limit)?;
+    let content =
+        super::root::term_directory_block_charge(content_terms).map_err(ProducerError::limit)?;
     *current = current
-        .checked_add(rows)
-        .and_then(|sum| sum.checked_add(blocks))
+        .checked_add(path)
+        .and_then(|sum| sum.checked_add(content))
         .ok_or_else(|| ProducerError::limit("term directory charge overflow"))?;
     if *current > policy.term_directory_bytes {
-        return Err(ProducerError::limit("term directory exceeds policy"));
+        return Err(ProducerError::limit(format!(
+            "term directory exceeds policy: charged={} limit={}",
+            *current, policy.term_directory_bytes
+        )));
     }
     Ok(())
 }
