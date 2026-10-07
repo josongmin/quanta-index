@@ -35,7 +35,44 @@ use core::ops::Range;
 use quanta_index_contract::{LqExpr, LqLeaf, LqPatternType, PreviewUnavailableReason};
 use quanta_index_lq_regex::executor::RegexRangeError;
 use quanta_index_lq_text_normalizer::MappedText;
-use std::cell::Cell;
+use quanta_index_lq_trigram::{DocResolver, TrigramPostingSource};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Preserve the union's candidate cap per intersection, including regex alternatives.
+struct CountingTrigramSource<'a, S> {
+    source: &'a S,
+    counts: &'a RefCell<BTreeMap<Vec<[u8; 3]>, usize>>,
+    seen: RefCell<BTreeSet<Vec<[u8; 3]>>>,
+}
+impl<S: TrigramPostingSource> TrigramPostingSource for CountingTrigramSource<'_, S> {
+    fn intersect_trigrams(&self, grams: &[[u8; 3]]) -> Result<Vec<TrigramDocId>, TrigramError> {
+        let part = self.source.intersect_trigrams(grams)?;
+        let first_in_shard = self.seen.borrow_mut().insert(grams.to_vec());
+        let mut counts = self.counts.borrow_mut();
+        let count = counts.entry(grams.to_vec()).or_default();
+        if first_in_shard {
+            *count = count.saturating_add(part.len());
+        }
+        if *count > MAX_CANDIDATE_PRE_VERIFY {
+            return Err(TrigramError::plan_limit(
+                LimitDimension::CandidateSet,
+                format!(
+                    "candidate set across shards {count} exceeds cap {MAX_CANDIDATE_PRE_VERIFY}"
+                ),
+            ));
+        }
+        Ok(part)
+    }
+}
+
+/// Only prefiltered NFC candidate texts survive a shard callback.
+struct RegexCandidateTexts(BTreeMap<TrigramDocId, String>);
+impl DocResolver for RegexCandidateTexts {
+    fn resolve(&self, doc_id: TrigramDocId) -> Option<&[u8]> {
+        self.0.get(&doc_id).map(String::as_bytes)
+    }
+}
 
 /// Verify-only regexes have the same pre-verify candidate cap as a usable
 /// trigram prefilter.
@@ -78,32 +115,32 @@ impl TantivySearcher {
         &self,
         needle: &str,
         options: &LqOptions,
+        budget: &RequestBudgetV1,
     ) -> Result<RoaringBitmap, CoreError> {
         let authority = self.text_authority(TextAuthorityFeature::RawSubstring)?;
         let folded = !Self::is_case_sensitive(options);
-        let trigram_index = authority.trigram_index(folded);
-        let resolver = authority.resolver(folded);
         let needle = normalize::nfc(needle);
         let query_bytes = normalize::apply_case(needle.as_ref(), Self::case_mode(options))
             .into_owned()
             .into_bytes();
-        let verified_doc_ids = query_raw_substring(&trigram_index, &query_bytes, &resolver)
-            .map_err(|err| match err.code {
-                TrigramErrorCode::RegexPrefilterUnusable => CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRawSubstringTrigramIndexMissing,
-                    message: format!("lexical: raw substring requires verify-only fallback: {err}"),
-                },
-                TrigramErrorCode::PlanLimitExceeded
-                | TrigramErrorCode::InvalidGeneration
-                | TrigramErrorCode::IndexDeserialize
-                | TrigramErrorCode::IndexCorrupted => {
-                    map_trigram_error("raw substring prefilter", &err)
-                }
-            })?;
-        authority_member_set(
-            verified_doc_ids.iter().map(|doc_id| doc_id.0),
-            "raw substring",
-        )
+        let counts = RefCell::new(BTreeMap::new());
+        let mut out = RoaringBitmap::new();
+        authority.visit_shards(budget, |shard| {
+            let index = shard.trigram_index(folded);
+            let source = CountingTrigramSource { source: &index, counts: &counts, seen: RefCell::new(BTreeSet::new()) };
+            let resolver = shard.resolver(folded);
+            let ids = query_raw_substring(&source, &query_bytes, &resolver)
+                .map_err(|err| match err.code {
+                    TrigramErrorCode::RegexPrefilterUnusable => CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRawSubstringTrigramIndexMissing,
+                        message: format!("lexical: raw substring requires verify-only fallback: {err}"),
+                    },
+                    TrigramErrorCode::InvalidGeneration | TrigramErrorCode::PlanLimitExceeded | TrigramErrorCode::IndexDeserialize | TrigramErrorCode::IndexCorrupted => map_trigram_error("raw substring prefilter", &err),
+                })?;
+            out |= authority_member_set(ids.iter().map(|id| id.0), "raw substring")?;
+            Ok(())
+        })?;
+        Ok(out)
     }
 
     /// The regex source as executed.
@@ -171,7 +208,6 @@ impl TantivySearcher {
                 message: format!("lexical: regex execution compile for {source:?}: {err}"),
             })?;
         let folded = !Self::is_case_sensitive(options);
-        let trigram_index = authority.trigram_index(folded);
         // The planner hands back an alternation, not a conjunction: a match
         // needs one of these literals. Case-insensitive patterns make that
         // concrete — `(?i)fresh` extracts `fresh` and `freſh` — so the prefilter
@@ -188,15 +224,49 @@ impl TantivySearcher {
         } else {
             plan.literal_alternation().to_vec()
         };
-        let prefiltered_doc_ids = match regex_prefilter_any_of(&trigram_index, &literal_alternation)
-        {
-            Ok(doc_ids) => doc_ids,
-            Err(err) if err.code == TrigramErrorCode::RegexPrefilterUnusable => {
-                bounded_verify_only_candidates(authority.doc_ids(), budget)?
+        let counts = RefCell::new(BTreeMap::new());
+        let mut candidates = RegexCandidateTexts(BTreeMap::new());
+        let mut fallback_count = 0_usize;
+        authority.visit_shards(budget, |shard| {
+            let index = shard.trigram_index(folded);
+            let source = CountingTrigramSource {
+                source: &index,
+                counts: &counts,
+                seen: RefCell::new(BTreeSet::new()),
+            };
+            let ids = match regex_prefilter_any_of(&source, &literal_alternation) {
+                Ok(ids) => ids,
+                Err(err) if err.code == TrigramErrorCode::RegexPrefilterUnusable => {
+                    let ids = bounded_verify_only_candidates(shard.doc_ids(), budget)?;
+                    fallback_count = fallback_count.saturating_add(ids.len());
+                    if fallback_count > MAX_CANDIDATE_PRE_VERIFY {
+                        return Err(map_trigram_error(
+                            "regex verify-only prefilter",
+                            &TrigramError::plan_limit(
+                                LimitDimension::CandidateSet,
+                                "verify-only candidate union exceeds cap",
+                            ),
+                        ));
+                    }
+                    ids
+                }
+                Err(err) => return Err(map_trigram_error("regex prefilter", &err)),
+            };
+            for id in ids {
+                budget.checkpoint("lexical:regex-candidate-text")?;
+                let doc = shard.doc(id.0).ok_or_else(|| {
+                    CoreError::Storage(format!("lexical: regex resolver missing doc {}", id.0))
+                })?;
+                if candidates.0.insert(id, doc.indexed_text.clone()).is_some() {
+                    return Err(CoreError::Storage(
+                        "lexical: duplicate text shard candidate".into(),
+                    ));
+                }
             }
-            Err(err) => return Err(map_trigram_error("regex prefilter", &err)),
-        };
-        let resolver = authority.resolver(false);
+            Ok(())
+        })?;
+        let prefiltered_doc_ids = candidates.0.keys().copied().collect::<Vec<_>>();
+        let resolver = candidates;
         let budget_ms = Self::regex_timeout_budget_ms(options).unwrap_or(0);
         if options.timeout_ms == Some(0) && !prefiltered_doc_ids.is_empty() {
             return Err(CoreError::Typed {
@@ -267,6 +337,7 @@ impl TantivySearcher {
         &self,
         text: &str,
         options: &LqOptions,
+        budget: &RequestBudgetV1,
     ) -> Result<RoaringBitmap, CoreError> {
         let authority = self.text_authority(TextAuthorityFeature::PhrasePositions)?;
         let plan = plan_phrase(
@@ -276,27 +347,26 @@ impl TantivySearcher {
             PhraseField::Content,
         )
         .map_err(map_phrase_plan_error)?;
-        let positions_index = authority.positions_index(plan.case_sensitive);
         let terms = plan.tokens.iter().map(String::as_str).collect::<Vec<_>>();
-        let matches = query_phrase(&positions_index, &terms)
-            .map_err(|err| map_positions_error("phrase query", &err))?;
-        if let Some(unheld) = matches
-            .matches
-            .iter()
-            .find(|phrase_match| authority.doc(phrase_match.doc_id.0).is_none())
-        {
-            return Err(CoreError::Storage(format!(
-                "lexical: phrase resolver missing doc {}",
-                unheld.doc_id.0
-            )));
-        }
-        authority_member_set(
-            matches
+        let mut out = RoaringBitmap::new();
+        authority.visit_shards(budget, |shard| {
+            let index = shard.positions_index(plan.case_sensitive);
+            let matches = query_phrase(&index, &terms)
+                .map_err(|err| map_positions_error("phrase query", &err))?;
+            if let Some(unheld) = matches
                 .matches
                 .iter()
-                .map(|phrase_match| phrase_match.doc_id.0),
-            "phrase",
-        )
+                .find(|m| shard.doc(m.doc_id.0).is_none())
+            {
+                return Err(CoreError::Storage(format!(
+                    "lexical: phrase resolver missing doc {}",
+                    unheld.doc_id.0
+                )));
+            }
+            out |= authority_member_set(matches.matches.iter().map(|m| m.doc_id.0), "phrase")?;
+            Ok(())
+        })?;
+        Ok(out)
     }
 }
 
@@ -621,6 +691,65 @@ mod l4_verify_only_candidate_bounds {
         );
         assert!(interrupted.is_err());
         assert!(!advanced.get());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod paging_limit_tests {
+    use super::{BTreeMap, BTreeSet, CountingTrigramSource, RefCell};
+    use quanta_index_lq_trigram::{
+        DocId, MAX_CANDIDATE_PRE_VERIFY, TrigramError, TrigramErrorCode, TrigramPostingSource,
+    };
+    struct FixedCandidates(usize);
+    impl TrigramPostingSource for FixedCandidates {
+        fn intersect_trigrams(&self, _grams: &[[u8; 3]]) -> Result<Vec<DocId>, TrigramError> {
+            (0..self.0)
+                .map(|value| {
+                    u64::try_from(value).map(DocId).map_err(|error| {
+                        TrigramError::new(
+                            TrigramErrorCode::IndexCorrupted,
+                            format!("fixed candidate id overflow: {error}"),
+                        )
+                    })
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "independent fixed candidate cap assertions"
+    )]
+    fn candidate_cap_is_aggregate_and_repeated_alternative_is_charged_once_per_shard()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let counts = RefCell::new(BTreeMap::new());
+        assert_eq!(MAX_CANDIDATE_PRE_VERIFY, 100_000);
+        let half = FixedCandidates(50_000);
+        for _ in 0..2 {
+            let source = CountingTrigramSource {
+                source: &half,
+                counts: &counts,
+                seen: RefCell::new(BTreeSet::new()),
+            };
+            assert_eq!(source.intersect_trigrams(&[*b"abc"])?.len(), half.0);
+            assert_eq!(source.intersect_trigrams(&[*b"abc"])?.len(), half.0);
+        }
+        let one = FixedCandidates(1);
+        let source = CountingTrigramSource {
+            source: &one,
+            counts: &counts,
+            seen: RefCell::new(BTreeSet::new()),
+        };
+        let error = source
+            .intersect_trigrams(&[*b"abc"])
+            .expect_err("union above the unchanged cap must refuse");
+        assert_eq!(error.code, TrigramErrorCode::PlanLimitExceeded);
+        assert_eq!(
+            error.dimension,
+            Some(quanta_index_lq_trigram::LimitDimension::CandidateSet)
+        );
         Ok(())
     }
 }

@@ -1,13 +1,6 @@
-//! QI-BB-001 보완 #3 — the resident-bytes estimate a handle reports to the
-//! snapshot registry is the decoded footprint, not the on-disk CBOR.
-//!
-//! The text authority is decoded at open into the NFC text, its folded
-//! copy, expanded trigram postings and positions postings; the CBOR on
-//! disk is smaller than that. The estimate must therefore exceed the
-//! authority's on-disk bytes, and the mapped index files must be counted
-//! by inode so a delta that hard-links its base's segments does not
-//! report the shared bytes as if it owned a second copy. The oracles are
-//! independent: the sidecar's file sizes and an inode-set walk.
+//! Resident estimates include serving metadata and file views, while authenticated
+//! text shard bodies remain transient. Independent source bytes bound retained
+//! text copies; an inode-set walk bounds the mapped generation files.
 
 #![forbid(unsafe_code)]
 
@@ -114,7 +107,7 @@ type InodeKey = (u64, u64);
 /// skipping `skip_dir` subtrees and the writer lock.
 fn inode_set_bytes(
     root: &Path,
-    skip_dir: &str,
+    skip_dirs: &[&str],
 ) -> Result<(u64, BTreeSet<InodeKey>), Box<dyn Error>> {
     let mut seen = BTreeSet::new();
     let mut total = 0_u64;
@@ -123,7 +116,7 @@ fn inode_set_bytes(
         for entry in std::fs::read_dir(&directory)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if name == skip_dir || name.starts_with(".tantivy-writer.lock") {
+            if skip_dirs.contains(&name.as_str()) || name.starts_with(".tantivy-writer.lock") {
                 continue;
             }
             let file_type = entry.file_type()?;
@@ -161,11 +154,9 @@ fn body(seed: u64) -> String {
         .join("\n")
 }
 
-/// The estimate exceeds the on-disk text-authority bytes plus the mapped
-/// index bytes: the decoded authority is counted as what it decodes into,
-/// not as its CBOR.
+/// Encoded text postings must not become retained snapshot heap.
 #[test]
-fn the_estimate_counts_the_decoded_authority_not_its_cbor() -> TestResult {
+fn the_estimate_excludes_transient_text_postings_and_counts_serving_metadata() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().join("indexes").join("lexical");
     let adapter = LexicalAdapter::with_state_root(root.clone());
@@ -175,7 +166,7 @@ fn the_estimate_counts_the_decoded_authority_not_its_cbor() -> TestResult {
         vec![scope("src/a.rs", &body(1))?, scope("src/b.rs", &body(2))?],
     )?)?;
     let dir = generation_dir(&root, 1);
-    let (mapped, _inodes) = inode_set_bytes(&dir, TEXT_AUTHORITY_DIR)?;
+    let (mapped, _inodes) = inode_set_bytes(&dir, &[TEXT_AUTHORITY_DIR, "file-authority"])?;
     let authority_cbor = text_authority_disk_bytes(&dir)?;
     if authority_cbor == 0 {
         return Err("the fixture writes a text authority".into());
@@ -187,11 +178,21 @@ fn the_estimate_counts_the_decoded_authority_not_its_cbor() -> TestResult {
         &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     let estimate = handle.resident_bytes_estimate();
-    if estimate <= mapped + authority_cbor {
-        return Err(format!(
-            "estimate {estimate} does not exceed mapped {mapped} + on-disk authority {authority_cbor}: the decoded authority is being reported as its CBOR"
-        )
-        .into());
+    let source_bytes = u64::try_from(
+        body(1)
+            .len()
+            .checked_add(body(2).len())
+            .ok_or("fixture source length overflow")?,
+    )?;
+    // The supported full-file view has original, NFC and folded copies.
+    // All other metadata for this two-file fixture fits a fixed 64 KiB budget.
+    let ceiling = source_bytes
+        .checked_mul(3)
+        .and_then(|bytes| bytes.checked_add(mapped))
+        .and_then(|bytes| bytes.checked_add(65_536))
+        .ok_or("fixture serving ceiling overflow")?;
+    if estimate < mapped || estimate > ceiling {
+        return Err(format!("estimate {estimate} is outside mapped {mapped} .. serving ceiling {ceiling}; transient text postings must not remain resident").into());
     }
     Ok(())
 }
@@ -199,8 +200,7 @@ fn the_estimate_counts_the_decoded_authority_not_its_cbor() -> TestResult {
 /// A delta generation's estimate counts each mapped inode once.
 ///
 /// The delta hard-links its base's index segments, so the estimate is
-/// bounded by the inode-set bytes of its own directory plus its decoded
-/// authority, never by a per-link sum.
+/// bounded by its mapped inode set plus source-file views and metadata.
 #[test]
 fn a_hard_linked_delta_counts_shared_inodes_once() -> TestResult {
     let temp = tempfile::tempdir()?;
@@ -210,18 +210,18 @@ fn a_hard_linked_delta_counts_shared_inodes_once() -> TestResult {
     let _stages = adapter.build_batch(&batch(2, Some(1), vec![scope("src/b.rs", &body(2))?])?)?;
     let base = generation_dir(&root, 1);
     let delta = generation_dir(&root, 2);
-    let (_base_bytes, base_inodes) = inode_set_bytes(&base, TEXT_AUTHORITY_DIR)?;
-    let (delta_bytes, delta_inodes) = inode_set_bytes(&delta, TEXT_AUTHORITY_DIR)?;
+    let (_base_bytes, base_inodes) =
+        inode_set_bytes(&base, &[TEXT_AUTHORITY_DIR, "file-authority"])?;
+    let (delta_bytes, delta_inodes) =
+        inode_set_bytes(&delta, &[TEXT_AUTHORITY_DIR, "file-authority"])?;
     let shared: BTreeSet<_> = base_inodes.intersection(&delta_inodes).collect();
     if shared.is_empty() {
         return Err(
             "the delta shares no index inode with its base; the fixture must hard-link".into(),
         );
     }
-    // The per-link sum would count every hard-linked file as many times as
-    // it is linked; the inode set counts it once. The estimate for the
-    // delta is at most its inode-set bytes plus a decoded authority that is
-    // itself bounded above by a generous multiple of the sidecar bytes.
+    // The inode set counts each shared mapped file once. Only source-file
+    // views and bounded metadata are added; text postings remain transient.
     let handle = adapter.open(
         &repo(),
         &revision(),
@@ -229,18 +229,110 @@ fn a_hard_linked_delta_counts_shared_inodes_once() -> TestResult {
         &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     let estimate = handle.resident_bytes_estimate();
-    let authority_cbor = text_authority_disk_bytes(&delta)?;
-    let decoded_ceiling = authority_cbor.saturating_mul(8);
+    let serving_ceiling = u64::try_from(
+        body(1)
+            .len()
+            .checked_add(body(2).len())
+            .ok_or("fixture source length overflow")?,
+    )?
+    .checked_mul(3)
+    .and_then(|bytes| bytes.checked_add(65_536))
+    .ok_or("fixture serving ceiling overflow")?;
     if estimate < delta_bytes {
         return Err(
             format!("estimate {estimate} is below the delta's mapped bytes {delta_bytes}").into(),
         );
     }
-    if estimate > delta_bytes.saturating_add(decoded_ceiling) {
+    if estimate > delta_bytes.saturating_add(serving_ceiling) {
         return Err(format!(
-            "estimate {estimate} exceeds mapped {delta_bytes} + decoded ceiling {decoded_ceiling}; shared inodes are being double counted"
+            "estimate {estimate} exceeds mapped {delta_bytes} + decoded ceiling {serving_ceiling}; shared inodes are being double counted"
         )
         .into());
+    }
+    Ok(())
+}
+
+/// Public leaf execution keeps fixed source answers and a stable resident charge.
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed public query and old-pin regression assertions"
+)]
+fn transient_text_queries_keep_fixed_answers_and_old_generation_pin() -> TestResult {
+    use quanta_index_contract::{LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery, LqSpan};
+    use quanta_index_core::RequestBudgetV1;
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("indexes/lexical");
+    let adapter = LexicalAdapter::with_state_root(root);
+    let _built = adapter.build_batch(&batch(
+        1,
+        None,
+        vec![
+            scope("a.rs", "alpha beta")?,
+            scope("b.rs", "alpha gamma")?,
+            scope("c.rs", "gamma delta")?,
+        ],
+    )?)?;
+    let old = adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(1),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let resident = old.resident_bytes_estimate();
+    let _delta = adapter.build_batch(&batch(2, Some(1), vec![scope("a.rs", "retired token")?])?)?;
+    let current = adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(2),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    for (leaf, expected) in [
+        (
+            LqLeaf::RawString("alpha".into()),
+            vec!["chunk:a.rs", "chunk:b.rs"],
+        ),
+        (LqLeaf::Phrase("alpha beta".into()), vec!["chunk:a.rs"]),
+        (
+            LqLeaf::Regex("alpha|delta".into()),
+            vec!["chunk:a.rs", "chunk:b.rs", "chunk:c.rs"],
+        ),
+        (
+            LqLeaf::Regex(".*".into()),
+            vec!["chunk:a.rs", "chunk:b.rs", "chunk:c.rs"],
+        ),
+    ] {
+        let query = LqQuery {
+            lq_version: LQ_VERSION_TAG,
+            expr: LqExpr::Leaf(leaf),
+            filters: Vec::new(),
+            options: LqOptions::defaults(),
+            directives: Vec::new(),
+            source_span: LqSpan::eof(0),
+        };
+        let actual = old.search(&query, 10, &RequestBudgetV1::unbounded())?;
+        assert_eq!(
+            actual
+                .iter()
+                .map(|row| row.candidate_id.as_str())
+                .collect::<BTreeSet<_>>(),
+            expected.into_iter().collect()
+        );
+        assert_eq!(
+            old.resident_bytes_estimate(),
+            resident,
+            "query retained decoded text shards"
+        );
+        if matches!(query.expr, LqExpr::Leaf(LqLeaf::RawString(_))) {
+            let actual = current.search(&query, 10, &RequestBudgetV1::unbounded())?;
+            assert_eq!(
+                actual
+                    .iter()
+                    .map(|row| row.candidate_id.as_str())
+                    .collect::<BTreeSet<_>>(),
+                BTreeSet::from(["chunk:b.rs"])
+            );
+        }
     }
     Ok(())
 }

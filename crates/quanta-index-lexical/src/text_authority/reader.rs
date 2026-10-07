@@ -1,143 +1,233 @@
-//! The sharded text authority as a query reads it.
+//! Generation-bound text authority with transient shard decoding.
 //!
-//! [`ShardedTextAuthority`] holds every listed shard — each read once,
-//! proved against its committed length and digest and decoded by the
-//! sealed-generation walk that both doors share — and answers the byte
-//! surfaces (raw substring, regex prefilter and verify) and the token
-//! surfaces (phrase, adjacency) by handing the `lq-trigram` and
-//! `lq-positions` algorithms a union view over the shards. The algorithms
-//! are the single-index ones, unchanged; the union is exact because shards
-//! partition the doc-id space in ascending ranges, and doc ids are global
-//! so nothing is remapped.
+//! Cold open proves every shard. Serving retains only the authenticated
+//! shard entries, file descriptors and compact document identities. A query
+//! decodes one shard at a time; keyword queries need no shard reads.
 
+use std::collections::BTreeMap;
 use std::fs::File;
-use std::path::Path;
+use std::io::ErrorKind;
+use std::os::unix::fs::FileExt as _;
+use std::path::{Path, PathBuf};
 
-use quanta_index_core::CoreError;
+use quanta_index_core::{CoreError, RequestBudgetV1};
 use quanta_index_lq_positions::ShardedPositionsIndex;
 use quanta_index_lq_trigram::{DocId as TrigramDocId, DocResolver, ShardedTrigramIndex};
 
-use crate::text_authority::manifest::{ShardEntry, TEXT_AUTHORITY_DIR_NAME, shard_index_of};
+use crate::text_authority::manifest::{ShardEntry, TEXT_AUTHORITY_DIR_NAME};
 use crate::text_authority::shard::{ShardBody, TextAuthorityDoc, sha256_of_bytes};
 
-/// One loaded shard, in manifest order.
-struct LoadedShard {
-    index: u64,
-    body: ShardBody,
+use quanta_index_core::count_from_usize as count_usize;
+
+pub(crate) struct ProvedTextShard {
+    pub(crate) entry: ShardEntry,
+    pub(crate) file: File,
 }
 
-/// A generation's text authority, every shard resident.
+enum ShardStorage {
+    Paged {
+        _root: File,
+        directory: PathBuf,
+        shards: Vec<ProvedTextShard>,
+    },
+    #[cfg(test)]
+    Resident(Vec<ShardBody>),
+}
+
+/// Authenticated immutable shard descriptors; decoded bodies are request scratch.
 pub(crate) struct ShardedTextAuthority {
-    shards: Vec<LoadedShard>,
+    storage: ShardStorage,
+    documents: BTreeMap<u64, TextDocIdentity>,
+}
+
+/// Small identity commitment used by selected-row integrity checks.
+pub(crate) struct TextDocIdentity {
+    pub(crate) candidate_id: String,
+    pub(crate) indexed_sha256: [u8; 32],
+}
+
+pub(crate) fn document_identities(body: &ShardBody) -> BTreeMap<u64, TextDocIdentity> {
+    body.docs_by_id
+        .iter()
+        .map(|(id, doc)| {
+            (
+                *id,
+                TextDocIdentity {
+                    candidate_id: doc.candidate_id.clone(),
+                    indexed_sha256: sha256_of_bytes(doc.indexed_text.as_bytes()),
+                },
+            )
+        })
+        .collect()
 }
 
 impl ShardedTextAuthority {
-    /// The authority over shards the sealed-generation walk proved and
-    /// decoded, given in ascending index order as the manifest lists them.
-    ///
-    /// The walk is the only reader of shard files, so every shard here was
-    /// read once, proved against its committed length and digest, and
-    /// checked against the manifest's row count and doc-id extremes; a
-    /// disagreement refused the whole generation, never a partial
-    /// authority.
-    pub(crate) fn from_proved_shards(shards: Vec<(u64, ShardBody)>) -> Result<Self, CoreError> {
-        let mut loaded = Vec::with_capacity(shards.len());
-        for (index, body) in shards {
-            if loaded
-                .last()
-                .is_some_and(|previous: &LoadedShard| previous.index >= index)
-            {
-                return Err(CoreError::InvalidContract(format!(
-                    "lexical: text authority shard {index} handed out of ascending order"
-                )));
-            }
-            loaded.push(LoadedShard { index, body });
-        }
-        Ok(Self { shards: loaded })
-    }
-
-    /// Bytes the decoded authority keeps on the heap, every shard summed
-    /// (see [`ShardBody::heap_bytes_estimate`]).
-    pub(crate) fn heap_bytes_estimate(&self) -> u64 {
-        self.shards.iter().fold(0_u64, |total, shard| {
-            total.saturating_add(shard.body.heap_bytes_estimate())
+    pub(crate) fn from_proved_files(
+        root: &File,
+        directory: &Path,
+        shards: Vec<ProvedTextShard>,
+        documents: BTreeMap<u64, TextDocIdentity>,
+    ) -> Result<Self, CoreError> {
+        let root = root.try_clone().map_err(|error| {
+            CoreError::Storage(format!("lexical: pin proved text authority: {error}"))
+        })?;
+        Ok(Self {
+            documents,
+            storage: ShardStorage::Paged {
+                _root: root,
+                directory: directory.into(),
+                shards,
+            },
         })
     }
 
-    /// The document with `doc_id`, if the authority holds it.
-    pub(crate) fn doc(&self, doc_id: u64) -> Option<&TextAuthorityDoc> {
-        let index = shard_index_of(doc_id);
-        self.shards
-            .binary_search_by_key(&index, |shard| shard.index)
-            .map_or(None, |position| self.shards.get(position))
-            .and_then(|shard| shard.body.docs_by_id.get(&doc_id))
-    }
-
-    /// Every doc id, ascending: the universe a verify-only regex walks when
-    /// the prefilter is unusable.
-    pub(crate) fn doc_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.shards
+    #[cfg(test)]
+    pub(crate) fn from_proved_shards(shards: Vec<(u64, ShardBody)>) -> Result<Self, CoreError> {
+        if shards
+            .windows(2)
+            .any(|pair| matches!(pair, [(previous, _), (next, _) ] if previous >= next))
+        {
+            return Err(CoreError::InvalidContract(
+                "lexical: text shards out of ascending order".into(),
+            ));
+        }
+        let documents = shards
             .iter()
-            .flat_map(|shard| shard.body.docs_by_id.keys().copied())
+            .flat_map(|(_, body)| document_identities(body))
+            .collect();
+        Ok(Self {
+            documents,
+            storage: ShardStorage::Resident(shards.into_iter().map(|(_, body)| body).collect()),
+        })
     }
 
-    /// The trigram union over every shard: the NFC copy, or the folded copy
-    /// the `case:no` byte surfaces search.
+    pub(crate) fn heap_bytes_estimate(&self) -> u64 {
+        let storage = match &self.storage {
+            ShardStorage::Paged {
+                directory, shards, ..
+            } => count_usize(directory.as_os_str().len()).saturating_add(
+                count_usize(shards.capacity())
+                    .saturating_mul(count_usize(std::mem::size_of::<ProvedTextShard>())),
+            ),
+            #[cfg(test)]
+            ShardStorage::Resident(shards) => shards.iter().fold(0_u64, |total, shard| {
+                total.saturating_add(shard.heap_bytes_estimate())
+            }),
+        };
+        self.documents.values().fold(storage, |total, doc| {
+            total
+                .saturating_add(128)
+                .saturating_add(count_usize(doc.candidate_id.capacity()))
+        })
+    }
+
+    /// Cold open committed these identities from proved shard bodies.
+    pub(crate) fn matches_document(&self, id: u64, candidate_id: &str, indexed: &str) -> bool {
+        self.documents.get(&id).is_some_and(|doc| {
+            doc.candidate_id == candidate_id
+                && doc.indexed_sha256 == sha256_of_bytes(indexed.as_bytes())
+        })
+    }
+
+    /// A body never escapes this callback or becomes cached snapshot heap.
+    /// Every read rechecks the pinned inode's committed digest and shape.
+    /// Existing handles survive directory reclaim and ignore pathname replacement.
+    pub(crate) fn visit_shards(
+        &self,
+        budget: &RequestBudgetV1,
+        mut visit: impl FnMut(TextAuthorityShard<'_>) -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        match &self.storage {
+            ShardStorage::Paged {
+                directory, shards, ..
+            } => {
+                if shards.is_empty() {
+                    visit(TextAuthorityShard { body: None })?;
+                }
+                for shard in shards {
+                    budget.checkpoint("lexical:text-shard-read")?;
+                    let body =
+                        decode_opened_shard(&shard.file, directory, &shard.entry, Some(budget))?;
+                    budget.checkpoint("lexical:text-shard-decode")?;
+                    visit(TextAuthorityShard { body: Some(&body) })?;
+                }
+            }
+            #[cfg(test)]
+            ShardStorage::Resident(shards) => {
+                if shards.is_empty() {
+                    visit(TextAuthorityShard { body: None })?;
+                }
+                for body in shards {
+                    budget.checkpoint("lexical:text-shard-read")?;
+                    visit(TextAuthorityShard { body: Some(body) })?;
+                }
+            }
+        }
+        budget.checkpoint("lexical:text-shards-complete")
+    }
+}
+
+pub(crate) struct TextAuthorityShard<'a> {
+    body: Option<&'a ShardBody>,
+}
+
+impl TextAuthorityShard<'_> {
+    pub(crate) fn doc(&self, doc_id: u64) -> Option<&TextAuthorityDoc> {
+        self.body.and_then(|body| body.docs_by_id.get(&doc_id))
+    }
+    pub(crate) fn doc_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.body
+            .into_iter()
+            .flat_map(|body| body.docs_by_id.keys().copied())
+    }
     pub(crate) fn trigram_index(&self, folded: bool) -> ShardedTrigramIndex<'_> {
         ShardedTrigramIndex::new(
-            self.shards
-                .iter()
-                .map(|shard| {
+            self.body
+                .into_iter()
+                .map(|body| {
                     if folded {
-                        &shard.body.trigram_folded
+                        &body.trigram_folded
                     } else {
-                        &shard.body.trigram
+                        &body.trigram
                     }
                 })
                 .collect(),
         )
     }
-
-    /// The positions chain over every shard: the case-sensitive token
-    /// stream, or the folded one.
     pub(crate) fn positions_index(&self, case_sensitive: bool) -> ShardedPositionsIndex<'_> {
         ShardedPositionsIndex::new(
-            self.shards
-                .iter()
-                .map(|shard| {
+            self.body
+                .into_iter()
+                .map(|body| {
                     if case_sensitive {
-                        &shard.body.positions
+                        &body.positions
                     } else {
-                        &shard.body.positions_folded
+                        &body.positions_folded
                     }
                 })
                 .collect(),
         )
     }
-
-    /// Doc id → document bytes for the verify passes.
-    pub(crate) const fn resolver(&self, folded: bool) -> TextAuthorityResolver<'_> {
+    pub(crate) fn resolver(&self, folded: bool) -> TextAuthorityResolver<'_> {
         TextAuthorityResolver {
-            authority: self,
+            body: self.body,
             folded,
         }
     }
 }
 
-/// Resolves a doc id to the bytes the byte surfaces verify against.
 pub(crate) struct TextAuthorityResolver<'a> {
-    authority: &'a ShardedTextAuthority,
+    body: Option<&'a ShardBody>,
     folded: bool,
 }
-
 impl DocResolver for TextAuthorityResolver<'_> {
     fn resolve(&self, doc_id: TrigramDocId) -> Option<&[u8]> {
-        let doc = self.authority.doc(doc_id.0)?;
-        if self.folded {
-            Some(doc.folded_indexed_text.as_bytes())
+        let doc = self.body?.docs_by_id.get(&doc_id.0)?;
+        Some(if self.folded {
+            doc.folded_indexed_text.as_bytes()
         } else {
-            Some(doc.indexed_text.as_bytes())
-        }
+            doc.indexed_text.as_bytes()
+        })
     }
 }
 
@@ -150,17 +240,19 @@ pub(crate) fn load_shard(
     generation_dir: &Path,
     entry: &ShardEntry,
 ) -> Result<ShardBody, CoreError> {
-    load_shard_with(generation_dir, entry, |name| {
+    load_shard_with(generation_dir, entry, None, |name| {
         crate::sealed_generation::open_regular_nofollow(generation_dir, name)
     })
+    .map(|(body, _file)| body)
 }
 
-pub(crate) fn load_shard_at(
+pub(crate) fn load_shard_file_at(
     root: &File,
     generation_dir: &Path,
     entry: &ShardEntry,
-) -> Result<ShardBody, CoreError> {
-    load_shard_with(generation_dir, entry, |name| {
+    budget: Option<&RequestBudgetV1>,
+) -> Result<(ShardBody, File), CoreError> {
+    load_shard_with(generation_dir, entry, budget, |name| {
         crate::sealed_generation::open_regular_below(root, name)
     })
 }
@@ -168,11 +260,12 @@ pub(crate) fn load_shard_at(
 fn load_shard_with(
     generation_dir: &Path,
     entry: &ShardEntry,
+    budget: Option<&RequestBudgetV1>,
     open: impl FnOnce(&Path) -> std::io::Result<File>,
-) -> Result<ShardBody, CoreError> {
+) -> Result<(ShardBody, File), CoreError> {
     let path = entry.path(generation_dir);
     let name = format!("{TEXT_AUTHORITY_DIR_NAME}/{}", entry.file_name());
-    let mut file = open(Path::new(&name)).map_err(|error| {
+    let file = open(Path::new(&name)).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             crate::index_store::sidecar_corrupt(generation_dir, &name, "missing")
         } else if crate::sealed_generation::is_unsafe_artifact_path(&error) {
@@ -184,6 +277,19 @@ fn load_shard_with(
             ))
         }
     })?;
+    let body = decode_opened_shard(&file, generation_dir, entry, budget)?;
+    Ok((body, file))
+}
+
+/// Positioned reads let concurrent queries share authenticated file descriptors.
+fn decode_opened_shard(
+    file: &File,
+    generation_dir: &Path,
+    entry: &ShardEntry,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<ShardBody, CoreError> {
+    let path = entry.path(generation_dir);
+    let name = format!("{TEXT_AUTHORITY_DIR_NAME}/{}", entry.file_name());
     let opened_len = file
         .metadata()
         .map_err(|error| {
@@ -202,11 +308,20 @@ fn load_shard_with(
             "lexical: committed shard length overflows usize: {error}"
         ))
     })?;
-    let bytes =
-        crate::sealed_generation::read_opened_bounded(&mut file, admitted).map_err(|error| {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(admitted).map_err(|error| {
+        CoreError::Storage(format!("lexical: allocate admitted text shard: {error}"))
+    })?;
+    bytes.resize(admitted, 0);
+    let mut offset = 0_u64;
+    for chunk in bytes.chunks_mut(64 * 1024) {
+        if let Some(budget) = budget {
+            budget.checkpoint("lexical:text-shard-bytes")?;
+        }
+        file.read_exact_at(chunk, offset).map_err(|error| {
             if matches!(
                 error.kind(),
-                std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+                ErrorKind::UnexpectedEof | ErrorKind::InvalidData
             ) {
                 crate::index_store::sidecar_corrupt(
                     generation_dir,
@@ -217,6 +332,24 @@ fn load_shard_with(
                 CoreError::Storage(format!("lexical: read shard {}: {error}", path.display()))
             }
         })?;
+        offset = offset
+            .checked_add(count_usize(chunk.len()))
+            .ok_or_else(|| CoreError::Storage("lexical: shard read offset overflow".into()))?;
+    }
+    if file
+        .read_at(&mut [0_u8; 1], entry.bytes)
+        .map_err(|error| CoreError::Storage(format!("lexical: read shard tail: {error}")))?
+        != 0
+    {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &name,
+            "shard grew during read",
+        ));
+    }
+    if let Some(budget) = budget {
+        budget.checkpoint("lexical:text-shard-proof")?;
+    }
     let length = u64::try_from(bytes.len()).map_err(|err| {
         CoreError::Storage(format!(
             "lexical: text authority shard {} length: {err}",
@@ -268,6 +401,211 @@ mod path_tests {
 
     use super::load_shard;
     use crate::text_authority::manifest::{ShardEntry, text_authority_dir};
+
+    fn paged_fixture() -> Result<
+        (
+            crate::test_support::GenerationFixture,
+            super::ShardedTextAuthority,
+            Vec<ShardEntry>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let generation = crate::test_support::generation_fixture()?;
+        let docs = [
+            (1, "alpha beta"),
+            (2048, "gamma delta"),
+            (4097, "alpha gamma"),
+        ]
+        .into_iter()
+        .map(|(doc_id, text)| crate::text_authority::AddedTextDoc {
+            doc_id,
+            candidate_id: format!("candidate-{doc_id}"),
+            text: text.into(),
+        })
+        .collect();
+        let _written = crate::text_authority::rebuild(
+            generation.path(),
+            quanta_index_contract::ManifestGeneration::new(1),
+            docs,
+            None,
+            4097,
+        )?;
+        let manifest =
+            crate::text_authority::read_manifest(generation.path())?.ok_or("missing manifest")?;
+        // Use the same proof path that supplies the open visitor.
+        let root = crate::sealed_generation::open_generation_dir_nofollow(generation.path())?;
+        let mut documents = std::collections::BTreeMap::new();
+        let mut proved = Vec::new();
+        for entry in &manifest.shards {
+            let (body, file) = super::load_shard_file_at(&root, generation.path(), entry, None)?;
+            documents.extend(super::document_identities(&body));
+            proved.push(super::ProvedTextShard {
+                entry: entry.clone(),
+                file,
+            });
+        }
+        let authority = super::ShardedTextAuthority::from_proved_files(
+            &root,
+            generation.path(),
+            proved,
+            documents,
+        )?;
+        Ok((generation, authority, manifest.shards))
+    }
+
+    fn budget() -> quanta_index_core::RequestBudgetV1 {
+        quanta_index_core::RequestBudgetV1::unbounded()
+    }
+
+    fn substring_ids(authority: &super::ShardedTextAuthority) -> Result<Vec<u64>, CoreError> {
+        let mut ids = Vec::new();
+        authority.visit_shards(&budget(), |shard| {
+            let found = quanta_index_lq_trigram::query_raw_substring(
+                &shard.trigram_index(false),
+                b"alpha",
+                &shard.resolver(false),
+            )
+            .map_err(|error| CoreError::Storage(error.to_string()))?;
+            ids.extend(found.into_iter().map(|id| id.0));
+            Ok(())
+        })?;
+        Ok(ids)
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "independent fixed regression assertions"
+    )]
+    fn paged_text_authority_keeps_descriptors_and_fixed_cross_shard_answers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_generation, authority, entries) = paged_fixture()?;
+        assert_eq!(entries.len(), 3);
+        assert!(authority.matches_document(1, "candidate-1", "alpha beta"));
+        assert!(!authority.matches_document(1, "other-candidate", "alpha beta"));
+        assert!(!authority.matches_document(1, "candidate-1", "alpha gamma"));
+        assert!(!authority.matches_document(2, "candidate-1", "alpha beta"));
+        assert!(
+            authority.heap_bytes_estimate() < 4096,
+            "decoded text postings remained resident"
+        );
+        assert_eq!(substring_ids(&authority)?, vec![1, 4097]);
+        let mut phrase_ids = Vec::new();
+        authority.visit_shards(&budget(), |shard| {
+            let found = quanta_index_lq_positions::query_phrase(
+                &shard.positions_index(true),
+                &["alpha", "beta"],
+            )
+            .map_err(|error| CoreError::Storage(error.to_string()))?;
+            phrase_ids.extend(found.matches.into_iter().map(|found| found.doc_id.0));
+            Ok(())
+        })?;
+        assert_eq!(phrase_ids, vec![1]);
+        assert_eq!(substring_ids(&authority)?, vec![1, 4097]);
+        assert!(
+            authority.heap_bytes_estimate() < 4096,
+            "query cached a decoded shard"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "independent fixed regression assertions"
+    )]
+    fn paged_text_authority_is_anchored_after_generation_path_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (generation, authority, _) = paged_fixture()?;
+        let moved = generation.path().with_file_name("old-g1");
+        std::fs::rename(generation.path(), &moved)?;
+        std::fs::create_dir(generation.path())?;
+        std::fs::create_dir(generation.path().join("text-authority"))?;
+        assert_eq!(substring_ids(&authority)?, vec![1, 4097]);
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "independent fixed regression assertions"
+    )]
+    fn paged_text_authority_refuses_inode_corruption_and_survives_path_redirect()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for redirect in [false, true] {
+            let (generation, authority, entries) = paged_fixture()?;
+            let entry = entries.first().ok_or("missing shard")?;
+            let path = entry.path(generation.path());
+            let original = std::fs::read(&path)?;
+            if redirect {
+                let outside = generation.track_path().join("outside");
+                std::fs::write(&outside, original)?;
+                std::fs::remove_file(&path)?;
+                std::os::unix::fs::symlink(&outside, &path)?;
+            } else {
+                std::fs::write(&path, vec![0; original.len()])?;
+            }
+            if redirect {
+                assert_eq!(substring_ids(&authority)?, vec![1, 4097]);
+            } else {
+                assert!(matches!(
+                    substring_ids(&authority),
+                    Err(CoreError::Typed {
+                        code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                        ..
+                    })
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "independent fixed regression assertions"
+    )]
+    fn paged_text_authority_checks_cancel_before_reading_another_shard()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_generation, authority, _) = paged_fixture()?;
+        let budget = budget();
+        let mut visits = 0;
+        let result = authority.visit_shards(&budget, |_shard| {
+            visits += 1;
+            budget.cancel_handle().cancel();
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(visits, 1);
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "independent fixed regression assertions"
+    )]
+    fn pinned_text_shards_survive_unlink_and_concurrent_positioned_reads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (generation, authority, _) = paged_fixture()?;
+        std::fs::remove_dir_all(generation.path())?;
+        assert_eq!(substring_ids(&authority)?, vec![1, 4097]);
+        std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+            let workers = (0..8)
+                .map(|_| scope.spawn(|| substring_ids(&authority)))
+                .collect::<Vec<_>>();
+            for worker in workers {
+                let actual = worker
+                    .join()
+                    .map_err(|_panic| "positioned-read worker panicked")??;
+                if actual != vec![1, 4097] {
+                    return Err("concurrent positioned read changed fixed source answers".into());
+                }
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
 
     #[test]
     fn shard_read_refuses_redirect_before_loading_bytes() -> Result<(), Box<dyn std::error::Error>>

@@ -84,6 +84,7 @@ impl ShardBody {
     /// monotone in the real cost, which is what a byte budget needs; the
     /// on-disk CBOR is smaller than this by the folded copy and the
     /// expanded postings.
+    #[cfg(test)]
     pub(crate) fn heap_bytes_estimate(&self) -> u64 {
         const ENTRY_OVERHEAD: u64 = 64;
         let mut bytes = 0_u64;
@@ -408,6 +409,7 @@ impl ShardBuilders {
 }
 
 /// A length as bytes; a length past `u64` saturates rather than wraps.
+#[cfg(test)]
 fn len_u64(length: usize) -> u64 {
     u64::try_from(length).map_or(u64::MAX, |value| value)
 }

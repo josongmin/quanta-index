@@ -3066,7 +3066,7 @@ impl E2eRuntime {
             driver.shutdown.store(true, Ordering::Release);
             if let Some(join) = driver.join.take() {
                 match join.join() {
-                    Ok(Ok(())) => message.push_str("; driver exited cleanly before response"),
+                    Ok(Ok(())) => message.push_str("; driver shut down after transport failure"),
                     Ok(Err(driver_err)) => {
                         message.push_str("; driver exited with error: ");
                         message.push_str(&driver_err.to_string());
@@ -3605,21 +3605,15 @@ fn cap_observation(observed: String) -> String {
     format!("{prefix}…[truncated]")
 }
 
-/// Preserve both the caller's per-request limit and the readiness window.
-///
-/// Every IPC attempt receives the earliest deadline, never a fresh full
-/// request timeout after the readiness window has already been spent.
-fn readiness_attempt_deadline(
-    client_io: ClientIoPolicy,
-    now: Instant,
-    readiness_deadline: Instant,
-) -> Instant {
-    let request_deadline = now
-        .checked_add(client_io.request_timeout())
-        .unwrap_or(readiness_deadline);
-    readiness_deadline
-        .min(request_deadline)
-        .min(client_io.absolute_deadline().unwrap_or(readiness_deadline))
+/// One owner deadline covers all query attempts; retries cannot refresh it.
+fn query_attempt_deadline(client_io: ClientIoPolicy, now: Instant) -> Result<Instant, IpcError> {
+    match client_io.absolute_deadline() {
+        Some(deadline) if deadline > now => Ok(deadline),
+        Some(_) => Err(IpcError::ClientIoDeadlineElapsed),
+        None => now
+            .checked_add(client_io.request_timeout())
+            .ok_or(IpcError::InvalidClientIoTimeout),
+    }
 }
 
 fn wait_for_query_response(
@@ -3628,49 +3622,48 @@ fn wait_for_query_response(
     client_io: ClientIoPolicy,
     ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
 ) -> Result<SearchPlaneQueryIpcResponseEnvelope, IpcError> {
-    let readiness_deadline = Instant::now()
-        .checked_add(READINESS_TIMEOUT)
-        .ok_or_else(|| IpcError::ReadinessTimeout {
-            timeout: READINESS_TIMEOUT,
-            attempts: 0,
-            last: "readiness deadline is not representable".to_string(),
-        })?;
+    wait_for_query_response_with_readiness_window(
+        socket,
+        envelope,
+        client_io,
+        READINESS_TIMEOUT,
+        ready,
+    )
+}
+
+/// Readiness bounds retries of transient responses, not an admitted query's I/O.
+fn wait_for_query_response_with_readiness_window(
+    socket: &Path,
+    envelope: &SearchPlaneQueryIpcRequestEnvelope,
+    client_io: ClientIoPolicy,
+    readiness_timeout: Duration,
+    ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
+) -> Result<SearchPlaneQueryIpcResponseEnvelope, IpcError> {
+    let started = Instant::now();
+    let query_deadline = query_attempt_deadline(client_io, started)?;
+    let readiness_deadline = started
+        .checked_add(readiness_timeout)
+        .ok_or(IpcError::InvalidClientIoTimeout)?
+        .min(query_deadline);
     let mut attempts = 0_u64;
     let mut last = String::from("no attempt completed");
     loop {
-        let now = Instant::now();
-        if now >= readiness_deadline {
+        if Instant::now() >= readiness_deadline {
             break;
         }
-        let attempt_deadline = readiness_attempt_deadline(client_io, now, readiness_deadline);
-        let attempt_io = match ClientIoPolicy::try_with_deadline(attempt_deadline) {
-            Ok(policy) => policy,
-            Err(_) if Instant::now() >= readiness_deadline => break,
-            Err(error) if client_io.absolute_deadline().is_some() => return Err(error),
-            Err(error) => {
-                // A stricter per-attempt budget can expire while this
-                // thread is descheduled. It does not spend the shared
-                // readiness window or authorize a terminal response.
-                last = format!("transport error: {error}");
-                continue;
-            }
-        };
+        let attempt_io = ClientIoPolicy::try_with_deadline(query_deadline)?;
         attempts = attempts.saturating_add(1);
         match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, envelope, attempt_io) {
             Ok(response) => {
                 let observed = describe_query_response_payload(&response.payload);
                 if ready(&response) {
-                    if Instant::now() < readiness_deadline {
-                        return Ok(response);
-                    }
-                    last = format!("ready after deadline {observed}");
-                    break;
+                    // The IPC owner checks this deadline after decoding the response.
+                    return Ok(response);
                 }
                 last = format!("not-ready {observed}");
             }
-            Err(transport_error) => {
-                last = format!("transport error: {transport_error}");
-            }
+            Err(error) if Instant::now() >= query_deadline => return Err(error),
+            Err(error) => last = format!("transport error: {error}"),
         }
         let remaining = readiness_deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -3679,7 +3672,7 @@ fn wait_for_query_response(
         thread::sleep(READINESS_POLL_INTERVAL.min(remaining));
     }
     Err(IpcError::ReadinessTimeout {
-        timeout: READINESS_TIMEOUT,
+        timeout: readiness_deadline.saturating_duration_since(started),
         attempts,
         last: cap_observation(last),
     })
@@ -4231,44 +4224,207 @@ mod teardown_fault_tests {
 
 #[cfg(test)]
 mod readiness_deadline_tests {
+    use super::query_attempt_deadline;
+    use quanta_index_ipc::ClientIoPolicy;
     use std::time::{Duration, Instant};
 
-    use quanta_index_ipc::ClientIoPolicy;
+    type SocketAnswerFixture = (
+        tempfile::TempDir,
+        std::thread::JoinHandle<Result<(), String>>,
+    );
 
-    use super::readiness_attempt_deadline;
+    fn delayed_socket_answer(
+        delay: Duration,
+        code: quanta_index_contract::SearchPlaneErrorCodeV2,
+    ) -> Result<SocketAnswerFixture, Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        let temp = tempfile::tempdir()?;
+        let listener = std::os::unix::net::UnixListener::bind(temp.path().join("q.sock"))?;
+        listener.set_nonblocking(true)?;
+        let join = std::thread::spawn(move || {
+            let accept_deadline = Instant::now()
+                .checked_add(Duration::from_secs(5))
+                .ok_or("fixture accept deadline overflow")?;
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= accept_deadline {
+                            return Err("socket fixture never received a connection".into());
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            };
+            stream
+                .set_nonblocking(false)
+                .map_err(|error| error.to_string())?;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .map_err(|error| error.to_string())?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .map_err(|error| error.to_string())?;
+            let request: quanta_index_contract::SearchPlaneQueryIpcRequestEnvelope =
+                quanta_index_ipc::decode_request(&mut stream).map_err(|error| error.to_string())?;
+            std::thread::sleep(delay);
+            let response = quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope {
+                request_id: request.request_id,
+                payload: quanta_index_contract::SearchPlaneQueryIpcResponse::Error(
+                    quanta_index_contract::SearchPlaneIpcError {
+                        code,
+                        message: "fixed response".into(),
+                        repair: None,
+                    },
+                ),
+            };
+            let bytes =
+                quanta_index_ipc::encode_response(&response).map_err(|error| error.to_string())?;
+            // A deadline case deliberately closes the client before this write.
+            if let Err(error) = stream.write_all(&bytes)
+                && !matches!(
+                    error.kind(),
+                    std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                )
+            {
+                return Err(error.to_string());
+            }
+            Ok(())
+        });
+        Ok((temp, join))
+    }
+
+    fn request() -> quanta_index_contract::SearchPlaneQueryIpcRequestEnvelope {
+        quanta_index_contract::SearchPlaneQueryIpcRequestEnvelope {
+            request_id: 1,
+            payload: quanta_index_contract::SearchPlaneQueryIpcRequest::Text(
+                quanta_index_contract::TextQueryRequest {
+                    syntax: quanta_index_contract::TextQuerySyntax::Native,
+                    query_text: "needle".into(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                    generation: None,
+                    generation_selector: None,
+                    top_k: 10,
+                    cursor: None,
+                },
+            ),
+        }
+    }
 
     #[test]
-    fn every_attempt_uses_the_earliest_owner_deadline() {
-        let now = Instant::now();
-        let readiness_deadline = now + Duration::from_secs(15);
-        let long_io = ClientIoPolicy::try_new(Duration::from_secs(30))
-            .expect("a positive request timeout is valid");
-        assert_eq!(
-            readiness_attempt_deadline(long_io, now, readiness_deadline),
-            readiness_deadline,
-            "a 30-second IPC limit cannot extend a 15-second readiness window"
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "independent socket and owner-deadline assertions"
+    )]
+    fn ready_socket_response_can_outlast_readiness_but_not_query_timeout()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::SearchPlaneErrorCodeV2 as Code;
+        let (temp, join) = delayed_socket_answer(Duration::from_millis(100), Code::InvalidRequest)?;
+        let result = super::wait_for_query_response_with_readiness_window(
+            &temp.path().join("q.sock"),
+            &request(),
+            ClientIoPolicy::try_new(Duration::from_secs(2))?,
+            Duration::from_millis(20),
+            super::query_response_ready,
         );
-
-        let short_io = ClientIoPolicy::try_new(Duration::from_secs(2))
-            .expect("a positive request timeout is valid");
-        assert_eq!(
-            readiness_attempt_deadline(short_io, now, readiness_deadline),
-            now + Duration::from_secs(2),
-            "a stricter per-request limit remains effective"
+        join.join()
+            .map_err(|panic| format!("socket fixture panicked: {panic:?}"))??;
+        let response = result?;
+        assert_eq!(response.request_id, 1);
+        assert!(
+            matches!(response.payload, quanta_index_contract::SearchPlaneQueryIpcResponse::Error(error) if error.code == Code::InvalidRequest)
         );
+        Ok(())
+    }
 
-        let caller_deadline = now + Duration::from_secs(3_600);
-        let absolute_io = ClientIoPolicy::try_with_deadline(caller_deadline)
-            .expect("a future absolute deadline is valid");
-        assert_eq!(
-            readiness_attempt_deadline(
-                absolute_io,
-                Instant::now(),
-                now + Duration::from_secs(7_200)
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "independent socket and owner-deadline assertions"
+    )]
+    fn not_ready_response_cannot_extend_readiness_window() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (temp, join) = delayed_socket_answer(
+            Duration::from_millis(100),
+            quanta_index_contract::SearchPlaneErrorCodeV2::NotReady,
+        )?;
+        let result = super::wait_for_query_response_with_readiness_window(
+            &temp.path().join("q.sock"),
+            &request(),
+            ClientIoPolicy::try_new(Duration::from_secs(2))?,
+            Duration::from_millis(20),
+            super::query_response_ready,
+        );
+        join.join()
+            .map_err(|panic| format!("socket fixture panicked: {panic:?}"))??;
+        assert!(matches!(
+            result,
+            Err(quanta_index_ipc::IpcError::ReadinessTimeout { attempts: 1, .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "independent socket and owner-deadline assertions"
+    )]
+    fn socket_read_obeys_shorter_absolute_query_deadline() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (temp, join) = delayed_socket_answer(
+            Duration::from_millis(200),
+            quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest,
+        )?;
+        let result = super::wait_for_query_response_with_readiness_window(
+            &temp.path().join("q.sock"),
+            &request(),
+            ClientIoPolicy::try_with_deadline(
+                Instant::now()
+                    .checked_add(Duration::from_millis(50))
+                    .ok_or("fixture deadline overflow")?,
+            )?,
+            Duration::from_secs(2),
+            super::query_response_ready,
+        );
+        join.join()
+            .map_err(|panic| format!("socket fixture panicked: {panic:?}"))??;
+        assert!(
+            matches!(
+                result,
+                Err(quanta_index_ipc::IpcError::Timeout {
+                    operation: quanta_index_ipc::IpcIoOperation::Read,
+                    ..
+                })
             ),
-            caller_deadline,
-            "a caller's absolute deadline remains effective"
+            "late socket response did not produce a typed read timeout: {result:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "independent socket and owner-deadline assertions"
+    )]
+    fn query_io_uses_declared_timeout_and_preserves_absolute_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let now = Instant::now();
+        for seconds in [2, 30, 600] {
+            let io = ClientIoPolicy::try_new(Duration::from_secs(seconds))?;
+            assert_eq!(
+                query_attempt_deadline(io, now)?,
+                now.checked_add(Duration::from_secs(seconds))
+                    .ok_or("fixture deadline overflow")?
+            );
+        }
+        let deadline = now
+            .checked_add(Duration::from_secs(3600))
+            .ok_or("fixture deadline overflow")?;
+        let io = ClientIoPolicy::try_with_deadline(deadline)?;
+        assert_eq!(query_attempt_deadline(io, Instant::now())?, deadline);
+        assert_eq!(query_attempt_deadline(io, Instant::now())?, deadline);
+        Ok(())
     }
 }
 

@@ -115,13 +115,13 @@ impl TantivySearcher {
                     return self.compile_regex_content_leaf(text, options, budget);
                 }
                 if matches!(leaf, LqLeaf::RawString(_)) {
-                    let members = self.raw_substring_match_set(text, options)?;
+                    let members = self.raw_substring_match_set(text, options, budget)?;
                     return Ok(self.authority_restriction_query(Arc::new(members)));
                 }
                 self.compile_keyword_leaf(text, options, include_path_terms)
             }
             LqLeaf::Phrase(text) => {
-                let members = self.phrase_match_set(text, options)?;
+                let members = self.phrase_match_set(text, options, budget)?;
                 Ok(self.authority_restriction_query(Arc::new(members)))
             }
             LqLeaf::Regex(text) => self.compile_regex_content_leaf(text, options, budget),

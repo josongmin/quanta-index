@@ -355,14 +355,12 @@ impl TantivySearcher {
                 &candidate.candidate_id,
             )
             .map_err(|error| integrity(&format!("invalid selected text authority id: {error}")))?;
-            let authoritative = authority
-                .doc(id)
-                .ok_or_else(|| integrity("selected text authority member missing"))?;
-            if authoritative.candidate_id != candidate.candidate_id
-                || authoritative.indexed_text != indexed
-            {
+            if !authority.matches_document(id, &candidate.candidate_id, indexed) {
                 return Err(integrity("selected document disagrees with text authority"));
             }
+            context
+                .request
+                .checkpoint("lexical:selected-authority-identity")?;
             (Some(start), Some(digest))
         } else {
             (None, None)

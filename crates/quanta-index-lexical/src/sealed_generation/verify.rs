@@ -56,7 +56,19 @@ use crate::{OverlaySnapshot, TANTIVY_INDEX_META_FILE_NAME};
 pub(crate) trait SealedGenerationVisitor {
     /// One text-authority shard, proved and decoded, in ascending index
     /// order.
-    fn text_authority_shard(&mut self, index: u64, body: ShardBody) -> Result<(), CoreError>;
+    fn text_authority_shard(
+        &mut self,
+        shard: crate::text_authority::ProvedTextShard,
+        body: ShardBody,
+    ) -> Result<(), CoreError>;
+
+    fn text_authority_complete(
+        &mut self,
+        _root: &File,
+        _directory: &Path,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
 
     /// Verified full-file sources. Only a query-open visitor builds the
     /// in-memory search index; validation visitors discard these bytes.
@@ -75,7 +87,11 @@ pub(crate) trait SealedGenerationVisitor {
 pub(crate) struct DiscardingVisitor;
 
 impl SealedGenerationVisitor for DiscardingVisitor {
-    fn text_authority_shard(&mut self, _index: u64, _body: ShardBody) -> Result<(), CoreError> {
+    fn text_authority_shard(
+        &mut self,
+        _shard: crate::text_authority::ProvedTextShard,
+        _body: ShardBody,
+    ) -> Result<(), CoreError> {
         Ok(())
     }
 
@@ -962,11 +978,18 @@ fn verify_text_authority<V: SealedGenerationVisitor>(
     ensure_text_authority_directory(root, generation_dir, &dir, files)?;
     for entry in &manifest.shards {
         checkpoint(budget, "lexical:cold-open:text-shard")?;
-        let body = crate::text_authority::load_shard_at(root, generation_dir, entry)?;
+        let (body, file) =
+            crate::text_authority::load_shard_file_at(root, generation_dir, entry, budget)?;
         checkpoint(budget, "lexical:cold-open:text-shard")?;
-        visitor.text_authority_shard(entry.index, body)?;
+        visitor.text_authority_shard(
+            crate::text_authority::ProvedTextShard {
+                entry: entry.clone(),
+                file,
+            },
+            body,
+        )?;
     }
-    Ok(())
+    visitor.text_authority_complete(root, generation_dir)
 }
 
 /// The sealed manifest's text-authority section and the text-authority

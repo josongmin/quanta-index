@@ -207,8 +207,33 @@ impl LexicalAdapter {
 }
 
 impl SealedGenerationVisitor for LoadedGeneration {
-    fn text_authority_shard(&mut self, index: u64, body: ShardBody) -> Result<(), CoreError> {
-        self.shards.push((index, body));
+    fn text_authority_shard(
+        &mut self,
+        shard: text_authority::ProvedTextShard,
+        body: ShardBody,
+    ) -> Result<(), CoreError> {
+        self.shards.push(shard);
+        for (id, identity) in text_authority::document_identities(&body) {
+            if self.documents.insert(id, identity).is_some() {
+                return Err(CoreError::InvalidContract(
+                    "lexical: duplicate proved text document".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn text_authority_complete(
+        &mut self,
+        root: &std::fs::File,
+        directory: &Path,
+    ) -> Result<(), CoreError> {
+        self.text_authority = Some(ShardedTextAuthority::from_proved_files(
+            root,
+            directory,
+            std::mem::take(&mut self.shards),
+            std::mem::take(&mut self.documents),
+        )?);
         Ok(())
     }
 
@@ -449,12 +474,7 @@ impl LexicalAdapter {
         let ranked_keys = verified.ranked_keys;
         let live_bm25 = verified.live_bm25;
         let overlay_bytes = loaded.overlay_heap_bytes_estimate()?;
-        let text_authority = verified
-            .manifest
-            .text_authority
-            .as_ref()
-            .map(|_files| ShardedTextAuthority::from_proved_shards(loaded.shards))
-            .transpose()?;
+        let text_authority = loaded.text_authority;
         let overlays: Vec<OverlayFamily> = verified
             .manifest
             .overlay_commitments()

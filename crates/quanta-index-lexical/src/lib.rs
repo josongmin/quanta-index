@@ -192,7 +192,7 @@ use crate::regex::RegexPolicy;
 
 use crate::regex_match_cache::RegexMatchCache;
 
-use crate::text_authority::{AddedTextDoc, ShardBody, ShardedTextAuthority, TextAuthorityManifest};
+use crate::text_authority::{AddedTextDoc, ShardedTextAuthority, TextAuthorityManifest};
 
 use tantivy::schema::{Field, Schema};
 
@@ -535,11 +535,12 @@ const fn op_writes_generation(op: &LexicalChannelOp) -> bool {
     op_mutates_index(op) || matches!(op, LexicalChannelOp::FullBundle(_))
 }
 
-/// The open's visitor: keeps every proved and decoded file to become a
-/// searcher.
+/// The open visitor retains authenticated text descriptors and serving metadata.
 #[derive(Default)]
 struct LoadedGeneration {
-    shards: Vec<(u64, ShardBody)>,
+    shards: Vec<text_authority::ProvedTextShard>,
+    documents: BTreeMap<u64, text_authority::TextDocIdentity>,
+    text_authority: Option<ShardedTextAuthority>,
     file_authority: Option<file_authority::FileAuthority>,
     repo_metadata: Option<LexicalRepoMetadataPayload>,
     repo_commit_recency: Option<RepoCommitRecencyShard>,
@@ -578,11 +579,9 @@ struct TantivySearcher {
     repo_description: Option<RepoDescriptionShard>,
     file_ownership: Option<FileOwnershipShard>,
     file_contributor: Option<FileContributorShard>,
-    /// What this handle keeps resident, estimated at open: the index and
-    /// snapshot files it maps or decoded (each inode once) plus the decoded
-    /// text authority's heap footprint — not the authority's on-disk CBOR,
-    /// which is smaller than the folded copies and expanded postings the
-    /// handle actually holds.
+    /// Retained index/snapshot bytes (each inode once), decoded serving metadata,
+    /// and compact text-authority identities and pinned shard descriptors.
+    /// Transient query shard bodies are request scratch, not retained cache bytes.
     resident_bytes_estimate: u64,
     /// What this handle is, for the read view: the sealed manifest digest
     /// the open proved, the normalizer, and which of the six source-repo
