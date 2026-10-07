@@ -232,6 +232,8 @@ RCA: source-key bucket마다 같은 trigram의 offset/count/hash를 모두 상�
 생산자/root/cold verifier가 같은 page 단위 산식을 사용한다. 32MiB 한도는 유지하며, posting wire v2와 새 policy identity가 구형 root를 rebuild-required로 거절한다.
 `VERIFIED`: `./scripts/cargow --lane test-fast-lane nextest run -p quanta-index-lexical --lib --test f15_file_authority --all-features --locked -E 'test(file_authority::) | binary(f15_file_authority)'` 41/41;
 `./scripts/cargow --lane clippy-lane clippy -p quanta-index-lexical --all-targets --all-features --locked -- -D warnings` 통과.
+고정 source `b262925b`의 daemon scope도 `VERIFIED`: `just rust-test-e2e test-fast-lane` 4binary·214/214 통과·1 skipped, Nextest `3d7dac7a-73f7-4c10-bc18-a4d421dfb7ac`.
+같은 source의 debug runner/searchd build와1529file source closure 재검증은 통과했고, binary copies/SHA는 새 실행 root의 `binary-pins.json`에 고정했다. 최신 main 전체/release qualification은 아니다.
 새 source 실제 재실행은 `/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b`에서 진행한다. Owner 회귀는 실제4repo 용량 proof를 대신하지 않는다.
 최종 `completed-summary.json` 및 `unjudged-native-union.json`에72tasks·191개 task/file 독립 판단 공백을 결속해 E1 입력으로 남겼다.
 원191개에 대한 두 blank review 입력은 `/Users/songmin/.codex/task-evidence/ready9-unjudged-review-inputs-20261007-01a10d0b`에 원문·해시/threshold를 결속했고 grade/reviewer ID는 null이다.
