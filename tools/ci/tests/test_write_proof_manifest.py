@@ -66,18 +66,11 @@ def test_terminal_json_preserves_unambiguous_values() -> None:
 
 
 def _cross_repo_custody_windows(source: str) -> dict[str, tuple[int, int]]:
-    """Locate the producer, list, run, and final custody boundaries."""
+    """Locate shell custody around the typed runner and final publication."""
     markers = {
-        "r5_branch": 'if [[ -n "${QUANTA_P11_R5_EVIDENCE_ROOT:-}" ]]; then',
+        "paired_source": 'cd -- "$semantica_root"',
         "r5_producer": 'python3 "$quanta_root/tools/ci/paired_r5_result.py"',
-        "fallback": "\nelse\n",
-        "runtime_list": "--test index_sdk_ingress_publish_contract_test -- --list",
-        "runtime_inventory": "| rg '^index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1: test$'",
-        "runtime_run": "  index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1 \\\n",
-        "kernel_list": "--features index-sdk-ingress-surface --lib -- --list",
-        "kernel_inventory": "| rg '^index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2: test$'",
-        "kernel_run": "  index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2 \\\n",
-        "fallback_end": '\nfi\nrequire_frozen_source "$quanta_root"',
+        "r5_end": '--runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution"\n',
         "resolution_after": "runtime_resolution_after=",
         "resolution_drift_end": "  printf 'resolved cross-repo dependency identities changed during proof\\n' >&2\n  exit 1\nfi\n",
         "final_output": "printf 'paired-daemon-sha256:",
@@ -85,12 +78,8 @@ def _cross_repo_custody_windows(source: str) -> dict[str, tuple[int, int]]:
     positions = {name: source.index(marker) for name, marker in markers.items()}
     assert list(positions.values()) == sorted(positions.values())
     boundaries = (
-        ("r5-producer", "r5_branch", "r5_producer"),
-        ("runtime-list", "fallback", "runtime_list"),
-        ("runtime-run", "runtime_inventory", "runtime_run"),
-        ("kernel-list", "runtime_run", "kernel_list"),
-        ("kernel-run", "kernel_inventory", "kernel_run"),
-        ("after-resolution", "fallback_end", "resolution_after"),
+        ("r5-producer", "paired_source", "r5_producer"),
+        ("after-resolution", "r5_end", "resolution_after"),
         ("final-output", "resolution_drift_end", "final_output"),
     )
     return {
@@ -125,16 +114,12 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     script = REPO_ROOT / "scripts/verify-repomap-cross-repo.sh"
     subprocess.run(["bash", "-n", str(script)], check=True, capture_output=True, text=True)
     source = script.read_text()
-    target = "index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1"
-    assert source.count(target) == 2, "the inventory guard and exact run must agree"
-    receipt_target = (
-        "index_sdk_ingress::terminal_receipt_v1::tests::"
-        "repomap_v2_receipts_require_exact_full_bundle_and_transition_v2"
-    )
-    assert source.count(receipt_target) == 2
-    assert "index_sdk_ingress_live_file_contributor_publish_and_query_roundtrip_v1" not in source
-    assert source.count("./scripts/quanta-build-cli cargo") == 5
-    assert source.count("-- --exact --nocapture") == 2
+    # The typed runner owns the exact list/run selectors. Its independent
+    # literal and behavior oracles live in test_paired_r5_result.py.
+    target = 'python3 "$quanta_root/tools/ci/paired_r5_result.py"'
+    assert source.count(target) == 1
+    assert '--qbc-lane "$r5_lane"' in source
+    assert "-- --list" not in source and "-- --exact --nocapture" not in source
     build = source.index("just rust-build-release-daemon-fresh")
     compare = source.index('binary_digest="$(python3')
     assert source.index('require_frozen_source "$quanta_root"') < build
@@ -147,10 +132,6 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     "boundary",
     (
         "r5-producer",
-        "runtime-list",
-        "runtime-run",
-        "kernel-list",
-        "kernel-run",
         "after-resolution",
         "final-output",
     ),

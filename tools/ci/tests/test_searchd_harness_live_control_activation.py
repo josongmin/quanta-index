@@ -72,13 +72,22 @@ def test_sealed_ingest_receipt_identity_reaches_composite_cas_v1() -> None:
     source = read_harness()
     runtime = rust_item_body(source, "pub struct E2eRuntime {")
     seal = rust_item_body(source, "pub fn seal_lexical_generation_for_tracks(")
-    publish = rust_item_body(source, "pub fn publish_search_corpus_batch(")
-    dispatch = rust_item_body(source, "fn dispatch_ingest_response(")
+    observed_seal = rust_item_body(source, "fn seal_lexical_generation_for_tracks_observed(")
+    publish_wrapper = rust_item_body(source, "pub fn publish_search_corpus_batch(")
+    publish = rust_item_body(source, "fn publish_search_corpus_batch_observed(")
+    dispatch_wrapper = rust_item_body(source, "fn dispatch_ingest_response(")
+    dispatch = rust_item_body(source, "fn dispatch_ingest_response_with_request_id(")
     activate = rust_item_body(source, "activate_last_sealed_generation(")
     publication = SOURCE_PUBLICATION.read_text(encoding="utf-8")
 
     assert "Option<SearchCorpusGenerationIdentityV1>" in runtime
-    assert "self.publish_search_corpus_batch(batch)?" in seal
+    assert "self.seal_lexical_generation_for_tracks_observed(tracks)" in seal
+    assert ".map(|(generation, _)| generation)" in seal
+    assert "self.publish_search_corpus_batch_observed(batch)?" in observed_seal
+    assert "self.publish_search_corpus_batch_observed(batch).map(|_| ())" in publish_wrapper
+    assert "self.dispatch_ingest_response_with_request_id(payload)" in dispatch_wrapper
+    assert ".map(|(_, response)| response)" in dispatch_wrapper
+    assert publish.count("self.dispatch_ingest_response_with_request_id(") == 2
     assert "SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome)" in publish
     assert "self.search_corpus_identity_from_sealed_receipt(" in publish
     assert "outcome.publication.target.manifest_generation" in publish

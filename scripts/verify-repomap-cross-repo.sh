@@ -79,7 +79,8 @@ cd -- "$semantica_root"
 if [[ -n "${QUANTA_P11_R5_EVIDENCE_ROOT:-}" ]]; then
   evidence_root="$QUANTA_P11_R5_EVIDENCE_ROOT"
 else
-  evidence_parent="$(mktemp -d /private/tmp/quanta-paired-r5-XXXXXX)"
+  temporary_root="$(cd -- "${TMPDIR:-/tmp}" && pwd -P)"
+  evidence_parent="$(mktemp -d "$temporary_root/quanta-paired-r5-XXXXXX")"
   evidence_root="$evidence_parent/result"
 fi
 require_binary_custody

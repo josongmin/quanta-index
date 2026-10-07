@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.ci import binary_custody
+from tools.ci import paired_r5_result as RUNNER
 from tools.ci.paired_r5_result import (
     CALLER_FEATURES,
     CASES,
@@ -214,6 +216,112 @@ def test_recipe_selected_caller_and_kernel_literals() -> None:
             "index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2",
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("replacement_boundary", "expected_runs"),
+    [(None, 2), ("before-list", 0), ("after-list", 1), ("before-run", 1), ("after-run", 2)],
+)
+@pytest.mark.parametrize("replacement_path", ["built", "provided", "custody"])
+def test_runner_checks_daemon_custody_at_each_nextest_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_boundary: str | None,
+    expected_runs: int,
+    replacement_path: str,
+) -> None:
+    root, paired = tmp_path / "quanta", tmp_path / "paired"
+    paths = {name: tmp_path / name for name in ("built", "provided", "custody")}
+    for path in paths.values():
+        path.write_bytes(b"original daemon bytes")
+        path.chmod(0o700)
+    digest = hashlib.sha256(paths["built"].read_bytes()).hexdigest()
+    custody_command = ["verify-fixture-daemon", digest, *map(str, paths.values())]
+    listed, events = _rows()
+    phases: list[str] = []
+    guards: list[str] = []
+    last_source: Path | None = None
+
+    def frozen(source: Path, _head: str) -> None:
+        nonlocal last_source
+        last_source = source
+
+    def run(command: list[str], **_kwargs):
+        if command[0] == "verify-fixture-daemon":
+            assert command == custody_command
+            boundary = (
+                "before-" + ("list" if not phases else "run")
+                if last_source == paired
+                else "after-" + phases[-1]
+            )
+            guards.append(boundary)
+            if replacement_boundary == boundary:
+                paths[replacement_path].write_bytes(b"replaced daemon bytes")
+            binary_custody.verify(command[1], [Path(path) for path in command[2:]])
+        else:
+            assert command[:4] == [
+                str(paired / "scripts/quanta-build-cli"),
+                "nextest",
+                "--lane",
+                "fixture",
+            ]
+            phases.append(command[5])
+        return SimpleNamespace(returncode=0)
+
+    capture = SimpleNamespace(
+        run=SimpleNamespace(lane="fixture", execution_root=paired, command_cwd=paired),
+        custody_payload_v1=lambda: {},
+    )
+
+    def completed(_path: Path):
+        capture.stdout = listed if phases[-1] == "list" else events
+        return SimpleNamespace(**vars(capture))
+
+    monkeypatch.setattr(RUNNER, "_frozen", frozen)
+    monkeypatch.setattr(RUNNER.subprocess, "run", run)
+    monkeypatch.setattr(
+        RUNNER, "read_locator", lambda *_: (b"locator", {"receipt_path": "/fixture/receipt.json"})
+    )
+    # Locator/content parsing has separate malformed and fixed-byte oracles.
+    # This test replaces only QBC transport, keeping the real custody verifier.
+    monkeypatch.setattr(RUNNER, "validate_locator", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(RUNNER, "_archive_capture", lambda *_: {})
+    arguments = (
+        paired,
+        root,
+        tmp_path,
+        "a" * 40,
+        "b" * 40,
+        ("caller", "pkg", "feature", "binary", "test", "selected"),
+        SimpleNamespace(read_completed_run_receipt_at_path_v1=completed),
+        SimpleNamespace(
+            LOCATOR_PATH_ENV_V1="FIXTURE_LOCATOR",
+            LOCATOR_NONCE_ENV_V1="FIXTURE_NONCE",
+            REQUEST_ENV_DIGEST_ENV_V1="FIXTURE_ENV_DIGEST",
+            EXPECTED_SOURCE_HEAD_ENV_V1="FIXTURE_SOURCE",
+        ),
+        SimpleNamespace(
+            _campaign_cargo_admission_owner_v1=lambda: SimpleNamespace(
+                campaign_source_snapshot_digest_v1=lambda _: "c" * 64
+            )
+        ),
+        custody_command,
+        "fixture",
+    )
+    if replacement_boundary is None:
+        result = RUNNER._one(*arguments)
+        assert (
+            result["nextest"]["selected"]
+            == result["nextest"]["executed"]
+            == result["nextest"]["passed"]
+            == 1
+        )
+        assert guards == ["before-list", "after-list", "before-run", "after-run"]
+    else:
+        with pytest.raises(ValueError, match="release daemon bytes changed"):
+            RUNNER._one(*arguments)
+        assert guards[-1] == replacement_boundary
+    assert len(phases) == expected_runs
 
 
 def test_locator_refuses_wrong_current_source_and_failed_process() -> None:

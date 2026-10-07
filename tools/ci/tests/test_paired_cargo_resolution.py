@@ -114,22 +114,25 @@ def test_binary_custody_refuses_symlink_and_nonprivate_destination(tmp_path):
 
 
 @pytest.mark.parametrize("mutate", [False, True])
+@pytest.mark.parametrize("temporary", ["default", "custom", "alias"])
 def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
-    resolution, tmp_path, monkeypatch, mutate
+    resolution, tmp_path, monkeypatch, mutate, temporary
 ):
-    quanta, paired, _, runtime_metadata = resolution
+    quanta, paired, _, _ = resolution
     repo_root = Path(__file__).resolve().parents[3]
-    kernel = "quanta-runtime-retrieval-kernel"
-    kernel_manifest = paired / "packages/analysis/quanta-v2/crates" / kernel / "Cargo.toml"
-    kernel_manifest.parent.mkdir()
-    kernel_manifest.write_text(f'[package]\nname = "{kernel}"\nversion = "0.1.0"\n')
-    kernel_metadata = copy.deepcopy(runtime_metadata)
-    kernel_metadata["packages"][-1].update(
-        id=kernel, name=kernel, manifest_path=str(kernel_manifest)
-    )
-    kernel_metadata["resolve"]["nodes"][-1].update(
-        id=kernel, features=["index-sdk-ingress-surface"]
-    )
+    monkeypatch.delenv("QUANTA_P11_R5_EVIDENCE_ROOT", raising=False)
+    if temporary == "default":
+        monkeypatch.delenv("TMPDIR", raising=False)
+        temporary_root = Path("/tmp").resolve()
+    else:
+        temporary_root = tmp_path / "temporary root"
+        temporary_root.mkdir()
+        named_root = temporary_root
+        if temporary == "alias":
+            named_root = tmp_path / "temporary alias"
+            named_root.symlink_to(temporary_root, target_is_directory=True)
+        monkeypatch.setenv("TMPDIR", str(named_root))
+        temporary_root = temporary_root.resolve()
     for relative in (
         "scripts/verify-repomap-cross-repo.sh",
         "tools/ci/paired_cargo_resolution.py",
@@ -154,6 +157,7 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     built = target_dir / "release/quanta-index-searchd"
     built.write_bytes(b"#!/bin/sh\nprintf original\n")
     built.chmod(0o700)
+    evidence_parent_record = tmp_path / "evidence-parent.txt"
     (quanta / "tools/ci/paired_r5_result.py").write_text(
         "import argparse, os, pathlib, subprocess\n"
         "p=argparse.ArgumentParser()\n"
@@ -163,6 +167,10 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         "a=p.parse_args(); pinned=pathlib.Path(a.custody_binary)\n"
         "assert pinned != pathlib.Path(a.built_binary)\n"
         "assert subprocess.check_output([str(pinned)]) == b'original'\n"
+        "evidence=pathlib.Path(a.evidence_root)\n"
+        f"assert evidence.parent.parent == pathlib.Path({str(temporary_root)!r})\n"
+        "assert evidence == evidence.resolve() and evidence.parent.is_dir()\n"
+        f"pathlib.Path({str(evidence_parent_record)!r}).write_text(str(evidence.parent))\n"
         f"if {mutate!r}: pathlib.Path({str(built)!r}).write_bytes(b'changed release bytes')\n"
     )
     (quanta / "scripts/cargow").write_text(
@@ -173,27 +181,6 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     bin_dir.mkdir()
     (bin_dir / "just").write_text("#!/bin/sh\nexit 0\n")
     (bin_dir / "just").chmod(0o700)
-    runtime_target = "index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1"
-    kernel_target = "index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2"
-    driver = tmp_path / "driver.py"
-    driver.write_text(
-        "import json, os, pathlib, subprocess, sys\n"
-        f"runtime = {runtime_metadata!r}\nkernel = {kernel_metadata!r}\n"
-        "args = sys.argv[1:]\n"
-        "if 'metadata' in args:\n"
-        "    print(json.dumps(kernel if any('quanta-runtime-retrieval-kernel' in arg for arg in args) else runtime))\n"
-        "elif '--list' in args:\n"
-        f"    print(({kernel_target!r} if 'quanta-runtime-retrieval-kernel' in args else {runtime_target!r}) + ': test')\n"
-        f"elif {runtime_target!r} in args:\n"
-        "    pinned = pathlib.Path(os.environ['QUANTA_INDEX_SEARCHD_BIN'])\n"
-        f"    assert pinned != pathlib.Path({str(built)!r})\n"
-        "    assert subprocess.check_output([str(pinned)]) == b'original'\n"
-        "    pass\n"
-    )
-    launcher = paired / "scripts/quanta-build-cli"
-    launcher.parent.mkdir()
-    launcher.write_text(f'#!/bin/sh\nexec python3 "{driver}" "$@"\n')
-    launcher.chmod(0o700)
     for root in (quanta, paired):
         (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
         for args in (
@@ -218,6 +205,11 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         text=True,
         capture_output=True,
     )
+    if evidence_parent_record.exists():
+        # The stub does not emit a result. Remove only its recorded fresh parent.
+        evidence_parent = Path(evidence_parent_record.read_text())
+        assert evidence_parent.parent == temporary_root
+        evidence_parent.rmdir()
     if mutate:
         assert completed.returncode != 0
         assert "release daemon bytes changed" in completed.stderr
