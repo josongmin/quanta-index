@@ -117,12 +117,21 @@ fn wait_for_scrape(
     what: &str,
     condition: impl Fn(&Scrape) -> bool,
 ) -> Result<Scrape, Box<dyn Error>> {
+    wait_for_scrape_with(|| Scrape::take(rt), bound, what, condition)
+}
+
+fn wait_for_scrape_with(
+    read: impl FnMut() -> Result<Scrape, Box<dyn Error>>,
+    bound: Duration,
+    what: &str,
+    condition: impl Fn(&Scrape) -> bool,
+) -> Result<Scrape, Box<dyn Error>> {
     match wait_for(
         &RealTicker::new(),
         bound,
         Duration::from_millis(10),
         what,
-        || Scrape::take(rt),
+        read,
         condition,
         |_| false,
     ) {
@@ -132,6 +141,111 @@ fn wait_for_scrape(
         Err(WaitError::Terminal(boxed)) => Err(boxed),
         Err(WaitError::Timeout(timeout)) => Err(Box::new(timeout)),
     }
+}
+
+fn stable_disk_refresh_window(
+    mut read: impl FnMut() -> Result<Scrape, Box<dyn Error>>,
+    bound: Duration,
+    initial: &Scrape,
+) -> Result<Scrape, Box<dyn Error>> {
+    let after = |scrape: &Scrape| -> Result<u64, Box<dyn Error>> {
+        scrape
+            .counter("maintenance_disk_refreshes_total")?
+            .checked_add(2)
+            .ok_or_else(|| "disk refresh counter overflow".into())
+    };
+    // The initial gauges can already match while an older scan is still
+    // running. Drain it before choosing the cumulative-failure baseline.
+    let drain_target = after(initial)?;
+    let drained = wait_for_scrape_with(
+        &mut read,
+        bound,
+        "disk refreshes draining the prior in-flight scan",
+        |scrape| {
+            scrape
+                .counter("maintenance_disk_refreshes_total")
+                .is_ok_and(|count| count >= drain_target)
+        },
+    )?;
+    let fresh_target = after(&drained)?;
+    let fresh = wait_for_scrape_with(
+        read,
+        bound,
+        "a completed disk refresh after draining prior work",
+        |scrape| {
+            scrape
+                .counter("maintenance_disk_refreshes_total")
+                .is_ok_and(|count| count >= fresh_target)
+        },
+    )?;
+    expect_eq(
+        "no fresh walk failed after draining prior work",
+        &fresh.counter("maintenance_disk_refresh_failures_total")?,
+        &drained.counter("maintenance_disk_refresh_failures_total")?,
+    )?;
+    Ok(fresh)
+}
+
+#[test]
+fn stable_disk_window_drains_late_history_and_refuses_a_fresh_failure() -> TestResult {
+    let snapshot = |starts, failures| Scrape {
+        counters: BTreeMap::from([
+            ("maintenance_disk_refreshes_total".to_string(), starts),
+            (
+                "maintenance_disk_refresh_failures_total".to_string(),
+                failures,
+            ),
+        ]),
+        gauges: BTreeMap::from([
+            (
+                "search_corpus_lexical_generation_disk_bytes".to_string(),
+                10.0,
+            ),
+            (
+                "search_corpus_semantic_generation_disk_bytes".to_string(),
+                20.0,
+            ),
+        ]),
+    };
+    // Cached values match before the prior scan's failure arrives. Its
+    // failure belongs to the drained history, while the new window is clean.
+    let initial = snapshot(2, 0);
+    let mut recovered = std::collections::VecDeque::from([snapshot(4, 1), snapshot(6, 1)]);
+    let fresh = stable_disk_refresh_window(
+        || {
+            recovered
+                .pop_front()
+                .ok_or_else(|| "fixed trace exhausted".into())
+        },
+        Duration::from_secs(1),
+        &initial,
+    )?;
+    expect_eq(
+        "recovered failure history",
+        &fresh.counter("maintenance_disk_refresh_failures_total")?,
+        &1,
+    )?;
+    expect_eq(
+        "cached lexical bytes",
+        &fresh.gauge("search_corpus_lexical_generation_disk_bytes")?,
+        &10.0,
+    )?;
+    let mut failed = std::collections::VecDeque::from([snapshot(4, 1), snapshot(6, 2)]);
+    let failure = stable_disk_refresh_window(
+        || {
+            failed
+                .pop_front()
+                .ok_or_else(|| "fixed trace exhausted".into())
+        },
+        Duration::from_secs(1),
+        &initial,
+    )
+    .err()
+    .ok_or("a fresh walk failure passed the stable window")?;
+    if !failure.to_string().contains("no fresh walk failed") {
+        return Err(format!("fresh failure was refused for another reason: {failure}").into());
+    }
+    Ok(())
 }
 
 /// The resident-memory gate: a writer is refused typed while the daemon
@@ -299,26 +413,9 @@ fn the_generation_disk_gauges_match_an_independent_walk_after_a_seal() -> TestRe
                     })
         },
     )?;
-    // Walks can overlap publication and refuse a changing directory. The
-    // failure counter is cumulative: bound the assertion to fresh scans of
-    // the quiescent tree instead of treating publication history as zero.
     // Refreshes count starts. Two subsequent starts on the single meter
-    // worker prove at least one whole new scan completed after convergence.
-    let refreshes = initial
-        .counter("maintenance_disk_refreshes_total")?
-        .checked_add(2)
-        .ok_or("disk refresh counter overflow")?;
-    let failures = initial.counter("maintenance_disk_refresh_failures_total")?;
-    let scrape = wait_for_scrape(
-        &mut rt,
-        bound,
-        "a completed disk refresh after the sealed tree converged",
-        |scrape| {
-            scrape
-                .counter("maintenance_disk_refreshes_total")
-                .is_ok_and(|count| count >= refreshes)
-        },
-    )?;
+    // prove one whole scan completed; drain old work before the new window.
+    let scrape = stable_disk_refresh_window(|| Scrape::take(&mut rt), bound, &initial)?;
     // Re-walk at assertion time: the tree is quiescent and the gauge must
     // still match both independent walks after a fresh completed scan.
     let lexical_now = walk_bytes(&rt.state_root().join("indexes/lexical"))?;
@@ -332,11 +429,6 @@ fn the_generation_disk_gauges_match_an_independent_walk_after_a_seal() -> TestRe
         "semantic disk gauge vs an independent walk",
         &scrape.gauge("search_corpus_semantic_generation_disk_bytes")?,
         &quanta_index_core::count_as_f64(semantic_now),
-    )?;
-    expect_eq(
-        "no fresh walk failed after the sealed tree converged",
-        &scrape.counter("maintenance_disk_refresh_failures_total")?,
-        &failures,
     )?;
     Ok(())
 }

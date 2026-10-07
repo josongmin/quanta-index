@@ -1019,6 +1019,95 @@ mod tests {
         }
     }
 
+    struct LateFailureDisk {
+        calls: AtomicU64,
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+        released: AtomicBool,
+    }
+
+    impl TrackDiskUsagePort for LateFailureDisk {
+        fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
+            budget.checkpoint("late-failure-disk:entry")?;
+            if self.calls.fetch_add(1, Ordering::AcqRel) == 1 {
+                self.entered
+                    .send(())
+                    .map_err(|error| CoreError::Storage(error.to_string()))?;
+                self.release
+                    .lock()
+                    .map_err(|error| CoreError::Storage(error.to_string()))?
+                    .recv_timeout(Duration::from_secs(10))
+                    .map_err(|error| CoreError::Storage(error.to_string()))?;
+                self.released.store(true, Ordering::Release);
+                return Err(CoreError::Storage(
+                    "controlled prior scan failure".to_string(),
+                ));
+            }
+            Ok(10)
+        }
+    }
+
+    #[test]
+    fn matching_cached_gauges_can_precede_a_prior_inflight_scan_failure() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let lexical = Arc::new(LateFailureDisk {
+            calls: AtomicU64::new(0),
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+            released: AtomicBool::new(false),
+        });
+        let lexical_port: Arc<dyn TrackDiskUsagePort> = lexical.clone();
+        let timer = MaintenanceTimer::start(
+            MaintenanceParts {
+                writer_sweep: Arc::new(CountingSweep(AtomicU64::new(0))),
+                lexical_disk_usage: lexical_port,
+                semantic_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(20))),
+                backend_probe: None,
+                inventory_admission: None,
+                integrity_scrub: None,
+            },
+            Duration::from_millis(10),
+        )
+        .expect("start-time disk values");
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("prior scan entered");
+        let tallies = timer.tallies();
+        assert_eq!(tallies.lexical_generation_disk_bytes(), 10);
+        assert_eq!(tallies.semantic_generation_disk_bytes(), 20);
+        assert_eq!(tallies.disk_refresh_failures.load(Ordering::Acquire), 0);
+        let initial = tallies.disk_refreshes.load(Ordering::Acquire);
+        assert_eq!(initial, 2, "the second scan is still blocked");
+        release_tx
+            .send(())
+            .expect("release the controlled late failure");
+        let wait_for_starts = |target| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while tallies.disk_refreshes.load(Ordering::Acquire) < target
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(
+                tallies.disk_refreshes.load(Ordering::Acquire) >= target,
+                "meter did not reach the completed-scan barrier"
+            );
+        };
+        wait_for_starts(initial + 2);
+        assert!(lexical.released.load(Ordering::Acquire));
+        let baseline = tallies.disk_refresh_failures.load(Ordering::Acquire);
+        assert_eq!(baseline, 1, "drained history includes the late failure");
+        wait_for_starts(tallies.disk_refreshes.load(Ordering::Acquire) + 2);
+        assert_eq!(
+            tallies.disk_refresh_failures.load(Ordering::Acquire),
+            baseline
+        );
+        assert_eq!(tallies.lexical_generation_disk_bytes(), 10);
+        assert_eq!(tallies.semantic_generation_disk_bytes(), 20);
+        drop(timer);
+    }
+
     struct PausedWalker {
         root: PathBuf,
         calls: AtomicU64,
