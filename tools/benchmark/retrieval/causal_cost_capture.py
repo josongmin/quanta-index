@@ -195,7 +195,10 @@ def capture(args: argparse.Namespace) -> dict:
     except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         execution["reason"] = str(error)
         if profile_created:
-            profile_path.unlink()
+            try:
+                profile_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                execution["cleanup_error"] = str(cleanup_error)
     (out_root / "execution.json").write_bytes(canonical(execution) + b"\n")
     return execution
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -154,6 +155,46 @@ def test_capture_removes_own_profile_if_epoch_changes_during_publication(
     assert result["status"] == "FAILED"
     assert "profile_sha256" not in result
     assert not (capture_fixture.args.out_root / "causal-profile.json").exists()
+
+
+@pytest.mark.parametrize("cleanup", ["already-missing", "unlink-refused"])
+def test_capture_preserves_failed_execution_when_profile_cleanup_cannot_complete(
+    cleanup: str, capture_fixture: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_capture = causal_cost_capture.capture_executable
+    original_unlink = Path.unlink
+    args = capture_fixture.args
+    profile = args.out_root / "causal-profile.json"
+
+    def mutate_published_epoch(path: Path) -> dict:
+        if profile.exists():
+            args.binary.write_bytes(b"changed executable after publication\n")
+            if cleanup == "already-missing":
+                original_unlink(profile)
+        return original_capture(path)
+
+    def refuse_profile_cleanup(path: Path, *values: object, **kwargs: object) -> None:
+        if path == profile and cleanup == "unlink-refused":
+            raise PermissionError("fixture cleanup refused")
+        original_unlink(path, *values, **kwargs)
+
+    monkeypatch.setattr(causal_cost_capture, "capture_executable", mutate_published_epoch)
+    monkeypatch.setattr(Path, "unlink", refuse_profile_cleanup)
+    result = capture(args)
+    assert result["status"] == "FAILED"
+    assert "executable epoch changed during causal replay" in result["reason"]
+    assert "profile_sha256" not in result
+    recorded = json.loads((args.out_root / "execution.json").read_text())
+    assert recorded["status"] == "FAILED"
+    assert recorded["reason"] == result["reason"]
+    assert "profile_sha256" not in recorded
+    if cleanup == "unlink-refused":
+        assert "fixture cleanup refused" in result["cleanup_error"]
+        assert recorded["cleanup_error"] == result["cleanup_error"]
+        assert profile.is_file()
+    else:
+        assert "cleanup_error" not in result
+        assert not profile.exists()
 
 
 def test_scale_command_forwards_pair_and_total_as_distinct_flags() -> None:

@@ -354,7 +354,12 @@ does not qualify power loss.
 Causal capture binds one raw binary identity/epoch before and after execution,
 replay and successful publication. Portable proof rechecks every role's admitted
 executable epoch before completion. Mutation refuses and cannot leave a passing
-profile; relocated replay preserves original receipt provenance.
+execution; relocated replay preserves original receipt provenance. A causal
+profile is admitted only with its verified execution record. Failure cleanup
+accepts an already missing owned profile; another cleanup I/O error is recorded
+separately while preserving the original refusal and `FAILED` execution. A
+profile retained because cleanup was refused is unqualified. Missing-profile
+and permission-refusal controls independently check the persisted failed record.
 
 CircleCI divides strict/MSRV, nextest/receipt, docs and whole-workspace bench
 compilation into separate jobs. The required verify node depends on all Rust
