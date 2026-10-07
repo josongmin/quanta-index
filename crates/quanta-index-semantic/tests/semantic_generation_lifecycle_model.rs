@@ -17,8 +17,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use quanta_index_contract::{
-    BatchIngestMode, ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SemanticCorpusKindV1,
-    SemanticReplaceScope,
+    BatchIngestMode, ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SearchScopeSurface,
+    SemanticCorpusKindV1, SemanticReplaceScope,
 };
 use quanta_index_core::{CoreError, RequestBudgetV1, SemanticIndexOpenPort};
 use quanta_index_semantic::{
@@ -59,7 +59,41 @@ struct RecordSpec {
     owner: &'static str,
     path: &'static str,
     vector: [f32; 3],
+    corpus: ModelCorpus,
+    kind: OwnerDocKind,
 }
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ModelCorpus {
+    Symbol,
+    Module,
+    Raw,
+}
+
+impl ModelCorpus {
+    fn wire(self) -> SemanticCorpusKindV1 {
+        match self {
+            Self::Symbol => SemanticCorpusKindV1::SymbolCard,
+            Self::Module => SemanticCorpusKindV1::ModuleCard,
+            Self::Raw => SemanticCorpusKindV1::RawCodeFallback,
+        }
+    }
+
+    // Independent fixture-domain contract; do not call the production surface mapper.
+    fn surface(self, kind: OwnerDocKind) -> Result<SearchScopeSurface, String> {
+        match (self, kind) {
+            (Self::Symbol, OwnerDocKind::Symbol)
+            | (Self::Raw, OwnerDocKind::Symbol | OwnerDocKind::Callsite) => {
+                Ok(SearchScopeSurface::Symbol)
+            }
+            (Self::Module | Self::Raw, OwnerDocKind::Module) => Ok(SearchScopeSurface::Module),
+            (Self::Raw, OwnerDocKind::Chunk) => Ok(SearchScopeSurface::Chunk),
+            _ => Err(format!("unsupported model owner/corpus {self:?}/{kind:?}")),
+        }
+    }
+}
+
+type OwnerKey = (ModelCorpus, OwnerDocKind, String);
 
 #[derive(Clone, Debug)]
 struct TombstoneSpec {
@@ -71,9 +105,9 @@ impl RecordSpec {
         embedding_record_v1(
             self.id,
             self.path,
-            OwnerDocKind::Symbol,
+            self.kind,
             self.owner,
-            SemanticCorpusKindV1::SymbolCard,
+            self.corpus.wire(),
             self.vector.to_vec(),
         )
     }
@@ -99,11 +133,19 @@ enum LifecycleCommand {
         target: u64,
     },
     RestartAndRecover,
+    Clear {
+        generation: u64,
+        base_generation: Option<u64>,
+        surface: SearchScopeSurface,
+    },
+    QueryPinned {
+        generation: u64,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
 struct ModelGeneration {
-    records_by_owner: BTreeMap<String, String>,
+    records_by_owner: BTreeMap<OwnerKey, String>,
     sealed: bool,
 }
 
@@ -170,12 +212,17 @@ impl LifecycleModel {
             ));
         }
         for tombstone in tombstones {
-            let _removed = state.records_by_owner.remove(tombstone.owner);
+            let _removed = state.records_by_owner.remove(&(
+                ModelCorpus::Symbol,
+                OwnerDocKind::Symbol,
+                tombstone.owner.into(),
+            ));
         }
         for record in replacements {
-            let _prior = state
-                .records_by_owner
-                .insert(record.owner.to_string(), record.id.to_string());
+            let _prior = state.records_by_owner.insert(
+                (record.corpus, record.kind, record.owner.into()),
+                record.id.to_string(),
+            );
         }
         if seal {
             state.sealed = true;
@@ -218,7 +265,10 @@ impl LifecycleModel {
                     .iter()
                     .map(|record| {
                         Ok(SemanticReplaceScope {
-                            scope: search_scope_v1(record.path),
+                            scope: quanta_index_contract::SearchScopeKey {
+                                doc_surface: record.corpus.surface(record.kind)?,
+                                ..search_scope_v1(record.path)
+                            },
                             scope_digest: format!("scope:{}:{}", record.path, record.owner),
                             embeddings: vec![record.embedding()?],
                             cluster_memberships: Vec::new(),
@@ -316,6 +366,46 @@ impl LifecycleModel {
                     self.assert_open_matches(adapter, active)?;
                 }
             }
+            LifecycleCommand::Clear {
+                generation,
+                base_generation,
+                surface,
+            } => {
+                let mut batch = ingest_batch_v1(
+                    repo_id(),
+                    revision_id(),
+                    Self::generation(generation),
+                    base_generation.map(Self::generation),
+                    format!("manifest:lifecycle:{generation}"),
+                    format!("lifecycle:{generation}:clear:{surface:?}"),
+                    if base_generation.is_some() {
+                        BatchIngestMode::Delta
+                    } else {
+                        BatchIngestMode::ReplaceGeneration
+                    },
+                    model_contract_v1(DIMENSION),
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                );
+                batch.clear_surfaces = vec![surface];
+                build_resident_batch_v1(adapter, &batch)?;
+                self.apply_build(generation, base_generation, &[], &[], false)?;
+                let state = self
+                    .generations
+                    .get_mut(&generation)
+                    .ok_or("missing clear generation")?;
+                let mut retained = BTreeMap::new();
+                for (key, id) in &state.records_by_owner {
+                    if key.0.surface(key.1)? != surface {
+                        let _prior = retained.insert(key.clone(), id.clone());
+                    }
+                }
+                state.records_by_owner = retained;
+            }
+            LifecycleCommand::QueryPinned { generation } => {
+                self.assert_open_matches(adapter, generation)?;
+            }
         }
         Ok(())
     }
@@ -343,12 +433,16 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
                     owner: "symbol:Session::alpha",
                     path: "src/session.rs",
                     vector: [1.0, 0.0, 0.0],
+                    corpus: ModelCorpus::Symbol,
+                    kind: OwnerDocKind::Symbol,
                 },
                 RecordSpec {
                     id: "beta-v1",
                     owner: "symbol:Session::beta",
                     path: "src/session.rs",
                     vector: [0.0, 1.0, 0.0],
+                    corpus: ModelCorpus::Symbol,
+                    kind: OwnerDocKind::Symbol,
                 },
             ],
             tombstones: Vec::new(),
@@ -365,12 +459,16 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
                     owner: "symbol:Session::alpha",
                     path: "src/session.rs",
                     vector: [0.9, 0.1, 0.0],
+                    corpus: ModelCorpus::Symbol,
+                    kind: OwnerDocKind::Symbol,
                 },
                 RecordSpec {
                     id: "gamma-v1",
                     owner: "symbol:Session::gamma",
                     path: "src/other.rs",
                     vector: [0.0, 0.0, 1.0],
+                    corpus: ModelCorpus::Symbol,
+                    kind: OwnerDocKind::Symbol,
                 },
             ],
             tombstones: Vec::new(),
@@ -394,6 +492,8 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
                 owner: "symbol:Session::beta",
                 path: "src/session.rs",
                 vector: [0.1, 0.9, 0.0],
+                corpus: ModelCorpus::Symbol,
+                kind: OwnerDocKind::Symbol,
             }],
             tombstones: vec![TombstoneSpec {
                 owner: "symbol:Session::gamma",
@@ -411,6 +511,8 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
                 owner: "symbol:Session::delta",
                 path: "src/unsealed.rs",
                 vector: [0.0, 0.5, 0.5],
+                corpus: ModelCorpus::Symbol,
+                kind: OwnerDocKind::Symbol,
             }],
             tombstones: Vec::new(),
             seal: false,
@@ -445,6 +547,8 @@ fn record(
         owner,
         path,
         vector,
+        corpus: ModelCorpus::Symbol,
+        kind: OwnerDocKind::Symbol,
     }
 }
 
@@ -605,5 +709,127 @@ fn generated_generation_lifecycle_traces_match_reference_model() -> TestResult {
         }
         assert_eq!(model.active_generation, Some(base));
     }
+    Ok(())
+}
+
+fn mixed_record(id: &'static str, corpus: ModelCorpus, kind: OwnerDocKind) -> RecordSpec {
+    RecordSpec {
+        corpus,
+        kind,
+        ..record(id, "shared-owner", "src/shared.rs", DIAGONAL_XYZ)
+    }
+}
+
+fn mixed_build(
+    generation: u64,
+    base: Option<u64>,
+    label: &str,
+    replacements: Vec<RecordSpec>,
+    seal: bool,
+) -> LifecycleCommand {
+    LifecycleCommand::Build {
+        generation,
+        base_generation: base,
+        batch_digest: format!("mixed:{generation}:{label}"),
+        replacements,
+        tombstones: Vec::new(),
+        seal,
+    }
+}
+
+#[test]
+fn mixed_corpus_clear_append_and_historical_pin_trace_matches_reference_model() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let mut adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let mut model = LifecycleModel::default();
+    // Every row deliberately shares path and owner_id: corpus and kind must remain independent keys.
+    let initial = vec![
+        mixed_record("symbol", ModelCorpus::Symbol, OwnerDocKind::Symbol),
+        mixed_record("raw-symbol", ModelCorpus::Raw, OwnerDocKind::Symbol),
+        mixed_record("raw-callsite", ModelCorpus::Raw, OwnerDocKind::Callsite),
+        mixed_record("module", ModelCorpus::Module, OwnerDocKind::Module),
+        mixed_record("raw-module", ModelCorpus::Raw, OwnerDocKind::Module),
+        mixed_record("chunk", ModelCorpus::Raw, OwnerDocKind::Chunk),
+    ];
+    let replace_module = mixed_build(
+        802,
+        Some(801),
+        "replace-module",
+        vec![mixed_record(
+            "module-v2",
+            ModelCorpus::Module,
+            OwnerDocKind::Module,
+        )],
+        false,
+    );
+    let trace = vec![
+        mixed_build(801, None, "initial", initial, true),
+        LifecycleCommand::Activate { generation: 801 },
+        replace_module.clone(),
+        replace_module,
+        LifecycleCommand::AssertUnsealedCannotActivate { generation: 802 },
+        LifecycleCommand::RestartAndRecover,
+        LifecycleCommand::QueryPinned { generation: 801 },
+        LifecycleCommand::Clear {
+            generation: 802,
+            base_generation: Some(801),
+            surface: SearchScopeSurface::Symbol,
+        },
+        LifecycleCommand::Clear {
+            generation: 802,
+            base_generation: Some(801),
+            surface: SearchScopeSurface::Symbol,
+        },
+        mixed_build(802, Some(801), "seal", Vec::new(), true),
+        LifecycleCommand::Activate { generation: 802 },
+        LifecycleCommand::QueryPinned { generation: 801 },
+        LifecycleCommand::Clear {
+            generation: 803,
+            base_generation: Some(802),
+            surface: SearchScopeSurface::Module,
+        },
+        mixed_build(
+            803,
+            Some(802),
+            "append-symbol",
+            vec![mixed_record(
+                "symbol-v2",
+                ModelCorpus::Symbol,
+                OwnerDocKind::Symbol,
+            )],
+            false,
+        ),
+        mixed_build(803, Some(802), "seal", Vec::new(), true),
+        LifecycleCommand::Activate { generation: 803 },
+        LifecycleCommand::QueryPinned { generation: 801 },
+        LifecycleCommand::QueryPinned { generation: 802 },
+        LifecycleCommand::RestartAndRecover,
+        LifecycleCommand::QueryPinned { generation: 801 },
+        LifecycleCommand::QueryPinned { generation: 802 },
+        LifecycleCommand::Rollback { target: 801 },
+        LifecycleCommand::QueryPinned { generation: 803 },
+    ];
+    for command in trace {
+        model.execute(&root, &mut adapter, command)?;
+    }
+    // Fixed independent membership goldens also qualify the model's selective-clear expectations.
+    assert_eq!(
+        model.expected_ids(801)?,
+        [
+            "chunk",
+            "module",
+            "raw-callsite",
+            "raw-module",
+            "raw-symbol",
+            "symbol"
+        ]
+    );
+    assert_eq!(
+        model.expected_ids(802)?,
+        ["chunk", "module-v2", "raw-module"]
+    );
+    assert_eq!(model.expected_ids(803)?, ["chunk", "symbol-v2"]);
+    assert_eq!(model.active_generation, Some(801));
     Ok(())
 }
