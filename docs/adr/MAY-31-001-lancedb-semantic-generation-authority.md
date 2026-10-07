@@ -140,13 +140,30 @@ The real-provider paraphrase test already exists as the ignored
 `runtime_fast_suite`. It requires the actual API key and provider grant; its
 selected execution is a proof/input gap, not missing provider test code.
 
-The source audit found no combined SDK/daemon test that sends all four exact
-text forms above through the cache, distinguishes cold/warm provider calls, then
-reopens the same persistent root under unchanged and rotated model identities.
-That specific matrix remains: assert input bytes and cache namespace/call counts,
-retain manifest model-mismatch refusal, and do not require different vectors
-for different text forms. Existing unit cache tests should be reused, not rewritten.
-This source/selector audit did not execute Rust or the live provider rail.
+The [public cache matrix](../../crates/quanta-index-searchd-runtime/src/public_cache_tests.rs)
+uses SDK/UDS, production daemon composition, the persistent cache and real
+catalog/lexical/semantic adapters. The daemon-owned `test-provider-transport`
+feature substitutes only HTTP I/O with fixed orthogonal vectors; production
+assembly has no command or environment selector for this test seam.
+The matrix sends all four exact text forms through cold/warm queries, checks
+provider inputs and hit/miss counters, and compares exact ranked IDs and score
+bits with an independently uncached run. Reopening the same root must retain
+cache entries. Changing either model ID or revision must use a separate
+namespace; rotating back must recover only the original namespace. Old pins
+retain model-mismatch refusal and provider-error precedence. Identical vectors
+for `foo_bar` and `foo bar` do not merge their cache entries.
+
+`VERIFIED` on 2026-10-07: `./scripts/cargow --lane test-daemon-lane test
+-p quanta-index-searchd-runtime --lib public_cache_tests --locked -- --nocapture`
+passed both tests (0 failures, 0 ignored; final rerun 4.29s). This is the focused public-path
+matrix with HTTP replaced and complete runtime teardown/reassembly.
+The existing `quanta-index-searchd --lib build_semantic_embedders` selector also
+passed all three composition regressions (4.08s), covering query/corpus model
+coupling and enabled/disabled cache-directory branches.
+Runtime `clippy -p quanta-index-searchd-runtime --lib --tests --all-features
+--locked -- -D warnings` also passed, including the library test configuration.
+The fixed transport does not qualify real-provider relevance, live egress or
+the upstream producer path; the ignored live-provider rail remains separate.
 
 ## Rejected alternatives
 

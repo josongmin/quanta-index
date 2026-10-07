@@ -48,6 +48,13 @@ use quanta_index_embed::{
     OpenAiEmbedTelemetrySource, OpenAiEmbeddingProvider, PotionCodeEmbeddingProvider,
     ProviderAttemptPool,
 };
+
+/// Provider HTTP test seam owned by the daemon composition crate. Consumers
+/// need no direct dependency on the concrete embedding adapter.
+#[cfg(feature = "test-provider-transport")]
+pub mod test_provider_transport {
+    pub use quanta_index_embed::{EmbeddingTransport, HttpResponse};
+}
 use quanta_index_ipc::{IpcDispatcher, IpcServerCounters, ServerAdmissionPolicy};
 use quanta_index_lq_regex::{RegexErrorCode, RegexExecutor};
 use quanta_index_lq_structural::{
@@ -591,11 +598,22 @@ struct SemanticEmbedders {
 /// provider I/O, and every settlement lands in the ledger's audit ring.
 /// An `OpenAi` profile whose egress grant is incomplete refuses boot —
 /// external egress without an explicit grant never serves.
+#[cfg(test)]
 fn build_semantic_embedders(
     profile: &SemanticEmbedderProfile,
     state_root: &Path,
     budget: &ProviderWorkBudgetConfig,
     grant: &ProviderEgressGrantConfig,
+) -> Result<SemanticEmbedders, CoreError> {
+    build_semantic_embedders_with_transport(profile, state_root, budget, grant, None)
+}
+
+fn build_semantic_embedders_with_transport(
+    profile: &SemanticEmbedderProfile,
+    state_root: &Path,
+    budget: &ProviderWorkBudgetConfig,
+    grant: &ProviderEgressGrantConfig,
+    transport: Option<Box<dyn quanta_index_embed::EmbeddingTransport>>,
 ) -> Result<SemanticEmbedders, CoreError> {
     let provider_ledger = Arc::new(ProviderBudgetLedger::new(budget.to_budget())?);
     match profile {
@@ -652,12 +670,16 @@ fn build_semantic_embedders(
         } => {
             // Thread the env-resolved operational knobs into the provider config
             // (mapping owned + unit-tested on OpenAiEmbedderTuning::provider_config).
-            let openai = OpenAiEmbeddingProvider::with_reqwest(tuning.provider_config(
+            let provider_config = tuning.provider_config(
                 model.clone(),
                 model_revision.clone(),
                 *dimension,
                 api_key.clone(),
-            ))?;
+            );
+            let openai = match transport {
+                Some(transport) => OpenAiEmbeddingProvider::new(provider_config, transport)?,
+                None => OpenAiEmbeddingProvider::with_reqwest(provider_config)?,
+            };
             // The supervisor-owned attempt pool (S21-09): one per process,
             // shared by the provider (spawn path) and the supervised drain
             // child (join path). Capped by the same concurrency knob that
@@ -1291,6 +1313,34 @@ pub struct RuntimeGuards {
 impl SearchdRuntime {
     /// Assemble the runtime from externally-supplied ports.
     pub fn assemble(config: SearchdConfig, parts: SearchdRuntimeParts) -> Result<Self> {
+        Self::assemble_inner(config, parts, None)
+    }
+
+    /// Substitute provider HTTP I/O while retaining the production provider,
+    /// normalization, cache, admission, adapters and IPC servers.
+    /// This seam has no daemon command or environment selector.
+    #[cfg(feature = "test-provider-transport")]
+    pub fn assemble_with_embedding_transport(
+        config: SearchdConfig,
+        parts: SearchdRuntimeParts,
+        transport: Box<dyn quanta_index_embed::EmbeddingTransport>,
+    ) -> Result<Self> {
+        if !matches!(
+            config.semantic_embedder_profile(),
+            SemanticEmbedderProfile::OpenAi { .. }
+        ) {
+            return Err(anyhow::anyhow!(
+                "provider HTTP test transport requires an OpenAI profile"
+            ));
+        }
+        Self::assemble_inner(config, parts, Some(transport))
+    }
+
+    fn assemble_inner(
+        config: SearchdConfig,
+        parts: SearchdRuntimeParts,
+        transport: Option<Box<dyn quanta_index_embed::EmbeddingTransport>>,
+    ) -> Result<Self> {
         let SearchdRuntimeParts {
             state_root_lease,
             search_corpus_build_port,
@@ -1505,11 +1555,12 @@ impl SearchdRuntime {
             provider_ledger,
             source_egress_policy,
             provider_attempt_pool,
-        } = build_semantic_embedders(
+        } = build_semantic_embedders_with_transport(
             config.semantic_embedder_profile(),
             &leased_state_root,
             config.provider_work_budget(),
             config.provider_egress_grant(),
+            transport,
         )
         .map_err(anyhow::Error::from)?;
         let semantic_materializer =

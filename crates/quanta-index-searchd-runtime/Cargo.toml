@@ -64,6 +64,7 @@ name = "dsl_query_matrix"
 harness = false
 
 [dev-dependencies]
+quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd", features = ["test-provider-transport"] }
 ciborium = { workspace = true }
 criterion = { workspace = true }
 quanta-index-corpus-smoke = { version = "0.1.0", path = "../quanta-index-corpus-smoke" }

@@ -92,6 +92,24 @@ fn build_runtime_with_parts(
     ) -> Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
     wrap_parts: impl FnOnce(&mut SearchdRuntimeParts),
 ) -> Result<SearchdRuntime> {
+    build_runtime_with_assembly(
+        config,
+        memory_probe,
+        wrap_lexical_builder,
+        wrap_parts,
+        SearchdRuntime::assemble,
+    )
+}
+
+fn build_runtime_with_assembly(
+    config: SearchdConfig,
+    memory_probe: Arc<dyn ProcessMemoryProbePort>,
+    wrap_lexical_builder: impl FnOnce(
+        Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+    ) -> Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+    wrap_parts: impl FnOnce(&mut SearchdRuntimeParts),
+    assemble: impl FnOnce(SearchdConfig, SearchdRuntimeParts) -> Result<SearchdRuntime>,
+) -> Result<SearchdRuntime> {
     let search_corpus_history_retention = config.search_corpus_history_retention_policy()?;
     // The one envelope (QI-BB-016) is validated before any adapter exists,
     // and its resident-memory ceiling becomes the lexical writer gate.
@@ -285,7 +303,7 @@ fn build_runtime_with_parts(
         memory_probe,
     };
     wrap_parts(&mut parts);
-    SearchdRuntime::assemble(config, parts)
+    assemble(config, parts)
 }
 
 /// The lexical writer gate for a resident-memory ceiling (QI-BB-016):
@@ -367,3 +385,5 @@ pub fn run_supervised(command: SearchdCommand) -> Result<quanta_index_searchd::S
 mod admitted_publish_timeout_tests;
 #[cfg(test)]
 mod process_slow_disk_tests;
+#[cfg(test)]
+mod public_cache_tests;
