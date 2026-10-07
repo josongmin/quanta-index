@@ -215,7 +215,7 @@ CS/SG/OG ready9 source091 capture/replay는 완료돼 있다. Ready9 NL file20ta
 `code_search_file` atoms·bare-symbol workflow는 이 NL query 계약의 실행 경로가 아니다.
 2026-10-07 source `6a3f6afc`의 native runner/searchd debug 빌드는 종료0(7m12s)이며
 9repo/180tasks의 original suite/query-pack·corpus revision/universe·Semble lock/env/model을 확인했다.
-Bat·lo native pair각40/40·독립 `run.py verdict --repo <repo> --suite <suite> --run-manifest <manifest> --out <out>`
+Bat·lo·Mocha native pair각40/40·독립 `run.py verdict --repo <repo> --suite <suite> --run-manifest <manifest> --out <out>`
 재생은 `VERIFIED`다. 공통 bridge는 file report에 없는 top-level `per_query`를 읽어 실패했고,
 `49a02c15`에서 canonical file judgments·no-answer·unjudged 분모 및 중복 observation 비교로 수리했다.
 `test_pair_capture.py`92개(80.70s), Ruff lint/format은 `VERIFIED`; file pair는 file metric만 발행한다.
@@ -227,10 +227,11 @@ Bat full5의 canonical old091 replay/scoring도 `VERIFIED`(20tasks, common eligi
 retained external source091과 native source6a3를 구분한다. 원18개 external capture의
 suite/query/corpus 결속·native raw 해시를 재확인했다. Score-only reuse projection은 Bat의
 full canonical 결과와 모든 file scores가 같으며 completed-boundary latency는 재발행하지 않는다.
-Lo도 원20tasks의 5제품 file score projection을 완료했다.
+Lo·Mocha도 각각 원20tasks의 5제품 file score projection을 완료했다.
 Lo의 공통 eligible 분모는5/20이며 Quanta가 새로 반환한15tasks·30개 task/file 판단은 없다.
 Main adapter의 actual Bat·lo file payload80rows 변환도 `VERIFIED`; Lo의15개 `unjudged/null`을 유지한다.
 독립 판단 입력은 evidence root의 `lo-unjudged-handoff.json`에 기록했다.
+Mocha는 Quanta3/20·Semble1/20 eligible이나 교집합이0이므로 공통 점수는 `NOT_APPLICABLE`이다.
 전체 ready9 pair/full5 완료나 quality/speed qualification은 아직 아니다.
 원 runtime/input/producer bytes 및 허용 reuse를
 검증해 결합하며 source97/5796/091 raw를 새 소스로 재표기하지 않는다.
