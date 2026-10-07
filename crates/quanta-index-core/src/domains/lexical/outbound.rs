@@ -67,6 +67,29 @@ pub trait SearchCorpusBatchBuildPort: Send + Sync {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError>;
+
+    /// The same refusal boundary with caller-owned proof custody. Current
+    /// committed bytes must be authenticated before any retained proof is used.
+    fn preflight_batch_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        phase: SearchCorpusPreflightPhaseV1,
+        owner: &mut crate::PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        owner.bind_batch(batch)?;
+        self.preflight_batch(batch, phase)
+    }
+
+    /// Build using the same publication scope, still rechecking the base at
+    /// the existing build refusal boundary before target creation.
+    fn build_batch_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut crate::PublicationValidationOwner,
+    ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
+        owner.bind_batch(batch)?;
+        self.build_batch(batch)
+    }
 }
 
 /// Open an existing lexical index for query.
@@ -130,6 +153,27 @@ pub trait SearchCorpusIngestPort: Send + Sync {
         batch: &SearchCorpusIngestBatch,
         budget: &RequestBudgetV1,
     ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError>;
+
+    /// Keep proof custody in the dispatcher across mutable preflight and
+    /// fenced apply. Terminal replay must not execute this method.
+    fn preflight_batch_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut crate::PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        owner.bind_batch(batch)?;
+        self.preflight_batch(batch)
+    }
+
+    fn publish_batch_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        budget: &RequestBudgetV1,
+        owner: &mut crate::PublicationValidationOwner,
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+        owner.bind_batch(batch)?;
+        self.publish_batch(batch, budget)
+    }
 }
 
 /// Ingest a source-repo keyed commit-recency authority snapshot for one lexical

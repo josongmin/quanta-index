@@ -185,6 +185,101 @@ def _qbc_modules(root: Path) -> tuple[Any, Any, Any]:
     return completed, completion, qbc
 
 
+def _execute_qbc_phase(
+    semantica: Path,
+    case: tuple[str, str, str, str, str, str],
+    phase: str,
+    cargo: list[str],
+    owner: Any,
+    completion: Any,
+    environment: dict[str, str],
+    lane: str,
+) -> int:
+    """Admit only this fixed recipe through QBC's canonical owner port.
+
+    Nextest list compiles but runs no assertions, so raw feature composition
+    is correctly refused by the manual front door. The paired recipe owns
+    exactly these two list/run shapes; its admission binds the command model.
+    Lane locking, execution, source guards and immutable receipts remain QBC's.
+    """
+    if case not in CASES or phase not in ("list", "run"):
+        raise ValueError("unregistered paired R5 recipe phase")
+    label, package, feature, binary, kind, test = case
+    expected = [
+        "cargo",
+        "nextest",
+        phase,
+        "--locked",
+        "--manifest-path",
+        "packages/analysis/quanta-v2/Cargo.toml",
+        "-p",
+        package,
+        "--no-default-features",
+        "--features",
+        feature,
+        "--lib" if kind == "lib" else "--test",
+    ]
+    if kind == "test":
+        expected.append(binary)
+    expected.extend(["-E", "test(/^" + re.escape(test) + "$/)"])
+    expected.extend(
+        ["--message-format", "json"]
+        if phase == "list"
+        else ["--message-format", "libtest-json-plus", "--message-format-version", "0.1"]
+    )
+    if cargo != expected:
+        raise ValueError("paired R5 owner recipe command drift")
+    admission_owner = owner._CARGO_INVOCATION_ADMISSION_OWNER_V1
+    if Path(admission_owner.__file__).resolve() != (
+        semantica / "tools/quanta-build-cli/cargo_invocation_admission.py"
+    ):
+        raise ValueError("paired QBC admission module belongs to another source")
+    reference = f"quanta-index:paired-r5:{label}:{phase}"
+    admission = admission_owner.validate_cargo_invocation_v1(
+        owner._build_command_model(cargo, runner="nextest"),
+        authority=admission_owner.InvocationAuthorityV1(
+            admission_owner.InvocationAuthorityKindV1.OWNER_RECIPE,
+            reference,
+        ),
+    )
+    source_digest = owner._campaign_cargo_admission_owner_v1().campaign_source_snapshot_digest_v1(
+        semantica
+    )
+    compile_environment = {
+        owner.EXPECTED_SOURCE_SNAPSHOT_ENV_V1: source_digest,
+        "CODEGRAPH_PERSONA": environment["CODEGRAPH_PERSONA"],
+    }
+    if phase == "run":
+        compile_environment["NEXTEST_EXPERIMENTAL_LIBTEST_JSON"] = "1"
+    completion_environment = {
+        name: environment[name]
+        for name in (
+            completion.LOCATOR_PATH_ENV_V1,
+            completion.LOCATOR_NONCE_ENV_V1,
+            completion.REQUEST_ENV_DIGEST_ENV_V1,
+            completion.EXPECTED_SOURCE_HEAD_ENV_V1,
+        )
+    }
+    return owner._run_lane_command(
+        lane=lane,
+        runner="nextest",
+        command=cargo,
+        jobs=None,
+        wait_seconds=0.0,
+        lane_token=None,
+        seed_policy="off",
+        explicit_source_lane=None,
+        allow_locked_source=False,
+        warmroot_preview_enabled=False,
+        owner_recipe_ref=reference,
+        invocation_admission_v1=admission,
+        execution_root_v1=semantica,
+        command_cwd_v1=semantica,
+        compile_env_overrides_v1=compile_environment,
+        verification_completion_environment_v1=completion_environment,
+    )
+
+
 def _one(
     semantica: Path,
     root: Path,
@@ -221,14 +316,6 @@ def _one(
         ("run", ["--message-format", "libtest-json-plus", "--message-format-version", "0.1"]),
     ):
         cargo = ["cargo", "nextest", phase, *common, "-E", exact_filter, *suffix]
-        qbc = [
-            str(semantica / "scripts/quanta-build-cli"),
-            "nextest",
-            "--lane",
-            qbc_lane,
-            "--",
-            *cargo[2:],
-        ]
         nonce = secrets.token_hex(16)
         locator_path = evidence / f"{label}-{phase}-completion.json"
         environment = os.environ.copy()
@@ -267,9 +354,11 @@ def _one(
         _frozen(root, quanta_head)
         _frozen(semantica, source_head)
         subprocess.run(binary_custody, check=True)
-        result = subprocess.run(qbc, cwd=semantica, env=environment, check=False)
-        if result.returncode != 0:
-            raise ValueError(f"QBC nextest {label}/{phase} failed: {result.returncode}")
+        exit_code = _execute_qbc_phase(
+            semantica, case, phase, cargo, qbc_owner, completion, environment, qbc_lane
+        )
+        if exit_code != 0:
+            raise ValueError(f"QBC nextest {label}/{phase} failed: {exit_code}")
         locator_raw, locator = read_locator(locator_path, completion)
         receipt_path = locator.get("receipt_path")
         if not isinstance(receipt_path, str) or not Path(receipt_path).is_absolute():

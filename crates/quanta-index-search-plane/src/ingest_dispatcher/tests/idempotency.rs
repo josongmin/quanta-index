@@ -23,10 +23,11 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
-    IdempotencyKeyV1, IngestBatchBodyV1 as _, IngestResourcePolicy, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    RequestBudgetV1, RequestProviderStageV1, RequestStageDiagnosticPortV1, SearchCorpusIngestPort,
-    SemanticIngestPort, SemanticStreamWindowPolicy, TextEmbeddingProvider,
+    IdempotencyKeyV1, IngestBatchBodyV1 as _, IngestResourcePolicy, PublicationValidationOwner,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, RequestProviderStageV1,
+    RequestStageDiagnosticPortV1, SearchCorpusIngestPort, SemanticIngestPort,
+    SemanticStreamWindowPolicy, TextEmbeddingProvider,
 };
 use quanta_index_ipc::{canonical_batch_digest_v1, stamp_batch_digest_v1};
 
@@ -279,6 +280,13 @@ struct CountingSearchCorpus {
     applies: AtomicUsize,
 }
 
+/// Independent fixture state: the dispatcher must carry one fresh scope from
+/// preflight to apply, and must not persist it across retry or terminal replay.
+#[derive(Default)]
+struct DispatchValidationWitness {
+    preflight_entered: bool,
+}
+
 impl CountingSearchCorpus {
     fn new(inner: DirectSearchCorpusMaterializer) -> Self {
         Self {
@@ -303,6 +311,25 @@ impl SearchCorpusIngestPort for CountingSearchCorpus {
         self.inner.preflight_batch(batch)
     }
 
+    fn preflight_batch_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        owner.bind_batch(batch)?;
+        let witness = owner.proof_state::<DispatchValidationWitness>(
+            quanta_index_contract::SearchPlaneTrackKind::Lexical,
+        )?;
+        if witness.preflight_entered {
+            return Err(CoreError::InvalidContract(
+                "fixture observed a retained owner from a previous dispatch".into(),
+            ));
+        }
+        witness.preflight_entered = true;
+        let _prior = self.preflights.fetch_add(1, Ordering::SeqCst);
+        self.inner.preflight_batch_with_owner(batch, owner)
+    }
+
     fn publish_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
@@ -310,6 +337,27 @@ impl SearchCorpusIngestPort for CountingSearchCorpus {
     ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
         let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
         self.inner.publish_batch(batch, budget)
+    }
+
+    fn publish_batch_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        budget: &RequestBudgetV1,
+        owner: &mut PublicationValidationOwner,
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+        owner.bind_batch(batch)?;
+        if !owner
+            .proof_state::<DispatchValidationWitness>(
+                quanta_index_contract::SearchPlaneTrackKind::Lexical,
+            )?
+            .preflight_entered
+        {
+            return Err(CoreError::InvalidContract(
+                "fixture apply lost the dispatcher's preflight owner".into(),
+            ));
+        }
+        let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
+        self.inner.publish_batch_with_owner(batch, budget, owner)
     }
 }
 
@@ -1296,13 +1344,31 @@ fn cancelled_peer_after_admitted_apply_still_commits_and_replays_exactly() -> Te
             self.inner.preflight_batch(batch)
         }
 
+        fn preflight_batch_with_owner(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            owner: &mut PublicationValidationOwner,
+        ) -> Result<(), CoreError> {
+            self.inner.preflight_batch_with_owner(batch, owner)
+        }
+
         fn publish_batch(
             &self,
             batch: &SearchCorpusIngestBatch,
             budget: &RequestBudgetV1,
         ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+            self.publish_batch_with_owner(batch, budget, &mut PublicationValidationOwner::default())
+        }
+
+        fn publish_batch_with_owner(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            budget: &RequestBudgetV1,
+            owner: &mut PublicationValidationOwner,
+        ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+            owner.bind_batch(batch)?;
             let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
-            let outcome = self.inner.publish_batch(batch, budget);
+            let outcome = self.inner.publish_batch_with_owner(batch, budget, owner);
             self.entered.send(outcome.is_ok()).map_err(|error| {
                 CoreError::Storage(format!("post-apply fixture lost observer: {error}"))
             })?;
@@ -1942,12 +2008,30 @@ fn completed_delta_recovers_after_retention_retires_base_before_journal_ack() ->
         fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
             self.inner.preflight_batch(batch)
         }
+
+        fn preflight_batch_with_owner(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            owner: &mut PublicationValidationOwner,
+        ) -> Result<(), CoreError> {
+            self.inner.preflight_batch_with_owner(batch, owner)
+        }
+
         fn publish_batch(
             &self,
             batch: &SearchCorpusIngestBatch,
             budget: &RequestBudgetV1,
         ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
-            let outcome = self.inner.publish_batch(batch, budget)?;
+            self.publish_batch_with_owner(batch, budget, &mut PublicationValidationOwner::default())
+        }
+
+        fn publish_batch_with_owner(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            budget: &RequestBudgetV1,
+            owner: &mut PublicationValidationOwner,
+        ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+            let outcome = self.inner.publish_batch_with_owner(batch, budget, owner)?;
             if batch.base_generation.is_some() && self.failures.fetch_add(1, Ordering::SeqCst) == 0
             {
                 let retention = crate::readiness::SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
@@ -2121,13 +2205,22 @@ fn source_event_apply_errors_retry_the_original_journal_without_retargeting() ->
     }
     impl SearchCorpusIngestPort for FailAfterPublishOnce {
         fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+            self.preflight_batch_with_owner(batch, &mut PublicationValidationOwner::default())
+        }
+
+        fn preflight_batch_with_owner(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            owner: &mut PublicationValidationOwner,
+        ) -> Result<(), CoreError> {
+            owner.bind_batch(batch)?;
             if self.preflights.fetch_add(1, Ordering::SeqCst) == 1 {
                 return Err(CoreError::Typed {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
                     message: "transient source preflight refusal after an uncertain apply".into(),
                 });
             }
-            self.inner.preflight_batch(batch)
+            self.inner.preflight_batch_with_owner(batch, owner)
         }
 
         fn publish_batch(
@@ -2135,8 +2228,18 @@ fn source_event_apply_errors_retry_the_original_journal_without_retargeting() ->
             batch: &SearchCorpusIngestBatch,
             budget: &RequestBudgetV1,
         ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+            self.publish_batch_with_owner(batch, budget, &mut PublicationValidationOwner::default())
+        }
+
+        fn publish_batch_with_owner(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            budget: &RequestBudgetV1,
+            owner: &mut PublicationValidationOwner,
+        ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+            owner.bind_batch(batch)?;
             let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
-            let outcome = self.inner.publish_batch(batch, budget)?;
+            let outcome = self.inner.publish_batch_with_owner(batch, budget, owner)?;
             let injected_error = self
                 .error
                 .lock()

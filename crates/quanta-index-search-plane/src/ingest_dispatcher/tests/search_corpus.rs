@@ -42,6 +42,214 @@ use crate::{
     SnapshotRetirementOwner,
 };
 
+#[derive(Default)]
+struct PublicationPhaseWitness(Vec<&'static str>);
+
+/// This port deliberately refuses a cold base check. It proves custody
+/// crosses all existing materializer boundaries; native byte authenticity is
+/// tested separately against the lexical disk adapter.
+struct PublicationPhasePorts {
+    base: ManifestGeneration,
+    target: ManifestGeneration,
+    built: std::sync::atomic::AtomicBool,
+    builder: FakeSearchCorpusBuilder,
+}
+
+impl GenerationIdentityValidatePort for PublicationPhasePorts {
+    fn validate_generation_identity(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<(), CoreError> {
+        if candidate.manifest_generation == self.base {
+            return Err(CoreError::InvalidContract(
+                "base validator lost publication custody".into(),
+            ));
+        }
+        if candidate.manifest_generation == self.target && !self.built.load(Ordering::SeqCst) {
+            return Err(CoreError::NotFound("fixture target not built".into()));
+        }
+        Ok(())
+    }
+
+    fn validate_generation_identity_with_owner(
+        &self,
+        candidate: &GenerationSnapshot,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        if candidate.manifest_generation == self.target && !self.built.load(Ordering::SeqCst) {
+            return Err(CoreError::NotFound("fixture target not built".into()));
+        }
+        let witness = owner.proof_state::<PublicationPhaseWitness>(candidate.track)?;
+        if candidate.manifest_generation == self.base {
+            witness.0.push("base");
+        } else if candidate.manifest_generation == self.target {
+            let expected: &[&str] = match candidate.track {
+                SearchPlaneTrackKind::Lexical => &["base", "before", "base", "locked", "built"],
+                SearchPlaneTrackKind::Semantic => &["base", "base"],
+                SearchPlaneTrackKind::Structural => {
+                    return Err(CoreError::InvalidContract(
+                        "unexpected structural publication proof".into(),
+                    ));
+                }
+            };
+            if witness.0 != expected || !self.built.load(Ordering::SeqCst) {
+                return Err(CoreError::InvalidContract(format!(
+                    "post-build proof lost custody: {:?}",
+                    witness.0
+                )));
+            }
+            witness.0.push("post");
+        } else {
+            return Err(CoreError::InvalidContract(
+                "unexpected fixture generation".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl quanta_index_core::SearchCorpusBatchBuildPort for PublicationPhasePorts {
+    fn preflight_batch(
+        &self,
+        _batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        _phase: quanta_index_core::SearchCorpusPreflightPhaseV1,
+    ) -> Result<(), CoreError> {
+        Err(CoreError::InvalidContract(
+            "builder preflight lost publication custody".into(),
+        ))
+    }
+
+    fn build_batch(
+        &self,
+        _batch: &quanta_index_contract::SearchCorpusIngestBatch,
+    ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
+        Err(CoreError::InvalidContract(
+            "builder lost publication custody".into(),
+        ))
+    }
+
+    fn preflight_batch_with_owner(
+        &self,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        phase: quanta_index_core::SearchCorpusPreflightPhaseV1,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        use quanta_index_core::SearchCorpusPreflightPhaseV1;
+        owner.bind_batch(batch)?;
+        let witness =
+            owner.proof_state::<PublicationPhaseWitness>(SearchPlaneTrackKind::Lexical)?;
+        let (expected, next): (&[&str], _) = match phase {
+            SearchCorpusPreflightPhaseV1::BeforeIntent => (&["base"], "before"),
+            SearchCorpusPreflightPhaseV1::UnderOperationLock => {
+                (&["base", "before", "base"], "locked")
+            }
+        };
+        if witness.0 != expected {
+            return Err(CoreError::InvalidContract(format!(
+                "builder preflight lost base proof: {:?}",
+                witness.0
+            )));
+        }
+        witness.0.push(next);
+        quanta_index_core::SearchCorpusBatchBuildPort::preflight_batch(&self.builder, batch, phase)
+    }
+
+    fn build_batch_with_owner(
+        &self,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
+        owner.bind_batch(batch)?;
+        let witness =
+            owner.proof_state::<PublicationPhaseWitness>(SearchPlaneTrackKind::Lexical)?;
+        if witness.0 != ["base", "before", "base", "locked"] {
+            return Err(CoreError::InvalidContract(format!(
+                "build lost locked proof: {:?}",
+                witness.0
+            )));
+        }
+        witness.0.push("built");
+        let stages =
+            quanta_index_core::SearchCorpusBatchBuildPort::build_batch(&self.builder, batch)?;
+        self.built.store(true, Ordering::SeqCst);
+        Ok(stages)
+    }
+}
+
+#[test]
+fn publication_owner_crosses_paired_checks_builder_and_postbuild() -> TestRes {
+    let base = multi_scope_corpus_batch()?;
+    let mut delta = base.clone();
+    delta.generation = ManifestGeneration::new(base.generation.get() + 1);
+    delta.base_generation = Some(base.generation);
+    delta.mode = BatchIngestMode::Delta;
+    delta.manifest_digest = "manifest:owned-delta".into();
+    delta.source_event.event_id = "event:owned-delta".into();
+    // This protocol fixture seeds the ledger, not a prior source-event journal.
+    delta.source_event.expected_base_event_id = None;
+    delta.replace_scopes.truncate(1);
+    restamp_search_corpus_fixture(&mut delta)?;
+    let ports = Arc::new(PublicationPhasePorts {
+        base: base.generation,
+        target: delta.generation,
+        built: std::sync::atomic::AtomicBool::new(false),
+        builder: FakeSearchCorpusBuilder::default(),
+    });
+    let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+        SearchCorpusMaterializerParts {
+            builder: ports.clone(),
+            ledger: Arc::new(RwLock::new(Ledger::new())),
+            semantic_ingest: Arc::new(DirectSemanticMaterializer::new(Arc::new(
+                FakeSemanticBuilder::default(),
+            ))),
+            semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            authority: Arc::new(RecordingSearchCorpusAuthority::default()),
+            lexical_generation_validator: ports.clone(),
+            semantic_generation_validator: ports,
+            semantic_content_roots:
+                crate::content_roots_test_support::generation_keyed_content_roots(),
+            lexical_incomplete_discard: test_incomplete_generation_discard(),
+            semantic_incomplete_discard: test_incomplete_generation_discard(),
+            lexical_reclaim: no_storage_sealed_reclaim(),
+            semantic_reclaim: no_storage_sealed_reclaim(),
+            snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+            source_publication: super::support::test_source_catalog(),
+            idempotency: memory_catalog(),
+            resource_policy: IngestResourcePolicy::DEFAULT,
+            semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+            source_egress_policy: None,
+            auxiliary_catalog: memory_aux_catalog(),
+            auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
+        },
+    );
+    let retain = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &base.repo_id,
+        &base.revision_id,
+        [base.generation],
+    );
+    materializer.finalize_generation_v1(&base, Some(&retain))?;
+    let mut owner = quanta_index_core::PublicationValidationOwner::default();
+    materializer.preflight_batch_with_owner(&delta, &mut owner)?;
+    let outcome =
+        materializer.publish_batch_with_owner(&delta, &RequestBudgetV1::unbounded(), &mut owner)?;
+    assert!(outcome.receipt.applied);
+    assert_eq!(
+        owner
+            .proof_state::<PublicationPhaseWitness>(SearchPlaneTrackKind::Lexical)?
+            .0,
+        ["base", "before", "base", "locked", "built", "post"]
+    );
+    assert_eq!(
+        owner
+            .proof_state::<PublicationPhaseWitness>(SearchPlaneTrackKind::Semantic)?
+            .0,
+        ["base", "base", "post"]
+    );
+    Ok(())
+}
+
 #[test]
 fn search_corpus_receipt_exactly_acknowledges_semantic_replace_and_tombstone_mutations_v1()
 -> TestRes {

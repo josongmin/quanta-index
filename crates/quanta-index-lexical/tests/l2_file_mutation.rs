@@ -186,9 +186,21 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
     request.source_event.expected_base_event_id = Some(newer.source_event.event_id.clone());
     request.validate_v1()?;
     request.validate_surface_mutations_v1()?;
+    let mut owner = quanta_index_core::PublicationValidationOwner::default();
     for result in [
-        adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
-        adapter.build_batch(&request).map(|_stages| ()),
+        adapter.preflight_batch_with_owner(
+            &request,
+            SearchCorpusPreflightPhaseV1::BeforeIntent,
+            &mut owner,
+        ),
+        adapter.preflight_batch_with_owner(
+            &request,
+            SearchCorpusPreflightPhaseV1::UnderOperationLock,
+            &mut owner,
+        ),
+        adapter
+            .build_batch_with_owner(&request, &mut owner)
+            .map(|_stages| ()),
     ] {
         assert!(
             matches!(
@@ -220,9 +232,21 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
         let mut invalid = request.clone();
         mutate(&mut invalid);
         invalid.validate_v1()?;
+        let mut owner = quanta_index_core::PublicationValidationOwner::default();
         for result in [
-            adapter.preflight_batch(&invalid, SearchCorpusPreflightPhaseV1::BeforeIntent),
-            adapter.build_batch(&invalid).map(|_stages| ()),
+            adapter.preflight_batch_with_owner(
+                &invalid,
+                SearchCorpusPreflightPhaseV1::BeforeIntent,
+                &mut owner,
+            ),
+            adapter.preflight_batch_with_owner(
+                &invalid,
+                SearchCorpusPreflightPhaseV1::UnderOperationLock,
+                &mut owner,
+            ),
+            adapter
+                .build_batch_with_owner(&invalid, &mut owner)
+                .map(|_stages| ()),
         ] {
             assert!(matches!(
                 result,
@@ -234,8 +258,13 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
         }
         assert!(!target.exists());
     }
-    adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
-    let _stages = adapter.build_batch(&request)?;
+    let mut owner = quanta_index_core::PublicationValidationOwner::default();
+    adapter.preflight_batch_with_owner(
+        &request,
+        SearchCorpusPreflightPhaseV1::BeforeIntent,
+        &mut owner,
+    )?;
+    let _stages = adapter.build_batch_with_owner(&request, &mut owner)?;
     assert_units(&adapter, &request, "oldmarker", &[], &[])?;
     assert_units(
         &adapter,
@@ -1977,12 +2006,26 @@ fn inherited_candidate_collision_refuses_before_target_creation() -> TestResult 
     replacement.coverage.unit_set_sha256 =
         source_file_unit_set_sha256(&replacement.chunks, &replacement.symbols)?;
     let delta = batch(2, Some(1), vec![replacement])?;
+    let mut owner = quanta_index_core::PublicationValidationOwner::default();
     assert!(
         adapter
-            .preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)
+            .preflight_batch_with_owner(
+                &delta,
+                SearchCorpusPreflightPhaseV1::BeforeIntent,
+                &mut owner
+            )
             .is_err()
     );
-    assert!(adapter.build_batch(&delta).is_err());
+    assert!(
+        adapter
+            .preflight_batch_with_owner(
+                &delta,
+                SearchCorpusPreflightPhaseV1::UnderOperationLock,
+                &mut owner
+            )
+            .is_err()
+    );
+    assert!(adapter.build_batch_with_owner(&delta, &mut owner).is_err());
     let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
         &delta.repo_id,
         &delta.revision_id,
@@ -2176,19 +2219,32 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
         &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
 
-    // Both stages use the same verifier; the phase records where work occurred.
-    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
+    // Preserve one publication proof owner across all existing refusal boundaries.
+    let mut owner = quanta_index_core::PublicationValidationOwner::default();
+    adapter.preflight_batch_with_owner(
+        &delta,
+        SearchCorpusPreflightPhaseV1::BeforeIntent,
+        &mut owner,
+    )?;
     if after_second_preflight {
-        adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::UnderOperationLock)?;
+        adapter.preflight_batch_with_owner(
+            &delta,
+            SearchCorpusPreflightPhaseV1::UnderOperationLock,
+            &mut owner,
+        )?;
     }
     let mut changed = original.clone();
     *changed.last_mut().ok_or("empty base coverage page")? ^= 1;
     std::fs::write(&page, changed)?;
     let refused = if after_second_preflight {
-        adapter.build_batch(&delta)
+        adapter.build_batch_with_owner(&delta, &mut owner)
     } else {
         adapter
-            .preflight_batch(&delta, SearchCorpusPreflightPhaseV1::UnderOperationLock)
+            .preflight_batch_with_owner(
+                &delta,
+                SearchCorpusPreflightPhaseV1::UnderOperationLock,
+                &mut owner,
+            )
             .map(|()| None)
     };
     assert!(
@@ -2211,8 +2267,12 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
     );
 
     std::fs::write(page, original)?;
-    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
-    let _stages = adapter.build_batch(&delta)?;
+    adapter.preflight_batch_with_owner(
+        &delta,
+        SearchCorpusPreflightPhaseV1::BeforeIntent,
+        &mut owner,
+    )?;
+    let _stages = adapter.build_batch_with_owner(&delta, &mut owner)?;
     assert_units(
         &adapter,
         &delta,
@@ -2230,6 +2290,283 @@ fn lock_phase_rechecks_base_page_after_outer_preflight() -> TestResult {
 #[test]
 fn build_rechecks_base_page_after_lock_phase_and_retry_succeeds() -> TestResult {
     changed_base_page_between_phases_is_refused(true)
+}
+
+fn owned_artifact_change_refuses_before_target(after_lock: bool) -> TestResult {
+    for (family, fault) in [
+        ("file", "tamper"),
+        ("file", "missing"),
+        ("file", "symlink"),
+        ("file", "orphan"),
+        ("text", "tamper"),
+        ("text", "missing"),
+        ("text", "symlink"),
+        ("text", "orphan"),
+        ("file-root", "tamper"),
+        ("file-root", "missing"),
+        ("file-root", "symlink"),
+        ("file-root", "orphan"),
+        ("text-manifest", "tamper"),
+        ("text-manifest", "missing"),
+        ("text-manifest", "symlink"),
+        ("sealed-manifest", "tamper"),
+        ("sealed-manifest", "missing"),
+        ("sealed-manifest", "symlink"),
+    ] {
+        let dir = tempfile::tempdir()?;
+        let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+        let base = batch(
+            1,
+            None,
+            vec![
+                file_scope("a.rs", "oldmarker")?,
+                file_scope("keep.rs", "keepmarker")?,
+            ],
+        )?;
+        let _stages = adapter.build_batch(&base)?;
+        let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
+        let family_key = quanta_index_core::GenerationStorageKeyV1::for_repo_revision(
+            &base.repo_id,
+            &base.revision_id,
+        );
+        let base_dir = family_key.generation_dir(dir.path(), base.generation);
+        let target = family_key.generation_dir(dir.path(), delta.generation);
+        let artifact_dir = match family {
+            "file" => base_dir.join("file-authority/objects"),
+            "file-root" => base_dir.join("file-authority"),
+            "sealed-manifest" => base_dir.clone(),
+            "text" | "text-manifest" => base_dir.join("text-authority"),
+            _ => return Err("unknown artifact family".into()),
+        };
+        let artifact = std::fs::read_dir(&artifact_dir)?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .find(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                match family {
+                    "file" => name.ends_with(".bin"),
+                    "file-root" => name == "root.cbor",
+                    "sealed-manifest" => name == "search-corpus-generation-manifest.cbor",
+                    "text" => name.starts_with("shard-"),
+                    "text-manifest" => name == "manifest.cbor",
+                    _ => false,
+                }
+            })
+            .ok_or("missing committed fixture artifact")?
+            .path();
+        let original = std::fs::read(&artifact)?;
+        let modified = std::fs::metadata(&artifact)?.modified()?;
+        let mut owner = quanta_index_core::PublicationValidationOwner::default();
+        adapter.preflight_batch_with_owner(
+            &delta,
+            SearchCorpusPreflightPhaseV1::BeforeIntent,
+            &mut owner,
+        )?;
+        if after_lock {
+            adapter.preflight_batch_with_owner(
+                &delta,
+                SearchCorpusPreflightPhaseV1::UnderOperationLock,
+                &mut owner,
+            )?;
+        }
+        let extra = artifact_dir.join("unexpected.bin");
+        match fault {
+            "tamper" => {
+                let mut changed = original.clone();
+                *changed.last_mut().ok_or("empty fixture artifact")? ^= 1;
+                std::fs::write(&artifact, changed)?;
+                // Same inode, length and restored mtime cannot authorize reuse.
+                std::fs::File::open(&artifact)?
+                    .set_times(std::fs::FileTimes::new().set_modified(modified))?;
+            }
+            "missing" => std::fs::remove_file(&artifact)?,
+            "symlink" => {
+                let external = dir.path().join("external-original");
+                std::fs::write(&external, &original)?;
+                std::fs::remove_file(&artifact)?;
+                std::os::unix::fs::symlink(external, &artifact)?;
+            }
+            "orphan" => std::fs::write(&extra, b"uncommitted")?,
+            _ => return Err("unknown artifact fault".into()),
+        }
+        let refusal = if after_lock {
+            adapter
+                .build_batch_with_owner(&delta, &mut owner)
+                .map(|_stages| ())
+        } else {
+            adapter.preflight_batch_with_owner(
+                &delta,
+                SearchCorpusPreflightPhaseV1::UnderOperationLock,
+                &mut owner,
+            )
+        };
+        let expected_code = if family == "sealed-manifest" && fault == "missing" {
+            quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestMissing
+        } else {
+            quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
+        };
+        assert!(
+            matches!(refusal, Err(quanta_index_core::CoreError::Typed { code, .. }) if code == expected_code),
+            "{family}/{fault} after_lock={after_lock}: {refusal:?}"
+        );
+        assert!(
+            !target.exists(),
+            "{family}/{fault} created a target before refusal"
+        );
+        assert!(
+            adapter
+                .open(
+                    &base.repo_id,
+                    &base.revision_id,
+                    base.generation,
+                    &RequestBudgetV1::unbounded()
+                )
+                .is_err(),
+            "independent cold open accepted {family}/{fault}"
+        );
+        if fault == "orphan" {
+            std::fs::remove_file(extra)?;
+        } else {
+            match artifact.symlink_metadata() {
+                Ok(_) => std::fs::remove_file(&artifact)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            std::fs::write(&artifact, original)?;
+        }
+        adapter.preflight_batch_with_owner(
+            &delta,
+            SearchCorpusPreflightPhaseV1::BeforeIntent,
+            &mut owner,
+        )?;
+        let _stages = adapter.build_batch_with_owner(&delta, &mut owner)?;
+        assert_units(&adapter, &delta, "oldmarker", &[], &[])?;
+        assert_units(
+            &adapter,
+            &delta,
+            "newmarker",
+            &["chunk-newmarker"],
+            &["symbol-newmarker"],
+        )?;
+        assert_units(
+            &adapter,
+            &delta,
+            "keepmarker",
+            &["chunk-keepmarker"],
+            &["symbol-keepmarker"],
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn owned_file_and_text_proofs_recheck_current_bytes_after_outer_preflight() -> TestResult {
+    owned_artifact_change_refuses_before_target(false)
+}
+
+#[test]
+fn owned_file_and_text_proofs_recheck_current_bytes_after_lock_and_retry() -> TestResult {
+    owned_artifact_change_refuses_before_target(true)
+}
+
+#[test]
+fn owned_delta_noop_and_delete_match_fresh_full_query_and_reopen() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let fresh_dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
+    let base = batch(
+        1,
+        None,
+        vec![
+            file_scope("a.rs", "oldmarker")?,
+            file_scope("keep.rs", "keepmarker")?,
+        ],
+    )?;
+    let _stages = adapter.build_batch(&base)?;
+    let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
+    let mut owner = quanta_index_core::PublicationValidationOwner::default();
+    for phase in [
+        SearchCorpusPreflightPhaseV1::BeforeIntent,
+        SearchCorpusPreflightPhaseV1::UnderOperationLock,
+    ] {
+        adapter.preflight_batch_with_owner(&delta, phase, &mut owner)?;
+    }
+    let _stages = adapter.build_batch_with_owner(&delta, &mut owner)?;
+    let full = batch(
+        1,
+        None,
+        vec![
+            file_scope("a.rs", "newmarker")?,
+            file_scope("keep.rs", "keepmarker")?,
+        ],
+    )?;
+    let _stages = fresh.build_batch(&full)?;
+    let noop = batch(3, Some(2), Vec::new())?;
+    let mut noop_owner = quanta_index_core::PublicationValidationOwner::default();
+    assert!(
+        adapter
+            .preflight_batch_with_owner(
+                &noop,
+                SearchCorpusPreflightPhaseV1::BeforeIntent,
+                &mut owner
+            )
+            .is_err(),
+        "another publication borrowed the delta owner"
+    );
+    for phase in [
+        SearchCorpusPreflightPhaseV1::BeforeIntent,
+        SearchCorpusPreflightPhaseV1::UnderOperationLock,
+    ] {
+        adapter.preflight_batch_with_owner(&noop, phase, &mut noop_owner)?;
+    }
+    let _stages = adapter.build_batch_with_owner(&noop, &mut noop_owner)?;
+    let reopened = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    for marker in ["newmarker", "keepmarker"] {
+        let chunk = format!("chunk-{marker}");
+        let symbol = format!("symbol-{marker}");
+        assert_units(&adapter, &delta, marker, &[&chunk], &[&symbol])?;
+        assert_units(&adapter, &noop, marker, &[&chunk], &[&symbol])?;
+        assert_units(&reopened, &noop, marker, &[&chunk], &[&symbol])?;
+        assert_units(&fresh, &full, marker, &[&chunk], &[&symbol])?;
+    }
+    assert_units(&reopened, &noop, "oldmarker", &[], &[])?;
+    let mut deleted = batch(4, Some(3), Vec::new())?;
+    deleted.tombstone_scopes.push(SearchCorpusTombstoneScope {
+        file: SourceFileKey {
+            source_repo_id: RepoId::new("l2-mutation-repo")?,
+            repo_relative_path: RepoRelativePath::new("a.rs"),
+        },
+    });
+    deleted.source_event.payload_sha256 = source_event_payload_sha256(&deleted)?;
+    let mut delete_owner = quanta_index_core::PublicationValidationOwner::default();
+    for phase in [
+        SearchCorpusPreflightPhaseV1::BeforeIntent,
+        SearchCorpusPreflightPhaseV1::UnderOperationLock,
+    ] {
+        adapter.preflight_batch_with_owner(&deleted, phase, &mut delete_owner)?;
+    }
+    let _stages = adapter.build_batch_with_owner(&deleted, &mut delete_owner)?;
+    let fresh_deleted = batch(2, None, vec![file_scope("keep.rs", "keepmarker")?])?;
+    let _stages = fresh.build_batch(&fresh_deleted)?;
+    let cold_deleted = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    for (opened, generation) in [
+        (&adapter, &deleted),
+        (&cold_deleted, &deleted),
+        (&fresh, &fresh_deleted),
+    ] {
+        assert_units(opened, generation, "newmarker", &[], &[])?;
+        assert_units(opened, generation, "oldmarker", &[], &[])?;
+        assert_units(
+            opened,
+            generation,
+            "keepmarker",
+            &["chunk-keepmarker"],
+            &["symbol-keepmarker"],
+        )?;
+    }
+    Ok(())
 }
 
 #[test]

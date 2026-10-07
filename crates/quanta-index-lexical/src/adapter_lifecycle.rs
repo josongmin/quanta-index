@@ -45,6 +45,27 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
             walk_sealed_generation(&generation_dir, &observed, &mut DiscardingVisitor, None)?;
         sync_generation_directory(&generation_dir)
     }
+
+    fn validate_generation_identity_with_owner(
+        &self,
+        candidate: &GenerationSnapshot,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        let (generation_dir, observed) =
+            self.sealed_generation_dir_for(candidate, "publication identity validator")?;
+        let proofs = owner
+            .proof_state::<crate::sealed_generation::publication_proof::PublicationProofs>(
+                SearchPlaneTrackKind::Lexical,
+            )?;
+        let _verified = crate::sealed_generation::walk_sealed_generation_reusing_proofs(
+            &generation_dir,
+            &observed,
+            None,
+            proofs,
+            None,
+        )?;
+        sync_generation_directory(&generation_dir)
+    }
 }
 
 impl SealedGenerationIdentityProbePort for LexicalAdapter {

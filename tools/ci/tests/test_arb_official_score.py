@@ -4,13 +4,87 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.machinery
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 from tools.benchmark.retrieval import arb_official_score as scorer
+
+
+def test_official_git_source_guard_rejects_dirty_helper_and_untracked_module(tmp_path):
+    arb = tmp_path / "arb"
+    source = arb / "src/agent_retrieval_bench"
+    source.mkdir(parents=True)
+    helper = source / "io.py"
+    helper.write_text("SOURCE = 1\n", encoding="utf-8")
+    (arb / ".gitignore").write_text("src/agent_retrieval_bench/ignored.py\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(arb), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(arb), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=ARB",
+            "-c",
+            "user.email=arb@example.test",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+            "-C",
+            str(arb),
+            "commit",
+            "-qm",
+            "fixed",
+        ],
+        check=True,
+    )
+    commit = subprocess.check_output(
+        ["git", "-C", str(arb), "rev-parse", "HEAD"], text=True
+    ).strip()
+    scorer.assert_git_source_clean(arb, commit)
+    with pytest.raises(scorer.ScoringRefusal, match="commit mismatch"):
+        scorer.assert_git_source_clean(arb, "0" * 40)
+    helper.write_text("SOURCE = 2\n", encoding="utf-8")
+    with pytest.raises(scorer.ScoringRefusal, match="tracked or untracked"):
+        scorer.assert_git_source_clean(arb, commit)
+    helper.write_text("SOURCE = 1\n", encoding="utf-8")
+    foreign = source / "injected.py"
+    foreign.write_text("SOURCE = 3\n", encoding="utf-8")
+    with pytest.raises(scorer.ScoringRefusal, match="tracked or untracked"):
+        scorer.assert_git_source_clean(arb, commit)
+    foreign.unlink()
+    (source / "ignored.py").write_text("SOURCE = 4\n", encoding="utf-8")
+    with pytest.raises(scorer.ScoringRefusal, match="ignored Python modules"):
+        scorer.assert_git_source_clean(arb, commit)
+
+
+def test_cached_foreign_arb_helper_origin_is_rejected(monkeypatch, tmp_path):
+    source = (
+        Path(
+            os.environ.get(
+                "ARB_B06_ROOT",
+                "/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/b06",
+            )
+        )
+        / "arb/src/agent_retrieval_bench"
+    )
+    fake_path = tmp_path / "foreign_io.py"
+    fake_path.write_text("", encoding="utf-8")
+    module = ModuleType("agent_retrieval_bench.io")
+    module.__file__ = str(fake_path)
+    module.__spec__ = importlib.machinery.ModuleSpec(
+        "agent_retrieval_bench.io", loader=None, origin=str(fake_path)
+    )
+    monkeypatch.setitem(sys.modules, "agent_retrieval_bench.io", module)
+    with pytest.raises(scorer.ScoringRefusal, match="foreign ARB module origin"):
+        scorer.assert_cached_arb_origins(source)
 
 
 def digest(text: str) -> str:

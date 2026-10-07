@@ -473,7 +473,18 @@ record run/profile/binary identity. Its pinned official Recall@20/MRR@20 uses
 the first20 distinct paths in the top100 ranked chunks. Successful/capped
 rankings and observed empty abstentions can score; missing, malformed, failed
 or refused records retain distinct states and no invented zero-filled metrics.
-The25 focused tests and real128-case empty-record binding preflight passed;
-that preflight supplies no native results. BCY remains `BLOCKED` until official
-archive and extracted corpus bytes have independent custody. File relevance,
-BCY, native capture custody and qualified holdout/performance remain separate.
+The initial25 focused tests and real128-case empty-record binding preflight
+passed; that preflight supplies no native results. The complete scorer/corpus
+extension passed44 focused tests. Selective restoration verifies pinned official
+archive and corpus-manifest digests, safe member types/paths, snapshot identity,
+counts and shared-base byte equality. Official BCY parses the exact bytes hashed
+from one pinned descriptor through a private spool; extracted bytes are rechecked
+after scoring. The transitive official source closure requires its clean pinned
+Git checkout and matching import origins, including refusal of ignored Python
+source. No checkout text substitutes for official corpus text.
+
+Three retained official archives were restored and rehashed for83 release-chunk
+files representing57 unique snapshots. Actual native128 and official score/BCY
+at the final source remain `NOT_RUN`; absence or failure of corpus custody keeps
+BCY `BLOCKED` without zero fill. File relevance, BCY, native capture custody and
+qualified holdout/performance remain separate.

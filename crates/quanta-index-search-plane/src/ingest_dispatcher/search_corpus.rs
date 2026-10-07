@@ -459,19 +459,34 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
     /// `publish_batch` repeats the delta-base check under its lock before
     /// the first mutation.
     fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        self.preflight_batch_with_owner(
+            batch,
+            &mut quanta_index_core::PublicationValidationOwner::default(),
+        )
+    }
+
+    fn preflight_batch_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        owner.bind_batch(batch)?;
         timed_ingest_work("ingest_preflight_before_intent", || {
             Self::validate_batch_shape_v1(batch)?;
             self.admit_resource_envelope(batch)?;
             if let Some(base_generation) = batch.base_generation
-                && !self.can_recover_completed_target_v1(batch)?
+                && !self.can_recover_completed_target_v1(batch, owner)?
             {
-                self.preflight_delta_base_v1(batch, base_generation)?;
+                self.preflight_delta_base_v1(batch, base_generation, owner)?;
             }
             // The cross-track sealed-base check owns the missing-base refusal.
             // Do not let a track-local coverage read turn it into an incomplete
             // identity error before the paired base has been admitted.
-            self.builder
-                .preflight_batch(batch, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
+            self.builder.preflight_batch_with_owner(
+                batch,
+                SearchCorpusPreflightPhaseV1::BeforeIntent,
+                owner,
+            )?;
             Ok(())
         })
     }
@@ -481,6 +496,20 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         batch: &SearchCorpusIngestBatch,
         budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+        self.publish_batch_with_owner(
+            batch,
+            budget,
+            &mut quanta_index_core::PublicationValidationOwner::default(),
+        )
+    }
+
+    fn publish_batch_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        budget: &quanta_index_core::RequestBudgetV1,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+        owner.bind_batch(batch)?;
         timed_ingest_work("ingest_publish_under_lock", || {
             use quanta_index_contract::{
                 IngestObservationStatus, SearchCorpusIngestObservation, SearchCorpusPublishOutcome,
@@ -529,27 +558,32 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             // Repeat immutable base/candidate ownership admission under this
             // operation's lock before reservation, provider calls or either builder.
             if let Some(base_generation) = batch.base_generation
-                && !self.can_recover_completed_target_v1(batch)?
+                && !self.can_recover_completed_target_v1(batch, owner)?
             {
-                self.preflight_delta_base_v1(batch, base_generation)?;
+                self.preflight_delta_base_v1(batch, base_generation, owner)?;
             }
-            self.builder
-                .preflight_batch(batch, SearchCorpusPreflightPhaseV1::UnderOperationLock)?;
+            self.builder.preflight_batch_with_owner(
+                batch,
+                SearchCorpusPreflightPhaseV1::UnderOperationLock,
+                owner,
+            )?;
             if !batch.seal {
                 let (lexical, semantic) = generation_pair_from_batch_v1(batch);
                 ensure_generation_is_mutable_v1(
                     self.lexical_generation_validator.as_ref(),
                     &lexical,
                     "lexical",
+                    owner,
                 )?;
                 ensure_generation_is_mutable_v1(
                     self.semantic_generation_validator.as_ref(),
                     &semantic,
                     "semantic",
+                    owner,
                 )?;
             }
             let sealed_plan = if batch.seal {
-                let plan = self.preflight_sealed_generation_v1(batch)?;
+                let plan = self.preflight_sealed_generation_v1(batch, owner)?;
                 plan.validate_repair_mode_v1(batch.mode)?;
                 Some(plan)
             } else {
@@ -642,7 +676,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             }
             if build_lexical {
                 let started = std::time::Instant::now();
-                observation.lexical_stages = self.builder.build_batch(batch)?;
+                observation.lexical_stages = self.builder.build_batch_with_owner(batch, owner)?;
                 observation.lexical_build_ns = Some(elapsed_ingest_ns(started)?);
             }
             if batch.seal {
@@ -651,11 +685,13 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                     self.lexical_generation_validator.as_ref(),
                     &lexical,
                     "lexical post-build",
+                    owner,
                 )?;
                 validate_physical_generation_v1(
                     self.semantic_generation_validator.as_ref(),
                     &semantic,
                     "semantic post-build",
+                    owner,
                 )?;
                 crash_point::reached(crash_point::BEFORE_AUTHORITY_RECORD);
                 let started = std::time::Instant::now();
@@ -713,6 +749,7 @@ impl DirectSearchCorpusMaterializer {
     fn can_recover_completed_target_v1(
         &self,
         batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
     ) -> Result<bool, CoreError> {
         if !batch.seal {
             return Ok(false);
@@ -736,7 +773,7 @@ impl DirectSearchCorpusMaterializer {
             return Ok(false);
         }
         Ok(self
-            .preflight_sealed_generation_v1(batch)?
+            .preflight_sealed_generation_v1(batch, owner)?
             .is_finalize_only())
     }
 
@@ -777,6 +814,7 @@ impl DirectSearchCorpusMaterializer {
         &self,
         batch: &SearchCorpusIngestBatch,
         base_generation: ManifestGeneration,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
     ) -> Result<(), CoreError> {
         timed_ingest_work("ingest_paired_base_validation", || {
             let tracks = [
@@ -826,7 +864,12 @@ impl DirectSearchCorpusMaterializer {
                     manifest_generation: base_generation,
                     manifest_digest: digest,
                 };
-                validate_delta_base_v1(validator.as_ref(), &base, &format!("{label} delta base"))?;
+                validate_delta_base_v1(
+                    validator.as_ref(),
+                    &base,
+                    &format!("{label} delta base"),
+                    owner,
+                )?;
             }
             if self.ledger.read().map_err(|error| CoreError::Storage(format!(
             "direct search-corpus materialize: ledger poisoned while inspecting base chunk authority: {error}"
@@ -853,6 +896,7 @@ impl DirectSearchCorpusMaterializer {
     fn preflight_sealed_generation_v1(
         &self,
         batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
     ) -> Result<SealedGenerationBuildPlanV1, CoreError> {
         let _known: SealedSearchCorpusAuthorityStateV1 =
             self.authority.inspect_sealed_search_corpus(
@@ -866,11 +910,13 @@ impl DirectSearchCorpusMaterializer {
             self.lexical_generation_validator.as_ref(),
             &lexical,
             "lexical preflight",
+            owner,
         )?;
         let semantic_state = inspect_physical_generation_v1(
             self.semantic_generation_validator.as_ref(),
             &semantic,
             "semantic preflight",
+            owner,
         )?;
         Ok(SealedGenerationBuildPlanV1 {
             lexical,

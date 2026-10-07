@@ -282,6 +282,7 @@ impl SearchPlaneIngestDispatcher {
         batch: &mut quanta_index_contract::SearchCorpusIngestBatch,
         apply: impl FnOnce(
             &quanta_index_contract::SearchCorpusIngestBatch,
+            &mut quanta_index_core::PublicationValidationOwner,
         ) -> Result<BatchPublishReceipt, CoreError>,
     ) -> Result<
         (
@@ -376,11 +377,25 @@ impl SearchPlaneIngestDispatcher {
         // here would consume the stream even when apply refuses a damaged
         // target before doing any work. Replay and reconciliation still use
         // this same catalog and the original operation journal.
+        // This scope dies with this attempt, including refusals and replay
+        // races. The synchronous journal stages borrow it sequentially.
+        let validation =
+            std::cell::RefCell::new(quanta_index_core::PublicationValidationOwner::default());
         let receipt = self.publish_idempotent_verified(
             batch,
             body_digest,
-            |batch| self.lexical.preflight_batch(batch),
-            apply,
+            |batch| {
+                let mut owner = validation.try_borrow_mut().map_err(|error| {
+                    CoreError::Storage(format!("source publication proof custody: {error}"))
+                })?;
+                self.lexical.preflight_batch_with_owner(batch, &mut owner)
+            },
+            |batch| {
+                let mut owner = validation.try_borrow_mut().map_err(|error| {
+                    CoreError::Storage(format!("source publication proof custody: {error}"))
+                })?;
+                apply(batch, &mut owner)
+            },
         )?;
         let reconciled = self.source_publication.reconcile_source_event(
             &batch.repo_id,
@@ -579,8 +594,10 @@ impl SearchPlaneIngestDispatcher {
             }
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(mut batch) => {
                 let mut observation = None;
-                match self.publish_source_idempotent(&mut batch, |batch| {
-                    let outcome = self.lexical.publish_batch(batch, budget)?;
+                match self.publish_source_idempotent(&mut batch, |batch, owner| {
+                    let outcome = self
+                        .lexical
+                        .publish_batch_with_owner(batch, budget, owner)?;
                     outcome
                         .publication
                         .validate_receipt(

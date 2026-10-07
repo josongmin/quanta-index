@@ -15,7 +15,7 @@ use crate::sealed_generation::coverage::{
     CoveragePlan, CoverageReadPhase, CoverageWriteBase, SOURCE_FILE_COVERAGE_FILE_NAME,
     plan_file_coverage, read_staged_coverage, write_staged_coverage,
 };
-use crate::sealed_generation::{DiscardingVisitor, seal_generation, walk_sealed_generation};
+use crate::sealed_generation::seal_generation;
 use crate::stage_timing::elapsed_stage_ns;
 use crate::{GenKey, LexicalAdapter, op_mutates_index, op_writes_generation};
 use quanta_index_contract::channel::LexicalChannelOp;
@@ -236,6 +236,20 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
     ) -> Result<(), CoreError> {
+        self.preflight_batch_with_owner(
+            batch,
+            phase,
+            &mut quanta_index_core::PublicationValidationOwner::default(),
+        )
+    }
+
+    fn preflight_batch_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        phase: SearchCorpusPreflightPhaseV1,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        owner.bind_batch(batch)?;
         let read_phase = match phase {
             SearchCorpusPreflightPhaseV1::BeforeIntent => CoverageReadPhase::BeforeIntent,
             SearchCorpusPreflightPhaseV1::UnderOperationLock => {
@@ -271,16 +285,23 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             // and neither build nor open accepts an unproved generation.
             let (_directory, _observed) =
                 self.sealed_generation_dir_for(&identity, "batch preflight")?;
-            let proved =
-                match walk_sealed_generation(&directory, &identity, &mut DiscardingVisitor, None) {
-                    Ok(proved) => proved,
-                    Err(CoreError::Typed {
-                        code:
-                            quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
-                        ..
-                    }) if batch.mode == BatchIngestMode::ReplaceGeneration => return Ok(()),
-                    Err(error) => return Err(error),
-                };
+            let proved = match crate::sealed_generation::walk_sealed_generation_reusing_proofs(
+                &directory,
+                &identity,
+                None,
+                owner
+                    .proof_state::<crate::sealed_generation::publication_proof::PublicationProofs>(
+                        SearchPlaneTrackKind::Lexical,
+                    )?,
+                None,
+            ) {
+                Ok(proved) => proved,
+                Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    ..
+                }) if batch.mode == BatchIngestMode::ReplaceGeneration => return Ok(()),
+                Err(error) => return Err(error),
+            };
             self.record_coverage_read(read_phase, proved.coverage_read_stats)?;
             if proved.source_publication.as_ref() != Some(&batch.source_event) {
                 return Err(CoreError::InvalidContract(
@@ -289,7 +310,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             }
             return Ok(());
         }
-        let _planned = self.plan_batch_coverage(batch, &identity, &directory, read_phase)?;
+        let _planned = self.plan_batch_coverage(batch, &identity, &directory, read_phase, owner)?;
         self.preflight_file_authority_batch(batch)?;
         Ok(())
     }
@@ -298,6 +319,18 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<Option<LexicalBuildStageDurationsV1>, CoreError> {
+        self.build_batch_with_owner(
+            batch,
+            &mut quanta_index_core::PublicationValidationOwner::default(),
+        )
+    }
+
+    fn build_batch_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<Option<LexicalBuildStageDurationsV1>, CoreError> {
+        owner.bind_batch(batch)?;
         let preparation_started = Instant::now();
         // Storage-free admission precedes even the sealed replay shortcut.
         // The same owner validates the public materializer and raw channel.
@@ -335,9 +368,17 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     ),
                 });
             }
-            self.validate_generation_identity(&candidate)?;
-            let verified =
-                walk_sealed_generation(&generation_dir, &candidate, &mut DiscardingVisitor, None)?;
+            self.validate_generation_identity_with_owner(&candidate, owner)?;
+            let verified = crate::sealed_generation::walk_sealed_generation_reusing_proofs(
+                &generation_dir,
+                &candidate,
+                None,
+                owner
+                    .proof_state::<crate::sealed_generation::publication_proof::PublicationProofs>(
+                        SearchPlaneTrackKind::Lexical,
+                    )?,
+                None,
+            )?;
             self.record_coverage_read(CoverageReadPhase::Build, verified.coverage_read_stats)?;
             if verified.source_publication.as_ref() != Some(&batch.source_event) {
                 return Err(CoreError::InvalidContract(
@@ -350,8 +391,13 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         let preflight_started = Instant::now();
         self.preflight_file_authority_batch(batch)?;
         let prep_file_authority_preflight_ns = elapsed_stage_ns(preflight_started)?;
-        let coverage =
-            self.plan_batch_coverage(batch, &candidate, &generation_dir, CoverageReadPhase::Build)?;
+        let coverage = self.plan_batch_coverage(
+            batch,
+            &candidate,
+            &generation_dir,
+            CoverageReadPhase::Build,
+            owner,
+        )?;
         // The prepared coverage marks this target as bound before any index
         // mutation. It is query-invisible until the index and artifact seal.
         let coverage_write_started = Instant::now();
@@ -573,6 +619,7 @@ impl LexicalAdapter {
         candidate: &GenerationSnapshot,
         generation_dir: &std::path::Path,
         read_phase: CoverageReadPhase,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
     ) -> Result<CoveragePlan, CoreError> {
         crate::causal_profile::timed_work("lexical_plan_batch_coverage", || {
             // Derive the complete next admitted universe from a proved base before
@@ -611,11 +658,11 @@ impl LexicalAdapter {
                     let mut decoded = std::mem::take(&mut *cache);
                     drop(cache);
                     let verified =
-                        crate::sealed_generation::walk_sealed_generation_reusing_coverage(
+                        crate::sealed_generation::walk_sealed_generation_reusing_proofs(
                             &base_dir,
                             &identity,
-                            &mut DiscardingVisitor,
                             Some(&mut decoded),
+                            owner.proof_state::<crate::sealed_generation::publication_proof::PublicationProofs>(SearchPlaneTrackKind::Lexical)?,
                             None,
                         )?;
                     *self.coverage_decode_cache.lock().map_err(|error| {

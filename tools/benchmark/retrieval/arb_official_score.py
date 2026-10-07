@@ -14,13 +14,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
+import tarfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from tools.benchmark import evidence as benchmark_evidence
-from tools.benchmark.retrieval import evaluator
+from tools.benchmark.retrieval import arb_corpus_custody, evaluator
 
 ROUTES = ("lexical", "semantic", "hybrid")
 BUDGETS = (4000, 8000, 16000, 32000)
@@ -71,10 +73,86 @@ def read_regular(path: Path, expected: str | None = None) -> bytes:
     return raw
 
 
+def assert_git_source_clean(arb: Path, expected_commit: str) -> None:
+    """Reject any source tree other than the pinned, fully clean ARB checkout."""
+    require(
+        type(expected_commit) is str
+        and len(expected_commit) == 40
+        and all(char in "0123456789abcdef" for char in expected_commit),
+        "invalid pinned ARB commit",
+    )
+
+    def git(*args: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "--no-optional-locks", "-C", str(arb), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise ScoringRefusal(f"ARB source git guard failed: {exc}") from exc
+        return result.stdout.strip()
+
+    require(
+        Path(git("rev-parse", "--show-toplevel")).resolve() == arb.resolve(),
+        "ARB source is not its own Git checkout",
+    )
+    require(git("rev-parse", "HEAD") == expected_commit, "ARB source commit mismatch")
+    require(
+        not git("status", "--porcelain=v1", "--untracked-files=all"),
+        "ARB source has tracked or untracked changes",
+    )
+    ignored_python = [
+        path
+        for path in git(
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--",
+            "src/agent_retrieval_bench",
+        ).split("\x00")
+        if path.endswith(".py")
+    ]
+    require(not ignored_python, f"ARB source has ignored Python modules: {ignored_python}")
+
+
+def assert_cached_arb_origins(source: Path) -> None:
+    """A cached foreign module must not bypass the pinned source import root."""
+    canonical = source.resolve()
+    for name, module in tuple(sys.modules.items()):
+        if name != "agent_retrieval_bench" and not name.startswith("agent_retrieval_bench."):
+            continue
+        origin = getattr(getattr(module, "__spec__", None), "origin", None)
+        module_file = getattr(module, "__file__", None)
+        require(
+            type(origin) is str and type(module_file) is str,
+            f"ARB module has no file origin: {name}",
+        )
+        origin_path = Path(origin).resolve()
+        require(
+            origin_path == Path(module_file).resolve()
+            and origin_path.suffix == ".py"
+            and origin_path.is_relative_to(canonical),
+            f"foreign ARB module origin: {name}: {origin_path}",
+        )
+
+
+def assert_official_source_custody(b06: Path, policy: dict[str, Any]) -> None:
+    arb = b06 / "arb"
+    source = arb / "src/agent_retrieval_bench"
+    assert_git_source_clean(arb, policy["arb"]["commit"])
+    assert_cached_arb_origins(source)
+
+
 def pinned_arb(b06: Path):
     """Import only the ARB modules whose bytes the retained policy pins."""
     policy = read_strict(b06 / "policy.json")[0]
     source = b06 / "arb/src/agent_retrieval_bench"
+    assert_official_source_custody(b06, policy)
     for name, expected in policy["arb"]["module_sha256"].items():
         read_regular(source / name, expected)
     # ARB imports sibling modules; this is an explicit, separately pinned source root.
@@ -91,6 +169,7 @@ def pinned_arb(b06: Path):
     )
     for name, expected in policy["arb"]["module_sha256"].items():
         read_regular(source / name, expected)
+    assert_official_source_custody(b06, policy)
     return policy, baseline, bcy_curve
 
 
@@ -279,12 +358,16 @@ def bind_identity(
     return gold
 
 
-def load_samples(b06: Path, policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def load_samples(
+    b06: Path, policy: dict[str, Any]
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     samples: dict[str, dict[str, Any]] = {}
+    release_by_id: dict[str, str] = {}
     for release in RELEASES:
         path = b06 / "data/benchmark" / release / "samples.jsonl"
         expected = policy["arb"]["releases"][release]["samples_jsonl_sha256"]
         raw = read_regular(path, expected)
+        selected_count = 0
         for line in raw.splitlines():
             try:
                 sample = benchmark_evidence.parse_json(line.decode("utf-8"))
@@ -293,14 +376,25 @@ def load_samples(b06: Path, policy: dict[str, Any]) -> dict[str, dict[str, Any]]
                 raise ScoringRefusal(f"invalid official sample JSONL: {release}: {exc}") from exc
             if sample.get("repo") != "gin-gonic/gin":
                 continue
+            require(
+                sample.get("task_type") == release.removeprefix("v2_"),
+                f"official sample task type differs from release: {release}",
+            )
             sid = sample["id"]
             require(sid not in samples, f"duplicate official sample ID: {sid}")
             samples[sid] = sample
+            release_by_id[sid] = release
+            selected_count += 1
+        require(
+            selected_count
+            == policy["sample_selection"]["expected_counts"][release.removeprefix("v2_")],
+            f"official sample count differs from release: {release}",
+        )
     require(
         len(samples) == policy["sample_selection"]["expected_counts"]["total"],
         "official denominator mismatch",
     )
-    return samples
+    return samples, release_by_id
 
 
 def case_context(case: dict[str, Any], sample: dict[str, Any], index: dict[str, Any], baseline):
@@ -401,6 +495,7 @@ def score_arm(
     record_index_path: Path,
     b06: Path,
     preparation_path: Path | None = None,
+    corpus_work_root: Path | None = None,
 ) -> dict[str, Any]:
     arm, arm_raw = read_strict(arm_path)
     record_index, record_index_raw = read_strict(record_index_path)
@@ -419,7 +514,7 @@ def score_arm(
         amendment_sha == sha256(read_regular(b06 / "policy_amendments.json")),
         "arm policy amendment digest mismatch",
     )
-    samples = load_samples(b06, policy)
+    samples, release_by_id = load_samples(b06, policy)
     official_sources = arm.get("official_source_files", arm.get("original_samples"))
     require(isinstance(official_sources, dict), "arm has no official sample source map")
     for release in RELEASES:
@@ -569,6 +664,44 @@ def score_arm(
                 row.update(status="BLOCKED", reason=str(exc))
             rows.append(row)
     require(len(rows) == len(cases) * len(ROUTES), "incomplete route accounting")
+    corpus = None
+    corpus_reason = "official archive and extracted corpus bytes have no independent custody proof"
+    if corpus_work_root is not None:
+        selected_by_release = {release: set() for release in RELEASES}
+        for case in cases:
+            sid = case["sample_id"]
+            selected_by_release[release_by_id[sid]].add(samples[sid]["base_commit"])
+        try:
+            corpus = arb_corpus_custody.restore(b06, policy, selected_by_release, corpus_work_root)
+        except (arb_corpus_custody.CorpusBlocked, OSError, ValueError, tarfile.TarError) as exc:
+            corpus_reason = str(exc)
+    if corpus is not None:
+        cache = arb_corpus_custody.verified_file_cache(corpus, bcy_curve)
+        for row in rows:
+            if row["status"] != "COMPLETED":
+                continue
+            sample = samples[row["sample_id"]]
+            detail = {
+                "sample_id": row["sample_id"],
+                "task_type": row["task_type"],
+                "repo": sample["repo"],
+                "base_commit": sample["base_commit"],
+                "gold_files": row["gold_files"],
+                "top_files": row["top_files"],
+            }
+            row["bcy_detail"] = detail
+            try:
+                evaluated = bcy_curve.evaluate_sample(
+                    detail, row["gold_files"], cache, BUDGETS, (1,)
+                )
+                row["bcy"] = {
+                    "status": "VERIFIED",
+                    "budgets": {
+                        str(budget): evaluated["packed"][budget]["bcy"] for budget in BUDGETS
+                    },
+                }
+            except (OSError, ValueError, KeyError, UnicodeError) as exc:
+                row["bcy"] = {"status": "BLOCKED", "reason": str(exc)}
     summaries = {}
     for route in ROUTES:
         selected = [row for row in rows if row["route"] == route]
@@ -580,6 +713,31 @@ def score_arm(
             )
             for name in ("Recall@20", "MRR@20")
         }
+        bcy_complete = [row for row in complete if row["bcy"]["status"] == "VERIFIED"]
+        bcy_summary: dict[str, Any] = {
+            "denominator": 0,
+            "status": "BLOCKED",
+            "reason": corpus_reason if corpus is None else "no complete BCY cohort",
+            "budgets": {str(b): None for b in BUDGETS},
+        }
+        if corpus is not None and complete and len(bcy_complete) == len(complete):
+            details = [row["bcy_detail"] for row in complete]
+            try:
+                official = bcy_curve.evaluate_run(
+                    f"quanta-{route}", "quanta", record_index_path, details, cache, BUDGETS, (1,)
+                )
+                require(official["samples"] == len(complete), "official BCY denominator mismatch")
+                bcy_summary = {
+                    "denominator": len(complete),
+                    "status": "VERIFIED",
+                    "budgets": {str(b): official["overall"][f"BCY@{b}"] for b in BUDGETS},
+                    "official_overall": official["overall"],
+                    "official_by_task": official["by_task"],
+                }
+            except (OSError, ValueError, KeyError, UnicodeError) as exc:
+                bcy_summary["reason"] = f"official BCY aggregate failed: {exc}"
+        elif corpus is not None and complete:
+            bcy_summary["reason"] = "one or more completed rows failed official BCY evaluation"
         summaries[route] = {
             "counts": {
                 "requested": requested,
@@ -601,12 +759,25 @@ def score_arm(
                 },
             },
             "completed_only": {"denominator": len(complete), **metrics},
-            "bcy_completed_only": {
-                "denominator": 0,
-                "status": "BLOCKED",
-                "budgets": {str(b): None for b in BUDGETS},
-            },
+            "bcy_completed_only": bcy_summary,
         }
+    if corpus is not None:
+        try:
+            arb_corpus_custody.verify_extracted(corpus)
+        except (arb_corpus_custody.CorpusBlocked, OSError, ValueError) as exc:
+            corpus_reason = f"extracted corpus changed during BCY evaluation: {exc}"
+            corpus = None
+            for row in rows:
+                if row["status"] == "COMPLETED":
+                    row["bcy"] = {"status": "BLOCKED", "reason": corpus_reason}
+            for summary in summaries.values():
+                summary["bcy_completed_only"] = {
+                    "denominator": 0,
+                    "status": "BLOCKED",
+                    "reason": corpus_reason,
+                    "budgets": {str(b): None for b in BUDGETS},
+                }
+    assert_official_source_custody(b06, policy)
     return {
         "schema_version": 1,
         "arm": arm.get("arm", "original_text_current_v3"),
@@ -616,7 +787,9 @@ def score_arm(
         "arb_policy_sha256": sha256(policy_raw),
         "qualification": "DIAGNOSTIC_UNQUALIFIED",
         "binary_capture_custody": "NOT_ATTESTED_BY_SCORER",
-        "corpus_custody": "BLOCKED_ARCHIVE_AND_EXTRACTED_BYTES_UNVERIFIED",
+        "corpus_custody": corpus.custody
+        if corpus is not None
+        else {"status": "BLOCKED", "reason": corpus_reason},
         "candidate_tokenizer": evaluator.TOKENIZER,
         "bcy_tokenizer": bcy_curve.TOKENIZER_NAME,
         "metric_contract": {
@@ -649,6 +822,11 @@ def main(argv: list[str] | None = None) -> int:
         help="optional pinned copy-spec manifest for a fresh capture run",
     )
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--corpus-work-root",
+        type=Path,
+        help="fresh direct child of the OS temp directory for verified official corpus restore",
+    )
     args = parser.parse_args(argv)
     try:
         root = args.b06_root.resolve()
@@ -659,7 +837,13 @@ def main(argv: list[str] | None = None) -> int:
             "output must be outside source checkout",
         )
         require(not args.out.exists(), "output already exists")
-        result = score_arm(args.arm_manifest, args.record_index, root, args.preparation_manifest)
+        result = score_arm(
+            args.arm_manifest,
+            args.record_index,
+            root,
+            args.preparation_manifest,
+            args.corpus_work_root,
+        )
         args.out.parent.mkdir(parents=True, exist_ok=True)
         with args.out.open("x", encoding="utf-8") as file:
             json.dump(result, file, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)

@@ -259,14 +259,14 @@ def test_runner_checks_daemon_custody_at_each_nextest_boundary(
                 paths[replacement_path].write_bytes(b"replaced daemon bytes")
             binary_custody.verify(command[1], [Path(path) for path in command[2:]])
         else:
-            assert command[:4] == [
-                str(paired / "scripts/quanta-build-cli"),
-                "nextest",
-                "--lane",
-                "fixture",
-            ]
-            phases.append(command[5])
+            pytest.fail("unexpected subprocess outside binary custody")
         return SimpleNamespace(returncode=0)
+
+    def execute_phase(semantica, _case, phase, cargo, _owner, _completion, _env, lane):
+        assert semantica == paired and lane == "fixture"
+        assert cargo[:3] == ["cargo", "nextest", phase]
+        phases.append(phase)
+        return 0
 
     capture = SimpleNamespace(
         run=SimpleNamespace(lane="fixture", execution_root=paired, command_cwd=paired),
@@ -279,6 +279,7 @@ def test_runner_checks_daemon_custody_at_each_nextest_boundary(
 
     monkeypatch.setattr(RUNNER, "_frozen", frozen)
     monkeypatch.setattr(RUNNER.subprocess, "run", run)
+    monkeypatch.setattr(RUNNER, "_execute_qbc_phase", execute_phase)
     monkeypatch.setattr(
         RUNNER, "read_locator", lambda *_: (b"locator", {"receipt_path": "/fixture/receipt.json"})
     )
@@ -545,3 +546,124 @@ def test_canonical_resolution_comparison_rejects_numeric_aliases(
     assert observed == resolutions["runtime"]
     with pytest.raises(ValueError, match="caller resolver identity changed"):
         _require_exact_resolution(observed, resolutions["runtime"], "caller")
+
+
+def _recipe_command(case, phase):
+    label, package, features, binary, kind, test = case
+    command = [
+        "cargo",
+        "nextest",
+        phase,
+        "--locked",
+        "--manifest-path",
+        "packages/analysis/quanta-v2/Cargo.toml",
+        "-p",
+        package,
+        "--no-default-features",
+        "--features",
+        features,
+    ]
+    command.extend(["--lib"] if kind == "lib" else ["--test", binary])
+    command.extend(["-E", "test(/^" + RUNNER.re.escape(test) + "$/)"])
+    command.extend(
+        ["--message-format", "json"]
+        if phase == "list"
+        else [
+            "--message-format",
+            "libtest-json-plus",
+            "--message-format-version",
+            "0.1",
+        ]
+    )
+    return command
+
+
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("phase", ["list", "run"])
+def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, case, phase):
+    command = _recipe_command(case, phase)
+    calls = []
+    completion = SimpleNamespace(
+        LOCATOR_PATH_ENV_V1="LOCATOR",
+        LOCATOR_NONCE_ENV_V1="NONCE",
+        REQUEST_ENV_DIGEST_ENV_V1="REQUEST",
+        EXPECTED_SOURCE_HEAD_ENV_V1="SOURCE",
+    )
+    control = {name: name.lower() for name in ("LOCATOR", "NONCE", "REQUEST", "SOURCE")}
+    environment = {**control, "CODEGRAPH_PERSONA": "agent"}
+    reference = f"quanta-index:paired-r5:{case[0]}:{phase}"
+
+    def admit(model, *, authority):
+        assert model == {"kind": "fixture", "command": command}
+        assert authority == ("owner_recipe", reference)
+        return "typed-command-bound-admission"
+
+    def execute(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["invocation_admission_v1"] == "typed-command-bound-admission"
+        assert kwargs["owner_recipe_ref"] == reference
+        assert kwargs["command"] == command and kwargs["runner"] == "nextest"
+        assert kwargs["lane"] == "registered" and kwargs["lane_token"] is None
+        assert kwargs["execution_root_v1"] == kwargs["command_cwd_v1"] == tmp_path
+        assert kwargs["verification_completion_environment_v1"] == control
+        assert kwargs["compile_env_overrides_v1"] == {
+            "EXPECTED_SNAPSHOT": "a" * 64,
+            "CODEGRAPH_PERSONA": "agent",
+            **({"NEXTEST_EXPERIMENTAL_LIBTEST_JSON": "1"} if phase == "run" else {}),
+        }
+        return 17
+
+    owner = SimpleNamespace(
+        _CARGO_INVOCATION_ADMISSION_OWNER_V1=SimpleNamespace(
+            __file__=str(tmp_path / "tools/quanta-build-cli/cargo_invocation_admission.py"),
+            validate_cargo_invocation_v1=admit,
+            InvocationAuthorityV1=lambda kind, ref: (kind, ref),
+            InvocationAuthorityKindV1=SimpleNamespace(OWNER_RECIPE="owner_recipe"),
+        ),
+        EXPECTED_SOURCE_SNAPSHOT_ENV_V1="EXPECTED_SNAPSHOT",
+        _build_command_model=lambda argv, runner: {"kind": "fixture", "command": argv},
+        _campaign_cargo_admission_owner_v1=lambda: SimpleNamespace(
+            campaign_source_snapshot_digest_v1=lambda root: "a" * 64
+        ),
+        _run_lane_command=execute,
+    )
+    assert (
+        RUNNER._execute_qbc_phase(
+            tmp_path, case, phase, command, owner, completion, environment, "registered"
+        )
+        == 17
+    )
+    assert len(calls) == 1
+    mutations = [command + ["--all-features"], [token for token in command if token != "--locked"]]
+    mutations.append(
+        ["--tests" if token == "--lib" else token for token in command]
+        if case[4] == "lib"
+        else ["other-target" if token == case[3] else token for token in command]
+    )
+    mutations.append(["test(/.*/)" if token.startswith("test(/") else token for token in command])
+    for changed in mutations:
+        with pytest.raises(ValueError, match="command drift"):
+            RUNNER._execute_qbc_phase(
+                tmp_path, case, phase, changed, owner, completion, environment, "registered"
+            )
+    with pytest.raises(ValueError, match="unregistered"):
+        RUNNER._execute_qbc_phase(
+            tmp_path,
+            ("foreign", *case[1:]),
+            phase,
+            command,
+            owner,
+            completion,
+            environment,
+            "registered",
+        )
+    with pytest.raises(ValueError, match="unregistered"):
+        RUNNER._execute_qbc_phase(
+            tmp_path, case, "build", command, owner, completion, environment, "registered"
+        )
+    owner._CARGO_INVOCATION_ADMISSION_OWNER_V1.__file__ = str(tmp_path / "foreign.py")
+    with pytest.raises(ValueError, match="another source"):
+        RUNNER._execute_qbc_phase(
+            tmp_path, case, phase, command, owner, completion, environment, "registered"
+        )
+    assert len(calls) == 1

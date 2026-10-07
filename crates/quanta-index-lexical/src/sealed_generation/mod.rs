@@ -13,6 +13,7 @@ pub(crate) mod live_bm25;
 mod manifest;
 mod overlay;
 mod path_io;
+pub(crate) mod publication_proof;
 mod scrub;
 mod seal;
 mod verify;
@@ -36,5 +37,5 @@ pub(crate) use scrub::{
 pub(crate) use seal::seal_generation;
 pub(crate) use verify::{
     DiscardingVisitor, SealedGenerationVisitor, walk_sealed_generation, walk_sealed_generation_at,
-    walk_sealed_generation_reusing_coverage,
+    walk_sealed_generation_reusing_proofs,
 };

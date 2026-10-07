@@ -25,6 +25,11 @@ use crate::channel_payloads::{decode_replace_scope_payload, decode_tombstone_sco
 
 mod codec;
 mod producer;
+mod publication_proof;
+
+pub(crate) use publication_proof::{
+    FileAuthorityWalkProof, ValidatedFileAuthorityProof, verify_for_publication,
+};
 
 #[cfg(test)]
 use crate::publication_faults::{
@@ -520,20 +525,13 @@ where
     })
 }
 
-pub(crate) fn verified_inventory(authority: &VerifiedAuthority) -> BTreeMap<String, u64> {
+fn inventory_for_root(root: &root::AuthorityRoot) -> BTreeMap<String, u64> {
     let mut names = BTreeMap::new();
     let _prior_root = names.insert(format!("{DIR}/{ROOT}"), 0);
-    for (digest, len) in object_inventory(&authority.authority.root) {
+    for (digest, len) in object_inventory(root) {
         let _prior_object = names.insert(object_name(&digest), len);
     }
     names
-}
-
-pub(crate) fn verified_matches_coverage(
-    authority: &VerifiedAuthority,
-    coverage: &quanta_index_contract::FileCoverageSnapshot,
-) -> bool {
-    root_matches_coverage(&authority.authority.root, coverage)
 }
 
 fn root_matches_coverage(

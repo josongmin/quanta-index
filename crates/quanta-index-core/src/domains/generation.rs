@@ -111,6 +111,17 @@ pub fn validate_pinned_generation_v1(
 pub trait GenerationIdentityValidatePort: Send + Sync {
     fn validate_generation_identity(&self, candidate: &GenerationSnapshot)
     -> Result<(), CoreError>;
+
+    /// Validate the current physical bytes using one publication's opaque
+    /// proof custody. This is not permission to bypass byte/inventory checks.
+    /// Backends without retained proofs execute the same cold validator.
+    fn validate_generation_identity_with_owner(
+        &self,
+        candidate: &GenerationSnapshot,
+        _owner: &mut crate::PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        self.validate_generation_identity(candidate)
+    }
 }
 
 /// Cheap, cache-bypassing liveness check for an active sealed identity.

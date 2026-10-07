@@ -18,8 +18,10 @@
 //!   is loaded and handed to the visitor.
 //!
 //! The visitor decides what to keep: the open keeps everything and becomes
-//! a searcher, the validator keeps nothing. Both decode, so a door that
-//! admits a generation has run every step a query's open runs.
+//! a searcher, the validator keeps nothing. Cold validation and query open
+//! decode independently. A publication may retain the typed semantic proof
+//! after that full walk, then reauthenticate every current committed byte and
+//! directory inventory before reusing it at the next refusal boundary.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -130,14 +132,42 @@ pub(crate) fn walk_sealed_generation<V: SealedGenerationVisitor>(
     visitor: &mut V,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<VerifiedGeneration, CoreError> {
-    walk_sealed_generation_reusing_coverage(generation_dir, identity, visitor, None, budget)
+    checkpoint(budget, "lexical:cold-open:walk")?;
+    let root = super::open_generation_dir_nofollow(generation_dir).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: open sealed generation {}: {error}",
+            generation_dir.display()
+        ))
+    })?;
+    walk_sealed_generation_at(&root, generation_dir, identity, visitor, None, budget)
 }
 
-pub(crate) fn walk_sealed_generation_reusing_coverage<V: SealedGenerationVisitor>(
+pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
+    root: &File,
     generation_dir: &Path,
     identity: &GenerationSnapshot,
     visitor: &mut V,
     cache: Option<&mut CoverageDecodeCache>,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<VerifiedGeneration, CoreError> {
+    walk_sealed_generation_at_with_proofs(
+        root,
+        generation_dir,
+        identity,
+        visitor,
+        cache,
+        None,
+        budget,
+    )
+}
+
+/// Only a non-serving visitor can consume retained publication proofs.
+/// Query and scrub doors continue to use the independent full walk above.
+pub(crate) fn walk_sealed_generation_reusing_proofs(
+    generation_dir: &Path,
+    identity: &GenerationSnapshot,
+    cache: Option<&mut CoverageDecodeCache>,
+    proofs: &mut super::publication_proof::PublicationProofs,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<VerifiedGeneration, CoreError> {
     checkpoint(budget, "lexical:cold-open:walk")?;
@@ -147,15 +177,24 @@ pub(crate) fn walk_sealed_generation_reusing_coverage<V: SealedGenerationVisitor
             generation_dir.display()
         ))
     })?;
-    walk_sealed_generation_at(&root, generation_dir, identity, visitor, cache, budget)
+    walk_sealed_generation_at_with_proofs(
+        &root,
+        generation_dir,
+        identity,
+        &mut DiscardingVisitor,
+        cache,
+        Some(proofs),
+        budget,
+    )
 }
 
-pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
+fn walk_sealed_generation_at_with_proofs<V: SealedGenerationVisitor>(
     root: &File,
     generation_dir: &Path,
     identity: &GenerationSnapshot,
     visitor: &mut V,
     cache: Option<&mut CoverageDecodeCache>,
+    mut proofs: Option<&mut super::publication_proof::PublicationProofs>,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<VerifiedGeneration, CoreError> {
     crate::causal_profile::timed_work("lexical_generation_proof", || {
@@ -196,6 +235,9 @@ pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
             manifest.text_authority.as_deref(),
             visitor,
             budget,
+            proofs
+                .as_deref_mut()
+                .map(|proofs| (identity, &mut proofs.text)),
         )?;
         checkpoint(budget, "lexical:cold-open:coverage")?;
         let coverage = match cache {
@@ -232,6 +274,7 @@ pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
             coverage.as_ref(),
             visitor,
             budget,
+            proofs.map(|proofs| (identity, &mut proofs.file)),
         )?;
         checkpoint(budget, "lexical:cold-open:walk")?;
         Ok(VerifiedGeneration {
@@ -253,6 +296,10 @@ fn verify_file_authority<V: SealedGenerationVisitor>(
     coverage: Option<&quanta_index_contract::FileCoverageSnapshot>,
     visitor: &mut V,
     budget: Option<&RequestBudgetV1>,
+    mut publication: Option<(
+        &GenerationSnapshot,
+        &mut Option<file_authority::ValidatedFileAuthorityProof>,
+    )>,
 ) -> Result<(), CoreError> {
     crate::causal_profile::timed_work("lexical_file_authority", || {
         checkpoint(budget, "lexical:cold-open:file-authority")?;
@@ -284,7 +331,7 @@ fn verify_file_authority<V: SealedGenerationVisitor>(
         }
         let root_bytes = read_committed(root, generation_dir, root_commitment, budget)?;
         let mut read_failure = None;
-        let verified_result = file_authority::verify_v15(&root_bytes, |digest, expected_len| {
+        let read_blob = |digest, expected_len| {
             let name = file_authority::object_name(&digest);
             let commitment = by_name
                 .get(name.as_str())
@@ -305,7 +352,18 @@ fn verify_file_authority<V: SealedGenerationVisitor>(
                 read_failure = Some(error);
                 format!("object {name} read failed")
             })
-        });
+        };
+        let verified_result = match publication.as_ref() {
+            Some((identity, retained)) => file_authority::verify_for_publication(
+                &root_bytes,
+                identity,
+                root_commitment,
+                retained.as_ref(),
+                read_blob,
+            ),
+            None => file_authority::verify_v15(&root_bytes, read_blob)
+                .map(file_authority::FileAuthorityWalkProof::Materialized),
+        };
         if let Some(error) = read_failure {
             return Err(error);
         }
@@ -313,7 +371,7 @@ fn verify_file_authority<V: SealedGenerationVisitor>(
             crate::index_store::sidecar_corrupt(generation_dir, &root_name, &reason)
         })?;
         checkpoint(budget, "lexical:cold-open:file-census")?;
-        let expected = file_authority::verified_inventory(&verified);
+        let expected = verified.inventory();
         if expected.len() != committed.len()
             || !expected
                 .keys()
@@ -339,7 +397,7 @@ fn verify_file_authority<V: SealedGenerationVisitor>(
                 "source coverage is missing",
             )
         })?;
-        if !file_authority::verified_matches_coverage(&verified, coverage) {
+        if !verified.matches_coverage(coverage) {
             return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 file_authority::DIR,
@@ -399,8 +457,28 @@ fn verify_file_authority<V: SealedGenerationVisitor>(
         let object_path = generation_dir
             .join(file_authority::DIR)
             .join(file_authority::OBJECTS);
-        visitor.file_authority(verified, object_path, budget)?;
-        checkpoint(budget, "lexical:cold-open:file-authority")
+        let retained = publication
+            .as_ref()
+            .and_then(|(identity, _)| verified.retain(identity, root_commitment));
+        match verified {
+            file_authority::FileAuthorityWalkProof::Materialized(verified) => {
+                visitor.file_authority(verified, object_path, budget)?;
+            }
+            file_authority::FileAuthorityWalkProof::Reauthenticated(_) => {
+                // Only walk_sealed_generation_reusing_proofs supplies custody;
+                // its statically selected visitor never builds a query handle.
+                if publication.is_none() {
+                    return Err(CoreError::InvalidContract(
+                        "publication-only F15 proof reached a serving walk".into(),
+                    ));
+                }
+            }
+        }
+        checkpoint(budget, "lexical:cold-open:file-authority")?;
+        if let (Some((_, owner)), Some(retained)) = (publication.as_mut(), retained) {
+            **owner = Some(retained);
+        }
+        Ok(())
     })
 }
 
@@ -942,6 +1020,10 @@ fn verify_text_authority<V: SealedGenerationVisitor>(
     committed: Option<&[SealedArtifactCommitmentV1]>,
     visitor: &mut V,
     budget: Option<&RequestBudgetV1>,
+    mut publication: Option<(
+        &GenerationSnapshot,
+        &mut Option<super::publication_proof::ValidatedTextAuthorityProof>,
+    )>,
 ) -> Result<(), CoreError> {
     crate::causal_profile::timed_work("lexical_text_authority", || {
         checkpoint(budget, "lexical:cold-open:text-authority")?;
@@ -993,6 +1075,44 @@ fn verify_text_authority<V: SealedGenerationVisitor>(
         checkpoint(budget, "lexical:cold-open:text-manifest-decode")?;
         ensure_text_authority_listing(generation_dir, &manifest, &manifest_name, files)?;
         ensure_text_authority_directory(root, generation_dir, &dir, files)?;
+        let reauthenticated = publication.as_ref().is_some_and(|(identity, retained)| {
+            retained
+                .as_ref()
+                .is_some_and(|proof| proof.matches(identity, manifest_commitment))
+        });
+        if reauthenticated {
+            let committed_by_name: BTreeMap<_, _> = files
+                .iter()
+                .map(|artifact| (artifact.name.as_str(), artifact))
+                .collect();
+            crate::causal_profile::timed_work(
+                "lexical_text_authority_proof_reauthentication",
+                || {
+                    for entry in &manifest.shards {
+                        checkpoint(budget, "lexical:cold-open:text-shard")?;
+                        let name = format!("{TEXT_AUTHORITY_DIR_NAME}/{}", entry.file_name());
+                        let commitment =
+                            committed_by_name
+                                .get(name.as_str())
+                                .copied()
+                                .ok_or_else(|| {
+                                    crate::index_store::sidecar_corrupt(
+                                        generation_dir,
+                                        &name,
+                                        "retained text shard is not committed",
+                                    )
+                                })?;
+                        // The authenticated manifest binds the exact descriptors
+                        // already decoded by the private witness. Current shard
+                        // bytes, size, nofollow path and inventory are still checked.
+                        let _current = read_committed(root, generation_dir, commitment, budget)?;
+                        checkpoint(budget, "lexical:cold-open:text-shard")?;
+                    }
+                    Ok::<(), CoreError>(())
+                },
+            )?;
+            return visitor.text_authority_complete(root, generation_dir);
+        }
         for entry in &manifest.shards {
             checkpoint(budget, "lexical:cold-open:text-shard")?;
             let (body, file) =
@@ -1006,7 +1126,16 @@ fn verify_text_authority<V: SealedGenerationVisitor>(
                 body,
             )?;
         }
-        visitor.text_authority_complete(root, generation_dir)
+        visitor.text_authority_complete(root, generation_dir)?;
+        if let Some((identity, retained)) = publication.as_mut() {
+            **retained = Some(
+                super::publication_proof::ValidatedTextAuthorityProof::after_full_verification(
+                    identity,
+                    manifest_commitment,
+                ),
+            );
+        }
+        Ok(())
     })
 }
 

@@ -11,6 +11,8 @@
 pub mod domains;
 pub mod error;
 pub mod ingest_resource;
+mod publication_validation;
+pub use publication_validation::PublicationValidationOwner;
 mod source_upload;
 pub use source_upload::SourcePublicationUploadPort;
 pub mod request_budget;

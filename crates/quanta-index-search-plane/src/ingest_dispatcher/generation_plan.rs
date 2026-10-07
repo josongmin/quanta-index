@@ -305,8 +305,9 @@ pub(super) fn inspect_physical_generation_v1(
     validator: &dyn GenerationIdentityValidatePort,
     candidate: &GenerationSnapshot,
     label: &str,
+    owner: &mut quanta_index_core::PublicationValidationOwner,
 ) -> Result<PhysicalGenerationStateV1, CoreError> {
-    match validator.validate_generation_identity(candidate) {
+    match validator.validate_generation_identity_with_owner(candidate, owner) {
         Ok(()) => Ok(PhysicalGenerationStateV1::Exact),
         Err(CoreError::NotFound(_)) => Ok(PhysicalGenerationStateV1::Absent),
         Err(CoreError::Typed {
@@ -333,8 +334,9 @@ pub(super) fn ensure_generation_is_mutable_v1(
     validator: &dyn GenerationIdentityValidatePort,
     candidate: &GenerationSnapshot,
     label: &str,
+    owner: &mut quanta_index_core::PublicationValidationOwner,
 ) -> Result<(), CoreError> {
-    match inspect_physical_generation_v1(validator, candidate, label)? {
+    match inspect_physical_generation_v1(validator, candidate, label, owner)? {
         PhysicalGenerationStateV1::Absent | PhysicalGenerationStateV1::InProgress => Ok(()),
         PhysicalGenerationStateV1::Exact => Err(CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
@@ -363,9 +365,10 @@ pub(super) fn validate_physical_generation_v1(
     validator: &dyn GenerationIdentityValidatePort,
     candidate: &GenerationSnapshot,
     label: &str,
+    owner: &mut quanta_index_core::PublicationValidationOwner,
 ) -> Result<(), CoreError> {
     validator
-        .validate_generation_identity(candidate)
+        .validate_generation_identity_with_owner(candidate, owner)
         .map_err(|source| CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
             message: format!(
@@ -386,8 +389,9 @@ pub(super) fn validate_delta_base_v1(
     validator: &dyn GenerationIdentityValidatePort,
     base: &GenerationSnapshot,
     label: &str,
+    owner: &mut quanta_index_core::PublicationValidationOwner,
 ) -> Result<(), CoreError> {
-    match inspect_physical_generation_v1(validator, base, label)? {
+    match inspect_physical_generation_v1(validator, base, label, owner)? {
         PhysicalGenerationStateV1::Exact => Ok(()),
         PhysicalGenerationStateV1::Corrupt { code } => Err(CoreError::Typed {
             code:

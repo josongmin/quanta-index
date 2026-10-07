@@ -94,6 +94,19 @@ remain separately pinned under `/private/tmp/qna7vj2zq6/`. The corrected actual
 Python3.12.12 import/file preflight and133 focused regressions passed; this does
 not substitute for executed caller/kernel tests.
 
+The third clean pair, Quanta2df/fixed77bc, completed a5m28s fresh daemon
+build but QBC refused caller/list's manual raw feature composition before
+test compilation. Actual assertions stayed `NOT_RUN`; the original failure
+and daemon are pinned in `/private/tmp/qna7vj2zq6/r5-2df-failure.json`.
+The fixed paired owner recipe now admits only the exact two caller/kernel
+list/run shapes through QBC's typed command-model admission and canonical
+lane-command port. Unregistered cases, phase/feature/target/selector drift
+and a foreign admission module refuse before execution. QBC still owns lane
+locking, source/environment checks and immutable completion publication;
+Quanta consumes the same locator/receipt and before/after daemon guards.
+Four actual frozen-QBC admission model preflights and137 focused tests passed.
+This adapter correction is separate from executed Nextest and operational proof.
+
 ## Native segment retention and committed live statistics
 
 Sealed manifest format 15 retains the format-14 live-statistics contract and
@@ -224,12 +237,24 @@ library tests,33 `l2_file_mutation` integration tests and lexical library/test
 Clippy with all features and `-D warnings`. Post-repair XL cost is `NOT_RUN`.
 This lookup repair does not remove the75.644s whole-proof bottleneck.
 
-The remaining structural repair must retain validated decoding/normalization/
-posting ownership within publication, bound to identity, manifest and policy,
-while authenticating current bytes at every existing refusal boundary.
-Prior successful checks or unchanged filesystem metadata cannot replace this
-authentication: the integration contract rejects base tampering after external
-preflight and after lock validation before target creation.
+The structural repair now carries a non-cloneable, non-serialized
+`PublicationValidationOwner` through one publication. Adapter-private typed
+proofs retain only identity, root/manifest and policy commitments after a full
+independent source/normalization/posting walk. Every existing refusal boundary
+still authenticates current committed objects, lengths, digests, paths and
+inventory. Query and scrub doors retain independent full validation; no source
+bodies, postings, query handles or filesystem-metadata success cache are retained.
+Exact payload identity prevents owner reuse across different publications.
+
+The complete coupled core/lexical/search-plane/runtime bundle passed1,035 library
+tests (one ignored),36 `l2_file_mutation` tests and
+`just rust-test-e2e test-scale-f15-lane` (300 passed,10 skipped), plus strict
+Clippy, format, hexagonal boundaries and module snapshots in its isolated
+worktree. Main integration preserved exact tested bytes, including the packed
+planner repair. Regressions reject same-inode/size/restored-mtime tampering,
+missing/symlink/orphan objects, lineage/owner mismatches and changed sealed
+manifests; retry, rebuild/query parity and process restart remain covered.
+Matching post-repair XL execution is `NOT_RUN`; tests do not establish its cost.
 
 ## Paged term directory
 
@@ -509,7 +534,8 @@ later source changes and new measurement profiles require affected checks.
 | `0d0eaa9312baf429e836f5a04be4f7364f7fc1c7` hosted capture-refusal checkpoint | All six terminal jobs in [workflow1036](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1036/workflows/548df841-2b6d-4d32-8b1b-b792ff4f7509) succeeded: tests2265, Python2266, docs2267, bench2268, static2269 and verify2270. Pipeline and every job revision match `0d`. Rust source-bound receipt, inventory and raw digests independently agree: 4,281 selected/executed/passed, zero failed, 30 ignored. Python: 4,323 passed, 30 skipped; Ruff check/format passed | Complete regular CI at this code checkpoint, including the two new cleanup-refusal regressions. Bench is compilation. Selected Contract/TSan and runtime diagnostics retain their own scopes; later documentation is not relabeled as this CI source. Superseded docs-only workflows1034/1035 were canceled while preserving their completed job outcomes |
 | `b9c058e15d7349ed76adaa408abbd43f123aa65a` hosted closure checkpoint | Pipeline1037's original workers docs2271, bench2272, static2273, tests2274 and Python2276 succeeded at matching source. Final verify2275 failed before executor start (`infrastructure_fail`), so its checkout/source command was `NOT_RUN`. A failed-only retry in [workflow1037](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1037/workflows/7f0e4a3e-87e3-4846-84ba-3f2d624398b7) succeeded: actual checkout and source-equality command in verify2277 exited0, inheriting the same five successful worker IDs. Original Rust raw/inventory/receipt agree: 4,281 selected/executed/passed, zero failed, 30 ignored; Python4,323 passed/30 skipped and Ruff check/format passed | Regular CI is complete at `b9` through the successful retry; original workflow `03c67383-3d37-4395-979a-b1267b555eaa` remains failed and is preserved. Workers were not rerun or counted twice. Bench remains compilation; SDK and selected Bat runtime capture retain separate scope. Artifacts: `/Users/songmin/.codex/task-evidence/scale-shared-final-20261007-1bl40iuo/ci-b9c058e1/` and its `retry-7f0e4a3e/` subtree |
 | `b2599e70b262d707771a69440f0e9a0f0c587e2b` hosted Rust observation/tooling checkpoint | Rust tests1570 succeeded at matching revision. Original receipt/raw/inventory digests agree: 4,286 selected/executed/passed, zero failed, 30 ignored inventory entries. Rust static/docs/bench and final verify contexts succeeded in [workflow](https://app.circleci.com/workflow/5b689098-0c80-4c51-9952-9dadab89d3d0). Python1569 executed and failed at the default paired-runner temporary directory: `/private/tmp` is absent on Linux | Rust scope is `VERIFIED`; regular CI at this source is `FAILED`. Bench is compilation. The Python failure is a product portability defect and is preserved separately from its later repair; local macOS focused passes cannot replace the Linux result |
-| `48fdc70045f3edcfc30378c8f9a048adc2cd56f9` hosted Python portability repair | [Python1576](https://circleci.com/gh/josongmin/quanta-index/1576) succeeded at the matching source: 4,355 passed,30 skipped; Ruff check and406-file format check passed. The separate P00 authority selection passed386, overlapping the full suite. [Rust1578](https://circleci.com/gh/josongmin/quanta-index/1578) receipt/source/raw/inventory digests independently agree:4,286 selected/executed/passed,zero failed,30 ignored inventory entries. Docs1575, static1579 and bench1577 succeeded at matching source | Python/Rust scopes are `VERIFIED`; final verify retains its own terminal status. Bench is compilation. Do not sum the overlapping P00 selection or qualify later paired-tooling changes with this receipt |
+| `48fdc70045f3edcfc30378c8f9a048adc2cd56f9` hosted Python portability repair | All six regular contexts in [workflow](https://app.circleci.com/workflow/86a9d214-6bf7-4acb-81e7-ae24bd8a105c) succeeded. [Python1576](https://circleci.com/gh/josongmin/quanta-index/1576):4,355 passed,30 skipped; Ruff check/406-file format passed. Overlapping P00 selection386 is separate. [Rust1578](https://circleci.com/gh/josongmin/quanta-index/1578) receipt/source/raw/inventory digests independently agree:4,286 selected/executed/passed,zero failed,30 ignored inventory entries. Docs1575/static1579/bench1577 match source | Regular CI is `VERIFIED`; bench is compilation. Do not sum P00 or qualify later paired-tooling source with this receipt |
+| `c38decbf04bdd9522e5c859423f05dc346cdecaf` hosted packed-source planner checkpoint | All six regular contexts in [workflow](https://app.circleci.com/workflow/3b302ad1-2cc4-419b-bbde-7c05ef71ad67) succeeded at matching source. Rust1584 receipt/raw/inventory/source independently agree:4,290 selected/executed/passed,zero failed,30 ignored. Python1582:4,355 passed,30 skipped; its overlapping P00 selection386 is separate. Docs1581/static1585/bench1583/final1586 succeeded | Regular CI is `VERIFIED` at this source; bench remains compilation and the later paired adapter/ARB scorer need their own affected results |
 | F15 candidate integrated as main `8599f2e8` | Five publication tests passed (72.842s), exercising 32 I/O and 32 SIGKILL cuts. Selected mutation/seal/cost integration tests: 73 passed. Strict lexical all-target Clippy: exit0 | Owner worktree execution preceded integration. Later recovered-query assertions and daemon/scale execution are separate |
 | F15 follow-ups `b09c4aa7` / `70521514` | Recovered-query parity and interrupted delta clone retry implemented. Owner reports 36 I/O + 36 SIGKILL cuts, corrected partial-clone controls, 73 storage regressions and strict lexical Clippy passing. Fixed705 daemon214 also passed | Complete focused code/recovery scope; latest hosted and Large/XL cost/RSS retain their own source binding |
 | `eb97e7c2` restart custody | Medium OS-process restart/delete and release-binary identity controls: 2 passed. The process harness checks daemon SHA-256 before each restart | Existing fixture and selected binary; not Large/XL or real-provider cache proof |
