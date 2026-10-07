@@ -84,7 +84,8 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
   기록된 SHA나 과거 수치로 입력을 재구성하지 않는다. 각 active ticket에 복구·새 준비 조건을 남겼다.
 - Scale 담당의 RSS 후보 및 Large/XL 실행은 별도 소유 작업이다. 중복 build를 등록하지 않는다.
   RSS/CI 후보3e5294ce의 owner 회귀70개와 추가 drain 경계c6a9120d의 회귀7개가 통과했고
-  main에 반영됐다. Strict Clippy·해당 source의 hosted CI 및 matching Large/XL 종료는 아직 미완료다.
+  main에 반영됐다. Owner는 c6a9120d의 hosted `clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  종료0을 확인했다. macOS RSS 두 library 확인·hosted 전체 CI 및 matching Large/XL 종료는 아직 미완료다.
   선택한 Linux 정식 rail은 macOS에서 unsupported_host로 거절됐다. Foreign Rust/Scale도
   실행 중이므로 로컬 진단을 Linux 성능 판정으로 세지 않는다. 실행 전에 host를 다시 확인한다.
 - `source-split-prepare/validated.json`은 source split만 검증한다. License/gold/acceptance가 아니다.
@@ -328,8 +329,9 @@ Concurrent CI owner는 해당 source의 Python/docs 통과와 hosted Rust 전체
 원본 로그에서 원인을 확인했다. 게시 전 누적 disk-walk 실패 counter를 현재 상태의 실패로 검사한
 assertion과 rename 거절·복구 회귀를 수리했다. 기존6a3의 전체 테스트 job은 `FAILED`이며
 후속 main의 final gate 통과로 세지 않는다.
-수정3e5294ce/c6a9120d는 main에 반영됐고 owner70·추가7 회귀가 통과했다. C6의 strict Clippy와
-hosted CI는 진행 중이다. 후속49a02c15 Python adapter 변경도 영향 gate에 결속한다.
+수정3e5294ce/c6a9120d는 main에 반영됐고 owner70·추가7 회귀가 통과했다. Owner는 C6의 hosted
+`clippy --workspace --all-targets --all-features --locked -- -D warnings` 종료0을 확인했다.
+macOS RSS 두 library와 hosted 전체 CI는 진행 중이다. 후속49a02c15 Python adapter 변경도 영향 gate에 결속한다.
 이 root는 live CI API를 조회하지 않았다. 완료는 same-source terminal/actual inventory/receipt로 판단한다.
 기존e371 SDK/Contract/runtime/open-loop 및9221d771 hosted gate는 원 source의 완료로 ADR/Git에 보존한다.
 공개SDK/contract·wire/state/query 변경은 registry/Justfile의 영향 rail과 portable replay를 실행한다.
