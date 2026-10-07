@@ -209,9 +209,13 @@ starts and restarts real child daemons. It requires a case for every declared
 [seal/GC crash point](../../crates/quanta-index-search-plane/src/crash_point.rs),
 currently eight, and checks convergence/retention. Those track-level points do
 not inject failure at each inner F15 write, object link, file/directory sync,
-root rename or cleanup operation. That narrower publication matrix remains
-[O4-E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02)-owned;
-QIT-03 retains the broader selected storage-boundary acceptance.
+root rename or cleanup operation. The narrower publication matrix is now
+implemented in main `8599f2e8`: 32 I/O and 32 actual SIGKILL cases with independent
+raw-object/source oracles. Its completed owner runs are recorded in
+[OCT-05-004](OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints).
+[O4-E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) owns only
+the follow-up recovered-query/daemon checks; QIT-03 retains broader selected
+storage-boundary acceptance. The F15 matrix is not missing implementation.
 
 These are source/test-coverage statements, not fresh Rust execution results.
 Full SDK-only recovery, native race detection, long mutation/fuzz and

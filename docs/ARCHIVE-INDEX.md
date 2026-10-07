@@ -39,14 +39,17 @@ history. The archived baseline below is the recovery source for committed bodies
 
 ## Completed evidence
 
-The following are historical source-bound results recorded before this cleanup,
-not executions performed by documentation consolidation:
+The following are source-bound results, rechecked where noted; documentation
+consolidation did not execute their Rust/benchmark commands:
 
 | Source / scope | Recorded completion and retained evidence |
 | --- | --- |
 | `e37123eb` SDK/Contract | SDK27; Contract Python793/Rust191; separate portable replay. `/Users/songmin/.codex/task-evidence/quanta-final-main-e37123eb-20261006-sdk`, `quanta-final-main-e37123eb-20261006-contract`, `quanta-final-main-e37123eb-20261006-custody` |
 | `e37123eb` selected runtime/open-loop | Runtime15 and open-loop20; complete source/commands/exclusions in the Git baseline OCT-04 index |
-| `9221d771` hosted CI | [Required verify1268](https://circleci.com/gh/josongmin/quanta-index/1268): regular jobs completed; bench is compilation, not samples. Later6a3f6afc closure remains I0-02 |
+| `9221d771` hosted CI | [Required verify1268](https://circleci.com/gh/josongmin/quanta-index/1268): regular jobs completed; bench is compilation, not samples |
+| `c6a9120d` hosted CI | Rechecked2026-10-07: required docs/static/Python/tests/bench/verify contexts succeeded, original nextest/inventory hashes match receipt; 4,241 passed, zero failed. [Completed checkpoint](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints) separates auxiliary PR coverage and later-source gates |
+| F15 main `8599f2e8` | Implemented barrier recovery and 32 I/O + 32 SIGKILL cases; five owner tests, 73 lexical integration tests and strict lexical Clippy passed before integration. Follow-up query/daemon checks remain E4-02; [ADR](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#publication-test-boundary) |
+| Frozen `492d2fdc` XL lifecycle | Existing frozen binary, explicit600s query profile, publish/delete/restart function proof completed. Latest-main cost/RSS is separate; [ADR](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints) |
 | `09103820` CS/SG/OG ready9 | CS180 and SG/OG each180 requests, separate replay9/9. Durable native-v3 and SG/OG-v5 roots are named in the active ledger. Earlier Docker failure and missing OG historical commit remain separate failures/blocked history |
 
 Exact raw/result contexts retain their original revisions and provenance. Missing

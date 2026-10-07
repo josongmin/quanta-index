@@ -131,3 +131,36 @@ Native service cleanup preserves the first body/capture exception and original
 cause while logging cleanup traceback separately, including Python 3.10. An
 exception label does not claim which comparator ran. This avoids losing the
 actual failure without turning failed cleanup into a successful capture.
+
+## Completed Ready9 capture scope
+
+Rechecked 2026-10-07 against the original result files. External source
+`09103820` completed CS/SG/OG capture and independent replay for all nine roots:
+180 requests per product, 540 total. Selected-project OpenGrok reader evidence
+retains that scope; all-project/global loaded-reader flags remain false.
+
+Quanta/Semble source `6a3f6afc` attempted every Ready9 repository and all 180
+original NL file tasks. Bat, lo, Mocha, Uvicorn and Zustand completed pair capture
+and independent `run.py verdict` replay, 40/40 product-task records per repository.
+Their five-product file score projections also completed. Common eligible counts
+are Bat20, lo5, Mocha0, Uvicorn1 and Zustand2; Mocha's common score is
+`NOT_APPLICABLE`. These diagnostic populations cannot be pooled into qualified
+whole-suite relevance or speed.
+
+Main `49a02c15` repaired the common adapter's assumption that an NL file report
+had top-level `per_query`. Canonical file judgments now preserve no-answer,
+unjudged/null, excluded denominators and duplicate-observation comparisons.
+The selected adapter regression run passed 92 tests; actual five-repository
+payload conversion covered ten payloads and 200 rows. Bat's full canonical
+five-product replay and score-only projections agree; projection does not
+reissue completed-boundary latency or relabel external091 bytes as native6a3.
+
+CLI, Django, Nushell and TypeORM capture failed at the fixed 32MiB term-directory
+policy. No native record or promoted root was issued for those failures. Final
+`completed-summary.json`, `capacity-failures.json` and
+`unjudged-native-union.json` retain five completed pairs, four actual failures
+and 72 tasks / 191 unique task-file pairs requiring independent judgments.
+Original native input/commands/raw/results remain at
+`/Users/songmin/.codex/task-evidence/ready9-native-pair-20261007-01a10d0b`.
+Capacity repair/re-execution and final independent judgments stay with
+[E2-04](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e2-04) and E1.

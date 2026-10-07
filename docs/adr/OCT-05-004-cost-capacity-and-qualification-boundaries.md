@@ -241,10 +241,20 @@ inject I/O failure or kill a child at each inner publication syscall.
 root through `index_store::write_atomic_durable`, then retires unused objects
 and staging. The root writer uses write → file sync → rename → parent sync.
 The broader daemon matrix covers declared track seal/GC points; it does not
-substitute for cuts inside this sequence. Implement and execute those selected
-old/complete-new and barrier-error oracles under
-[E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02), without claiming
-a known serving defect or storage power-loss qualification from source review.
+substitute for cuts inside this sequence. Main `8599f2e8` adds the independent
+[publication oracle](../../crates/quanta-index-lexical/src/publication_faults/tests.rs)
+and test-only before/after instrumentation: 32 injected I/O cases and 32 actual
+child SIGKILL cases. Fixed source bytes and independently decoded root, source
+packs and postings determine the expected result; inherited inode custody,
+unsealed refusal, recovery and forged-source negatives remain explicit.
+
+The regression exposed a replay durability defect: absence of staging after an
+interrupted unlink did not prove its parent directory had been synchronized.
+Replay now reissues that barrier and retires nested atomic-root temporaries
+before sealing. Already sealed generations still refuse extra temporaries.
+Follow-up recovered-query parity and daemon assertions are owned by
+[E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02); the fault
+matrix itself is implemented. Process-kill testing does not qualify power loss.
 
 ## Proof execution and CI
 
@@ -266,6 +276,32 @@ Owners: [causal capture](../../tools/benchmark/retrieval/causal_cost_capture.py)
 [portable proof](../../tools/benchmark/retrieval/portable_proof.py),
 [CI graph](../../.circleci/config.yml) and
 [receipt writer](../../tools/ci/write-verification-receipt.py).
+
+## Completed source-bound checkpoints
+
+Rechecked on 2026-10-07 against current main, owned worktrees, actual terminal
+output and original artifacts. These completions retain their consumed source;
+later dirty assertions and new measurement profiles require affected checks.
+
+| Source / scope | Observed completion | Boundary |
+| --- | --- | --- |
+| `c6a9120dc71d9878ea62e37384a289535191b42f` hosted main | Required docs/static/Python/tests/bench/verify GitHub contexts succeeded. [CircleCI tests job2011 artifacts](https://circleci.com/api/v2/project/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/2011/artifacts): receipt revision matches; raw/inventory SHA-256 matches; 159 terminal suites, 4,241 passed, zero failed | Auxiliary PR coverage was pending; it is separate from this completed main scope. Bench is compilation. This is not a receipt for later source |
+| F15 candidate integrated as main `8599f2e8` | Five publication tests passed (72.842s), exercising 32 I/O and 32 SIGKILL cuts. Selected mutation/seal/cost integration tests: 73 passed. Strict lexical all-target Clippy: exit0 | Owner worktree execution preceded integration. Later recovered-query assertions and daemon/scale execution are separate |
+| CI admission integrated as main `9def97ac` | Config and test-authority preflight admit supported receipt tier/context combinations and reject unsupported ones | Implementation is present; the new source's hosted result is separate from C6 |
+| Frozen `492d2fdccc0fc42ec42e4da19db7833ecbf032ea` XL lifecycle | Original `xl-result.json`: exit0, `VERIFIED`, 287.843s, existing frozen binary, `query_dispatch_budget_ms=600000` | Functional publish/delete/restart scope. Latest main Large/XL cost/RSS and qualified performance remain separate |
+
+C6's actual test command was `./scripts/cargow nextest run --workspace
+--all-features --locked --message-format libtest-json-plus
+--message-format-version 0.1`.
+The F15 owner ran `./scripts/cargow --lane test-scale-f15-lane nextest run
+-p quanta-index-lexical --lib --all-features --locked --no-tests fail
+--test-threads 1 --no-fail-fast -E 'test(/^publication_faults::tests::f15_/)'`.
+The 73-test run selected `l2_file_mutation`, `sealed_manifest` and
+`sealed_commitment_cost`; Clippy selected the lexical package with
+`--all-targets --all-features --locked -- -D warnings`.
+These are observed prior owner terminals, not Rust runs performed by the doc edit.
+The original XL result remains at
+`/Users/songmin/.codex/task-evidence/quanta-scale-recovery-20261006-01a10d0b/xl-result.json`.
 
 ## Operational actions
 

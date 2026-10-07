@@ -8,14 +8,27 @@ and [test authority](../../../../tools/ci/test-authority.toml) own executable ra
 [S21-13](../../sep-21-search-plane-sota-hardening/tickets/S21-13-release-evidence-and-sota-qualification.md)
 owns weekly/release/DAG promotion. This cleanup makes no live provider/billing claim.
 
+## Completed main scope
+
+`VERIFIED` on 2026-10-07: source `c6a9120d` required docs/static/Python/tests/bench/
+verify GitHub contexts succeeded. CircleCI job2011's original receipt names that
+revision; downloaded raw/inventory SHA-256 matches and terminal suites total
+4,241 passed, zero failed. The source-bound completion and commands live in
+[OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints).
+Aux PR coverage was pending in a separate workflow. Do not reopen completed main
+CI because that auxiliary status or a later source is pending.
+Main `9def97ac` also contains the receipt context/tier preflight implementation;
+its affected hosted result and new F15/capacity sources retain separate acceptance.
+
 ## Remaining hosted acceptance
 
 1. Observe the selected final SHA's regular `verify`/`verify-python` checkout,
    commands, terminal result and emitted test-authority/P00 artifacts. Both jobs
    must pass for that hosted scope; config validation, local passes and older runs
    cannot issue it. PR coverage separately needs its selected passing job.
-2. Require matching terminal GitHub `ci/circleci` contexts. A finished provider
-   workflow with pending contexts leaves status completion unresolved. For a
+2. Require matching terminal GitHub `ci/circleci` contexts **selected for the
+   claimed scope**. A pending required context leaves that scope unresolved;
+   auxiliary PR contexts do not undo completed regular main jobs. For a
    pre-start refusal, record the actual job API/banner/plan or provider cause;
    one-second duration alone cannot identify credits, entitlement or scheduling.
 3. Separate provider admission failures from source lint/test failures. The
