@@ -192,17 +192,47 @@ deterministic case and six generated seed/base traces cover replacement, delta,
 tombstones, unsealed-open refusal, selection/rollback and restart recovery.
 Sealing is carried by Build; selection/rollback changes the model's selected
 generation, not the process-wide active-head CAS. The current command enum has
-no independent Append, Clear or QueryPinned operation. Extend those observable
-cases and process-CAS coverage rather than writing a second foundation model.
+no independent Append, Clear or QueryPinned operation. This is a limit of the
+generated model, not missing production APIs or an absence of individual tests:
+
+- `build/tests.rs::clear_symbol_surface_removes_exact_and_fallback_rows_only_v1`
+  independently checks that clearing Symbol removes exact/fallback rows while
+  preserving Module; append-failure tests preserve prior unsealed rows.
+- `persisted_semantic.rs::generation_pin_isolates_results` checks distinct
+  persisted-generation result sets. SCV2 owner replace/tombstone/restart and
+  vector-index append/delete/retrain cases also exist.
+- `readiness/tests/activation.rs` already covers simultaneous CAS contenders,
+  stale activation/rollback tokens and old-pair visibility during delayed parent
+  sync. `composite_generation_authority_restart.rs` has real child-process
+  active/pinned queries before and after restart/rollback, including cross-repo
+  retention. `active_selection_process_v1.rs` gates a selected G1 query across
+  G2/G3 activation and physical retirement, requiring refusal before old-view open.
+
+The remaining model extension combines corpus/surface-aware clear, repeated
+unsealed append/replacement, historical pinned observations and process-wide
+CAS outcomes against an independent reference state. Reuse the existing
+catalog/SDK operations and individual regressions; do not recreate them.
 
 The [runtime concurrency test](../../crates/quanta-index-searchd-runtime/tests/e2e_generation_activation_concurrency.rs)
 uses the SDK over UDS with an in-process `E2eRuntime`. A querying thread overlaps
 one G1-to-G2 activation and checks complete, unmixed predicate-authority result
 sets. It is not an independent operation-history linearizability checker or a
 duplicate/reorder/delay/rollback/restart schedule matrix.
+Individual concurrent-CAS, sync-delay, source-event refusal and child restart/
+rollback regressions above cover parts of that schedule. The missing checker
+must consume operation invocation/completion history, enforce real-time order
+and find a legal sequence in an independent model across combined schedules;
+per-response complete-result membership alone cannot issue that claim.
 The [dispatcher selector regressions](../../crates/quanta-index-search-plane/src/query_dispatcher/tests/semantic.rs)
 already reject resolved-selector A-to-B-to-A ABA and mismatched explicit pins;
 retain those controls while extending the operation-history oracle.
+
+The lifecycle model and persisted scenarios are registered integration targets
+in `tools/ci/test-authority.toml`. Runtime concurrency uses `runtime_risk_suite`,
+composite restart uses `runtime_extended_suite`, and active selection is the
+standalone `active_selection_process_v1` target. Semantic build and activation
+catalog regressions are library tests. Their implementation is enrolled already;
+this source audit did not run Rust or native race detection.
 
 The [daemon crash matrix](../../crates/quanta-index-searchd-runtime/tests/e2e_crash_matrix.rs)
 starts and restarts real child daemons. It requires a case for every declared

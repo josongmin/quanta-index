@@ -31,9 +31,9 @@ P11 공통 producer/parser/checker/recipes 및 hosted CI 분할은 구현돼 있
 | E1 bootstrap | `evaluator.py::mean_ci`의 10,000 draws·16-key/256KiB bounded cache와 `test_bootstrap_cache.py`의 독립 고정 golden·validation controls | 추가 최적화는 actual paired full-caller 비용·parity를 보고 판정 |
 | E2 reader/inventory | `live_lexical_external.py`의 selected-project acquired-reader 검증, `opengrok_query_witness.py`, workflow/matrix/ready-drain | 미실행 required cells·actual replay/join; caller가 요구할 경우에만 전체 loaded-reader witness 구현 |
 | E4 F15 | full-build/cold-refusal 및 `publication_faults`의 32 I/O·32 실제 SIGKILL cuts, replay directory barrier 수리. main8599f2e8 반영 | 후속 복구 query/restart assertion의 검증 및 실제 lifecycle 비용/RSS. 기존 fault matrix 재구현 없음 |
-| QIT lifecycle | `semantic_generation_lifecycle_model.rs`의 독립 owner map·6 generated traces, real-daemon 8-point seal/GC matrix | 별도 Append/Clear/QueryPinned·process CAS·선택한 내부 storage cut 확장 |
-| QIT concurrency | `e2e_generation_activation_concurrency.rs`의 SDK/UDS G1→G2 complete-result race | 독립 history checker·duplicate/reorder/delay/rollback/restart·native race detection |
-| Semantic | daemon shared provider, manifest model/vector normalization, exact-text cache·rotation/invalid-hit regressions·provider/cache scrape wiring | public-path text/rotation matrix·actual provider/producer·restart 및 필요한 관측 범위 |
+| QIT lifecycle | 독립 owner map·6 generated traces 및 개별 Clear/append-failure/pin 회귀. Catalog concurrent CAS·delayed sync·실제 child restart/rollback/pinned·selected-G1 retirement도 구현·등록됨 | Clear/반복 unsealed append/과거 pin/process-CAS 결과를 하나의 독립 reference trace로 검증. 기존 API/개별 회귀 재구현 없음 |
+| QIT concurrency | SDK/UDS G1→G2 complete-result race, catalog CAS winner·sync-delay 및 child restart/rollback 회귀 | invocation/completion·real-time order를 검사하는 독립 history checker와 복합 duplicate/reorder/delay/rollback/restart schedule. Native race detector 실행은 별도 |
+| Semantic | SDK semantic/hybrid·hash text derivation, shared provider/model identity, exact-text cache·rotation/invalid-hit unit 회귀 및 boot scrape. 실제 OpenAI paraphrase rail도 존재(ignored) | SDK/daemon의 FooBar/foobar/foo_bar/foo bar cold/warm cache·같은 root reopen/model rotation 통합 matrix. 기존 live-provider rail은 실제 입력/실행 및 upstream producer 검증이 잔여 |
 | I0 operations | 공통 typed action producer·pre-state refusal·checker/aggregate, optional paired caller/kernel archive | concrete target adapter·독립 observer 계약 구현, authorized target 입력 및 exact-pair/action 실행 |
 
 완료된 foundation은 [review ADR](../../../adr/OCT-05-001-review-admission-and-result-identity.md#owners-and-regressions),

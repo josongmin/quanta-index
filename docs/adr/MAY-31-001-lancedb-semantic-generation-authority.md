@@ -129,8 +129,24 @@ Owners: [daemon composition](../../crates/quanta-index-searchd/src/app/runtime.r
 [query gate](../../crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs)
 and [serving manifest](../../crates/quanta-index-semantic/src/manifest.rs).
 Existing cache rotation/invalid-hit/mixed-batch and query model/provider-refusal
-tests are implementation foundations. Fresh public-path provider, text-policy,
-rotation and restart execution remains in the semantic residual ledger.
+tests are implemented. The SDK frontdoor already routes semantic and hybrid
+queries; `runtime_fast_suite` also checks search-owned text derivation with the
+explicit hash profile. Daemon composition tests couple query/corpus model
+identity and exercise cache-enabled/disabled branches. Metrics E2E checks
+provider/cache counters at boot; it does not issue a cache-hit query.
+
+The real-provider paraphrase test already exists as the ignored
+`end_to_end::openai_semantic_paraphrase_outranks_unrelated_v1` in
+`runtime_fast_suite`. It requires the actual API key and provider grant; its
+selected execution is a proof/input gap, not missing provider test code.
+
+The source audit found no combined SDK/daemon test that sends all four exact
+text forms above through the cache, distinguishes cold/warm provider calls, then
+reopens the same persistent root under unchanged and rotated model identities.
+That specific matrix remains: assert input bytes and cache namespace/call counts,
+retain manifest model-mismatch refusal, and do not require different vectors
+for different text forms. Existing unit cache tests should be reused, not rewritten.
+This source/selector audit did not execute Rust or the live provider rail.
 
 ## Rejected alternatives
 
