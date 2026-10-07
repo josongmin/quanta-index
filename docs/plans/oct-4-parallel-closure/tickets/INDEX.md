@@ -216,18 +216,26 @@ missing/output 경합은 success가 아니다. 완료: 누락 없는 terminal/in
 ### O4-E2-04
 
 부분 완료 · Ready9 전체9repo capture 시도·5repo pair/replay/projection은 `VERIFIED`.
-실패4repo 용량 수리·재실행과191개 독립 판단이 잔여다. 별도 C3의 남은3repo 및 다른 lanes는 이9repo와 구분한다.
+용량 코드 수리는 main `b262925b`에 반영·push됐다. 실패4repo의 새 source 재실행과191개 독립 판단이 잔여다.
+별도 C3의 남은3repo 및 다른 lanes는 이9repo와 구분한다.
 CS/SG/OG ready9 source091 capture/replay는 완료돼 있다. Ready9 NL file20tasks/repo는
 `natural_language_file`/Semble `lexical-file`의 distinct-file pair로 실행한다.
 `code_search_file` atoms·bare-symbol workflow는 이 NL query 계약의 실행 경로가 아니다.
 완료된5repo capture/replay/projection 및 main49a02c15 adapter 수리는
 [Ready9 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope)가 소유한다.
-CLI·Django·Nushell·TypeORM actual capture는 `FAILED`: lexical-file authority의 고정 `term_directory_bytes=32MiB`를 초과했다.
+원 source `6a3f6afc`의 CLI·Django·Nushell·TypeORM actual capture는 `FAILED`: lexical-file authority의 고정 `term_directory_bytes=32MiB`를 초과했다.
 Native runner에 해당 정책을 바꾸는 startup/spec 옵션은 없다. 4개 실패는 native record와
 promoted root가 없고, failure descriptor의 stderr/resource 해시까지 확인했다. 원본 입력/명령/raw/결과는
 `/Users/songmin/.codex/task-evidence/ready9-native-pair-20261007-01a10d0b`에 보존한다.
+RCA: source-key bucket마다 같은 trigram의 offset/count/hash를 모두 상주시키면서 실패 직전 약52만 term 행이 누적됐다.
+수리: 128term마다 fence/table SHA만 보관하고, 조회는 인증한 table page와 선택한 posting list의 별도 range/SHA를 검증한다.
+생산자/root/cold verifier가 같은 page 단위 산식을 사용한다. 32MiB 한도는 유지하며, posting wire v2와 새 policy identity가 구형 root를 rebuild-required로 거절한다.
+`VERIFIED`: `./scripts/cargow --lane test-fast-lane nextest run -p quanta-index-lexical --lib --test f15_file_authority --all-features --locked -E 'test(file_authority::) | binary(f15_file_authority)'` 41/41;
+`./scripts/cargow --lane clippy-lane clippy -p quanta-index-lexical --all-targets --all-features --locked -- -D warnings` 통과.
+새 source 실제 재실행은 `/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b`에서 진행한다. Owner 회귀는 실제4repo 용량 proof를 대신하지 않는다.
 최종 `completed-summary.json` 및 `unjudged-native-union.json`에72tasks·191개 task/file 독립 판단 공백을 결속해 E1 입력으로 남겼다.
-Ready9 전체 성공·quality/speed qualification은 아니다. 잔여는4repo 용량 gate, 독립 판단 및 아직 실행하지 않은 inventory다.
+원191개에 대한 두 blank review 입력은 `/Users/songmin/.codex/task-evidence/ready9-unjudged-review-inputs-20261007-01a10d0b`에 원문·해시/threshold를 결속했고 grade/reviewer ID는 null이다.
+Ready9 전체 성공·quality/speed qualification은 아니다. 잔여는4repo 실제 재실행 gate, 독립 판단 및 아직 실행하지 않은 inventory다.
 원 runtime/input/producer bytes 및 허용 reuse를
 검증해 결합하며 source97/5796/091 raw를 새 소스로 재표기하지 않는다.
 Required lanes: exact1,196; prefix/infix/components; default/explicit typo; no-answer; C3 NL240;
