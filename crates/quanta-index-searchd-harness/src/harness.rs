@@ -41,19 +41,20 @@ use quanta_index_contract::{
     QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
     QuarantineTargetV1, QueryResultWindowV2, RawFallbackReasonV1, RepoId, RepoRelativePath,
     RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1,
-    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchExplanation,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2, SearchPlaneExplainQueryRequest,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusPublishOutcome,
+    SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2,
+    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
     SearchPlaneTrackKind, SemanticCorpusKindV1, SemanticQueryRequest, SemanticSourceRecordV1,
-    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1, StructuralCandidate,
-    StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord,
-    SymbolId, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourcePublicationBinding, SourceRoleV1,
+    StructuralCandidate, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
+    StructuralTreeRecord, SymbolId, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::{
     IngestResourcePolicy, IntegrityScrubPolicyV1, LexicalWriterPolicy, ProcessMemoryProbePort,
@@ -74,6 +75,15 @@ use quanta_index_searchd::app::{
 };
 use quanta_index_searchd_runtime::build_runtime_with_memory_probe;
 use tempfile::TempDir;
+
+/// The request binding and validated response from one publication call.
+/// Retaining the transport request ID avoids borrowing a previous observation.
+#[derive(Clone, Debug)]
+pub(crate) struct ObservedSearchCorpusPublication {
+    pub(crate) request_id: u64,
+    pub(crate) requested: SourcePublicationBinding,
+    pub(crate) outcome: SearchCorpusPublishOutcome,
+}
 
 #[derive(Clone, Debug)]
 pub struct E2eRuntimeCatalogSpec {
@@ -1468,13 +1478,21 @@ impl E2eRuntime {
     }
 
     pub fn publish_search_corpus_batch(&mut self, batch: SearchCorpusIngestBatch) -> AnyResult<()> {
+        self.publish_search_corpus_batch_observed(batch).map(|_| ())
+    }
+
+    fn publish_search_corpus_batch_observed(
+        &mut self,
+        batch: SearchCorpusIngestBatch,
+    ) -> AnyResult<ObservedSearchCorpusPublication> {
         self.source_publication.ensure_publishable(&batch)?;
         let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) =
             stamped_ingest_request(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?
         else {
             return Err(anyhow::anyhow!("unexpected stamped corpus request"));
         };
-        let response = if quanta_index_ipc::cbor_payload_len(&batch)?
+        let requested = SourcePublicationBinding::for_batch(&batch);
+        let (request_id, response) = if quanta_index_ipc::cbor_payload_len(&batch)?
             > quanta_index_ipc::SOURCE_PUBLICATION_INLINE_BYTES
         {
             let upload_identity = quanta_index_ipc::source_publication_upload_identity(&batch)?;
@@ -1509,7 +1527,7 @@ impl E2eRuntime {
                     anyhow::Error::new(error)
                 }
             })?;
-            self.dispatch_ingest_response(
+            self.dispatch_ingest_response_with_request_id(
                 SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(
                     quanta_index_contract::SourcePublicationUploadCommit {
                         identity: upload_identity,
@@ -1520,9 +1538,9 @@ impl E2eRuntime {
                 ),
             )?
         } else {
-            self.dispatch_ingest_response(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-                batch.clone(),
-            ))?
+            self.dispatch_ingest_response_with_request_id(
+                SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+            )?
         };
         let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = response else {
             return Err(anyhow::anyhow!(
@@ -1546,7 +1564,11 @@ impl E2eRuntime {
                 .ok_or_else(|| anyhow::anyhow!("harness generation exhausted"))?;
         }
         self.last_sealed_search_corpus_identity = Some(identity);
-        Ok(())
+        Ok(ObservedSearchCorpusPublication {
+            request_id,
+            requested,
+            outcome,
+        })
     }
 
     pub fn ingest_structural_function_tree(
@@ -2187,6 +2209,20 @@ impl E2eRuntime {
         &mut self,
         tracks: &[SearchPlaneTrackKind],
     ) -> AnyResult<ManifestGeneration> {
+        self.seal_lexical_generation_for_tracks_observed(tracks)
+            .map(|(generation, _)| generation)
+    }
+
+    pub(crate) fn seal_observed(
+        &mut self,
+    ) -> AnyResult<(ManifestGeneration, ObservedSearchCorpusPublication)> {
+        self.seal_lexical_generation_for_tracks_observed(&[SearchPlaneTrackKind::Lexical])
+    }
+
+    fn seal_lexical_generation_for_tracks_observed(
+        &mut self,
+        tracks: &[SearchPlaneTrackKind],
+    ) -> AnyResult<(ManifestGeneration, ObservedSearchCorpusPublication)> {
         let sealed = self.current_generation();
         if tracks.is_empty() {
             return Err(anyhow::anyhow!(
@@ -2211,7 +2247,7 @@ impl E2eRuntime {
             .frozen()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("harness source event was not frozen"))?;
-        self.publish_search_corpus_batch(batch)?;
+        let publication = self.publish_search_corpus_batch_observed(batch)?;
         self.source_publication.finish_frozen();
         // The search plane rejects auxiliary records whose source chunk is not
         // yet in the sealed lexical generation. Preserve fixture call order.
@@ -2220,7 +2256,7 @@ impl E2eRuntime {
             let _published = self.pending_source_aux.remove(0);
         }
         self.generation_counter = next_generation;
-        Ok(sealed)
+        Ok((sealed, publication))
     }
 
     /// Issue a `TextQueryRequest` against the live socket, lazy-starting
@@ -3363,6 +3399,14 @@ impl E2eRuntime {
         &mut self,
         payload: SearchPlaneIngestIpcRequest,
     ) -> AnyResult<SearchPlaneIngestIpcResponse> {
+        self.dispatch_ingest_response_with_request_id(payload)
+            .map(|(_, response)| response)
+    }
+
+    fn dispatch_ingest_response_with_request_id(
+        &mut self,
+        payload: SearchPlaneIngestIpcRequest,
+    ) -> AnyResult<(u64, SearchPlaneIngestIpcResponse)> {
         let payload = stamped_ingest_request(payload)?;
         let source_binding = match &payload {
             SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) => {
@@ -3427,7 +3471,7 @@ impl E2eRuntime {
                     .map_err(anyhow::Error::msg)?;
             }
         }
-        Ok(response.payload)
+        Ok((request_id, response.payload))
     }
 
     fn dispatch_control(

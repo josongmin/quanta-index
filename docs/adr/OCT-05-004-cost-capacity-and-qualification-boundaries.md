@@ -65,11 +65,23 @@ Measurements and missing authority remain in the [residual ledger](../plans/oct-
    Shell exit zero or caller-written success JSON cannot promote them.
 
 The paired caller/kernel component uses the existing cross-repository recipe
-and CLI-owned immutable completion custody. Its optional typed archive binds
+and CLI-owned immutable completion custody. Its typed archive binds
 the exact selected tests, source/dependency mapping and daemon bytes; the archive
 is `runner-candidate-only`. This component is separate from concrete
 operational target/observer acceptance in decision 9. Owner tests do
 not establish an executed clean pair or promote an operational registry node.
+
+The paired recipe requires a registered `QUANTA_P11_R5_QBC_LANE` for both
+resolver preflight and selected Nextest execution. QBC auxiliary metadata does
+not forward Cargo JSON to terminal stdout and does not issue a test receipt.
+The resolver consumes its own invocation's bounded regular output only after
+checking a fresh run ID, exact command/cwd/lane, nonce, effective exit zero,
+stable owner status and file bytes/identity, and clean source/manifest/lock
+bindings before and after. Missing auxiliary raw-exit detail cannot qualify a
+test; an explicitly nonzero raw exit or effective exit125 is refused.
+Selected list/run always uses the existing immutable completion archive,
+including the default recipe path. Metadata cannot substitute for that proof.
+See [paired usage](../operator/p11-operational-proof.md#paired-caller-and-kernel).
 
 ## Native segment retention and committed live statistics
 
@@ -111,6 +123,56 @@ Owners: [document census](../../crates/quanta-index-lexical/src/doc_census.rs),
 Retain fixed untouched-file/component and byte gates, independent fresh-rebuild
 score bits and cursor oracles, consecutive delta/delete/no-op/reopen fixtures,
 empty-generation cases and mandatory-sidecar corruption/refusal tests.
+
+## Per-seal ingest observation
+
+The Scale caller now retains the `SearchCorpusPublishOutcome` returned by each
+timed seal instead of discarding its ingest observation. The transient carrier
+binds the actual request ID, requested source publication, accepted receipt and
+owner clocks from that invocation. Staged publication binds the final commit
+request ID rather than an upload-part acknowledgement. Existing receipt
+validation, generation advance and source-event acceptance remain in place.
+
+`summary.json` carries `ingest_observations.by_seal` for full, delta and no-op,
+plus delete in scoped tiers. The writer rejects absent/replayed observations,
+identity or event-lineage mismatch, nonsequential generations, stale request
+IDs, missing clocks, overflow, child clocks outside their parents and a clock
+sum exceeding its containing operation. It adds only semantic total, lexical
+total and finalize; nested stages overlap those parents. Activation remains a
+separate control request. Small full wall time includes ingest and seal;
+scoped full wall time covers seal; delta/delete include staging. The wall clock
+stops before the additional observation projection and validation.
+
+`unattributed_ns` is the remaining wall time. It can include preflight,
+validation, transport, locks and harness work; it does not identify a single
+cause or physical I/O. This addition makes the existing XL seal bottleneck
+measurable without skipping validation, changing admission bounds or issuing a
+performance improvement claim. `TierMeasurement` gains a crate-visible field;
+external struct-literal construction is consequently restricted. Existing
+repository callers obtain measurements through the producer functions.
+
+Owners: [harness publication](../../crates/quanta-index-searchd-harness/src/harness.rs)
+and [Scale producer](../../crates/quanta-index-searchd-harness/src/scale.rs).
+Owner execution and matching-release stage attribution remain separate checks
+under [E4-01](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-01).
+
+With `QUANTA_INDEX_CAUSAL_PROFILE_V1=1`, `QI_INGEST_TRACE_V1` stderr spans
+also expose pre-intent and paired-base validation, lexical generation/file/
+text/segment/overlay proofs, semantic row commitment and source finalization.
+Each wrapper retains the original operation's result and validation. Spans
+overlap and can recur within one publication; their durations cannot be summed
+as exclusive cost. Bind the complete stderr to the enclosing Scale phase,
+source and executable. An XL trace on the matching candidate remains a
+separate diagnostic, not a speed or incremental-update qualification.
+
+Focused owner execution passed 44/44 with
+`./scripts/cargow --lane test-scale-f15-lane test -p quanta-index-searchd-harness
+--lib scale:: --all-features --locked -- --test-threads=1`. This includes the
+real daemon's full/delta/no-op/delete observations and independent identity,
+clock, lineage and corruption predicates. It does not qualify Large/XL cost.
+Strict Clippy also passed for lexical, semantic, search-plane and harness
+libraries/tests with all features and `-D warnings`. The first executed checks
+found type/ownership and lint errors; those were repaired before these passes.
 
 ## Paged term directory
 

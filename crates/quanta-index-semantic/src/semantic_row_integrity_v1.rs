@@ -138,7 +138,28 @@ const OPTIONAL_NAMES: [&str; 4] = [
 ];
 
 /// Commit the rows and derive manifest coverage in the same table scan.
+#[expect(
+    clippy::print_stderr,
+    reason = "Opt-in ingest diagnosis writes source-bound span markers."
+)]
 pub(crate) async fn semantic_row_commitment_v1(
+    table: &lancedb::Table,
+) -> Result<SemanticRowCommitmentV1, CoreError> {
+    let started = std::env::var_os("QUANTA_INDEX_CAUSAL_PROFILE_V1")
+        .is_some_and(|value| value == std::ffi::OsStr::new("1"))
+        .then(std::time::Instant::now);
+    let result = semantic_row_commitment_inner_v1(table).await;
+    if let Some(started) = started {
+        eprintln!(
+            "QI_INGEST_TRACE_V1 label=semantic_row_commitment ok={} elapsed_ns={}",
+            u8::from(result.is_ok()),
+            started.elapsed().as_nanos()
+        );
+    }
+    result
+}
+
+async fn semantic_row_commitment_inner_v1(
     table: &lancedb::Table,
 ) -> Result<SemanticRowCommitmentV1, CoreError> {
     let counted = table

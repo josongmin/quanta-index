@@ -574,106 +574,116 @@ impl LexicalAdapter {
         generation_dir: &std::path::Path,
         read_phase: CoverageReadPhase,
     ) -> Result<CoveragePlan, CoreError> {
-        // Derive the complete next admitted universe from a proved base before
-        // any target writes. A missing base capability cannot become empty.
-        batch
-            .source_event
-            .validate()
-            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
-        let (base_coverage, base) = match batch.mode {
-            BatchIngestMode::ReplaceGeneration => {
-                (quanta_index_contract::FileCoverageSnapshot::new(), None)
-            }
-            BatchIngestMode::Delta => {
-                let base = batch.base_generation.ok_or_else(|| {
-                    CoreError::InvalidContract("lexical: coverage delta requires a base".into())
-                })?;
-                let base_dir = self.index_path(&GenKey {
-                    repo_id: batch.repo_id.clone(),
-                    revision_id: batch.revision_id.clone(),
-                    generation: base,
-                });
-                let identity = crate::index_store::read_lexical_sealed_identity(&base_dir)?;
-                if identity.repo_id != batch.repo_id
-                    || identity.revision_id != batch.revision_id
-                    || identity.manifest_generation != base
-                {
-                    return Err(CoreError::Storage(
-                        "lexical: coverage base identity mismatch".into(),
-                    ));
+        crate::causal_profile::timed_work("lexical_plan_batch_coverage", || {
+            // Derive the complete next admitted universe from a proved base before
+            // any target writes. A missing base capability cannot become empty.
+            batch
+                .source_event
+                .validate()
+                .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+            let (base_coverage, base) = match batch.mode {
+                BatchIngestMode::ReplaceGeneration => {
+                    (quanta_index_contract::FileCoverageSnapshot::new(), None)
                 }
-                let mut cache = self.coverage_decode_cache.lock().map_err(|error| {
-                    CoreError::Storage(format!("lexical: coverage decode cache poisoned: {error}"))
-                })?;
-                let mut decoded = std::mem::take(&mut *cache);
-                drop(cache);
-                let verified = crate::sealed_generation::walk_sealed_generation_reusing_coverage(
-                    &base_dir,
-                    &identity,
-                    &mut DiscardingVisitor,
-                    Some(&mut decoded),
-                    None,
-                )?;
-                *self.coverage_decode_cache.lock().map_err(|error| {
-                    CoreError::Storage(format!("lexical: coverage decode cache poisoned: {error}"))
-                })? = decoded;
-                self.record_coverage_read(read_phase, verified.coverage_read_stats)?;
-                // A current source high-water alone cannot authorize cloning an
-                // older physical snapshot: unchanged files would be resurrected
-                // while the new event claims to extend the current lineage.
-                // Prove the actual inherited snapshot is the declared parent.
-                if verified.source_publication.as_ref().is_none_or(|event| {
-                    event.stream_id != batch.source_event.stream_id
-                        || Some(&event.event_id)
-                            != batch.source_event.expected_base_event_id.as_ref()
-                }) {
-                    return Err(CoreError::Typed {
+                BatchIngestMode::Delta => {
+                    let base = batch.base_generation.ok_or_else(|| {
+                        CoreError::InvalidContract("lexical: coverage delta requires a base".into())
+                    })?;
+                    let base_dir = self.index_path(&GenKey {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: base,
+                    });
+                    let identity = crate::index_store::read_lexical_sealed_identity(&base_dir)?;
+                    if identity.repo_id != batch.repo_id
+                        || identity.revision_id != batch.revision_id
+                        || identity.manifest_generation != base
+                    {
+                        return Err(CoreError::Storage(
+                            "lexical: coverage base identity mismatch".into(),
+                        ));
+                    }
+                    let mut cache = self.coverage_decode_cache.lock().map_err(|error| {
+                        CoreError::Storage(format!(
+                            "lexical: coverage decode cache poisoned: {error}"
+                        ))
+                    })?;
+                    let mut decoded = std::mem::take(&mut *cache);
+                    drop(cache);
+                    let verified =
+                        crate::sealed_generation::walk_sealed_generation_reusing_coverage(
+                            &base_dir,
+                            &identity,
+                            &mut DiscardingVisitor,
+                            Some(&mut decoded),
+                            None,
+                        )?;
+                    *self.coverage_decode_cache.lock().map_err(|error| {
+                        CoreError::Storage(format!(
+                            "lexical: coverage decode cache poisoned: {error}"
+                        ))
+                    })? = decoded;
+                    self.record_coverage_read(read_phase, verified.coverage_read_stats)?;
+                    // A current source high-water alone cannot authorize cloning an
+                    // older physical snapshot: unchanged files would be resurrected
+                    // while the new event claims to extend the current lineage.
+                    // Prove the actual inherited snapshot is the declared parent.
+                    if verified.source_publication.as_ref().is_none_or(|event| {
+                        event.stream_id != batch.source_event.stream_id
+                            || Some(&event.event_id)
+                                != batch.source_event.expected_base_event_id.as_ref()
+                    }) {
+                        return Err(CoreError::Typed {
                         code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
                         message: "lexical: delta base source event differs from the declared stream parent; publish a full replacement to start another lineage".into(),
                     });
+                    }
+                    self.validate_inherited_candidate_ownership(&verified.reader, batch)?;
+                    let coverage = verified.coverage.ok_or_else(|| CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageUnavailable, message: "lexical: coverage delta requires a base with admitted file coverage; rebuild the generation".into() })?;
+                    let root = verified.manifest.source_coverage.ok_or_else(|| {
+                        CoreError::Storage(
+                            "lexical: verified coverage has no root commitment".into(),
+                        )
+                    })?;
+                    (
+                        coverage,
+                        Some(CoverageWriteBase {
+                            directory: base_dir,
+                            root,
+                        }),
+                    )
                 }
-                self.validate_inherited_candidate_ownership(&verified.reader, batch)?;
-                let coverage = verified.coverage.ok_or_else(|| CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageUnavailable, message: "lexical: coverage delta requires a base with admitted file coverage; rebuild the generation".into() })?;
-                let root = verified.manifest.source_coverage.ok_or_else(|| {
-                    CoreError::Storage("lexical: verified coverage has no root commitment".into())
-                })?;
-                (
-                    coverage,
-                    Some(CoverageWriteBase {
-                        directory: base_dir,
-                        root,
-                    }),
-                )
+            };
+            let coverage = plan_file_coverage(
+                &base_coverage,
+                base,
+                batch.replace_scopes.iter().map(|scope| &scope.coverage),
+                batch.tombstone_scopes.iter().map(|scope| &scope.file),
+                &batch.clear_surfaces,
+            )?;
+            let staged = read_staged_coverage(generation_dir, candidate)?;
+            if let Some(staged) = staged.as_ref() {
+                self.record_coverage_read(read_phase, staged.read_stats)?;
             }
-        };
-        let coverage = plan_file_coverage(
-            &base_coverage,
-            base,
-            batch.replace_scopes.iter().map(|scope| &scope.coverage),
-            batch.tombstone_scopes.iter().map(|scope| &scope.file),
-            &batch.clear_surfaces,
-        )?;
-        let staged = read_staged_coverage(generation_dir, candidate)?;
-        if let Some(staged) = staged.as_ref() {
-            self.record_coverage_read(read_phase, staged.read_stats)?;
-        }
-        match staged {
-            Some(staged)
-                if staged.publication != batch.source_event
-                    || staged.coverage != *coverage.snapshot() =>
-            {
-                return Err(CoreError::InvalidContract(
-                    "lexical: target already belongs to a different source publication".into(),
-                ));
+            match staged {
+                Some(staged)
+                    if staged.publication != batch.source_event
+                        || staged.coverage != *coverage.snapshot() =>
+                {
+                    return Err(CoreError::InvalidContract(
+                        "lexical: target already belongs to a different source publication".into(),
+                    ));
+                }
+                None if crate::generation_dir::lexical_index_content_exists(generation_dir) => {
+                    return Err(CoreError::InvalidContract(
+                        "lexical: cannot bind coverage over pre-existing unbound index content"
+                            .into(),
+                    ));
+                }
+                Some(_) | None => {}
             }
-            None if crate::generation_dir::lexical_index_content_exists(generation_dir) => {
-                return Err(CoreError::InvalidContract(
-                    "lexical: cannot bind coverage over pre-existing unbound index content".into(),
-                ));
-            }
-            Some(_) | None => {}
-        }
-        Ok(coverage)
+            Ok(coverage)
+        })
     }
 
     fn validate_inherited_candidate_ownership(

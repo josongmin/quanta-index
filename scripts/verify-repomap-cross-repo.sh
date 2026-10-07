@@ -5,6 +5,7 @@ quanta_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 semantica_root="${1:?Semantica checkout path is required}"
 semantica_root="$(cd -- "$semantica_root" && pwd -P)"
 provided_binary="${QUANTA_INDEX_SEARCHD_BIN:?QUANTA_INDEX_SEARCHD_BIN is required}"
+r5_lane="${QUANTA_P11_R5_QBC_LANE:?registered QBC lane is required}"
 if [[ "$provided_binary" != /* ]]; then
   provided_binary="$(pwd -P)/$provided_binary"
 fi
@@ -30,14 +31,9 @@ require_frozen_source "$semantica_root" "$semantica_head"
 resolved_pair() {
   local consumer="$1"
   local feature="$2"
-  (
-    cd -- "$semantica_root"
-    CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- metadata \
-      --locked --format-version 1 --no-default-features \
-      --manifest-path "packages/analysis/quanta-v2/crates/$consumer/Cargo.toml" \
-      --features "$feature"
-  ) | python3 "$quanta_root/tools/ci/paired_cargo_resolution.py" \
-    --quanta-root "$quanta_root" --paired-root "$semantica_root" --consumer "$consumer"
+  python3 "$quanta_root/tools/ci/paired_cargo_resolution.py" \
+    --quanta-root "$quanta_root" --paired-root "$semantica_root" \
+    --consumer "$consumer" --feature "$feature" --qbc-lane "$r5_lane"
 }
 
 # Check the actual Cargo resolver before the expensive build, not the spelling
@@ -81,49 +77,19 @@ require_frozen_source "$semantica_root" "$semantica_head"
 
 cd -- "$semantica_root"
 if [[ -n "${QUANTA_P11_R5_EVIDENCE_ROOT:-}" ]]; then
-  require_binary_custody
-  python3 "$quanta_root/tools/ci/paired_r5_result.py" \
-    --quanta-root "$quanta_root" --semantica-root "$semantica_root" \
-    --evidence-root "$QUANTA_P11_R5_EVIDENCE_ROOT" \
-    --quanta-head "$quanta_head" --semantica-head "$semantica_head" \
-    --daemon-digest "$binary_digest" --built-binary "$built_binary" \
-    --provided-binary "$provided_binary" --custody-binary "$custody_binary" \
-    --runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution"
+  evidence_root="$QUANTA_P11_R5_EVIDENCE_ROOT"
 else
-  require_binary_custody
-  CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
-  --locked \
-  --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime \
-  --no-default-features --features index-sdk-ingress,retrieval-authority-contract-surface \
-  --test index_sdk_ingress_publish_contract_test -- --list \
-  | rg '^index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1: test$'
-require_binary_custody
-CODEGRAPH_PERSONA=agent \
-  ./scripts/quanta-build-cli cargo --lane local -- test \
-  --locked \
-  --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime \
-  --no-default-features --features index-sdk-ingress,retrieval-authority-contract-surface \
-  --test index_sdk_ingress_publish_contract_test \
-  index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1 \
-  -- --exact --nocapture
-
-require_binary_custody
-CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
-  --locked \
-  --manifest-path packages/analysis/quanta-v2/Cargo.toml \
-  -p quanta-runtime-retrieval-kernel --no-default-features \
-  --features index-sdk-ingress-surface --lib -- --list \
-  | rg '^index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2: test$'
-require_binary_custody
-CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
-  --locked \
-  --manifest-path packages/analysis/quanta-v2/Cargo.toml \
-  -p quanta-runtime-retrieval-kernel --no-default-features \
-  --features index-sdk-ingress-surface --lib \
-  index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2 \
-  -- --exact --nocapture
-
+  evidence_parent="$(mktemp -d /private/tmp/quanta-paired-r5-XXXXXX)"
+  evidence_root="$evidence_parent/result"
 fi
+require_binary_custody
+PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" python3 "$quanta_root/tools/ci/paired_r5_result.py" \
+  --quanta-root "$quanta_root" --semantica-root "$semantica_root" \
+  --evidence-root "$evidence_root" --qbc-lane "$r5_lane" \
+  --quanta-head "$quanta_head" --semantica-head "$semantica_head" \
+  --daemon-digest "$binary_digest" --built-binary "$built_binary" \
+  --provided-binary "$provided_binary" --custody-binary "$custody_binary" \
+  --runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution"
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
 require_binary_custody

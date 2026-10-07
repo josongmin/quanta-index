@@ -1,9 +1,12 @@
-"""Fixed runner and locator oracles for the optional paired R5 archive."""
+"""Fixed runner and locator oracles for the paired R5 archive."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +22,26 @@ from tools.ci.paired_r5_result import (
     validate_locator,
     validate_selected,
 )
+
+
+def test_paired_runner_imports_its_owner_from_foreign_cwd(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[3]
+    foreign_tools = tmp_path / "tools"
+    foreign_tools.mkdir()
+    (foreign_tools / "__init__.py").write_text("raise RuntimeError('foreign tools imported')\n")
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONPATH"] = os.pathsep.join((str(root), str(tmp_path)))
+    result = subprocess.run(
+        [sys.executable, str(root / "tools/ci/paired_r5_result.py"), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--qbc-lane" in result.stdout
 
 
 def _rows(outcome: str = "ok", name: str = "pkg::binary$selected") -> tuple[bytes, bytes]:
@@ -252,7 +275,7 @@ def test_locator_refuses_wrong_current_source_and_failed_process() -> None:
         validate_locator(locator, boolean_run, **kwargs, source_digest="a" * 64)
 
 
-def test_legacy_recipe_resolves_and_executes_the_same_cargo_target_floor() -> None:
+def test_default_recipe_uses_typed_selected_runner_and_same_cargo_target_floor() -> None:
     # Independent fixed literal from quanta-runtime/Cargo.toml's
     # index_sdk_ingress_publish_contract_test required-features, not the helper.
     required = "index-sdk-ingress,retrieval-authority-contract-surface"
@@ -260,7 +283,10 @@ def test_legacy_recipe_resolves_and_executes_the_same_cargo_target_floor() -> No
         Path(__file__).resolve().parents[3] / "scripts/verify-repomap-cross-repo.sh"
     ).read_text(encoding="utf-8")
     assert script.count(f"resolved_pair quanta-runtime {required})") == 2
-    assert script.count("--features " + required + " " + chr(92)) == 2
+    assert '--qbc-lane "$r5_lane"' in script
+    assert 'python3 "$quanta_root/tools/ci/paired_r5_result.py"' in script
+    assert "--list" not in script
+    assert "| rg '^index_sdk_ingress" not in script
     assert "--all-features" not in script
 
 

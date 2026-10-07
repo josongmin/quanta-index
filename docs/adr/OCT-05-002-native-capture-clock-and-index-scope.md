@@ -322,3 +322,99 @@ claims are false. The pair manifest contains no Contract/SDK qualification
 receipts, so its `CONTRACT_GREEN`/`SDK_PATH_GREEN` remain `not_run` despite the
 separate fresh SDK proof. T01–T09 inputs, operational portability, independent
 human review, quiet-host performance and other required lanes are not closed.
+
+## Selected Gin declaration and robustness execution
+
+On 2026-10-08, the clean `f60609fe2d2882f1193d4ba68deb8704e8972138`
+driver used the frozen `b9c058e1` SDK release runner/daemon identified above.
+The intervening changes were documentation only. Gin remained at
+`d3ffc9985281dcf4d3bef604cce4e662b1a327a6`, with its original 99 source files
+and 1,196 query identities. The original `go_exact_local_name_v1` file suite
+was refused before capture because that oracle is unsupported. Its failed
+`g.staging` output and original suite bytes are preserved. A separate canonical
+`source_oracle_suite` preparation recomputed v3 file/symbol labels from the
+same source and queries; this does not relabel the old attempt as successful.
+
+- The four declaration/name-span controls passed with MRR@10 and recall@10
+  both 1.0. The full v3 symbol population recorded 1,192 success and four
+  capped outcomes. Both declaration and name-recovery MRR@10 were 1.0;
+  recall@10 was 0.9985493335876968. The four controls are included in the
+  1,196 population and are not additional unique tasks.
+- The default `code_search_file` pair executed 1,196 tasks per product:
+  Quanta 1,109 success/87 capped, Semble 1,196 success. File Hit@10 was
+  0.9924749163879598/0.9949832775919732; nDCG@10 was
+  0.9376536074540455/0.9355208052300636. The nDCG delta's 95% interval
+  [-0.005404081719473451, 0.009541906847290399] does not establish a
+  qualified improvement. Independent verdict replay reproduced identical bytes.
+- Canonical `identifier_robustness_suite` preparation selected all 1,196
+  original families. Prefix/infix/components/typo admitted
+  1,121/1,147/982/1,189 tasks, retaining 75/49/214/7 ineligible records.
+  Declaration absence admitted 100; content absence retained 99 and excluded
+  one; typo content absence retained 1,138 and excluded 51 from typo.
+  These new populations do not replace the historical four typo denominators.
+
+`run.py quality-batch --spec` executed the seven default-file cohorts through
+one native index per product. Their 5,776 scoring memberships correspond to
+4,514 unique native queries per product. Quanta recorded 3,699 success,
+716 capped and 99 abstained; Semble recorded 3,891 success and 623 abstained.
+`quality-batch-verify` independently replayed all seven members and both
+original union records. Derived cohort views are not separate native captures.
+All 28 original/derived suite, pack and member-spec byte bindings still matched.
+
+| Source-derived cohort | Tasks | Quanta file Hit@10 | Semble file Hit@10 |
+| --- | ---: | ---: | ---: |
+| Prefix | 1,121 | 0.9928635147190009 | 0.8046387154326494 |
+| Infix | 1,147 | 0.994768962510898 | 0.5274629468177855 |
+| Components | 982 | 0.9928716904276986 | 0.9959266802443992 |
+| Typo under the default profile | 1,189 | 0.9941126997476871 | 0.8469301934398654 |
+
+Content-absence queries abstained 99/99 in Quanta; Semble returned nonempty
+windows 99/99. Declaration absence alone allowed one actual content match in
+Quanta, so its 100-task scope is distinct. Typo content absence produced nonempty
+windows 1,138/1,138 in Quanta and 1,035/1,138 in Semble: absence of a literal
+content match does not rule out a permitted OSA1 match. This cohort is not
+an OSA1-absence oracle or an explicit-typo acceptance result.
+
+A separate canonical `ascii_identifier_osa1_absent_casefold_v1` preparation
+proved 99 negative queries against the same admitted source. A second native
+batch selected `code_search_typo_file` for Quanta and retained Semble's declared
+lexical-file profile. The 1,189 positive typo tasks recorded Quanta 1,116
+success/73 capped and Semble 1,068 success/121 abstained. File Hit@10 was
+1.0/0.8469301934398654, nDCG@10 was 1.0/0.6856607398733592, and recall@10
+was 0.9982878769674397/0.8433137089991589. The independently proved OSA1
+absence cohort recorded Quanta 99 abstentions and Semble 99 nonempty results.
+No negative query was removed based on a product response. Original union
+records and both original member suites were independently replayed with
+`quality-batch-verify`: two members and two native records `VERIFIED`.
+The explicit typo profile and default profile are distinct configurations;
+these source-derived results do not qualify independent holdout quality.
+
+Commands used: `source_oracle_suite`, `identifier_robustness_suite`,
+`run.py quanta`, `evaluator.py evaluate-diagnostic`, `run.py pair`,
+`run.py verdict`, `run.py quality-batch` and `run.py quality-batch-verify`.
+Capture, new inputs, original refusal and replay remain outside the checkout
+at `/private/tmp/qna7vj2zq6/`. Results are `VERIFIED` for these executed
+diagnostic scopes, with all quality/speed/incremental qualification claims false.
+They do not issue independent holdout judgments, external five-product recapture,
+other-repository acceptance or current release qualification.
+
+## Retained B09 scope reconciliation
+
+The retained `d1a1b7097c5c915afd8fb24467c6d737acdb3b14` B09 ledger has 33
+actual successful native cells, totaling 11,272 selected rows across overlapping
+profiles. Original record, diagnostic, pack and manifest byte commitments were
+rechecked on 2026-10-08. Current `validate_retrieval_diagnostic` accepted all
+33 original returned-window/ingest diagnostics. Current phase validation refused
+all 33 with `invalid symbol producer evidence`; it requires producer evidence
+not supplied by those original phase artifacts. That replay scope is `FAILED`,
+not a new native execution or a rewrite of the original completion.
+
+Original captures and frozen-decoder completion remain at
+`/Users/songmin/Documents/code-new/qi-b09-structural-fix-20261004-ji1PLR/`;
+the current decoder results remain at
+`/private/tmp/qna7vj2zq6/b09-retained-current-decoder-replay.json`.
+The separate retained 4,363-task/21,815-response global12 join is not the same
+population as these 33 profiles. None qualifies a later source or supplies
+missing current producer/phase bindings. Do not list the original B09 native
+inventory wholesale as `NOT_RUN` or promote its old phase bytes to a current
+closed capture.

@@ -459,19 +459,21 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
     /// `publish_batch` repeats the delta-base check under its lock before
     /// the first mutation.
     fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
-        Self::validate_batch_shape_v1(batch)?;
-        self.admit_resource_envelope(batch)?;
-        if let Some(base_generation) = batch.base_generation
-            && !self.can_recover_completed_target_v1(batch)?
-        {
-            self.preflight_delta_base_v1(batch, base_generation)?;
-        }
-        // The cross-track sealed-base check owns the missing-base refusal.
-        // Do not let a track-local coverage read turn it into an incomplete
-        // identity error before the paired base has been admitted.
-        self.builder
-            .preflight_batch(batch, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
-        Ok(())
+        timed_ingest_work("ingest_preflight_before_intent", || {
+            Self::validate_batch_shape_v1(batch)?;
+            self.admit_resource_envelope(batch)?;
+            if let Some(base_generation) = batch.base_generation
+                && !self.can_recover_completed_target_v1(batch)?
+            {
+                self.preflight_delta_base_v1(batch, base_generation)?;
+            }
+            // The cross-track sealed-base check owns the missing-base refusal.
+            // Do not let a track-local coverage read turn it into an incomplete
+            // identity error before the paired base has been admitted.
+            self.builder
+                .preflight_batch(batch, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
+            Ok(())
+        })
     }
 
     fn publish_batch(
@@ -479,198 +481,200 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         batch: &SearchCorpusIngestBatch,
         budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
-        use quanta_index_contract::{
-            IngestObservationStatus, SearchCorpusIngestObservation, SearchCorpusPublishOutcome,
-        };
-        let mut observation = SearchCorpusIngestObservation {
-            request_id: budget.response_request_id(),
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-            batch_digest: batch.batch_digest.clone(),
-            status: IngestObservationStatus::Executed,
-            semantic: None,
-            lexical_build_ns: None,
-            lexical_stages: None,
-            finalize_ns: None,
-            activation_ns: None,
-        };
-        Self::validate_batch_shape_v1(batch)?;
-        self.measure_resource_envelope(batch)?;
-        let stripe = search_corpus_lock_stripe_v1(&batch.repo_id, &batch.revision_id);
-        let operation_lock = self.operation_locks.get(stripe).ok_or_else(|| {
+        timed_ingest_work("ingest_publish_under_lock", || {
+            use quanta_index_contract::{
+                IngestObservationStatus, SearchCorpusIngestObservation, SearchCorpusPublishOutcome,
+            };
+            let mut observation = SearchCorpusIngestObservation {
+                request_id: budget.response_request_id(),
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                batch_digest: batch.batch_digest.clone(),
+                status: IngestObservationStatus::Executed,
+                semantic: None,
+                lexical_build_ns: None,
+                lexical_stages: None,
+                finalize_ns: None,
+                activation_ns: None,
+            };
+            Self::validate_batch_shape_v1(batch)?;
+            self.measure_resource_envelope(batch)?;
+            let stripe = search_corpus_lock_stripe_v1(&batch.repo_id, &batch.revision_id);
+            let operation_lock = self.operation_locks.get(stripe).ok_or_else(|| {
             CoreError::Storage(format!(
                 "direct search-corpus materialize: computed operation-lock stripe {stripe} outside configured range"
             ))
         })?;
-        let _operation_guard = operation_lock.lock().map_err(|err| {
+            let _operation_guard = operation_lock.lock().map_err(|err| {
             CoreError::Storage(format!(
                 "direct search-corpus materialize: operation-lock stripe {stripe} poisoned: {err}"
             ))
         })?;
-        // An orphan may exist before its durable record is written. Claim
-        // both track keys before inspecting either physical generation so
-        // orphan discard and every other delete owner must defer until this
-        // complete pair is recorded or the publication stops.
-        let _publication = batch
-            .seal
-            .then(|| {
-                self.snapshots.begin_publication(&SnapshotKey::new(
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                ))
-            })
-            .transpose()?;
+            // An orphan may exist before its durable record is written. Claim
+            // both track keys before inspecting either physical generation so
+            // orphan discard and every other delete owner must defer until this
+            // complete pair is recorded or the publication stops.
+            let _publication = batch
+                .seal
+                .then(|| {
+                    self.snapshots.begin_publication(&SnapshotKey::new(
+                        &batch.repo_id,
+                        &batch.revision_id,
+                        batch.generation,
+                    ))
+                })
+                .transpose()?;
 
-        // Repeat immutable base/candidate ownership admission under this
-        // operation's lock before reservation, provider calls or either builder.
-        if let Some(base_generation) = batch.base_generation
-            && !self.can_recover_completed_target_v1(batch)?
-        {
-            self.preflight_delta_base_v1(batch, base_generation)?;
-        }
-        self.builder
-            .preflight_batch(batch, SearchCorpusPreflightPhaseV1::UnderOperationLock)?;
-        if !batch.seal {
-            let (lexical, semantic) = generation_pair_from_batch_v1(batch);
-            ensure_generation_is_mutable_v1(
-                self.lexical_generation_validator.as_ref(),
-                &lexical,
-                "lexical",
-            )?;
-            ensure_generation_is_mutable_v1(
-                self.semantic_generation_validator.as_ref(),
-                &semantic,
-                "semantic",
-            )?;
-        }
-        let sealed_plan = if batch.seal {
-            let plan = self.preflight_sealed_generation_v1(batch)?;
-            plan.validate_repair_mode_v1(batch.mode)?;
-            Some(plan)
-        } else {
-            None
-        };
-        let build_lexical = sealed_plan
-            .as_ref()
-            .is_none_or(SealedGenerationBuildPlanV1::build_lexical);
-        let build_semantic = sealed_plan
-            .as_ref()
-            .is_none_or(SealedGenerationBuildPlanV1::build_semantic);
-        // Constructing the borrowed stream validates semantic source records,
-        // the model contract, and egress admission without embedding. These
-        // pure refusals must precede reservation and physical repair too.
-        let mut derived = if build_semantic {
-            Some(derive_semantic_stream_from_semantic_sources_v1(
-                batch,
-                self.semantic_embedder.as_ref(),
-                self.semantic_stream_policy,
-                self.source_egress_policy.as_ref(),
-                budget,
-            )?)
-        } else {
-            None
-        };
-        // Known admission refusals must not consume a stream slot. Once
-        // admitted, reserve before reclaim, discard, or any provider/build work.
-        let binding = Self::source_binding_v1(batch);
-        match self.source_publication.reserve_source_event(&binding)? {
-            quanta_index_core::SourceEventReservationV1::Reserved(_) => {}
-            quanta_index_core::SourceEventReservationV1::Existing(record) => {
-                if record.binding != binding
-                    || record.phase != quanta_index_core::SourceEventPhaseV1::Pending
-                {
-                    return Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy, message: "source event already has an original publication; replay or reconcile its journal before materializing".into() });
+            // Repeat immutable base/candidate ownership admission under this
+            // operation's lock before reservation, provider calls or either builder.
+            if let Some(base_generation) = batch.base_generation
+                && !self.can_recover_completed_target_v1(batch)?
+            {
+                self.preflight_delta_base_v1(batch, base_generation)?;
+            }
+            self.builder
+                .preflight_batch(batch, SearchCorpusPreflightPhaseV1::UnderOperationLock)?;
+            if !batch.seal {
+                let (lexical, semantic) = generation_pair_from_batch_v1(batch);
+                ensure_generation_is_mutable_v1(
+                    self.lexical_generation_validator.as_ref(),
+                    &lexical,
+                    "lexical",
+                )?;
+                ensure_generation_is_mutable_v1(
+                    self.semantic_generation_validator.as_ref(),
+                    &semantic,
+                    "semantic",
+                )?;
+            }
+            let sealed_plan = if batch.seal {
+                let plan = self.preflight_sealed_generation_v1(batch)?;
+                plan.validate_repair_mode_v1(batch.mode)?;
+                Some(plan)
+            } else {
+                None
+            };
+            let build_lexical = sealed_plan
+                .as_ref()
+                .is_none_or(SealedGenerationBuildPlanV1::build_lexical);
+            let build_semantic = sealed_plan
+                .as_ref()
+                .is_none_or(SealedGenerationBuildPlanV1::build_semantic);
+            // Constructing the borrowed stream validates semantic source records,
+            // the model contract, and egress admission without embedding. These
+            // pure refusals must precede reservation and physical repair too.
+            let mut derived = if build_semantic {
+                Some(derive_semantic_stream_from_semantic_sources_v1(
+                    batch,
+                    self.semantic_embedder.as_ref(),
+                    self.semantic_stream_policy,
+                    self.source_egress_policy.as_ref(),
+                    budget,
+                )?)
+            } else {
+                None
+            };
+            // Known admission refusals must not consume a stream slot. Once
+            // admitted, reserve before reclaim, discard, or any provider/build work.
+            let binding = Self::source_binding_v1(batch);
+            match self.source_publication.reserve_source_event(&binding)? {
+                quanta_index_core::SourceEventReservationV1::Reserved(_) => {}
+                quanta_index_core::SourceEventReservationV1::Existing(record) => {
+                    if record.binding != binding
+                        || record.phase != quanta_index_core::SourceEventPhaseV1::Pending
+                    {
+                        return Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy, message: "source event already has an original publication; replay or reconcile its journal before materializing".into() });
+                    }
                 }
             }
-        }
-        if sealed_plan
-            .as_ref()
-            .is_some_and(SealedGenerationBuildPlanV1::is_finalize_only)
-        {
-            let started = std::time::Instant::now();
-            self.finalize_sealed_generation_v1(batch)?;
-            observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
-            observation.status = IngestObservationStatus::FinalizeOnly;
-            return Ok(SearchCorpusPublishOutcome {
-                publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
-                receipt: self.sealed_receipt_v1(batch)?,
-                observation: Some(observation),
-            });
-        }
-        if let Some(plan) = sealed_plan.as_ref() {
-            plan.discard_incomplete_v1(
-                self.lexical_incomplete_discard.as_ref(),
-                self.semantic_incomplete_discard.as_ref(),
-            )?;
-            plan.repair_corrupt_v1(
-                batch.mode,
-                &self.snapshots,
-                self.lexical_reclaim.as_ref(),
-                self.semantic_reclaim.as_ref(),
-            )?;
-        }
-
-        if !build_semantic || !build_lexical {
-            observation.status = IngestObservationStatus::PartialRecovery;
-        }
-        // Search-owned semantic derivation is mandatory work for every
-        // accepted search-corpus batch; there is no lexical-only downgrade
-        // path. The semantic track builds first: its records are embedded
-        // window by window as the build asks for them (QI-BB-021), and the
-        // embedding provider is the one network dependency of a batch, so a
-        // provider failure refuses the batch before the lexical track has
-        // mutated, as the all-at-once derivation did. Every source record is
-        // validated before the first window is embedded.
-        if let Some(derived) = derived.as_mut() {
-            let (semantic_receipt, semantic_report) = self
-                .semantic_ingest
-                .publish_stream(&derived.header, &mut derived.source)?;
-            observation.semantic = Some(Box::new(semantic_report));
-            validate_semantic_publish_receipt_v1(
-                &derived.header,
-                derived.source.tally(),
-                &semantic_receipt,
-            )?;
-            if batch.seal {
-                crash_point::reached(crash_point::AFTER_SEMANTIC_SEAL);
+            if sealed_plan
+                .as_ref()
+                .is_some_and(SealedGenerationBuildPlanV1::is_finalize_only)
+            {
+                let started = std::time::Instant::now();
+                self.finalize_sealed_generation_v1(batch)?;
+                observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
+                observation.status = IngestObservationStatus::FinalizeOnly;
+                return Ok(SearchCorpusPublishOutcome {
+                    publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
+                    receipt: self.sealed_receipt_v1(batch)?,
+                    observation: Some(observation),
+                });
             }
-        }
-        if build_lexical {
+            if let Some(plan) = sealed_plan.as_ref() {
+                plan.discard_incomplete_v1(
+                    self.lexical_incomplete_discard.as_ref(),
+                    self.semantic_incomplete_discard.as_ref(),
+                )?;
+                plan.repair_corrupt_v1(
+                    batch.mode,
+                    &self.snapshots,
+                    self.lexical_reclaim.as_ref(),
+                    self.semantic_reclaim.as_ref(),
+                )?;
+            }
+
+            if !build_semantic || !build_lexical {
+                observation.status = IngestObservationStatus::PartialRecovery;
+            }
+            // Search-owned semantic derivation is mandatory work for every
+            // accepted search-corpus batch; there is no lexical-only downgrade
+            // path. The semantic track builds first: its records are embedded
+            // window by window as the build asks for them (QI-BB-021), and the
+            // embedding provider is the one network dependency of a batch, so a
+            // provider failure refuses the batch before the lexical track has
+            // mutated, as the all-at-once derivation did. Every source record is
+            // validated before the first window is embedded.
+            if let Some(derived) = derived.as_mut() {
+                let (semantic_receipt, semantic_report) = self
+                    .semantic_ingest
+                    .publish_stream(&derived.header, &mut derived.source)?;
+                observation.semantic = Some(Box::new(semantic_report));
+                validate_semantic_publish_receipt_v1(
+                    &derived.header,
+                    derived.source.tally(),
+                    &semantic_receipt,
+                )?;
+                if batch.seal {
+                    crash_point::reached(crash_point::AFTER_SEMANTIC_SEAL);
+                }
+            }
+            if build_lexical {
+                let started = std::time::Instant::now();
+                observation.lexical_stages = self.builder.build_batch(batch)?;
+                observation.lexical_build_ns = Some(elapsed_ingest_ns(started)?);
+            }
+            if batch.seal {
+                let (lexical, semantic) = generation_pair_from_batch_v1(batch);
+                validate_physical_generation_v1(
+                    self.lexical_generation_validator.as_ref(),
+                    &lexical,
+                    "lexical post-build",
+                )?;
+                validate_physical_generation_v1(
+                    self.semantic_generation_validator.as_ref(),
+                    &semantic,
+                    "semantic post-build",
+                )?;
+                crash_point::reached(crash_point::BEFORE_AUTHORITY_RECORD);
+                let started = std::time::Instant::now();
+                self.finalize_sealed_generation_v1(batch)?;
+                observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
+                return Ok(SearchCorpusPublishOutcome {
+                    publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
+                    receipt: self.sealed_receipt_v1(batch)?,
+                    observation: Some(observation),
+                });
+            }
             let started = std::time::Instant::now();
-            observation.lexical_stages = self.builder.build_batch(batch)?;
-            observation.lexical_build_ns = Some(elapsed_ingest_ns(started)?);
-        }
-        if batch.seal {
-            let (lexical, semantic) = generation_pair_from_batch_v1(batch);
-            validate_physical_generation_v1(
-                self.lexical_generation_validator.as_ref(),
-                &lexical,
-                "lexical post-build",
-            )?;
-            validate_physical_generation_v1(
-                self.semantic_generation_validator.as_ref(),
-                &semantic,
-                "semantic post-build",
-            )?;
-            crash_point::reached(crash_point::BEFORE_AUTHORITY_RECORD);
-            let started = std::time::Instant::now();
-            self.finalize_sealed_generation_v1(batch)?;
+            self.finalize_generation_v1(batch, None)?;
             observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
-            return Ok(SearchCorpusPublishOutcome {
+            Ok(SearchCorpusPublishOutcome {
                 publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
-                receipt: self.sealed_receipt_v1(batch)?,
+                receipt: batch_publish_receipt_v1(batch),
                 observation: Some(observation),
-            });
-        }
-        let started = std::time::Instant::now();
-        self.finalize_generation_v1(batch, None)?;
-        observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
-        Ok(SearchCorpusPublishOutcome {
-            publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
-            receipt: batch_publish_receipt_v1(batch),
-            observation: Some(observation),
+            })
         })
     }
 }
@@ -774,22 +778,23 @@ impl DirectSearchCorpusMaterializer {
         batch: &SearchCorpusIngestBatch,
         base_generation: ManifestGeneration,
     ) -> Result<(), CoreError> {
-        let tracks = [
-            (
-                SearchPlaneTrackKind::Lexical,
-                &self.lexical_generation_validator,
-                "lexical",
-            ),
-            (
-                SearchPlaneTrackKind::Semantic,
-                &self.semantic_generation_validator,
-                "semantic",
-            ),
-        ];
-        for (track, validator, label) in tracks {
-            // Read the ledger only long enough to copy the digest out; the
-            // physical validation below reads files and must not hold it.
-            let recorded = self
+        timed_ingest_work("ingest_paired_base_validation", || {
+            let tracks = [
+                (
+                    SearchPlaneTrackKind::Lexical,
+                    &self.lexical_generation_validator,
+                    "lexical",
+                ),
+                (
+                    SearchPlaneTrackKind::Semantic,
+                    &self.semantic_generation_validator,
+                    "semantic",
+                ),
+            ];
+            for (track, validator, label) in tracks {
+                // Read the ledger only long enough to copy the digest out; the
+                // physical validation below reads files and must not hold it.
+                let recorded = self
                 .ledger
                 .read()
                 .map_err(|err| {
@@ -803,8 +808,8 @@ impl DirectSearchCorpusMaterializer {
                     track,
                     base_generation,
                 );
-            let Some(digest) = recorded else {
-                return Err(CoreError::Typed {
+                let Some(digest) = recorded else {
+                    return Err(CoreError::Typed {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
                     message: format!(
                         "direct search-corpus materialize: delta base generation {} is not a sealed {label} track for repo={} revision={}; refusing before any mutation",
@@ -813,17 +818,17 @@ impl DirectSearchCorpusMaterializer {
                         batch.revision_id.as_str(),
                     ),
                 });
-            };
-            let base = GenerationSnapshot {
-                repo_id: batch.repo_id.clone(),
-                revision_id: batch.revision_id.clone(),
-                track,
-                manifest_generation: base_generation,
-                manifest_digest: digest,
-            };
-            validate_delta_base_v1(validator.as_ref(), &base, &format!("{label} delta base"))?;
-        }
-        if self.ledger.read().map_err(|error| CoreError::Storage(format!(
+                };
+                let base = GenerationSnapshot {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    track,
+                    manifest_generation: base_generation,
+                    manifest_digest: digest,
+                };
+                validate_delta_base_v1(validator.as_ref(), &base, &format!("{label} delta base"))?;
+            }
+            if self.ledger.read().map_err(|error| CoreError::Storage(format!(
             "direct search-corpus materialize: ledger poisoned while inspecting base chunk authority: {error}"
         )))?.structural_state(&batch.repo_id, &batch.revision_id, base_generation)
             .is_none_or(|state| state.source_batch_digest().is_none()) {
@@ -832,7 +837,8 @@ impl DirectSearchCorpusMaterializer {
                 message: "source delta base has no complete chunk authority; rebuild the source generation before publication".into(),
             });
         }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Computes the convergent per-track recovery plan before any mutation.
@@ -878,16 +884,17 @@ impl DirectSearchCorpusMaterializer {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<(), CoreError> {
-        // Retention can retire the base authority before its receipt returns,
-        // including an I/O failure after a durable removal. Checkpoint the
-        // complete target chunks first, while the base is still available.
-        // This does not publish either track or advance rollback history.
-        self.apply_source_finalization_v1(batch, None, false)?;
-        // Fence rollback before entering the durable retention owner. A
-        // delete may succeed while the following directory fsync fails; in
-        // that state the old same-process ledger is not authoritative. Only a
-        // reconciled retained-set receipt clears this pair-local fence.
-        self.ledger
+        timed_ingest_work("ingest_finalize_sealed_generation", || {
+            // Retention can retire the base authority before its receipt returns,
+            // including an I/O failure after a durable removal. Checkpoint the
+            // complete target chunks first, while the base is still available.
+            // This does not publish either track or advance rollback history.
+            self.apply_source_finalization_v1(batch, None, false)?;
+            // Fence rollback before entering the durable retention owner. A
+            // delete may succeed while the following directory fsync fails; in
+            // that state the old same-process ledger is not authoritative. Only a
+            // reconciled retained-set receipt clears this pair-local fence.
+            self.ledger
             .write()
             .map_err(|err| {
                 CoreError::Storage(format!(
@@ -895,19 +902,19 @@ impl DirectSearchCorpusMaterializer {
                 ))
             })?
             .fence_search_corpus_history_v1(&batch.repo_id, &batch.revision_id);
-        let retention = self.authority.record_sealed_search_corpus(
-            &batch.repo_id,
-            &batch.revision_id,
-            batch.generation,
-            batch.manifest_digest.as_str(),
-        );
-        let retention = match retention {
-            Ok(receipt) => receipt,
-            Err(error @ CoreError::Storage(_)) => return Err(error),
-            Err(error) => {
-                // Typed/contract rejections are pre-mutation outcomes of this
-                // port and therefore do not create durability ambiguity.
-                self.ledger
+            let retention = self.authority.record_sealed_search_corpus(
+                &batch.repo_id,
+                &batch.revision_id,
+                batch.generation,
+                batch.manifest_digest.as_str(),
+            );
+            let retention = match retention {
+                Ok(receipt) => receipt,
+                Err(error @ CoreError::Storage(_)) => return Err(error),
+                Err(error) => {
+                    // Typed/contract rejections are pre-mutation outcomes of this
+                    // port and therefore do not create durability ambiguity.
+                    self.ledger
                     .write()
                     .map_err(|err| {
                         CoreError::Storage(format!(
@@ -918,11 +925,12 @@ impl DirectSearchCorpusMaterializer {
                         &batch.repo_id,
                         &batch.revision_id,
                     );
-                return Err(error);
-            }
-        };
-        crash_point::reached(crash_point::AFTER_RETENTION_RECEIPT);
-        self.finalize_generation_v1(batch, Some(&retention))
+                    return Err(error);
+                }
+            };
+            crash_point::reached(crash_point::AFTER_RETENTION_RECEIPT);
+            self.finalize_generation_v1(batch, Some(&retention))
+        })
     }
 
     pub(super) fn finalize_generation_v1(
@@ -945,192 +953,199 @@ impl DirectSearchCorpusMaterializer {
         retention: Option<&SearchCorpusHistoryRetentionReceiptV1>,
         publish_tracks: bool,
     ) -> Result<(), CoreError> {
-        const WHAT: &str = "direct search-corpus materialize";
-        // The chunk universe and the reap of the auxiliary generations the
-        // retention receipt retired are one durable transaction before the
-        // generation is visible (QI-BB-020): validated against the ledger,
-        // written to the catalog together, then applied under the write
-        // lock with the track bookkeeping. A failed transaction leaves the
-        // catalog and the ledger as they were, the retried seal redoes it.
-        // The coordinator serializes every auxiliary mutation, so the set
-        // read here is the set the write lock forgets.
-        let _serial = self
-            .auxiliary_coordinator
-            .lock(&crate::ingest_dispatcher::auxiliary::coordinator_owner())?;
-        let (chunks, reaped_auxiliary) = {
-            let guard = self.ledger.read().map_err(|err| {
-                CoreError::Storage(format!(
-                    "{WHAT}: ledger poisoned while finalizing generation: {err}"
-                ))
-            })?;
-            let epoch = guard.structural_next_epoch(
-                &batch.repo_id,
-                &batch.revision_id,
-                batch.generation,
-            )?;
-            let current =
-                guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation);
-            let already_complete = current.is_some_and(|state| {
-                state.source_batch_digest() == Some(batch.batch_digest.as_str())
-            });
-            if !publish_tracks && already_complete {
-                return Ok(());
-            }
-            let mut chunks = if already_complete {
-                // The previous atomic chunk transaction may have retired the
-                // base before the operation journal acknowledged this batch.
-                // Reuse only a complete target bound to this original body.
-                let mut delta = structural_chunks_transition(current, epoch, batch);
-                delta.removed.clear();
-                delta.upserts.clear();
-                delta.clear = false;
-                delta
-            } else {
-                let inherited = match batch.base_generation {
-                    Some(base) => {
-                        let state = guard
+        timed_ingest_work("ingest_source_finalization_transaction", || {
+            const WHAT: &str = "direct search-corpus materialize";
+            // The chunk universe and the reap of the auxiliary generations the
+            // retention receipt retired are one durable transaction before the
+            // generation is visible (QI-BB-020): validated against the ledger,
+            // written to the catalog together, then applied under the write
+            // lock with the track bookkeeping. A failed transaction leaves the
+            // catalog and the ledger as they were, the retried seal redoes it.
+            // The coordinator serializes every auxiliary mutation, so the set
+            // read here is the set the write lock forgets.
+            let _serial = self
+                .auxiliary_coordinator
+                .lock(&crate::ingest_dispatcher::auxiliary::coordinator_owner())?;
+            let (chunks, reaped_auxiliary) = {
+                let guard = self.ledger.read().map_err(|err| {
+                    CoreError::Storage(format!(
+                        "{WHAT}: ledger poisoned while finalizing generation: {err}"
+                    ))
+                })?;
+                let epoch = guard.structural_next_epoch(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                )?;
+                let current =
+                    guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation);
+                let already_complete = current.is_some_and(|state| {
+                    state.source_batch_digest() == Some(batch.batch_digest.as_str())
+                });
+                if !publish_tracks && already_complete {
+                    return Ok(());
+                }
+                let mut chunks = if already_complete {
+                    // The previous atomic chunk transaction may have retired the
+                    // base before the operation journal acknowledged this batch.
+                    // Reuse only a complete target bound to this original body.
+                    let mut delta = structural_chunks_transition(current, epoch, batch);
+                    delta.removed.clear();
+                    delta.upserts.clear();
+                    delta.clear = false;
+                    delta
+                } else {
+                    let inherited = match batch.base_generation {
+                        Some(base) => {
+                            let state = guard
                             .structural_state(&batch.repo_id, &batch.revision_id, base)
                             .filter(|state| state.source_batch_digest().is_some())
                             .ok_or_else(|| CoreError::NotReady(
                                 "source delta has no complete base chunk authority; rebuild the source generation".into(),
                             ))?;
-                        Some(state)
+                            Some(state)
+                        }
+                        None => None,
+                    };
+                    let mut delta = structural_chunks_transition(inherited, epoch, batch);
+                    if let Some(base) = inherited {
+                        let mut next = base.clone();
+                        next.apply_chunks_delta(&delta);
+                        delta.upserts = next.chunks().values().cloned().collect();
                     }
-                    None => None,
+                    // This is the whole target chunk universe, not a patch against
+                    // an empty target. Persist inherited rows in the same existing
+                    // auxiliary transaction before retirement removes their base.
+                    delta.clear = true;
+                    delta.removed.clear();
+                    delta
                 };
-                let mut delta = structural_chunks_transition(inherited, epoch, batch);
-                if let Some(base) = inherited {
-                    let mut next = base.clone();
-                    next.apply_chunks_delta(&delta);
-                    delta.upserts = next.chunks().values().cloned().collect();
-                }
-                // This is the whole target chunk universe, not a patch against
-                // an empty target. Persist inherited rows in the same existing
-                // auxiliary transaction before retirement removes their base.
-                delta.clear = true;
-                delta.removed.clear();
-                delta
+                chunks.meta.seal_requested =
+                    current.is_some_and(crate::readiness::StructuralAuthorityState::seal_requested);
+                chunks.meta.source_batch_digest = Some(batch.batch_digest.clone());
+                // Auxiliary generations older than the one being sealed that the
+                // retention receipt does not retain go with it; a newer
+                // generation still being staged is never touched.
+                let reaped: Vec<ManifestGeneration> =
+                    retention.map_or_else(Vec::new, |retention| {
+                        guard
+                            .auxiliary_generations_older_than(
+                                &batch.repo_id,
+                                &batch.revision_id,
+                                batch.generation,
+                            )
+                            .into_iter()
+                            .filter(|generation| !retention.retains(*generation))
+                            .collect()
+                    });
+                drop(guard);
+                (chunks, reaped)
             };
-            chunks.meta.seal_requested =
-                current.is_some_and(crate::readiness::StructuralAuthorityState::seal_requested);
-            chunks.meta.source_batch_digest = Some(batch.batch_digest.clone());
-            // Auxiliary generations older than the one being sealed that the
-            // retention receipt does not retain go with it; a newer
-            // generation still being staged is never touched.
-            let reaped: Vec<ManifestGeneration> = retention.map_or_else(Vec::new, |retention| {
-                guard
+            let mut delta = structural_chunks_delta_rows(&chunks)?;
+            delta.rows.extend(reaped_auxiliary.iter().map(|generation| {
+                AuxiliaryRowMutationV1::ForgetGeneration(AuxiliaryGenerationKeyV1 {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: *generation,
+                })
+            }));
+            let _durable = self.auxiliary_catalog.apply(&delta)?;
+            if retention.is_some() {
+                crash_point::reached(crash_point::AFTER_CATALOG_TRANSACTION);
+            }
+            {
+                let mut guard = self.ledger.write().map_err(|err| {
+                    CoreError::Storage(format!(
+                        "{WHAT}: ledger poisoned while finalizing generation: {err}"
+                    ))
+                })?;
+                if let Some(retention) = retention {
+                    guard.apply_search_corpus_history_retention_receipt_v1(
+                        &batch.repo_id,
+                        &batch.revision_id,
+                        batch.generation,
+                        retention,
+                    )?;
+                }
+                guard.apply_structural_chunks_delta(&chunks, std::time::Instant::now())?;
+                if !publish_tracks {
+                    return Ok(());
+                }
+                // Both tracks of the pair are recorded here and only here,
+                // whether this batch built them or found them sealed on disk: a
+                // seal retried after a crash does not rebuild a track the crash
+                // left sealed, and a restarted daemon never seeded one the
+                // authority had not recorded, so this record is what makes it
+                // the track's identity (QI-BB-029).
+                for track in [
+                    SearchPlaneTrackKind::Lexical,
+                    SearchPlaneTrackKind::Semantic,
+                ] {
+                    guard.materialize_track(
+                        &batch.repo_id,
+                        &batch.revision_id,
+                        track,
+                        batch.generation,
+                        Some(batch.manifest_digest.as_str()),
+                    );
+                    if batch.seal {
+                        guard.seal_track_with_digest(
+                            &batch.repo_id,
+                            &batch.revision_id,
+                            track,
+                            batch.generation,
+                            batch.manifest_digest.as_str(),
+                        );
+                    }
+                }
+                if batch.seal {
+                    guard.record_historically_sealed_search_corpus(
+                        &batch.repo_id,
+                        &batch.revision_id,
+                        batch.generation,
+                        batch.manifest_digest.as_str(),
+                    );
+                }
+                for generation in &reaped_auxiliary {
+                    guard.forget_auxiliary_generation(
+                        &batch.repo_id,
+                        &batch.revision_id,
+                        *generation,
+                    );
+                }
+            }
+            if retention.is_some() {
+                crash_point::reached(crash_point::AFTER_LEDGER_RECONCILE);
+            }
+            // Forgotten generations' text indexes go with their rows, swept
+            // from the disk against the generations the ledger still knows, so
+            // one a reader still holds, or whose discard failed, is found again
+            // by the next seal of the pair.
+            if let Some(history_text) = &self.history_text {
+                let known: BTreeSet<ManifestGeneration> = self
+                    .ledger
+                    .read()
+                    .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?
                     .auxiliary_generations_older_than(
                         &batch.repo_id,
                         &batch.revision_id,
                         batch.generation,
                     )
                     .into_iter()
-                    .filter(|generation| !retention.retains(*generation))
-                    .collect()
-            });
-            drop(guard);
-            (chunks, reaped)
-        };
-        let mut delta = structural_chunks_delta_rows(&chunks)?;
-        delta.rows.extend(reaped_auxiliary.iter().map(|generation| {
-            AuxiliaryRowMutationV1::ForgetGeneration(AuxiliaryGenerationKeyV1 {
-                repo_id: batch.repo_id.clone(),
-                revision_id: batch.revision_id.clone(),
-                generation: *generation,
-            })
-        }));
-        let _durable = self.auxiliary_catalog.apply(&delta)?;
-        if retention.is_some() {
-            crash_point::reached(crash_point::AFTER_CATALOG_TRANSACTION);
-        }
-        {
-            let mut guard = self.ledger.write().map_err(|err| {
-                CoreError::Storage(format!(
-                    "{WHAT}: ledger poisoned while finalizing generation: {err}"
-                ))
-            })?;
-            if let Some(retention) = retention {
-                guard.apply_search_corpus_history_retention_receipt_v1(
+                    .collect();
+                history_text.sweep_forgotten_after_durable(
                     &batch.repo_id,
                     &batch.revision_id,
                     batch.generation,
-                    retention,
+                    &known,
                 )?;
             }
-            guard.apply_structural_chunks_delta(&chunks, std::time::Instant::now())?;
-            if !publish_tracks {
-                return Ok(());
+            if let Some(retention) = retention {
+                let receipt = self.reclaim_retired_generations_v1(batch, retention)?;
+                self.record_reclaim_receipt(retention, &receipt)?;
             }
-            // Both tracks of the pair are recorded here and only here,
-            // whether this batch built them or found them sealed on disk: a
-            // seal retried after a crash does not rebuild a track the crash
-            // left sealed, and a restarted daemon never seeded one the
-            // authority had not recorded, so this record is what makes it
-            // the track's identity (QI-BB-029).
-            for track in [
-                SearchPlaneTrackKind::Lexical,
-                SearchPlaneTrackKind::Semantic,
-            ] {
-                guard.materialize_track(
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    track,
-                    batch.generation,
-                    Some(batch.manifest_digest.as_str()),
-                );
-                if batch.seal {
-                    guard.seal_track_with_digest(
-                        &batch.repo_id,
-                        &batch.revision_id,
-                        track,
-                        batch.generation,
-                        batch.manifest_digest.as_str(),
-                    );
-                }
-            }
-            if batch.seal {
-                guard.record_historically_sealed_search_corpus(
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                    batch.manifest_digest.as_str(),
-                );
-            }
-            for generation in &reaped_auxiliary {
-                guard.forget_auxiliary_generation(&batch.repo_id, &batch.revision_id, *generation);
-            }
-        }
-        if retention.is_some() {
-            crash_point::reached(crash_point::AFTER_LEDGER_RECONCILE);
-        }
-        // Forgotten generations' text indexes go with their rows, swept
-        // from the disk against the generations the ledger still knows, so
-        // one a reader still holds, or whose discard failed, is found again
-        // by the next seal of the pair.
-        if let Some(history_text) = &self.history_text {
-            let known: BTreeSet<ManifestGeneration> = self
-                .ledger
-                .read()
-                .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?
-                .auxiliary_generations_older_than(
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    batch.generation,
-                )
-                .into_iter()
-                .collect();
-            history_text.sweep_forgotten_after_durable(
-                &batch.repo_id,
-                &batch.revision_id,
-                batch.generation,
-                &known,
-            )?;
-        }
-        if let Some(retention) = retention {
-            let receipt = self.reclaim_retired_generations_v1(batch, retention)?;
-            self.record_reclaim_receipt(retention, &receipt)?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Physical GC for the pair the batch just sealed (QI-BB-003).
@@ -1357,4 +1372,26 @@ impl DirectSearchCorpusMaterializer {
         }
         Ok(())
     }
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "Opt-in ingest diagnosis writes source-bound span markers."
+)]
+fn timed_ingest_work<T>(
+    label: &'static str,
+    operation: impl FnOnce() -> Result<T, CoreError>,
+) -> Result<T, CoreError> {
+    let started = std::env::var_os("QUANTA_INDEX_CAUSAL_PROFILE_V1")
+        .is_some_and(|value| value == std::ffi::OsStr::new("1"))
+        .then(std::time::Instant::now);
+    let result = operation();
+    if let Some(started) = started {
+        eprintln!(
+            "QI_INGEST_TRACE_V1 label={label} ok={} elapsed_ns={}",
+            u8::from(result.is_ok()),
+            started.elapsed().as_nanos()
+        );
+    }
+    result
 }

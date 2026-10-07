@@ -184,195 +184,198 @@ pub(super) fn verify_authority<R>(
 where
     R: FnMut([u8; 32], u64) -> Result<Vec<u8>, String>,
 {
-    let root = AuthorityRoot::decode(root_bytes, policy)?;
-    let mut files = Vec::new();
-    let mut posting_directory = PostingDirectory::default();
-    let mut directory_charge = 0_u64;
-    let mut resident_charge = root.term_directory_charge(policy)?;
-    // Admit the complete directory before allocation. Exact capacities keep
-    // geometric Vec growth from exceeding the per-bucket resident charge.
-    posting_directory
-        .path
-        .try_reserve_exact(root.path_postings.len())
-        .map_err(|_allocation_error| corrupt("path directory allocation refused"))?;
-    posting_directory
-        .content
-        .try_reserve_exact(root.content_postings.len())
-        .map_err(|_allocation_error| corrupt("content directory allocation refused"))?;
-    files
-        .try_reserve(root.sources.len())
-        .map_err(|_allocation_error| corrupt("source vector allocation refused"))?;
-    let mut by_bucket: BTreeMap<u8, Vec<&SourceRow>> = BTreeMap::new();
-    for row in &root.sources {
-        let key = source_key_digest(&row.source)?;
-        by_bucket.entry(key[0]).or_default().push(row);
-    }
-    if root.packs.len() != root.path_postings.len()
-        || root.packs.len() != root.content_postings.len()
-        || root.packs.len() != by_bucket.len()
-    {
-        return Err(corrupt("source pack and posting bucket inventories differ"));
-    }
-    for ((pack, path), content) in root
-        .packs
-        .iter()
-        .zip(&root.path_postings)
-        .zip(&root.content_postings)
-    {
-        if pack.prefix != path.prefix || pack.prefix != content.prefix {
-            return Err(corrupt("source and posting bucket prefixes differ"));
+    crate::causal_profile::timed_work("lexical_file_authority_decode_and_membership", || {
+        let root = AuthorityRoot::decode(root_bytes, policy)?;
+        let mut files = Vec::new();
+        let mut posting_directory = PostingDirectory::default();
+        let mut directory_charge = 0_u64;
+        let mut resident_charge = root.term_directory_charge(policy)?;
+        // Admit the complete directory before allocation. Exact capacities keep
+        // geometric Vec growth from exceeding the per-bucket resident charge.
+        posting_directory
+            .path
+            .try_reserve_exact(root.path_postings.len())
+            .map_err(|_allocation_error| corrupt("path directory allocation refused"))?;
+        posting_directory
+            .content
+            .try_reserve_exact(root.content_postings.len())
+            .map_err(|_allocation_error| corrupt("content directory allocation refused"))?;
+        files
+            .try_reserve(root.sources.len())
+            .map_err(|_allocation_error| corrupt("source vector allocation refused"))?;
+        let mut by_bucket: BTreeMap<u8, Vec<&SourceRow>> = BTreeMap::new();
+        for row in &root.sources {
+            let key = source_key_digest(&row.source)?;
+            by_bucket.entry(key[0]).or_default().push(row);
         }
-        let bucket_rows = by_bucket
-            .get(&pack.prefix[0])
-            .ok_or_else(|| corrupt("missing source bucket"))?;
-        let mut scratch = Scratch {
-            bytes: 0,
-            ceiling: policy.bucket_scratch_bytes,
-        };
-        scratch.charge(pack.bytes)?;
-        scratch.charge(path.bytes)?;
-        scratch.charge(content.bytes)?;
-        let source_bytes = blob(pack, &mut read_blob)?;
-        let source_view = decode_source_pack(&source_bytes, codec_limits)
-            .map_err(|error| corrupt(&format!("source pack decode: {error:?}")))?;
-        let mut expected_digests = BTreeMap::new();
-        for row in bucket_rows {
-            if let Some(previous_length) =
-                expected_digests.insert(row.source.source_sha256, row.source_bytes)
-                && previous_length != row.source_bytes
-            {
-                return Err(corrupt("same digest has different source length"));
+        if root.packs.len() != root.path_postings.len()
+            || root.packs.len() != root.content_postings.len()
+            || root.packs.len() != by_bucket.len()
+        {
+            return Err(corrupt("source pack and posting bucket inventories differ"));
+        }
+        for ((pack, path), content) in root
+            .packs
+            .iter()
+            .zip(&root.path_postings)
+            .zip(&root.content_postings)
+        {
+            if pack.prefix != path.prefix || pack.prefix != content.prefix {
+                return Err(corrupt("source and posting bucket prefixes differ"));
             }
-        }
-        if source_view.entries().len() != expected_digests.len() {
-            return Err(corrupt("source pack digest inventory differs"));
-        }
-        for (digest, bytes) in source_view.entries() {
-            let expected_length = expected_digests
-                .get(&digest)
-                .ok_or_else(|| corrupt("unreferenced packed source"))?;
-            if u64::try_from(bytes.len())
-                .map_err(|_length_width_error| corrupt("packed source length overflow"))?
-                != *expected_length
-            {
-                return Err(corrupt("packed source length differs from root"));
+            let bucket_rows = by_bucket
+                .get(&pack.prefix[0])
+                .ok_or_else(|| corrupt("missing source bucket"))?;
+            let mut scratch = Scratch {
+                bytes: 0,
+                ceiling: policy.bucket_scratch_bytes,
+            };
+            scratch.charge(pack.bytes)?;
+            scratch.charge(path.bytes)?;
+            scratch.charge(content.bytes)?;
+            let source_bytes = blob(pack, &mut read_blob)?;
+            let source_view = decode_source_pack(&source_bytes, codec_limits)
+                .map_err(|error| corrupt(&format!("source pack decode: {error:?}")))?;
+            let mut expected_digests = BTreeMap::new();
+            for row in bucket_rows {
+                if let Some(previous_length) =
+                    expected_digests.insert(row.source.source_sha256, row.source_bytes)
+                    && previous_length != row.source_bytes
+                {
+                    return Err(corrupt("same digest has different source length"));
+                }
             }
-        }
-        let mut expected_path = Expected::new();
-        let mut expected_content = Expected::new();
-        for row in bucket_rows {
-            let source = source_view
-                .get(&row.source.source_sha256)
-                .ok_or_else(|| corrupt("missing packed source"))?;
-            let raw = if row.text_admitted {
-                Some(
-                    std::str::from_utf8(source)
-                        .map_err(|_utf8_error| corrupt("text-admitted source is not UTF-8"))?,
+            if source_view.entries().len() != expected_digests.len() {
+                return Err(corrupt("source pack digest inventory differs"));
+            }
+            for (digest, bytes) in source_view.entries() {
+                let expected_length = expected_digests
+                    .get(&digest)
+                    .ok_or_else(|| corrupt("unreferenced packed source"))?;
+                if u64::try_from(bytes.len())
+                    .map_err(|_length_width_error| corrupt("packed source length overflow"))?
+                    != *expected_length
+                {
+                    return Err(corrupt("packed source length differs from root"));
+                }
+            }
+            let mut expected_path = Expected::new();
+            let mut expected_content = Expected::new();
+            for row in bucket_rows {
+                let source = source_view
+                    .get(&row.source.source_sha256)
+                    .ok_or_else(|| corrupt("missing packed source"))?;
+                let raw = if row.text_admitted {
+                    Some(
+                        std::str::from_utf8(source)
+                            .map_err(|_utf8_error| corrupt("text-admitted source is not UTF-8"))?,
+                    )
+                } else {
+                    None
+                };
+                let scratch_current = usize::try_from(scratch.bytes)
+                    .map_err(|_width_error| corrupt("normalization scratch width overflow"))?;
+                let scratch_ceiling = usize::try_from(scratch.ceiling).map_err(|_width_error| {
+                    corrupt("normalization scratch ceiling width overflow")
+                })?;
+                let plan = super::NormalizedSurfacesPlan::new_with_budget(
+                    row.source.file.repo_relative_path.as_str(),
+                    raw,
+                    scratch_current,
+                    scratch_ceiling,
                 )
-            } else {
-                None
-            };
-            let scratch_current = usize::try_from(scratch.bytes)
-                .map_err(|_width_error| corrupt("normalization scratch width overflow"))?;
-            let scratch_ceiling = usize::try_from(scratch.ceiling)
-                .map_err(|_width_error| corrupt("normalization scratch ceiling width overflow"))?;
-            let plan = super::NormalizedSurfacesPlan::new_with_budget(
-                row.source.file.repo_relative_path.as_str(),
-                raw,
-                scratch_current,
-                scratch_ceiling,
-            )
-            .map_err(|error| corrupt(&format!("normalization plan: {error}")))?;
-            let (indexed_path_bytes, folded_path_bytes, indexed_text_bytes, folded_text_bytes) =
-                plan.lengths();
-            let file_charge = resident_file_charge(
-                &row.source,
-                &row.language,
-                source.len(),
-                indexed_path_bytes,
-                folded_path_bytes,
-                indexed_text_bytes,
-                folded_text_bytes,
-            )?;
-            if file_charge != row.resident_heap_bytes {
-                return Err(corrupt("resident row charge differs from source bytes"));
-            }
-            resident_charge = resident_charge
-                .checked_add(file_charge)
-                .ok_or_else(|| corrupt("resident heap charge overflow"))?;
-            if resident_charge > policy.resident_file_heap_bytes {
-                return Err(corrupt("resident heap exceeds policy"));
-            }
-            let (indexed_path, folded_path, indexed_text, folded_text) = plan
-                .build_with_budget(scratch_current, scratch_ceiling)
-                .map_err(|error| corrupt(&format!("normalization build: {error}")))?;
-            let path_count = add_source(
-                folded_path.as_bytes(),
-                row.source_id,
-                &mut expected_path,
-                &mut scratch,
-            )?;
-            let content_count = if let Some(folded) = folded_text.as_ref() {
-                add_source(
-                    folded.as_bytes(),
+                .map_err(|error| corrupt(&format!("normalization plan: {error}")))?;
+                let (indexed_path_bytes, folded_path_bytes, indexed_text_bytes, folded_text_bytes) =
+                    plan.lengths();
+                let file_charge = resident_file_charge(
+                    &row.source,
+                    &row.language,
+                    source.len(),
+                    indexed_path_bytes,
+                    folded_path_bytes,
+                    indexed_text_bytes,
+                    folded_text_bytes,
+                )?;
+                if file_charge != row.resident_heap_bytes {
+                    return Err(corrupt("resident row charge differs from source bytes"));
+                }
+                resident_charge = resident_charge
+                    .checked_add(file_charge)
+                    .ok_or_else(|| corrupt("resident heap charge overflow"))?;
+                if resident_charge > policy.resident_file_heap_bytes {
+                    return Err(corrupt("resident heap exceeds policy"));
+                }
+                let (indexed_path, folded_path, indexed_text, folded_text) = plan
+                    .build_with_budget(scratch_current, scratch_ceiling)
+                    .map_err(|error| corrupt(&format!("normalization build: {error}")))?;
+                let path_count = add_source(
+                    folded_path.as_bytes(),
                     row.source_id,
-                    &mut expected_content,
+                    &mut expected_path,
                     &mut scratch,
-                )?
-            } else {
-                0
-            };
-            let total = path_count
-                .checked_add(content_count)
-                .ok_or_else(|| corrupt("source membership overflow"))?;
-            if total != row.posting_memberships {
-                return Err(corrupt("source posting count differs from bytes"));
+                )?;
+                let content_count = if let Some(folded) = folded_text.as_ref() {
+                    add_source(
+                        folded.as_bytes(),
+                        row.source_id,
+                        &mut expected_content,
+                        &mut scratch,
+                    )?
+                } else {
+                    0
+                };
+                let total = path_count
+                    .checked_add(content_count)
+                    .ok_or_else(|| corrupt("source membership overflow"))?;
+                if total != row.posting_memberships {
+                    return Err(corrupt("source posting count differs from bytes"));
+                }
+                let (bytes, indexed_text, folded_text) =
+                    super::share_verified_surfaces(source, raw, indexed_text, folded_text);
+                files.push(SourceFile {
+                    source: row.source.clone(),
+                    bytes,
+                    text_admitted: row.text_admitted,
+                    language: row.language.clone(),
+                    indexed_text,
+                    folded_text,
+                    indexed_path,
+                    folded_path,
+                    expected_postings: row.posting_memberships,
+                });
             }
-            let (bytes, indexed_text, folded_text) =
-                super::share_verified_surfaces(source, raw, indexed_text, folded_text);
-            files.push(SourceFile {
-                source: row.source.clone(),
-                bytes,
-                text_admitted: row.text_admitted,
-                language: row.language.clone(),
-                indexed_text,
-                folded_text,
-                indexed_path,
-                folded_path,
-                expected_postings: row.posting_memberships,
-            });
+            let path_bytes = blob(path, &mut read_blob)?;
+            let path_view = decode_posting_block(&path_bytes, PostingSurface::Path, codec_limits)
+                .map_err(|error| corrupt(&format!("path posting decode: {error:?}")))?;
+            compare_block(path, &path_view, &expected_path)?;
+            append_directory(
+                &mut posting_directory.path,
+                path,
+                &path_view,
+                &mut directory_charge,
+                policy,
+            )?;
+            let content_bytes = blob(content, &mut read_blob)?;
+            let content_view =
+                decode_posting_block(&content_bytes, PostingSurface::Content, codec_limits)
+                    .map_err(|error| corrupt(&format!("content posting decode: {error:?}")))?;
+            compare_block(content, &content_view, &expected_content)?;
+            append_directory(
+                &mut posting_directory.content,
+                content,
+                &content_view,
+                &mut directory_charge,
+                policy,
+            )?;
         }
-        let path_bytes = blob(path, &mut read_blob)?;
-        let path_view = decode_posting_block(&path_bytes, PostingSurface::Path, codec_limits)
-            .map_err(|error| corrupt(&format!("path posting decode: {error:?}")))?;
-        compare_block(path, &path_view, &expected_path)?;
-        append_directory(
-            &mut posting_directory.path,
-            path,
-            &path_view,
-            &mut directory_charge,
-            policy,
-        )?;
-        let content_bytes = blob(content, &mut read_blob)?;
-        let content_view =
-            decode_posting_block(&content_bytes, PostingSurface::Content, codec_limits)
-                .map_err(|error| corrupt(&format!("content posting decode: {error:?}")))?;
-        compare_block(content, &content_view, &expected_content)?;
-        append_directory(
-            &mut posting_directory.content,
-            content,
-            &content_view,
-            &mut directory_charge,
-            policy,
-        )?;
-    }
-    if directory_charge != root.term_directory_charge(policy)? {
-        return Err(corrupt("term directory charge differs from root"));
-    }
-    Ok(VerifiedAuthority {
-        root,
-        files,
-        posting_directory,
+        if directory_charge != root.term_directory_charge(policy)? {
+            return Err(corrupt("term directory charge differs from root"));
+        }
+        Ok(VerifiedAuthority {
+            root,
+            files,
+            posting_directory,
+        })
     })
 }
 

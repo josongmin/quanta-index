@@ -158,89 +158,91 @@ pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
     cache: Option<&mut CoverageDecodeCache>,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<VerifiedGeneration, CoreError> {
-    checkpoint(budget, "lexical:cold-open:identity")?;
-    let observed = crate::index_store::read_lexical_sealed_identity_at(generation_dir, root)?;
-    checkpoint(budget, "lexical:cold-open:identity")?;
-    crate::index_store::validate_lexical_sealed_identity(&observed, identity)?;
-    // A generation the scrub proved corrupt is refused at every door.
-    crate::sealed_generation::refuse_if_quarantined_at(root, generation_dir)?;
-    let manifest = read_bound_manifest_at(generation_dir, root, &identity.manifest_digest)?;
-    if !matches!(usize::try_from(manifest.index_meta.bytes), Ok(bytes) if bytes <= MAX_INDEX_CONTROL_BYTES)
-    {
-        return Err(crate::index_store::sidecar_corrupt(
+    crate::causal_profile::timed_work("lexical_generation_proof", || {
+        checkpoint(budget, "lexical:cold-open:identity")?;
+        let observed = crate::index_store::read_lexical_sealed_identity_at(generation_dir, root)?;
+        checkpoint(budget, "lexical:cold-open:identity")?;
+        crate::index_store::validate_lexical_sealed_identity(&observed, identity)?;
+        // A generation the scrub proved corrupt is refused at every door.
+        crate::sealed_generation::refuse_if_quarantined_at(root, generation_dir)?;
+        let manifest = read_bound_manifest_at(generation_dir, root, &identity.manifest_digest)?;
+        if !matches!(usize::try_from(manifest.index_meta.bytes), Ok(bytes) if bytes <= MAX_INDEX_CONTROL_BYTES)
+        {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &manifest.index_meta.name,
+                "index commit exceeds the control-file byte limit",
+            ));
+        }
+        checkpoint(budget, "lexical:cold-open:manifest")?;
+        let meta_bytes = read_committed(root, generation_dir, &manifest.index_meta, budget)?;
+        let index = crate::index_store::open_sealed_index_at(generation_dir, root, meta_bytes)?;
+        checkpoint(budget, "lexical:cold-open:index")?;
+        verify_index_segments(root, generation_dir, &index, &manifest.index_segments)?;
+        let (ranked_keys, reader) =
+            verify_ranked_keys(root, generation_dir, &index, &manifest.ranked_keys, budget)?;
+        checkpoint(budget, "lexical:cold-open:live-bm25")?;
+        let live_bytes = read_committed(root, generation_dir, &manifest.live_bm25, budget)?;
+        let live_bm25 = Arc::new(LiveBm25Statistics::decode(
+            &live_bytes,
             generation_dir,
-            &manifest.index_meta.name,
-            "index commit exceeds the control-file byte limit",
-        ));
-    }
-    checkpoint(budget, "lexical:cold-open:manifest")?;
-    let meta_bytes = read_committed(root, generation_dir, &manifest.index_meta, budget)?;
-    let index = crate::index_store::open_sealed_index_at(generation_dir, root, meta_bytes)?;
-    checkpoint(budget, "lexical:cold-open:index")?;
-    verify_index_segments(root, generation_dir, &index, &manifest.index_segments)?;
-    let (ranked_keys, reader) =
-        verify_ranked_keys(root, generation_dir, &index, &manifest.ranked_keys, budget)?;
-    checkpoint(budget, "lexical:cold-open:live-bm25")?;
-    let live_bytes = read_committed(root, generation_dir, &manifest.live_bm25, budget)?;
-    let live_bm25 = Arc::new(LiveBm25Statistics::decode(
-        &live_bytes,
-        generation_dir,
-        manifest.index_meta.sha256,
-        &reader.searcher(),
-    )?);
-    verify_overlays(root, generation_dir, &manifest, visitor, budget)?;
-    verify_text_authority(
-        root,
-        generation_dir,
-        manifest.text_authority.as_deref(),
-        visitor,
-        budget,
-    )?;
-    checkpoint(budget, "lexical:cold-open:coverage")?;
-    let coverage = match cache {
-        Some(cache) => verify_source_coverage_reusing(
+            manifest.index_meta.sha256,
+            &reader.searcher(),
+        )?);
+        verify_overlays(root, generation_dir, &manifest, visitor, budget)?;
+        verify_text_authority(
             root,
             generation_dir,
-            identity,
-            manifest.source_coverage.as_ref(),
-            Some(cache),
-        ),
-        None => verify_source_coverage_reusing(
+            manifest.text_authority.as_deref(),
+            visitor,
+            budget,
+        )?;
+        checkpoint(budget, "lexical:cold-open:coverage")?;
+        let coverage = match cache {
+            Some(cache) => verify_source_coverage_reusing(
+                root,
+                generation_dir,
+                identity,
+                manifest.source_coverage.as_ref(),
+                Some(cache),
+            ),
+            None => verify_source_coverage_reusing(
+                root,
+                generation_dir,
+                identity,
+                manifest.source_coverage.as_ref(),
+                None,
+            ),
+        }?;
+        checkpoint(budget, "lexical:cold-open:coverage")?;
+        let (coverage, source_publication, coverage_read_stats) = coverage.map_or(
+            (None, None, LexicalCoverageReadStats::default()),
+            |artifact| {
+                (
+                    Some(artifact.coverage),
+                    Some(artifact.publication),
+                    artifact.read_stats,
+                )
+            },
+        );
+        verify_file_authority(
             root,
             generation_dir,
-            identity,
-            manifest.source_coverage.as_ref(),
-            None,
-        ),
-    }?;
-    checkpoint(budget, "lexical:cold-open:coverage")?;
-    let (coverage, source_publication, coverage_read_stats) = coverage.map_or(
-        (None, None, LexicalCoverageReadStats::default()),
-        |artifact| {
-            (
-                Some(artifact.coverage),
-                Some(artifact.publication),
-                artifact.read_stats,
-            )
-        },
-    );
-    verify_file_authority(
-        root,
-        generation_dir,
-        &manifest.file_authority,
-        coverage.as_ref(),
-        visitor,
-        budget,
-    )?;
-    checkpoint(budget, "lexical:cold-open:walk")?;
-    Ok(VerifiedGeneration {
-        manifest,
-        reader,
-        ranked_keys,
-        live_bm25,
-        coverage,
-        source_publication,
-        coverage_read_stats,
+            &manifest.file_authority,
+            coverage.as_ref(),
+            visitor,
+            budget,
+        )?;
+        checkpoint(budget, "lexical:cold-open:walk")?;
+        Ok(VerifiedGeneration {
+            manifest,
+            reader,
+            ranked_keys,
+            live_bm25,
+            coverage,
+            source_publication,
+            coverage_read_stats,
+        })
     })
 }
 
@@ -252,148 +254,154 @@ fn verify_file_authority<V: SealedGenerationVisitor>(
     visitor: &mut V,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<(), CoreError> {
-    checkpoint(budget, "lexical:cold-open:file-authority")?;
-    let root_name = format!("{}/{}", file_authority::DIR, file_authority::ROOT);
-    let by_name: BTreeMap<&str, &SealedArtifactCommitmentV1> = committed
-        .iter()
-        .map(|artifact| (artifact.name.as_str(), artifact))
-        .collect();
-    if by_name.len() != committed.len() {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            file_authority::DIR,
-            "duplicate file authority commitment",
-        ));
-    }
-    let root_commitment = by_name.get(root_name.as_str()).copied().ok_or_else(|| {
-        crate::index_store::sidecar_corrupt(generation_dir, &root_name, "F15 root is not committed")
-    })?;
-    if root_commitment.bytes > file_authority::max_root_bytes() {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            &root_name,
-            "F15 root exceeds byte policy",
-        ));
-    }
-    let root_bytes = read_committed(root, generation_dir, root_commitment, budget)?;
-    let mut read_failure = None;
-    let verified_result = file_authority::verify_v15(&root_bytes, |digest, expected_len| {
-        let name = file_authority::object_name(&digest);
-        let commitment = by_name
-            .get(name.as_str())
-            .copied()
-            .ok_or_else(|| format!("object {name} is absent from outer manifest"))?;
-        if commitment.bytes != expected_len || commitment.sha256 != digest {
-            return Err(format!("object {name} differs from root descriptor"));
+    crate::causal_profile::timed_work("lexical_file_authority", || {
+        checkpoint(budget, "lexical:cold-open:file-authority")?;
+        let root_name = format!("{}/{}", file_authority::DIR, file_authority::ROOT);
+        let by_name: BTreeMap<&str, &SealedArtifactCommitmentV1> = committed
+            .iter()
+            .map(|artifact| (artifact.name.as_str(), artifact))
+            .collect();
+        if by_name.len() != committed.len() {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::DIR,
+                "duplicate file authority commitment",
+            ));
         }
-        file_authority::read_object_pinned(
-            &generation_dir
-                .join(file_authority::DIR)
-                .join(file_authority::OBJECTS),
-            digest,
-            expected_len,
-            budget,
-        )
-        .map_err(|error| {
-            read_failure = Some(error);
-            format!("object {name} read failed")
-        })
-    });
-    if let Some(error) = read_failure {
-        return Err(error);
-    }
-    let verified = verified_result.map_err(|reason| {
-        crate::index_store::sidecar_corrupt(generation_dir, &root_name, &reason)
-    })?;
-    checkpoint(budget, "lexical:cold-open:file-census")?;
-    let expected = file_authority::verified_inventory(&verified);
-    if expected.len() != committed.len()
-        || !expected
-            .keys()
-            .map(String::as_str)
-            .eq(by_name.keys().copied())
-        || expected.iter().any(|(name, len)| {
-            name != &root_name
-                && by_name
-                    .get(name.as_str())
-                    .is_none_or(|row| row.bytes != *len)
-        })
-    {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            file_authority::DIR,
-            "outer manifest object inventory differs from F15 root",
-        ));
-    }
-    let coverage = coverage.ok_or_else(|| {
-        crate::index_store::sidecar_corrupt(
-            generation_dir,
-            file_authority::DIR,
-            "source coverage is missing",
-        )
-    })?;
-    if !file_authority::verified_matches_coverage(&verified, coverage) {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            file_authority::DIR,
-            "F15 source metadata differs from coverage",
-        ));
-    }
-    // List through pinned nofollow directory descriptors, including nested objects.
-    let authority_dir = open_child_directory(root, file_authority::DIR).map_err(|error| {
-        crate::index_store::sidecar_corrupt(
-            generation_dir,
-            file_authority::DIR,
-            &format!("open directory: {error}"),
-        )
-    })?;
-    let top: BTreeSet<String> = super::entry_names_at(&authority_dir, None)
-        .map_err(|error| CoreError::Storage(format!("lexical: list F15 authority: {error}")))?
-        .into_iter()
-        .map(|name| name.to_string_lossy().into_owned())
-        .collect();
-    if top
-        != BTreeSet::from([
-            file_authority::ROOT.to_owned(),
-            file_authority::OBJECTS.to_owned(),
-        ])
-    {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            file_authority::DIR,
-            "F15 authority directory has uncommitted entries",
-        ));
-    }
-    let object_dir =
-        open_child_directory(&authority_dir, file_authority::OBJECTS).map_err(|error| {
+        let root_commitment = by_name.get(root_name.as_str()).copied().ok_or_else(|| {
             crate::index_store::sidecar_corrupt(
                 generation_dir,
-                file_authority::OBJECTS,
-                &format!("open object directory: {error}"),
+                &root_name,
+                "F15 root is not committed",
             )
         })?;
-    let actual_objects: BTreeSet<String> = super::entry_names_at(&object_dir, None)
-        .map_err(|error| CoreError::Storage(format!("lexical: list F15 objects: {error}")))?
-        .into_iter()
-        .map(|name| name.to_string_lossy().into_owned())
-        .collect();
-    let object_prefix = format!("{}/{}/", file_authority::DIR, file_authority::OBJECTS);
-    let expected_objects: BTreeSet<String> = expected
-        .keys()
-        .filter_map(|name| name.strip_prefix(&object_prefix).map(str::to_owned))
-        .collect();
-    if actual_objects != expected_objects {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            file_authority::DIR,
-            "F15 object directory differs from root",
-        ));
-    }
-    let object_path = generation_dir
-        .join(file_authority::DIR)
-        .join(file_authority::OBJECTS);
-    visitor.file_authority(verified, object_path, budget)?;
-    checkpoint(budget, "lexical:cold-open:file-authority")
+        if root_commitment.bytes > file_authority::max_root_bytes() {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &root_name,
+                "F15 root exceeds byte policy",
+            ));
+        }
+        let root_bytes = read_committed(root, generation_dir, root_commitment, budget)?;
+        let mut read_failure = None;
+        let verified_result = file_authority::verify_v15(&root_bytes, |digest, expected_len| {
+            let name = file_authority::object_name(&digest);
+            let commitment = by_name
+                .get(name.as_str())
+                .copied()
+                .ok_or_else(|| format!("object {name} is absent from outer manifest"))?;
+            if commitment.bytes != expected_len || commitment.sha256 != digest {
+                return Err(format!("object {name} differs from root descriptor"));
+            }
+            file_authority::read_object_pinned(
+                &generation_dir
+                    .join(file_authority::DIR)
+                    .join(file_authority::OBJECTS),
+                digest,
+                expected_len,
+                budget,
+            )
+            .map_err(|error| {
+                read_failure = Some(error);
+                format!("object {name} read failed")
+            })
+        });
+        if let Some(error) = read_failure {
+            return Err(error);
+        }
+        let verified = verified_result.map_err(|reason| {
+            crate::index_store::sidecar_corrupt(generation_dir, &root_name, &reason)
+        })?;
+        checkpoint(budget, "lexical:cold-open:file-census")?;
+        let expected = file_authority::verified_inventory(&verified);
+        if expected.len() != committed.len()
+            || !expected
+                .keys()
+                .map(String::as_str)
+                .eq(by_name.keys().copied())
+            || expected.iter().any(|(name, len)| {
+                name != &root_name
+                    && by_name
+                        .get(name.as_str())
+                        .is_none_or(|row| row.bytes != *len)
+            })
+        {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::DIR,
+                "outer manifest object inventory differs from F15 root",
+            ));
+        }
+        let coverage = coverage.ok_or_else(|| {
+            crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::DIR,
+                "source coverage is missing",
+            )
+        })?;
+        if !file_authority::verified_matches_coverage(&verified, coverage) {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::DIR,
+                "F15 source metadata differs from coverage",
+            ));
+        }
+        // List through pinned nofollow directory descriptors, including nested objects.
+        let authority_dir = open_child_directory(root, file_authority::DIR).map_err(|error| {
+            crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::DIR,
+                &format!("open directory: {error}"),
+            )
+        })?;
+        let top: BTreeSet<String> = super::entry_names_at(&authority_dir, None)
+            .map_err(|error| CoreError::Storage(format!("lexical: list F15 authority: {error}")))?
+            .into_iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        if top
+            != BTreeSet::from([
+                file_authority::ROOT.to_owned(),
+                file_authority::OBJECTS.to_owned(),
+            ])
+        {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::DIR,
+                "F15 authority directory has uncommitted entries",
+            ));
+        }
+        let object_dir =
+            open_child_directory(&authority_dir, file_authority::OBJECTS).map_err(|error| {
+                crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    file_authority::OBJECTS,
+                    &format!("open object directory: {error}"),
+                )
+            })?;
+        let actual_objects: BTreeSet<String> = super::entry_names_at(&object_dir, None)
+            .map_err(|error| CoreError::Storage(format!("lexical: list F15 objects: {error}")))?
+            .into_iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        let object_prefix = format!("{}/{}/", file_authority::DIR, file_authority::OBJECTS);
+        let expected_objects: BTreeSet<String> = expected
+            .keys()
+            .filter_map(|name| name.strip_prefix(&object_prefix).map(str::to_owned))
+            .collect();
+        if actual_objects != expected_objects {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::DIR,
+                "F15 object directory differs from root",
+            ));
+        }
+        let object_path = generation_dir
+            .join(file_authority::DIR)
+            .join(file_authority::OBJECTS);
+        visitor.file_authority(verified, object_path, budget)?;
+        checkpoint(budget, "lexical:cold-open:file-authority")
+    })
 }
 
 fn open_child_directory(parent: &File, name: &str) -> std::io::Result<File> {
@@ -419,66 +427,68 @@ fn verify_ranked_keys(
     commitments: &[SealedArtifactCommitmentV1],
     budget: Option<&RequestBudgetV1>,
 ) -> Result<(Arc<RankedKeyTables>, IndexReader), CoreError> {
-    checkpoint(budget, "lexical:cold-open:ranked-keys")?;
-    let reader: IndexReader = index
-        .reader_builder()
-        .reload_policy(ReloadPolicy::Manual)
-        .try_into()
-        .map_err(|error| {
-            CoreError::Storage(format!("lexical: ranked-key verifier reader: {error}"))
-        })?;
-    let searcher = reader.searcher();
-    if commitments.len() != searcher.segment_readers().len() {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            "ranked keys",
-            "segment count mismatch",
-        ));
-    }
-    let by_name: std::collections::BTreeMap<&str, &SealedArtifactCommitmentV1> = commitments
-        .iter()
-        .map(|artifact| (artifact.name.as_str(), artifact))
-        .collect();
-    let mut total = 0_u64;
-    let resident_limit = u64::try_from(MAX_RANKED_KEYS_BYTES).map_err(|error| {
-        CoreError::Storage(format!("lexical: ranked-key limit overflow: {error}"))
-    })?;
-    let mut tables = Vec::new();
-    for segment in searcher.segment_readers() {
+    crate::causal_profile::timed_work("lexical_ranked_keys", || {
         checkpoint(budget, "lexical:cold-open:ranked-keys")?;
-        let name = ranked_keys::file_name(segment);
-        let commitment = by_name.get(name.as_str()).copied().ok_or_else(|| {
-            crate::index_store::sidecar_corrupt(generation_dir, &name, "missing commitment")
-        })?;
-        total = total.checked_add(commitment.bytes).ok_or_else(|| {
-            CoreError::Storage("lexical: ranked-key resident bytes overflow".into())
-        })?;
-        if total > resident_limit {
+        let reader: IndexReader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .map_err(|error| {
+                CoreError::Storage(format!("lexical: ranked-key verifier reader: {error}"))
+            })?;
+        let searcher = reader.searcher();
+        if commitments.len() != searcher.segment_readers().len() {
             return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
-                &name,
-                "resident table exceeds limit",
+                "ranked keys",
+                "segment count mismatch",
             ));
         }
-        let bytes = read_committed(root, generation_dir, commitment, budget)?;
-        tables.push(Arc::new(SegmentKeys::decode(bytes, segment)?));
-        checkpoint(budget, "lexical:cold-open:ranked-keys-decode")?;
-    }
-    let tables = RankedKeyTables::bind(tables, searcher.segment_readers())?;
-    // A stale or uncommitted table is never silently ignored.
-    for name in super::entry_names_at(root, None).map_err(|error| {
-        CoreError::Storage(format!("lexical: list ranked-key directory: {error}"))
-    })? {
-        let name = name.to_string_lossy();
-        if ranked_keys::is_ranked_key_entry(&name) && !by_name.contains_key(name.as_ref()) {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                &name,
-                "uncommitted ranked-key file",
-            ));
+        let by_name: std::collections::BTreeMap<&str, &SealedArtifactCommitmentV1> = commitments
+            .iter()
+            .map(|artifact| (artifact.name.as_str(), artifact))
+            .collect();
+        let mut total = 0_u64;
+        let resident_limit = u64::try_from(MAX_RANKED_KEYS_BYTES).map_err(|error| {
+            CoreError::Storage(format!("lexical: ranked-key limit overflow: {error}"))
+        })?;
+        let mut tables = Vec::new();
+        for segment in searcher.segment_readers() {
+            checkpoint(budget, "lexical:cold-open:ranked-keys")?;
+            let name = ranked_keys::file_name(segment);
+            let commitment = by_name.get(name.as_str()).copied().ok_or_else(|| {
+                crate::index_store::sidecar_corrupt(generation_dir, &name, "missing commitment")
+            })?;
+            total = total.checked_add(commitment.bytes).ok_or_else(|| {
+                CoreError::Storage("lexical: ranked-key resident bytes overflow".into())
+            })?;
+            if total > resident_limit {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    &name,
+                    "resident table exceeds limit",
+                ));
+            }
+            let bytes = read_committed(root, generation_dir, commitment, budget)?;
+            tables.push(Arc::new(SegmentKeys::decode(bytes, segment)?));
+            checkpoint(budget, "lexical:cold-open:ranked-keys-decode")?;
         }
-    }
-    Ok((Arc::new(tables), reader))
+        let tables = RankedKeyTables::bind(tables, searcher.segment_readers())?;
+        // A stale or uncommitted table is never silently ignored.
+        for name in super::entry_names_at(root, None).map_err(|error| {
+            CoreError::Storage(format!("lexical: list ranked-key directory: {error}"))
+        })? {
+            let name = name.to_string_lossy();
+            if ranked_keys::is_ranked_key_entry(&name) && !by_name.contains_key(name.as_ref()) {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    &name,
+                    "uncommitted ranked-key file",
+                ));
+            }
+        }
+        Ok((Arc::new(tables), reader))
+    })
 }
 
 /// Verify and decode the same bytes. A missing committed artifact or an
@@ -635,68 +645,70 @@ pub(crate) fn verify_index_segments(
     index: &Index,
     committed: &[SealedArtifactCommitmentV1],
 ) -> Result<(), CoreError> {
-    let referenced = referenced_index_files_at(index, generation_dir, root)?;
-    let listed: BTreeSet<&str> = committed
-        .iter()
-        .map(|artifact| artifact.name.as_str())
-        .collect();
-    for name in &referenced {
-        if !listed.contains(name.as_str()) {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                name,
-                "referenced by the sealed commit although the seal did not commit to it",
-            ));
+    crate::causal_profile::timed_work("lexical_index_segments", || {
+        let referenced = referenced_index_files_at(index, generation_dir, root)?;
+        let listed: BTreeSet<&str> = committed
+            .iter()
+            .map(|artifact| artifact.name.as_str())
+            .collect();
+        for name in &referenced {
+            if !listed.contains(name.as_str()) {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    name,
+                    "referenced by the sealed commit although the seal did not commit to it",
+                ));
+            }
         }
-    }
-    let referenced: BTreeSet<&str> = referenced.iter().map(String::as_str).collect();
-    for artifact in committed {
-        if !referenced.contains(artifact.name.as_str()) {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                &artifact.name,
-                "committed although the sealed commit does not reference it",
-            ));
+        let referenced: BTreeSet<&str> = referenced.iter().map(String::as_str).collect();
+        for artifact in committed {
+            if !referenced.contains(artifact.name.as_str()) {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    &artifact.name,
+                    "committed although the sealed commit does not reference it",
+                ));
+            }
+            let path = generation_dir.join(&artifact.name);
+            let metadata = super::open_regular_below(root, Path::new(&artifact.name))
+                .and_then(|file| file.metadata())
+                .map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        || super::is_unsafe_artifact_path(&error)
+                    {
+                        crate::index_store::sidecar_corrupt(
+                            generation_dir,
+                            &artifact.name,
+                            "missing or unsafe",
+                        )
+                    } else {
+                        CoreError::Storage(format!(
+                            "lexical: inspect committed segment file {}: {error}",
+                            path.display()
+                        ))
+                    }
+                })?;
+            if !metadata.is_file() {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    &artifact.name,
+                    "is not a regular file",
+                ));
+            }
+            if metadata.len() != artifact.bytes {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    &artifact.name,
+                    &format!(
+                        "{} bytes on disk, {} committed",
+                        metadata.len(),
+                        artifact.bytes
+                    ),
+                ));
+            }
         }
-        let path = generation_dir.join(&artifact.name);
-        let metadata = super::open_regular_below(root, Path::new(&artifact.name))
-            .and_then(|file| file.metadata())
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound
-                    || super::is_unsafe_artifact_path(&error)
-                {
-                    crate::index_store::sidecar_corrupt(
-                        generation_dir,
-                        &artifact.name,
-                        "missing or unsafe",
-                    )
-                } else {
-                    CoreError::Storage(format!(
-                        "lexical: inspect committed segment file {}: {error}",
-                        path.display()
-                    ))
-                }
-            })?;
-        if !metadata.is_file() {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                &artifact.name,
-                "is not a regular file",
-            ));
-        }
-        if metadata.len() != artifact.bytes {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                &artifact.name,
-                &format!(
-                    "{} bytes on disk, {} committed",
-                    metadata.len(),
-                    artifact.bytes
-                ),
-            ));
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Every listed overlay is read once, proved and decoded; a family the
@@ -889,35 +901,37 @@ fn verify_overlays<V: SealedGenerationVisitor>(
     visitor: &mut V,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<(), CoreError> {
-    for family in OverlayFamily::ALL {
-        checkpoint(budget, "lexical:cold-open:overlay")?;
-        if let Some(artifact) = manifest.overlay(family) {
-            let value = read_committed_overlay_value(root, generation_dir, artifact, budget)?;
-            let snapshot =
-                crate::overlay_codec::decode_overlay_value(family, value, generation_dir)?;
-            checkpoint(budget, "lexical:cold-open:overlay-decode")?;
-            visitor.overlay(snapshot)?;
-        } else {
-            let path = family.path(generation_dir);
-            match super::optional_entry_at(root, Path::new(family.file_name())) {
-                Ok(true) => {
-                    return Err(crate::index_store::sidecar_corrupt(
-                        generation_dir,
-                        family.file_name(),
-                        "present although the seal committed to no such overlay",
-                    ));
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    return Err(CoreError::Storage(format!(
-                        "lexical: inspect absent overlay {}: {error}",
-                        path.display()
-                    )));
+    crate::causal_profile::timed_work("lexical_overlays", || {
+        for family in OverlayFamily::ALL {
+            checkpoint(budget, "lexical:cold-open:overlay")?;
+            if let Some(artifact) = manifest.overlay(family) {
+                let value = read_committed_overlay_value(root, generation_dir, artifact, budget)?;
+                let snapshot =
+                    crate::overlay_codec::decode_overlay_value(family, value, generation_dir)?;
+                checkpoint(budget, "lexical:cold-open:overlay-decode")?;
+                visitor.overlay(snapshot)?;
+            } else {
+                let path = family.path(generation_dir);
+                match super::optional_entry_at(root, Path::new(family.file_name())) {
+                    Ok(true) => {
+                        return Err(crate::index_store::sidecar_corrupt(
+                            generation_dir,
+                            family.file_name(),
+                            "present although the seal committed to no such overlay",
+                        ));
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        return Err(CoreError::Storage(format!(
+                            "lexical: inspect absent overlay {}: {error}",
+                            path.display()
+                        )));
+                    }
                 }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// The `text-authority/` tree is exactly what the seal listed, and every
@@ -929,67 +943,71 @@ fn verify_text_authority<V: SealedGenerationVisitor>(
     visitor: &mut V,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<(), CoreError> {
-    checkpoint(budget, "lexical:cold-open:text-authority")?;
-    let dir = text_authority_dir(generation_dir);
-    let observed =
-        super::optional_entry_at(root, Path::new(TEXT_AUTHORITY_DIR_NAME)).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: inspect text authority {}: {error}",
-                dir.display()
-            ))
-        })?;
-    let files = match (committed, observed) {
-        (None, false) => return Ok(()),
-        (None, true) => {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                TEXT_AUTHORITY_DIR_NAME,
-                "present although the seal committed to no text authority",
-            ));
-        }
-        (Some(_), false) => {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                TEXT_AUTHORITY_DIR_NAME,
-                "missing",
-            ));
-        }
-        (Some(files), true) => files,
-    };
-    let manifest_name = format!("{TEXT_AUTHORITY_DIR_NAME}/{TEXT_AUTHORITY_MANIFEST_FILE_NAME}");
-    let manifest_commitment = files
-        .iter()
-        .find(|artifact| artifact.name == manifest_name)
-        .ok_or_else(|| {
-            crate::index_store::sidecar_corrupt(generation_dir, &manifest_name, "not committed")
-        })?;
-    if !matches!(usize::try_from(manifest_commitment.bytes), Ok(bytes) if bytes <= MAX_MANIFEST_BYTES)
-    {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            &manifest_name,
-            "text-authority manifest exceeds its format byte limit",
-        ));
-    }
-    let manifest_bytes = read_committed(root, generation_dir, manifest_commitment, budget)?;
-    let manifest = TextAuthorityManifest::decode(&manifest_bytes, generation_dir)?;
-    checkpoint(budget, "lexical:cold-open:text-manifest-decode")?;
-    ensure_text_authority_listing(generation_dir, &manifest, &manifest_name, files)?;
-    ensure_text_authority_directory(root, generation_dir, &dir, files)?;
-    for entry in &manifest.shards {
-        checkpoint(budget, "lexical:cold-open:text-shard")?;
-        let (body, file) =
-            crate::text_authority::load_shard_file_at(root, generation_dir, entry, budget)?;
-        checkpoint(budget, "lexical:cold-open:text-shard")?;
-        visitor.text_authority_shard(
-            crate::text_authority::ProvedTextShard {
-                entry: entry.clone(),
-                file,
+    crate::causal_profile::timed_work("lexical_text_authority", || {
+        checkpoint(budget, "lexical:cold-open:text-authority")?;
+        let dir = text_authority_dir(generation_dir);
+        let observed = super::optional_entry_at(root, Path::new(TEXT_AUTHORITY_DIR_NAME)).map_err(
+            |error| {
+                CoreError::Storage(format!(
+                    "lexical: inspect text authority {}: {error}",
+                    dir.display()
+                ))
             },
-            body,
         )?;
-    }
-    visitor.text_authority_complete(root, generation_dir)
+        let files = match (committed, observed) {
+            (None, false) => return Ok(()),
+            (None, true) => {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    TEXT_AUTHORITY_DIR_NAME,
+                    "present although the seal committed to no text authority",
+                ));
+            }
+            (Some(_), false) => {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    TEXT_AUTHORITY_DIR_NAME,
+                    "missing",
+                ));
+            }
+            (Some(files), true) => files,
+        };
+        let manifest_name =
+            format!("{TEXT_AUTHORITY_DIR_NAME}/{TEXT_AUTHORITY_MANIFEST_FILE_NAME}");
+        let manifest_commitment = files
+            .iter()
+            .find(|artifact| artifact.name == manifest_name)
+            .ok_or_else(|| {
+                crate::index_store::sidecar_corrupt(generation_dir, &manifest_name, "not committed")
+            })?;
+        if !matches!(usize::try_from(manifest_commitment.bytes), Ok(bytes) if bytes <= MAX_MANIFEST_BYTES)
+        {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &manifest_name,
+                "text-authority manifest exceeds its format byte limit",
+            ));
+        }
+        let manifest_bytes = read_committed(root, generation_dir, manifest_commitment, budget)?;
+        let manifest = TextAuthorityManifest::decode(&manifest_bytes, generation_dir)?;
+        checkpoint(budget, "lexical:cold-open:text-manifest-decode")?;
+        ensure_text_authority_listing(generation_dir, &manifest, &manifest_name, files)?;
+        ensure_text_authority_directory(root, generation_dir, &dir, files)?;
+        for entry in &manifest.shards {
+            checkpoint(budget, "lexical:cold-open:text-shard")?;
+            let (body, file) =
+                crate::text_authority::load_shard_file_at(root, generation_dir, entry, budget)?;
+            checkpoint(budget, "lexical:cold-open:text-shard")?;
+            visitor.text_authority_shard(
+                crate::text_authority::ProvedTextShard {
+                    entry: entry.clone(),
+                    file,
+                },
+                body,
+            )?;
+        }
+        visitor.text_authority_complete(root, generation_dir)
+    })
 }
 
 /// The sealed manifest's text-authority section and the text-authority

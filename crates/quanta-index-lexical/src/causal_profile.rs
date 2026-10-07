@@ -31,3 +31,24 @@ pub(crate) fn timed_sync(
     }
     result
 }
+
+/// Trace one ingest/proof span without changing its result.
+#[expect(
+    clippy::print_stderr,
+    reason = "Opt-in ingest diagnosis writes source-bound span markers."
+)]
+pub(crate) fn timed_work<T, E>(
+    label: &'static str,
+    operation: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let started = enabled().then(Instant::now);
+    let result = operation();
+    if let Some(started) = started {
+        eprintln!(
+            "QI_INGEST_TRACE_V1 label={label} ok={} elapsed_ns={}",
+            u8::from(result.is_ok()),
+            started.elapsed().as_nanos()
+        );
+    }
+    result
+}

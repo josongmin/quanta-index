@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +52,7 @@ def resolution(tmp_path):
     manifest = workspace / "crates" / consumer / "Cargo.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(f'[package]\nname = "{consumer}"\nversion = "0.1.0"\n')
+    (workspace / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/quanta-runtime"]\n')
     (workspace / "Cargo.lock").write_text("nested-lock-authority\n")
     (paired / "Cargo.lock").write_text("unrelated-root-lock\n")
     packages.append(
@@ -138,11 +140,31 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         target = quanta / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((repo_root / relative).read_bytes())
+    # This scenario owns binary custody; resolver/selected-run behavior has
+    # independent tests and is stubbed so no QBC lane or Rust build is needed.
+    (quanta / "tools/ci/paired_cargo_resolution.py").write_text(
+        "import argparse, json\n"
+        "p=argparse.ArgumentParser()\n"
+        "p.add_argument('--consumer'); p.add_argument('--quanta-root'); "
+        "p.add_argument('--paired-root'); p.add_argument('--feature'); p.add_argument('--qbc-lane')\n"
+        "a=p.parse_args(); print(json.dumps({'consumer':a.consumer,'feature':a.feature}))\n"
+    )
     target_dir = tmp_path / "target"
     (target_dir / "release").mkdir(parents=True)
     built = target_dir / "release/quanta-index-searchd"
     built.write_bytes(b"#!/bin/sh\nprintf original\n")
     built.chmod(0o700)
+    (quanta / "tools/ci/paired_r5_result.py").write_text(
+        "import argparse, os, pathlib, subprocess\n"
+        "p=argparse.ArgumentParser()\n"
+        "for k in ('quanta-root','semantica-root','evidence-root','qbc-lane','quanta-head',"
+        "'semantica-head','daemon-digest','built-binary','provided-binary','custody-binary',"
+        "'runtime-resolution','kernel-resolution'): p.add_argument('--'+k)\n"
+        "a=p.parse_args(); pinned=pathlib.Path(a.custody_binary)\n"
+        "assert pinned != pathlib.Path(a.built_binary)\n"
+        "assert subprocess.check_output([str(pinned)]) == b'original'\n"
+        f"if {mutate!r}: pathlib.Path({str(built)!r}).write_bytes(b'changed release bytes')\n"
+    )
     (quanta / "scripts/cargow").write_text(
         "#!/bin/sh\nprintf '%s\\n' '" + json.dumps({"target_directory": str(target_dir)}) + "'\n"
     )
@@ -166,7 +188,7 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         "    pinned = pathlib.Path(os.environ['QUANTA_INDEX_SEARCHD_BIN'])\n"
         f"    assert pinned != pathlib.Path({str(built)!r})\n"
         "    assert subprocess.check_output([str(pinned)]) == b'original'\n"
-        f"    if {mutate!r}: pathlib.Path({str(built)!r}).write_bytes(b'changed release bytes')\n"
+        "    pass\n"
     )
     launcher = paired / "scripts/quanta-build-cli"
     launcher.parent.mkdir()
@@ -190,6 +212,7 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
             subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("QUANTA_INDEX_SEARCHD_BIN", str(built))
+    monkeypatch.setenv("QUANTA_P11_R5_QBC_LANE", "registered-resolution")
     completed = subprocess.run(
         ["bash", str(quanta / "scripts/verify-repomap-cross-repo.sh"), str(paired)],
         text=True,
@@ -253,6 +276,150 @@ def test_canonical_symlink_alias_to_expected_checkout_is_accepted(resolution):
     assert MODULE.validate_resolution(
         metadata, quanta_root=quanta, paired_root=paired, consumer=consumer
     )["packages"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "stale",
+        "output-change",
+        "nonzero",
+        "wrong-command",
+        "bad-json",
+        "unregistered",
+        "effective-failure",
+        "raw-unobserved",
+        "raw-failure",
+        "missing-output",
+        "owner-change",
+        "wrong-path",
+        "wrong-nonce",
+        "wrong-cwd",
+    ],
+)
+def test_qbc_resolver_uses_own_stable_auxiliary_stdout_and_refuses_bad_owners(
+    resolution, tmp_path, monkeypatch, failure
+):
+    quanta, paired, consumer, metadata = resolution
+    state = tmp_path / "state"
+    state.mkdir()
+    lane = "registered-resolution"
+    nonce = ""
+    status_calls = 0
+    command = [
+        "cargo",
+        "metadata",
+        "--locked",
+        "--format-version",
+        "1",
+        "--no-default-features",
+        "--manifest-path",
+        f"packages/analysis/quanta-v2/crates/{consumer}/Cargo.toml",
+        "--features",
+        "index-sdk-ingress",
+    ]
+
+    def fake_status(source, requested_lane, environment):
+        nonlocal status_calls
+        status_calls += 1
+        assert source == paired and requested_lane == lane
+        if failure == "unregistered":
+            raise ValueError(f"QBC lane registration missing: {lane}")
+        current = status_calls > 1
+        run_id = "old" if not current or failure == "stale" else "own"
+        if failure == "owner-change" and status_calls == 3:
+            run_id = "other"
+        output_path = (
+            state
+            / "execution-roots/owner-key/lanes/registered-resolution/last-completed-run/stdout.log"
+        )
+        item = {
+            "lane": lane,
+            "lane_key": lane,
+            "execution_root": str(paired),
+            "registered": True,
+            "receipt": {
+                "last_run_id_v1": run_id,
+                "run_state": "finished",
+                "command": command if failure != "wrong-command" else command[:-1],
+                "command_cwd_v1": str(quanta if failure == "wrong-cwd" else paired),
+                "last_exit_code": 125 if failure == "effective-failure" else 0,
+                "command_exit_code_v1": (
+                    None if failure == "raw-unobserved" else 1 if failure == "raw-failure" else 0
+                ),
+                "last_stdout_path_v1": str(quanta if failure == "wrong-path" else output_path),
+            },
+            "meta": {
+                "user_meta": {
+                    "paired_r5_resolution_nonce": "other" if failure == "wrong-nonce" else nonce
+                },
+                "command_context": {"last_run_id_v1": run_id},
+            },
+        }
+        return ({"state_root": str(state), "execution_root_key": "owner-key"}, item)
+
+    def fake_run(argv, **_kwargs):
+        nonlocal nonce
+        assert argv[:4] == [str(paired / "scripts/quanta-build-cli"), "cargo", "--lane", lane]
+        nonce = argv[5].split("=", 1)[1]
+        assert argv[6:] == ["--", *command[1:]]
+        return SimpleNamespace(returncode=1 if failure == "nonzero" else 0, stdout=b"", stderr=b"")
+
+    raw = b"{" if failure == "bad-json" else json.dumps(metadata).encode()
+    reads = 0
+
+    def fake_read(_path):
+        nonlocal reads
+        reads += 1
+        if failure == "missing-output":
+            raise FileNotFoundError("metadata output absent")
+        if failure == "output-change" and reads == 2:
+            return b"changed", (1, 2, 3, 4, 5)
+        return raw, (1, 2, len(raw), 4, 5)
+
+    monkeypatch.setattr(MODULE, "_frozen_head", lambda _root: "f" * 40)
+    monkeypatch.setattr(MODULE, "_status", fake_status)
+    monkeypatch.setattr(MODULE, "_read_bounded_regular", fake_read)
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+
+    def invoke():
+        return MODULE.resolve_from_qbc(
+            quanta_root=quanta,
+            paired_root=paired,
+            consumer=consumer,
+            feature="index-sdk-ingress",
+            lane=lane,
+        )
+
+    if failure in (None, "raw-unobserved"):
+        assert invoke()["consumer"] == consumer
+        assert reads == 2 and status_calls == 3
+    else:
+        with pytest.raises(ValueError):
+            invoke()
+        if failure == "unregistered":
+            assert status_calls == 1
+        if failure == "bad-json":
+            assert reads == 1
+
+
+def test_qbc_auxiliary_output_reader_requires_bounded_regular_single_link(tmp_path, monkeypatch):
+    output = tmp_path / "stdout.log"
+    output.write_bytes(b'{"version":1}')
+    assert MODULE._read_bounded_regular(output)[0] == output.read_bytes()
+    alias = tmp_path / "alias.log"
+    alias.symlink_to(output)
+    with pytest.raises(ValueError, match="alias"):
+        MODULE._read_bounded_regular(alias)
+    hardlink = tmp_path / "hardlink.log"
+    os.link(output, hardlink)
+    with pytest.raises(ValueError, match="regular"):
+        MODULE._read_bounded_regular(output)
+    hardlink.unlink()
+    monkeypatch.setattr(MODULE, "QBC_METADATA_MAX_BYTES", 4)
+    with pytest.raises(ValueError, match="bounded"):
+        MODULE._read_bounded_regular(output)
 
 
 @pytest.mark.parametrize(

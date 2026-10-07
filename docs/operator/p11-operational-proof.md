@@ -63,3 +63,32 @@ across deployment, activation and restore-forward.
 
 The registry is not promoted by passing these owner tests. Actual Linux actions,
 exact-pair acceptance and final aggregate qualification remain separate runs.
+
+## Paired caller and kernel
+
+`just rust-verify-hellgate-cross-repo <Semantica checkout>` uses clean Quanta and
+Semantica checkouts, the actual nested Cargo lock/resolver, a fresh release
+daemon and the two exact caller/kernel tests. Provide
+`QUANTA_INDEX_SEARCHD_BIN` with the matching executable and
+`QUANTA_P11_R5_QBC_LANE` with an explicitly registered lane in that producer
+checkout. If the lane is new, admit it through the producer's
+`scripts/quanta-build-cli lane-token issue --lane <lane> --reason <reason>` and
+pass the returned token through `QUANTA_BUILD_LANE_TOKEN`. Missing registration
+refuses before the expensive daemon build; the recipe does not invent a lane.
+
+The QBC metadata adapter reads the same auxiliary invocation's output using
+its nonce, new run ID, exact command, stable owner status/file identity and
+clean source/manifest/lock checks. This establishes dependency resolution only.
+The recipe prefixes Quanta's Python import path, and its regular `tools`
+package keeps imports within this checkout even when the paired working
+directory contains a different package with the same name.
+Selected Nextest inventory and execution retain QBC's immutable completion
+locator and receipt checks. Effective exit125, source drift, missing completion
+or output replacement cannot be treated as success.
+
+The typed selected-run archive is also used by the default recipe. Set
+`QUANTA_P11_R5_EVIDENCE_ROOT` to a fresh absolute external path to choose its
+location; otherwise the recipe retains it under a new `/private/tmp` directory.
+It remains `runner-candidate-only`, separate from installed Linux transitions
+and the operational registry. A refused producer completion stays refused even
+when both dependency resolutions pass.

@@ -1,4 +1,4 @@
-"""Opt-in, source-bound R5 paired runner archive; no operational qualification."""
+"""Source-bound R5 paired runner archive; no operational qualification."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.ci.nextest_events import parse_nextest_bytes, parse_nextest_inventory_bytes
-from tools.ci.paired_cargo_resolution import validate_resolution
+from tools.ci.paired_cargo_resolution import resolve_from_qbc
 
 SCHEMA = "quanta-paired-r5-runner-candidate/v1"
 # Cargo.toml [[test]] index_sdk_ingress_publish_contract_test required-features.
@@ -94,13 +94,14 @@ def validate_locator(
     command: list[str],
     source_head: str,
     source_digest: str,
+    lane: str = "local",
 ) -> None:
     """Bind QBC's physical immutable receipt to the requested nextest invocation."""
     receipt = capture.receipt_payload_v1()
     expected = {
         "schema_version": "qbc-verification-completion-locator/v1",
         "nonce": nonce,
-        "lane": "local",
+        "lane": lane,
         "run_id": capture.run.run_id,
         "receipt_path": str(capture.run.result_directory / "receipt.json"),
         "receipt_size_bytes": len(capture.receipt_bytes),
@@ -120,7 +121,7 @@ def validate_locator(
     if (
         _canonical(locator) != _canonical(expected)
         or capture.run.command != tuple(command)
-        or capture.run.lane != "local"
+        or capture.run.lane != lane
     ):
         raise ValueError("QBC completion locator differs from immutable selected run")
     if (
@@ -188,6 +189,7 @@ def _one(
     completion: Any,
     qbc_owner: Any,
     binary_custody: list[str],
+    qbc_lane: str,
 ) -> dict[str, Any]:
     label, package, feature, binary, kind, test = case
     common = [
@@ -216,7 +218,7 @@ def _one(
             str(semantica / "scripts/quanta-build-cli"),
             "nextest",
             "--lane",
-            "local",
+            qbc_lane,
             "--",
             *cargo[2:],
         ]
@@ -267,7 +269,7 @@ def _one(
             raise ValueError("QBC completion locator has no absolute receipt path")
         capture = completed.read_completed_run_receipt_at_path_v1(Path(receipt_path))
         if (
-            capture.run.lane != "local"
+            capture.run.lane != qbc_lane
             or capture.run.execution_root != semantica
             or capture.run.command_cwd != semantica
         ):
@@ -285,6 +287,7 @@ def _one(
             command=cargo,
             source_head=source_head,
             source_digest=observed_source,
+            lane=qbc_lane,
         )
         captures[phase] = capture
         archives[phase] = {
@@ -363,28 +366,11 @@ def _require_exact_resolution(actual: dict[str, Any], expected: dict[str, Any], 
         raise ValueError(f"{label} resolver identity changed during runner proof")
 
 
-def _resolved_after(root: Path, semantica: Path, consumer: str, feature: str) -> dict[str, Any]:
-    command = [
-        str(semantica / "scripts/quanta-build-cli"),
-        "cargo",
-        "--lane",
-        "local",
-        "--",
-        "metadata",
-        "--locked",
-        "--format-version",
-        "1",
-        "--no-default-features",
-        "--manifest-path",
-        f"packages/analysis/quanta-v2/crates/{consumer}/Cargo.toml",
-        "--features",
-        feature,
-    ]
-    environment = os.environ.copy()
-    environment["CODEGRAPH_PERSONA"] = "agent"
-    raw = subprocess.check_output(command, cwd=semantica, env=environment)
-    return validate_resolution(
-        json.loads(raw), quanta_root=root, paired_root=semantica, consumer=consumer
+def _resolved_after(
+    root: Path, semantica: Path, consumer: str, feature: str, lane: str
+) -> dict[str, Any]:
+    return resolve_from_qbc(
+        quanta_root=root, paired_root=semantica, consumer=consumer, feature=feature, lane=lane
     )
 
 
@@ -401,6 +387,7 @@ def main() -> int:
     parser.add_argument("--custody-binary", required=True, type=Path)
     parser.add_argument("--runtime-resolution", required=True)
     parser.add_argument("--kernel-resolution", required=True)
+    parser.add_argument("--qbc-lane", required=True)
     args = parser.parse_args()
     root = args.quanta_root.resolve(strict=True)
     semantica = args.semantica_root.resolve(strict=True)
@@ -423,13 +410,17 @@ def main() -> int:
     # The post-run repetition below rejects source or lock drift during proof.
     _verify_resolution_files(root, semantica, resolutions)
     _require_exact_resolution(
-        _resolved_after(root, semantica, "quanta-runtime", CALLER_FEATURES),
+        _resolved_after(root, semantica, "quanta-runtime", CALLER_FEATURES, args.qbc_lane),
         resolutions["runtime"],
         "caller",
     )
     _require_exact_resolution(
         _resolved_after(
-            root, semantica, "quanta-runtime-retrieval-kernel", "index-sdk-ingress-surface"
+            root,
+            semantica,
+            "quanta-runtime-retrieval-kernel",
+            "index-sdk-ingress-surface",
+            args.qbc_lane,
         ),
         resolutions["kernel"],
         "kernel",
@@ -459,6 +450,7 @@ def main() -> int:
             completion,
             qbc_owner,
             binary_custody,
+            args.qbc_lane,
         )
         for case in CASES
     ]
@@ -467,13 +459,17 @@ def main() -> int:
     subprocess.run(binary_custody, check=True)
     _verify_resolution_files(root, semantica, resolutions)
     _require_exact_resolution(
-        _resolved_after(root, semantica, "quanta-runtime", CALLER_FEATURES),
+        _resolved_after(root, semantica, "quanta-runtime", CALLER_FEATURES, args.qbc_lane),
         resolutions["runtime"],
         "caller",
     )
     _require_exact_resolution(
         _resolved_after(
-            root, semantica, "quanta-runtime-retrieval-kernel", "index-sdk-ingress-surface"
+            root,
+            semantica,
+            "quanta-runtime-retrieval-kernel",
+            "index-sdk-ingress-surface",
+            args.qbc_lane,
         ),
         resolutions["kernel"],
         "kernel",

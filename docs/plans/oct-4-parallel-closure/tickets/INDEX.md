@@ -69,7 +69,7 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 | 잔여 | 현재 입력·실행 상태 | 다음 조치 |
 | --- | --- | --- |
 | E1 judgments/admission/holdout | `BLOCKED`: 151tasks/742pairs의 reviewer 배정·최종 판단0; 새 holdout license/gold/acceptance 부재. Retained Ready9 AI license custody는 완료 | 실제 독립 reviewer/adjudicator raw·해당 승인 입력을 받은 뒤 finalizer/admission/scoring. Blank form을 labels로 채우지 않음 |
-| E2 other required native lanes | `NOT_RUN`: Ready9 완료와 다른 selector/input inventory | 기존 issued spec·source·raw별 reuse 또는 실행. Ready9 9repo를 재캡처하지 않음 |
+| E2 other required native lanes | Gin v3 symbol/file·7개 default robust cohort는 `VERIFIED`; retained B09 diagnostic33은 대조 완료, current phase33은 `FAILED`; 나머지 selected inventory는 별도 | [실행 범위](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-gin-declaration-and-robustness-execution) 및 [원 B09/current replay](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#retained-b09-scope-reconciliation)를 유지. 원본 bytes/source와 미실행 selector를 분리 |
 | E2 Semble A/B adoption | `NOT_RUN`: Bat A/A 반복·Zustand0/1 selected parity 완료 | 대체 구현/모드와 사전 whole-caller 기준·고정 source 입력을 선택한 뒤 실제 A/B |
 | E4 formal performance | `BLOCKED`: qualified Linux/host timeline·사전 효과/불확실성 기준 부재 | 대상 host·config·동일 boundary와 사전 paired schedule 입력 |
 | E4 Scanner closed/historical replay | `BLOCKED`: 옛 root/binary 및 기존 두 closed custody receipts 부재 | 원본 bytes 복구 또는 별도 새 source의 실제 closed capture. 기존 관측 결과는 ADR에 보존 |
@@ -180,7 +180,9 @@ admission/result, wrong-source/threshold/grade/family/unit/runtime/proof/license
 ### O4-E1-04
 
 `NOT_RUN` · 다른 supported declaration-name/span·typo cells와 후속 source 영향 평가.
-Gin exact1,196의 historical diagnostic을 제품 비교/최신 main/holdout으로 승격하지 않는다.
+Gin 4개 name-span controls와 canonical v3 symbol1,196·default file1,196의
+실제 native 진단은 [ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-gin-declaration-and-robustness-execution)로 완료 이관했다.
+Driver f606/binaries b9의 scope를 후속 main·holdout으로 승격하지 않는다.
 Independent source oracle·native selected unit으로 same-line/receiver/use-only/Unicode/case를 대조한다.
 완료: supported/unsupported 분모·source-attested 선언 identity/name bytes/span. File hit는 name recovery가 아니다.
 
@@ -223,6 +225,9 @@ loaded-reader witness/consumer를 구현·검증한다. Disk/API/readonly seal·
 
 Ready99repo의 terminal inventory는 완료됐다. 잔여는 다른 required inventory의
 executed/reused/unsupported/failed/blocked/not_run 설명 및 ready drain이다.
+Gin v3 native 및7개 default cohort의 실행/독립 replay는 완료됐다.
+B09 원33cells/11,272selected rows의 original commitments 및 diagnostics는 대조 완료다.
+Current phase replay33은 producer 증거 부재로 `FAILED`이며 원 완료와 분리한다.
 원 source와 qrel-only reuse를 구분한다. 살아 있는 process/malformed/wrong-repo terminal/
 missing/output 경합은 success가 아니다. 완료: 누락 없는 terminal/input-byte inventory와 실패 sibling에 독립적인 실행.
 
@@ -231,8 +236,13 @@ missing/output 경합은 success가 아니다. 완료: 누락 없는 terminal/in
 Ready9 capture/replay/projection과 원 source별 완료는
 [ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope)가 소유한다.
 실제151tasks/742pairs 판단·admission 잔여는 [E1-02](#o4-e1-02)/[E1-03](#o4-e1-03)에만 둔다.
-다른 required native lanes는 exact1,196; prefix/infix/components; default/explicit typo;
-no-answer; C3 NL240; Gin20; ARB original17/88·adapted88; B09 OSA/CLARC/CSN이다.
+Gin v3 exact symbol/file1,196 및 prefix/infix/components/default typo/declaration absence/
+content absence/typo content absence7개 cohort는
+[ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-gin-declaration-and-robustness-execution)로 완료 이관했다.
+잔여 selected lanes는 explicit typo/독립 OSA1 absence; C3 NL240; Gin20;
+ARB original17/88·adapted88 및 후속 source/producer 조건을 요구하는 B09 cells다.
+원 B09 OSA/CLARC/CSN 캡처33개를 전부 미실행으로 재표기하지 않는다.
+현재 decoder의 phase refusal은 [원 scope 대조](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#retained-b09-scope-reconciliation)를 따른다.
 Four typo populations1,192/1,178/1,192/1,192와 ARB original/adapted 분모를 합산하지 않는다.
 [E2-03](#o4-e2-03)이 required outcomes·original raw/input/source/unit/clock replay를 한 번만 소유한다.
 
@@ -265,6 +275,12 @@ Contract: [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-b
 
 `NOT_RUN` · matching release의 full/delta/delete/no-op/reopen 전체 비용 qualification.
 Native segment 재사용·live-BM25·F15 changed-bucket publication은 구현됐다.
+같은 timed seal 응답의 request/source/receipt에 결속한 단계 관측 보존·검증도
+[cost ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#per-seal-ingest-observation)에 반영했다.
+Pre-intent/base proof·lexical proof·semantic commitment·source finalization의
+opt-in stderr trace도 전체 묶음으로 반영했다. 중첩 span은 exclusive 합산 비용이 아니다.
+Scale owner 회귀 44/44와 영향4package strict Clippy는 `VERIFIED`.
+새 matching-release XL 단계 attribution은 진행 중이다. 이를 지연 개선으로 발행하지 않는다.
 Remaining: cold 전수 검증·metadata/custody 읽기·hash/fold, delete-mask O(max_doc), correction/
 NoMerge segment fanout, transient peak 및 foreground/maintenance CPU/read/write/fsync 분해.
 Causal producer의 source/binary와 independent markers를 결속한다. Seal retention gauge는 unique-inode
@@ -356,10 +372,28 @@ compiler/focused/local/full/release를 구분하고 과거 결과를 최신 sour
 실제 Linux host/config/state/retention/rollback 입력은 `BLOCKED`이며 dependent action은 미실행이다.
 공통 typed producer/parser/checker/recipes는 완료됐다.
 별도 exact-pair caller/kernel build/test/daemon custody는 `NOT_RUN`; runner-candidate-only는 operational receipt가 아니다.
-2026-10-08 확인한 Semantica `d74365f505dc63c80c475b6a7ade14ff69f410d3`는1,251dirty paths로
-현재 clean pair 입력이 `BLOCKED`다. 외부 작업을 reset/stage하거나 dirty pair를 qualified로 발행하지 않는다.
+2026-10-08 최초 Semantica 확인 시 `77bc829ad70bd32b9c22f92c849a9d6a2aa6b9da`에서
+1,286dirty paths를 확인했다. R5 입력으로 고정한 같은 HEAD의 clean
+`.codex-semantica-oct8-scc-proof` checkout도 존재한다. 이후 움직이는 Semantica main과
+이 exact-pair 입력을 동일 source로 취급하지 않는다.
+실제 Cargo runtime/kernel resolver는 이 Quanta checkout의 contract/IPC/SDK로 해석됐다.
+QBC metadata exit0의 child stdout은 owner 로그에 보존되지만 터미널 stdout은 비어 있어
+기존 Quanta pipe/check_output 연동은 `FAILED`다. 같은 invocation의 nonce/run/status/원본 bytes를
+확인하는 metadata adapter와 default typed Nextest archive로 caller 연결부를 수리했다.
+추가 foreign-cwd 회귀에서 실제 Python namespace 충돌을 발견해 Quanta `tools`
+package 소유권을 명시했다. 수정 후 출력 bridge·locator·foreign-cwd 회귀 60/60은
+`VERIFIED`; clean-source actual preflight는 별도 실행한다.
+QBC metadata completion probe는 별도로 `verification source changed during QBC execution`로
+`FAILED`다. 원인은 미확정이며 실제 Nextest 실행 실패로 재표기하지 않는다.
+Current paired caller/kernel build/test는 `NOT_RUN`이며 clean Quanta source 준비 후 실행한다.
+Resolution preflight로 이 테스트를 대체하지 않는다.
+외부 작업을 reset/stage하거나 dirty pair를 qualified로 발행하지 않는다.
 외부 Semantica R3 expected semantic partition/omission 검증은 producer owner의 별도 연동 잔여다.
 기존 producer의 prior-state binding·plan assembly와 독립 expected-partition 검증을 구분한다.
+고정77bc source의 `load_prior_shadow_semantic_state_v1`는 이전 lexical batch가 delta이면
+누적 semantic 상태의 복원을 거부한다. 연속 G1→G2→G3 semantic 발행 수용은 `NOT_RUN`이며,
+producer의 누적 상태·digest·event lineage 수리가 별도 필요하다. Source 거부 경로 확인을
+실행 재현으로 발행하거나 Quanta full rebuild로 우회하지 않는다.
 Target/Linux 입력 부족이 upstream 검증 코드 구현의 선행은 아니다.
 [Installed/pair/action ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance)와
 [release/proof](#release-and-proof)가 P00–P12/provider/installed/state/pair/operations의

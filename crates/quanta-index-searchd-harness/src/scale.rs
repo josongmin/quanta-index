@@ -46,8 +46,8 @@ use nix::sys::resource::{UsageWho, getrusage};
 use nix::sys::statvfs::statvfs;
 use nix::sys::time::TimeValLike as _;
 use quanta_index_contract::{
-    LexicalCandidate, ManifestGeneration, MetricsSnapshotV1, QueryConstraintSetV1,
-    TextQueryRequest, TextQuerySyntax,
+    IngestObservationStatus, LexicalCandidate, ManifestGeneration, MetricsSnapshotV1,
+    QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1};
 use quanta_index_ipc::ServerAdmissionPolicy;
@@ -63,7 +63,10 @@ use crate::artifact::{
     config_digest, corpus_digest, corpus_digest_refs, directory_bytes, model_revision_of,
     saturating_u64,
 };
-use crate::harness::{E2eRuntime, E2eTextChunkSpec, HARNESS_HISTORY_MAX_REVISION_PAIRS};
+use crate::harness::{
+    E2eRuntime, E2eTextChunkSpec, HARNESS_HISTORY_MAX_REVISION_PAIRS,
+    ObservedSearchCorpusPublication,
+};
 
 /// The artifact dimension this rail writes.
 pub const DIMENSION: &str = "scale";
@@ -1018,6 +1021,9 @@ pub struct TierMeasurement {
     /// Admission source reads and durable-root replay reads are logical work;
     /// hashing and inheritance counters cover manifest commitments separately.
     pub seal_work_by_seal: BTreeMap<&'static str, BTreeMap<&'static str, u64>>,
+    /// Identity-bound observations returned by the same timed seal calls.
+    /// These are transient measurements, not durable publication authority.
+    pub(crate) ingest_observations_by_seal: BTreeMap<&'static str, ScaleIngestObservation>,
     /// Registry accounting charge after the first query, separate from RSS.
     pub lexical_registry_resident_bytes: u64,
     /// The lexical open port's accounting estimate, even when uncached.
@@ -1030,6 +1036,184 @@ pub struct TierMeasurement {
     /// Separate from the process high-water RSS in `BenchArtifactV1`.
     pub phase_resources: BTreeMap<&'static str, PhaseResourceV1>,
     pub delete_reopen: Option<DeleteReopenMeasurementV1>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ScaleIngestObservation {
+    wall_ns: u64,
+    publication: ObservedSearchCorpusPublication,
+}
+
+type ObservedSealPhase<T> = (
+    T,
+    BTreeMap<&'static str, PhaseResourceV1>,
+    ScaleIngestObservation,
+);
+
+impl ScaleIngestObservation {
+    fn wall_ms(&self) -> f64 {
+        Duration::from_nanos(self.wall_ns).as_secs_f64() * 1000.0
+    }
+
+    /// Sum only the three sequential owner clocks. Their child clocks overlap
+    /// their parents; none of the clocks measures the separate activation.
+    fn observed_stage_ns(&self) -> AnyResult<u64> {
+        let publication = &self.publication;
+        let outcome = &publication.outcome;
+        let observation = outcome
+            .observation
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("scale: seal returned no ingest observation"))?;
+        observation
+            .validate_identity(
+                publication.request_id,
+                &publication.requested,
+                true,
+                &outcome.publication,
+                &outcome.receipt,
+            )
+            .map_err(anyhow::Error::msg)?;
+        if observation.status != IngestObservationStatus::Executed {
+            anyhow::bail!("scale: timed seal requires an executed ingest observation");
+        }
+        let semantic = observation
+            .semantic
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("scale: missing semantic owner clock"))?;
+        let lexical = observation
+            .lexical_build_ns
+            .ok_or_else(|| anyhow::anyhow!("scale: missing lexical owner clock"))?;
+        let finalize = observation
+            .finalize_ns
+            .ok_or_else(|| anyhow::anyhow!("scale: missing finalize clock"))?;
+        if observation.lexical_stages.is_none() {
+            anyhow::bail!("scale: missing lexical stage clocks");
+        }
+        let total = semantic
+            .durations
+            .total
+            .checked_add(lexical)
+            .and_then(|total| total.checked_add(finalize))
+            .ok_or_else(|| anyhow::anyhow!("scale: ingest owner clock sum overflow"))?;
+        if total > self.wall_ns {
+            anyhow::bail!("scale: ingest owner clocks exceed containing operation");
+        }
+        Ok(total)
+    }
+
+    fn to_json(&self) -> AnyResult<Value> {
+        let observed_stage_ns = self.observed_stage_ns()?;
+        let unattributed_ns = self
+            .wall_ns
+            .checked_sub(observed_stage_ns)
+            .ok_or_else(|| anyhow::anyhow!("scale: invalid ingest residual"))?;
+        Ok(json!({
+            "wall_ns": self.wall_ns,
+            "observed_stage_ns": observed_stage_ns,
+            "unattributed_ns": unattributed_ns,
+            "request_id": self.publication.request_id,
+            "requested": self.publication.requested,
+            "outcome": self.publication.outcome,
+        }))
+    }
+}
+
+/// Stop the operation clock immediately after the original seal finishes.
+/// Validation and projection of its observation occur outside that clock.
+fn measure_observed_seal(
+    rt: &mut E2eRuntime,
+    started: Instant,
+    stage: &'static str,
+) -> AnyResult<ScaleIngestObservation> {
+    let repo = rt.repo();
+    let revision = rt.revision();
+    let expected_generation = rt.current_generation();
+    let (generation, publication) = rt
+        .seal_observed()
+        .map_err(|error| ScaleStageError::operation(stage, &error))?;
+    let wall_ns = u64::try_from(started.elapsed().as_nanos())
+        .map_err(|error| stage_or_preserve(stage, error))?;
+    if generation != expected_generation
+        || publication.requested.target.repo_id != repo
+        || publication.requested.target.revision_id != revision
+        || publication.requested.target.manifest_generation != expected_generation
+    {
+        anyhow::bail!("scale: seal observation names another requested generation");
+    }
+    let observed = ScaleIngestObservation {
+        wall_ns,
+        publication,
+    };
+    let _total = observed
+        .observed_stage_ns()
+        .map_err(|error| stage_or_preserve(stage, error))?;
+    Ok(observed)
+}
+
+fn validate_ingest_observations(measurement: &TierMeasurement) -> AnyResult<()> {
+    let seals: &[&str] = if measurement.tier == ScaleTier::Small {
+        &["full", "delta", "noop"]
+    } else {
+        &["full", "delta", "noop", "delete"]
+    };
+    if measurement
+        .ingest_observations_by_seal
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        != seals.iter().copied().collect::<BTreeSet<_>>()
+    {
+        anyhow::bail!("scale: missing or unexpected ingest observation for seal phases");
+    }
+    let mut previous: Option<&ObservedSearchCorpusPublication> = None;
+    for &seal in seals {
+        let observed = measurement
+            .ingest_observations_by_seal
+            .get(seal)
+            .ok_or_else(|| anyhow::anyhow!("scale: missing {seal} ingest observation"))?;
+        let _total = observed.observed_stage_ns()?;
+        let expected_ms = match seal {
+            "full" if measurement.tier == ScaleTier::Small => measurement.build_ms,
+            "full" => measurement.full_seal_ms.ok_or_else(|| {
+                anyhow::anyhow!("scale: scoped full observation has no seal clock")
+            })?,
+            "delta" => measurement.delta.update_ms,
+            "noop" => measurement.noop.seal_ms,
+            "delete" => {
+                measurement
+                    .delete_reopen
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("scale: delete observation has no operation clock")
+                    })?
+                    .delete_seal
+            }
+            _ => anyhow::bail!("scale: unknown seal phase {seal}"),
+        };
+        if observed.wall_ms().to_bits() != expected_ms.to_bits() {
+            anyhow::bail!("scale: {seal} ingest observation differs from its operation clock");
+        }
+        let current = &observed.publication;
+        if let Some(previous) = previous
+            && (current.request_id <= previous.request_id
+                || current.requested.target.repo_id != previous.requested.target.repo_id
+                || current.requested.target.revision_id != previous.requested.target.revision_id
+                || previous
+                    .requested
+                    .target
+                    .manifest_generation
+                    .get()
+                    .checked_add(1)
+                    != Some(current.requested.target.manifest_generation.get())
+                || current.requested.batch_digest == previous.requested.batch_digest
+                || current.requested.event.stream_id != previous.requested.event.stream_id
+                || current.requested.event.expected_base_event_id.as_ref()
+                    != Some(&previous.requested.event.event_id))
+        {
+            anyhow::bail!("scale: {seal} ingest observation is stale or breaks source lineage");
+        }
+        previous = Some(current);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2132,6 +2316,7 @@ struct ScopedDeleteObservation {
     phase_resources: BTreeMap<&'static str, PhaseResourceV1>,
     retained_index_bytes: u64,
     seal_work: BTreeMap<&'static str, u64>,
+    ingest_observation: ScaleIngestObservation,
 }
 
 fn measure_scoped_delete_reopen(
@@ -2151,16 +2336,14 @@ fn measure_scoped_delete_reopen(
     require_single_source_file(&retained_before, "repo1", &file.repo_relative_path)?;
 
     let before_seal = seal_work_snapshot(&rt.metrics_snapshot()?)?;
-    let (delete_seal_ms, delete_resource) =
+    let (ingest_observation, delete_resource) =
         observe_phase_at_root("delete_seal", Some(&disk_root), || {
             let delete_started = Instant::now();
             rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
                 .map_err(|error| ScaleStageError::operation("delete", &error))?;
-            let _generation = rt
-                .seal()
-                .map_err(|error| ScaleStageError::operation("delete_seal", &error))?;
-            Ok(elapsed_ms(delete_started))
+            measure_observed_seal(rt, delete_started, "delete_seal")
         })?;
+    let delete_seal_ms = ingest_observation.wall_ms();
     let (delete_activation_ms, activation_resource) =
         observe_phase_at_root("delete_activate", Some(&disk_root), || {
             let activation_started = Instant::now();
@@ -2213,6 +2396,7 @@ fn measure_scoped_delete_reopen(
         phase_resources,
         retained_index_bytes: delete_retained,
         seal_work: delete_work,
+        ingest_observation,
     })
 }
 
@@ -2375,7 +2559,7 @@ fn retained_index_bytes_from_snapshot(snapshot: &MetricsSnapshotV1) -> AnyResult
 fn measure_delta(
     rt: &mut E2eRuntime,
     seed: u64,
-) -> AnyResult<(DeltaMeasurementV1, BTreeMap<&'static str, PhaseResourceV1>)> {
+) -> AnyResult<ObservedSealPhase<DeltaMeasurementV1>> {
     let disk_root = rt.state_root().to_path_buf();
     let corpus = generate_corpus(ScaleTier::Small, seed);
     let Some((path, original)) = corpus.first() else {
@@ -2385,15 +2569,13 @@ fn measure_delta(
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let serving_owner = rt.repo();
-    let (update_ms, update_resource) =
+    let (ingest_observation, update_resource) =
         observe_phase_at_root("delta_ingest_seal", Some(&disk_root), || {
             let update_started = Instant::now();
             rt.ingest_text(serving_owner.as_str(), path, &changed)?;
-            let _generation = rt
-                .seal()
-                .map_err(|error| ScaleStageError::operation("delta_seal", &error))?;
-            Ok(elapsed_ms(update_started))
+            measure_observed_seal(rt, update_started, "delta_seal")
         })?;
+    let update_ms = ingest_observation.wall_ms();
     let after_build = directory_bytes(rt.state_root())?;
     let (activation_with_reclaim_ms, activation_resource) =
         observe_phase_at_root("delta_activate", Some(&disk_root), || {
@@ -2415,24 +2597,17 @@ fn measure_delta(
             reclaimed_bytes: after_build.saturating_sub(after_activation),
         },
         phase_resources,
+        ingest_observation,
     ))
 }
 
-fn measure_noop(
-    rt: &mut E2eRuntime,
-) -> AnyResult<(NoOpMeasurementV1, BTreeMap<&'static str, PhaseResourceV1>)> {
+fn measure_noop(rt: &mut E2eRuntime) -> AnyResult<ObservedSealPhase<NoOpMeasurementV1>> {
     let disk_root = rt.state_root().to_path_buf();
-    let expected_generation = rt.current_generation();
-    let (seal_ms, seal_resource) = observe_phase_at_root("noop_seal", Some(&disk_root), || {
-        let started = Instant::now();
-        let sealed = rt
-            .seal()
-            .map_err(|error| ScaleStageError::operation("noop_seal", &error))?;
-        if sealed != expected_generation {
-            anyhow::bail!("scale: no-op seal published the wrong generation");
-        }
-        Ok(elapsed_ms(started))
-    })?;
+    let (ingest_observation, seal_resource) =
+        observe_phase_at_root("noop_seal", Some(&disk_root), || {
+            measure_observed_seal(rt, Instant::now(), "noop_seal")
+        })?;
+    let seal_ms = ingest_observation.wall_ms();
     let (activation_ms, activation_resource) =
         observe_phase_at_root("noop_activate", Some(&disk_root), || {
             let started = Instant::now();
@@ -2449,6 +2624,7 @@ fn measure_noop(
             activation_ms,
         },
         phases,
+        ingest_observation,
     ))
 }
 
@@ -2519,18 +2695,16 @@ fn measure_small_tier_with_config(
         let before_build = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?;
         let serving_owner = rt.repo();
-        let (build_ms, build_resource) =
+        let (full_ingest_observation, build_resource) =
             observe_phase_at_root("full_ingest_seal", Some(&disk_root), || {
                 let build_started = Instant::now();
                 for (path, content) in &corpus {
                     rt.ingest_text(serving_owner.as_str(), path, content)
                         .map_err(|error| stage_or_preserve("build_ingest", error))?;
                 }
-                let _generation = rt
-                    .seal()
-                    .map_err(|error| ScaleStageError::operation("build_seal", &error))?;
-                Ok(elapsed_ms(build_started))
+                measure_observed_seal(&mut rt, build_started, "build_seal")
             })?;
+        let build_ms = full_ingest_observation.wall_ms();
         let build_bytes_written = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
@@ -2589,7 +2763,7 @@ fn measure_small_tier_with_config(
         let (adapter, open_resident_estimate) = measure_adapter_phases(&rt, None)
             .map_err(|error| stage_or_preserve("adapter", error))?;
         let before_delta = seal_work_snapshot(&rt.metrics_snapshot()?)?;
-        let (delta, delta_resources) =
+        let (delta, delta_resources, delta_ingest_observation) =
             measure_delta(&mut rt, seed).map_err(|error| stage_or_preserve("delta", error))?;
         let after_delta_seal = rt.metrics_snapshot()?;
         let delta_retained = retained_index_bytes_from_snapshot(&after_delta_seal)
@@ -2603,7 +2777,7 @@ fn measure_small_tier_with_config(
         )
         .map_err(|error| stage_or_preserve("noop_verify", error))?;
         let before_noop_seal = seal_work_snapshot(&rt.metrics_snapshot()?)?;
-        let (noop, noop_resources) =
+        let (noop, noop_resources, noop_ingest_observation) =
             measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
         let after_noop_seal = rt.metrics_snapshot()?;
         let noop_retained = retained_index_bytes_from_snapshot(&after_noop_seal)
@@ -2672,6 +2846,13 @@ fn measure_small_tier_with_config(
             ]
             .into_iter()
             .collect(),
+            ingest_observations_by_seal: [
+                ("full", full_ingest_observation),
+                ("delta", delta_ingest_observation),
+                ("noop", noop_ingest_observation),
+            ]
+            .into_iter()
+            .collect(),
             lexical_registry_resident_bytes: registry_resident,
             lexical_open_resident_estimate_bytes: open_resident_estimate,
             cpu: None,
@@ -2695,13 +2876,13 @@ fn measure_small_tier_with_config(
 fn measure_scoped_delta(
     rt: &mut E2eRuntime,
     file: &ScopedFile,
-) -> AnyResult<(DeltaMeasurementV1, BTreeMap<&'static str, PhaseResourceV1>)> {
+) -> AnyResult<ObservedSealPhase<DeltaMeasurementV1>> {
     let disk_root = rt.state_root().to_path_buf();
     let changed = format!("{}// delta {SCALE_QUERY_TOKEN} touched\n", file.content);
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let serving_owner = rt.repo();
-    let (update_ms, update_resource) =
+    let (ingest_observation, update_resource) =
         observe_phase_at_root("delta_ingest_seal", Some(&disk_root), || {
             let update_started = Instant::now();
             let _ids = rt.ingest_text_chunks(
@@ -2714,11 +2895,9 @@ fn measure_scoped_delta(
                     source_repo_id: Some(&file.source_repo_id),
                 }],
             )?;
-            let _generation = rt
-                .seal()
-                .map_err(|error| ScaleStageError::operation("delta_seal", &error))?;
-            Ok(elapsed_ms(update_started))
+            measure_observed_seal(rt, update_started, "delta_seal")
         })?;
+    let update_ms = ingest_observation.wall_ms();
     let after_build = directory_bytes(rt.state_root())?;
     let (activation_with_reclaim_ms, activation_resource) =
         observe_phase_at_root("delta_activate", Some(&disk_root), || {
@@ -2740,6 +2919,7 @@ fn measure_scoped_delta(
             reclaimed_bytes: after_build.saturating_sub(after_activation),
         },
         phase_resources,
+        ingest_observation,
     ))
 }
 
@@ -2831,14 +3011,12 @@ pub fn measure_tier_with_runtime_config(
         let (ingest_decoded_bytes, ingest_wire_bytes) = rt
             .preview_pending_search_corpus_wire_bytes()
             .map_err(|error| ScaleStageError::wire_admission(&error))?;
-        let (seal_ms, seal_resource) =
+        let (full_ingest_observation, seal_resource) =
             observe_phase_at_root("full_seal", Some(&disk_root), || {
                 let seal_started = Instant::now();
-                let _generation = rt
-                    .seal()
-                    .map_err(|error| ScaleStageError::operation("build_seal", &error))?;
-                Ok(elapsed_ms(seal_started))
+                measure_observed_seal(&mut rt, seal_started, "build_seal")
             })?;
+        let seal_ms = full_ingest_observation.wall_ms();
         let build_ms = ingest_ms + seal_ms;
         let build_bytes_written = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?
@@ -2905,8 +3083,9 @@ pub fn measure_tier_with_runtime_config(
             .first()
             .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
         let before_delta = seal_work_snapshot(&rt.metrics_snapshot()?)?;
-        let (delta, delta_resources) = measure_scoped_delta(&mut rt, delta_file)
-            .map_err(|error| stage_or_preserve("delta", error))?;
+        let (delta, delta_resources, delta_ingest_observation) =
+            measure_scoped_delta(&mut rt, delta_file)
+                .map_err(|error| stage_or_preserve("delta", error))?;
         let after_delta_seal = rt.metrics_snapshot()?;
         let delta_retained = retained_index_bytes_from_snapshot(&after_delta_seal)
             .map_err(|error| stage_or_preserve("retention_delta", error))?;
@@ -2917,7 +3096,7 @@ pub fn measure_tier_with_runtime_config(
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
         let before_noop_seal = seal_work_snapshot(&rt.metrics_snapshot()?)?;
-        let (noop, noop_resources) =
+        let (noop, noop_resources, noop_ingest_observation) =
             measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
         let after_noop_seal = rt.metrics_snapshot()?;
         let noop_retained = retained_index_bytes_from_snapshot(&after_noop_seal)
@@ -2992,6 +3171,14 @@ pub fn measure_tier_with_runtime_config(
                 ("delta", delta_work),
                 ("noop", noop_work),
                 ("delete", delete.seal_work),
+            ]
+            .into_iter()
+            .collect(),
+            ingest_observations_by_seal: [
+                ("full", full_ingest_observation),
+                ("delta", delta_ingest_observation),
+                ("noop", noop_ingest_observation),
+                ("delete", delete.ingest_observation),
             ]
             .into_iter()
             .collect(),
@@ -3262,6 +3449,12 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
             "unavailable_reason": snapshot.unavailable_reason,
         })
     }
+    validate_ingest_observations(measurement)?;
+    let ingest_observations = measurement
+        .ingest_observations_by_seal
+        .iter()
+        .map(|(&seal, observed)| Ok((seal, observed.to_json()?)))
+        .collect::<AnyResult<BTreeMap<_, _>>>()?;
     let phase_resources = measurement
         .phase_resources
         .iter()
@@ -3355,6 +3548,11 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
             "scope": "RUSAGE_SELF whole process from runtime boot through cleanup: harness, in-process daemon, RSS sampler thread, and RSS observer management",
             "user_ms": measurement.cpu.map(|cpu| cpu.user_ms),
             "system_ms": measurement.cpu.map(|cpu| cpu.system_ms),
+        },
+        "ingest_observations": {
+            "method": "identity_bound_same_call_owner_clocks_v1",
+            "scope": "nanoseconds; full wall covers ingest and seal for small, seal only for scoped tiers; delta/delete wall includes staging; semantic total, lexical total and finalize are sequential; child clocks overlap their parents; unattributed includes preflight, validation, transport, locks and harness work; activation is a separate control request; not durable authority",
+            "by_seal": ingest_observations,
         },
         "phase_resources": phase_resources,
         "phase_resources_method": "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, disk sampler and observer probes; RSS and allocated-root maxima are sampled, not true peaks; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
@@ -3830,6 +4028,12 @@ pub fn write_artifacts(
 mod tests {
     //! Generator, artifact and narrow runtime behavior.
     use super::*;
+    use quanta_index_contract::{
+        BatchPublishReceipt, GenerationSnapshot, IngestStageDurations, IngestStageReport,
+        LexicalBuildStageDurationsV1, RepoId, RevisionId, SearchCorpusIngestObservation,
+        SearchCorpusPublishOutcome, SearchPlaneTrackKind, SourcePublicationBinding,
+        SourcePublicationEvent,
+    };
 
     // Result-returning tests retain each independent predicate and report the failed
     // values through the test error, without panicking in a Result function.
@@ -5299,6 +5503,356 @@ mod tests {
         assert_eq!(measured[0]["tier"], "small");
     }
 
+    // The parent clocks are 40 + 100 + 50 = 190 ns. Child clocks are
+    // deliberately nonzero so a double-counting projection fails the oracle.
+    fn sample_ingest_observation(
+        generation: u64,
+        request_id: u64,
+        wall_ns: u64,
+    ) -> AnyResult<ScaleIngestObservation> {
+        let requested = SourcePublicationBinding {
+            event: SourcePublicationEvent {
+                stream_id: "scale-observation-fixture".to_owned(),
+                event_id: format!("event-{generation}"),
+                expected_base_event_id: generation
+                    .checked_sub(1)
+                    .filter(|previous| *previous > 0)
+                    .map(|previous| format!("event-{previous}")),
+                payload_sha256: [7; 32],
+            },
+            target: GenerationSnapshot {
+                repo_id: RepoId::new("scale-observation-repo")?,
+                revision_id: RevisionId::new("scale-observation-revision")?,
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(generation),
+                manifest_digest: format!("lex-seal:{generation}"),
+            },
+            batch_digest: format!("{generation:064x}"),
+        };
+        let receipt = BatchPublishReceipt {
+            sealed: true,
+            durable_sequence: 7,
+            ..BatchPublishReceipt::empty_for(
+                requested.target.manifest_generation,
+                Some(requested.target.manifest_digest.clone()),
+                requested.batch_digest.clone(),
+            )
+        };
+        let observation = SearchCorpusIngestObservation {
+            request_id,
+            repo_id: requested.target.repo_id.clone(),
+            revision_id: requested.target.revision_id.clone(),
+            generation: requested.target.manifest_generation,
+            batch_digest: requested.batch_digest.clone(),
+            status: IngestObservationStatus::Executed,
+            semantic: Some(Box::new(IngestStageReport {
+                owner_scopes: 1,
+                windows: 1,
+                durations: IngestStageDurations {
+                    total: 40,
+                    prepare: 5,
+                    stream: 10,
+                    semantic_append: 4,
+                    membership_append: 3,
+                    seal: Some(20),
+                    embedding: Some(3),
+                    promotion: 5,
+                    ..IngestStageDurations::default()
+                },
+                ..IngestStageReport::default()
+            })),
+            lexical_build_ns: Some(100),
+            lexical_stages: Some(LexicalBuildStageDurationsV1 {
+                preparation_ns: 10,
+                prep_file_authority_preflight_ns: Some(4),
+                prep_coverage_write_ns: Some(3),
+                writer_mutation_ns: 20,
+                text_authority_ns: 15,
+                text_authority_collect_ns: Some(2),
+                text_authority_shard_build_ns: Some(7),
+                text_authority_publish_ns: Some(3),
+                file_authority_ns: 15,
+                file_authority_source_write_ns: Some(5),
+                seal_ns: Some(30),
+                seal_writer_commit_ns: Some(5),
+                seal_merge_wait_ns: Some(5),
+                seal_commitment_ns: Some(15),
+                seal_file_admission_ns: Some(3),
+            }),
+            finalize_ns: Some(50),
+            activation_ns: None,
+        };
+        Ok(ScaleIngestObservation {
+            wall_ns,
+            publication: ObservedSearchCorpusPublication {
+                request_id,
+                requested: requested.clone(),
+                outcome: SearchCorpusPublishOutcome {
+                    publication: requested,
+                    receipt,
+                    observation: Some(observation),
+                },
+            },
+        })
+    }
+
+    #[test]
+    fn ingest_observation_projection_uses_fixed_parent_clock_oracle() -> AnyResult<()> {
+        let value = sample_ingest_observation(1, 11, 200)?.to_json()?;
+        ensure_equal!(value["observed_stage_ns"], 190);
+        ensure_equal!(value["unattributed_ns"], 10);
+        ensure_equal!(value["wall_ns"], 200);
+        ensure_equal!(value["request_id"], 11);
+        ensure_equal!(value["outcome"]["observation"]["lexical_build_ns"], 100);
+        ensure_equal!(
+            value["outcome"]["observation"]["semantic"]["durations"]["seal"],
+            20
+        );
+        ensure_equal!(
+            value["outcome"]["observation"]["activation_ns"],
+            Value::Null
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ingest_observation_refuses_missing_recovery_and_identity_mismatch() -> AnyResult<()> {
+        for mutation in [
+            "missing",
+            "request",
+            "repo",
+            "revision",
+            "generation",
+            "batch",
+            "receipt",
+            "replay",
+            "partial",
+            "finalize_only",
+            "activation",
+            "lexical_stages",
+        ] {
+            let mut observed = sample_ingest_observation(1, 11, 200)?;
+            if mutation == "missing" {
+                observed.publication.outcome.observation = None;
+            } else {
+                let outcome = &mut observed.publication.outcome;
+                let observation = outcome
+                    .observation
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("missing fixed observation"))?;
+                match mutation {
+                    "request" => observation.request_id = 12,
+                    "repo" => observation.repo_id = RepoId::new("another-repo")?,
+                    "revision" => observation.revision_id = RevisionId::new("another-revision")?,
+                    "generation" => observation.generation = ManifestGeneration::new(2),
+                    "batch" => observation.batch_digest = "b".repeat(64),
+                    "receipt" => outcome.receipt.batch_digest = "b".repeat(64),
+                    "activation" => observation.activation_ns = Some(1),
+                    "lexical_stages" => observation.lexical_stages = None,
+                    "partial" => {
+                        observation.status = IngestObservationStatus::PartialRecovery;
+                        observation.semantic = None;
+                    }
+                    "replay" | "finalize_only" => {
+                        observation.semantic = None;
+                        observation.lexical_build_ns = None;
+                        observation.lexical_stages = None;
+                        if mutation == "replay" {
+                            observation.status = IngestObservationStatus::Replayed;
+                            observation.finalize_ns = None;
+                            outcome.receipt = outcome.receipt.clone().replayed();
+                        } else {
+                            observation.status = IngestObservationStatus::FinalizeOnly;
+                        }
+                    }
+                    _ => anyhow::bail!("unknown mutation {mutation}"),
+                }
+            }
+            ensure_predicate!(observed.to_json().is_err(), "accepted mutation {mutation}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ingest_observation_refuses_nested_overflow_and_negative_residual() -> AnyResult<()> {
+        let valid = sample_ingest_observation(1, 11, 200)?;
+        let mut over_wall = valid.clone();
+        over_wall.wall_ns = 189;
+        ensure_predicate!(over_wall.to_json().is_err());
+        let mut overflow = valid.clone();
+        overflow.wall_ns = u64::MAX;
+        overflow
+            .publication
+            .outcome
+            .observation
+            .as_mut()
+            .and_then(|observation| observation.semantic.as_mut())
+            .ok_or_else(|| anyhow::anyhow!("missing semantic fixture"))?
+            .durations
+            .total = u64::MAX;
+        ensure_predicate!(overflow.to_json().is_err());
+        let mut nested = valid;
+        nested
+            .publication
+            .outcome
+            .observation
+            .as_mut()
+            .and_then(|observation| observation.lexical_stages.as_mut())
+            .ok_or_else(|| anyhow::anyhow!("missing lexical fixture"))?
+            .seal_file_admission_ns = Some(16);
+        ensure_predicate!(nested.to_json().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn ingest_observation_artifact_refuses_missing_stale_lineage_and_wrong_wall() -> AnyResult<()> {
+        let valid = sample_measurement();
+        let _detail = detail_json(&valid)?;
+        let mut missing = valid.clone();
+        let _removed = missing.ingest_observations_by_seal.remove("delta");
+        ensure_predicate!(detail_json(&missing).is_err());
+        let mut stale = valid.clone();
+        let mut previous = stale
+            .ingest_observations_by_seal
+            .get("full")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing full fixture"))?;
+        previous.wall_ns = 900_000;
+        let _replaced = stale.ingest_observations_by_seal.insert("delta", previous);
+        ensure_predicate!(detail_json(&stale).is_err());
+        let mut broken_lineage = valid.clone();
+        let publication = &mut broken_lineage
+            .ingest_observations_by_seal
+            .get_mut("delta")
+            .ok_or_else(|| anyhow::anyhow!("missing delta fixture"))?
+            .publication;
+        publication.requested.event.expected_base_event_id = Some("wrong-predecessor".to_owned());
+        publication.outcome.publication = publication.requested.clone();
+        ensure_predicate!(detail_json(&broken_lineage).is_err());
+        let mut wrong_wall = valid;
+        wrong_wall.delta.update_ms = 0.91;
+        ensure_predicate!(detail_json(&wrong_wall).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn real_daemon_seal_observations_follow_full_delta_noop_delete() -> AnyResult<()> {
+        let mut rt = E2eRuntime::boot_with_history_max_generations(2)?;
+        let path = "src/shared.rs";
+        let before = "// cedarremovetarget\n";
+        let unaffected = "// quartzhiddenanchor\n";
+        let chunks0 = [E2eTextChunkSpec {
+            content: before,
+            start_line: 1,
+            end_line: 2,
+            source_repo_id: Some("repo0"),
+        }];
+        let chunks1 = [E2eTextChunkSpec {
+            content: unaffected,
+            start_line: 1,
+            end_line: 2,
+            source_repo_id: Some("repo1"),
+        }];
+        let _ids = rt.ingest_text_files_one_batch(&[(path, &chunks0), (path, &chunks1)])?;
+        let full = measure_observed_seal(&mut rt, Instant::now(), "build_seal")?;
+        ensure_equal!(full.publication.outcome.receipt.accepted_replace_scopes, 2);
+        rt.activate_last_sealed_generation()?;
+        require_single_source_file(
+            &rt.query_text(TextQuerySyntax::Native, "cedarremovetarget", 10),
+            "repo0",
+            path,
+        )?;
+        require_single_source_file(
+            &rt.query_text(TextQuerySyntax::Native, "quartzhiddenanchor", 10),
+            "repo1",
+            path,
+        )?;
+
+        let owner = rt.repo();
+        let delta_started = Instant::now();
+        let _ids = rt.ingest_text_chunks(
+            owner.as_str(),
+            path,
+            &[E2eTextChunkSpec {
+                content: "// violetreplacementtarget\n",
+                start_line: 1,
+                end_line: 2,
+                source_repo_id: Some("repo0"),
+            }],
+        )?;
+        let delta = measure_observed_seal(&mut rt, delta_started, "delta_seal")?;
+        ensure_equal!(delta.publication.outcome.receipt.accepted_replace_scopes, 1);
+        rt.activate_last_sealed_generation()?;
+        require_no_source_file(&rt.query_text(TextQuerySyntax::Native, "cedarremovetarget", 10))?;
+        require_single_source_file(
+            &rt.query_text(TextQuerySyntax::Native, "violetreplacementtarget", 10),
+            "repo0",
+            path,
+        )?;
+        let before_noop = rt.query_text(TextQuerySyntax::Native, "quartzhiddenanchor", 10);
+        require_single_source_file(&before_noop, "repo1", path)?;
+
+        let noop = measure_observed_seal(&mut rt, Instant::now(), "noop_seal")?;
+        ensure_equal!(noop.publication.outcome.receipt.accepted_replace_scopes, 0);
+        ensure_equal!(
+            noop.publication.outcome.receipt.accepted_tombstone_scopes,
+            0
+        );
+        rt.activate_last_sealed_generation()?;
+        let after_noop = rt.query_text(TextQuerySyntax::Native, "quartzhiddenanchor", 10);
+        require_noop_candidate_parity(&before_noop, &after_noop)?;
+
+        let delete_started = Instant::now();
+        rt.delete_chunk_for_source_file("repo0", path)?;
+        let delete = measure_observed_seal(&mut rt, delete_started, "delete_seal")?;
+        ensure_equal!(
+            delete.publication.outcome.receipt.accepted_tombstone_scopes,
+            1
+        );
+        rt.activate_last_sealed_generation()?;
+        require_no_source_file(&rt.query_text(
+            TextQuerySyntax::Native,
+            "violetreplacementtarget",
+            10,
+        ))?;
+        require_single_source_file(
+            &rt.query_text(TextQuerySyntax::Native, "quartzhiddenanchor", 10),
+            "repo1",
+            path,
+        )?;
+
+        let observed = [full, delta, noop, delete];
+        for phase in &observed {
+            let value = phase.to_json()?;
+            ensure_equal!(value["outcome"]["observation"]["status"], "executed");
+            ensure_equal!(
+                value["outcome"]["observation"]["activation_ns"],
+                Value::Null
+            );
+        }
+        for pair in observed.windows(2) {
+            let previous = &pair[0].publication;
+            let current = &pair[1].publication;
+            ensure_predicate!(current.request_id > previous.request_id);
+            ensure_predicate!(current.requested.batch_digest != previous.requested.batch_digest);
+            ensure_equal!(
+                current.requested.event.expected_base_event_id.as_ref(),
+                Some(&previous.requested.event.event_id),
+            );
+            ensure_equal!(
+                previous
+                    .requested
+                    .target
+                    .manifest_generation
+                    .get()
+                    .checked_add(1),
+                Some(current.requested.target.manifest_generation.get()),
+            );
+        }
+        rt.stop()?;
+        Ok(())
+    }
+
     fn sample_measurement() -> TierMeasurement {
         let sample_resource = PhaseResourceV1 {
             cpu: CpuUsageV1 {
@@ -5348,6 +5902,22 @@ mod tests {
                     )
                 })
                 .collect(),
+            ingest_observations_by_seal: [
+                (
+                    "full",
+                    sample_ingest_observation(1, 11, 1_500_000).expect("full fixture"),
+                ),
+                (
+                    "delta",
+                    sample_ingest_observation(2, 22, 900_000).expect("delta fixture"),
+                ),
+                (
+                    "noop",
+                    sample_ingest_observation(3, 33, 200_000).expect("noop fixture"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
             lexical_registry_resident_bytes: 1234,
             lexical_open_resident_estimate_bytes: 4321,
             retained_index_bytes_by_seal: [("full", 4_096), ("delta", 5_120), ("noop", 5_000)]
@@ -5424,6 +5994,12 @@ mod tests {
         let tier = &value["detail"]["measured_tiers"][0];
         for seal in ["full", "delta", "noop"] {
             ensure_equal!(tier["seal_work"]["by_seal"][seal]["lexical_seals_total"], 1);
+            let observed = &tier["ingest_observations"]["by_seal"][seal];
+            ensure_equal!(observed["observed_stage_ns"], 190);
+            ensure_equal!(
+                observed["outcome"]["observation"]["activation_ns"],
+                Value::Null
+            );
         }
         ensure_equal!(tier["lexical_registry_resident_bytes"]["value"], 1234);
         ensure_equal!(tier["lexical_open_resident_estimate_bytes"]["value"], 4321);
