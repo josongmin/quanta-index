@@ -15,6 +15,42 @@ from types import ModuleType
 import pytest
 
 from tools.benchmark.retrieval import arb_official_score as scorer
+from tools.ci.tests.test_retrieval_benchmark import fixture_v3
+
+
+def test_combined_suite_accepts_quanta_projection_and_refuses_digest_or_route_drift(tmp_path):
+    repo, suite, record, *_ = fixture_v3(tmp_path, answerable_only=True)
+    suite["routes"] = sorted(scorer.ROUTES)
+    record["route_provenance"]["semantic"] = {"capture_id": "q0"}
+    record["results"].extend(
+        {**copy.deepcopy(row), "route": "semantic"}
+        for row in list(record["results"])
+        if row["route"] == "hybrid"
+    )
+    _, native_pack, source = scorer.evaluator.validate_suite(repo, suite)
+    record["query_pack_sha256"] = scorer.evaluator.digest(scorer.evaluator.canonical(native_pack))
+    # The independent three-route suite accepts the record before combining it.
+    scorer.evaluator.validate_evidence_against_suite(repo, suite, native_pack, source, record)
+    combined = {**suite, "routes": sorted([*scorer.ROUTES, "semble-hybrid"])}
+    _, combined_pack, source = scorer.evaluator.validate_suite(repo, combined)
+    with pytest.raises(scorer.evaluator.EvidenceError, match="query pack hash mismatch"):
+        scorer.evaluator.validate_evidence_against_suite(
+            repo, combined, combined_pack, source, record
+        )
+    before = copy.deepcopy((combined, combined_pack, record))
+    assert scorer.validate_quanta_record(repo, combined, combined_pack, source, record) == record
+    assert (combined, combined_pack, record) == before
+    wrong_digest = copy.deepcopy(record)
+    wrong_digest["query_pack_sha256"] = scorer.evaluator.digest(
+        scorer.evaluator.canonical(combined_pack)
+    )
+    with pytest.raises(scorer.evaluator.EvidenceError, match="query pack hash mismatch"):
+        scorer.validate_quanta_record(repo, combined, combined_pack, source, wrong_digest)
+    for routes in ({"lexical", "hybrid"}, {*scorer.ROUTES, "semble-hybrid"}):
+        wrong_routes = copy.deepcopy(record)
+        wrong_routes["route_provenance"] = {route: {"capture_id": "q0"} for route in routes}
+        with pytest.raises(scorer.ScoringRefusal, match="route set mismatch"):
+            scorer.validate_quanta_record(repo, combined, combined_pack, source, wrong_routes)
 
 
 def test_official_git_source_guard_rejects_dirty_helper_and_untracked_module(tmp_path):

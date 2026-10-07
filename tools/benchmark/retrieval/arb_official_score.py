@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.benchmark import evidence as benchmark_evidence
-from tools.benchmark.retrieval import arb_corpus_custody, evaluator
+from tools.benchmark.retrieval import arb_corpus_custody, evaluator, run
 
 ROUTES = ("lexical", "semantic", "hybrid")
 BUDGETS = (4000, 8000, 16000, 32000)
@@ -410,6 +410,20 @@ def case_context(case: dict[str, Any], sample: dict[str, Any], index: dict[str, 
     return gold, spec, validated_suite, validated_pack, source, repo
 
 
+def validate_quanta_record(repo, suite, pack, source, record):
+    """Bind a Quanta capture to the canonical projection of the combined inputs."""
+    require(
+        isinstance(record, dict)
+        and isinstance(record.get("route_provenance"), dict)
+        and set(record["route_provenance"]) == set(ROUTES),
+        "record route set mismatch",
+    )
+    projected_pack, projected_suite = run.project_pack_and_suite(pack, suite, list(ROUTES))
+    return evaluator.validate_evidence_against_suite(
+        repo, projected_suite, projected_pack, source, record
+    )
+
+
 def capture_specs(
     preparation_path: Path | None,
     arm_path: Path,
@@ -632,7 +646,7 @@ def score_arm(
                 )
                 continue
             record = payload
-            record = evaluator.validate_evidence_against_suite(repo, suite, pack, source, record)
+            record = validate_quanta_record(repo, suite, pack, source, record)
             bind_record_identity(record, capture_spec, arm)
             results = {result["route"]: result for result in record["results"]}
             require(set(results) == set(ROUTES), "record route set mismatch")
