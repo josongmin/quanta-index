@@ -130,7 +130,7 @@ qualification split:
 
 ## Active work
 
-- [OCT-04 residual work](docs/plans/oct-4-parallel-closure/tickets/INDEX.md): remaining code, conditional decisions, required inputs and execution.
+- [Residual work](docs/plans/oct-4-parallel-closure/tickets/INDEX.md): remaining code, conditional decisions, required inputs and execution.
 - [Execution order](docs/plans/oct-4-parallel-closure/tickets/INDEX.md#실행-순서): dependencies and owner handoffs.
 - [All acceptance owners](docs/README.md#start-here): benchmark, engine, semantic, quality, CI, paired and operational scopes.
 

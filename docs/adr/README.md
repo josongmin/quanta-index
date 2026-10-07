@@ -25,7 +25,12 @@ They preserve existing contracts; conditional optimization, open proposals and
 actual operational targets remain staged. Oct-06/07 completed bounded
 publication, budget, executable-custody, common operational producer and CI
 contracts are consolidated in OCT-05-002/003/004. Current acceptance is owned by
-the [21-scope residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md).
+the [single residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md).
+
+Dated RFC/plan/ticket packets are retired. Their standing corpus/statistics,
+native/update, cost/host, consumer/platform and installed/pair/action acceptance
+is consolidated into OCT-05-001/002/004 and SEP-27-005; unfinished execution
+remains once in the ledger. This consolidation admits no new result or target.
 
 - [Review, admission and result identity](OCT-05-001-review-admission-and-result-identity.md): E1 frozen typed binding, actual judgment, name units and split/gold authority.
 - [Native capture, clock and index scope](OCT-05-002-native-capture-clock-and-index-scope.md): E2 native replay, strict Lucene metadata, disk/reader boundaries and warmup policy.

@@ -482,9 +482,9 @@ rust-bench-dsl-parity:
     python3 tools/benchmark/sourcegraph_parity.py --check --write
 
 # --------------------------------------------------------------------------
-# Search product quality rails (docs/plans/jun-7-search-product-quality).
-# One command proves exactly one quality dimension; see MEASUREMENT_MATRIX.md
-# and COMMAND_AND_ARTIFACT_CONTRACT.md. Blocking unless a recipe says advisory.
+# Search product quality rails. One command proves one quality dimension.
+# See docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md
+# and tools/benchmark/README.md. Blocking unless a recipe says advisory.
 # --------------------------------------------------------------------------
 
 # Relevance ranking rail (J7Q-01A). Blocking dimension: relevance.

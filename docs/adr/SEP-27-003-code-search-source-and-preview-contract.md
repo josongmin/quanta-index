@@ -15,7 +15,7 @@ facts, ambiguous file mutation, incomplete symbol authority, source identity,
 collection interruption, approximate snippet anchors and parser ownership.
 Separate handoffs repeated those decisions alongside changing test counts and
 source snapshots. The decisions belong here; remaining implementation and
-qualification belong in the [active code-search ledger](../plans/sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md).
+qualification belong in the [active code-search ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md#legacy-scope-routes).
 
 ## Decision
 

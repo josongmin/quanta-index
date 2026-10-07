@@ -26,4 +26,4 @@ The linked ADRs own full semantics. This table is the compact implementation ind
 | R-EVAL-01 | Development selects one combination; one independently frozen holdout evaluates it | [SEP-26-003](SEP-26-003-retrieval-evidence-custody-and-qualification.md) | RBR-12 |
 
 Open execution and qualification work is not a decision. It is tracked only in the
-[SEP-27 execution SSOT](../plans/sep-27-misc/tickets/INDEX.md).
+[single residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform).

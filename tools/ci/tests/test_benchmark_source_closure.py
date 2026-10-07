@@ -30,6 +30,7 @@ def test_live_workflow_and_owner_tests_are_bound(profile: str) -> None:
         "tools/ci/tests/test_live_lexical_external.py",
         "tools/ci/tests/test_code_search_workflow.py",
         "tools/ci/tests/test_code_search_matrix.py",
+        "tools/ci/lane-handoff.schema.json",
     } <= paths
 
 
@@ -72,7 +73,6 @@ def test_normative_benchmark_files_are_bound() -> None:
     profile = module.PROFILES[PROFILE]
     paths = set(profile["paths"])
     for required in (
-        "docs/plans/sep-27-misc/tickets",
         "docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md",
         "docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md",
         "docs/adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md",
@@ -190,12 +190,10 @@ def test_local_patch_below_registry_dependency_remains_in_source_closure(tmp_pat
         module._cargo_roots(tmp_path, ("app",))
 
 
-def test_only_consolidated_ticket_contract_is_bound_as_planning_root() -> None:
+def test_execution_ledgers_are_not_normative_source_roots() -> None:
     module = _closure_module()
     roots = module.resolve_roots(REPO_ROOT, PROFILE)
-    assert [root for root in roots if root.startswith("docs/plans/")] == [
-        "docs/plans/sep-27-misc/tickets"
-    ]
+    assert not [root for root in roots if root.startswith("docs/plans/")]
 
 
 def test_every_declared_normative_path_exists() -> None:

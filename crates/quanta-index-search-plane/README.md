@@ -15,4 +15,4 @@ SDK front door for claims about publication, visibility or recovery; unit
 tests of one dispatcher have a narrower scope.
 
 See the [repository verification profiles](../../README.md#build-and-verification)
-and [release evidence contract](../../docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-13-release-evidence-and-sota-qualification.md).
+and [release evidence contract](../../docs/adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance).

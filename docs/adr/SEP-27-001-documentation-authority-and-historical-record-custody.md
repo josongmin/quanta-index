@@ -20,8 +20,7 @@ count, or implementation status can be mistaken for current authority.
 1. Accepted product decisions are owned by `docs/adr/README.md` and its linked
    decision registries.
 2. Current capability and implementation state are established by live source,
-   checked inventories, and the current ticket or residual ledger named by the
-   owning packet.
+   checked inventories, and the single current residual ledger.
 3. Verification follows the repository contract: routine focused edits use
    relevant source inspection and terminal results; formal replay, release and
    qualified benchmarks bind the required exact inputs and evidence. A receipt
@@ -33,9 +32,10 @@ count, or implementation status can be mistaken for current authority.
    the single `docs/ARCHIVE-INDEX.md` identifies the
    pre-deletion revision and recovery command. A deleted record is not a live
    link or a current authority.
-5. A parent packet remains active when any implementation, measurement,
-   qualification, deployment, or activation gate remains open. Historical child
-   records may be archived individually without closing the parent.
+5. An unfinished implementation, measurement, qualification, deployment or
+   activation gate retains its owner in the current residual ledger. A dated
+   parent packet may be retired after this transfer; deleting it does not close
+   its remaining gates.
 6. A historical finding is neither a current defect nor proof of repair. Reopen
    it only after reproducing the reachable condition against current source.
 
@@ -67,8 +67,9 @@ The recovery boundary, successor authorities, and deliberately retained active
 records and completed implementation plans are listed in
 [the recovery index](../ARCHIVE-INDEX.md#historical-record-recovery). The later SEP-26 retrieval
 packet follows the same rule: accepted decisions in SEP-26-001/002/003,
-unfinished execution and inline contracts in the
-[SEP-27 execution SSOT](../plans/sep-27-misc/tickets/INDEX.md), historical detail
+unfinished execution in the
+[single residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md), normative
+contracts in the bound Accepted ADRs, and historical detail
 in Git or the verified external content backup for dirty/untracked preimages.
 
 ## Consequences

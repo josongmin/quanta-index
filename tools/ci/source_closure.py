@@ -39,7 +39,6 @@ PROFILES = {
             "docs/adr/OCT-05-002-native-capture-clock-and-index-scope.md",
             "docs/adr/OCT-05-003-active-query-and-runtime-lifecycle.md",
             "docs/adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md",
-            "docs/plans/sep-27-misc/tickets",
             "scripts/cargow",
             "tools/ci/resource_admission.py",
             "tools/ci/tests/test_resource_admission.py",
@@ -58,6 +57,7 @@ PROFILES = {
             "tools/ci/nextest_events.py",
             "tools/ci/junit_events.py",
             "tools/ci/source_closure.py",
+            "tools/ci/lane-handoff.schema.json",
             "tools/ci/timing/rust_profile_history.py",
             "tools/ci/tests/test_portable_proof.py",
             "tools/ci/tests/test_cargo_preparation.py",
@@ -87,8 +87,8 @@ PROFILES = {
         # Normative benchmark registration/evidence/CLI surface only. Product
         # source is bound separately through the envelope's Git revision and
         # measured binary digests; the retrieval rail keeps its own profile.
-        # The consolidated packet contains normative acceptance contracts.
-        # Bind it; unrelated planning/history remains outside this closure.
+        # Normative acceptance is owned by the bound ADRs.
+        # Execution status, planning and history stay outside this closure.
         "cargo_packages": ("quanta-index-bench-protocol",),
         "paths": (
             ".circleci/config.yml",
@@ -100,7 +100,6 @@ PROFILES = {
             "docs/adr/OCT-05-001-review-admission-and-result-identity.md",
             "docs/adr/OCT-05-002-native-capture-clock-and-index-scope.md",
             "docs/adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md",
-            "docs/plans/sep-27-misc/tickets",
             ".cargo/config.toml",
             "Cargo.lock",
             "Cargo.toml",
@@ -119,6 +118,7 @@ PROFILES = {
             "tools/benchmark/manifest.py",
             "tools/benchmark/evidence.py",
             "tools/ci/lint/handoff_validation.py",
+            "tools/ci/lane-handoff.schema.json",
             "tools/ci/proof_json.py",
             "tools/benchmark/evidence.schema.json",
             "tools/benchmark/evidence_bridge.py",

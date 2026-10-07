@@ -287,8 +287,8 @@ significance or benchmark-wide quality.
 ## Consequences
 
 - The historical RBR packet is recoverable from Git history, not a live status authority.
-- Current decisions live in accepted ADRs; unfinished execution work lives in the SEP-27 execution SSOT; accepted comparison/admission contracts live here.
+- Current decisions live in accepted ADRs; unfinished execution work lives in the single residual ledger; accepted comparison/admission contracts live here.
 - A normative SSOT change requires new source-bound proof before current qualification.
 - Current verification and qualification status is maintained in the
-  [execution SSOT](../plans/sep-27-misc/tickets/INDEX.md),
+  [execution SSOT](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform),
   not in this decision record.

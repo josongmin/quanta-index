@@ -68,7 +68,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, Path]:
         "tools/ci/test-authority.toml",
         "tools/ci/write-error-authority-inventory.py",
         "tools/ci/error-authority-inventory.schema.json",
-        "docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/lane-handoff.schema.json",
+        "tools/ci/lane-handoff.schema.json",
     ):
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)

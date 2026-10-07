@@ -2,65 +2,48 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
-Completed decisions live in [ADRs](adr/README.md); unfinished acceptance lives in
-[the active ledger](plans/oct-4-parallel-closure/tickets/INDEX.md) and its scoped owners.
-Historical commands, counts, receipts and failure sequences do not qualify newer source.
+Accepted contracts live in [ADRs](adr/README.md); unfinished work lives once in
+[the residual ledger](plans/oct-4-parallel-closure/tickets/INDEX.md).
+Historical commands, counts and receipts do not qualify newer source.
 
 ## Historical record recovery
 
-Pre-consolidation Git revision: `6a3f6afc8c286176962e722ce75524aefcfa7607`.
-Recover a tracked body with `git show 6a3f6afc:<repository-relative-path>`.
-The earlier recovery indexes are themselves retained in Git:
+The final dated RFC/plan/ticket retirement on 2026-10-07 uses pre-deletion revision
+`4f07c3c5ac57f161aa6870a5cc661b0038932993`. It removes 39 Markdown files under
+`docs/plans/` plus the redundant `tickets/README.md`; the current residual ledger
+is retained. The executable handoff schema moves unchanged to
+`tools/ci/lane-handoff.schema.json`.
+
+Recover an original body into a separate directory:
 
 ```sh
-git show 6a3f6afc:docs/ARCHIVE-INDEX.md
-git show 6a3f6afc:docs/plans/ARCHIVE-INDEX.md
+git show 4f07c3c5:<repository-relative-path>
+git ls-tree -r --name-only 4f07c3c5 docs/plans tickets
 ```
 
-These contain the prior exact revisions, removed-path sets, successor ADRs and
-external backup identities for May–Oct-05 records. In particular, dirty/untracked
-SEP-27 preimages need their named external content backup; Git does not recover
-bytes that were never committed. Restore into a separate directory.
-
-The follow-up Oct-07 cleanup uses pre-edit revision `a5e87614bee79bf9d67c8358df01313242548798`
-for the former OCT-04 completed-status detail and B07 execution chronology.
-Recover those committed bodies with `git show a5e87614:<repository-relative-path>`.
-Their accepted contracts and completed checkpoints now live in the ADRs below.
-
-The Oct-07 pre-edit content, including concurrent dirty benchmark/CI updates,
-is saved outside the checkout at `/tmp/qi-oct7-doc-consolidation-xz1fej2f/before`;
-`manifest.json` identifies each SHA-256. This temporary backup is not durable Git
-history. The archived baseline below is the recovery source for committed bodies.
-
-| Retired or compacted record | Current authority |
+| Retired packet | Current contract / remaining owner |
 | --- | --- |
-| `docs/plans/oct-4-parallel-closure/WAVES.md` | [One execution order](plans/oct-4-parallel-closure/tickets/INDEX.md#실행-순서); latest input/ownership updates retained there |
-| OCT-04 `tickets/INDEX.md` completed checkpoints, sidebar history and duplicate status | [OCT-05 ADRs](adr/README.md#oct-05-implemented-contracts); unfinished acceptance remains in the ledger and completed anchors point to ADRs |
-| O4-E3-01–06 | [Runtime contract and completed scope disposition](adr/OCT-05-003-active-query-and-runtime-lifecycle.md#completed-execution-scopes); E3-02 was unadopted/NOT_APPLICABLE |
-| O4-E2-01 | [Completed-clock contract](adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-clock-scope); repeated performance remains E4-06 |
-| O4-I0-01 | [Shared-source validation](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#shared-source-validation); source validation remains a standing rule |
-| O4-E2-04 completed capacity RCA and source-bound checks | [Paged term directory](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#paged-term-directory) and [Ready9 completed capture](adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope); TypeORM and independent judgments remain live |
-| S30-B07 execution chronology and stale F15 repair queue | [Cost/capacity checkpoints](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints); the ticket retains measurement/host acceptance only |
-| SEP-21 `CURRENT-RESIDUAL-2026-09-26.md` | [R0–R6 execution/acceptance](plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md); S21-11/12/13 retain detailed acceptance |
-| `docs/plans/ARCHIVE-INDEX.md` and repetitive archive chronology | This single recovery index; prior exact mappings remain in the two Git bodies above |
+| Sep27 code-search RFCs, Sep30 B01–B09 | [Review/corpus/statistics](adr/OCT-05-001-review-admission-and-result-identity.md), [native/update](adr/OCT-05-002-native-capture-clock-and-index-scope.md), [cost/host](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md); E1/E2/E4/I0 |
+| Sep21 residual plan, S21-11/12/13, prompts/handoff usage | [Proof/backup/custody](adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md), [installed/pair/actions](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance), operator runbooks and executable registry; I0 |
+| Jul15 QIT, Sep27 MISC and root ticket index | [Selected regression/platform](adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#selected-regression-and-platform-acceptance), [CI provider](adr/SEP-28-001-circleci-provider-and-credit-boundary.md); test/platform/E1/E2/E4 |
+| Jun7 J7Q quality and May25 semantic | [Consumer preview/operator](adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#consumer-preview-and-operator-acceptance), [semantic generation](adr/MAY-31-001-lancedb-semantic-generation-authority.md), cost/review ADRs; semantic/E1/E4/I0 |
+| Oct4 owner map / Semantica pointer | [Single owners](plans/oct-4-parallel-closure/tickets/INDEX.md#owners), [release/proof](plans/oct-4-parallel-closure/tickets/INDEX.md#release-and-proof); external producer fact resolution stays producer-owned |
 
-## Completed evidence
+Existing IDs route through [the scope table](plans/oct-4-parallel-closure/tickets/INDEX.md#legacy-scope-routes).
+Completed source-bound cache/lifecycle/F15/CI/Medium/Ready9 checkpoints remain in
+those ADRs; deleting a packet does not issue fresh execution or qualification.
+Unadmitted numeric hardening/holdout targets remain historical proposals.
 
-The following are source-bound results, rechecked where noted; documentation
-consolidation did not execute their Rust/benchmark commands:
+## Earlier recovery boundaries
 
-| Source / scope | Recorded completion and retained evidence |
-| --- | --- |
-| `e37123eb` SDK/Contract | SDK27; Contract Python793/Rust191; separate portable replay. `/Users/songmin/.codex/task-evidence/quanta-final-main-e37123eb-20261006-sdk`, `quanta-final-main-e37123eb-20261006-contract`, `quanta-final-main-e37123eb-20261006-custody` |
-| `e37123eb` selected runtime/open-loop | Runtime15 and open-loop20; complete source/commands/exclusions in the Git baseline OCT-04 index |
-| `9221d771` hosted CI | [Required verify1268](https://circleci.com/gh/josongmin/quanta-index/1268): regular jobs completed; bench is compilation, not samples |
-| `c6a9120d` hosted CI | Rechecked2026-10-07: required docs/static/Python/tests/bench/verify contexts succeeded, original nextest/inventory hashes match receipt; 4,241 passed, zero failed. [Completed checkpoint](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints) separates auxiliary PR coverage and later-source gates |
-| `8642fa9b` hosted CI | Scale/Scanner owners rechecked all six regular main jobs and source/command/inventory/raw/result receipt binding; 4,268 passed, zero failed, 30 skipped. [Completed checkpoint](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints) retains this source; later cache-test extensions are separate |
-| F15 main `8599f2e8` and follow-ups | Barrier recovery and the original 32 I/O + 32 SIGKILL matrix passed. `b09c4aa7` adds recovered-query parity; `70521514` repairs interrupted clone retry and passes 36 I/O + 36 SIGKILL cuts, 73 storage regressions and strict lexical Clippy. Fixed705 daemon214 and `eb97e7c2` Medium restart/delete/binary custody2 also passed. Latest hosted and Large/XL remain separate; [ADR](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#publication-test-boundary) |
-| Frozen `492d2fdc` XL lifecycle | Existing frozen binary, explicit600s query profile, publish/delete/restart function proof completed. Latest-main cost/RSS is separate; [ADR](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints) |
-| `09103820` CS/SG/OG ready9 | CS180 and SG/OG each180 requests, separate replay9/9. Durable native-v3 and SG/OG-v5 roots are named in the active ledger. Earlier Docker failure and missing OG historical commit remain separate failures/blocked history |
+- `6a3f6afc8c286176962e722ce75524aefcfa7607`: earlier May–Oct05 documentation
+  and packet consolidation, including the original `docs/ARCHIVE-INDEX.md` and
+  `docs/plans/ARCHIVE-INDEX.md` mappings.
+- `a5e87614bee79bf9d67c8358df01313242548798`: earlier Oct07 completed OCT04
+  status detail and B07 execution chronology.
 
-Exact raw/result contexts retain their original revisions and provenance. Missing
-old temporary roots cannot be recreated from written hashes, counts or current
-manifests. Current full5/holdout/scale/RSS/qualified speed/pair/operations still
-need their active owner's inputs and proof.
+Read those historical recovery indexes with `git show <revision>:<path>` for
+exact older source/artifact identities and removed-path sets. Dirty/untracked
+Sep27 preimages require the external content backup named there; Git cannot
+recover never-committed bytes. Temporary external backups are not durable history.
+Missing old native/raw/review roots cannot be recreated from hashes or counters.

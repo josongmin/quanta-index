@@ -174,6 +174,63 @@ optimization remains conditional on actual paired-call cost and parity.
   [native span tests](../../tools/ci/tests/test_retrieval_native_span_projection.py)
   and [source oracle tests](../../tools/ci/tests/test_source_oracle_suite.py).
 
+## Corpus, gold and holdout acceptance
+
+These are standing admission boundaries consolidated from CS-BENCH-01/03 and
+S30-B01/02/03/05/06/08/09, not newly completed datasets or product gates.
+
+- Freeze licensed repository commits, complete source/file hashes, parser identity,
+  query grammar/case, task/family IDs, rank unit and gold provenance before capture.
+  A parser failure is not absence. Exhaustive mechanical gold retains every valid
+  alternative; relevant, secondary and seed-related labels are not interchangeable.
+- Proper prefix/infix/component and one-edit identifier tasks preserve the declared
+  tokenizer, insertion/deletion/substitution/transposition and case policy. Keep
+  ambiguity, exact-name collisions and all nearest alternatives explicit. No-answer
+  requires an exhaustive oracle for its selected content/path/declaration domain.
+  Original queries and variants stay in one statistical family.
+- Freeze development/holdout repository, query and family separation before exposure.
+  Prespecify candidate/reserve rosters and small/medium/large language strata; reject
+  forks, near copies and source/gold leakage. Underfilled strata stay underfilled.
+  Public source is not necessarily unseen to a pretrained model. Retire holdout
+  independence after using it to select policy. Historical 12-repository/1,200-task
+  ambitions are engineering proposals, not admitted power or quality thresholds.
+- Natural-language gold needs actual blind reviewer and adjudicator execution plus
+  source-bound raw judgments. Product/rank/score remain hidden. Report pool omissions
+  and leave-one-system-out sensitivity; a diverse pool is not exhaustive relevance.
+- Gin exact-name/variant, Semble Gin20 and ARB remain exposed case-series/workflow
+  populations. ARB uses each case's official pre-fix base and complete file universe;
+  original versus adapted requests, gold-bearing versus no-gold tasks and context
+  token budgets remain separate. Anchors or post-fix source cannot leak into queries.
+- External adoption binds actual materialized source, pinned upstream qrels/license
+  and local unit/admission. CodeSearchNet fractional means and CLARC original/neutral
+  shared/new/excluded populations retain their policies. Methodology references do
+  not import whole datasets or runners. Missing official inputs cannot be replaced
+  with fabricated data. Public external data cannot fill unused holdout.
+
+## Statistical units and default decisions
+
+- Exact conformance, ranked file/declaration relevance, unranked set recall, context
+  delivery and updates have separate scoreboards. Assign original ranks before gold
+  filtering. Preserve all requested/eligible/attempted/completed/unsupported/error/
+  timeout/unjudged/excluded denominators and raw numerators.
+- Compare paired common-eligible units with independent hand-computed set/range
+  fixtures and pinned reference metric implementations. Query variants cluster by
+  family; multi-repository inference clusters by repository. Small single-repository
+  or Gin20 samples retain descriptive limits and cannot establish p99 or generality.
+- Before tuning or holdout access, freeze primary track/metric, useful effect,
+  critical-stratum regression bounds, resource ceilings, uncertainty and finite
+  ablations. Account for multiple comparisons; do not select favorable k, subgroup
+  or repetition after observing results.
+- PAIR_VALID and QUALITY_DELTA admit evidence. Default selection additionally uses
+  the existing decision.py with its exact pre-capture policy and qualified report:
+  actual primary effect, cluster lower bound, critical strata and p95/RSS/index
+  cost. Missing or insufficient useful effect cannot issue a win. Semantic quality,
+  ANN recall and encoder cost retain independent controls under SEP-26-002.
+
+Owners remain the existing source oracle, evaluator, review/admission, corpus
+binding and decision modules; no second scoring or labeling stack is introduced.
+Current issuance and execution are tracked once in the residual ledger.
+
 ## Consequences
 
 Owner regressions establish binding/refusal behavior. They do not complete model

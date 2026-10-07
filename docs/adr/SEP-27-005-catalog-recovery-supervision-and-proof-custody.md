@@ -7,7 +7,7 @@ Decided: 2026-09-27
 Consolidates completed SEP-21 repair decisions from the execution chronology.
 Extends SEP-21-002/003/004 and SEP-27-004. Historical runs do not qualify the
 current source; remaining release, producer and operational work stays in the
-[SEP-21 residual ledger](../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md).
+[SEP-21 residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md#release-and-proof).
 
 ## Decision
 
@@ -181,8 +181,8 @@ root; external trust anchors and root/daemon fencing are separate obligations.
   receipt cannot establish completed proof. Keep the existing guard/parser owner,
   not a second test list or generic boolean promotion API.
 - Adapter lifecycle generation-selection models and independent query fixtures
-  are implemented proof seams. Quantitative targets from the retired Jul-15
-  plan remain proposals in its residual board until admitted and implemented.
+  are implemented proof seams. Unadmitted quantitative targets from the retired
+  Jul-15 plan remain historical proposals; executable authority owns selected gates.
 
 ### Implemented lifecycle tests and remaining coverage
 
@@ -315,9 +315,9 @@ bytes across process restarts; its Medium restart/delete and binary-custody
 regressions passed. These focused owner results are not current hosted or
 Large/XL qualification. Original completed owner runs are recorded in
 [OCT-05-004](OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints).
-[O4-E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) records
-these follow-up checkpoints; QIT-03 retains broader selected storage-boundary
-acceptance. The F15 matrix and recovered-query assertions are not missing
+Current Large/XL cost remains [E4](../plans/oct-4-parallel-closure/tickets/INDEX.md#e4);
+[test/platform](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform)
+retains broader selected storage-boundary acceptance. The F15 matrix and recovered-query assertions are not missing
 implementation.
 
 Source coverage and explicitly reported focused executions above have separate
@@ -326,7 +326,7 @@ Full SDK-only recovery, native race detection, long mutation/fuzz and
 release/platform execution retain their independent oracles and scope.
 
 The old QIT progress snapshot/scaffolding is retired. Its unfulfilled acceptance
-is preserved in [the residual board](../plans/jul-15-sota-test-hardening/tickets/00-ticket-status-board.md);
+is preserved in [the residual board](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform);
 this consolidation asserts implemented authorities, not SOTA/test qualification.
 
 ### Test fixture and wait invariants
@@ -360,7 +360,7 @@ Do not shorten sleeps, disable production jitter, weaken errors, share mutable
 global fixtures or delete lower-layer assertions to make timing look better.
 Reproduce a current regression before reopening implementation. Final selected
 functional/installed/platform execution and paired test-cost measurements remain
-in [MISC-05/06](../plans/sep-27-misc/tickets/INDEX.md).
+in [MISC-05/06](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform).
 
 ### Semantic mutation output admission
 
@@ -373,6 +373,47 @@ writes, with only one leased window at a time. Earlier staging cannot be promote
 after later refusal. Charge first-window admission to streaming, not storage
 preparation. The SQL ceiling is not total-input or aggregate heap admission and
 does not change public owner/vector limits or wire schema.
+
+### Selected regression and platform acceptance
+
+QIT-00–09 and MISC-03/04/05 consolidate into the current residual ledger, with
+these standing limits rather than another implementation queue:
+
+- Test authority/catalog wiring does not prove semantic independence. Public wire
+  golden/refusal/re-encode, independent lexical/ANN/fusion/filter/metamorphic oracles,
+  generated lifecycle history, declared repeats and native race detection retain
+  their actual inventory and platform. Existing lifecycle/SDK fixtures remain done.
+- Selected storage/marker/CAS crash cuts keep old-or-complete-new and unchanged-source
+  truth. Process kill does not establish power loss. Real ingress/provider and actual
+  installed SDK/CLI/daemon lifecycle are separate from scripted peers and local tests.
+- Mutation/fuzz/coverage select actual risk owners and admitted thresholds; record
+  survivor dispositions/expiry and minimized inputs. Historical percentage, repeat,
+  fuzz-duration and CI-budget aspirations are not newly enforced requirements.
+- Every selected adapter's prepare/execute/publish/load/replay validates large success
+  and failed stdout/stderr, many-entry metadata and bounded archive/JSONL interruption
+  through the common process/I/O owner. One fake adapter cannot qualify all adapters.
+- Final-source production and relocated replay use the canonical registered command,
+  current complete nonzero inventory and independent terminal parsing. Refuse sticky
+  profile/GC and ambient selection overrides; retain cooperative process limits.
+  SDK/runtime, Linux cgroup/Landlock, native race detector, model and hosted CI results
+  are separate scopes. Unselected Miri/ASan/LLVM/udeps diagnostics are conditional.
+- Handoff schema now lives at tools/ci/lane-handoff.schema.json. Strict
+  lane-handoff-check binds current-source checkpoint/proof custody; historical mode
+  and lane-handoff-chain-check audit original ancestry/order/P02 joins only. Missing
+  historical bytes cannot be reconstructed from current manifests or become release
+  prerequisites by an old lane name.
+
+### Consumer preview and operator acceptance
+
+J7Q-01/02 retains independently judged route/hard-negative quality and overlapping
+native lexical comparison, not arbitrary generated/test-file ranking penalties.
+Actual SDK/CLI wire proof covers phrase/regex/repeated/long-line/symbol previews,
+UTF-8/CRLF spans, bounded deterministic truncation and empty/unavailable output.
+Explain reconciles actual planner/engine/contribution/score/provenance. Doctor,
+readiness, generation-status and metrics agree under missing/divergent/failed
+states; unsupported/ambiguous/wrong-route repairs remain typed without silently
+rewriting intent. UI/confidence fields and the deferred regex allocation cap need
+their explicit consumer/measurement trigger.
 
 ## Consequences and verification boundary
 

@@ -661,12 +661,11 @@ def test_retrieval_source_closure_includes_transitive_execution_owners() -> None
     } <= paths
 
 
-def test_retrieval_source_closure_binds_consolidated_ticket_contract() -> None:
+def test_retrieval_source_closure_binds_adopted_adr_contracts() -> None:
     # Consolidation moves, rather than removes, the normative contract from
     # source custody. Contract edits must invalidate existing receipts.
     paths = set(source_closure.PROFILES["retrieval"]["paths"])
     assert {
-        "docs/plans/sep-27-misc/tickets",
         "docs/adr/SEP-27-003-code-search-source-and-preview-contract.md",
         "docs/adr/SEP-27-004-benchmark-capture-and-resource-custody.md",
         "docs/adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md",
@@ -676,7 +675,7 @@ def test_retrieval_source_closure_binds_consolidated_ticket_contract() -> None:
 @pytest.mark.parametrize(
     "contract_path",
     (
-        "docs/plans/sep-27-misc/tickets/INDEX.md",
+        "docs/adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md",
         "docs/adr/SEP-27-003-code-search-source-and-preview-contract.md",
         "docs/adr/SEP-27-004-benchmark-capture-and-resource-custody.md",
         "docs/adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md",
@@ -685,9 +684,8 @@ def test_retrieval_source_closure_binds_consolidated_ticket_contract() -> None:
 def test_source_closure_rejects_consolidated_contract_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contract_path: str
 ) -> None:
-    # Additions, edits, deletions, and committed changes under the consolidated
-    # packet must each invalidate a previously captured closure
-    # manifest before any receipt bound to it is trusted.
+    # Adopted ADR edits, deletions and committed changes invalidate a captured
+    # closure before any receipt bound to it is trusted.
     source = _clean_repo(tmp_path)
     ticket = source / contract_path
     tickets = ticket.parent
@@ -700,11 +698,7 @@ def test_source_closure_rejects_consolidated_contract_drift(
         "fixture",
         {
             "cargo_packages": (),
-            "paths": (
-                "docs/plans/sep-27-misc/tickets"
-                if contract_path.endswith("/INDEX.md")
-                else contract_path,
-            ),
+            "paths": (contract_path,),
         },
     )
     manifest = source_closure.build_manifest(source, "fixture")
@@ -716,21 +710,9 @@ def test_source_closure_rejects_consolidated_contract_drift(
         source_closure.verify_manifest(source, manifest)
     subprocess.run(["git", "checkout", "--", "."], cwd=source, check=True)
 
-    # The ticket packet binds its directory; adopted ADRs bind exact files.
-    if contract_path.endswith("/INDEX.md"):
-        (tickets / "MISC-new.md").write_text("# untracked addition\n", encoding="utf-8")
-        with pytest.raises(source_closure.ClosureError, match="dirty relevant source"):
-            source_closure.verify_manifest(source, manifest)
-        (tickets / "MISC-new.md").unlink()
-
     # Uncommitted deletion of a bound contract document.
     ticket.unlink()
-    deletion_error = (
-        "dirty relevant source"
-        if contract_path.endswith("/INDEX.md")
-        else "source root does not exist"
-    )
-    with pytest.raises(source_closure.ClosureError, match=deletion_error):
+    with pytest.raises(source_closure.ClosureError, match="source root does not exist"):
         source_closure.verify_manifest(source, manifest)
     subprocess.run(["git", "checkout", "--", "."], cwd=source, check=True)
 

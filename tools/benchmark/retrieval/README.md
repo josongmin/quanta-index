@@ -9,9 +9,8 @@ Permanent scoring, custody and qualification rules live in
 [SEP-26-003](../../../docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md),
 [review/unit contracts](../../../docs/adr/OCT-05-001-review-admission-and-result-identity.md#review-completion-and-diagnostic-units)
 and [response verification](../../../docs/adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-response-verification).
-Open work is in [OCT-04](../../../docs/plans/oct-4-parallel-closure/tickets/INDEX.md),
-[B01–B09](../../../docs/plans/sep-30-code-search-benchmark-trust/tickets/INDEX.md)
-and [MISC](../../../docs/plans/sep-27-misc/tickets/INDEX.md). This guide declares no
+Open work is in the [single residual ledger](../../../docs/plans/oct-4-parallel-closure/tickets/INDEX.md).
+This guide declares no
 current capture, quality, speed or default-policy result.
 
 ## Native Quanta capture and recorded evaluation
@@ -295,7 +294,7 @@ uv run --frozen --extra dev python -m tools.benchmark.retrieval.codesearchnet_qr
 The intake checks the pinned digest and preserves repeated/fractional grades,
 notes and unknowns. It refuses normalization collisions, mutable URLs and
 existing/checkout-local outputs. It is a review seed, not an executable suite.
-Source/licensing/scoring admission remains [B09 work](../../../docs/plans/sep-30-code-search-benchmark-trust/tickets/S30-B09-external-robustness-adoption.md).
+Source/licensing/scoring admission remains [B09 work](../../../docs/adr/OCT-05-001-review-admission-and-result-identity.md#corpus-gold-and-holdout-acceptance).
 Materialize without dropping unavailable-source tasks or inventing snippets:
 
 ```sh
@@ -448,7 +447,7 @@ A verdict does not select defaults. Freeze `decision_policy_sha256` before captu
 execute `python -m tools.benchmark.retrieval.decision --repo REPO --suite SUITE
 --run-manifest RUN_MANIFEST --policy POLICY --out DECISION_JSON` afterwards.
 Exit 0 admits, 1 refuses thresholds, 2 refuses malformed/missing proof.
-[Statistics/decision owner](../../../docs/plans/sep-27-code-search-remediation/rfcs/CS-BENCH-03-tracks-metrics-and-statistics.md)
+[Statistics/decision owner](../../../docs/adr/OCT-05-001-review-admission-and-result-identity.md#statistical-units-and-default-decisions)
 and `decision.py` own closed policy fields and inference; single-repository
 policy does not establish a multi-repository default. C5 context-policy v2/
 scored-file-policy v3 replay without a decision is `replayed_no_default_decision`.

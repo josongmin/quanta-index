@@ -60,7 +60,7 @@ Measurements and missing authority remain in the [residual ledger](../plans/oct-
    operational result/parser/checker/aggregate are implemented. Concrete target
    adapters, distinct independent pre/post success contracts and authorized
    host/state/retention/rollback inputs remain required under
-   [S21-12](../plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md).
+   [S21-12](OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance).
    Entries stay staged until that authority is registered and actually executed.
    Shell exit zero or caller-written success JSON cannot promote them.
 
@@ -285,7 +285,7 @@ Follow-up `b09c4aa7` recovered-query parity, `70521514` interrupted clone retry
 and the 36 I/O + 36 SIGKILL matrix are implemented and their focused owner
 checks passed. The fixed705 daemon scope passed 214 tests; `eb97e7c2` Medium
 restart/delete and release-binary custody passed 2. Their completion is retained
-below; [E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) directs
+below; [E4](../plans/oct-4-parallel-closure/tickets/INDEX.md#e4) directs
 new hosted and Large/XL qualification to their owners. Process-kill testing
 does not qualify power loss.
 
@@ -365,6 +365,67 @@ validation remain standing rules. PREPARE → affected VALIDATE → admission IS
 is scoped per repository/claim; no label/provider/holdout/Linux global barrier
 blocks an independent ready cell. Completed selected SDK/Contract/runtime/CI
 results retain their original source, while I0-02 owns later-source acceptance.
+
+## Whole-pipeline measurement acceptance
+
+The retired CS-ENG-02/BENCH-04, S30-B07, J7Q-03/04 and MISC-06 packets share
+this boundary. It does not assert that remaining measurements were executed.
+
+- Increasing one-file, delete and mixed updates include index/ranked keys/coverage,
+  text and file authority, catalog, semantic work, publication and independent open.
+  Attribute pre-intent and lock-held preflight, build, seal/hash and open separately;
+  report physical I/O, rows/pages/hash work, transient/retained heap and disk. Changed
+  page bytes or logical charges do not prove sublinear total ingest or physical heap.
+- Removing repeated verification needs an authenticated immutable base capability
+  preserving pre-intent refusal, lock-time ownership, lineage and tamper/eviction/
+  repaired-retry controls. Process-local locking does not exclude external mutation.
+  Cached/inherited/root/semantic corruption, symlink/orphan/oversized inputs and
+  over-limit definite/indefinite decode keep independent refusal/rebuild oracles.
+- Measure complete client construction-to-decoded-output and observable server phases,
+  output units, process-tree CPU/RSS, construction and every authority sidecar. Cold
+  process/model/index/page-cache and warm query are separate states; fresh directories
+  do not prove cold OS cache. Unavailable observers retain named limitations.
+- Selected B07 timing requires at least five fresh roots and 1,000 warm observations
+  per route, warmup at least one, randomized paired schedules, independent rounds and
+  continuous load/frequency/thermal/power/disk admission. Report p50/p95 uncertainty;
+  p99 needs adequate tails. No retry-until-favorable sampling. Open-loop reconciles
+  offered/achieved/errors/timeouts/drops and queue delay independently of completion.
+- Existing medium/large/XL fixtures retain original source shapes and independent
+  planted-query/count/restart truth. Whole-call ceilings and typed over-limit refusal
+  govern capacity; sampled maxima and logical retention keep their narrower scope.
+- Test-cost optimization uses at least five warm paired samples of the same selector,
+  count and assertions, reporting median/p95/min/max. Query observer on/off and hybrid
+  fetch-floor experiments retain parity and whole-caller/deadline controls. Existing
+  DSL floors (200 warm, 20 cold) and Criterion minima (10 samples, 1,000 resamples)
+  keep their selected contracts; short Criterion runs are diagnostics.
+
+## Installed, paired and operational acceptance
+
+The retired S21-11/12/13 and CS-INT-01 packets retain these release distinctions:
+
+- Execute the selected actual producer/SDK/daemon/installed CLI, publish/activate,
+  crash/restart/retention/rollback and supported Linux scopes on matching source and
+  binaries. Unit fixtures, local owner rails and relocated replay keep separate proof.
+- An exact clean producer/consumer pair binds both sources, dependency resolver locks,
+  build/tests and attested daemon bytes. Preserve the V2 chain from source/prepared
+  payload/request through journal/sealed candidate/CAS activation and exact ACK replay.
+  Wrong identity, old wire and same-identity/different-payload refuse without mutation.
+  Runner-candidate-only archives cannot issue operational qualification.
+- Current-format backup/restore uses the exclusive lease and original immutable
+  manifest/catalog/incarnation authority, with replayed append/clear/replace/tombstone
+  windows. Target-root/release proof is separate from disposable owner fixtures;
+  retired formats require producer rebuild, not silent legacy import.
+- Deploy, activate and restore-forward each require a concrete authorized Linux target,
+  independent observed pre/post contract, actual action and same host/config/state/
+  source continuity. Distinct actor bytes and exit zero are insufficient domain
+  oracles. Registry entries remain staged until these inputs and executions exist.
+- The live proof registry and independent checker own the selected P00–P12 DAG,
+  target/staging and required raw inventory. P12A infrastructure is independent of
+  P11; final --require-all --bind-source qualification needs all selected dependencies.
+  CODE_QUALIFIED, DEPLOYED, ACTIVATED and ROLLBACK_PROVEN remain distinct verdicts.
+
+Usage stays in the P11/state operator runbooks, Justfile and executable authorities.
+Unissued release or operational results stay in the residual ledger.
 
 ## Consequences
 

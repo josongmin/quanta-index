@@ -44,11 +44,11 @@ The old statements that these scenarios were entirely unexecuted no longer apply
 
 ## Owners
 
-- [O4-E4-01](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-01) owns causal cost;
-  [O4-E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) owns conditional durable barriers.
-- [S30-B07](../plans/sep-30-code-search-benchmark-trust/tickets/S30-B07-performance-and-indexing.md)
+- [O4-E4-01](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-01) owns causal
+  cost and any measured follow-up durable-barrier decision.
+- [S30-B07](OCT-05-004-cost-capacity-and-qualification-boundaries.md#whole-pipeline-measurement-acceptance)
   owns actual performance and indexing acceptance.
-- [SEP-21 residual plan](../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)
+- [SEP-21 residual plan](../plans/oct-4-parallel-closure/tickets/INDEX.md#release-and-proof)
   owns shipping process/release qualification.
 
 This compaction neither accepts the open designs nor supplies physical-pressure,

@@ -8,7 +8,7 @@ Consolidates implemented MISC-01/02, IO-1–4 and C4/C5 decisions. It extends
 [SEP-27-002](SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md)
 and [SEP-26-003](SEP-26-003-retrieval-evidence-custody-and-qualification.md).
 Remaining execution/resource acceptance lives in the
-[MISC ledger](../plans/sep-27-misc/tickets/INDEX.md).
+[MISC ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform).
 
 ## Decision
 

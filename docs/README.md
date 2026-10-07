@@ -8,19 +8,16 @@ acceptance. Historical tests, counts and status do not qualify current source.
 
 | Question | Owner |
 | --- | --- |
-| Remaining OCT-04 work, code/input/verification distinction | [Residual ledger](plans/oct-4-parallel-closure/tickets/INDEX.md) |
-| Owners and execution order | [Owner map](plans/oct-4-parallel-closure/README.md), [single execution order](plans/oct-4-parallel-closure/tickets/INDEX.md#실행-순서) |
+| Remaining work, code/input/verification distinction | [Single residual ledger](plans/oct-4-parallel-closure/tickets/INDEX.md) |
+| Owners and execution order | [Owner map](plans/oct-4-parallel-closure/tickets/INDEX.md#owners), [execution order](plans/oct-4-parallel-closure/tickets/INDEX.md#실행-순서) |
 | Implemented architecture / open proposals | [ADR registry](adr/README.md) |
 | Current source entry points and typed limits | [Engine source map](ssot/engine-status-v1.md), [crate ownership](ssot/crate-ownership.md) |
-| Code-search engine/integration acceptance | [Remediation owners](plans/sep-27-code-search-remediation/readme.md) |
-| Benchmark B01–B09 acceptance | [Benchmark index](plans/sep-30-code-search-benchmark-trust/tickets/INDEX.md) |
-| Shared execution/CI/measurement obligations | [MISC](plans/sep-27-misc/tickets/INDEX.md) |
-| Installed, paired, operational and release scopes | [SEP-21 residuals](plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md) |
-| Semantic ownership / relevance / scale / tail | [Semantic residuals](plans/may-25-search-owned-semantic-derivation/README.md), [J7Q acceptance](plans/jun-7-search-product-quality/tickets-wave2/INDEX.md) |
-| Test hardening and actual CI provider coverage | [QIT board](plans/jul-15-sota-test-hardening/tickets/00-ticket-status-board.md), [QIT-09](plans/jul-15-sota-test-hardening/tickets/QIT-09-circleci-provider-coverage.md) |
+| Previous RFC/ticket IDs and acceptance | [Scope routes](plans/oct-4-parallel-closure/tickets/INDEX.md#legacy-scope-routes) and linked ADRs |
+| Test/CI/platform, semantic, installed/pair/actions | [Test/platform](plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform), [semantic](plans/oct-4-parallel-closure/tickets/INDEX.md#semantic), [release/proof](plans/oct-4-parallel-closure/tickets/INDEX.md#release-and-proof) |
 
-Plans above retain unfinished implementation, input/decision and qualification
-conditions. Completed histories and duplicate handoff summaries are retired.
+The single ledger retains unfinished implementation, input/decision and
+qualification conditions. Dated RFC/plan/ticket packets and duplicate handoff
+summaries are retired; stable contracts are consolidated in existing ADRs.
 Accepted contracts, current usage, generated capabilities and the reusable
 [purpose audit inventory](reference/purpose-audit-inventory.md)
 are references, not another uncompleted feature queue. Proposed ADRs remain

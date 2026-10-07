@@ -112,6 +112,32 @@ changed membership, stale source/cache, missing child and phase-byte mutants.
   [fixture reproduction tests](../../tools/ci/tests/test_opengrok_query_fixture.py), with
   [clock tests](../../tools/ci/tests/test_completed_response_timing.py).
 
+## Native matrix and incremental acceptance
+
+Consolidated CS-BENCH-02/04 and S30-B04 acceptance preserves each selected
+product's actual SDK/daemon/server/indexer/binary/config/model and indexed source
+view. Sourcegraph, OpenGrok, cs and Semble use their native supported entrypoints;
+ripgrep is an exact scan/cost reference. Direct Zoekt is a separate engine profile.
+A generic BM25 runner or GitHub CLI cannot substitute for another native backend.
+
+- Inventory every selected entrypoint/format and retain original native response,
+  request/source/index bindings and terminal outcome. Independently mutate path,
+  span, order, score and metadata; normalized-only equality is insufficient.
+  Genuine complete zero results remain valid, while missing/capped/partial results
+  keep their actual outcome. Existing decoders remain the single parser authority.
+- Ranked file requests require ten distinct files. Ten chunks subsequently deduped
+  do not issue file top-10; collect-to-files work discloses extra enumeration.
+  Path-ordered constant-score prefixes are not relevance-ranked pools. Matched
+  semantics and native workflows retain separate comparisons and budgets.
+- A deterministic update sequence covers full readiness, add/edit, rename/move/
+  delete, malformed-source lexical survival, syntax repair and declared interruption/
+  restart cuts. Independent source hashes and expected state verify new bytes,
+  retired paths/declarations, unchanged source and coherent old/new readers.
+- Actual watcher events permit workspace-event latency; explicit ingest keeps its
+  narrower start. ACK, activation and query visibility are distinct milestones.
+  Await bounded observed state, not sleep-based presumed completion. Report lag,
+  stale hits, reprocessed files/bytes and recovery under the product's actual policy.
+
 ## Consequences
 
 A replayable diagnostic can contain complete empty queries and incomplete

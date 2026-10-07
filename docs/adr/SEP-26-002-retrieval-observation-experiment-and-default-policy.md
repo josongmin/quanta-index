@@ -85,4 +85,4 @@ observation or PID start identity from the filtered metric rows alone.
 
 Completed implementation checkpoints and raw artifact references are
 recoverable with `git show eff53181:<path>`. Remaining execution is owned by
-[the SEP-27 execution SSOT](../plans/sep-27-misc/tickets/INDEX.md).
+[the single residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform).

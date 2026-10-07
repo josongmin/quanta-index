@@ -52,9 +52,9 @@ a bounded term/range/hash directory; queries read admitted posting ranges under
 one request work budget. Logical heap admission does not establish an RSS bound.
 F15 implementation/selected owner checks are consolidated in the accepted ADR;
 matching Large/XL, crash/reopen and release evidence remain capacity/cost boundaries under
-[E4-01/02/05](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
+[E4-01/05](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
 Explicit timeout/retention diagnostic success does not close default capacity.
-[SEP-21](../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)
+[SEP-21](../plans/oct-4-parallel-closure/tickets/INDEX.md#release-and-proof)
 owns installed/paired/Linux/provider/release acceptance. Its R3 gap belongs to
 the external Semantica producer's independent expected semantic partition/omission
 check before dispatch. It is a separate producer-integration obligation, not a
@@ -63,7 +63,7 @@ is already implemented.
 P11's common typed deploy/activate/restore-forward producer, recipes and
 parser/checker/aggregate are implemented under
 [OCT-05-004](../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#operational-actions).
-[S21-12](../plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md)
+[S21-12](../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance)
 still needs concrete target adapters, independent pre/post contracts and authorized inputs.
 The [existing cross-repo recipe](../../scripts/verify-repomap-cross-repo.sh) and
 [paired component archive](../../tools/ci/paired_r5_result.py) bind caller/kernel

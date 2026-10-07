@@ -29,7 +29,7 @@ if str(ROOT) not in sys.path:
 from tools.ci.proof_json import parse_proof_json  # noqa: E402
 
 SCHEMA_PATH = (
-    ROOT / "docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/lane-handoff.schema.json"
+    ROOT / "tools/ci/lane-handoff.schema.json"
 )
 PROOF_SCHEMA_PATH = ROOT / "tools/ci/proof-manifest.schema.json"
 PROOF_REGISTRY_PATH = ROOT / "tools/ci/proof-authority.toml"

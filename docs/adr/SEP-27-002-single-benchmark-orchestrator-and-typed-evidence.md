@@ -73,6 +73,6 @@ Those exclusions prevent treating this ADR as performance qualification.
 
 The benchmark migration remains **partial**: current execution coverage,
 source-bound receipts and missing qualification are tracked in
-[the execution SSOT](../plans/sep-27-misc/tickets/INDEX.md). An
+[the execution SSOT](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform). An
 accepted orchestration decision does not close BM-03 implementation or any
 benchmark family by itself.

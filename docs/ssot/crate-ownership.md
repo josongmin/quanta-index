@@ -56,7 +56,7 @@ package ownership. Nested fuzz manifests are tooling, not root packages.
 | [quanta-index-scan-experiment](../../crates/quanta-index-scan-experiment/README.md) | Exploratory keyword scan comparison. Its output is not a qualified daemon or DSL benchmark. |
 
 For current serving behavior, see [engine status](engine-status-v1.md).
-For verification status, follow the [active residual ledger](../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md) and the selected gate.
+For verification status, follow the [active residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md#release-and-proof) and the selected gate.
 
 ## Boundary triage
 

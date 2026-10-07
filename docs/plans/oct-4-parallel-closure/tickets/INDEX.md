@@ -1,15 +1,30 @@
-# OCT-04 잔여 작업 인덱스
+# 잔여 작업 인덱스
 
 Status: `ACTIVE_RESIDUAL`
 
 완료된 결정은 [ADR](../../../adr/README.md), 정확한 과거 문서·실행은
 [복구 인덱스](../../../ARCHIVE-INDEX.md#historical-record-recovery)가 소유한다. 이 인덱스에는 **미완료 조건만** 남긴다.
-완료·비적용 scope는 ADR로 흡수했고, 미완료 수용 조건과 기존 ID의 ADR 연결만 유지한다.
-[담당 경계](../README.md). B01–B09/J7Q/QIT/SEP-21은 아래 연결한 개별 수용 조건의 owner다.
+완료·비적용 scope와 중복 RFC/플랜/티켓은 제거했다. B01–B09/J7Q/QIT/SEP-21/MISC의
+미완료 작업은 이 목록에만 유지하고, 영구 수용 계약은 기존 ADR가 소유한다.
+파일 경로는 동시 작업의 참조를 보존하기 위해 유지한다.
+
+## Owners
+
+| Owner | 소유 경계 |
+| --- | --- |
+| E1 | review/admission/evaluator/source oracle/split/license/gold/scoring |
+| E2 | native collector/index scope/Semble phases/required cells |
+| E4 | lexical lifetime/cost/scanner/scale/open-loop/측정 후 정책 판정 |
+| I0 | shared DTO/schema/registry/CI/dependency/영향 source/설치·pair·release |
+
+Cargo/Justfile/CI/shared schema는 한 integration owner가 반영한다.
+E1→E2는 immutable admitted inputs, E2→E1는 raw/index/clock/outcomes/unjudged keys,
+E1→E4/I0는 final qrels/report/denominators/정책 판정이다.
+Semantica는 외부 producer이며 fact resolution/join/completion은 그 저장소가 소유한다.
 
 ## 현재 코드 잔여
 
-2026-10-07 코드 대조 기준은 main `a80eb83d`다. 완료된 F15/query/restart·paged directory,
+2026-10-07 문서 통합 기준은 main `4f07c3c5`다. 완료된 F15/query/restart·paged directory,
 SDK lifecycle/cache 및 hosted checkpoint의 source·명령·범위는 아래 ADR가 소유한다.
 Staged upload, EOF cancellation, checked memory/deadline, scanner custody와 P11 공통
 producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비용·반례 또는 target 계약으로 결정한다.
@@ -191,27 +206,13 @@ missing/output 경합은 success가 아니다. 완료: 누락 없는 terminal/in
 
 ### O4-E2-04
 
-부분 완료 · Ready9 9repo capture/replay/projection 진단 inventory는 완료됐다.
-원 source6a3의5repo를 보존하고, fixedb262의 CLI·Django·Nushell·TypeORM은 원본 입력으로
-각40/40 capture·독립 replay 및5제품 projection을 완료했다. Native source는 둘이며 uniform-source/
-latest-main/release·quality/speed qualification은 아니다.
-잔여는 최종151tasks·742개 task/file pair의 실제 독립 판단·final admission이다 (`BLOCKED`: 판단 입력 부재).
-완료 범위·원 실패·source별 raw는 [Ready9 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope),
-용량 수리·집중 검증은 [paged-directory ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#paged-term-directory)가 소유한다.
-새 실행·review 입력은 `/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b`에 있다.
-`ready9-checkpoint-inventory.json`은 기존5개·새4개 성공과 원 실패를 source별로 보존한다.
-최종 `ready9-unjudged-checkpoint-union.json`은 원72tasks·191pair와 새79tasks·551pair를 결합한다.
-새4repo의 원문·해시 결속 blank review 두 입력씩도 준비돼 있으며 reviewer identity와 label 변경은0이다.
-실제 판단 없이 review/admission 완료로 승격하지 않는다.
-별도 C3의 남은3repo 및 다른 lanes는 이9repo와 구분한다.
-Ready9 NL file20tasks/repo는 `natural_language_file`/Semble `lexical-file` distinct-file pair다.
-Bare-symbol workflow와 다르며, diagnostic capture/replay/projection은 quality/speed qualification이 아니다.
-원 runtime/input/producer bytes 및 허용 reuse를
-검증해 결합하며 source97/5796/091 raw를 새 소스로 재표기하지 않는다.
-Required lanes: exact1,196; prefix/infix/components; default/explicit typo; no-answer; C3 NL240;
-Gin20; ARB original17/88·adapted88; B09 OSA/CLARC/CSN. Four typo populations
-1,192/1,178/1,192/1,192는 서로 합산하지 않는다. ARB v1은 현재 v2 adapted88 결과가 아니다.
-완료: raw/exit/request/source/unit/clock 독립 replay 및 마지막 unjudged union의 E1 인계.
+Ready9 capture/replay/projection과 원 source별 완료는
+[ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#completed-ready9-capture-scope)가 소유한다.
+실제151tasks/742pairs 판단·admission 잔여는 [E1-02](#o4-e1-02)/[E1-03](#o4-e1-03)에만 둔다.
+다른 required native lanes는 exact1,196; prefix/infix/components; default/explicit typo;
+no-answer; C3 NL240; Gin20; ARB original17/88·adapted88; B09 OSA/CLARC/CSN이다.
+Four typo populations1,192/1,178/1,192/1,192와 ARB original/adapted 분모를 합산하지 않는다.
+[E2-03](#o4-e2-03)이 required outcomes·original raw/input/source/unit/clock replay를 한 번만 소유한다.
 
 ### O4-E2-05
 
@@ -242,15 +243,6 @@ NoMerge segment fanout, transient peak 및 foreground/maintenance CPU/read/write
 Causal producer의 source/binary와 independent markers를 결속한다. Seal retention gauge는 unique-inode
 regular-file st_size이며 restart gauge0·st_blocks·physical I/O/true peak와 구분한다.
 완료: 원인별 exclusive 비용·명시적 clock/resource domain·fresh rebuild score/page parity.
-
-### O4-E4-02
-
-완료 · fault/query/clone-retry/restart 구현과 집중 검증은
-[ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)로 이관했다.
-최신 hosted gate는 [I0-02](#o4-i0-02), matching Large/XL 비용·RSS·restart는
-[E4-01](#o4-e4-01)/[E4-05](#o4-e4-05), 더 넓은 storage 수용은
-[QIT-03](../../jul-15-sota-test-hardening/tickets/00-ticket-status-board.md)가 소유한다.
-이 ID로 같은 fault/query/daemon 구현·실행을 다시 등록하지 않는다.
 
 ### O4-E4-03
 
@@ -329,20 +321,12 @@ Contract: [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-b
 ### O4-I0-02
 
 후속 main의 영향 hosted 결과 및 selected SDK/Contract·PR/release proof 회수가 잔여다.
-Cache focused4/4·normal-library strict 및 lint3개 수정 후 corrected `--lib --tests` strict는 완료됐다. 같은 focused 실행을 다시 잔여로 등록하지 않는다.
-`8642fa9b` regular main6jobs는 완료됐고,4268 Rust tests·30 skipped 및 receipt의
-source/command/inventory/raw/result 대조를 Scale/Scanner owner가 확인했다.
-완료된 regular main 범위는 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)이 소유한다.
-`VERIFIED` · `c6a9120d`의 필수 docs/static/Python/tests/bench/verify contexts를 live GitHub API로 확인했다.
-CircleCI job2011의 actual receipt·raw/inventory 해시는 일치하고 terminal4,241 tests가 통과했다.
-기존6a3 실패의 counter/rename 수리는 완료됐으며 추가 CI 재수리로 남기지 않는다.
-Pending aux PR coverage는 main 필수 CI 완료와 별도다.
-CI receipt admission `9def97ac`과 F15 `8599f2e8` 및 후속 query/restart·paged directory 수리도 main에 반영됐다.
-각 checkpoint의 focused/daemon 및8642 regular main 결과는 완료이며 그 이후 변경 source의 영향 gate만 별도로 회수한다.
-과거 C6 결과를 최신 source로 재표기하지 않는다.
-기존e371 SDK/Contract/runtime/open-loop 및9221d771 hosted gate는 원 source의 완료로 ADR/Git에 보존한다.
-공개SDK/contract·wire/state/query 변경은 registry/Justfile의 영향 rail과 portable replay를 실행한다.
-Runtime autotests=false의 실제 suite/selector를 사용한다. Compiler/focused/local 결과를 full/release로 승격하지 않는다.
+완료된 regular main CI/F15·query/restart·cache focused/strict·SDK/runtime checkpoint는
+[ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)와
+[cache 계약](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)이 소유한다.
+공개 SDK/contract·wire/state/query 변경은 executable authority의 영향 rail과 portable replay를 실행한다.
+Runtime autotests=false의 실제 suite/selector를 사용한다. Auxiliary PR coverage/main,
+compiler/focused/local/full/release를 구분하고 과거 결과를 최신 source로 재표기하지 않는다.
 
 ### O4-I0-03
 
@@ -353,9 +337,9 @@ Runtime autotests=false의 실제 suite/selector를 사용한다. Compiler/focus
 외부 Semantica R3 expected semantic partition/omission 검증은 producer owner의 별도 연동 잔여다.
 기존 producer의 prior-state binding·plan assembly와 독립 expected-partition 검증을 구분한다.
 Target/Linux 입력 부족이 upstream 검증 코드 구현의 선행은 아니다.
-[S21-12](../../sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md)와
-[SEP-21 R0–R6](../../sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)가
-P00–P12/provider/installed/state/pair/operations의 세부 수용 및 graph를 소유한다.
+[Installed/pair/action ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance)와
+[release/proof](#release-and-proof)가 P00–P12/provider/installed/state/pair/operations의
+세부 수용을 소유하고 실행 registry가 graph를 소유한다.
 완료: CODE_QUALIFIED/DEPLOYED/ACTIVATED/ROLLBACK_PROVEN 각각의 실제 prerequisites·observed action.
 
 ## 잔여 실행 진입점
@@ -370,9 +354,79 @@ P00–P12/provider/installed/state/pair/operations의 세부 수용 및 graph를
 | Scale/open-loop | matching `scale_matrix` / `open_loop_matrix` binaries의 실제 `--help` 및 external output |
 | Pair / release | `just rust-verify-hellgate-cross-repo <Semantica-checkout>`; `just proof-p12a-proof-infrastructure`; actual manifests로 proof-authority code/release/final gates |
 
-[Benchmark B01–B09](../../sep-30-code-search-benchmark-trust/tickets/INDEX.md),
-[remediation](../../sep-27-code-search-remediation/readme.md),
-[MISC](../../sep-27-misc/tickets/INDEX.md), [J7Q](../../jun-7-search-product-quality/tickets-wave2/INDEX.md),
-[semantic](../../may-25-search-owned-semantic-derivation/tickets/INDEX.md),
-[QIT](../../jul-15-sota-test-hardening/tickets/00-ticket-status-board.md)는 실행 소유 경계다.
-같은 작업/무거운 rail을 다른 packet에 중복 등록하지 않는다.
+기존 ID는 아래 경로표와 ADR 계약으로 해석한다. 날짜별 packet/티켓을 다시 만들거나
+같은 작업/무거운 rail을 다른 목록에 중복 등록하지 않는다.
+
+## Test and platform
+
+Owner: I0 + 실제 test/adapter owner. Contract:
+[선택된 회귀·플랫폼](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#selected-regression-and-platform-acceptance),
+[CI provider](../../../adr/SEP-28-001-circleci-provider-and-credit-boundary.md).
+
+| 남은 scope | 종료 조건 |
+| --- | --- |
+| QIT-00/01/05 | 선택된 catalog의 독립 oracle·public wire negative/re-encode 및 lexical/ANN/fusion/filter/metamorphic 결과. Source registration과 실제 execution을 구분 |
+| QIT-02/03/04 | 기존 lifecycle/F15/history fixture 재구현 없음. 선언된 generated/repeat inventory·native race detector·추가 선택 storage/marker/CAS crash scope의 실제 결과 |
+| QIT-06 / installed · J7Q-02 | 실제 설치된 SDK/CLI/daemon·consumer lifecycle/recovery·operator/preview/explain wire proof. Local/scripted peer 결과는 별도 |
+| QIT-07 | 선택된 risk-owner mutation/fuzz/coverage·survivor disposition/expiry·minimized input. 옛 미승인 비율·횟수 목표는 Git history로 퇴역 |
+| MISC-03 | 모든 선택 adapter의 실제 large success/failure stdout/stderr·many-entry metadata/archive/JSONL·interrupt·heap/bounded I/O |
+| MISC-04/05 / QIT-09 | 마지막 영향 source의 canonical nonzero inventory/terminal·production/relocated replay·full selected Rust/Python/hosted/Linux. Native detector/API/model 및 조건부 diagnostics는 선택한 범위만 판정 |
+| MISC-06 / QIT-08 | 같은 selector·assertions의 paired test cost 및 query-observer/deadline/fetch parity. 정식 latency/scale/relevance는 E4/E1에 한 번만 실행 |
+| MISC-07 | 선택된 registry profile·actual command/input/native capability/replay/exclusion 정합성. 지원하는 실제 multi-repo/product pilot; 작은 fixture로 all-language/full-platform을 승격하지 않음 |
+
+필수 입력이 없으면 그 claim만 BLOCKED, 선택됐으나 미실행이면 NOT_RUN이다.
+원 source의 완료된 main CI/cache/lifecycle/history 결과는 ADR에 남기며 새 source 결과와 섞지 않는다.
+
+## Semantic
+
+Owner: producer + semantic/search-plane/SDK/operator. Contract:
+[generation/cache](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md),
+[selected semantic/ANN](../../../adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md#semantic-and-ann-proof).
+
+- 실제 typed-source ReplaceGeneration/Delta/no-op/tombstone membership과 prior-base,
+  resolver/aggregate/outbox retained state·paired restart를 두 저장소의 matching source로 검증한다.
+- Partial derivation 후 restart·delete/replacement·complete seal·model/dimension refusal·blocked activation,
+  installed CLI/live provider/release를 선택한 rail에서 실행한다. 기존 cache matrix는 완료다.
+- 실제 provider request/failure/cache와 선택된 latency/pending-work/seal-lag/model/policy/blocked 이유를
+  기존 export에서 확인한다. Boot-time metric 존재는 live 동작 증거가 아니다.
+- 증분 reuse는 stable producer semantic-owner identity가 필요하며 불명확하면 full rebuild한다.
+  Model/render/normalization 변경은 coordinated rebuild/refusal 및 비용 검증이 필요하다.
+  Batched/async worker·새 cache tier/projection은 측정·consumer 요구 이후 별도 결정이다.
+- NL semantic relevance는 E1의 독립 pool/holdout, encoder latency/memory는 E4,
+  큰 corpus ANN recall은 독립 exhaustive oracle이 소유한다. Exact-symbol 성공으로 대신하지 않는다.
+
+## Release and proof
+
+Owner: I0 + producer/운영 담당. Contract:
+[installed/pair/actions](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance).
+Proof ID/target/host/staging/graph는 [실행 registry](../../../../tools/ci/proof-authority.toml)와
+독립 checker가 소유한다. 이 표는 구현된 foundation을 다시 만드는 작업표가 아니다.
+
+| 기존 scope | 남은 acceptance / 선행 |
+| --- | --- |
+| R0 / P00 | 선택된 final-source raw nonzero inventory·actual producer/native/SDK 및 relocated replay. Wrong counts/source/binary/host/run·partial/tamper refusal; trusted runner authority |
+| R1 / P03–08 | 등록된 concrete release targets와 독립 oracle: activation/exact ACK/publish-only; held physical view·GC/churn/cancel; fixed quality IDs/order/windows; actual SDK wrong identity; real provider identity/egress/budget/cancel; process signal/child/readiness/FD/lease/shutdown |
+| R2 / P09 | 실제 release process의 active-root stale/missing/divergent/backend-loss/restoration·cadence. Admin ring denial/caps/wrap/drop/gap/instance/restart/two-UID/request correlation. Existing root probe는 full-content scrub이 아님 |
+| R3 / upstream | Semantica aggregate handoff의 별도 expected replace/tombstone/unchanged partition oracle. Supplied scope/prior binding·plan assembly와 구분; 현재 caller/source를 다시 확인하고 producer owner가 구현/검증. 관측된 omission 사고로 표기하지 않음 |
+| R4 / S21-11 / P10 | Current-format exclusive-lease backup/verify/restore 및 native exporter mutation/replay·release/authorized target root. Disposable owner fixture는 실제 data/host qualification이 아님 |
+| R5 / S21-12 / P11 pair | 두 clean source와 실제 상대 Cargo dependency/lock·fresh build/test/daemon·V2 positive/negative/exact replay. 기존 candidate-only caller archive는 운영 proof가 아님 |
+| R6 / S21-12/13 / P11–12 | Concrete deploy/activate/restore-forward adapters·독립 pre/post observer 및 authorized Linux/config/state/retention/rollback 입력. 이어 P12A와 final require-all/bind-source graph; CODE/DEPLOYED/ACTIVATED/ROLLBACK 별도 verdict |
+
+R3 upstream oracle 구현에는 Linux/운영 입력이 선행하지 않는다.
+실제 target 입력 부재가 dependent action만 막는다. Historical handoff 감사는 현재 release와 별도다.
+
+## Legacy scope routes
+
+영구 조건은 ADR, 현재 입력/실행 상태는 위 owner에 한 번만 둔다.
+
+| 퇴역한 RFC/플랜/티켓 ID | 현재 owner / 계약 |
+| --- | --- |
+| CS-BENCH-01/03 · S30-B01/02/03/05/08/09 | E1; [corpus/gold/holdout](../../../adr/OCT-05-001-review-admission-and-result-identity.md#corpus-gold-and-holdout-acceptance), [통계·default](../../../adr/OCT-05-001-review-admission-and-result-identity.md#statistical-units-and-default-decisions) |
+| S30-B06 / ARB | E1/E2; per-case official base·original/adapted/no-gold·file/context budget는 위 corpus 계약 |
+| CS-BENCH-02/04 · S30-B04 | E2/E4; [native/mutation](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#native-matrix-and-incremental-acceptance) |
+| CS-ENG-02 · S30-B07 · J7Q-03/04 | E4; [whole-pipeline/host/sample](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#whole-pipeline-measurement-acceptance) |
+| J7Q-01/02 | E1 및 installed owner; [preview/operator](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#consumer-preview-and-operator-acceptance) |
+| QIT-00–09 · MISC-03–07 | [Test/platform](#test-and-platform); 품질·비용은 E1/E2/E4 |
+| SEM-OWN / May25 | [Semantic](#semantic); async worker/cache/projection 새 설계는 조건부 |
+| CS-INT-01 · SEP-21 R0–R6/S21-11/12/13 | I0; [Release/proof](#release-and-proof) |
+| CS-ENG-04 · OCT-04 proposed designs | [Deferred regex](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md#deferred-regex-allocation-cap-cs-eng-04) 및 [Proposed ADR](../../../adr/README.md). 선택되지 않은 구현/릴리스 gate를 만들지 않음 |
