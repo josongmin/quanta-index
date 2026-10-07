@@ -20,7 +20,9 @@ The original two focused tests and three composition controls passed; runtime
 library/test strict Clippy passed. The following four-test matrix also passed
 (14.841s): semantic/hybrid exact-text cold/warm/uncached parity,
 model/revision/dimension rotation/restoration and actual OS-process cache reopen.
-Its affected library-test strict Clippy also passed (19.01s).
+Normal-library strict Clippy passed (19.01s); the corrected `--lib --tests`
+check for the new cache-test code also passed after fixing three lints (4.46s).
+The same four focused tests passed again on the revised source (14.674s).
 Completed scope and exact commands are owned by the ADR. Repeating their
 implementation or focused execution is not remaining work. Installed CLI,
 live-provider and upstream-pair qualification retain their own acceptance.

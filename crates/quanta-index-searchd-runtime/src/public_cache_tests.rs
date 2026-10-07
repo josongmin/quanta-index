@@ -550,7 +550,10 @@ fn hybrid_query(running: &Running, text: &str, first: &str) -> Result<Vec<(Strin
     {
         assert_eq!(row.candidate.candidate_id, expected_id);
         assert_eq!(row.contributions.len(), 1);
-        let dense = &row.contributions[0];
+        let dense = row
+            .contributions
+            .first()
+            .ok_or_else(|| anyhow!("hybrid fixture is missing its dense contribution"))?;
         assert_eq!(dense.lane, HybridLaneV1::Dense);
         assert_eq!(dense.rank, rank);
         assert_eq!(dense.raw_score.to_bits(), raw_score.to_bits());
@@ -651,7 +654,16 @@ impl CacheChild {
 impl Drop for CacheChild {
     fn drop(&mut self) {
         if let Some(mut child) = self.0.take() {
-            if child.try_wait().ok().flatten().is_none() {
+            let needs_kill = match child.try_wait() {
+                Ok(status) => status.is_none(),
+                Err(error) => {
+                    super::boot_log(&format!(
+                        "cache child status unavailable during cleanup: {error}"
+                    ));
+                    true
+                }
+            };
+            if needs_kill {
                 let _killed = child.kill();
             }
             let _reaped = child.wait();
@@ -681,9 +693,10 @@ fn run_cache_process_phase(root: &Path, phase: &str) -> Result<()> {
     running.stop()
 }
 
-/// Each phase runs the actual runtime in a fresh OS process with no inherited
-/// provider/cache objects. The parent waits for the seed process to exit before
-/// reopening its persisted corpus and query-vector cache in another process.
+/// Reopens the persisted cache in a fresh runtime OS process.
+///
+/// Each phase inherits no provider/cache objects. The parent waits for the seed
+/// process to exit before starting the next runtime over its persisted root.
 #[test]
 fn sdk_cache_survives_os_process_restart() -> Result<()> {
     if let Some(root) = std::env::var_os(PROCESS_ROOT_ENV) {

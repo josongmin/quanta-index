@@ -180,8 +180,15 @@ This includes dimension rotation/restoration, hybrid/semantic cache reuse and
 fresh OS-process reopen, with fixed expected IDs, scores and provider/cache
 observations. The process test runs the real runtime with test HTTP transport;
 it is not the separately installed CLI or live-provider release rail.
-Affected library-test strict Clippy also passed (exit0, 19.01 seconds):
+Normal-library strict Clippy passed (exit0, 19.01 seconds):
 `./scripts/cargow --lane test-daemon-lane clippy -p quanta-index-searchd-runtime --lib --all-features --locked -- -D warnings`.
+That command excludes `cfg(test)` and does not establish strict Clippy for the
+new cache-test code. The corrected affected library-test command passed after
+fixing three test-code lints (exit0, 4.46 seconds):
+`./scripts/cargow --lane test-daemon-lane clippy -p quanta-index-searchd-runtime --lib --tests --all-features --locked -- -D warnings`.
+After those lint fixes, the same four cache tests passed again (14.674 seconds;
+three other library tests excluded). Both the corrected strict check and this
+focused rerun cover the revised test source.
 The command reused the existing external Cargo target with
 `QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR=1`, explicit `CARGO_TARGET_DIR`,
 `QUANTA_INDEX_TARGET_GC=0`, `QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200` and

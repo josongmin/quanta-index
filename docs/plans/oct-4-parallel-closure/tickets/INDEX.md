@@ -17,7 +17,7 @@ C6의 필수 hosted CI 완료와 F15 구현·집중 회귀를 확인했다.
 완료 범위는 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)가 소유한다.
 후속 query/restart·paged directory 수리는 `b09c4aa7`·`70521514`·`b262925b`로 main에 반영됐다.
 해당 focused 회귀와 daemon214 검증 및 `8642fa9b` hosted6jobs는 완료됐다.
-추가 cache matrix4/4·affected library strict도 완료됐고, Large/XL 및 별도 release 수용은 잔여다.
+추가 cache matrix4/4와 normal-library strict는 완료됐다. 새 cache-test 코드의 `--lib --tests` strict도 lint3개 수정 후 통과했으며, Large/XL 및 별도 release 수용은 잔여다.
 F14/F15, staged upload, EOF cancellation, checked memory/deadline, scanner custody,
 P11 공통 producer/parser/checker/recipes 및 hosted CI 분할은 구현돼 있다.
 같은 구현을 다시 만드는 티켓은 제거했다. 추가 수리는 실제 비용·반례 또는 target 계약으로 결정한다.
@@ -35,7 +35,7 @@ P11 공통 producer/parser/checker/recipes 및 hosted CI 분할은 구현돼 있
 | E4 F15 | full-build/cold-refusal·replay barrier, fresh 복구 query, interrupted delta clone 수리. main70521514까지 반영했고 owner의 36 I/O·36 SIGKILL cuts 및 저장소 회귀 통과. Medium 실제 restart/delete·release binary custody 및 fixed705 daemon214도 완료. `8642fa9b` hosted도 완료 | Large/XL lifecycle 비용/RSS. 기존 fault/query/daemon matrix 재구현 없음 |
 | QIT lifecycle | 기존 6 generated Build traces에 반복 unsealed append/replace/restart가 이미 있음. Corpus/kind/owner 독립 키·Symbol/Module Clear·과거 pin 혼합 adapter 모델 3tests·strict Clippy `VERIFIED`. 새 SDK/실제 daemon의 source 삭제/append/old replay/pin/중복·stale CAS/조기 publication 거절·exact retry/rollback/restart와 독립 row/head checker는 최종 8/8·affected strict 통과. coverage-bound SDK의 독립 Chunk/Symbol clear 금지는 유지 | 구현·focused oracle은 잔여에서 제외. 선언된 generated/repeat inventory·native race detector는 별도 `NOT_RUN` |
 | QIT concurrency | 기존 race/CAS/sync-delay 회귀와 새 invocation/response·real-time history checker. 복합 duplicate/reorder/caller-delay/rollback/restart 및 고정 음성 반례는 최종 8/8·affected strict 통과 | 선언된 generated/repeat inventory·native race detector 실행은 별도이며 100,000 search-node 한도는 nightly transition 실행이 아님 |
-| Semantic | SDK/UDS→production provider/cache/storage의 FooBar/foobar/foo_bar/foo bar semantic/hybrid cold/warm·uncached parity, model-id/revision/dimension rotation/restoration 및 실제 OS-process cache reopen matrix4/4 `VERIFIED` (14.841s)·affected library strict 통과(19.01s). 기존 composition3tests·cfg(test) strict도 통과. 완료 범위는 [ADR](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)이 소유 | 기존 OpenAI paraphrase rail(ignored)의 실제 API 입력/실행, installed CLI/live-provider release 및 upstream producer 검증은 별도 잔여 |
+| Semantic | SDK/UDS→production provider/cache/storage의 FooBar/foobar/foo_bar/foo bar semantic/hybrid cold/warm·uncached parity, model-id/revision/dimension rotation/restoration 및 실제 OS-process cache reopen matrix4/4 `VERIFIED` (lint 수정 후 재실행14.674s)·normal-library strict 통과(19.01s). 새 cache-test 코드의 corrected `--lib --tests` strict도 lint3개 수정 후 통과(4.46s). 기존 composition3tests·이전 cfg(test) strict도 통과. 완료 범위는 [ADR](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md#text-vector-and-cache-identity)이 소유 | 기존 OpenAI paraphrase rail(ignored)의 실제 API 입력/실행, installed CLI/live-provider release 및 upstream producer 검증은 별도 잔여 |
 | I0 operations | 공통 typed action producer·pre-state refusal·checker/aggregate, optional paired caller/kernel archive | concrete target adapter·독립 observer 계약 구현, authorized target 입력 및 exact-pair/action 실행 |
 
 완료된 foundation은 [review ADR](../../../adr/OCT-05-001-review-admission-and-result-identity.md#owners-and-regressions),
@@ -52,7 +52,7 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
 
 | 우선·owner | 실제 잔여 | 종료 조건 |
 | --- | --- | --- |
-| P0 · I0-02 / CI/integration | 추가 cache 테스트 source의 hosted 결과 및 선택된 SDK/Contract·PR/release 결과 회수 | 같은 source의 terminal·inventory·receipt. cache focused4/4·strict 및 `8642fa9b` regular main6jobs는 완료이며 기존 CI/F15 수리는 잔여가 아님 |
+| P0 · I0-02 / CI/integration | 추가 cache 테스트 source의 hosted 결과 및 선택된 SDK/Contract·PR/release 결과 회수 | 같은 source의 terminal·inventory·receipt. cache focused4/4·corrected library-test strict 및 `8642fa9b` regular main6jobs는 완료이며 기존 CI/F15 수리는 잔여가 아님 |
 | P1 · E4 / Scale | matching Large4,096·XL32,768 lifecycle/capacity/cost·OS restart | 원래 fixture, 명시된 profile, live/RSS/retained bytes·typed over-limit refusal |
 | P1 · E4 / performance | 전체 sync/read/hash/metadata·segment fanout 비용, scanner·Semble·bootstrap 판정 | 원인별 실제 관측 및 독립 parity. 정식 속도는 admitted host·사전 기준·반복 표본 |
 | P1 · E1/E2 / quality | labels/admissions·matching Quanta/Semble pair·native replay/full5·독립 채점 | required cells 및 query/unit/source/index scope, 미판단·실패·제외 분모 설명 |
@@ -96,7 +96,8 @@ SDK/Contract `e37123eb`, hosted CI `9221d771`, CS/SG/OG ready9 `09103820`의 완
   Aux PR coverage의 pending은 완료된 main 필수 CI와 별도 scope다.
   CI9def97ac·F15 8599f2e8 및 후속 clone/query/restart 수리는 main 반영 완료다.
   Fixed70521514의 daemon214와 Medium restart/delete 회귀2개도 완료됐다.
-  `8642fa9b` regular main6jobs와4268 Rust tests·receipt 대조 및 후속 cache4/4·strict도 완료됐다.
+  `8642fa9b` regular main6jobs와4268 Rust tests·receipt 대조 및 후속 cache4/4·normal-library strict도 완료됐다.
+  새 cache-test 코드의 corrected `--lib --tests` strict도 lint3개 수정 후 통과했다.
   새 cache 테스트 source의 hosted 결과는 이전4268 결과와 별도로 회수한다.
   Frozen492d2fdc의 XL lifecycle 기능 proof도 완료돼 있다. 최신 profile의 Large/XL 비용/RSS 종료는 별도 잔여다.
   선택한 Linux 정식 rail은 macOS에서 unsupported_host로 거절됐다. Foreign Rust/Scale도
@@ -349,7 +350,7 @@ Contract: [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-b
 ### O4-I0-02
 
 추가 cache 테스트 source의 hosted 결과 및 selected SDK/Contract·PR/release proof 회수가 잔여다.
-Cache focused4/4·affected library strict는 완료됐으며 같은 집중 실행을 다시 잔여로 등록하지 않는다.
+Cache focused4/4·normal-library strict 및 lint3개 수정 후 corrected `--lib --tests` strict는 완료됐다. 같은 focused 실행을 다시 잔여로 등록하지 않는다.
 `8642fa9b` regular main6jobs는 완료됐고,4268 Rust tests·30 skipped 및 receipt의
 source/command/inventory/raw/result 대조를 Scale/Scanner owner가 확인했다.
 완료된 regular main 범위는 [ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints)이 소유한다.
