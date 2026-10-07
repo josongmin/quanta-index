@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -122,6 +123,11 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
 ):
     quanta, paired, _, _ = resolution
     repo_root = Path(__file__).resolve().parents[3]
+    python_env = paired / "scripts/lib/python-env.sh"
+    python_env.parent.mkdir(parents=True)
+    python_env.write_text(
+        "cg_resolve_python_bin() { printf '%s\\n' " + shlex.quote(sys.executable) + "; }\n"
+    )
     monkeypatch.delenv("QUANTA_P11_R5_EVIDENCE_ROOT", raising=False)
     if temporary == "default":
         monkeypatch.delenv("TMPDIR", raising=False)

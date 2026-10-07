@@ -447,3 +447,33 @@ population as these 33 profiles. None qualifies a later source or supplies
 missing current producer/phase bindings. Do not list the original B09 native
 inventory wholesale as `NOT_RUN` or promote its old phase bytes to a current
 closed capture.
+
+Frozen-driver recapture preparation independently matched the original bytes
+for CLARC original/neutral-renamed and six CodeSearchNet languages: eight cells,
+1,350 selected tasks and3,798 source files. The original explicit64-token NL
+policy is preserved. Actual execution remains `NOT_RUN`. Original checkout
+directories for24 OSA cells are absent, so their new recapture is `BLOCKED`;
+retained top-k candidates cannot reconstruct those source universes. Preparation
+and the independent controller are under `/private/tmp/qb09-owmq5d8q/`.
+
+## ARB current policy and official file scoring
+
+The frozen88-case official population has three separately prepared arms under
+the current32-token NL policy: original text13 accepted/75 refused, retained
+adapter-v1 27/61 and canonical adapter-v2 88/0. The historical original17 arm
+included four queries now over the token limit and is not the current13 arm.
+All128 accepted case/spec/source/gold bindings passed preflight; their actual
+captures remain `NOT_RUN`. The fresh external copy-spec preparation is
+`/private/tmp/qarb-14cw8d1e/preparation.json`; query/budget/gold bytes are unchanged.
+
+The [read-only scorer](../../tools/benchmark/retrieval/arb_official_score.py)
+binds official raw samples and `baseline.target_gold_files`, original/adapted
+query identity, base commit, full file universe, suite/pack/spec and current
+record run/profile/binary identity. Its pinned official Recall@20/MRR@20 uses
+the first20 distinct paths in the top100 ranked chunks. Successful/capped
+rankings and observed empty abstentions can score; missing, malformed, failed
+or refused records retain distinct states and no invented zero-filled metrics.
+The25 focused tests and real128-case empty-record binding preflight passed;
+that preflight supplies no native results. BCY remains `BLOCKED` until official
+archive and extracted corpus bytes have independent custody. File relevance,
+BCY, native capture custody and qualified holdout/performance remain separate.

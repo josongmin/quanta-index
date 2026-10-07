@@ -175,6 +175,13 @@ def _qbc_modules(root: Path) -> tuple[Any, Any, Any]:
     import quanta_build_cli as qbc
     import verification_completion_locator_v1 as completion
 
+    for module, name in (
+        (completed, "qbc_completed_run_v1"),
+        (completion, "verification_completion_locator_v1"),
+        (qbc, "quanta_build_cli"),
+    ):
+        if Path(module.__file__).resolve() != root / "tools/quanta-build-cli" / (name + ".py"):
+            raise ValueError("paired QBC module belongs to another source")
     return completed, completion, qbc
 
 
@@ -401,6 +408,7 @@ def main() -> int:
     }
     _verify_resolution_files(root, semantica, resolutions)
     if args.verify_resolution_only:
+        _qbc_modules(semantica)
         return 0
     for field in (
         "evidence_root",

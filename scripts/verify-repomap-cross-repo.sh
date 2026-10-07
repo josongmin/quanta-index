@@ -4,6 +4,10 @@ set -euo pipefail
 quanta_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 semantica_root="${1:?Semantica checkout path is required}"
 semantica_root="$(cd -- "$semantica_root" && pwd -P)"
+# Use the same supported interpreter as the producer's QBC front door.
+# The host's python3 may be Xcode Python 3.9 even when QBC has Python 3.12.
+source "$semantica_root/scripts/lib/python-env.sh"
+paired_python="$(cg_resolve_python_bin "$semantica_root")"
 provided_binary="${QUANTA_INDEX_SEARCHD_BIN:?QUANTA_INDEX_SEARCHD_BIN is required}"
 r5_lane="${QUANTA_P11_R5_QBC_LANE:?registered QBC lane is required}"
 if [[ "$provided_binary" != /* ]]; then
@@ -31,7 +35,7 @@ require_frozen_source "$semantica_root" "$semantica_head"
 resolved_pair() {
   local consumer="$1"
   local feature="$2"
-  python3 "$quanta_root/tools/ci/paired_cargo_resolution.py" \
+  "$paired_python" "$quanta_root/tools/ci/paired_cargo_resolution.py" \
     --quanta-root "$quanta_root" --paired-root "$semantica_root" \
     --consumer "$consumer" --feature "$feature" --qbc-lane "$r5_lane"
 }
@@ -47,13 +51,13 @@ kernel_resolution="$(resolved_pair quanta-runtime-retrieval-kernel index-sdk-ing
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
 
-PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" python3 "$quanta_root/tools/ci/paired_r5_result.py" \
+PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" "$paired_python" "$quanta_root/tools/ci/paired_r5_result.py" \
   --verify-resolution-only --quanta-root "$quanta_root" --semantica-root "$semantica_root" \
   --runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution"
 
 cd -- "$quanta_root"
 just rust-build-release-daemon-fresh
-target_dir="$(./scripts/cargow --lane release-daemon-bin-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+target_dir="$(./scripts/cargow --lane release-daemon-bin-lane metadata --format-version 1 --no-deps | "$paired_python" -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 built_binary="$target_dir/release/quanta-index-searchd"
 if [[ ! -x "$built_binary" || ! -x "$provided_binary" ]]; then
   printf 'fresh release daemon and QUANTA_INDEX_SEARCHD_BIN must both be executable\n' >&2
@@ -69,11 +73,11 @@ cleanup_custody() {
 trap cleanup_custody EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
-binary_digest="$(python3 "$quanta_root/tools/ci/binary_custody.py" pin \
+binary_digest="$("$paired_python" "$quanta_root/tools/ci/binary_custody.py" pin \
   "$built_binary" "$provided_binary" "$custody_binary")"
 export QUANTA_INDEX_SEARCHD_BIN="$custody_binary"
 require_binary_custody() {
-  python3 "$quanta_root/tools/ci/binary_custody.py" verify "$binary_digest" \
+  "$paired_python" "$quanta_root/tools/ci/binary_custody.py" verify "$binary_digest" \
     "$built_binary" "$provided_binary" "$custody_binary"
 }
 require_frozen_source "$quanta_root" "$quanta_head"
@@ -88,7 +92,7 @@ else
   evidence_root="$evidence_parent/result"
 fi
 require_binary_custody
-PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" python3 "$quanta_root/tools/ci/paired_r5_result.py" \
+PYTHONPATH="$quanta_root${PYTHONPATH:+:$PYTHONPATH}" "$paired_python" "$quanta_root/tools/ci/paired_r5_result.py" \
   --quanta-root "$quanta_root" --semantica-root "$semantica_root" \
   --evidence-root "$evidence_root" --qbc-lane "$r5_lane" \
   --quanta-head "$quanta_head" --semantica-head "$semantica_head" \

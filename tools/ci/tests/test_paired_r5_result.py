@@ -392,7 +392,7 @@ def test_default_recipe_uses_typed_selected_runner_and_same_cargo_target_floor()
     ).read_text(encoding="utf-8")
     assert script.count(f"resolved_pair quanta-runtime {required})") == 2
     assert '--qbc-lane "$r5_lane"' in script
-    assert 'python3 "$quanta_root/tools/ci/paired_r5_result.py"' in script
+    assert '"$paired_python" "$quanta_root/tools/ci/paired_r5_result.py"' in script
     assert "--list" not in script
     assert "| rg '^index_sdk_ingress" not in script
     assert "--all-features" not in script
@@ -485,6 +485,10 @@ def test_resolution_preflight_cli_checks_nested_lock_without_runner(tmp_path: Pa
     root, paired, resolutions = _complete_resolution_fixture(tmp_path)
     # A different root lock cannot stand in for the nested Cargo resolver's lock.
     (paired / "Cargo.lock").write_bytes(b"unrelated root lock\n")
+    modules = paired / "tools/quanta-build-cli"
+    modules.mkdir(parents=True)
+    for name in ("qbc_completed_run_v1", "verification_completion_locator_v1", "quanta_build_cli"):
+        (modules / (name + ".py")).write_text("# import-only runtime fixture\n")
     command = [
         sys.executable,
         str(Path(RUNNER.__file__)),
@@ -505,6 +509,13 @@ def test_resolution_preflight_cli_checks_nested_lock_without_runner(tmp_path: Pa
         command, cwd=tmp_path, env=environment, capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stderr
+    (modules / "quanta_build_cli.py").write_text("raise RuntimeError('QBC runtime unavailable')\n")
+    result = subprocess.run(
+        command, cwd=tmp_path, env=environment, capture_output=True, text=True, check=False
+    )
+    assert result.returncode != 0
+    assert "QBC runtime unavailable" in result.stderr
+    (modules / "quanta_build_cli.py").write_text("# import-only runtime fixture\n")
     (paired / "packages/analysis/quanta-v2/Cargo.lock").write_bytes(b"changed nested lock\n")
     result = subprocess.run(
         command, cwd=tmp_path, env=environment, capture_output=True, text=True, check=False

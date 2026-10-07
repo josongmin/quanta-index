@@ -230,6 +230,9 @@ executed/reused/unsupported/failed/blocked/not_run 설명 및 ready drain이다.
 Gin v3 native 및7개 default cohort의 실행/독립 replay는 완료됐다.
 B09 원33cells/11,272selected rows의 original commitments 및 diagnostics는 대조 완료다.
 Current phase replay33은 producer 증거 부재로 `FAILED`이며 원 완료와 분리한다.
+재캡처 입력 대조에서 CLARC2/CSN6 cells의 1,350selected tasks·3,798source files는
+원 manifest bytes와 대조돼 준비됐다. OSA24 cells의 원 checkout은 없어 `BLOCKED`다.
+준비8 cells의 actual native는 `NOT_RUN`; 원 successful33 결과와 분리한다.
 원 source와 qrel-only reuse를 구분한다. 살아 있는 process/malformed/wrong-repo terminal/
 missing/output 경합은 success가 아니다. 완료: 누락 없는 terminal/input-byte inventory와 실패 sibling에 독립적인 실행.
 
@@ -244,7 +247,12 @@ content absence/typo content absence7개 cohort와 explicit typo1,189/독립 OSA
 Gin20의 original manifest bytes 복구·f606 native hybrid pair20·독립 byte-identical
 verdict replay는 [진단 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-retained-gin20-hybrid-pair)로 완료 이관했다.
 잔여 selected lanes는 C3 NL240;
-ARB original17/88·adapted88 및 후속 source/producer 조건을 요구하는 B09 cells다.
+ARB current32-token policy의 original13/88·retained adapter-v1 27/88·adapter-v2 88/88 및
+후속 source/producer 조건을 요구하는 B09 cells다. Historical original17과 current13을 구분한다.
+새 read-only ARB scorer는 official raw sample/gold·base/universe·spec·query·record를 결속하며
+top100chunks→20distinct files의 공식 Recall/MRR를 계산한다. Focused25와 actual128 prepared-spec
+binding preflight는 `VERIFIED`; actual capture/score는 `NOT_RUN`이다. 미실행·refusal·failure를
+zero score로 채우지 않으며 official archive/extracted-byte custody가 없는 BCY는 `BLOCKED`다.
 원 B09 OSA/CLARC/CSN 캡처33개를 전부 미실행으로 재표기하지 않는다.
 현재 decoder의 phase refusal은 [원 scope 대조](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#retained-b09-scope-reconciliation)를 따른다.
 Four typo populations1,192/1,178/1,192/1,192와 ARB original/adapted 분모를 합산하지 않는다.
@@ -401,6 +409,9 @@ main48fd의 수리는 OS 임시 경로 정규화·3파일/4경계 변조 거절�
 Local full 실행의4,058passed/1failed는 수리 전 결과로 보존하며 최신 full-suite 성공으로 합산하지 않는다.
 48fd 원격 Python1576은 동일 source에서4,355passed/30skipped·Ruff check/406-file format으로
 `VERIFIED`다. 별도 P00 selection386은 중첩하며 합산하지 않는다. 후속 tooling 수정과 Rust CI는 별도 scope다.
+48fd Rust1578의 receipt/raw/inventory 및 source를 대조해4,286selected/executed/passed,
+0failed·30ignored inventory를 확인했다. Bench1577도 같은 source에서 성공했고 final verify의
+terminal은 별도 확인한다. Bench는 실제 benchmark 실행이 아닌 compilation이다.
 QBC metadata completion probe는 별도로 `verification source changed during QBC execution`로
 `FAILED`다. 원인은 미확정이며 실제 Nextest 실행 실패로 재표기하지 않는다.
 Clean Quanta c38/fixed77bc의 첫 actual paired recipe는 새 all-feature release build를13m08s에
@@ -409,8 +420,13 @@ Clean Quanta c38/fixed77bc의 첫 actual paired recipe는 새 all-feature releas
 `/private/tmp/qna7vj2zq6/r5-c38-failure.json`과 연결해 보존했다. 검증기는 producer와 같은
 paired-checkout 상대 경로를 사용하도록 수리했고, 동일 file guard를 expensive build 전에 실행한다.
 Actual resolver 출력의 현재 manifest/lock 대조와 producer→runner 경로 roundtrip·pre-build refusal·custody
-focused133은 `VERIFIED`다. Current paired caller/kernel
-build/test는 아직 `NOT_RUN`이며 수리된 clean source에서 실행한다.
+focused133은 `VERIFIED`다. 후속 clean9c0/fixed77bc actual recipe는 fresh build를2m29s에
+완료한 뒤 host Xcode Python3.9에서 QBC `tomllib` import가 실패했다. 원 controller·daemon은
+`/private/tmp/qna7vj2zq6/r5-9c0-failure.json`에 결속해 보존했다. 실제 Nextest list/run은 미시작이다.
+현재 shell은 producer의 canonical `python-env.sh` resolver를 모든 Python helper에 사용하며,
+QBC module origin/import를 expensive build 전에 검사한다. Actual Python3.12.12로 frozen77bc
+QBC import·manifest/lock preflight와 focused133은 `VERIFIED`다. Current paired caller/kernel
+build/test는 아직 `NOT_RUN`이며 새 clean source에서 실행한다.
 Resolution preflight로 이 테스트를 대체하지 않는다.
 외부 작업을 reset/stage하거나 dirty pair를 qualified로 발행하지 않는다.
 외부 Semantica R3 expected semantic partition/omission 검증은 producer owner의 별도 연동 잔여다.
