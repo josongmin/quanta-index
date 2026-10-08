@@ -295,10 +295,55 @@ macro_rules! validated_identity {
                 Ok(Self(value))
             }
 
-            /// Validate borrowed input at the same predicate/NFC producers,
-            /// then perform exactly one admitted owned copy. The normalization
-            /// policy owns temporary scratch grants; the copy admission retains
-            /// the resulting String backing with the caller's original group.
+            /// Validate and copy borrowed input into caller-owned attempt slots.
+            ///
+            /// `attempted` must be false, `backing` empty with zero capacity,
+            /// and `output` None. Invalid or reused slots are preserved without
+            /// invoking either admission. Once validation begins, this attempt
+            /// cannot be reused, including after refusal before native birth.
+            ///
+            /// The same predicate/NFC producers validate before the single
+            /// admitted copy. Failure preserves partial or complete unsealed
+            /// backing in the caller's String and returns the exact cause.
+            /// Only a successful final checkpoint moves backing into `output`.
+            /// The caller retains these slots, the returned failure, and its
+            /// original copy grant through failure settlement.
+            #[cfg(feature = "quanta-native-identity-v1")]
+            pub fn try_from_str_into_with_native_admission_v1<P>(
+                value: &str,
+                backing: &mut String,
+                output: &mut Option<Self>,
+                attempted: &mut bool,
+                normalization_admission: &mut P,
+                copy_admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, P::Error>,
+            ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>>
+            where
+                P: unicode_normalization::NativeNormalizationAdmissionV1,
+            {
+                if *attempted || output.is_some() || !backing.is_empty() || backing.capacity() != 0 {
+                    return Err(NativeIdentityConstructionErrorV1::Copy(
+                        NativeIdentityCopyErrorV1::InvalidNativeProducer,
+                    ));
+                }
+                *attempted = true;
+                validate_native_identity_v1(value, normalization_admission)?;
+                let copy_work = u64::try_from(value.len()).map_err(|_| {
+                    NativeIdentityConstructionErrorV1::Normalization(
+                        unicode_normalization::NativeNormalizationErrorV1::ArithmeticOverflow,
+                    )
+                })?;
+                normalization_admission.checkpoint_work_v1(copy_work)
+                    .map_err(|cause| NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(cause)))?;
+                try_copy_string_into_with_native_birth_v1(value, backing, copy_admission)
+                    .map_err(NativeIdentityConstructionErrorV1::Copy)?;
+                normalization_admission.checkpoint_work_v1(0)
+                    .map_err(|cause| NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(cause)))?;
+                *output = Some(Self(core::mem::take(backing)));
+                Ok(())
+            }
+
+            /// Owned convenience over the same borrowed attempt body.
+            /// Use the into-slot API when backing must outlive a late refusal.
             #[cfg(feature = "quanta-native-identity-v1")]
             pub fn try_from_str_with_native_admission_v1<P>(
                 value: &str,
@@ -308,19 +353,16 @@ macro_rules! validated_identity {
             where
                 P: unicode_normalization::NativeNormalizationAdmissionV1,
             {
-                validate_native_identity_v1(value, normalization_admission)?;
-                let copy_work = u64::try_from(value.len()).map_err(|_| {
-                    NativeIdentityConstructionErrorV1::Normalization(
-                        unicode_normalization::NativeNormalizationErrorV1::ArithmeticOverflow,
-                    )
-                })?;
-                normalization_admission.checkpoint_work_v1(copy_work)
-                    .map_err(|cause| NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(cause)))?;
-                let value = try_copy_string_with_native_birth_v1(value, copy_admission)
-                    .map_err(NativeIdentityConstructionErrorV1::Copy)?;
-                normalization_admission.checkpoint_work_v1(0)
-                    .map_err(|cause| NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(cause)))?;
-                Ok(Self(value))
+                let mut backing = String::new();
+                let mut output = None;
+                let mut attempted = false;
+                Self::try_from_str_into_with_native_admission_v1(
+                    value, &mut backing, &mut output, &mut attempted,
+                    normalization_admission, copy_admission,
+                )?;
+                output.ok_or(NativeIdentityConstructionErrorV1::Copy(
+                    NativeIdentityCopyErrorV1::InvalidNativeProducer,
+                ))
             }
 
             /// Validate an already-owned, caller-admitted String without a
@@ -904,5 +946,332 @@ mod native_raw_identity_tests_v1 {
             assert_eq!(admission.births, expected_births);
             assert_eq!(admission.releases, 2);
         }
+    }
+
+    #[test]
+    fn borrowed_into_slots_seals_canonical_repo_and_revision_only_after_success_v1() {
+        let source = format!("q{}", "\u{301}".repeat(20));
+        let mut backing = String::new();
+        let mut output = None;
+        let mut attempted = false;
+        let mut admission = Admission::default();
+        let mut copies = 0_usize;
+        RepoId::try_from_str_into_with_native_admission_v1(
+            &source,
+            &mut backing,
+            &mut output,
+            &mut attempted,
+            &mut admission,
+            |bytes, birth| {
+                assert_eq!(bytes, 41);
+                copies = copies
+                    .checked_add(1_usize)
+                    .expect("fixture copy count fits usize");
+                Ok(birth())
+            },
+        )
+        .unwrap();
+        let repo = output.unwrap();
+        assert_eq!(repo.as_str(), source);
+        assert_ne!(repo.as_str().as_ptr(), source.as_ptr());
+        assert!(attempted);
+        assert_eq!(copies, 1);
+        assert_eq!(backing.capacity(), 0);
+        assert!(admission.births >= 2);
+        assert_eq!(admission.releases, 2);
+
+        let source = "é".repeat(256);
+        let mut revision = None;
+        let mut attempted = false;
+        RevisionId::try_from_str_into_with_native_admission_v1(
+            &source,
+            &mut backing,
+            &mut revision,
+            &mut attempted,
+            &mut admission,
+            |bytes, birth| {
+                assert_eq!(bytes, 512);
+                Ok(birth())
+            },
+        )
+        .unwrap();
+        assert_eq!(revision.unwrap().as_str(), source);
+        assert!(attempted);
+        assert_eq!(backing.capacity(), 0);
+    }
+
+    #[test]
+    fn borrowed_into_slots_preserves_invalid_input_error_order_and_blocks_retry_v1() {
+        let too_long_control = format!("\n{}", "x".repeat(512));
+        for (source, expected) in [
+            ("", IdentityValidationErrorV1::Empty),
+            (
+                too_long_control.as_str(),
+                IdentityValidationErrorV1::TooLong,
+            ),
+            ("\n", IdentityValidationErrorV1::ControlCharacter),
+            ("e\u{301}", IdentityValidationErrorV1::NonCanonical),
+        ] {
+            let mut backing = String::new();
+            let mut output = None;
+            let mut attempted = false;
+            let mut admission = Admission::default();
+            let error = RepoId::try_from_str_into_with_native_admission_v1(
+                source,
+                &mut backing,
+                &mut output,
+                &mut attempted,
+                &mut admission,
+                |_, _| -> Result<bool, u8> { panic!("invalid source must not be copied") },
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, NativeIdentityConstructionErrorV1::Validation(cause) if cause == expected)
+            );
+            assert!(attempted);
+            assert!(output.is_none());
+            assert_eq!(backing.capacity(), 0);
+            let work = admission.work;
+            admission.fail_work = Some(99);
+            let error = RepoId::try_from_str_into_with_native_admission_v1(
+                "valid",
+                &mut backing,
+                &mut output,
+                &mut attempted,
+                &mut admission,
+                |_, _| -> Result<bool, u8> { panic!("used attempt must not be copied") },
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                NativeIdentityConstructionErrorV1::Copy(
+                    NativeIdentityCopyErrorV1::InvalidNativeProducer
+                )
+            ));
+            assert_eq!(admission.work, work);
+        }
+    }
+
+    #[test]
+    fn borrowed_into_slots_preserves_occupied_storage_before_any_poll_v1() {
+        for mut backing in [String::from("prior"), String::with_capacity(9)] {
+            let pointer = backing.as_ptr();
+            let capacity = backing.capacity();
+            let expected = backing.clone();
+            let mut output = None;
+            let mut attempted = false;
+            let mut admission = Admission {
+                fail_work: Some(7),
+                ..Admission::default()
+            };
+            let error = RevisionId::try_from_str_into_with_native_admission_v1(
+                "revision",
+                &mut backing,
+                &mut output,
+                &mut attempted,
+                &mut admission,
+                |_, _| -> Result<bool, u8> { panic!("occupied backing must not admit") },
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                NativeIdentityConstructionErrorV1::Copy(
+                    NativeIdentityCopyErrorV1::InvalidNativeProducer
+                )
+            ));
+            assert_eq!(backing, expected);
+            assert_eq!(backing.as_ptr(), pointer);
+            assert_eq!(backing.capacity(), capacity);
+            assert!(output.is_none());
+            assert!(!attempted);
+            assert_eq!(admission.work, 0);
+        }
+        let prior = RepoId::new("prior").unwrap();
+        let pointer = prior.as_str().as_ptr();
+        let mut output = Some(prior);
+        let mut backing = String::new();
+        let mut attempted = false;
+        let mut admission = Admission {
+            fail_work: Some(7),
+            ..Admission::default()
+        };
+        let error = RepoId::try_from_str_into_with_native_admission_v1(
+            "repository",
+            &mut backing,
+            &mut output,
+            &mut attempted,
+            &mut admission,
+            |_, _| -> Result<bool, u8> { panic!("occupied output must not admit") },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            NativeIdentityConstructionErrorV1::Copy(
+                NativeIdentityCopyErrorV1::InvalidNativeProducer
+            )
+        ));
+        let prior = output.unwrap();
+        assert_eq!(prior.as_str(), "prior");
+        assert_eq!(prior.as_str().as_ptr(), pointer);
+        assert_eq!(backing.capacity(), 0);
+        assert!(!attempted);
+        assert_eq!(admission.work, 0);
+    }
+
+    struct SlotAdmission<'a> {
+        copied: &'a std::cell::Cell<bool>,
+        refuse_after_copy: Option<Box<u8>>,
+        polls: usize,
+    }
+    impl NativeNormalizationAdmissionV1 for SlotAdmission<'_> {
+        type Error = Box<u8>;
+        fn checkpoint_work_v1(&mut self, _units: u64) -> Result<(), Self::Error> {
+            self.polls = self
+                .polls
+                .checked_add(1)
+                .expect("fixture poll count fits usize");
+            if self.copied.get()
+                && let Some(cause) = self.refuse_after_copy.take()
+            {
+                return Err(cause);
+            }
+            Ok(())
+        }
+        fn native_birth_v1(
+            &mut self,
+            _demand: NativeNormalizationScratchDemandV1,
+            birth: &mut dyn FnMut() -> bool,
+        ) -> Result<bool, Self::Error> {
+            Ok(birth())
+        }
+        fn release_scratch_v1(&mut self, _owner: NativeNormalizationScratchOwnerV1) {}
+    }
+
+    #[test]
+    fn borrowed_into_slots_retains_noncopy_refusal_and_any_born_backing_v1() {
+        for after_birth in [false, true] {
+            let copied = std::cell::Cell::new(false);
+            let mut admission = SlotAdmission {
+                copied: &copied,
+                refuse_after_copy: None,
+                polls: 0,
+            };
+            let mut backing = String::new();
+            let mut output = None;
+            let mut attempted = false;
+            let cause = Box::new(23);
+            let pointer = std::ptr::from_ref(cause.as_ref());
+            let error = RepoId::try_from_str_into_with_native_admission_v1(
+                "repo/test",
+                &mut backing,
+                &mut output,
+                &mut attempted,
+                &mut admission,
+                |bytes, birth| {
+                    assert_eq!(bytes, 9);
+                    if after_birth {
+                        assert!(birth());
+                    }
+                    Err(cause)
+                },
+            )
+            .unwrap_err();
+            match error {
+                NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(
+                    cause,
+                )) => {
+                    assert_eq!(std::ptr::from_ref(cause.as_ref()), pointer);
+                    assert_eq!(*cause, 23);
+                }
+                other => panic!("expected exact noncopy cause: {other:?}"),
+            }
+            assert!(attempted);
+            assert!(output.is_none());
+            assert!(backing.is_empty());
+            assert_eq!(backing.capacity(), if after_birth { 9 } else { 0 });
+            let polls = admission.polls;
+            let error = RepoId::try_from_str_into_with_native_admission_v1(
+                "repo/test",
+                &mut backing,
+                &mut output,
+                &mut attempted,
+                &mut admission,
+                |_, _| -> Result<bool, Box<u8>> { panic!("refused attempt must not be retried") },
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                NativeIdentityConstructionErrorV1::Copy(
+                    NativeIdentityCopyErrorV1::InvalidNativeProducer
+                )
+            ));
+            assert_eq!(admission.polls, polls);
+            assert_eq!(backing.capacity(), if after_birth { 9 } else { 0 });
+        }
+    }
+
+    #[test]
+    fn borrowed_into_slots_keeps_complete_unsealed_bytes_after_final_refusal_v1() {
+        let copied = std::cell::Cell::new(false);
+        let cause = Box::new(31);
+        let cause_pointer = std::ptr::from_ref(cause.as_ref());
+        let mut admission = SlotAdmission {
+            copied: &copied,
+            refuse_after_copy: Some(cause),
+            polls: 0,
+        };
+        let mut backing = String::new();
+        let mut output = None;
+        let mut attempted = false;
+        let error = RevisionId::try_from_str_into_with_native_admission_v1(
+            "rev/test",
+            &mut backing,
+            &mut output,
+            &mut attempted,
+            &mut admission,
+            |bytes, birth| {
+                assert_eq!(bytes, 8);
+                let success = birth();
+                assert!(success);
+                copied.set(true);
+                Ok(success)
+            },
+        )
+        .unwrap_err();
+        match error {
+            NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(
+                cause,
+            )) => {
+                assert_eq!(std::ptr::from_ref(cause.as_ref()), cause_pointer);
+                assert_eq!(*cause, 31);
+            }
+            other => panic!("expected exact final-checkpoint cause: {other:?}"),
+        }
+        assert!(attempted);
+        assert!(output.is_none());
+        assert_eq!(backing, "rev/test");
+        assert_eq!(backing.capacity(), 8);
+        let pointer = backing.as_ptr();
+        let polls = admission.polls;
+        let error = RevisionId::try_from_str_into_with_native_admission_v1(
+            "other",
+            &mut backing,
+            &mut output,
+            &mut attempted,
+            &mut admission,
+            |_, _| -> Result<bool, Box<u8>> {
+                panic!("complete refused attempt must not be retried")
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            NativeIdentityConstructionErrorV1::Copy(
+                NativeIdentityCopyErrorV1::InvalidNativeProducer
+            )
+        ));
+        assert_eq!(backing, "rev/test");
+        assert_eq!(backing.as_ptr(), pointer);
+        assert_eq!(admission.polls, polls);
     }
 }
