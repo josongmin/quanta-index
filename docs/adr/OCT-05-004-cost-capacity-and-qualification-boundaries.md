@@ -348,8 +348,9 @@ initial two-thread library run failed one history BM25 test with writer
 mechanical Clippy fixes, `test --lib plan -- --test-threads=1` passed31 and
 `test --test l2_file_mutation -- --test-threads=1 --quiet` passed36 again.
 `clippy --lib --tests -- -D warnings`, format, hexagonal boundaries, module
-discipline/cycles and no-allow checks passed. Full daemon and new matching XL
-execution remain `NOT_RUN` for this plan-custody change.
+discipline/cycles and no-allow checks passed. Matching XL execution was `NOT_RUN`
+at this owner checkpoint; the later diagnostic below covers both publication
+repairs. Broader daemon suites remain a separate scope.
 
 Another redundant cost was cold publication validation using a query-oriented
 `verify_authority` and a `DiscardingVisitor`, reconstructing source/normalization/
@@ -403,14 +404,82 @@ checks establish allocation-path removal, not measured RSS or XL latency.
 (one private subprocess entrypoint ignored),3 F15 integration tests and36
 file-mutation integration tests. The earlier focused `file_authority::` run
 passed55. Lexical library/test strict Clippy, format, hexagonal boundaries,
-module discipline/cycles and no-allow checks also passed. A new daemon-wide
-execution, matching XL timing and RSS measurement are `NOT_RUN` for this change.
+module discipline/cycles and no-allow checks also passed. The matching XL timing
+and RSS measurement below now covers this change. A broader daemon-suite run
+remains `NOT_RUN` for this owner checkpoint.
 
 Whole-root metadata and unchanged-source inventory traversal still scale with
 the corpus. The F15 producer also requires eight prefix bits, so a changed
 source rebuilds its affected fixed bucket, whose size can grow with the corpus.
 These remaining costs are distinct from source-body retention and repeated
 proof construction; neither repair establishes end-to-end O(delta) behavior.
+
+### Post-repair matching XL diagnostic
+
+On2026-10-08 clean detached source
+`703d0e6899599ab4ab69c051089a9e4eda497ab0` completed an actual matching XL
+capture after main `4647097d` plan custody and `dfbf9213` publication-only output.
+`./scripts/cargow --lane test-scale-f15-lane rustc -p quanta-index-searchd-harness
+--bin scale_matrix --all-features --release --locked -- -C lto=off` completed
+the release build in29m53s. The controller's first hash finalization failed on
+Python3.9; a subsequent guessed cache path selected the old e227 binary and was
+refused before native execution. `cargow` resets inherited `CARGO_TARGET_DIR`
+unless preservation is explicit. A hot recheck with `--message-format=json`
+selected Cargo's actual `compiler-artifact.executable`, then pinned the copy:
+`641f6b37eea3d8a10cef7cbe9742b951aa824c98d2e7aeb36950a64c6807e831`.
+Both controller failures and successful build logs remain outside the checkout.
+
+The canonical `tools.benchmark.retrieval.causal_cost_capture` ran with
+`--tier xlarge --seed 5864059738136528177 --max-seconds 1100`, the exact source
+and binary digest, under the shared resource-admission lock. Native exit0 in
+361.748152s, all10 phase endings, full/delta/no-op/delete/query assertions and
+same-process reopen passed. Source and executable identities matched before
+and after; the source stayed clean. The separate
+`tools.benchmark.retrieval.causal_cost_profile` replay reproduces the canonical
+profile bytes after deleting only the capture-added `scope.binary_source_binding`.
+Artifacts are in `/private/tmp/qi-local-scale-703d-ky1zujs_/`: `build.json`,
+`build-wrong-cache.json`, `xlarge/{execution.json,causal-profile.json,artifact/summary.json}`,
+`independent-profile-replay.json` and `comparison.json`.
+
+The e227 and703d tier-manifest bytes,32,768files/64repos/113,023,546source bytes,
+seed, corpus digest `dbc4b0d39b458aa4fd838a28e01caf95c0146601b1fae50bfc5d3b197dd59821`,
+config digest `a1869a15783402e5710fba038165e190665db346515808da10dc0e3a020f7cdc`
+and complete runtime configuration are identical. Process4GiB, history1GiB per
+pair/2GiB total and registry512MiB admission remain unchanged.
+
+| Observed operation | e227 sample, seconds | 703d sample, seconds |
+| --- | --- | --- |
+| Full seal | 129.469351375 | 132.434367041 |
+| Delta seal,3,437changed bytes | 42.517229542 | 40.970795167 |
+| No-op seal | 45.034310666 | 45.405355541 |
+| Delete seal | 43.148191166 | 43.948350000 |
+| Delta activation | 13.215161500 | 13.395811292 |
+| Same-process reopen | 13.848056125 | 14.328692292 |
+
+The new delta still performs six generation-proof envelopes totaling32.609455209s:
+two cold walks13.006949625s/12.346616542s and four authentications1.718–1.976s.
+Nested file-authority work23.880979668s overlaps those envelopes; it is not an
+additional exclusive partition. The new plan marker records one derivation per
+seal and three storage revalidations. For delta these total1.043844000s and
+2.808988124s respectively; root/manifest reads and operation binding precede the
+markers. No-op and delete keep their full independent proofs as well.
+
+Sampled RSS max2,457,288,704bytes and largest RSS observation gap114.818ms are
+within the selected4GiB/500ms bounds; the samples do not establish the true peak.
+Registry accounting326,813,495bytes remains below536,870,912bytes. Exact retained
+file bytes after full/delta/no-op/delete are923,876,747/960,972,849/924,133,708/
+939,211,892; this gauge is separate from RSS and filesystem allocated bytes.
+
+`VERIFIED` applies to this local matching diagnostic and independent replay.
+Two instrumented samples on shared macOS do not establish a randomized paired
+effect, quiet-host speed/RSS improvement, physical-I/O attribution or Linux
+qualification. The harness has no SDK dependency; frozen703d predates the later
+SDK replay-CAS repair, whose actual debug OS-child regression is owned by the
+[lifecycle ADR](OCT-05-003-active-query-and-runtime-lifecycle.md#replay-cas-preflight-authority-repair).
+Same-process reopen here is not OS-child restart, installed-provider/release or
+Semantica Runtime qualification. Current-byte authentication, independent cold
+membership proofs and full metadata/inventory traversal remain measured cost
+boundaries; the repairs do not make end-to-end work O(delta).
 
 ## Paged term directory
 

@@ -208,6 +208,13 @@ ordering and all8 named crash cuts. Actual roots are
 `/tmp/qi-l2-activation-UYTPrs`, `/tmp/qi-l2-crash-gUCTAf`,
 `/tmp/qi-l2-EsvK7M` and `/tmp/qi-l2-cross-stream-PdIW3N`.
 Public API inventories for SDK/Contract and test-authority validation passed.
+After the final receipt-equality assertions, the SDK library rerun passed130/130.
+The first strict Clippy run refused a wildcard enum match in the new daemon test;
+all seven non-evidence error variants are now explicit. The same
+`./scripts/cargow clippy -p quanta-index-sdk --lib --tests --all-features --locked
+-- -D warnings` then passed. The changed process test was rerun with its exact
+selector and the same debug daemon:1/1 passed in4.90s, retaining
+`/tmp/qi-l2-activation-gZthtz`. The final re-export ordering is mechanical formatting.
 This is a local hash-dev debug-daemon process regression. Semantica Runtime
 restart/migration, installed-provider/release and qualified performance remain
 separate scopes.

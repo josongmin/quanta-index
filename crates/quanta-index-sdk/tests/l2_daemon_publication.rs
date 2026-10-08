@@ -538,7 +538,15 @@ fn activation_failure_preserves_original_publication_across_restart() -> TestRes
             ));
             evidence
         }
-        other => return Err(format!("publication evidence was lost: {other}").into()),
+        other @ (SdkError::Usage(_)
+        | SdkError::Protocol(_)
+        | SdkError::Serialization(_)
+        | SdkError::Transport(_)
+        | SdkError::Binding { .. }
+        | SdkError::PlaneUnavailable { .. }
+        | SdkError::Remote { .. }) => {
+            return Err(format!("publication evidence was lost: {other}").into());
+        }
     };
     assert!(retained.receipt.applied);
     assert_eq!(retained.receipt.accepted_replace_scopes, 1);
