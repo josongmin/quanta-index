@@ -18,6 +18,10 @@ use super::root::{
     AuthorityPolicy, AuthorityRoot, Partition, SourceRow, resident_file_charge, source_key_digest,
 };
 
+mod output;
+
+pub(super) use output::{PublicationOutput, ServingOutput, VerificationOutput};
+
 const _: () = assert!(std::mem::size_of::<PostingPageDescriptor>() <= 64);
 
 #[derive(Debug)]
@@ -34,10 +38,9 @@ pub(crate) struct PostingDirectory {
 }
 
 #[derive(Debug)]
-pub(crate) struct VerifiedAuthority {
+pub(crate) struct VerifiedAuthority<O = ServingOutput> {
     pub(crate) root: AuthorityRoot,
-    pub(crate) files: Vec<SourceFile>,
-    pub(crate) posting_directory: PostingDirectory,
+    pub(crate) output: O,
 }
 
 fn corrupt(reason: &str) -> String {
@@ -137,8 +140,9 @@ fn compare_block(
     Ok(())
 }
 
-fn append_directory(
-    target: &mut Vec<PostingBucketDirectory>,
+fn verify_directory<O: VerificationOutput>(
+    output: &mut O,
+    surface: PostingSurface,
     descriptor: &Partition,
     view: &PostingBlockView<'_>,
     charged: &mut u64,
@@ -156,16 +160,18 @@ fn append_directory(
     if view.iter_terms().len() != terms {
         return Err(corrupt("posting term count differs from root"));
     }
-    let mut rows = Vec::new();
-    rows.try_reserve_exact(terms.div_ceil(usize::from(super::codec::DIRECTORY_PAGE_TERMS)))
-        .map_err(|_allocation_error| corrupt("term directory allocation refused"))?;
+    let mut retained = output.directory(
+        surface,
+        descriptor,
+        terms.div_ceil(usize::from(super::codec::DIRECTORY_PAGE_TERMS)),
+    )?;
+    // Decode every page descriptor even when publication retains no directory.
     for page in view.page_descriptors() {
-        rows.push(page.map_err(|error| corrupt(&format!("page descriptor: {error:?}")))?);
+        let page = page.map_err(|error| corrupt(&format!("page descriptor: {error:?}")))?;
+        if let Some(rows) = retained.as_mut() {
+            rows.push(page);
+        }
     }
-    target.push(PostingBucketDirectory {
-        partition: descriptor.clone(),
-        pages: rows,
-    });
     Ok(())
 }
 
@@ -175,34 +181,20 @@ fn append_directory(
 ///
 /// This verifies one fixed source-key bucket at a time. A caller keeps the
 /// generation lease for the lifetime of the returned root and lazy queries.
-pub(super) fn verify_authority<R>(
+pub(super) fn verify_authority<R, O: VerificationOutput>(
     root_bytes: &[u8],
     policy: AuthorityPolicy,
     codec_limits: &CodecLimits,
     mut read_blob: R,
-) -> Result<VerifiedAuthority, String>
+) -> Result<VerifiedAuthority<O>, String>
 where
     R: FnMut([u8; 32], u64) -> Result<Vec<u8>, String>,
 {
     crate::causal_profile::timed_work("lexical_file_authority_decode_and_membership", || {
         let root = AuthorityRoot::decode(root_bytes, policy)?;
-        let mut files = Vec::new();
-        let mut posting_directory = PostingDirectory::default();
         let mut directory_charge = 0_u64;
         let mut resident_charge = root.term_directory_charge(policy)?;
-        // Admit the complete directory before allocation. Exact capacities keep
-        // geometric Vec growth from exceeding the per-bucket resident charge.
-        posting_directory
-            .path
-            .try_reserve_exact(root.path_postings.len())
-            .map_err(|_allocation_error| corrupt("path directory allocation refused"))?;
-        posting_directory
-            .content
-            .try_reserve_exact(root.content_postings.len())
-            .map_err(|_allocation_error| corrupt("content directory allocation refused"))?;
-        files
-            .try_reserve(root.sources.len())
-            .map_err(|_allocation_error| corrupt("source vector allocation refused"))?;
+        let mut output = O::prepare(&root)?;
         let mut by_bucket: BTreeMap<u8, Vec<&SourceRow>> = BTreeMap::new();
         for row in &root.sources {
             let key = source_key_digest(&row.source)?;
@@ -330,26 +322,29 @@ where
                 if total != row.posting_memberships {
                     return Err(corrupt("source posting count differs from bytes"));
                 }
-                let (bytes, indexed_text, folded_text) =
-                    super::share_verified_surfaces(source, raw, indexed_text, folded_text);
-                files.push(SourceFile {
-                    source: row.source.clone(),
-                    bytes,
-                    text_admitted: row.text_admitted,
-                    language: row.language.clone(),
-                    indexed_text,
-                    folded_text,
-                    indexed_path,
-                    folded_path,
-                    expected_postings: row.posting_memberships,
+                output.source(|| {
+                    let (bytes, indexed_text, folded_text) =
+                        super::share_verified_surfaces(source, raw, indexed_text, folded_text);
+                    SourceFile {
+                        source: row.source.clone(),
+                        bytes,
+                        text_admitted: row.text_admitted,
+                        language: row.language.clone(),
+                        indexed_text,
+                        folded_text,
+                        indexed_path,
+                        folded_path,
+                        expected_postings: row.posting_memberships,
+                    }
                 });
             }
             let path_bytes = blob(path, &mut read_blob)?;
             let path_view = decode_posting_block(&path_bytes, PostingSurface::Path, codec_limits)
                 .map_err(|error| corrupt(&format!("path posting decode: {error:?}")))?;
             compare_block(path, &path_view, &expected_path)?;
-            append_directory(
-                &mut posting_directory.path,
+            verify_directory(
+                &mut output,
+                PostingSurface::Path,
                 path,
                 &path_view,
                 &mut directory_charge,
@@ -360,8 +355,9 @@ where
                 decode_posting_block(&content_bytes, PostingSurface::Content, codec_limits)
                     .map_err(|error| corrupt(&format!("content posting decode: {error:?}")))?;
             compare_block(content, &content_view, &expected_content)?;
-            append_directory(
-                &mut posting_directory.content,
+            verify_directory(
+                &mut output,
+                PostingSurface::Content,
                 content,
                 &content_view,
                 &mut directory_charge,
@@ -371,13 +367,12 @@ where
         if directory_charge != root.term_directory_charge(policy)? {
             return Err(corrupt("term directory charge differs from root"));
         }
-        Ok(VerifiedAuthority {
-            root,
-            files,
-            posting_directory,
-        })
+        Ok(VerifiedAuthority { root, output })
     })
 }
+
+#[cfg(test)]
+mod publication_tests;
 
 #[cfg(test)]
 mod tests {
@@ -457,7 +452,7 @@ mod tests {
         assert_eq!(scratch.bytes, 64);
     }
 
-    fn policy() -> AuthorityPolicy {
+    pub(super) fn policy() -> AuthorityPolicy {
         AuthorityPolicy {
             root_bytes: 16 * 1024 * 1024,
             source_files: 4,
@@ -479,7 +474,7 @@ mod tests {
         }
     }
 
-    fn codec_limits() -> CodecLimits {
+    pub(super) fn codec_limits() -> CodecLimits {
         CodecLimits {
             source_pack_encoded_bytes: 1024,
             posting_block_encoded_bytes: 1024,
@@ -500,7 +495,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> (AuthorityRoot, BTreeMap<[u8; 32], Vec<u8>>) {
+    pub(super) fn fixture() -> (AuthorityRoot, BTreeMap<[u8; 32], Vec<u8>>) {
         let body = b"abc";
         let source = SourceFileRevision {
             file: SourceFileKey {
@@ -587,12 +582,17 @@ mod tests {
     fn fixed_three_term_census_and_retired_id_mutant() {
         let (root, blobs) = fixture();
         let root_bytes = root.encode(policy()).expect("root");
-        let opened = verify_authority(&root_bytes, policy(), &codec_limits(), |sha, _expected| {
-            blobs
-                .get(&sha)
-                .cloned()
-                .ok_or_else(|| "missing blob".to_string())
-        })
+        let opened = verify_authority::<_, super::ServingOutput>(
+            &root_bytes,
+            policy(),
+            &codec_limits(),
+            |sha, _expected| {
+                blobs
+                    .get(&sha)
+                    .cloned()
+                    .ok_or_else(|| "missing blob".to_string())
+            },
+        )
         .expect("fixed corpus opens");
         assert_eq!(
             opened
@@ -603,7 +603,7 @@ mod tests {
                 .posting_memberships,
             3
         );
-        assert_eq!(opened.files.len(), 1);
+        assert_eq!(opened.output.files.len(), 1);
 
         let mut forged_charge = root.clone();
         forged_charge
@@ -612,7 +612,7 @@ mod tests {
             .expect("source")
             .resident_heap_bytes += 1;
         let forged_charge_root = forged_charge.encode(policy()).expect("structural root");
-        let failure = verify_authority(
+        let failure = verify_authority::<_, super::ServingOutput>(
             &forged_charge_root,
             policy(),
             &codec_limits(),
@@ -633,7 +633,7 @@ mod tests {
             .expect("path bucket")
             .terms = 1;
         let forged_term_root = forged_terms.encode(policy()).expect("structural root");
-        let failure = verify_authority(
+        let failure = verify_authority::<_, super::ServingOutput>(
             &forged_term_root,
             policy(),
             &codec_limits(),
@@ -673,14 +673,18 @@ mod tests {
         let forged_root = forged
             .encode(policy())
             .expect("self-consistent root metadata");
-        let failure =
-            verify_authority(&forged_root, policy(), &codec_limits(), |sha, _expected| {
+        let failure = verify_authority::<_, super::ServingOutput>(
+            &forged_root,
+            policy(),
+            &codec_limits(),
+            |sha, _expected| {
                 forged_blobs
                     .get(&sha)
                     .cloned()
                     .ok_or_else(|| "missing blob".to_string())
-            })
-            .expect_err("retired ID must fail independent source census");
+            },
+        )
+        .expect_err("retired ID must fail independent source census");
         assert!(failure.contains("live IDs differ"), "{failure}");
     }
 }

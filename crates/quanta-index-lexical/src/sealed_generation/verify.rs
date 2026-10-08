@@ -464,7 +464,8 @@ fn verify_file_authority<V: SealedGenerationVisitor>(
             file_authority::FileAuthorityWalkProof::Materialized(verified) => {
                 visitor.file_authority(verified, object_path, budget)?;
             }
-            file_authority::FileAuthorityWalkProof::Reauthenticated(_) => {
+            file_authority::FileAuthorityWalkProof::Validated(_)
+            | file_authority::FileAuthorityWalkProof::Reauthenticated(_) => {
                 // Only walk_sealed_generation_reusing_proofs supplies custody;
                 // its statically selected visitor never builds a query handle.
                 if publication.is_none() {

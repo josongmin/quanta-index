@@ -22,6 +22,7 @@ pub(crate) struct ValidatedFileAuthorityProof {
 /// A reauthenticated proof cannot be converted into a serving authority.
 pub(crate) enum FileAuthorityWalkProof {
     Materialized(VerifiedAuthority),
+    Validated(super::verify::VerifiedAuthority<super::verify::PublicationOutput>),
     Reauthenticated(root::AuthorityRoot),
 }
 
@@ -29,6 +30,7 @@ impl FileAuthorityWalkProof {
     fn root(&self) -> &root::AuthorityRoot {
         match self {
             Self::Materialized(verified) => &verified.authority.root,
+            Self::Validated(verified) => &verified.root,
             Self::Reauthenticated(root) => root,
         }
     }
@@ -49,7 +51,7 @@ impl FileAuthorityWalkProof {
         commitment: &SealedArtifactCommitmentV1,
     ) -> Option<ValidatedFileAuthorityProof> {
         match self {
-            Self::Materialized(_) => Some(ValidatedFileAuthorityProof {
+            Self::Materialized(_) | Self::Validated(_) => Some(ValidatedFileAuthorityProof {
                 identity: identity.clone(),
                 root_commitment: commitment.clone(),
                 policy_sha256: self.root().policy_sha256,
@@ -86,7 +88,8 @@ where
             && proof.policy_sha256 == policy.digest()
     });
     let Some(_proof) = matching else {
-        return super::verify_v15(root_bytes, read_blob).map(FileAuthorityWalkProof::Materialized);
+        return super::verify_v15_for_publication(root_bytes, read_blob)
+            .map(FileAuthorityWalkProof::Validated);
     };
     crate::causal_profile::timed_work("lexical_file_authority_proof_reauthentication", || {
         // Decode still enforces current policy, strict ordered source keys,
@@ -144,25 +147,37 @@ mod tests {
         Vec<u8>,
         SealedArtifactCommitmentV1,
     ) {
+        fixture_with_paths(&["src/a.rs"])
+    }
+
+    fn fixture_with_paths(
+        paths: &[&str],
+    ) -> (
+        tempfile::TempDir,
+        GenerationSnapshot,
+        Vec<u8>,
+        SealedArtifactCommitmentV1,
+    ) {
         let dir = tempfile::tempdir().expect("fixture generation");
         let raw = b"proofmarker";
-        let source = SourceFileRevision {
-            file: SourceFileKey {
-                source_repo_id: RepoId::new("source").expect("source repo"),
-                repo_relative_path: RepoRelativePath::new("src/a.rs"),
-            },
-            revision_id: RevisionId::new("source-revision").expect("source revision"),
-            source_sha256: Sha256::digest(raw).into(),
-        };
-        let expected_postings = file_authority::source_posting_memberships(
-            &source,
-            raw,
-            true,
-            &mut vec![0; TRIGRAM_BITMAP_BYTES],
-        )
-        .expect("fixture memberships");
-        let _authority = file_authority::from_test_files(
-            vec![SourceFile {
+        let mut files = Vec::new();
+        for path in paths {
+            let source = SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: RepoId::new("source").expect("source repo"),
+                    repo_relative_path: RepoRelativePath::new(*path),
+                },
+                revision_id: RevisionId::new("source-revision").expect("source revision"),
+                source_sha256: Sha256::digest(raw).into(),
+            };
+            let expected_postings = file_authority::source_posting_memberships(
+                &source,
+                raw,
+                true,
+                &mut vec![0; TRIGRAM_BITMAP_BYTES],
+            )
+            .expect("fixture memberships");
+            files.push(SourceFile {
                 source,
                 bytes: raw.to_vec().into(),
                 text_admitted: true,
@@ -172,10 +187,10 @@ mod tests {
                 indexed_path: String::new(),
                 folded_path: String::new(),
                 expected_postings,
-            }],
-            dir.path(),
-        )
-        .expect("independent packed source proof");
+            });
+        }
+        let _authority = file_authority::from_test_files(files, dir.path())
+            .expect("independent packed source proof");
         let bytes = std::fs::read(file_authority::root_path(dir.path())).expect("root bytes");
         let commitment = SealedArtifactCommitmentV1 {
             name: format!("{}/{}", file_authority::DIR, file_authority::ROOT),
@@ -216,7 +231,7 @@ mod tests {
             read_blob(dir.path(), digest, len)
         })
         .expect("full proof");
-        assert!(matches!(&first, FileAuthorityWalkProof::Materialized(_)));
+        assert!(matches!(&first, FileAuthorityWalkProof::Validated(_)));
         let retained = first
             .retain(&identity, &commitment)
             .expect("validated witness");
@@ -239,6 +254,38 @@ mod tests {
         ));
         // One source pack, one path block and one content block in this fixture.
         assert_eq!(reads.get(), 3);
+    }
+
+    #[test]
+    fn cold_publication_and_serving_refuse_changed_shared_object_identity() {
+        let (dir, _identity, bytes, _commitment) = fixture_with_paths(&["src/a.rs", "src/b.rs"]);
+        let root = file_authority::root::AuthorityRoot::decode(&bytes, file_authority::policy())
+            .expect("root");
+        assert_eq!(root.packs.len(), 2);
+        assert_eq!(
+            root.packs.first().expect("first pack").sha256,
+            root.packs.last().expect("last pack").sha256
+        );
+        for publication in [false, true] {
+            let mut seen = std::collections::BTreeSet::new();
+            let read = |digest, len| {
+                let (bytes, mut pinned) = read_blob(dir.path(), digest, len)?;
+                if !seen.insert(digest) {
+                    pinned.ino = pinned.ino.checked_add(1).expect("fixture inode width");
+                }
+                Ok((bytes, pinned))
+            };
+            let refusal = if publication {
+                file_authority::verify_v15_for_publication(&bytes, read).map(|_verified| ())
+            } else {
+                file_authority::verify_v15(&bytes, read).map(|_verified| ())
+            }
+            .expect_err("one committed digest changed physical identity during the walk");
+            assert_eq!(
+                refusal,
+                "F15 object identity changed during cold verification"
+            );
+        }
     }
 
     #[test]
@@ -319,7 +366,7 @@ mod tests {
                 |digest, len| read_blob(dir.path(), digest, len),
             )
             .expect("new full proof");
-            assert!(matches!(observed, FileAuthorityWalkProof::Materialized(_)));
+            assert!(matches!(observed, FileAuthorityWalkProof::Validated(_)));
         }
         retained.policy_sha256 = [0; 32];
         let observed = verify_for_publication(
@@ -330,7 +377,7 @@ mod tests {
             |digest, len| read_blob(dir.path(), digest, len),
         )
         .expect("current policy full proof");
-        assert!(matches!(observed, FileAuthorityWalkProof::Materialized(_)));
+        assert!(matches!(observed, FileAuthorityWalkProof::Validated(_)));
         let retained = first
             .retain(&identity, &commitment)
             .expect("original validated witness");
@@ -357,7 +404,7 @@ mod tests {
             |digest, len| read_blob(dir.path(), digest, len),
         )
         .expect("new metadata full proof");
-        assert!(matches!(observed, FileAuthorityWalkProof::Materialized(_)));
+        assert!(matches!(observed, FileAuthorityWalkProof::Validated(_)));
         assert!(
             verify_for_publication(
                 &changed,

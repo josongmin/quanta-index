@@ -44,8 +44,8 @@ mod verify;
 
 pub(crate) use codec::PostingSurface;
 pub(crate) use reader::QueryWork;
-pub(crate) struct VerifiedAuthority {
-    authority: verify::VerifiedAuthority,
+pub(crate) struct VerifiedAuthority<O = verify::ServingOutput> {
+    authority: verify::VerifiedAuthority<O>,
     pinned_objects: BTreeMap<[u8; 32], ObjectIdentity>,
 }
 
@@ -500,10 +500,29 @@ fn object_inventory(root: &root::AuthorityRoot) -> BTreeMap<[u8; 32], u64> {
         .collect()
 }
 
-pub(crate) fn verify_v15<R>(
+pub(crate) fn verify_v15<R>(root_bytes: &[u8], read_blob: R) -> Result<VerifiedAuthority, String>
+where
+    R: FnMut([u8; 32], u64) -> Result<(Vec<u8>, ObjectIdentity), String>,
+{
+    verify_v15_with_output(root_bytes, read_blob)
+}
+
+fn verify_v15_for_publication<R>(
+    root_bytes: &[u8],
+    read_blob: R,
+) -> Result<verify::VerifiedAuthority<verify::PublicationOutput>, String>
+where
+    R: FnMut([u8; 32], u64) -> Result<(Vec<u8>, ObjectIdentity), String>,
+{
+    let verified: VerifiedAuthority<verify::PublicationOutput> =
+        verify_v15_with_output(root_bytes, read_blob)?;
+    Ok(verified.authority)
+}
+
+fn verify_v15_with_output<R, O: verify::VerificationOutput>(
     root_bytes: &[u8],
     mut read_blob: R,
-) -> Result<VerifiedAuthority, String>
+) -> Result<VerifiedAuthority<O>, String>
 where
     R: FnMut([u8; 32], u64) -> Result<(Vec<u8>, ObjectIdentity), String>,
 {
@@ -1531,8 +1550,10 @@ pub(crate) fn from_v15_verified(
     } = verified;
     let verify::VerifiedAuthority {
         root,
-        files,
-        posting_directory,
+        output: verify::ServingOutput {
+            files,
+            posting_directory,
+        },
     } = authority;
     let mut by_key = BTreeMap::new();
     for file in files {

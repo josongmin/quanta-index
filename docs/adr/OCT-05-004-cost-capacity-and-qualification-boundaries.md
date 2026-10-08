@@ -351,11 +351,11 @@ mechanical Clippy fixes, `test --lib plan -- --test-threads=1` passed31 and
 discipline/cycles and no-allow checks passed. Full daemon and new matching XL
 execution remain `NOT_RUN` for this plan-custody change.
 
-The main remaining cost owner is publication validation: cold validation uses
-the query-oriented `verify_authority` and a `DiscardingVisitor`, reconstructing
-source/normalization/posting evidence before dropping query materialization.
-A publication-only verifier can avoid retaining those query objects, but it
-must prove the same invariants. Inherited packs/postings and Tantivy segments
+Another redundant cost was cold publication validation using a query-oriented
+`verify_authority` and a `DiscardingVisitor`, reconstructing source/normalization/
+posting evidence before dropping query materialization. The following repair
+removes that materialization while proving the same invariants.
+Inherited packs/postings and Tantivy segments
 already reuse immutable objects; swapping the underlying engine alone does
 not remove caller-owned whole-generation verification. Coverage already uses
 a persistent shared tree; cloning coverage is not an additional whole-map
@@ -368,6 +368,49 @@ mutable file bytes still match their commitments. A future storage capability
 that enforces immutability could change that cost boundary; relaxing validation
 silently is not a repair. Until then, separate unavoidable byte authentication
 from redundant reconstruction and measure both under the existing contract.
+
+### Publication-only verification output
+
+Cold publication and serving now execute one canonical
+`verify_authority<Output>` walk. `ServingOutput` retains source bodies and
+normalized fields plus posting directories; `PublicationOutput` carries no
+serving fields. The latter consumes no `SourceFile` factory and retains no
+posting page vector. Both still decode each page descriptor, normalize sources,
+compare exact posting memberships, enforce serving resident/directory/scratch
+policy and authenticate all source/posting object bytes. A shared pinned-reader
+wrapper checks object identity and inventory before either output escapes.
+
+The cold publication result is a distinct typed proof, which may establish
+the existing publication witness but cannot enter `from_v15_verified` or
+construct a query handle. Independent query open and scrub keep the serving
+output. This avoids copying each source into a serving Arc and retaining all
+normalized source fields and posting-directory pages merely to discard them.
+Normalization and per-bucket membership maps remain required verification
+scratch; this is not removal of the two cold proofs or their byte reads.
+
+The fixed-census regression observes one source and two directory
+materializations for serving and zero of either for publication, while both
+read the same three committed objects in the same order. Corruption oracles
+require identical refusals for forged resident charges, source counts, term
+metadata, retired IDs, rehashed malformed objects, invalid UTF-8, missing or
+mutated objects and six reduced policy dimensions. A repeated digest with
+changed pinned identity is also refused by both consumers. These structural
+checks establish allocation-path removal, not measured RSS or XL latency.
+
+`VERIFIED`: `./scripts/cargow --lane test-scale-f15-lane test
+-p quanta-index-lexical --lib --test l2_file_mutation --test f15_file_authority
+--all-features --locked -- --test-threads=1 --quiet` passed373 library tests
+(one private subprocess entrypoint ignored),3 F15 integration tests and36
+file-mutation integration tests. The earlier focused `file_authority::` run
+passed55. Lexical library/test strict Clippy, format, hexagonal boundaries,
+module discipline/cycles and no-allow checks also passed. A new daemon-wide
+execution, matching XL timing and RSS measurement are `NOT_RUN` for this change.
+
+Whole-root metadata and unchanged-source inventory traversal still scale with
+the corpus. The F15 producer also requires eight prefix bits, so a changed
+source rebuilds its affected fixed bucket, whose size can grow with the corpus.
+These remaining costs are distinct from source-body retention and repeated
+proof construction; neither repair establishes end-to-end O(delta) behavior.
 
 ## Paged term directory
 
