@@ -4633,9 +4633,11 @@ dependencies = [
 name = "quanta-index-sdk"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "quanta-index-contract",
  "quanta-index-ipc",
  "serde",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
 ]

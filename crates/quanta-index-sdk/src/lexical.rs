@@ -166,8 +166,7 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
         sources: Vec<SemanticSourceRecordV1>,
         mut cluster_memberships: Vec<ClusterMembershipReplaceV1>,
     ) -> Self {
-        cluster_memberships
-            .sort_by(|left, right| left.cluster_record_id.cmp(&right.cluster_record_id));
+        canonicalize_semantic_cluster_memberships_v1(&mut cluster_memberships);
         let search_result = self.semantic_replace_scopes.binary_search_by(|candidate| {
             semantic_scope_sort_key_v1(&candidate.scope).cmp(&semantic_scope_sort_key_v1(&scope))
         });
@@ -644,7 +643,13 @@ fn dispatch_search_corpus_publish_outcome_v1<const SEALED: bool>(
     }
 }
 
-fn validate_semantic_cluster_membership_authority_v1(
+pub(crate) fn canonicalize_semantic_cluster_memberships_v1(
+    memberships: &mut [ClusterMembershipReplaceV1],
+) {
+    memberships.sort_by(|left, right| left.cluster_record_id.cmp(&right.cluster_record_id));
+}
+
+pub(crate) fn validate_semantic_cluster_membership_authority_v1(
     scopes: &[SemanticSourceReplaceScopeV1],
 ) -> Result<(), SdkError> {
     for scope in scopes {

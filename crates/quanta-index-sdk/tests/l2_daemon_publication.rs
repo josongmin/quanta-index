@@ -916,3 +916,149 @@ fn recover_delta_after_crash(binary: &Path, state: &Path, point: &str) -> TestRe
     );
     recovered.stop()
 }
+
+fn prepared_fixture_source(
+    stable: &str,
+    path: &str,
+    text: &str,
+    markdown: bool,
+) -> TestResult<quanta_index_sdk::preparation::PreparedSource> {
+    use quanta_index_sdk::preparation::{
+        MarkdownAdapter, PlainTextAdapter, PreparationBudgets, SourceAdapter, SourceContext,
+        TextSource,
+    };
+    // Reuse the independent literal-byte SHA-256 oracle from the direct producer fixture.
+    let fixture = corpus(
+        1,
+        None,
+        revision()?,
+        "fixture",
+        None,
+        &[(path, "fixture", text)],
+    )?;
+    let scope = fixture
+        .replace_scopes()
+        .first()
+        .ok_or("fixture scope missing")?;
+    let budgets = PreparationBudgets::new(1024, 1024, 1024, 16, 64 * 1024)?;
+    let profile = if markdown {
+        MarkdownAdapter::profile(budgets)?
+    } else {
+        PlainTextAdapter::profile(budgets)?
+    };
+    let context = SourceContext::new(stable, scope.coverage.source.clone(), profile)?;
+    let input = TextSource::new(context, &scope.source_bytes);
+    Ok(if markdown {
+        MarkdownAdapter.prepare(input)?
+    } else {
+        PlainTextAdapter.prepare(input)?
+    })
+}
+
+#[test]
+#[ignore = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"]
+fn prepared_text_and_markdown_move_delete_noop_survive_restart() -> TestResult {
+    use quanta_index_sdk::preparation::{
+        CompleteSourceSet, PriorSourceManifest, ReconcileIntent, reconcile_complete_universe,
+    };
+    let binary = std::env::var_os("QUANTA_INDEX_L2_TEST_BINARY")
+        .ok_or("QUANTA_INDEX_L2_TEST_BINARY is required")?;
+    let root = tempfile::Builder::new()
+        .prefix("qi-l2-preparation-")
+        .tempdir_in("/tmp")?;
+    let state = root.path().join("state");
+    let daemon = Daemon::start(Path::new(&binary), &state, "prepared-start")?;
+    let current = || -> TestResult<CompleteSourceSet> {
+        Ok(CompleteSourceSet::new(vec![
+            prepared_fixture_source("move", "new.txt", "oldneedle", false)?,
+            prepared_fixture_source("keep", "README.md", "untouchedneedle", true)?,
+        ]))
+    };
+    let first = reconcile_complete_universe(
+        &PriorSourceManifest::new(Vec::new())?,
+        CompleteSourceSet::new(vec![
+            prepared_fixture_source("move", "old.txt", "oldneedle", false)?,
+            prepared_fixture_source("keep", "README.md", "untouchedneedle", true)?,
+            prepared_fixture_source("delete", "delete.txt", "newneedle", false)?,
+        ]),
+        ReconcileIntent::new(repo()?, revision()?, None),
+        64 * 1024,
+    )?;
+    let (full, planned) =
+        first.apply_to_batch(corpus(1, None, revision()?, "prepared-one", None, &[])?)?;
+    let (receipt, active) = daemon
+        .client
+        .search_corpus()
+        .publish_and_activate(&full, None)?;
+    assert_eq!(receipt.accepted_replace_scopes, 3);
+    let prior = planned; // Adoption occurs only after the intended publication/activation is confirmed.
+    assert_eq!(query(&daemon.client, 1, "oldneedle")?.len(), 1);
+    assert_eq!(query(&daemon.client, 1, "untouchedneedle")?.len(), 1);
+    assert_eq!(query(&daemon.client, 1, "newneedle")?.len(), 1);
+
+    let delta = reconcile_complete_universe(
+        &prior,
+        current()?,
+        ReconcileIntent::new(repo()?, revision()?, Some(ManifestGeneration::new(1))),
+        64 * 1024,
+    )?;
+    assert_eq!(delta.replacements().len(), 1);
+    assert_eq!(delta.tombstones().len(), 2);
+    let (batch, planned) = delta.apply_to_batch(corpus(
+        2,
+        Some(1),
+        revision()?,
+        "prepared-two",
+        Some("prepared-one"),
+        &[],
+    )?)?;
+    let (receipt, active) = daemon
+        .client
+        .search_corpus()
+        .publish_and_activate(&batch, Some(active.active))?;
+    assert_eq!(receipt.accepted_replace_scopes, 1);
+    assert_eq!(receipt.accepted_tombstone_scopes, 2);
+    assert!(query(&daemon.client, 2, "newneedle")?.is_empty());
+    assert_eq!(query(&daemon.client, 2, "untouchedneedle")?.len(), 1);
+    let original_id = query(&daemon.client, 1, "oldneedle")?;
+    let moved_id = query(&daemon.client, 2, "oldneedle")?;
+    assert_eq!(moved_id.len(), 1);
+    assert_ne!(moved_id, original_id);
+    assert_eq!(query(&daemon.client, 1, "newneedle")?.len(), 1);
+    let mut encoded = Vec::new();
+    ciborium::into_writer(&planned, &mut encoded)?;
+    daemon.stop()?;
+
+    let daemon = Daemon::start(Path::new(&binary), &state, "prepared-restart")?;
+    let prior: PriorSourceManifest = ciborium::from_reader(encoded.as_slice())?;
+    let no_op = reconcile_complete_universe(
+        &prior,
+        current()?,
+        ReconcileIntent::new(repo()?, revision()?, Some(ManifestGeneration::new(2))),
+        64 * 1024,
+    )?;
+    assert!(no_op.replacements().is_empty());
+    assert!(no_op.tombstones().is_empty());
+    let (batch, _) = no_op.apply_to_batch(corpus(
+        3,
+        Some(2),
+        revision()?,
+        "prepared-three",
+        Some("prepared-two"),
+        &[],
+    )?)?;
+    let (receipt, activated) = daemon
+        .client
+        .search_corpus()
+        .publish_and_activate(&batch, Some(active.active))?;
+    assert_eq!(receipt.accepted_replace_scopes, 0);
+    assert_eq!(receipt.accepted_tombstone_scopes, 0);
+    assert_eq!(
+        activated.active.generation.lexical.manifest_generation,
+        ManifestGeneration::new(3)
+    );
+    assert_eq!(query(&daemon.client, 3, "oldneedle")?, moved_id);
+    assert_eq!(query(&daemon.client, 3, "untouchedneedle")?.len(), 1);
+    assert!(query(&daemon.client, 3, "newneedle")?.is_empty());
+    daemon.stop()
+}

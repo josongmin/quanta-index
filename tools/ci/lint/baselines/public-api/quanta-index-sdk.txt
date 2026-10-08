@@ -173,6 +173,322 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::SdkW
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::SdkWireRouteV1
 pub const quanta_index_sdk::binding::SDK_WIRE_ROUTES_V1: &[quanta_index_sdk::binding::SdkWireRouteV1]
 pub const quanta_index_sdk::binding::SDK_WIRE_ROUTE_EXCLUSIONS_V1: &[(&str, &str)]
+pub mod quanta_index_sdk::preparation
+#[non_exhaustive] pub enum quanta_index_sdk::preparation::PreparationError
+pub quanta_index_sdk::preparation::PreparationError::AdapterMismatch
+pub quanta_index_sdk::preparation::PreparationError::DuplicateSource
+pub quanta_index_sdk::preparation::PreparationError::InvalidBudget
+pub quanta_index_sdk::preparation::PreparationError::InvalidContribution(alloc::string::String)
+pub quanta_index_sdk::preparation::PreparationError::InvalidProfile
+pub quanta_index_sdk::preparation::PreparationError::InvalidSource(&'static str)
+pub quanta_index_sdk::preparation::PreparationError::InvalidUtf8
+pub quanta_index_sdk::preparation::PreparationError::LimitExceeded(&'static str)
+pub quanta_index_sdk::preparation::PreparationError::ManifestConflict
+pub quanta_index_sdk::preparation::PreparationError::PathOwnershipConflict
+pub quanta_index_sdk::preparation::PreparationError::SourceDigestMismatch
+impl core::clone::Clone for quanta_index_sdk::preparation::PreparationError
+pub fn quanta_index_sdk::preparation::PreparationError::clone(&self) -> quanta_index_sdk::preparation::PreparationError
+impl core::cmp::Eq for quanta_index_sdk::preparation::PreparationError
+impl core::cmp::PartialEq for quanta_index_sdk::preparation::PreparationError
+pub fn quanta_index_sdk::preparation::PreparationError::eq(&self, other: &quanta_index_sdk::preparation::PreparationError) -> bool
+impl core::error::Error for quanta_index_sdk::preparation::PreparationError
+impl core::fmt::Debug for quanta_index_sdk::preparation::PreparationError
+pub fn quanta_index_sdk::preparation::PreparationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_sdk::preparation::PreparationError
+pub fn quanta_index_sdk::preparation::PreparationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::preparation::PreparationError
+impl core::marker::Freeze for quanta_index_sdk::preparation::PreparationError
+impl core::marker::Send for quanta_index_sdk::preparation::PreparationError
+impl core::marker::Sync for quanta_index_sdk::preparation::PreparationError
+impl core::marker::Unpin for quanta_index_sdk::preparation::PreparationError
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::PreparationError
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::PreparationError
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::PreparationError
+pub struct quanta_index_sdk::preparation::CompleteSourceSet
+impl quanta_index_sdk::preparation::CompleteSourceSet
+pub fn quanta_index_sdk::preparation::CompleteSourceSet::new(sources: alloc::vec::Vec<quanta_index_sdk::preparation::PreparedSource>) -> Self
+impl core::marker::Freeze for quanta_index_sdk::preparation::CompleteSourceSet
+impl core::marker::Send for quanta_index_sdk::preparation::CompleteSourceSet
+impl core::marker::Sync for quanta_index_sdk::preparation::CompleteSourceSet
+impl core::marker::Unpin for quanta_index_sdk::preparation::CompleteSourceSet
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::CompleteSourceSet
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::CompleteSourceSet
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::CompleteSourceSet
+pub struct quanta_index_sdk::preparation::MarkdownAdapter
+impl quanta_index_sdk::preparation::MarkdownAdapter
+pub const quanta_index_sdk::preparation::MarkdownAdapter::ADAPTER_ID: &'static str
+pub const quanta_index_sdk::preparation::MarkdownAdapter::RECIPE_REVISION: &'static str
+pub fn quanta_index_sdk::preparation::MarkdownAdapter::profile(budgets: quanta_index_sdk::preparation::PreparationBudgets) -> core::result::Result<quanta_index_sdk::preparation::PreparationProfile, quanta_index_sdk::preparation::PreparationError>
+impl core::clone::Clone for quanta_index_sdk::preparation::MarkdownAdapter
+pub fn quanta_index_sdk::preparation::MarkdownAdapter::clone(&self) -> quanta_index_sdk::preparation::MarkdownAdapter
+impl core::default::Default for quanta_index_sdk::preparation::MarkdownAdapter
+pub fn quanta_index_sdk::preparation::MarkdownAdapter::default() -> quanta_index_sdk::preparation::MarkdownAdapter
+impl core::fmt::Debug for quanta_index_sdk::preparation::MarkdownAdapter
+pub fn quanta_index_sdk::preparation::MarkdownAdapter::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::preparation::MarkdownAdapter
+impl<'a> quanta_index_sdk::preparation::SourceAdapter<quanta_index_sdk::preparation::TextSource<'a>> for quanta_index_sdk::preparation::MarkdownAdapter
+pub fn quanta_index_sdk::preparation::MarkdownAdapter::capabilities(&self) -> quanta_index_sdk::preparation::PreparationCapabilities
+pub fn quanta_index_sdk::preparation::MarkdownAdapter::prepare(&self, input: quanta_index_sdk::preparation::TextSource<'a>) -> core::result::Result<quanta_index_sdk::preparation::PreparedSource, quanta_index_sdk::preparation::PreparationError>
+impl core::marker::Freeze for quanta_index_sdk::preparation::MarkdownAdapter
+impl core::marker::Send for quanta_index_sdk::preparation::MarkdownAdapter
+impl core::marker::Sync for quanta_index_sdk::preparation::MarkdownAdapter
+impl core::marker::Unpin for quanta_index_sdk::preparation::MarkdownAdapter
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::MarkdownAdapter
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::MarkdownAdapter
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::MarkdownAdapter
+pub struct quanta_index_sdk::preparation::PlainTextAdapter
+impl quanta_index_sdk::preparation::PlainTextAdapter
+pub const quanta_index_sdk::preparation::PlainTextAdapter::ADAPTER_ID: &'static str
+pub const quanta_index_sdk::preparation::PlainTextAdapter::RECIPE_REVISION: &'static str
+pub fn quanta_index_sdk::preparation::PlainTextAdapter::profile(budgets: quanta_index_sdk::preparation::PreparationBudgets) -> core::result::Result<quanta_index_sdk::preparation::PreparationProfile, quanta_index_sdk::preparation::PreparationError>
+impl core::clone::Clone for quanta_index_sdk::preparation::PlainTextAdapter
+pub fn quanta_index_sdk::preparation::PlainTextAdapter::clone(&self) -> quanta_index_sdk::preparation::PlainTextAdapter
+impl core::default::Default for quanta_index_sdk::preparation::PlainTextAdapter
+pub fn quanta_index_sdk::preparation::PlainTextAdapter::default() -> quanta_index_sdk::preparation::PlainTextAdapter
+impl core::fmt::Debug for quanta_index_sdk::preparation::PlainTextAdapter
+pub fn quanta_index_sdk::preparation::PlainTextAdapter::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::preparation::PlainTextAdapter
+impl<'a> quanta_index_sdk::preparation::SourceAdapter<quanta_index_sdk::preparation::TextSource<'a>> for quanta_index_sdk::preparation::PlainTextAdapter
+pub fn quanta_index_sdk::preparation::PlainTextAdapter::capabilities(&self) -> quanta_index_sdk::preparation::PreparationCapabilities
+pub fn quanta_index_sdk::preparation::PlainTextAdapter::prepare(&self, input: quanta_index_sdk::preparation::TextSource<'a>) -> core::result::Result<quanta_index_sdk::preparation::PreparedSource, quanta_index_sdk::preparation::PreparationError>
+impl core::marker::Freeze for quanta_index_sdk::preparation::PlainTextAdapter
+impl core::marker::Send for quanta_index_sdk::preparation::PlainTextAdapter
+impl core::marker::Sync for quanta_index_sdk::preparation::PlainTextAdapter
+impl core::marker::Unpin for quanta_index_sdk::preparation::PlainTextAdapter
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::PlainTextAdapter
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::PlainTextAdapter
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::PlainTextAdapter
+pub struct quanta_index_sdk::preparation::PreparationBudgets
+impl quanta_index_sdk::preparation::PreparationBudgets
+pub fn quanta_index_sdk::preparation::PreparationBudgets::max_batch_bytes(self) -> usize
+pub fn quanta_index_sdk::preparation::PreparationBudgets::max_chunk_bytes(self) -> usize
+pub fn quanta_index_sdk::preparation::PreparationBudgets::max_chunks(self) -> usize
+pub fn quanta_index_sdk::preparation::PreparationBudgets::max_emitted_text_bytes(self) -> usize
+pub fn quanta_index_sdk::preparation::PreparationBudgets::max_input_bytes(self) -> usize
+pub fn quanta_index_sdk::preparation::PreparationBudgets::new(max_input_bytes: usize, max_emitted_text_bytes: usize, max_chunk_bytes: usize, max_chunks: usize, max_batch_bytes: usize) -> core::result::Result<Self, quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::PreparationBudgets::validate(self) -> core::result::Result<(), quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::PreparationBudgets::with_max_batch_bytes(self, value: usize) -> core::result::Result<Self, quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::PreparationBudgets::with_max_chunk_bytes(self, value: usize) -> core::result::Result<Self, quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::PreparationBudgets::with_max_chunks(self, value: usize) -> core::result::Result<Self, quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::PreparationBudgets::with_max_emitted_text_bytes(self, value: usize) -> core::result::Result<Self, quanta_index_sdk::preparation::PreparationError>
+impl core::clone::Clone for quanta_index_sdk::preparation::PreparationBudgets
+pub fn quanta_index_sdk::preparation::PreparationBudgets::clone(&self) -> quanta_index_sdk::preparation::PreparationBudgets
+impl core::cmp::Eq for quanta_index_sdk::preparation::PreparationBudgets
+impl core::cmp::PartialEq for quanta_index_sdk::preparation::PreparationBudgets
+pub fn quanta_index_sdk::preparation::PreparationBudgets::eq(&self, other: &quanta_index_sdk::preparation::PreparationBudgets) -> bool
+impl core::fmt::Debug for quanta_index_sdk::preparation::PreparationBudgets
+pub fn quanta_index_sdk::preparation::PreparationBudgets::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_sdk::preparation::PreparationBudgets
+pub fn quanta_index_sdk::preparation::PreparationBudgets::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_sdk::preparation::PreparationBudgets
+impl core::marker::StructuralPartialEq for quanta_index_sdk::preparation::PreparationBudgets
+impl core::marker::Freeze for quanta_index_sdk::preparation::PreparationBudgets
+impl core::marker::Send for quanta_index_sdk::preparation::PreparationBudgets
+impl core::marker::Sync for quanta_index_sdk::preparation::PreparationBudgets
+impl core::marker::Unpin for quanta_index_sdk::preparation::PreparationBudgets
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::PreparationBudgets
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::PreparationBudgets
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::PreparationBudgets
+pub struct quanta_index_sdk::preparation::PreparationCapabilities
+impl quanta_index_sdk::preparation::PreparationCapabilities
+pub const fn quanta_index_sdk::preparation::PreparationCapabilities::lexical(self) -> bool
+pub const fn quanta_index_sdk::preparation::PreparationCapabilities::new(lexical: bool, typed_semantic: bool, symbols: bool) -> Self
+pub const fn quanta_index_sdk::preparation::PreparationCapabilities::symbols(self) -> bool
+pub const fn quanta_index_sdk::preparation::PreparationCapabilities::typed_semantic(self) -> bool
+impl core::clone::Clone for quanta_index_sdk::preparation::PreparationCapabilities
+pub fn quanta_index_sdk::preparation::PreparationCapabilities::clone(&self) -> quanta_index_sdk::preparation::PreparationCapabilities
+impl core::cmp::Eq for quanta_index_sdk::preparation::PreparationCapabilities
+impl core::cmp::PartialEq for quanta_index_sdk::preparation::PreparationCapabilities
+pub fn quanta_index_sdk::preparation::PreparationCapabilities::eq(&self, other: &quanta_index_sdk::preparation::PreparationCapabilities) -> bool
+impl core::fmt::Debug for quanta_index_sdk::preparation::PreparationCapabilities
+pub fn quanta_index_sdk::preparation::PreparationCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::preparation::PreparationCapabilities
+impl core::marker::StructuralPartialEq for quanta_index_sdk::preparation::PreparationCapabilities
+impl core::marker::Freeze for quanta_index_sdk::preparation::PreparationCapabilities
+impl core::marker::Send for quanta_index_sdk::preparation::PreparationCapabilities
+impl core::marker::Sync for quanta_index_sdk::preparation::PreparationCapabilities
+impl core::marker::Unpin for quanta_index_sdk::preparation::PreparationCapabilities
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::PreparationCapabilities
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::PreparationCapabilities
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::PreparationCapabilities
+pub struct quanta_index_sdk::preparation::PreparationProfile
+impl quanta_index_sdk::preparation::PreparationProfile
+pub fn quanta_index_sdk::preparation::PreparationProfile::adapter_id(&self) -> &str
+pub fn quanta_index_sdk::preparation::PreparationProfile::budgets(&self) -> quanta_index_sdk::preparation::PreparationBudgets
+pub fn quanta_index_sdk::preparation::PreparationProfile::new(adapter_id: impl core::convert::Into<alloc::string::String>, recipe_revision: impl core::convert::Into<alloc::string::String>, budgets: quanta_index_sdk::preparation::PreparationBudgets) -> core::result::Result<Self, quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::PreparationProfile::recipe_revision(&self) -> &str
+pub fn quanta_index_sdk::preparation::PreparationProfile::sha256(&self) -> [u8; 32]
+impl core::clone::Clone for quanta_index_sdk::preparation::PreparationProfile
+pub fn quanta_index_sdk::preparation::PreparationProfile::clone(&self) -> quanta_index_sdk::preparation::PreparationProfile
+impl core::cmp::Eq for quanta_index_sdk::preparation::PreparationProfile
+impl core::cmp::PartialEq for quanta_index_sdk::preparation::PreparationProfile
+pub fn quanta_index_sdk::preparation::PreparationProfile::eq(&self, other: &quanta_index_sdk::preparation::PreparationProfile) -> bool
+impl core::fmt::Debug for quanta_index_sdk::preparation::PreparationProfile
+pub fn quanta_index_sdk::preparation::PreparationProfile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_sdk::preparation::PreparationProfile
+pub fn quanta_index_sdk::preparation::PreparationProfile::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::StructuralPartialEq for quanta_index_sdk::preparation::PreparationProfile
+impl core::marker::Freeze for quanta_index_sdk::preparation::PreparationProfile
+impl core::marker::Send for quanta_index_sdk::preparation::PreparationProfile
+impl core::marker::Sync for quanta_index_sdk::preparation::PreparationProfile
+impl core::marker::Unpin for quanta_index_sdk::preparation::PreparationProfile
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::PreparationProfile
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::PreparationProfile
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::PreparationProfile
+pub struct quanta_index_sdk::preparation::PreparedChanges
+impl quanta_index_sdk::preparation::PreparedChanges
+pub fn quanta_index_sdk::preparation::PreparedChanges::apply_to_batch(self, batch: quanta_index_sdk::SearchCorpusBatch) -> core::result::Result<(quanta_index_sdk::SearchCorpusBatch, quanta_index_sdk::preparation::PriorSourceManifest), quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::PreparedChanges::next_manifest(&self) -> &quanta_index_sdk::preparation::PriorSourceManifest
+pub fn quanta_index_sdk::preparation::PreparedChanges::replacements(&self) -> &[quanta_index_sdk::preparation::PreparedSource]
+pub fn quanta_index_sdk::preparation::PreparedChanges::semantic_tombstones(&self) -> &[quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1]
+pub fn quanta_index_sdk::preparation::PreparedChanges::tombstones(&self) -> &[quanta_index_contract_base::source_file::SourceFileKey]
+impl core::marker::Freeze for quanta_index_sdk::preparation::PreparedChanges
+impl core::marker::Send for quanta_index_sdk::preparation::PreparedChanges
+impl core::marker::Sync for quanta_index_sdk::preparation::PreparedChanges
+impl core::marker::Unpin for quanta_index_sdk::preparation::PreparedChanges
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::PreparedChanges
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::PreparedChanges
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::PreparedChanges
+pub struct quanta_index_sdk::preparation::PreparedSource
+impl quanta_index_sdk::preparation::PreparedSource
+pub fn quanta_index_sdk::preparation::PreparedSource::bytes(&self) -> &[u8]
+pub fn quanta_index_sdk::preparation::PreparedSource::chunks(&self) -> &[quanta_index_contract::channel::records::ChunkRecord]
+pub fn quanta_index_sdk::preparation::PreparedSource::coverage(&self) -> &quanta_index_contract::source_coverage::SourceFileCoverage
+pub fn quanta_index_sdk::preparation::PreparedSource::from_lexical(context: quanta_index_sdk::preparation::SourceContext, bytes: alloc::vec::Vec<u8>, language: quanta_index_contract_base::query::constraints::LanguageCode, chunks: alloc::vec::Vec<quanta_index_contract::channel::records::ChunkRecord>, symbols: alloc::vec::Vec<quanta_index_contract::lex::symbol::SymbolRecord>, symbol_coverage: quanta_index_contract::source_coverage::SymbolCoverage, semantic: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::SemanticSourceReplaceScopeV1>) -> core::result::Result<Self, quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::PreparedSource::profile_sha256(&self) -> [u8; 32]
+pub fn quanta_index_sdk::preparation::PreparedSource::semantic(&self) -> &[quanta_index_contract::ipc::semantic_source::SemanticSourceReplaceScopeV1]
+pub fn quanta_index_sdk::preparation::PreparedSource::source(&self) -> &quanta_index_contract_base::source_file::SourceFileRevision
+impl core::clone::Clone for quanta_index_sdk::preparation::PreparedSource
+pub fn quanta_index_sdk::preparation::PreparedSource::clone(&self) -> quanta_index_sdk::preparation::PreparedSource
+impl core::cmp::Eq for quanta_index_sdk::preparation::PreparedSource
+impl core::cmp::PartialEq for quanta_index_sdk::preparation::PreparedSource
+pub fn quanta_index_sdk::preparation::PreparedSource::eq(&self, other: &quanta_index_sdk::preparation::PreparedSource) -> bool
+impl core::fmt::Debug for quanta_index_sdk::preparation::PreparedSource
+pub fn quanta_index_sdk::preparation::PreparedSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::preparation::PreparedSource
+impl core::marker::Freeze for quanta_index_sdk::preparation::PreparedSource
+impl core::marker::Send for quanta_index_sdk::preparation::PreparedSource
+impl core::marker::Sync for quanta_index_sdk::preparation::PreparedSource
+impl core::marker::Unpin for quanta_index_sdk::preparation::PreparedSource
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::PreparedSource
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::PreparedSource
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::PreparedSource
+pub struct quanta_index_sdk::preparation::PriorSourceEntry
+impl quanta_index_sdk::preparation::PriorSourceEntry
+pub fn quanta_index_sdk::preparation::PriorSourceEntry::coverage(&self) -> &quanta_index_contract::source_coverage::SourceFileCoverage
+pub fn quanta_index_sdk::preparation::PriorSourceEntry::new(stable_key: impl core::convert::Into<alloc::string::String>, coverage: quanta_index_contract::source_coverage::SourceFileCoverage, semantic_scopes: alloc::vec::Vec<(quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1, [u8; 32])>) -> core::result::Result<Self, quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::PriorSourceEntry::profile_sha256(&self) -> [u8; 32]
+pub fn quanta_index_sdk::preparation::PriorSourceEntry::semantic_scopes(&self) -> &[(quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1, [u8; 32])]
+pub fn quanta_index_sdk::preparation::PriorSourceEntry::source(&self) -> &quanta_index_contract_base::source_file::SourceFileRevision
+pub fn quanta_index_sdk::preparation::PriorSourceEntry::stable_key(&self) -> &str
+pub fn quanta_index_sdk::preparation::PriorSourceEntry::unit_set_sha256(&self) -> [u8; 32]
+impl core::clone::Clone for quanta_index_sdk::preparation::PriorSourceEntry
+pub fn quanta_index_sdk::preparation::PriorSourceEntry::clone(&self) -> quanta_index_sdk::preparation::PriorSourceEntry
+impl core::cmp::Eq for quanta_index_sdk::preparation::PriorSourceEntry
+impl core::cmp::PartialEq for quanta_index_sdk::preparation::PriorSourceEntry
+pub fn quanta_index_sdk::preparation::PriorSourceEntry::eq(&self, other: &quanta_index_sdk::preparation::PriorSourceEntry) -> bool
+impl core::fmt::Debug for quanta_index_sdk::preparation::PriorSourceEntry
+pub fn quanta_index_sdk::preparation::PriorSourceEntry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::preparation::PriorSourceEntry
+impl core::marker::Freeze for quanta_index_sdk::preparation::PriorSourceEntry
+impl core::marker::Send for quanta_index_sdk::preparation::PriorSourceEntry
+impl core::marker::Sync for quanta_index_sdk::preparation::PriorSourceEntry
+impl core::marker::Unpin for quanta_index_sdk::preparation::PriorSourceEntry
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::PriorSourceEntry
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::PriorSourceEntry
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::PriorSourceEntry
+pub struct quanta_index_sdk::preparation::PriorSourceManifest
+impl quanta_index_sdk::preparation::PriorSourceManifest
+pub fn quanta_index_sdk::preparation::PriorSourceManifest::entries(&self) -> &[quanta_index_sdk::preparation::PriorSourceEntry]
+pub fn quanta_index_sdk::preparation::PriorSourceManifest::new(entries: alloc::vec::Vec<quanta_index_sdk::preparation::PriorSourceEntry>) -> core::result::Result<Self, quanta_index_sdk::preparation::PreparationError>
+impl core::clone::Clone for quanta_index_sdk::preparation::PriorSourceManifest
+pub fn quanta_index_sdk::preparation::PriorSourceManifest::clone(&self) -> quanta_index_sdk::preparation::PriorSourceManifest
+impl core::cmp::Eq for quanta_index_sdk::preparation::PriorSourceManifest
+impl core::cmp::PartialEq for quanta_index_sdk::preparation::PriorSourceManifest
+pub fn quanta_index_sdk::preparation::PriorSourceManifest::eq(&self, other: &quanta_index_sdk::preparation::PriorSourceManifest) -> bool
+impl core::fmt::Debug for quanta_index_sdk::preparation::PriorSourceManifest
+pub fn quanta_index_sdk::preparation::PriorSourceManifest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::preparation::PriorSourceManifest
+impl serde_core::ser::Serialize for quanta_index_sdk::preparation::PriorSourceManifest
+pub fn quanta_index_sdk::preparation::PriorSourceManifest::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_sdk::preparation::PriorSourceManifest
+pub fn quanta_index_sdk::preparation::PriorSourceManifest::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_sdk::preparation::PriorSourceManifest
+impl core::marker::Send for quanta_index_sdk::preparation::PriorSourceManifest
+impl core::marker::Sync for quanta_index_sdk::preparation::PriorSourceManifest
+impl core::marker::Unpin for quanta_index_sdk::preparation::PriorSourceManifest
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::PriorSourceManifest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::PriorSourceManifest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::PriorSourceManifest
+pub struct quanta_index_sdk::preparation::ReconcileIntent
+impl quanta_index_sdk::preparation::ReconcileIntent
+pub fn quanta_index_sdk::preparation::ReconcileIntent::base_generation(&self) -> core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
+pub fn quanta_index_sdk::preparation::ReconcileIntent::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>) -> Self
+pub fn quanta_index_sdk::preparation::ReconcileIntent::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
+pub fn quanta_index_sdk::preparation::ReconcileIntent::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
+impl core::clone::Clone for quanta_index_sdk::preparation::ReconcileIntent
+pub fn quanta_index_sdk::preparation::ReconcileIntent::clone(&self) -> quanta_index_sdk::preparation::ReconcileIntent
+impl core::cmp::Eq for quanta_index_sdk::preparation::ReconcileIntent
+impl core::cmp::PartialEq for quanta_index_sdk::preparation::ReconcileIntent
+pub fn quanta_index_sdk::preparation::ReconcileIntent::eq(&self, other: &quanta_index_sdk::preparation::ReconcileIntent) -> bool
+impl core::fmt::Debug for quanta_index_sdk::preparation::ReconcileIntent
+pub fn quanta_index_sdk::preparation::ReconcileIntent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::preparation::ReconcileIntent
+impl core::marker::Freeze for quanta_index_sdk::preparation::ReconcileIntent
+impl core::marker::Send for quanta_index_sdk::preparation::ReconcileIntent
+impl core::marker::Sync for quanta_index_sdk::preparation::ReconcileIntent
+impl core::marker::Unpin for quanta_index_sdk::preparation::ReconcileIntent
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::ReconcileIntent
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::ReconcileIntent
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::ReconcileIntent
+pub struct quanta_index_sdk::preparation::SourceContext
+impl quanta_index_sdk::preparation::SourceContext
+pub fn quanta_index_sdk::preparation::SourceContext::new(stable_key: impl core::convert::Into<alloc::string::String>, source: quanta_index_contract_base::source_file::SourceFileRevision, profile: quanta_index_sdk::preparation::PreparationProfile) -> core::result::Result<Self, quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::SourceContext::profile(&self) -> &quanta_index_sdk::preparation::PreparationProfile
+pub fn quanta_index_sdk::preparation::SourceContext::source(&self) -> &quanta_index_contract_base::source_file::SourceFileRevision
+pub fn quanta_index_sdk::preparation::SourceContext::stable_key(&self) -> &str
+impl core::clone::Clone for quanta_index_sdk::preparation::SourceContext
+pub fn quanta_index_sdk::preparation::SourceContext::clone(&self) -> quanta_index_sdk::preparation::SourceContext
+impl core::cmp::Eq for quanta_index_sdk::preparation::SourceContext
+impl core::cmp::PartialEq for quanta_index_sdk::preparation::SourceContext
+pub fn quanta_index_sdk::preparation::SourceContext::eq(&self, other: &quanta_index_sdk::preparation::SourceContext) -> bool
+impl core::fmt::Debug for quanta_index_sdk::preparation::SourceContext
+pub fn quanta_index_sdk::preparation::SourceContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::preparation::SourceContext
+impl core::marker::Freeze for quanta_index_sdk::preparation::SourceContext
+impl core::marker::Send for quanta_index_sdk::preparation::SourceContext
+impl core::marker::Sync for quanta_index_sdk::preparation::SourceContext
+impl core::marker::Unpin for quanta_index_sdk::preparation::SourceContext
+impl core::marker::UnsafeUnpin for quanta_index_sdk::preparation::SourceContext
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::SourceContext
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::SourceContext
+pub struct quanta_index_sdk::preparation::TextSource<'a>
+impl<'a> quanta_index_sdk::preparation::TextSource<'a>
+pub fn quanta_index_sdk::preparation::TextSource<'a>::into_parts(self) -> (quanta_index_sdk::preparation::SourceContext, &'a [u8])
+pub fn quanta_index_sdk::preparation::TextSource<'a>::new(context: quanta_index_sdk::preparation::SourceContext, bytes: &'a [u8]) -> Self
+impl<'a> quanta_index_sdk::preparation::SourceAdapter<quanta_index_sdk::preparation::TextSource<'a>> for quanta_index_sdk::preparation::MarkdownAdapter
+pub fn quanta_index_sdk::preparation::MarkdownAdapter::capabilities(&self) -> quanta_index_sdk::preparation::PreparationCapabilities
+pub fn quanta_index_sdk::preparation::MarkdownAdapter::prepare(&self, input: quanta_index_sdk::preparation::TextSource<'a>) -> core::result::Result<quanta_index_sdk::preparation::PreparedSource, quanta_index_sdk::preparation::PreparationError>
+impl<'a> quanta_index_sdk::preparation::SourceAdapter<quanta_index_sdk::preparation::TextSource<'a>> for quanta_index_sdk::preparation::PlainTextAdapter
+pub fn quanta_index_sdk::preparation::PlainTextAdapter::capabilities(&self) -> quanta_index_sdk::preparation::PreparationCapabilities
+pub fn quanta_index_sdk::preparation::PlainTextAdapter::prepare(&self, input: quanta_index_sdk::preparation::TextSource<'a>) -> core::result::Result<quanta_index_sdk::preparation::PreparedSource, quanta_index_sdk::preparation::PreparationError>
+impl<'a> core::marker::Freeze for quanta_index_sdk::preparation::TextSource<'a>
+impl<'a> core::marker::Send for quanta_index_sdk::preparation::TextSource<'a>
+impl<'a> core::marker::Sync for quanta_index_sdk::preparation::TextSource<'a>
+impl<'a> core::marker::Unpin for quanta_index_sdk::preparation::TextSource<'a>
+impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::preparation::TextSource<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::preparation::TextSource<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::preparation::TextSource<'a>
+pub trait quanta_index_sdk::preparation::SourceAdapter<Input>
+pub fn quanta_index_sdk::preparation::SourceAdapter::capabilities(&self) -> quanta_index_sdk::preparation::PreparationCapabilities
+pub fn quanta_index_sdk::preparation::SourceAdapter::prepare(&self, input: Input) -> core::result::Result<quanta_index_sdk::preparation::PreparedSource, quanta_index_sdk::preparation::PreparationError>
+impl<'a> quanta_index_sdk::preparation::SourceAdapter<quanta_index_sdk::preparation::TextSource<'a>> for quanta_index_sdk::preparation::MarkdownAdapter
+pub fn quanta_index_sdk::preparation::MarkdownAdapter::capabilities(&self) -> quanta_index_sdk::preparation::PreparationCapabilities
+pub fn quanta_index_sdk::preparation::MarkdownAdapter::prepare(&self, input: quanta_index_sdk::preparation::TextSource<'a>) -> core::result::Result<quanta_index_sdk::preparation::PreparedSource, quanta_index_sdk::preparation::PreparationError>
+impl<'a> quanta_index_sdk::preparation::SourceAdapter<quanta_index_sdk::preparation::TextSource<'a>> for quanta_index_sdk::preparation::PlainTextAdapter
+pub fn quanta_index_sdk::preparation::PlainTextAdapter::capabilities(&self) -> quanta_index_sdk::preparation::PreparationCapabilities
+pub fn quanta_index_sdk::preparation::PlainTextAdapter::prepare(&self, input: quanta_index_sdk::preparation::TextSource<'a>) -> core::result::Result<quanta_index_sdk::preparation::PreparedSource, quanta_index_sdk::preparation::PreparationError>
+pub fn quanta_index_sdk::preparation::reconcile_complete_universe(prior: &quanta_index_sdk::preparation::PriorSourceManifest, current_set: quanta_index_sdk::preparation::CompleteSourceSet, intent: quanta_index_sdk::preparation::ReconcileIntent, aggregate_batch_bytes: usize) -> core::result::Result<quanta_index_sdk::preparation::PreparedChanges, quanta_index_sdk::preparation::PreparationError>
 pub enum quanta_index_sdk::BatchMode
 pub quanta_index_sdk::BatchMode::Delta
 pub quanta_index_sdk::BatchMode::ReplaceGeneration

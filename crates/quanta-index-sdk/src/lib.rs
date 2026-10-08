@@ -13,6 +13,7 @@ mod history;
 pub(crate) mod lexical;
 mod namespace;
 mod observability;
+pub mod preparation;
 mod quarantine;
 mod repomap;
 mod runtime;
