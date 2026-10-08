@@ -24,12 +24,60 @@ use crate::{
 };
 use crate::{ControlTransport, IngestTransport};
 
-struct QuantaIndexInner {
-    query_transport: Arc<dyn QueryTransport>,
-    /// `None` in the query-only profile (S21-07): least privilege, no
-    /// dummy transport.
-    control_transport: Option<Arc<dyn ControlTransport>>,
-    ingest_transport: Option<Arc<dyn IngestTransport>>,
+// Transports have exactly the client's lifetime. Only the complete client is
+// shared; no independent header or retain is needed for a transport dispatch.
+enum ClientTransports {
+    Uds {
+        query: UdsQueryTransport,
+        control: Option<UdsControlTransport>,
+        ingest: Option<UdsIngestTransport>,
+    },
+    #[cfg(test)]
+    Injected {
+        query: Arc<dyn QueryTransport>,
+        control: Arc<dyn ControlTransport>,
+        ingest: Arc<dyn IngestTransport>,
+    },
+}
+
+impl ClientTransports {
+    fn query(&self) -> &dyn QueryTransport {
+        match self {
+            Self::Uds { query, .. } => query,
+            #[cfg(test)]
+            Self::Injected { query, .. } => query.as_ref(),
+        }
+    }
+
+    fn control(&self) -> Option<&dyn ControlTransport> {
+        match self {
+            Self::Uds { control, .. } => control
+                .as_ref()
+                .map(|transport| -> &dyn ControlTransport { transport }),
+            #[cfg(test)]
+            Self::Injected { control, .. } => Some(control.as_ref()),
+        }
+    }
+
+    fn ingest(&self) -> Option<&dyn IngestTransport> {
+        match self {
+            Self::Uds { ingest, .. } => ingest
+                .as_ref()
+                .map(|transport| -> &dyn IngestTransport { transport }),
+            #[cfg(test)]
+            Self::Injected { ingest, .. } => Some(ingest.as_ref()),
+        }
+    }
+}
+
+/// The canonical nonshared SDK payload.
+///
+/// Native hosts birth their existing
+/// typed shared owner directly around this value. It contains no Source,
+/// admission, funding bank, callback, or independently shared transport.
+/// Construction stays with the SDK; this type has no infallible Clone.
+pub struct QuantaIndexClientPayloadV1 {
+    transports: ClientTransports,
     next_request_id: AtomicU64,
 }
 
@@ -93,7 +141,15 @@ pub struct ClientLexicalQueryObservationV1 {
 
 #[derive(Clone)]
 pub struct QuantaIndex {
-    inner: Arc<QuantaIndexInner>,
+    inner: Arc<QuantaIndexClientPayloadV1>,
+}
+
+impl std::ops::Deref for QuantaIndex {
+    type Target = QuantaIndexClientPayloadV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl QuantaIndex {
@@ -111,6 +167,120 @@ impl QuantaIndex {
         Ok(Self::from_resolved(resolved))
     }
 
+    #[must_use]
+    pub fn lexical(&self) -> LexicalNamespace<'_> {
+        self.inner.lexical()
+    }
+
+    #[must_use]
+    pub fn search_corpus(&self) -> SearchCorpusNamespace<'_> {
+        self.inner.search_corpus()
+    }
+
+    #[must_use]
+    pub fn symbol(&self) -> SymbolNamespace<'_> {
+        self.inner.symbol()
+    }
+
+    #[must_use]
+    pub fn semantic(&self) -> SemanticNamespace<'_> {
+        self.inner.semantic()
+    }
+
+    #[must_use]
+    pub fn search(&self) -> SearchNamespace<'_> {
+        self.inner.search()
+    }
+
+    #[must_use]
+    pub fn history(&self) -> HistoryNamespace<'_> {
+        self.inner.history()
+    }
+
+    #[must_use]
+    pub fn runtime(&self) -> RuntimeNamespace<'_> {
+        self.inner.runtime()
+    }
+
+    #[must_use]
+    pub fn structural(&self) -> StructuralNamespace<'_> {
+        self.inner.structural()
+    }
+
+    #[must_use]
+    pub fn repomap(&self) -> RepoMapNamespace<'_> {
+        self.inner.repomap()
+    }
+
+    #[must_use]
+    pub fn generations(&self) -> GenerationNamespace<'_> {
+        self.inner.generations()
+    }
+
+    #[must_use]
+    pub fn observability(&self) -> ObservabilityNamespace<'_> {
+        self.inner.observability()
+    }
+
+    #[must_use]
+    pub fn quarantine(&self) -> QuarantineNamespace<'_> {
+        self.inner.quarantine()
+    }
+
+    #[must_use]
+    pub fn reader(&self) -> ReaderClient<'_> {
+        self.inner.reader()
+    }
+
+    #[must_use]
+    pub fn producer(&self) -> ProducerClient<'_> {
+        self.inner.producer()
+    }
+
+    #[must_use]
+    pub fn control(&self) -> ControlClient<'_> {
+        self.inner.control()
+    }
+
+    fn from_resolved(resolved: crate::config::ResolvedConnectOptions) -> Self {
+        Self {
+            inner: Arc::new(QuantaIndexClientPayloadV1::from_resolved(resolved)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_transports(
+        query: Arc<dyn QueryTransport>,
+        control: Arc<dyn ControlTransport>,
+        ingest: Arc<dyn IngestTransport>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(QuantaIndexClientPayloadV1::from_transports(
+                query, control, ingest,
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_seed_next_request_id(&self, first: u64) {
+        self.inner.test_seed_next_request_id(first);
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_next_request_id(&self) -> u64 {
+        self.inner.test_next_request_id()
+    }
+
+    #[cfg(test)]
+    pub(super) fn dispatch_query(
+        &self,
+        request: SearchPlaneQueryIpcRequest,
+    ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
+        self.inner.dispatch_query(request)
+    }
+}
+
+impl QuantaIndexClientPayloadV1 {
     #[must_use]
     pub fn lexical(&self) -> LexicalNamespace<'_> {
         LexicalNamespace::new(self)
@@ -234,7 +404,7 @@ impl QuantaIndex {
             payload,
         };
         let response = if let Some(trace) = observation {
-            let (response, ipc) = self.inner.query_transport.send_observed(envelope)?;
+            let (response, ipc) = self.transports.query().send_observed(envelope)?;
             let kind = observed_kind.ok_or_else(|| {
                 SdkError::Protocol("observed query RPC kind disappeared".to_string())
             })?;
@@ -245,7 +415,7 @@ impl QuantaIndex {
             });
             response
         } else {
-            self.inner.query_transport.send(envelope)?
+            self.transports.query().send(envelope)?
         };
         if response.request_id != request_id {
             return Err(SdkError::Protocol(format!(
@@ -346,9 +516,8 @@ impl QuantaIndex {
     ) -> Result<SearchPlaneControlIpcResponse, SdkError> {
         let binding = ControlCallBinding::from_request(&payload);
         let control_transport = self
-            .inner
-            .control_transport
-            .clone()
+            .transports
+            .control()
             .ok_or(SdkError::PlaneUnavailable { plane: "control" })?;
         let request_id = self.next_request_id();
         let envelope = SearchPlaneControlIpcRequestEnvelope {
@@ -393,9 +562,8 @@ impl QuantaIndex {
     ) -> Result<SearchPlaneIngestIpcResponse, SdkError> {
         let binding = IngestCallBinding::from_request(&payload)?;
         let ingest_transport = self
-            .inner
-            .ingest_transport
-            .clone()
+            .transports
+            .ingest()
             .ok_or(SdkError::PlaneUnavailable { plane: "ingest" })?;
         let request_id = self.next_request_id();
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
@@ -534,47 +702,44 @@ impl QuantaIndex {
         }
     }
 
-    fn from_resolved(resolved: crate::config::ResolvedConnectOptions) -> Self {
-        // `state_root` is resolved for config validation only; the client talks
-        // to the daemon over sockets and never touches the state root itself.
-        let query_transport = Arc::new(UdsQueryTransport::new(
+    pub(crate) fn from_resolved(resolved: crate::config::ResolvedConnectOptions) -> Self {
+        Self::from_socket_paths_v1(
             resolved.query_socket,
+            resolved.control_socket,
+            resolved.ingest_socket,
             resolved.io_policy,
-        ));
-        let control_transport =
-            resolved
-                .control_socket
-                .map(|socket| -> Arc<dyn ControlTransport> {
-                    Arc::new(UdsControlTransport::new(socket, resolved.io_policy))
-                });
-        let ingest_transport = resolved
-            .ingest_socket
-            .map(|socket| -> Arc<dyn IngestTransport> {
-                Arc::new(UdsIngestTransport::new(socket, resolved.io_policy))
-            });
+        )
+    }
+
+    pub(crate) fn from_socket_paths_v1(
+        query: std::path::PathBuf,
+        control: Option<std::path::PathBuf>,
+        ingest: Option<std::path::PathBuf>,
+        io_policy: quanta_index_ipc::ClientIoPolicy,
+    ) -> Self {
         Self {
-            inner: Arc::new(QuantaIndexInner {
-                query_transport,
-                control_transport,
-                ingest_transport,
-                next_request_id: AtomicU64::new(1),
-            }),
+            transports: ClientTransports::Uds {
+                query: UdsQueryTransport::new(query, io_policy),
+                control: control.map(|path| UdsControlTransport::new(path, io_policy)),
+                ingest: ingest.map(|path| UdsIngestTransport::new(path, io_policy)),
+            },
+            next_request_id: AtomicU64::new(1),
         }
     }
 
     #[cfg(test)]
     pub(super) fn from_transports(
-        query_transport: Arc<dyn QueryTransport>,
-        control_transport: Arc<dyn ControlTransport>,
-        ingest_transport: Arc<dyn IngestTransport>,
+        query: Arc<dyn QueryTransport>,
+        control: Arc<dyn ControlTransport>,
+        ingest: Arc<dyn IngestTransport>,
     ) -> Self {
         Self {
-            inner: Arc::new(QuantaIndexInner {
-                query_transport,
-                control_transport: Some(control_transport),
-                ingest_transport: Some(ingest_transport),
-                next_request_id: AtomicU64::new(1),
-            }),
+            transports: ClientTransports::Injected {
+                query,
+                control,
+                ingest,
+            },
+            next_request_id: AtomicU64::new(1),
         }
     }
 
@@ -584,7 +749,7 @@ impl QuantaIndex {
         // yields 0 exactly once, skipped here). The server refuses 0
         // anyway, so skipping is belt and braces, never load-bearing.
         loop {
-            let id = self.inner.next_request_id.fetch_add(1, Ordering::Relaxed);
+            let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
             if id != 0 {
                 return id;
             }
@@ -593,7 +758,7 @@ impl QuantaIndex {
 
     #[cfg(test)]
     pub(super) fn test_seed_next_request_id(&self, first: u64) {
-        self.inner.next_request_id.store(first, Ordering::Relaxed);
+        self.next_request_id.store(first, Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -604,11 +769,11 @@ impl QuantaIndex {
 
 #[derive(Clone, Copy)]
 pub struct ReaderClient<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> ReaderClient<'a> {
-    const fn new(client: &'a QuantaIndex) -> Self {
+    const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -714,11 +879,11 @@ impl<'a> ReaderClient<'a> {
 
 #[derive(Clone, Copy)]
 pub struct ProducerClient<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> ProducerClient<'a> {
-    const fn new(client: &'a QuantaIndex) -> Self {
+    const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -785,11 +950,11 @@ impl<'a> ProducerClient<'a> {
 
 #[derive(Clone, Copy)]
 pub struct ControlClient<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> ControlClient<'a> {
-    const fn new(client: &'a QuantaIndex) -> Self {
+    const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 

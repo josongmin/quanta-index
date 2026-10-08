@@ -4,14 +4,14 @@ use quanta_index_contract::{
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
-use crate::{QuantaIndex, SdkError};
+use crate::{QuantaIndexClientPayloadV1, SdkError};
 
 pub struct SymbolNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> SymbolNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -36,12 +36,12 @@ pub struct SymbolQueryBuilder<
     const HAS_SELECTION: bool = false,
     const HAS_TOP_K: bool = false,
 > {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
     state: TextQueryBuilderState,
 }
 
 impl<'a> SymbolQueryBuilder<'a> {
-    fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self {
             client,
             state: TextQueryBuilderState::new(),
@@ -161,7 +161,7 @@ impl SymbolQueryBuilder<'_, true, true, true> {
 }
 
 fn dispatch_symbol_query_request_v1(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     request: quanta_index_contract::SymbolQueryRequest,
 ) -> Result<SymbolQueryResponse, SdkError> {
     let response = client.dispatch_query(
@@ -189,7 +189,7 @@ fn dispatch_symbol_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             Err(SdkError::Protocol(format!(
                 "expected symbol query response, got {}",
-                QuantaIndex::query_response_kind(&other)
+                QuantaIndexClientPayloadV1::query_response_kind(&other)
             )))
         }
     }

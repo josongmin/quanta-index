@@ -12,7 +12,7 @@ use quanta_index_contract::{
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
-use crate::{BatchReceipt, QuantaIndex, SdkError, stamp_batch_digest_v1};
+use crate::{BatchReceipt, QuantaIndexClientPayloadV1, SdkError, stamp_batch_digest_v1};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RefMutation {
@@ -565,11 +565,11 @@ impl FileContributorBatch {
 }
 
 pub struct HistoryNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> HistoryNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -606,7 +606,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo commit recency receipt",
-                QuantaIndex::ingest_response_kind(&other),
+                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
             )),
         }
     }
@@ -632,7 +632,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo meta receipt",
-                QuantaIndex::ingest_response_kind(&other),
+                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
             )),
         }
     }
@@ -658,7 +658,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo topic receipt",
-                QuantaIndex::ingest_response_kind(&other),
+                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
             )),
         }
     }
@@ -687,7 +687,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo description receipt",
-                QuantaIndex::ingest_response_kind(&other),
+                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
             )),
         }
     }
@@ -716,7 +716,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "file ownership receipt",
-                QuantaIndex::ingest_response_kind(&other),
+                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
             )),
         }
     }
@@ -745,7 +745,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "file contributor receipt",
-                QuantaIndex::ingest_response_kind(&other),
+                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
             )),
         }
     }
@@ -766,7 +766,10 @@ impl crate::NamespaceIngest for HistoryNs {
     type Batch = HistoryBatch;
     type Receipt = BatchReceipt;
 
-    fn publish(client: &QuantaIndex, batch: &HistoryBatch) -> Result<BatchReceipt, SdkError> {
+    fn publish(
+        client: &QuantaIndexClientPayloadV1,
+        batch: &HistoryBatch,
+    ) -> Result<BatchReceipt, SdkError> {
         let wire = batch.to_wire_batch()?;
         let response =
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(wire))?;
@@ -786,7 +789,7 @@ impl crate::NamespaceIngest for HistoryNs {
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "history receipt",
-                QuantaIndex::ingest_response_kind(&other),
+                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
             )),
         }
     }
@@ -795,7 +798,7 @@ impl crate::NamespaceIngest for HistoryNs {
 impl crate::NamespaceQuery for HistoryNs {
     type QueryBuilder<'a> = HistoryQueryBuilder<'a>;
 
-    fn query(client: &QuantaIndex) -> HistoryQueryBuilder<'_> {
+    fn query(client: &QuantaIndexClientPayloadV1) -> HistoryQueryBuilder<'_> {
         HistoryQueryBuilder::new(client)
     }
 }
@@ -829,14 +832,14 @@ pub struct HistoryQueryBuilder<
     const HAS_TOP_K: bool = false,
     const HAS_ORDER: bool = false,
 > {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
     state: TextQueryBuilderState,
     order: Option<HistoryOrderV1>,
     cursor: Option<ContinuationTokenV2>,
 }
 
 impl<'a> HistoryQueryBuilder<'a> {
-    fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self {
             client,
             state: TextQueryBuilderState::new(),
@@ -974,7 +977,7 @@ impl HistoryQueryBuilder<'_, true, true, true, true> {
 }
 
 fn dispatch_history_query_request_v1(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     request: HistoryQueryRequest,
 ) -> Result<SearchPlaneHistoryQueryResponse, SdkError> {
     let response = client.dispatch_query(SearchPlaneQueryIpcRequest::History(request))?;
@@ -995,7 +998,7 @@ fn dispatch_history_query_request_v1(
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
             "history response",
-            QuantaIndex::query_response_kind(&other),
+            QuantaIndexClientPayloadV1::query_response_kind(&other),
         )),
     }
 }

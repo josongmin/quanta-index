@@ -7,14 +7,14 @@ use quanta_index_contract::{
     TextQueryRequest,
 };
 
-use crate::{QuantaIndex, SdkError, text_query_builder::VectorQueryBuilderState};
+use crate::{QuantaIndexClientPayloadV1, SdkError, text_query_builder::VectorQueryBuilderState};
 
 pub struct SearchNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> SearchNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -115,7 +115,7 @@ impl<'a> SearchNamespace<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::unexpected_response(
                     "cluster membership read response",
-                    QuantaIndex::query_response_kind(&other),
+                    QuantaIndexClientPayloadV1::query_response_kind(&other),
                 ))
             }
         }
@@ -203,7 +203,7 @@ impl<'a> SearchNamespace<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected explain response, got {}",
-                    QuantaIndex::query_response_kind(&other)
+                    QuantaIndexClientPayloadV1::query_response_kind(&other)
                 )))
             }
         }
@@ -217,12 +217,12 @@ pub struct HybridSeedQueryBuilder<
     const HAS_SELECTION: bool = false,
     const HAS_TOP_K: bool = false,
 > {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
     state: VectorQueryBuilderState,
 }
 
 impl<'a> HybridSeedQueryBuilder<'a> {
-    fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self {
             client,
             state: VectorQueryBuilderState::new(),
@@ -359,7 +359,7 @@ impl HybridSeedQueryBuilder<'_, true, true, true, true> {
 }
 
 fn dispatch_hybrid_seed_query_request_v1(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     request: HybridSeedQueryRequest,
 ) -> Result<HybridSeedQueryResponse, SdkError> {
     let response = client
@@ -386,7 +386,7 @@ fn dispatch_hybrid_seed_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             Err(SdkError::Protocol(format!(
                 "expected hybrid seed query response, got {}",
-                QuantaIndex::query_response_kind(&other)
+                QuantaIndexClientPayloadV1::query_response_kind(&other)
             )))
         }
     }
@@ -404,12 +404,12 @@ pub struct HybridQueryBuilder<
     const HAS_SELECTION: bool = false,
     const HAS_TOP_K: bool = false,
 > {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
     state: VectorQueryBuilderState,
 }
 
 impl<'a> HybridQueryBuilder<'a> {
-    fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self {
             client,
             state: VectorQueryBuilderState::new(),
@@ -540,7 +540,7 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
 }
 
 fn dispatch_hybrid_query_request_v1(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     request: HybridQueryRequest,
 ) -> Result<HybridQueryResponse, SdkError> {
     let response = client.dispatch_query(
@@ -568,7 +568,7 @@ fn dispatch_hybrid_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             Err(SdkError::Protocol(format!(
                 "expected hybrid query response, got {}",
-                QuantaIndex::query_response_kind(&other)
+                QuantaIndexClientPayloadV1::query_response_kind(&other)
             )))
         }
     }

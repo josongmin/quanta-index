@@ -22,7 +22,7 @@ use quanta_index_contract::{
 
 use crate::text_query_builder::TextQueryBuilderState;
 use crate::{
-    BatchMode, BatchReceipt, ClientLexicalQueryObservationV1, QuantaIndex, SdkError,
+    BatchMode, BatchReceipt, ClientLexicalQueryObservationV1, QuantaIndexClientPayloadV1, SdkError,
     stamp_batch_digest_v1,
 };
 
@@ -335,11 +335,11 @@ fn semantic_scope_sort_key_v1(
 }
 
 pub struct LexicalNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> LexicalNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -358,11 +358,11 @@ impl<'a> LexicalNamespace<'a> {
 }
 
 pub struct SearchCorpusNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> SearchCorpusNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -478,7 +478,7 @@ impl<'a> SearchCorpusNamespace<'a> {
                 | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                     return Err(SdkError::Protocol(format!(
                         "expected composite search corpus activation CAS ack, got {}",
-                        QuantaIndex::control_response_kind(&other)
+                        QuantaIndexClientPayloadV1::control_response_kind(&other)
                     )));
                 }
                 SearchPlaneControlIpcResponse::Error(_) => {
@@ -554,20 +554,23 @@ impl crate::NamespaceIngest for SearchCorpusNs {
     type Batch = SearchCorpusBatch;
     type Receipt = BatchReceipt;
 
-    fn publish(client: &QuantaIndex, batch: &SearchCorpusBatch) -> Result<BatchReceipt, SdkError> {
+    fn publish(
+        client: &QuantaIndexClientPayloadV1,
+        batch: &SearchCorpusBatch,
+    ) -> Result<BatchReceipt, SdkError> {
         dispatch_search_corpus_publish_v1(client, batch)
     }
 }
 
 fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     batch: &SearchCorpusBatch<SEALED>,
 ) -> Result<BatchReceipt, SdkError> {
     Ok(dispatch_search_corpus_publish_outcome_v1(client, batch)?.receipt)
 }
 
 pub(crate) fn dispatch_search_corpus_publish_observed_v1<const SEALED: bool>(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     batch: &SearchCorpusBatch<SEALED>,
 ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, SdkError> {
     let outcome = dispatch_search_corpus_publish_outcome_v1(client, batch)?;
@@ -580,7 +583,7 @@ pub(crate) fn dispatch_search_corpus_publish_observed_v1<const SEALED: bool>(
 }
 
 fn dispatch_search_corpus_publish_outcome_v1<const SEALED: bool>(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     batch: &SearchCorpusBatch<SEALED>,
 ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, SdkError> {
     validate_semantic_cluster_membership_authority_v1(batch.semantic_replace_scopes())?;
@@ -638,7 +641,7 @@ fn dispatch_search_corpus_publish_outcome_v1<const SEALED: bool>(
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
         | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
             "search corpus receipt",
-            QuantaIndex::ingest_response_kind(&other),
+            QuantaIndexClientPayloadV1::ingest_response_kind(&other),
         )),
     }
 }
@@ -799,7 +802,7 @@ fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
 impl crate::NamespaceQuery for LexicalNs {
     type QueryBuilder<'a> = LexicalQueryBuilder<'a>;
 
-    fn query(client: &QuantaIndex) -> LexicalQueryBuilder<'_> {
+    fn query(client: &QuantaIndexClientPayloadV1) -> LexicalQueryBuilder<'_> {
         LexicalQueryBuilder::new(client)
     }
 }
@@ -810,12 +813,12 @@ pub struct LexicalQueryBuilder<
     const HAS_SELECTION: bool = false,
     const HAS_TOP_K: bool = false,
 > {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
     state: TextQueryBuilderState,
 }
 
 impl<'a> LexicalQueryBuilder<'a> {
-    fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self {
             client,
             state: TextQueryBuilderState::new(),
@@ -971,14 +974,14 @@ impl LexicalQueryBuilder<'_, true, true, true> {
 }
 
 fn dispatch_text_query_request_v1(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     request: TextQueryRequest,
 ) -> Result<TextQueryResponse, SdkError> {
     dispatch_text_query_request_inner(client, request, None)
 }
 
 fn dispatch_text_query_request_inner(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     request: TextQueryRequest,
     observation: Option<&mut ClientLexicalQueryObservationV1>,
 ) -> Result<TextQueryResponse, SdkError> {
@@ -1010,7 +1013,7 @@ fn dispatch_text_query_request_inner(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             Err(SdkError::unexpected_response(
                 "text query response",
-                QuantaIndex::query_response_kind(&other),
+                QuantaIndexClientPayloadV1::query_response_kind(&other),
             ))
         }
     }

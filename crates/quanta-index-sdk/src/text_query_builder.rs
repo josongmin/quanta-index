@@ -9,7 +9,7 @@ use quanta_index_contract::{
     TextQueryRequest, TextQuerySyntax,
 };
 
-use crate::{QuantaIndex, SdkError};
+use crate::{QuantaIndexClientPayloadV1, SdkError};
 
 pub(crate) struct TextQueryBuilderState {
     pub(crate) syntax: TextQuerySyntax,
@@ -48,7 +48,8 @@ impl TextQueryBuilderState {
             .top_k
             .ok_or_else(|| SdkError::Usage(format!("{plane} top_k is required")))?;
         let top_k = accepted_top_k(plane, top_k)?;
-        let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
+        let (generation, generation_selector) =
+            QuantaIndexClientPayloadV1::selection_to_fields(selection);
         Ok(TextQueryRequest {
             syntax: self.syntax,
             query_text,
@@ -207,7 +208,7 @@ impl VectorQueryBuilderState {
     fn selection_fields(
         selection: GenerationSelector,
     ) -> (Option<GenerationPin>, Option<GenerationSelector>) {
-        QuantaIndex::selection_to_fields(selection)
+        QuantaIndexClientPayloadV1::selection_to_fields(selection)
     }
 }
 

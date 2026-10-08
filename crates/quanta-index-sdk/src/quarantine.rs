@@ -4,16 +4,16 @@ use quanta_index_contract::ipc::{
     SearchPlaneControlIpcResponse,
 };
 
-use crate::{QuantaIndex, SdkError};
+use crate::{QuantaIndexClientPayloadV1, SdkError};
 
 /// The daemon's quarantine over the control socket (QI-BB-026): what boot
 /// set aside, listed live, and the one way to discard an entry.
 pub struct QuarantineNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> QuarantineNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -39,7 +39,7 @@ impl<'a> QuarantineNamespace<'a> {
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
                 "expected quarantine inventory, got {}",
-                QuantaIndex::control_response_kind(&other)
+                QuantaIndexClientPayloadV1::control_response_kind(&other)
             ))),
         }
     }
@@ -78,7 +78,7 @@ impl<'a> QuarantineNamespace<'a> {
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
                 "expected quarantine discard ack, got {}",
-                QuantaIndex::control_response_kind(&other)
+                QuantaIndexClientPayloadV1::control_response_kind(&other)
             ))),
         }
     }
