@@ -12,6 +12,7 @@ mod generations;
 mod history;
 pub(crate) mod lexical;
 mod namespace;
+pub mod native_connect_v1;
 mod observability;
 pub mod preparation;
 mod quarantine;
@@ -28,6 +29,7 @@ pub use batch::{BatchMode, BatchReceipt};
 pub use binding::{
     ExpectedQueryResponseV1, SDK_WIRE_ROUTE_EXCLUSIONS_V1, SDK_WIRE_ROUTES_V1, SdkWireRouteV1,
 };
+pub use client::QuantaIndexClientPayloadV1;
 pub use client::{
     ClientLexicalQueryObservationV1, ClientQueryRpcKindV1, ClientQueryRpcObservationV1,
     ControlClient, ProducerClient, QuantaIndex, ReaderClient,

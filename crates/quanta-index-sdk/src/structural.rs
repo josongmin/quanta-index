@@ -8,7 +8,7 @@ use quanta_index_contract::{
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
-use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError, stamp_batch_digest_v1};
+use crate::{BatchMode, BatchReceipt, QuantaIndexClientPayloadV1, SdkError, stamp_batch_digest_v1};
 
 /// A structural publish under construction.
 ///
@@ -193,11 +193,11 @@ impl<const SEALED: bool> StructuralBatch<SEALED> {
 }
 
 pub struct StructuralNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> StructuralNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -229,13 +229,16 @@ impl crate::NamespaceIngest for StructuralNs {
     type Batch = StructuralBatch;
     type Receipt = BatchReceipt;
 
-    fn publish(client: &QuantaIndex, batch: &StructuralBatch) -> Result<BatchReceipt, SdkError> {
+    fn publish(
+        client: &QuantaIndexClientPayloadV1,
+        batch: &StructuralBatch,
+    ) -> Result<BatchReceipt, SdkError> {
         publish_structural_batch(client, batch)
     }
 }
 
 fn publish_structural_batch<const SEALED: bool>(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     batch: &StructuralBatch<SEALED>,
 ) -> Result<BatchReceipt, SdkError> {
     let response = client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
@@ -257,7 +260,7 @@ fn publish_structural_batch<const SEALED: bool>(
         | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
         | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
             "structural receipt",
-            QuantaIndex::ingest_response_kind(&other),
+            QuantaIndexClientPayloadV1::ingest_response_kind(&other),
         )),
     }
 }
@@ -265,7 +268,7 @@ fn publish_structural_batch<const SEALED: bool>(
 impl crate::NamespaceQuery for StructuralNs {
     type QueryBuilder<'a> = StructuralQueryBuilder<'a>;
 
-    fn query(client: &QuantaIndex) -> StructuralQueryBuilder<'_> {
+    fn query(client: &QuantaIndexClientPayloadV1) -> StructuralQueryBuilder<'_> {
         StructuralQueryBuilder::new(client)
     }
 }
@@ -276,13 +279,13 @@ pub struct StructuralQueryBuilder<
     const HAS_SELECTION: bool = false,
     const HAS_TOP_K: bool = false,
 > {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
     state: TextQueryBuilderState,
     cursor: Option<ContinuationTokenV2>,
 }
 
 impl<'a> StructuralQueryBuilder<'a> {
-    fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self {
             client,
             state: TextQueryBuilderState::new(),
@@ -374,7 +377,7 @@ impl StructuralQueryBuilder<'_, true, true, true> {
 }
 
 fn dispatch_structural_query_request_v1(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     request: StructuralQueryRequest,
 ) -> Result<SearchPlaneStructuralQueryResponse, SdkError> {
     let response = client.dispatch_query(SearchPlaneQueryIpcRequest::Structural(request))?;
@@ -395,7 +398,7 @@ fn dispatch_structural_query_request_v1(
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
             "structural response",
-            QuantaIndex::query_response_kind(&other),
+            QuantaIndexClientPayloadV1::query_response_kind(&other),
         )),
     }
 }

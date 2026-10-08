@@ -3,14 +3,17 @@ use quanta_index_contract::{
     SemanticQueryResponse, SemanticWorkBoundedQueryRequestV1, SemanticWorkBoundedQueryResponseV1,
 };
 
-use crate::{QuantaIndex, SdkError, TextQuerySyntax, text_query_builder::VectorQueryBuilderState};
+use crate::{
+    QuantaIndexClientPayloadV1, SdkError, TextQuerySyntax,
+    text_query_builder::VectorQueryBuilderState,
+};
 
 pub struct SemanticNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> SemanticNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -60,7 +63,7 @@ impl<'a> SemanticNamespace<'a> {
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
                 "expected work-bounded semantic response, got {}",
-                QuantaIndex::query_response_kind(&other)
+                QuantaIndexClientPayloadV1::query_response_kind(&other)
             ))),
         }
     }
@@ -72,7 +75,7 @@ struct SemanticNs;
 impl crate::NamespaceQuery for SemanticNs {
     type QueryBuilder<'a> = SemanticQueryBuilder<'a>;
 
-    fn query(client: &QuantaIndex) -> SemanticQueryBuilder<'_> {
+    fn query(client: &QuantaIndexClientPayloadV1) -> SemanticQueryBuilder<'_> {
         SemanticQueryBuilder::new(client)
     }
 }
@@ -85,12 +88,12 @@ pub struct SemanticQueryBuilder<
     const HAS_SCOPE: bool = false,
     const HAS_SCOPE_TOP_K: bool = false,
 > {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
     state: VectorQueryBuilderState,
 }
 
 impl<'a> SemanticQueryBuilder<'a> {
-    fn new(client: &'a QuantaIndex) -> Self {
+    fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self {
             client,
             state: VectorQueryBuilderState::new(),
@@ -245,7 +248,7 @@ impl SemanticQueryBuilder<'_, true, true, true, true, true> {
 }
 
 fn dispatch_semantic_query_request_v1(
-    client: &QuantaIndex,
+    client: &QuantaIndexClientPayloadV1,
     request: SemanticQueryRequest,
 ) -> Result<SemanticQueryResponse, SdkError> {
     let response = client.dispatch_query(
@@ -273,7 +276,7 @@ fn dispatch_semantic_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             Err(SdkError::Protocol(format!(
                 "expected semantic response, got {}",
-                QuantaIndex::query_response_kind(&other)
+                QuantaIndexClientPayloadV1::query_response_kind(&other)
             )))
         }
     }

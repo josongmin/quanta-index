@@ -7,7 +7,7 @@ use quanta_index_contract::{
     },
 };
 
-use crate::{QuantaIndex, SdkError};
+use crate::{QuantaIndexClientPayloadV1, SdkError};
 
 /// Read and rollback administration for already-published generations.
 ///
@@ -15,11 +15,11 @@ use crate::{QuantaIndex, SdkError};
 /// [`crate::SearchCorpusNamespace::publish_and_activate`], whose input carries
 /// one validated lexical + semantic composite identity.
 pub struct GenerationNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> GenerationNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -49,7 +49,7 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected rollback ack, got {}",
-                    QuantaIndex::control_response_kind(&other)
+                    QuantaIndexClientPayloadV1::control_response_kind(&other)
                 )))
             }
         }
@@ -87,7 +87,7 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected current generation snapshot, got {}",
-                    QuantaIndex::control_response_kind(&other)
+                    QuantaIndexClientPayloadV1::control_response_kind(&other)
                 )))
             }
         }
@@ -123,7 +123,7 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected generation status report, got {}",
-                    QuantaIndex::control_response_kind(&other)
+                    QuantaIndexClientPayloadV1::control_response_kind(&other)
                 )))
             }
         }
@@ -162,7 +162,7 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected search-corpus active-head observation, got {}",
-                    QuantaIndex::control_response_kind(&other)
+                    QuantaIndexClientPayloadV1::control_response_kind(&other)
                 )))
             }
         }

@@ -136,12 +136,13 @@ with the full test name and `-- --exact` for the daemon harness. These focused
 results do not qualify native Source custody, the whole daemon suite, installed
 process behavior, or remote CI.
 
-### Open native connect co-cut
+### Native connect producer and open receiver co-cut
 
-Status: **proposed interface, not implemented or qualified**. This is distinct
-from the transport ownership decision above and the native corpus decode
-candidate. Ordinary `connect`, including its remaining outer std Arc, cannot be
-adopted as a Source-admitted client after construction.
+Status: **Index producer implemented as a candidate; actual Core/Original Source
+receiver binding and qualification remain open**. This is distinct from the
+transport ownership decision above and the native corpus decode candidate.
+Ordinary `connect`, including its remaining outer std Arc, cannot be adopted as
+a Source-admitted client after construction.
 
 The current Semantica receiving functions take an explicit borrowed state root
 and default, relative `Duration`, or absolute `Instant` I/O policy. A native
@@ -169,15 +170,67 @@ The remaining interface decision has two concrete owners:
   `admitted_retain_shared_value_into_slot_v3` and counter. Neither an ordinary
   std Arc nor a newly implemented reference counter satisfies this seam.
 
-The proposed SDK port has associated `OriginalError`, `Funding`, and
-`Shared: Deref<Target = IndexClientPayload>` types. The payload has private
-construction and no infallible native clone. The receiver binds `Shared` to the
-actual Core type; Index does not depend on Semantica's source or funding types.
-The port lends path birth and shared birth only during a transient canonical
-producer call, with payload/shared output slots outside the callback. It cannot
-store Source, current-control, input references or callbacks in retained DATA.
-The associated-handle form and borrowed execution view require agreement with
-the receiving owner before adding the public API.
+The SDK port `native_connect_v1::NativeSdkConnectAdmissionV1` has associated
+`OriginalError`, `Funding`, and
+`Shared: Deref<Target = QuantaIndexClientPayloadV1>` types. Its methods are
+`consume_connect_work_v1`, `admit_path_birth_v1`, and
+`birth_client_into_slots_v1`. The latter receives mutable external
+`Option<QuantaIndexClientPayloadV1>`, `Option<Shared>`, and `Option<Funding>`
+slots. The payload has private construction and no infallible native clone.
+The receiver binds `Shared` to the actual Core type; Index has no dependency on
+Semantica's source, funding, or allocator crates.
+
+`try_connect_native_into_v1(ConnectOptions<&Path>, ClientProfile, &mut policy,
+&mut NativeSdkConnectDataV1<OriginalError, Funding, Shared>)` returns only a
+finite attempt status. Complete admission and `IpcError` causes are observed
+through `failure_v1`; an actual `TryReserveError` has its own
+`reserve_failure_v1` slot, preserving it even if admission also refuses after
+the physical callback. `complete_into_slot_v1` is a pure move; occupied output
+and used DATA reject without polling admission or replacing state.
+`client_v1` borrows only a producer-complete payload. Neither observation nor
+transfer performs the receiving Source's terminal classification.
+
+Owned and borrowed options use the SAME generic `ConnectOptions<P>` carrier,
+root/socket decisions, raw path producer, and I/O-policy validator. Ordinary
+and native construction call the SAME payload factory; all SDK namespaces and
+dispatch methods borrow that payload. There is no native RPC implementation.
+The native port lends path/shared birth only during the synchronous producer
+call. Its receiver contract forbids Source, current-control, input references,
+or callbacks in retained DATA or funding.
+
+The connect work model, separate from the Core producer's existing header and
+paid-retain costs, is:
+
+| Operation | Work before the operation |
+| --- | --- |
+| Initial/final and post-path lifecycle checks | 0 (checkpoint only) |
+| Root decision | 1 |
+| Each selected socket decision | 1 |
+| Each path reserve/fill | Planned encoded-byte capacity |
+| Nonshared payload construction | 1 |
+
+An explicit path uses its raw platform encoded-byte length. A derived socket
+uses that length plus the fixed relative suffix and one conservative separator
+byte, with checked arithmetic. The actual `try_reserve_exact` runs inside the
+host admission callback before the SAME `PathBuf::push` producer. Capacity is
+checked before and after fill; mismatch refuses publication. The separator
+can overcharge one byte for an empty root or existing trailing separator. No
+String conversion, environment-created input, or unadmitted path copy occurs.
+The receiving owner must accept this work model and retain its complete
+Original Source cause through the highest finisher.
+
+The existing Semantica host seam is
+`OriginalCanonicalAdmissionV3::try_from_original_group_v3` followed by
+`native_temporary_v3(&OriginalCanonicalNativeStorageRefusalV3)`.
+`OriginalCanonicalNativeStorageV3` implements Core's
+`NativeAllocationAdmissionV3`; its birth method delegates to the authentic
+control's `admit_owned_native_birth_v3` on that SAME externally retained group.
+The receiver can lend this existing admission to both the actual path callback
+and `admitted_shared_value_into_slots_v3`, retaining the group and refusal DATA
+outside the client. This is source inspection of an available seam, not an
+executed receiver binding. Do not substitute the normalization-only three-slot
+funding carrier, create another allocator, or wrap an ordinary client in a
+native header.
 
 All physical state and output slots precede the actual funding bank in DATA's
 drop order. The bank is not inside the shared payload: physical header release
@@ -193,6 +246,20 @@ pre/post-birth refusal tests, exact path/profile/deadline parity, alias/header
 funding lifetime tests, and real UDS dispatch. Source review, SDK compilation,
 or ordinary daemon tests alone do not establish native acceptance. Integration
 of this ABI is one coupled producer/receiver change.
+
+Focused candidate validation (2026-10-09): SDK
+`./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-sdk --all-features --locked`
+passed 176 tests, with six environment-dependent tests ignored; SDK all-targets,
+all-features Clippy with `-D warnings` passed. The nine added tests cover complete
+causes/partials, malformed callbacks, used DATA, path/profile/absolute-deadline
+parity, occupied transfers, and actual three-plane UDS route/codec/request-ID
+behavior through the SAME payload. Their shared owner is an inline test double;
+they do not exercise Core shared allocation, paid aliases, or Original Source
+funding lifetime. The existing daemon harness named above was rerun after the
+common-payload refactor and passed one test (67 filtered), exercising ordinary
+UDS publish/activation/query and shutdown. The earlier 167-test result belongs
+to the transport-owner candidate; neither ordinary daemon run establishes
+Native receiver acceptance.
 
 ## Consequences
 

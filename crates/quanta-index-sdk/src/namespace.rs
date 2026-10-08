@@ -21,7 +21,7 @@
 #[cfg(test)]
 use std::marker::PhantomData;
 
-use crate::{QuantaIndex, SdkError};
+use crate::{QuantaIndexClientPayloadV1, SdkError};
 
 /// Marker capability: a namespace exposes a typed publish path.
 ///
@@ -30,7 +30,7 @@ use crate::{QuantaIndex, SdkError};
 /// reference to the SDK-side batch DTO and returns the namespace's receipt
 /// shape.
 ///
-/// Implementations route through `QuantaIndex::dispatch_ingest` and are
+/// Implementations route through `QuantaIndexClientPayloadV1::dispatch_ingest` and are
 /// responsible for:
 ///
 /// - mapping the SDK batch into the namespace's ingest IPC request variant,
@@ -48,7 +48,10 @@ pub(crate) trait NamespaceIngest {
     type Receipt;
 
     /// Publish a batch through the SDK's ingest transport.
-    fn publish(client: &QuantaIndex, batch: &Self::Batch) -> Result<Self::Receipt, SdkError>;
+    fn publish(
+        client: &QuantaIndexClientPayloadV1,
+        batch: &Self::Batch,
+    ) -> Result<Self::Receipt, SdkError>;
 }
 
 /// Marker capability: a namespace exposes a typed query builder.
@@ -61,17 +64,17 @@ pub(crate) trait NamespaceIngest {
 pub(crate) trait NamespaceQuery {
     /// Per-namespace builder type. Each namespace defines its own; there
     /// is no fat shared trait (ISP). The builder is responsible for
-    /// dispatching through `QuantaIndex::dispatch_query` when its
+    /// dispatching through `QuantaIndexClientPayloadV1::dispatch_query` when its
     /// `execute()` method is called.
     type QueryBuilder<'a>
     where
         Self: 'a;
 
     /// Construct a fresh query builder bound to `client`.
-    fn query(client: &QuantaIndex) -> Self::QueryBuilder<'_>;
+    fn query(client: &QuantaIndexClientPayloadV1) -> Self::QueryBuilder<'_>;
 }
 
-/// Test-only handle returned by [`QuantaIndex::ns`].
+/// Test-only handle returned by [`QuantaIndexClientPayloadV1::ns`].
 ///
 /// This wrapper gates `.publish` and `.query` on which capabilities the marker
 /// `N` implements. Calling `.publish` on a namespace that does not implement
@@ -81,7 +84,7 @@ pub(crate) struct NamespaceHandle<'a, N>
 where
     N: ?Sized,
 {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
     // PhantomData over `fn() -> N` so the handle is invariant in the
     // marker but does not borrow `N` itself (markers are zero-sized).
     _marker: PhantomData<fn() -> N>,
@@ -92,7 +95,7 @@ impl<'a, N> NamespaceHandle<'a, N>
 where
     N: ?Sized,
 {
-    pub(crate) const fn new(client: &'a QuantaIndex) -> NamespaceHandle<'a, N> {
+    pub(crate) const fn new(client: &'a QuantaIndexClientPayloadV1) -> NamespaceHandle<'a, N> {
         NamespaceHandle {
             client,
             _marker: PhantomData,
@@ -164,7 +167,7 @@ mod tests {
         type Receipt = BatchReceipt;
 
         fn publish(
-            client: &QuantaIndex,
+            client: &QuantaIndexClientPayloadV1,
             batch: &SearchCorpusBatch,
         ) -> Result<BatchReceipt, SdkError> {
             // Reuse the SearchCorpusNs implementation so the wire path is
@@ -231,8 +234,8 @@ mod tests {
         }
     }
 
-    fn make_client(ingest: Arc<StubIngestTransport>) -> QuantaIndex {
-        QuantaIndex::from_transports(
+    fn make_client(ingest: Arc<StubIngestTransport>) -> QuantaIndexClientPayloadV1 {
+        QuantaIndexClientPayloadV1::from_transports(
             Arc::new(StubQueryTransport),
             Arc::new(StubControlTransport),
             ingest,

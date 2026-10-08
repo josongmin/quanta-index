@@ -6,14 +6,14 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
 };
 
-use crate::{QuantaIndex, SdkError};
+use crate::{QuantaIndexClientPayloadV1, SdkError};
 
 pub struct RepoMapNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> RepoMapNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -47,7 +47,7 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SdkError::unexpected_response(
                     "repomap active head v2",
-                    QuantaIndex::control_response_kind(&other),
+                    QuantaIndexClientPayloadV1::control_response_kind(&other),
                 ))
             }
         }
@@ -75,7 +75,7 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::unexpected_response(
                     "repomap query response",
-                    QuantaIndex::query_response_kind(&other),
+                    QuantaIndexClientPayloadV1::query_response_kind(&other),
                 ))
             }
         }
@@ -112,7 +112,7 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SdkError::unexpected_response(
                     "repomap V2 activate receipt",
-                    QuantaIndex::control_response_kind(&other),
+                    QuantaIndexClientPayloadV1::control_response_kind(&other),
                 ))
             }
         }
@@ -130,7 +130,7 @@ impl crate::NamespaceIngest for RepoMapNs {
     type Receipt = RepoMapTerminalReceiptV2;
 
     fn publish(
-        client: &QuantaIndex,
+        client: &QuantaIndexClientPayloadV1,
         request: &RepoMapPublishBundleRequestV2,
     ) -> Result<RepoMapTerminalReceiptV2, SdkError> {
         let response = client.dispatch_ingest(
@@ -152,7 +152,7 @@ impl crate::NamespaceIngest for RepoMapNs {
             | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repomap terminal receipt",
-                QuantaIndex::ingest_response_kind(&other),
+                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
             )),
         }
     }

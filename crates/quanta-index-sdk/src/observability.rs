@@ -4,15 +4,15 @@ use quanta_index_contract::ipc::{
     SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
 };
 
-use crate::{QuantaIndex, SdkError};
+use crate::{QuantaIndexClientPayloadV1, SdkError};
 
 /// Read-only observability over the control socket (QI-BB-015).
 pub struct ObservabilityNamespace<'a> {
-    client: &'a QuantaIndex,
+    client: &'a QuantaIndexClientPayloadV1,
 }
 
 impl<'a> ObservabilityNamespace<'a> {
-    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
 
@@ -40,7 +40,7 @@ impl<'a> ObservabilityNamespace<'a> {
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected metrics snapshot, got {}",
-                    QuantaIndex::control_response_kind(&other)
+                    QuantaIndexClientPayloadV1::control_response_kind(&other)
                 )))
             }
         }
@@ -74,7 +74,7 @@ impl<'a> ObservabilityNamespace<'a> {
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected process readiness report, got {}",
-                    QuantaIndex::control_response_kind(&other)
+                    QuantaIndexClientPayloadV1::control_response_kind(&other)
                 )))
             }
         }
@@ -111,7 +111,7 @@ impl<'a> ObservabilityNamespace<'a> {
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected process request events, got {}",
-                    QuantaIndex::control_response_kind(&other)
+                    QuantaIndexClientPayloadV1::control_response_kind(&other)
                 )))
             }
         }
