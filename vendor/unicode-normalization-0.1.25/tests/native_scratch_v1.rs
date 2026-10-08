@@ -1,10 +1,12 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use unicode_normalization::{
-    try_for_each_nfc_with_native_admission_v1, try_is_nfc_with_native_admission_v1,
-    NativeNormalizationAdmissionV1, NativeNormalizationErrorV1 as Error,
-    NativeNormalizationScratchDemandV1 as Demand, NativeNormalizationScratchOwnerV1 as Owner,
-    UnicodeNormalization,
+    try_for_each_nfc_into_with_native_admission_v1, try_for_each_nfc_with_native_admission_v1,
+    try_is_nfc_into_with_native_admission_v1, try_is_nfc_with_native_admission_v1,
+    NativeNormalizationAdmissionV1, NativeNormalizationDataRefusalV1 as Refusal,
+    NativeNormalizationDataV1 as Data, NativeNormalizationErrorV1 as Error,
+    NativeNormalizationOutcomeV1 as Outcome, NativeNormalizationScratchDemandV1 as Demand,
+    NativeNormalizationScratchOwnerV1 as Owner, UnicodeNormalization,
 };
 
 thread_local! {
@@ -281,4 +283,245 @@ fn native_allocator_failure_and_invalid_birth_protocol_are_distinct_v1() {
         assert!(matches!(result, Err(Error::InvalidNativeProducer)));
         assert_eq!(actual_births, usize::from(malformed != 1));
     }
+}
+
+#[test]
+fn external_identity_scratch_survives_return_and_rejects_reuse_without_poll_v1() {
+    let cause = Cell::new(61);
+    let input = format!("q{}", "\u{301}".repeat(20));
+    let mut policy = Policy::new(&cause);
+    let mut data = Data::new_v1();
+    let (_, actual_births) = measured(|| {
+        assert!(try_is_nfc_into_with_native_admission_v1(&input, &mut data, &mut policy).is_ok());
+        assert!(matches!(data.result_v1(), Some(Ok(Outcome::IsNfc(true)))));
+        assert!(!data.is_fresh_v1());
+        LIVE_BYTES.with(|bytes| assert!(bytes.get() > 0));
+        assert!(policy.retained[0] > 0 && policy.retained[1] > 0);
+        assert!(policy.releases.is_empty());
+        let calls = policy.native_calls;
+        let work = policy.remaining_work;
+        assert_eq!(
+            try_is_nfc_into_with_native_admission_v1("other", &mut data, &mut policy),
+            Err(Refusal::UsedData)
+        );
+        assert_eq!(policy.native_calls, calls);
+        assert_eq!(policy.remaining_work, work);
+        assert!(matches!(data.result_v1(), Some(Ok(Outcome::IsNfc(true)))));
+        // Simulated caller terminal point: real buffers retire before grants.
+        data.release_scratch_v1(&mut policy);
+        data.release_scratch_v1(&mut policy);
+        assert_eq!(
+            policy.releases,
+            [Owner::Decomposition, Owner::Recomposition]
+        );
+        assert_eq!(policy.retained, [0; 3]);
+        assert!(matches!(data.result_v1(), Some(Ok(Outcome::IsNfc(true)))));
+    });
+    assert_eq!(actual_births, policy.native_calls);
+    let mut occupied = Some(Ok(Outcome::Streamed));
+    assert_eq!(
+        data.result_into_slot_v1(&mut occupied),
+        Err(Refusal::OccupiedOutput)
+    );
+    assert!(matches!(occupied, Some(Ok(Outcome::Streamed))));
+    let mut result = None;
+    data.result_into_slot_v1(&mut result).unwrap();
+    assert!(matches!(result, Some(Ok(Outcome::IsNfc(true)))));
+    assert_eq!(
+        data.result_into_slot_v1(&mut None),
+        Err(Refusal::MissingResult)
+    );
+}
+
+// Fixed storage keeps instrumentation independent of policy allocations.
+// The non-Clone cause models a full original error, including a late refusal.
+struct LateRefusal {
+    cause: Option<Box<u32>>,
+    owner: Owner,
+    retained: [usize; 3],
+    calls: usize,
+    polls: usize,
+    releases: usize,
+}
+impl NativeNormalizationAdmissionV1 for LateRefusal {
+    type Error = Box<u32>;
+    fn checkpoint_work_v1(&mut self, _units: u64) -> Result<(), Self::Error> {
+        self.polls += 1;
+        Ok(())
+    }
+    fn native_birth_v1(
+        &mut self,
+        demand: Demand,
+        birth: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, Self::Error> {
+        let index = slot(demand.owner_v1);
+        assert_eq!(self.retained[index], demand.current_bytes_v1);
+        self.calls += 1;
+        let success = birth();
+        assert!(success);
+        self.retained[index] = demand.new_bytes_v1;
+        if demand.owner_v1 == self.owner {
+            return Err(self.cause.take().expect("exactly one refusal"));
+        }
+        Ok(success)
+    }
+    fn release_scratch_v1(&mut self, owner: Owner) {
+        LIVE_BYTES.with(|bytes| assert_eq!(bytes.get(), 0));
+        self.retained[slot(owner)] = 0;
+        self.releases += 1;
+    }
+}
+
+#[test]
+fn external_data_retains_actual_late_birth_and_full_noncopy_error_v1() {
+    for owner in [Owner::Decomposition, Owner::Recomposition, Owner::Sort] {
+        let input = format!("a{}\u{300}", "\u{315}".repeat(513));
+        let cause = Box::new(67);
+        let pointer = std::ptr::from_ref(cause.as_ref());
+        let mut policy = LateRefusal {
+            cause: Some(cause),
+            owner,
+            retained: [0; 3],
+            calls: 0,
+            polls: 0,
+            releases: 0,
+        };
+        let mut data = Data::new_v1();
+        let (_, actual_births) = measured(|| {
+            assert!(try_for_each_nfc_into_with_native_admission_v1(
+                &input,
+                &mut data,
+                &mut policy,
+                |_| Ok(())
+            )
+            .is_err());
+            assert!(
+                matches!(data.result_v1(), Some(Err(Error::Admission(cause))) if std::ptr::from_ref(cause.as_ref()) == pointer && **cause == 67)
+            );
+            LIVE_BYTES.with(|bytes| assert!(bytes.get() > 0));
+            assert!(policy.retained[slot(owner)] > 0);
+            assert_eq!(policy.releases, 0);
+            let polls = policy.polls;
+            let calls = policy.calls;
+            assert!(try_for_each_nfc_into_with_native_admission_v1(
+                "other",
+                &mut data,
+                &mut policy,
+                |_| panic!("used DATA must not emit")
+            )
+            .is_err());
+            assert_eq!(policy.polls, polls);
+            assert_eq!(policy.calls, calls);
+            data.release_scratch_v1(&mut policy);
+            assert_eq!(policy.retained, [0; 3]);
+            assert_eq!(
+                policy.releases,
+                if owner == Owner::Decomposition { 2 } else { 3 }
+            );
+            assert!(
+                matches!(data.result_v1(), Some(Err(Error::Admission(cause))) if std::ptr::from_ref(cause.as_ref()) == pointer)
+            );
+        });
+        assert_eq!(actual_births, policy.calls);
+        // Cause was allocated before the allocator probe. Transfer/drop after
+        // it stops, proving its allocation survived physical scratch release.
+        let mut result = None;
+        data.result_into_slot_v1(&mut result).unwrap();
+        assert!(
+            matches!(result, Some(Err(Error::Admission(ref cause))) if std::ptr::from_ref(cause.as_ref()) == pointer)
+        );
+    }
+}
+
+#[test]
+fn external_stream_retains_emitter_error_and_scratch_until_terminal_v1() {
+    let input = format!("q{}", "\u{301}".repeat(20));
+    let cause = Box::new(73);
+    let pointer = std::ptr::from_ref(cause.as_ref());
+    let mut cause = Some(cause);
+    let mut policy = LateRefusal {
+        cause: None,
+        owner: Owner::Sort,
+        retained: [0; 3],
+        calls: 0,
+        polls: 0,
+        releases: 0,
+    };
+    let mut data = Data::new_v1();
+    let (_, actual_births) = measured(|| {
+        assert!(try_for_each_nfc_into_with_native_admission_v1(
+            &input,
+            &mut data,
+            &mut policy,
+            |_| Err(cause
+                .take()
+                .expect("first emitter refusal stops normalization")),
+        )
+        .is_err());
+        assert!(
+            matches!(data.result_v1(), Some(Err(Error::Admission(cause)))
+            if std::ptr::from_ref(cause.as_ref()) == pointer && **cause == 73)
+        );
+        LIVE_BYTES.with(|bytes| assert!(bytes.get() > 0));
+        assert_eq!(policy.releases, 0);
+        data.release_scratch_v1(&mut policy);
+        assert_eq!(policy.retained, [0; 3]);
+    });
+    assert_eq!(actual_births, policy.calls);
+    // DATA has no input lifetime; even the full error survives source drop.
+    drop(input);
+    assert!(
+        matches!(data.result_v1(), Some(Err(Error::Admission(cause)))
+        if std::ptr::from_ref(cause.as_ref()) == pointer)
+    );
+}
+
+#[test]
+fn external_stream_reuses_and_grows_sort_backing_with_fixed_stable_output_v1() {
+    let cause = Cell::new(71);
+    let input = format!(
+        "a{}\u{300}b{}\u{300}b{}\u{300}",
+        "\u{315}".repeat(513),
+        "\u{315}".repeat(520),
+        "\u{315}".repeat(513)
+    );
+    let expected = format!(
+        "à{}b\u{300}{}b\u{300}{}",
+        "\u{315}".repeat(513),
+        "\u{315}".repeat(520),
+        "\u{315}".repeat(513)
+    );
+    let mut output = String::with_capacity(expected.len());
+    let mut policy = Policy::new(&cause);
+    let mut data = Data::new_v1();
+    let (_, actual_births) = measured(|| {
+        assert!(try_for_each_nfc_into_with_native_admission_v1(
+            &input,
+            &mut data,
+            &mut policy,
+            |scalar| {
+                output.push(scalar);
+                Ok(())
+            }
+        )
+        .is_ok());
+        assert_eq!(output, expected);
+        assert!(matches!(data.result_v1(), Some(Ok(Outcome::Streamed))));
+        assert!(policy.retained.iter().all(|bytes| *bytes > 0));
+        assert!(policy.releases.is_empty());
+        let mut sorts = policy
+            .demands
+            .iter()
+            .filter(|demand| demand.owner_v1 == Owner::Sort);
+        assert_eq!(sorts.next().unwrap().current_bytes_v1, 0);
+        assert!(sorts.next().unwrap().current_bytes_v1 > 0);
+        assert!(sorts.next().is_none());
+        data.release_scratch_v1(&mut policy);
+        assert_eq!(policy.retained, [0; 3]);
+        assert_eq!(
+            policy.releases,
+            [Owner::Sort, Owner::Decomposition, Owner::Recomposition]
+        );
+    });
+    assert_eq!(actual_births, policy.native_calls);
 }

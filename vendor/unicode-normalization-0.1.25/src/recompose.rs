@@ -34,6 +34,16 @@ pub struct Recompositions<I> {
 }
 
 impl<I: Iterator<Item = char>> Recompositions<I> {
+    #[cfg(feature = "quanta-native-scratch-v1")]
+    pub(crate) fn swap_scratch_v1(
+        &mut self,
+        decomposition_v1: &mut TinyVec<[(u8, char); 4]>,
+        recomposition_v1: &mut TinyVec<[char; 4]>,
+    ) {
+        self.iter.swap_scratch_v1(decomposition_v1);
+        core::mem::swap(&mut self.buffer, recomposition_v1);
+    }
+
     /// Create a new recomposition iterator for canonical compositions (NFC)
     ///
     /// Note that this iterator can also be obtained by directly calling [`.nfc()`](crate::UnicodeNormalization::nfc)

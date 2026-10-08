@@ -68,6 +68,11 @@ impl<I: Iterator<Item = char>> Decompositions<I> {
 }
 
 impl<I> Decompositions<I> {
+    #[cfg(feature = "quanta-native-scratch-v1")]
+    pub(crate) fn swap_scratch_v1(&mut self, backing_v1: &mut TinyVec<[(u8, char); 4]>) {
+        core::mem::swap(&mut self.buffer, backing_v1);
+    }
+
     #[inline]
     fn push_back<P: NormalizationPolicyV1>(
         &mut self,

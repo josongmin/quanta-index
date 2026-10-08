@@ -89,6 +89,8 @@ pub use quanta_index_contract_base::{
 
 #[cfg(feature = "quanta-native-identity-v1")]
 pub use quanta_index_contract_base::{
-    NativeNormalizationAdmissionV1, NativeNormalizationErrorV1, NativeNormalizationScratchDemandV1,
-    NativeNormalizationScratchOwnerV1, try_is_nfc_with_native_admission_v1,
+    NativeNormalizationAdmissionV1, NativeNormalizationDataRefusalV1, NativeNormalizationDataV1,
+    NativeNormalizationErrorV1, NativeNormalizationOutcomeV1, NativeNormalizationScratchDemandV1,
+    NativeNormalizationScratchOwnerV1, try_for_each_nfc_into_with_native_admission_v1,
+    try_is_nfc_into_with_native_admission_v1, try_is_nfc_with_native_admission_v1,
 };

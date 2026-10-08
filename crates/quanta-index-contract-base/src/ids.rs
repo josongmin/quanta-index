@@ -205,17 +205,47 @@ impl<E: fmt::Display> fmt::Display for NativeIdentityConstructionErrorV1<E> {
 impl<E: std::error::Error + 'static> std::error::Error for NativeIdentityConstructionErrorV1<E> {}
 
 #[cfg(feature = "quanta-native-identity-v1")]
-struct NativeIdentityValidationV1<'a, P>(&'a mut P);
+struct NativeIdentityValidationV1<'a, P: unicode_normalization::NativeNormalizationAdmissionV1> {
+    admission: &'a mut P,
+    data: &'a mut unicode_normalization::NativeNormalizationDataV1<P::Error>,
+}
 #[cfg(feature = "quanta-native-identity-v1")]
 impl<P: unicode_normalization::NativeNormalizationAdmissionV1> IdentityValidationPolicyV1
     for NativeIdentityValidationV1<'_, P>
 {
     type Error = unicode_normalization::NativeNormalizationErrorV1<P::Error>;
     fn character_step_v1(&mut self) -> Result<(), Self::Error> {
-        self.0.checkpoint_work_v1(1).map_err(Self::Error::Admission)
+        self.admission
+            .checkpoint_work_v1(1)
+            .map_err(Self::Error::Admission)
     }
     fn is_nfc_v1(&mut self, value: &str) -> Result<bool, Self::Error> {
-        unicode_normalization::try_is_nfc_with_native_admission_v1(value, self.0)
+        if !self.data.is_fresh_v1() {
+            return Err(Self::Error::InvalidNativeProducer);
+        }
+        let status = unicode_normalization::try_is_nfc_into_with_native_admission_v1(
+            value,
+            self.data,
+            self.admission,
+        );
+        if status.is_ok() {
+            return match self.data.result_v1() {
+                Some(Ok(unicode_normalization::NativeNormalizationOutcomeV1::IsNfc(value))) => {
+                    Ok(value)
+                }
+                _ => Err(Self::Error::InvalidNativeProducer),
+            };
+        }
+        // Move the exact full cause to the caller's parent error. All actual
+        // scratch stays in external DATA; neither transfer releases a grant.
+        let mut result = None;
+        self.data
+            .result_into_slot_v1(&mut result)
+            .map_err(|_slot_refusal| Self::Error::InvalidNativeProducer)?;
+        match result {
+            Some(Err(cause)) => Err(cause),
+            _ => Err(Self::Error::InvalidNativeProducer),
+        }
     }
 }
 
@@ -224,7 +254,22 @@ fn validate_native_identity_v1<P: unicode_normalization::NativeNormalizationAdmi
     value: &str,
     admission: &mut P,
 ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>> {
-    match validate_identity_with_policy_v1(value, &mut NativeIdentityValidationV1(admission)) {
+    let mut data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+    let result = validate_native_identity_into_v1(value, &mut data, admission);
+    data.release_scratch_v1(admission);
+    result
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+fn validate_native_identity_into_v1<P: unicode_normalization::NativeNormalizationAdmissionV1>(
+    value: &str,
+    data: &mut unicode_normalization::NativeNormalizationDataV1<P::Error>,
+    admission: &mut P,
+) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>> {
+    match validate_identity_with_policy_v1(
+        value,
+        &mut NativeIdentityValidationV1 { admission, data },
+    ) {
         Ok(()) => Ok(()),
         Err(IdentityValidationFailureV1::Validation(cause)) => {
             Err(NativeIdentityConstructionErrorV1::Validation(cause))
@@ -298,8 +343,8 @@ macro_rules! validated_identity {
             /// Validate and copy borrowed input into caller-owned attempt slots.
             ///
             /// `attempted` must be false, `backing` empty with zero capacity,
-            /// and `output` None. Invalid or reused slots are preserved without
-            /// invoking either admission. Once validation begins, this attempt
+            /// `output` None, and `normalization_data` fresh. Invalid or reused
+            /// slots are preserved without invoking either admission. Once validation begins, this attempt
             /// cannot be reused, including after refusal before native birth.
             ///
             /// The same predicate/NFC producers validate before the single
@@ -307,26 +352,32 @@ macro_rules! validated_identity {
             /// backing in the caller's String and returns the exact cause.
             /// Only a successful final checkpoint moves backing into `output`.
             /// The caller retains these slots, the returned failure, and its
-            /// original copy grant through failure settlement.
+            /// original copy grant through failure settlement. Normalization
+            /// scratch stays in `normalization_data` on every outcome. Retain
+            /// the actual normalization funding bank through the highest source
+            /// finisher, then drop DATA before that bank or explicitly retire
+            /// DATA at the caller's safe terminal point.
             #[cfg(feature = "quanta-native-identity-v1")]
             pub fn try_from_str_into_with_native_admission_v1<P>(
                 value: &str,
                 backing: &mut String,
                 output: &mut Option<Self>,
                 attempted: &mut bool,
+                normalization_data: &mut unicode_normalization::NativeNormalizationDataV1<P::Error>,
                 normalization_admission: &mut P,
                 copy_admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, P::Error>,
             ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>>
             where
                 P: unicode_normalization::NativeNormalizationAdmissionV1,
             {
-                if *attempted || output.is_some() || !backing.is_empty() || backing.capacity() != 0 {
+                if *attempted || output.is_some() || !backing.is_empty() || backing.capacity() != 0
+                    || !normalization_data.is_fresh_v1() {
                     return Err(NativeIdentityConstructionErrorV1::Copy(
                         NativeIdentityCopyErrorV1::InvalidNativeProducer,
                     ));
                 }
                 *attempted = true;
-                validate_native_identity_v1(value, normalization_admission)?;
+                validate_native_identity_into_v1(value, normalization_data, normalization_admission)?;
                 let copy_work = u64::try_from(value.len()).map_err(|_| {
                     NativeIdentityConstructionErrorV1::Normalization(
                         unicode_normalization::NativeNormalizationErrorV1::ArithmeticOverflow,
@@ -356,10 +407,13 @@ macro_rules! validated_identity {
                 let mut backing = String::new();
                 let mut output = None;
                 let mut attempted = false;
-                Self::try_from_str_into_with_native_admission_v1(
+                let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+                let result = Self::try_from_str_into_with_native_admission_v1(
                     value, &mut backing, &mut output, &mut attempted,
-                    normalization_admission, copy_admission,
-                )?;
+                    &mut normalization_data, normalization_admission, copy_admission,
+                );
+                normalization_data.release_scratch_v1(normalization_admission);
+                result?;
                 output.ok_or(NativeIdentityConstructionErrorV1::Copy(
                     NativeIdentityCopyErrorV1::InvalidNativeProducer,
                 ))
@@ -954,6 +1008,7 @@ mod native_raw_identity_tests_v1 {
         let mut backing = String::new();
         let mut output = None;
         let mut attempted = false;
+        let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
         let mut admission = Admission::default();
         let mut copies = 0_usize;
         RepoId::try_from_str_into_with_native_admission_v1(
@@ -961,6 +1016,7 @@ mod native_raw_identity_tests_v1 {
             &mut backing,
             &mut output,
             &mut attempted,
+            &mut normalization_data,
             &mut admission,
             |bytes, birth| {
                 assert_eq!(bytes, 41);
@@ -978,16 +1034,20 @@ mod native_raw_identity_tests_v1 {
         assert_eq!(copies, 1);
         assert_eq!(backing.capacity(), 0);
         assert!(admission.births >= 2);
+        assert_eq!(admission.releases, 0);
+        normalization_data.release_scratch_v1(&mut admission);
         assert_eq!(admission.releases, 2);
 
         let source = "é".repeat(256);
         let mut revision = None;
         let mut attempted = false;
+        let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
         RevisionId::try_from_str_into_with_native_admission_v1(
             &source,
             &mut backing,
             &mut revision,
             &mut attempted,
+            &mut normalization_data,
             &mut admission,
             |bytes, birth| {
                 assert_eq!(bytes, 512);
@@ -1015,12 +1075,14 @@ mod native_raw_identity_tests_v1 {
             let mut backing = String::new();
             let mut output = None;
             let mut attempted = false;
+            let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
             let mut admission = Admission::default();
             let error = RepoId::try_from_str_into_with_native_admission_v1(
                 source,
                 &mut backing,
                 &mut output,
                 &mut attempted,
+                &mut normalization_data,
                 &mut admission,
                 |_, _| -> Result<bool, u8> { panic!("invalid source must not be copied") },
             )
@@ -1038,6 +1100,7 @@ mod native_raw_identity_tests_v1 {
                 &mut backing,
                 &mut output,
                 &mut attempted,
+                &mut normalization_data,
                 &mut admission,
                 |_, _| -> Result<bool, u8> { panic!("used attempt must not be copied") },
             )
@@ -1060,6 +1123,7 @@ mod native_raw_identity_tests_v1 {
             let expected = backing.clone();
             let mut output = None;
             let mut attempted = false;
+            let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
             let mut admission = Admission {
                 fail_work: Some(7),
                 ..Admission::default()
@@ -1069,6 +1133,7 @@ mod native_raw_identity_tests_v1 {
                 &mut backing,
                 &mut output,
                 &mut attempted,
+                &mut normalization_data,
                 &mut admission,
                 |_, _| -> Result<bool, u8> { panic!("occupied backing must not admit") },
             )
@@ -1091,6 +1156,7 @@ mod native_raw_identity_tests_v1 {
         let mut output = Some(prior);
         let mut backing = String::new();
         let mut attempted = false;
+        let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
         let mut admission = Admission {
             fail_work: Some(7),
             ..Admission::default()
@@ -1100,6 +1166,7 @@ mod native_raw_identity_tests_v1 {
             &mut backing,
             &mut output,
             &mut attempted,
+            &mut normalization_data,
             &mut admission,
             |_, _| -> Result<bool, u8> { panic!("occupied output must not admit") },
         )
@@ -1121,15 +1188,20 @@ mod native_raw_identity_tests_v1 {
     struct SlotAdmission<'a> {
         copied: &'a std::cell::Cell<bool>,
         refuse_after_copy: Option<Box<u8>>,
+        refuse_after_normalization_birth: Option<Box<u8>>,
+        births: usize,
+        releases: usize,
         polls: usize,
+    }
+    fn count_slot_call_v1(count: &mut usize) {
+        let (next, overflow) = count.overflowing_add(1);
+        assert!(!overflow, "fixture call count exceeds usize");
+        *count = next;
     }
     impl NativeNormalizationAdmissionV1 for SlotAdmission<'_> {
         type Error = Box<u8>;
         fn checkpoint_work_v1(&mut self, _units: u64) -> Result<(), Self::Error> {
-            self.polls = self
-                .polls
-                .checked_add(1)
-                .expect("fixture poll count fits usize");
+            count_slot_call_v1(&mut self.polls);
             if self.copied.get()
                 && let Some(cause) = self.refuse_after_copy.take()
             {
@@ -1142,9 +1214,16 @@ mod native_raw_identity_tests_v1 {
             _demand: NativeNormalizationScratchDemandV1,
             birth: &mut dyn FnMut() -> bool,
         ) -> Result<bool, Self::Error> {
-            Ok(birth())
+            count_slot_call_v1(&mut self.births);
+            let success = birth();
+            if success && let Some(cause) = self.refuse_after_normalization_birth.take() {
+                return Err(cause);
+            }
+            Ok(success)
         }
-        fn release_scratch_v1(&mut self, _owner: NativeNormalizationScratchOwnerV1) {}
+        fn release_scratch_v1(&mut self, _owner: NativeNormalizationScratchOwnerV1) {
+            count_slot_call_v1(&mut self.releases);
+        }
     }
 
     #[test]
@@ -1154,11 +1233,15 @@ mod native_raw_identity_tests_v1 {
             let mut admission = SlotAdmission {
                 copied: &copied,
                 refuse_after_copy: None,
+                refuse_after_normalization_birth: None,
+                births: 0,
+                releases: 0,
                 polls: 0,
             };
             let mut backing = String::new();
             let mut output = None;
             let mut attempted = false;
+            let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
             let cause = Box::new(23);
             let pointer = std::ptr::from_ref(cause.as_ref());
             let error = RepoId::try_from_str_into_with_native_admission_v1(
@@ -1166,6 +1249,7 @@ mod native_raw_identity_tests_v1 {
                 &mut backing,
                 &mut output,
                 &mut attempted,
+                &mut normalization_data,
                 &mut admission,
                 |bytes, birth| {
                     assert_eq!(bytes, 9);
@@ -1176,15 +1260,10 @@ mod native_raw_identity_tests_v1 {
                 },
             )
             .unwrap_err();
-            match error {
-                NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(
-                    cause,
-                )) => {
-                    assert_eq!(std::ptr::from_ref(cause.as_ref()), pointer);
-                    assert_eq!(*cause, 23);
-                }
-                other => panic!("expected exact noncopy cause: {other:?}"),
-            }
+            assert!(matches!(&error,
+                NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(cause))
+                if std::ptr::from_ref(cause.as_ref()) == pointer && **cause == 23
+            ));
             assert!(attempted);
             assert!(output.is_none());
             assert!(backing.is_empty());
@@ -1195,6 +1274,7 @@ mod native_raw_identity_tests_v1 {
                 &mut backing,
                 &mut output,
                 &mut attempted,
+                &mut normalization_data,
                 &mut admission,
                 |_, _| -> Result<bool, Box<u8>> { panic!("refused attempt must not be retried") },
             )
@@ -1211,6 +1291,74 @@ mod native_raw_identity_tests_v1 {
     }
 
     #[test]
+    fn borrowed_into_slots_retains_normalization_cause_and_blocks_used_scratch_v1() {
+        let copied = std::cell::Cell::new(false);
+        let cause = Box::new(37);
+        let pointer = std::ptr::from_ref(cause.as_ref());
+        let mut admission = SlotAdmission {
+            copied: &copied,
+            refuse_after_copy: None,
+            refuse_after_normalization_birth: Some(cause),
+            births: 0,
+            releases: 0,
+            polls: 0,
+        };
+        let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+        let mut backing = String::new();
+        let mut output = None;
+        let mut attempted = false;
+        let source = format!("q{}", "\u{301}".repeat(20));
+        let error = RepoId::try_from_str_into_with_native_admission_v1(
+            &source,
+            &mut backing,
+            &mut output,
+            &mut attempted,
+            &mut normalization_data,
+            &mut admission,
+            |_, _| -> Result<bool, Box<u8>> { panic!("normalization refusal precedes copy") },
+        )
+        .unwrap_err();
+        assert!(matches!(error,
+            NativeIdentityConstructionErrorV1::Normalization(NativeNormalizationErrorV1::Admission(ref cause))
+            if std::ptr::from_ref(cause.as_ref()) == pointer && **cause == 37
+        ));
+        assert_eq!(admission.births, 1);
+        assert_eq!(admission.releases, 0);
+        assert!(attempted);
+        assert!(output.is_none());
+        assert_eq!(backing.capacity(), 0);
+        // Error moved to the parent's external result; scratch did not move.
+        assert!(normalization_data.result_v1().is_none());
+        assert!(!normalization_data.is_fresh_v1());
+        let polls = admission.polls;
+        let mut fresh_attempt = false;
+        let retry = RepoId::try_from_str_into_with_native_admission_v1(
+            "other",
+            &mut backing,
+            &mut output,
+            &mut fresh_attempt,
+            &mut normalization_data,
+            &mut admission,
+            |_, _| -> Result<bool, Box<u8>> { panic!("used scratch must not copy") },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            retry,
+            NativeIdentityConstructionErrorV1::Copy(
+                NativeIdentityCopyErrorV1::InvalidNativeProducer
+            )
+        ));
+        assert_eq!(admission.polls, polls);
+        assert!(!fresh_attempt);
+        normalization_data.release_scratch_v1(&mut admission);
+        assert_eq!(admission.releases, 2);
+        assert!(matches!(error,
+            NativeIdentityConstructionErrorV1::Normalization(NativeNormalizationErrorV1::Admission(ref cause))
+            if std::ptr::from_ref(cause.as_ref()) == pointer
+        ));
+    }
+
+    #[test]
     fn borrowed_into_slots_keeps_complete_unsealed_bytes_after_final_refusal_v1() {
         let copied = std::cell::Cell::new(false);
         let cause = Box::new(31);
@@ -1218,16 +1366,21 @@ mod native_raw_identity_tests_v1 {
         let mut admission = SlotAdmission {
             copied: &copied,
             refuse_after_copy: Some(cause),
+            refuse_after_normalization_birth: None,
+            births: 0,
+            releases: 0,
             polls: 0,
         };
         let mut backing = String::new();
         let mut output = None;
         let mut attempted = false;
+        let mut normalization_data = unicode_normalization::NativeNormalizationDataV1::new_v1();
         let error = RevisionId::try_from_str_into_with_native_admission_v1(
             "rev/test",
             &mut backing,
             &mut output,
             &mut attempted,
+            &mut normalization_data,
             &mut admission,
             |bytes, birth| {
                 assert_eq!(bytes, 8);
@@ -1238,15 +1391,10 @@ mod native_raw_identity_tests_v1 {
             },
         )
         .unwrap_err();
-        match error {
-            NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(
-                cause,
-            )) => {
-                assert_eq!(std::ptr::from_ref(cause.as_ref()), cause_pointer);
-                assert_eq!(*cause, 31);
-            }
-            other => panic!("expected exact final-checkpoint cause: {other:?}"),
-        }
+        assert!(matches!(&error,
+            NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(cause))
+            if std::ptr::from_ref(cause.as_ref()) == cause_pointer && **cause == 31
+        ));
         assert!(attempted);
         assert!(output.is_none());
         assert_eq!(backing, "rev/test");
@@ -1258,6 +1406,7 @@ mod native_raw_identity_tests_v1 {
             &mut backing,
             &mut output,
             &mut attempted,
+            &mut normalization_data,
             &mut admission,
             |_, _| -> Result<bool, Box<u8>> {
                 panic!("complete refused attempt must not be retried")
