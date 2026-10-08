@@ -102,6 +102,98 @@ owns ingest dispatch and durable lifecycle coordination. Historical channel,
 in-memory HNSW and early Lance adapter descriptions do not override current
 source or the later semantic-generation ADR.
 
+### Client transport ownership
+
+The production client directly owns its UDS query, control and ingest transports
+inside the shared client payload. Their paths and I/O policies have exactly the
+client's lifetime. They have no independent aliases or shared headers. Ordinary
+client clones retain the same outer client and request-ID counter; dispatch
+borrows a transport without retaining another counter. Query-only clients keep
+control and ingest absent. Test-only injected transports do not change this
+production representation.
+
+Configuration consumes an explicit state-root backing instead of cloning it.
+Each default socket uses one relative suffix under that root, with no
+intermediate `search-plane` PathBuf. Environment precedence, explicit socket
+overrides, profile selection, and timeout/deadline validation remain owned by
+`ConnectOptions`. An absolute `Instant` is preserved through every request.
+Client construction does not dial a socket; I/O starts at transport dispatch.
+
+Removing the production trait-object transport headers also makes the client
+and its borrowed namespaces unwind-safe by auto-trait inference. Public method
+signatures and client cloning semantics are unchanged; the public API snapshot
+records this auto-trait expansion.
+
+Focused local validation (2026-10-09): SDK `test --all-features --locked` passed
+167 tests, with six environment-dependent tests ignored. SDK all-targets,
+all-features Clippy with `-D warnings`, scoped formatting, public-API and
+hexagonal gates passed. The existing `runtime_fast_suite` test
+`sdk_frontdoor::publication_tests::sdk_default_code_search_matches_terms_across_chunks_as_one_file`
+also passed, exercising actual UDS publish/activation/query and fixture shutdown.
+Commands use `./scripts/cargow --lane test-sdk-binding-owner-lane` for the SDK
+and `--lane test-daemon-lane test -p quanta-index-searchd-runtime --test runtime_fast_suite --all-features --locked`
+with the full test name and `-- --exact` for the daemon harness. These focused
+results do not qualify native Source custody, the whole daemon suite, installed
+process behavior, or remote CI.
+
+### Open native connect co-cut
+
+Status: **proposed interface, not implemented or qualified**. This is distinct
+from the transport ownership decision above and the native corpus decode
+candidate. Ordinary `connect`, including its remaining outer std Arc, cannot be
+adopted as a Source-admitted client after construction.
+
+The current Semantica receiving functions take an explicit borrowed state root
+and default, relative `Duration`, or absolute `Instant` I/O policy. A native
+entrypoint for these calls must run the same configuration decisions, payload
+construction and namespace/dispatch bodies. It must not add a second connector,
+query implementation, allocator, root issuer, or environment-resolution policy.
+The explicit-root path does not consult the environment. Native support for
+environment-created input is a separate admission requirement, not an implicit
+fallback to `std::env::var` inside a Source loan.
+
+The remaining interface decision has two concrete owners:
+
+- Index owns the nonshared client payload, canonical path construction, and
+  transient producer loan. It must park complete paths, partial path backing,
+  original `TryReserveError`/`IpcError`, original non-Copy admission failure,
+  and candidate payload in caller-owned DATA before any late refusal. Invalid
+  I/O policy is checked before path birth. Raw platform path bytes must retain
+  their existing semantics, including non-Unicode Unix paths; a String bridge
+  is not a substitute. Occupied/reused DATA must reject before any poll or birth.
+- Semantica owns the concrete shared handle and actual funding custody. Its
+  receiver calls Core's existing
+  `admitted_shared_value_into_slots_v3(admission, payload_slot, shared_slot)`
+  with `NativeSharedValueV3<IndexClientPayload>` as the concrete output. Paid
+  aliases use the same Core
+  `admitted_retain_shared_value_into_slot_v3` and counter. Neither an ordinary
+  std Arc nor a newly implemented reference counter satisfies this seam.
+
+The proposed SDK port has associated `OriginalError`, `Funding`, and
+`Shared: Deref<Target = IndexClientPayload>` types. The payload has private
+construction and no infallible native clone. The receiver binds `Shared` to the
+actual Core type; Index does not depend on Semantica's source or funding types.
+The port lends path birth and shared birth only during a transient canonical
+producer call, with payload/shared output slots outside the callback. It cannot
+store Source, current-control, input references or callbacks in retained DATA.
+The associated-handle form and borrowed execution view require agreement with
+the receiving owner before adding the public API.
+
+All physical state and output slots precede the actual funding bank in DATA's
+drop order. The bank is not inside the shared payload: physical header release
+can occur after the last payload destructor. The caller retains that bank
+through the highest Source finisher and until every strong/weak handle and
+dependent backing has dropped, including after a successful output transfer.
+Late cancellation, deadline or header checkpoint refusal must leave candidate
+state and full original failure in DATA for the same terminal classification;
+no retry may restart the absolute deadline or replace the original cause.
+
+Acceptance requires the actual receiving Core call and Original Source path,
+pre/post-birth refusal tests, exact path/profile/deadline parity, alias/header
+funding lifetime tests, and real UDS dispatch. Source review, SDK compilation,
+or ordinary daemon tests alone do not establish native acceptance. Integration
+of this ABI is one coupled producer/receiver change.
+
 ## Consequences
 
 - Adding a public operation requires a contract route, SDK namespace or

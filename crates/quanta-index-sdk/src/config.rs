@@ -99,7 +99,7 @@ impl ConnectOptions {
     /// the control and ingest sockets unresolved instead of failing or
     /// inventing defaults for transports the profile never constructs.
     pub(crate) fn resolve_profile(
-        self,
+        mut self,
         profile: ClientProfile,
     ) -> Result<ResolvedConnectOptions, SdkError> {
         let io_policy = match self.request_io_deadline {
@@ -110,7 +110,7 @@ impl ConnectOptions {
         let state_root = self.resolve_state_root()?;
         let query_socket = match (self.query_socket, &state_root) {
             (Some(path), _) => path,
-            (None, Some(root)) => root.join("search-plane").join("query.sock"),
+            (None, Some(root)) => root.join("search-plane/query.sock"),
             (None, None) => {
                 return Err(SdkError::Usage(
                     "query socket unresolved: set state root or explicit query socket".to_string(),
@@ -120,21 +120,23 @@ impl ConnectOptions {
         let optional_socket = |explicit: Option<PathBuf>, name: &str| -> Option<PathBuf> {
             match (explicit, &state_root) {
                 (Some(path), _) => Some(path),
-                (None, Some(root)) => Some(root.join("search-plane").join(name)),
+                (None, Some(root)) => Some(root.join(name)),
                 (None, None) => None,
             }
         };
         let (control_socket, ingest_socket) = match profile {
             ClientProfile::Full => {
-                let control_socket = optional_socket(self.control_socket, "control.sock")
-                    .ok_or_else(|| {
-                        SdkError::Usage(
+                let control_socket =
+                    optional_socket(self.control_socket, "search-plane/control.sock").ok_or_else(
+                        || {
+                            SdkError::Usage(
                             "control socket unresolved: set state root or explicit control socket"
                                 .to_string(),
                         )
-                    })?;
-                let ingest_socket =
-                    optional_socket(self.ingest_socket, "ingest.sock").ok_or_else(|| {
+                        },
+                    )?;
+                let ingest_socket = optional_socket(self.ingest_socket, "search-plane/ingest.sock")
+                    .ok_or_else(|| {
                         SdkError::Usage(
                             "ingest socket unresolved: set state root or explicit ingest socket"
                                 .to_string(),
@@ -153,7 +155,7 @@ impl ConnectOptions {
         })
     }
 
-    fn resolve_state_root(&self) -> Result<Option<PathBuf>, SdkError> {
+    fn resolve_state_root(&mut self) -> Result<Option<PathBuf>, SdkError> {
         self.resolve_state_root_with(&SystemEnv)
     }
 
@@ -165,11 +167,11 @@ impl ConnectOptions {
     /// error; a missing or non-Unicode `QUANTA_INDEX_*` variable falls
     /// through to the next source.
     pub(crate) fn resolve_state_root_with(
-        &self,
+        &mut self,
         env: &dyn EnvLookup,
     ) -> Result<Option<PathBuf>, SdkError> {
-        if let Some(root) = &self.state_root {
-            return Ok(Some(root.clone()));
+        if let Some(root) = self.state_root.take() {
+            return Ok(Some(root));
         }
         if self.query_socket.is_some()
             || self.control_socket.is_some()

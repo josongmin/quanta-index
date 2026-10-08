@@ -24,12 +24,54 @@ use crate::{
 };
 use crate::{ControlTransport, IngestTransport};
 
+// Transports have exactly the client's lifetime. Only the complete client is
+// shared; no independent header or retain is needed for a transport dispatch.
+enum ClientTransports {
+    Uds {
+        query: UdsQueryTransport,
+        control: Option<UdsControlTransport>,
+        ingest: Option<UdsIngestTransport>,
+    },
+    #[cfg(test)]
+    Injected {
+        query: Arc<dyn QueryTransport>,
+        control: Arc<dyn ControlTransport>,
+        ingest: Arc<dyn IngestTransport>,
+    },
+}
+
+impl ClientTransports {
+    fn query(&self) -> &dyn QueryTransport {
+        match self {
+            Self::Uds { query, .. } => query,
+            #[cfg(test)]
+            Self::Injected { query, .. } => query.as_ref(),
+        }
+    }
+
+    fn control(&self) -> Option<&dyn ControlTransport> {
+        match self {
+            Self::Uds { control, .. } => control
+                .as_ref()
+                .map(|transport| -> &dyn ControlTransport { transport }),
+            #[cfg(test)]
+            Self::Injected { control, .. } => Some(control.as_ref()),
+        }
+    }
+
+    fn ingest(&self) -> Option<&dyn IngestTransport> {
+        match self {
+            Self::Uds { ingest, .. } => ingest
+                .as_ref()
+                .map(|transport| -> &dyn IngestTransport { transport }),
+            #[cfg(test)]
+            Self::Injected { ingest, .. } => Some(ingest.as_ref()),
+        }
+    }
+}
+
 struct QuantaIndexInner {
-    query_transport: Arc<dyn QueryTransport>,
-    /// `None` in the query-only profile (S21-07): least privilege, no
-    /// dummy transport.
-    control_transport: Option<Arc<dyn ControlTransport>>,
-    ingest_transport: Option<Arc<dyn IngestTransport>>,
+    transports: ClientTransports,
     next_request_id: AtomicU64,
 }
 
@@ -234,7 +276,7 @@ impl QuantaIndex {
             payload,
         };
         let response = if let Some(trace) = observation {
-            let (response, ipc) = self.inner.query_transport.send_observed(envelope)?;
+            let (response, ipc) = self.inner.transports.query().send_observed(envelope)?;
             let kind = observed_kind.ok_or_else(|| {
                 SdkError::Protocol("observed query RPC kind disappeared".to_string())
             })?;
@@ -245,7 +287,7 @@ impl QuantaIndex {
             });
             response
         } else {
-            self.inner.query_transport.send(envelope)?
+            self.inner.transports.query().send(envelope)?
         };
         if response.request_id != request_id {
             return Err(SdkError::Protocol(format!(
@@ -347,8 +389,8 @@ impl QuantaIndex {
         let binding = ControlCallBinding::from_request(&payload);
         let control_transport = self
             .inner
-            .control_transport
-            .clone()
+            .transports
+            .control()
             .ok_or(SdkError::PlaneUnavailable { plane: "control" })?;
         let request_id = self.next_request_id();
         let envelope = SearchPlaneControlIpcRequestEnvelope {
@@ -394,8 +436,8 @@ impl QuantaIndex {
         let binding = IngestCallBinding::from_request(&payload)?;
         let ingest_transport = self
             .inner
-            .ingest_transport
-            .clone()
+            .transports
+            .ingest()
             .ok_or(SdkError::PlaneUnavailable { plane: "ingest" })?;
         let request_id = self.next_request_id();
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
@@ -537,26 +579,17 @@ impl QuantaIndex {
     fn from_resolved(resolved: crate::config::ResolvedConnectOptions) -> Self {
         // `state_root` is resolved for config validation only; the client talks
         // to the daemon over sockets and never touches the state root itself.
-        let query_transport = Arc::new(UdsQueryTransport::new(
-            resolved.query_socket,
-            resolved.io_policy,
-        ));
-        let control_transport =
-            resolved
-                .control_socket
-                .map(|socket| -> Arc<dyn ControlTransport> {
-                    Arc::new(UdsControlTransport::new(socket, resolved.io_policy))
-                });
-        let ingest_transport = resolved
-            .ingest_socket
-            .map(|socket| -> Arc<dyn IngestTransport> {
-                Arc::new(UdsIngestTransport::new(socket, resolved.io_policy))
-            });
         Self {
             inner: Arc::new(QuantaIndexInner {
-                query_transport,
-                control_transport,
-                ingest_transport,
+                transports: ClientTransports::Uds {
+                    query: UdsQueryTransport::new(resolved.query_socket, resolved.io_policy),
+                    control: resolved
+                        .control_socket
+                        .map(|socket| UdsControlTransport::new(socket, resolved.io_policy)),
+                    ingest: resolved
+                        .ingest_socket
+                        .map(|socket| UdsIngestTransport::new(socket, resolved.io_policy)),
+                },
                 next_request_id: AtomicU64::new(1),
             }),
         }
@@ -570,9 +603,11 @@ impl QuantaIndex {
     ) -> Self {
         Self {
             inner: Arc::new(QuantaIndexInner {
-                query_transport,
-                control_transport: Some(control_transport),
-                ingest_transport: Some(ingest_transport),
+                transports: ClientTransports::Injected {
+                    query: query_transport,
+                    control: control_transport,
+                    ingest: ingest_transport,
+                },
                 next_request_id: AtomicU64::new(1),
             }),
         }
