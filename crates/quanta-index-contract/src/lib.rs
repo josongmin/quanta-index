@@ -82,6 +82,7 @@ pub use quanta_index_contract_base::{
     NativeIdentityConstructionErrorV1, NativeIdentityDecodeAdmissionV1,
     NativeIdentityDecodeDataRefusalV1, NativeIdentityDecodeDataV1, NativeIdentityDecodeLoanV1,
     NativeIdentityDecodeRunnerV1, NativeManifestGenerationDecodeDataV1,
+    NativeRetainedScalarDecodeDataV1, NativeRetainedScalarLeafV1,
 };
 
 #[cfg(feature = "quanta-native-identity-v1")]

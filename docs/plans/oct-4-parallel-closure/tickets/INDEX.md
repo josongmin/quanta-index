@@ -242,6 +242,16 @@ private scalar decoder/visitor 전체 body는 `8c0d7726`와 동일함을 확인�
 Native receiver/actual Source, 설치 E2E, remote CI는 **NOT_RUN**이며 이 로컬 결과로
 수용 완료나 main 통합 승인을 주장하지 않는다.
 
+`0129de29` 후보 이후 수신부 import 경계의 누락을 수정했다.
+`quanta-index-contract` root의 기존 `quanta-native-identity-v1` feature-gated
+thin pub use에 `NativeRetainedScalarDecodeDataV1`과 `NativeRetainedScalarLeafV1`을
+추가했다. Semantica는 기존 umbrella dependency로 같은 base producer를 가져온다.
+새 package dependency, scalar body/validator, newtype extension은 추가하지 않았다.
+이 export delta는 `./scripts/cargow --lane test-canonical-identity-lane clippy -p quanta-index-contract --all-targets --all-features --locked -- -D warnings`
+compile/lint **VERIFIED**다. default-feature public API snapshot도 unchanged다.
+기존 439/401/SDK 176 결과는 앞선 producer 후보의 실행 결과이며 이 alias delta에서
+다시 실행한 테스트로 표기하지 않는다. 실제 Semantica Source 수용은 계속 **NOT_RUN**이다.
+
 ### SDK connect native 경계의 추가 대조 — 2026-10-09
 
 아래는 transport-owner/native producer 구현 전의 역사적 source 대조다.
