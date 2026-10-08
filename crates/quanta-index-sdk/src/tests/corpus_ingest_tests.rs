@@ -1070,9 +1070,7 @@ fn producer_client_rejects_invalid_expected_composite_before_ingest_v1() {
 }
 
 #[test]
-fn producer_client_delegates_non_advancing_activation_rejection_before_ingest_v1() {
-    let ingest = unused_ingest();
-    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+fn producer_client_rejects_non_advancing_verified_publication_before_activation_v1() {
     let batch = SearchCorpusBatch::replace_generation(
         repo_id(),
         revision_id(),
@@ -1080,6 +1078,20 @@ fn producer_client_delegates_non_advancing_activation_rejection_before_ingest_v1
         "manifest:7-new",
     )
     .source_event(sample_source_event());
+    let published = BatchPublishReceipt {
+        sealed: true,
+        applied: true,
+        durable_sequence: 7,
+        semantic_content: Some(semantic_roots(7)),
+        ..BatchPublishReceipt::empty_for(
+            batch.generation(),
+            Some(batch.manifest_digest().to_string()),
+            ok_or_fail!(batch.batch_digest()),
+        )
+    };
+    let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(published.clone()));
+    let control = unused_control();
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest.clone());
     let error = client
         .producer()
         .publish_search_corpus_and_activate(
@@ -1088,16 +1100,53 @@ fn producer_client_delegates_non_advancing_activation_rejection_before_ingest_v1
         )
         .expect_err("activation candidate must strictly advance the expected active generation");
     assert!(
-        matches!(error, crate::SdkError::Protocol(ref message) if message.contains("CANDIDATE_GENERATION_MUST_ADVANCE_EXPECTED_ACTIVE")),
+        matches!(&error, crate::SdkError::ActivationAfterPublish { source, .. }
+            if matches!(source.as_ref(), crate::SdkError::Protocol(message)
+                if message.contains("CANDIDATE_GENERATION_MUST_ADVANCE_EXPECTED_ACTIVE"))),
         "expected contract-owned generation relation error, got {error:?}"
+    );
+    assert_eq!(error.published_receipt(), Some(&published));
+    assert_eq!(
+        ingest.requests.lock().expect("ingest request mutex").len(),
+        1
+    );
+    assert!(
+        control
+            .requests
+            .lock()
+            .expect("control request mutex")
+            .is_empty()
+    );
+}
+
+#[test]
+fn producer_client_rejects_foreign_repo_expectation_before_ingest_v1() {
+    let ingest = unused_ingest();
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(7),
+        "manifest:7",
+    )
+    .source_event(sample_source_event());
+    let mut expected = search_corpus_head(6, "manifest:6", 1);
+    let foreign_repo = ok_or_fail!(RepoId::new("foreign-repo"));
+    expected.generation.lexical.repo_id = foreign_repo.clone();
+    expected.generation.semantic.repo_id = foreign_repo;
+    let error = client
+        .producer()
+        .publish_search_corpus_and_activate(&batch, Some(expected))
+        .expect_err("source-event replay cannot cross repository authority");
+    assert!(
+        matches!(error, crate::SdkError::Protocol(ref message) if message.contains("REPO_MISMATCH"))
     );
     assert!(
         ingest
             .requests
             .lock()
             .expect("ingest request mutex")
-            .is_empty(),
-        "non-advancing activation reached ingest"
+            .is_empty()
     );
 }
 

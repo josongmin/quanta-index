@@ -488,6 +488,143 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
     clippy::print_stdout,
     reason = "the process proof records its retained artifact root"
 )]
+fn activation_failure_preserves_original_publication_across_restart() -> TestResult {
+    let requested_binary = std::env::var_os("QUANTA_INDEX_L2_TEST_BINARY")
+        .ok_or("QUANTA_INDEX_L2_TEST_BINARY is required")?;
+    let root = tempfile::Builder::new()
+        .prefix("qi-l2-activation-")
+        .tempdir_in("/tmp")?
+        .keep();
+    println!("L2_PROCESS_ARTIFACT_ROOT={}", root.display());
+    let state_root = root.join("state");
+    let binary = root.join("daemon-under-test");
+    let _copied_bytes = std::fs::copy(requested_binary, &binary)?;
+    let daemon = Daemon::start(&binary, &state_root, "activation-first")?;
+    let first = corpus(
+        1,
+        None,
+        revision()?,
+        "activation-one",
+        None,
+        &[("a.rs", "a-old", "oldneedle")],
+    )?;
+    let (_, first_active, _) = daemon
+        .client
+        .search_corpus()
+        .publish_and_activate_observed(&first, None)?;
+    let second = corpus(
+        2,
+        Some(1),
+        revision()?,
+        "activation-two",
+        Some("activation-one"),
+        &[("a.rs", "a-new", "newneedle")],
+    )?;
+    // Explicitly expecting no active head is valid input but conflicts with G1.
+    // Publication must succeed first, without converting the CAS refusal to ACK.
+    let failure = daemon
+        .client
+        .search_corpus()
+        .publish_and_activate_observed(&second, None)
+        .expect_err("existing G1 must reject activation expecting an empty head");
+    let retained = match failure {
+        SdkError::ActivationAfterPublish { evidence, source } => {
+            assert!(matches!(
+                *source,
+                SdkError::Remote {
+                    code: SearchPlaneErrorCodeV2::CompositeActivationCasConflict,
+                    ..
+                }
+            ));
+            evidence
+        }
+        other => return Err(format!("publication evidence was lost: {other}").into()),
+    };
+    assert!(retained.receipt.applied);
+    assert_eq!(retained.receipt.accepted_replace_scopes, 1);
+    assert_eq!(retained.receipt.accepted_tombstone_scopes, 0);
+    assert_eq!(
+        retained.publication.target.manifest_generation,
+        ManifestGeneration::new(2)
+    );
+    assert_eq!(retained.publication.target.revision_id, revision()?);
+    assert_eq!(query(&daemon.client, 2, "newneedle")?, ["a-new"]);
+    assert_eq!(query(&daemon.client, 1, "oldneedle")?, ["a-old"]);
+    assert_eq!(
+        daemon
+            .client
+            .generations()
+            .active_head(repo()?, revision()?)?,
+        Some(first_active.active.clone())
+    );
+    daemon.stop()?;
+
+    let restarted = Daemon::start(&binary, &state_root, "activation-restart")?;
+    let attempted_revision = RevisionId::new("activation-retargeted")?;
+    let retargeted = corpus(
+        99,
+        Some(1),
+        attempted_revision.clone(),
+        "activation-two",
+        Some("activation-one"),
+        &[("a.rs", "a-new", "newneedle")],
+    )?;
+    let replay_failure = restarted
+        .client
+        .search_corpus()
+        .publish_and_activate_observed(&retargeted, None)
+        .expect_err("restart must preserve the original active head and CAS refusal");
+    assert_eq!(
+        replay_failure.published_publication(),
+        Some(&retained.publication)
+    );
+    assert_eq!(
+        replay_failure.published_receipt(),
+        Some(&retained.receipt.clone().replayed())
+    );
+    assert!(matches!(
+        replay_failure,
+        SdkError::ActivationAfterPublish { source, .. }
+            if matches!(*source, SdkError::Remote {
+                code: SearchPlaneErrorCodeV2::CompositeActivationCasConflict,
+                ..
+            })
+    ));
+    let observed_head = restarted
+        .client
+        .generations()
+        .active_head(repo()?, revision()?)?
+        .ok_or("original active head disappeared after restart")?;
+    assert_eq!(observed_head, first_active.active);
+    let (replayed, activated, _) = restarted
+        .client
+        .search_corpus()
+        .publish_and_activate_observed(&retargeted, Some(observed_head))?;
+    assert_eq!(replayed.publication, retained.publication);
+    assert_eq!(replayed.receipt, retained.receipt.replayed());
+    assert_eq!(
+        activated.active.generation.lexical,
+        replayed.publication.target
+    );
+    assert_eq!(query(&restarted.client, 2, "newneedle")?, ["a-new"]);
+    assert!(query(&restarted.client, 2, "oldneedle")?.is_empty());
+    assert_eq!(query(&restarted.client, 1, "oldneedle")?, ["a-old"]);
+    assert!(
+        restarted
+            .client
+            .generations()
+            .active_head(repo()?, attempted_revision)?
+            .is_none()
+    );
+    restarted.stop()
+}
+
+#[test]
+#[ignore = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"]
+#[expect(
+    clippy::print_stdout,
+    reason = "the process proof records its retained artifact root"
+)]
 fn unresolved_cross_stream_publication_orders_activation_after_restart() -> TestResult {
     let requested_binary = std::env::var_os("QUANTA_INDEX_L2_TEST_BINARY")
         .ok_or("QUANTA_INDEX_L2_TEST_BINARY is required")?;

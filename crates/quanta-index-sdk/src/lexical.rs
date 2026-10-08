@@ -9,12 +9,13 @@ use std::time::Instant;
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
     ChunkRecord, ClusterMembershipReplaceV1, ContinuationTokenV2, GenerationSelector,
-    ManifestGeneration, RepoId, RevisionId, SearchCorpusActiveHeadV1,
-    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchCorpusTombstoneScope, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind,
-    SearchScopeSurface, SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
+    ManifestGeneration, RepoId, RevisionId, SearchCorpusActivationValidationErrorV1,
+    SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind, SearchScopeSurface,
+    SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
     SemanticSourceScopeKeyV1, SourceFileCoverage, SourceFileKey, SourcePublicationEvent,
     TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
@@ -424,16 +425,25 @@ impl<'a> SearchCorpusNamespace<'a> {
         ),
         SdkError,
     > {
-        // An expectation that could never be met — invalid, another pair,
-        // or not advanced by this batch — is refused before any byte is
-        // published, by the contract's own rule.
-        SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_v1(
-            &batch_lexical_scope_v1(batch),
-            expected_active.as_ref(),
-        )
-        .map_err(|error| {
-            SdkError::Protocol(format!("composite activation request is invalid: {error}"))
-        })?;
+        // A replay can resolve to an original revision/generation different
+        // from the submitted target. Validate only independently knowable
+        // invariants here; the verified publication owns the full CAS relation.
+        if let Some(expected) = expected_active.as_ref() {
+            expected.validate_v1().map_err(|error| {
+                SdkError::Protocol(format!(
+                    "composite activation request is invalid: {}",
+                    SearchCorpusActivationValidationErrorV1::ExpectedActiveIdentity(error)
+                ))
+            })?;
+            // Response binding requires the original publication's repo to
+            // match the submitted batch, even when its target is replayed.
+            if expected.generation.lexical.repo_id != *batch.repo_id() {
+                return Err(SdkError::Protocol(format!(
+                    "composite activation request is invalid: {}",
+                    SearchCorpusActivationValidationErrorV1::RepoMismatch
+                )));
+            }
+        }
         let publish_started = Instant::now();
         let outcome = dispatch_search_corpus_publish_outcome_v1(self.client, batch)?;
         let activation_result = (|| {
@@ -496,18 +506,6 @@ impl<'a> SearchCorpusNamespace<'a> {
                 source: Box::new(source),
             })?;
         Ok((outcome, activation, timings))
-    }
-}
-
-/// The lexical scope a batch publishes into: what the CAS expectation is
-/// validated against before the batch is published.
-fn batch_lexical_scope_v1(batch: &SearchCorpusBatch) -> quanta_index_contract::GenerationSnapshot {
-    quanta_index_contract::GenerationSnapshot {
-        repo_id: batch.repo_id().clone(),
-        revision_id: batch.revision_id().clone(),
-        track: SearchPlaneTrackKind::Lexical,
-        manifest_generation: batch.generation(),
-        manifest_digest: batch.manifest_digest().to_string(),
     }
 }
 

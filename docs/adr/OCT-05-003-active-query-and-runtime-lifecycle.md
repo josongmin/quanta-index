@@ -97,8 +97,9 @@ Quanta local main `0760680de8367bb9078f31438b017c227b776c27` retains both
 `SdkError::ActivationAfterPublish` evidence, with the original typed cause.
 The getters return the verified original publication and receipt. All errors
 after the validated publish outcome use that boundary, including observation,
-activation request/response, transport and timing errors. Invalid expected-CAS
-input still refuses before publication. The box allocates only on the failure
+activation request/response, transport and timing errors. Invalid expected-head
+identity and a foreign repository refuse before publication. Revision/generation
+relations use the verified original publication, as detailed below. The box allocates only on the failure
 path; successful SDK results retain their existing shape. Public API inventory
 was updated with the complete producer change.
 
@@ -165,3 +166,48 @@ respective integrated main bytes; unrelated Semantica dirty work was preserved.
   remains incomplete; Quanta remote publication does not establish pair completion.
   The publishing chat received the coupled owner boundary. Local integration,
   individual repository publication and release qualification remain distinct.
+
+### Replay CAS preflight authority repair
+
+On2026-10-08 the real-daemon recovery regression found a further SDK defect:
+after a successful G2 publication and activation CAS refusal, restart retained
+the original G2 and active G1, but an explicit G1 expectation with the retargeted
+replay submission failed locally with `REVISION_MISMATCH`. The preflight compared
+the expectation to the attempted revision rather than the verified publication.
+The first actual run retains3 passed/1 failed; it is not a successful process proof.
+
+The SDK now prevalidates the expected head's own canonical identity and repository
+authority. Response binding guarantees that the original publication stays in
+that repository. A replay's revision/generation are unknown until the verified
+publish outcome; the existing contract-owned full CAS validation then checks
+that original candidate against the unchanged explicit expectation. The SDK
+does not redirect or synthesize an expected head. A well-formed expectation that
+cannot be advanced by the original publication returns `ActivationAfterPublish`
+with its durable evidence and sends no activation request. It is not a pre-publish
+refusal, because the submitted target cannot establish that relation for a replay.
+
+Regressions independently cover malformed head/foreign repository pre-ingest
+refusal, original-target non-advance refusal with retained receipt, and G3
+retargeted submission resolving to original G7 against explicit G6. Both ordinary
+and observed SDK routes retain the actual candidate and explicit expectation.
+The real process test publishes G2, refuses CAS expecting an empty active head,
+checks G2 query visibility while G1 remains active, restarts, repeats the refusal
+under retargeted G99, then activates original G2 with the independently observed
+G1 head. Receipt/binding equality, replay rather than duplicate application,
+old-generation queries and absence of the retargeted revision's active head are
+asserted separately.
+
+`./scripts/cargow test -p quanta-index-sdk --lib --locked -- --quiet` passed130/130.
+The daemon was rebuilt with `./scripts/cargow --lane test-daemon-lane build -p
+quanta-index-searchd-runtime --bin quanta-index-searchd --all-features --locked`.
+With `QUANTA_INDEX_L2_TEST_BINARY` naming that binary,
+`./scripts/cargow --lane test-integration-lane test -p quanta-index-sdk --test
+l2_daemon_publication --locked -- --ignored --test-threads=1 --nocapture` passed4/4
+in64.62s, including the existing original-binding/delta/restart, cross-stream
+ordering and all8 named crash cuts. Actual roots are
+`/tmp/qi-l2-activation-UYTPrs`, `/tmp/qi-l2-crash-gUCTAf`,
+`/tmp/qi-l2-EsvK7M` and `/tmp/qi-l2-cross-stream-PdIW3N`.
+Public API inventories for SDK/Contract and test-authority validation passed.
+This is a local hash-dev debug-daemon process regression. Semantica Runtime
+restart/migration, installed-provider/release and qualified performance remain
+separate scopes.

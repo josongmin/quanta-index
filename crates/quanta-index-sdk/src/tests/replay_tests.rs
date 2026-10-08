@@ -165,7 +165,11 @@ fn l2_source_replay_retains_verified_receipt_when_activation_fails() {
     assert_eq!(error.published_receipt(), Some(&published.receipt));
     assert_eq!(error.published_publication(), Some(&published.publication));
     assert_eq!(
-        error.published_publication().expect("original publication").target.manifest_generation,
+        error
+            .published_publication()
+            .expect("original publication")
+            .target
+            .manifest_generation,
         ManifestGeneration::new(7)
     );
     assert!(matches!(
@@ -227,7 +231,7 @@ fn l2_source_replay_does_not_redirect_explicit_cas_expectation() {
         unused_query(),
         control.clone(),
         Arc::new(L2ReplayIngestTransport {
-            outcome,
+            outcome: outcome.clone(),
             observed: true,
         }),
     );
@@ -235,9 +239,72 @@ fn l2_source_replay_does_not_redirect_explicit_cas_expectation() {
         .search_corpus()
         .publish_and_activate_observed(&batch, Some(expected))
         .expect_err("original target cannot advance the requested revision's head");
+    assert_eq!(error.published_receipt(), Some(&outcome.receipt));
+    assert_eq!(error.published_publication(), Some(&outcome.publication));
     assert!(
         matches!(error, crate::SdkError::ActivationAfterPublish { source, .. }
             if matches!(*source, crate::SdkError::Protocol(ref message) if message.contains("composite activation request is invalid")))
     );
     assert!(ok_or_fail!(control.requests.lock()).is_empty());
+}
+
+#[test]
+fn l2_source_replay_validates_cas_against_original_target_with_explicit_head() {
+    let (_, outcome) = l2_replay_fixture();
+    // The submitted G3 cannot advance G6; the verified original G7 can.
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        ok_or_fail!(RevisionId::new("retargeted-revision")),
+        ManifestGeneration::new(3),
+        "manifest:retargeted",
+    )
+    .source_event(sample_source_event());
+    let previous = search_corpus_head(6, "manifest:previous", 1);
+    let original = search_corpus_identity(7, "manifest:original");
+    for observed in [false, true] {
+        let ack = SearchPlaneSearchCorpusActivationCasAck {
+            active: head_with_generation(original.clone(), 2),
+            previous_sealed_active: Some(previous.clone()),
+        };
+        let control = Arc::new(StubControlTransport::new(
+            quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
+                ack.clone(),
+            ),
+        ));
+        let client = QuantaIndex::from_transports(
+            unused_query(),
+            control.clone(),
+            Arc::new(L2ReplayIngestTransport {
+                outcome: outcome.clone(),
+                observed,
+            }),
+        );
+        if observed {
+            let (published, active, _) = ok_or_fail!(
+                client
+                    .search_corpus()
+                    .publish_and_activate_observed(&batch, Some(previous.clone()))
+            );
+            assert_eq!(published.publication, outcome.publication);
+            assert_eq!(published.receipt, outcome.receipt);
+            assert_eq!(active, ack);
+        } else {
+            let (receipt, active) = ok_or_fail!(
+                client
+                    .search_corpus()
+                    .publish_and_activate(&batch, Some(previous.clone()))
+            );
+            assert_eq!(receipt, outcome.receipt);
+            assert_eq!(active, ack);
+        }
+        let request = ok_or_fail!(only_control_request(&control));
+        let quanta_index_contract::SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+            request,
+        ) = request.payload
+        else {
+            panic!("expected composite activation");
+        };
+        assert_eq!(request.candidate, original);
+        assert_eq!(request.expected_active, Some(previous.clone()));
+    }
 }

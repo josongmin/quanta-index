@@ -717,12 +717,13 @@ impl SearchPlaneActivateSearchCorpusGenerationCasRequest {
     }
 
     /// The CAS expectation's own invariants against the candidate's scope
-    /// and generation, which a producer knows before it publishes: the
-    /// expectation is a valid identity, names the candidate's pair, and
+    /// and generation: the expectation is a valid identity, names the candidate's pair, and
     /// the candidate strictly advances it. This is the one authority for
     /// those invariants; [`Self::validate_v1`] runs it after the candidate
-    /// identity check, and a producer may run it before the candidate's
-    /// content roots exist.
+    /// identity check. A producer may run it before the content roots exist
+    /// only when the candidate scope is established. Source-event replay can
+    /// return an original revision/generation different from the submitted
+    /// target; that caller must use the verified publication scope.
     pub fn validate_expected_active_v1(
         candidate_scope: &GenerationSnapshot,
         expected_active: Option<&SearchCorpusActiveHeadV1>,
