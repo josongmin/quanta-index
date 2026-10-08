@@ -158,6 +158,10 @@ respective integrated main bytes; unrelated Semantica dirty work was preserved.
 - Semantica canonical commit passed staged integrity, all18 changed Rust formatting
   checks and changed safety fences. Its canonical push refused because remote
   `035961a8efc` is not the task commit's exact parent `d29ac508`:110 earlier local
-  commits belong to other work. SDK-only remote publication is held until those
-  owner commits and the complete consumer are published. Local main integration
-  is distinct from remote publication and release qualification.
+  commits belong to other work. Root held SDK-only remote publication, but the
+  separately authorized existing commit/push heartbeat subsequently published
+  Quanta `0760680d` and documentation `6870a635`. Its actual push/fetch verified
+  Quanta HEAD and origin/main equality. Semantica consumer remote publication
+  remains incomplete; Quanta remote publication does not establish pair completion.
+  The publishing chat received the coupled owner boundary. Local integration,
+  individual repository publication and release qualification remain distinct.
