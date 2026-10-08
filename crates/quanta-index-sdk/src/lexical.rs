@@ -436,56 +436,66 @@ impl<'a> SearchCorpusNamespace<'a> {
         })?;
         let publish_started = Instant::now();
         let outcome = dispatch_search_corpus_publish_outcome_v1(self.client, batch)?;
-        let publish_ns = sdk_elapsed_ns(publish_started)?;
-        let activation_started = Instant::now();
-        if observation_required && outcome.observation.is_none() {
-            return Err(SdkError::Protocol(
-                "search corpus observation is missing".to_string(),
-            ));
-        }
-        let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
-            candidate: search_corpus_identity_from_sealed_receipt_v1(&outcome)?,
-            expected_active,
-        };
-        request.validate_v1().map_err(|error| {
-            SdkError::Protocol(format!("composite activation request is invalid: {error}"))
-        })?;
-        let response = self.client.dispatch_control(
-            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request),
-        )?;
-        let activation = match response {
-            SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => ack,
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
-            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
-            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
-            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
-            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
-                return Err(SdkError::Protocol(format!(
-                    "expected composite search corpus activation CAS ack, got {}",
-                    QuantaIndex::control_response_kind(&other)
-                )));
-            }
-            SearchPlaneControlIpcResponse::Error(_) => {
+        let activation_result = (|| {
+            let publish_ns = sdk_elapsed_ns(publish_started)?;
+            let activation_started = Instant::now();
+            if observation_required && outcome.observation.is_none() {
                 return Err(SdkError::Protocol(
-                    "control dispatch leaked an error response".to_string(),
+                    "search corpus observation is missing".to_string(),
                 ));
             }
-        };
-        let activation_ns = sdk_elapsed_ns(activation_started)?;
-        Ok((
-            outcome,
-            activation,
-            SdkPublishActivateDurationsV1 {
-                publish_ns,
-                activation_ns,
-            },
-        ))
+            let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                candidate: search_corpus_identity_from_sealed_receipt_v1(&outcome)?,
+                expected_active,
+            };
+            request.validate_v1().map_err(|error| {
+                SdkError::Protocol(format!("composite activation request is invalid: {error}"))
+            })?;
+            let response = self.client.dispatch_control(
+                SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request),
+            )?;
+            let activation = match response {
+                SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => ack,
+                other @ (SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+                | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+                | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+                | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+                | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+                | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
+                | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+                | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+                | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+                | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+                | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
+                    return Err(SdkError::Protocol(format!(
+                        "expected composite search corpus activation CAS ack, got {}",
+                        QuantaIndex::control_response_kind(&other)
+                    )));
+                }
+                SearchPlaneControlIpcResponse::Error(_) => {
+                    return Err(SdkError::Protocol(
+                        "control dispatch leaked an error response".to_string(),
+                    ));
+                }
+            };
+            let activation_ns = sdk_elapsed_ns(activation_started)?;
+            Ok((
+                activation,
+                SdkPublishActivateDurationsV1 {
+                    publish_ns,
+                    activation_ns,
+                },
+            ))
+        })();
+        let (activation, timings) =
+            activation_result.map_err(|source| SdkError::ActivationAfterPublish {
+                evidence: Box::new(crate::PublishedBatchEvidence {
+                    publication: outcome.publication.clone(),
+                    receipt: outcome.receipt.clone(),
+                }),
+                source: Box::new(source),
+            })?;
+        Ok((outcome, activation, timings))
     }
 }
 

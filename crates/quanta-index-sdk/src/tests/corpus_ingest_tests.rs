@@ -799,15 +799,17 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
             .expect_err(label);
         assert!(
             matches!(
-                error,
-                crate::SdkError::Binding {
-                    axis: crate::ResponseBindingAxis::TargetIdentity,
-                    ..
-                } | crate::SdkError::Binding {
-                    axis: crate::ResponseBindingAxis::CasExpectation,
-                    ..
-                }
-            ) || matches!(error, crate::SdkError::Protocol(ref message) if message.contains("acknowledgement")),
+                &error,
+                crate::SdkError::ActivationAfterPublish { source, .. }
+                    if matches!(source.as_ref(),
+                        crate::SdkError::Binding {
+                            axis: crate::ResponseBindingAxis::TargetIdentity,
+                            ..
+                        } | crate::SdkError::Binding {
+                            axis: crate::ResponseBindingAxis::CasExpectation,
+                            ..
+                        }) || matches!(source.as_ref(), crate::SdkError::Protocol(message) if message.contains("acknowledgement"))
+            ),
             "{label} mismatch must fail closed, got {error:?}"
         );
     }
@@ -847,7 +849,8 @@ fn producer_client_refuses_to_activate_on_a_sealed_receipt_without_content_roots
         .publish_search_corpus_and_activate(&batch, None)
         .expect_err("a receipt without content roots must not be activated");
     assert!(
-        matches!(error, crate::SdkError::Protocol(ref message) if message.contains("attests no semantic content roots")),
+        matches!(&error, crate::SdkError::ActivationAfterPublish { source, .. }
+            if matches!(source.as_ref(), crate::SdkError::Protocol(message) if message.contains("attests no semantic content roots"))),
         "got {error:?}"
     );
     assert!(

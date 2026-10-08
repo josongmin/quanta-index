@@ -1,7 +1,17 @@
 use core::fmt;
-use quanta_index_contract::{QueryErrorRepair, SearchPlaneErrorCodeV2};
+use quanta_index_contract::{
+    BatchPublishReceipt, QueryErrorRepair, SearchPlaneErrorCodeV2, SourcePublicationBinding,
+};
 
 use thiserror::Error;
+
+/// Verified original publication retained when the following activation
+/// fails. The boxed owner keeps successful SDK results small.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedBatchEvidence {
+    pub publication: SourcePublicationBinding,
+    pub receipt: BatchPublishReceipt,
+}
 
 #[derive(Debug, Error)]
 pub enum SdkError {
@@ -48,9 +58,50 @@ pub enum SdkError {
         message: String,
         repair: Option<QueryErrorRepair>,
     },
+
+    /// Publication returned a validated sealed receipt, but the subsequent
+    /// activation did not return a verified CAS acknowledgement. The caller
+    /// must reconcile the active head before deciding whether to retry.
+    #[error("activation after successful publication: {source}")]
+    ActivationAfterPublish {
+        evidence: Box<PublishedBatchEvidence>,
+        #[source]
+        source: Box<SdkError>,
+    },
 }
 
 impl SdkError {
+    /// A verified publication receipt retained across an activation failure.
+    #[must_use]
+    pub fn published_receipt(&self) -> Option<&BatchPublishReceipt> {
+        match self {
+            Self::ActivationAfterPublish { evidence, .. } => Some(&evidence.receipt),
+            Self::Usage(_)
+            | Self::Protocol(_)
+            | Self::Serialization(_)
+            | Self::Transport(_)
+            | Self::Binding { .. }
+            | Self::PlaneUnavailable { .. }
+            | Self::Remote { .. } => None,
+        }
+    }
+
+    /// Original publication selected by the source-event catalog. On a
+    /// replay, its target can differ from the attempted batch's target.
+    #[must_use]
+    pub fn published_publication(&self) -> Option<&SourcePublicationBinding> {
+        match self {
+            Self::ActivationAfterPublish { evidence, .. } => Some(&evidence.publication),
+            Self::Usage(_)
+            | Self::Protocol(_)
+            | Self::Serialization(_)
+            | Self::Transport(_)
+            | Self::Binding { .. }
+            | Self::PlaneUnavailable { .. }
+            | Self::Remote { .. } => None,
+        }
+    }
+
     /// Build a [`SdkError::Protocol`] for the namespace-receipt /
     /// query-response mismatch pattern that appears once per namespace
     /// per direction. `expected` describes the wanted shape (e.g.

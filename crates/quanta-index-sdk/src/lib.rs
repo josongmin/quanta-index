@@ -34,6 +34,7 @@ pub use client::{
 pub use config::{ClientProfile, ConnectOptions};
 pub use error::ResponseBindingAxis;
 pub use error::SdkError;
+pub use error::PublishedBatchEvidence;
 pub use generations::GenerationNamespace;
 pub use history::{
     DiffHunkMutation, FileContributorBatch, FileContributorMutation, FileOwnershipBatch,

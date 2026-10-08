@@ -147,6 +147,36 @@ fn l2_source_replay_publishes_original_receipt_and_activates_original_pair() {
 }
 
 #[test]
+fn l2_source_replay_retains_verified_receipt_when_activation_fails() {
+    let (batch, published) = l2_replay_fixture();
+    let control = unused_control();
+    let client = QuantaIndex::from_transports(
+        unused_query(),
+        control.clone(),
+        Arc::new(L2ReplayIngestTransport {
+            outcome: published.clone(),
+            observed: false,
+        }),
+    );
+    let error = client
+        .search_corpus()
+        .publish_and_activate(&batch, None)
+        .expect_err("activation refusal must retain publication evidence");
+    assert_eq!(error.published_receipt(), Some(&published.receipt));
+    assert_eq!(error.published_publication(), Some(&published.publication));
+    assert_eq!(
+        error.published_publication().expect("original publication").target.manifest_generation,
+        ManifestGeneration::new(7)
+    );
+    assert!(matches!(
+        error,
+        crate::SdkError::ActivationAfterPublish { source, .. }
+            if matches!(*source, crate::SdkError::Remote { code: SearchPlaneErrorCodeV2::Internal, .. })
+    ));
+    assert_eq!(ok_or_fail!(control.requests.lock()).len(), 1);
+}
+
+#[test]
 fn l2_source_replay_rejects_false_bindings_with_or_without_observation() {
     let (batch, valid) = l2_replay_fixture();
     let mutations: [fn(&mut quanta_index_contract::SearchCorpusPublishOutcome); 14] = [
@@ -206,7 +236,8 @@ fn l2_source_replay_does_not_redirect_explicit_cas_expectation() {
         .publish_and_activate_observed(&batch, Some(expected))
         .expect_err("original target cannot advance the requested revision's head");
     assert!(
-        matches!(error, crate::SdkError::Protocol(ref message) if message.contains("composite activation request is invalid"))
+        matches!(error, crate::SdkError::ActivationAfterPublish { source, .. }
+            if matches!(*source, crate::SdkError::Protocol(ref message) if message.contains("composite activation request is invalid")))
     );
     assert!(ok_or_fail!(control.requests.lock()).is_empty());
 }
