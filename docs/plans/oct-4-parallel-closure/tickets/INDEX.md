@@ -29,6 +29,124 @@ SDK lifecycle/cache 및 hosted checkpoint의 source·명령·범위는 아래 AD
 Staged upload, EOF cancellation, checked memory/deadline, scanner custody와 P11 공통
 producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비용·반례 또는 target 계약으로 결정한다.
 
+### Native corpus decode의 외부 DATA 계약 — 2026-10-09
+
+**상태: ABI 설계와 호출 경로의 정적 대조 완료. 아래 새 decode ABI는 미구현이며
+compile/test/pair 수용은 `NOT_RUN`이다.** Index `48eeccf5`의 NFC DATA/borrowed
+identity 생성자 구현·집중 테스트와 이 decoder 변경을 같은 완료 증거로 취급하지 않는다.
+Semantica의 아래 수신 파일들은 진행 중인 working-tree 입력을 포함한다.
+
+현재 canonical 경계의 결함:
+
+- `contract-base/src/ids.rs`의 `NativeIdentityDecodeAdmissionV1` 네 callback과
+  `RepoId`/`RevisionId::native_decode_seed_v1`은 owned identity를 반환한다.
+  owned String의 validation 실패와 borrowed 생성자의 정상 반환 모두에서 로컬 NFC
+  DATA/실제 scratch가 상위 Source finisher 전에 해제될 수 있다. `48eeccf5`의 외부
+  NFC DATA 인자를 사용하는 생성자가 있어도 이 Serde 경로는 자동으로 전환되지 않는다.
+- `contract/src/ipc/control.rs`의 active-head, corpus-generation, generation-snapshot,
+  semantic-content-roots 네 map visitor는 자식 값을 로컬 `Option`에 보관한다.
+  이후 missing/duplicate/unknown/semantic 또는 work refusal이면 이미 만들어진 자식
+  String/identity/부분 payload가 로컬에서 해제된다. 최종 DTO만 외부 슬롯에 옮기는
+  Semantica `decoder_scratch_v3.rs`의 수리는 이 재귀 부분 상태를 보존하지 못한다.
+- `CorpusKeySeedV1`, track visitor, activation-token key visitor까지 owned/escaped
+  string 입력의 수명을 함께 다뤄야 한다. `deserialize_string`을 사용했다는 사실이나
+  외부의 grant만으로 실제 String/decoder scratch 보존을 증명할 수 없다.
+
+현재 확인한 직접 정책 구현과 실제 수신 경로:
+
+| Owner | 경로와 역할 |
+| --- | --- |
+| Index | `crates/quanta-index-contract-base/src/ids.rs`: private canonical validator, identity visitor/policy/seed |
+| Index | `crates/quanta-index-contract/src/ipc/control/native_decode_v1.rs`: native policy, key seed, scalar/identity delegation, active-head seed |
+| Index | `crates/quanta-index-contract/src/ipc/control.rs`: 네 map visitor와 `native_corpus_decode_tests_v1::Admission` 테스트 정책 |
+| Index | `crates/quanta-index-contract-base/src/activation_token.rs`: 기존 token/key visitor; 새 token issuer는 필요 없음 |
+| Semantica Contract | `quanta-contract-retrieval/src/indexing_writer_ports/admitted_decode_v3.rs:357`: `ReplayDecodeValueV3`에서 Index native head seed를 실제 호출. 같은 모듈의 policy trait은 `&dyn NativeCorpusDecodeAdmissionV1`을 반환 |
+| Semantica 테스트 | `quanta-contract-retrieval/src/indexing_writer_ports/admitted_decode_v3/native_corpus_policy_tests_v3.rs`: `VectorPolicyV3`가 두 native 정책 구현. `policy_tests_v3.rs`의 dyn 정책 반환 seam도 변경 대상 |
+| Semantica Runtime | `quanta-runtime/src/indexing_machine_v2/store/source_bound_replay_v2/canonical_json_v2/native_corpus_admission_v3.rs`: `OriginalReplayVectorsV3`가 두 native 정책 구현; `decoder_scratch_v3.rs`는 recursive seed 뒤 최종 DTO만 외부 슬롯에 저장 |
+
+위 census는 현재 Index와 Semantica의 지정 crate 경계다. SDK/daemon의 일반
+`SearchCorpusActiveHeadV1` 사용을 이 native policy의 caller 수로 세지 않는다.
+
+**제안하는 물리 ABI:** 아래 타입/메서드 이름은 제안이며 현재 export가 아니다.
+원래 `RepoId`, `RevisionId`, `SearchCorpusActiveHeadV1`과 같은 private validator,
+Serde visitor, NFC iterator를 사용한다. DATA는 부분 상태 보관이며 새 wire IR,
+identity issuer, arena 또는 normalization 알고리즘이 아니다.
+
+```rust
+// Native policy callbacks fill external attempt data and return status only.
+trait NativeIdentityDecodeAdmissionV1 {
+    type OriginalError;
+    type Error: core::fmt::Display; // Finite Serde-facing refusal only.
+
+    fn repo_id_from_owned_v1(
+        &mut self,
+        data: &mut NativeIdentityDecodeDataV1<RepoId, Self::OriginalError>,
+    ) -> Result<(), Self::Error>;
+    fn repo_id_from_borrowed_v1(
+        &mut self,
+        value: &str,
+        data: &mut NativeIdentityDecodeDataV1<RepoId, Self::OriginalError>,
+    ) -> Result<(), Self::Error>;
+    // RevisionId has the corresponding two callbacks.
+}
+
+// D::Error is saved in external DATA before the unit-status return.
+fn try_decode_active_head_into_v1<'de, D, P>(
+    deserializer: D,
+    data: &mut NativeCorpusDecodeDataV1<P::OriginalError, D::Error>,
+    admission: &mut P,
+) -> Result<(), NativeCorpusDecodeDataRefusalV1>
+where
+    D: serde::Deserializer<'de>,
+    P: NativeCorpusDecodeAdmissionV1 + ?Sized;
+
+// Recursive canonical seeds fill their borrowed external subtree: Value = ().
+// Final publication only moves the existing canonical DTO to another slot.
+```
+
+필수 ownership 조건:
+
+1. identity DATA는 zero-allocation fresh 상태에서 시작한다. 실제 owned wire String은
+   canonical visitor가 admission/validation 전에 먼저 DATA에 저장한다. owned callback은
+   이 슬롯을 받으며 새 String을 인자로 받아 ordinary 값을 native로 입양하지 않는다.
+   borrowed 입력은 transient runner에서만 빌리고 DATA에는 원문 참조를 저장하지 않는다.
+2. identity DATA는 실제 copy backing/typed output, one-attempt 상태,
+   `NativeNormalizationDataV1<OriginalError>`, 전체
+   `NativeIdentityConstructionErrorV1<OriginalError>`를 보관한다. 기존 canonical
+   into-slot body를 호출하며 full error를 저장한 뒤 finite 상태를 반환한다.
+   실제 normalization/copy grant bank는 Runtime의 외부 DATA가 별도로 보유한다.
+3. 하나의 active head에는 RepoId 두 개와 RevisionId 두 개가 있다. 이 네 필드의
+   DATA를 schema 위치별로 보관하되, 네 개를 전체 replay의 identity 상한으로 사용하지
+   않는다. 여러 head/collection occurrence는 각각 별도 외부 DATA loan을 받아야 한다.
+   컨테이너 backing의 선행 admission은 기존 Runtime collection owner가 책임진다.
+4. 각 map의 seen 상태, field partial, escaped key/value backing, token 부분 상태는
+   해당 외부 subtree에서 보관한다. duplicate는 두 번째 value를 읽기 전에 거부하되
+   이미 materialize된 duplicate key도 보존한다. unknown/missing/schema/work/late native
+   refusal 역시 먼저 읽은 모든 자식과 전체 오류를 보존한다. owned track 문자열과
+   token key의 기본 `visit_string -> visit_str` 조기 drop도 함께 제거한다.
+5. 부분 field를 합친 canonical candidate도 외부 슬롯에 먼저 저장하고 기존
+   `validate_v1`/work checkpoint를 실행한다. 완성 객체를 로컬에서 검증하다 실패한 뒤
+   버리지 않는다. 새 predicate나 private canonical ID 복제는 만들지 않는다.
+6. 재귀 seed의 success `Value`는 unit이며 child payload를 반환하지 않는다. 가장 바깥
+   unit driver는 실제 `D::Error`를 외부 결과 슬롯에 저장한 뒤 반환한다. Source finisher
+   전에는 외부 DATA 사이의 순수 이동만 허용하며 raw source/admission/callback을
+   DATA에 저장하지 않는다. DATA 재사용은 decoder/admission poll 전에 거부한다.
+7. 실제 scratch/부분 payload가 먼저 해제되고 funding bank가 나중에 해제돼야 한다.
+   reader-owned escaped scratch와 root/nested decode 결과도 같은 상위 Source finisher
+   순서를 유지한다. byte counter나 finite marker만 남기는 것은 수용 조건이 아니다.
+
+**결합 변경과 검증:** Index의 위 네 owning 파일, facade export와 회귀를 하나의 변경으로
+준비하고, Semantica Contract의 recursive DATA/seed 및 Runtime 정책·bank 수신을 함께
+맞춘다. native owned-return trait만 단독 변경해 소비자가 깨진 상태를 main에 반영하지 않는다.
+Ordinary Serde와 native unit fill은 같은 visitor의 output/state policy로 분기한다.
+
+필요한 독립 oracle은 정상 borrowed/escaped identity·field 순서 변화, 모든 nested 단계의
+duplicate/unknown/missing·invalid NFC, 후반 malformed JSON/semantic/work/native refusal,
+비-Copy 원본 오류 동일성, 실제 backing/grant liveness와 해제 순서, 사용된 DATA 재시도
+무-poll, occupied transfer 보존이다. 여러 head/collection occurrence를 실행해 고정 네
+identity 전역 슬롯으로 우회하지 않았음을 검사한다. 기존 NFC owner 테스트는 이 새
+recursive decoder 및 Semantica Original Source의 실행 증거를 대체하지 않는다.
+
 ### SDK 구현 후보 통합 재감사 — 2026-10-08
 
 Updated: 2026-10-09 (KST).
