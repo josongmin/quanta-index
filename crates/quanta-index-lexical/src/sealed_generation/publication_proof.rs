@@ -5,7 +5,7 @@ use quanta_index_core::SealedArtifactCommitmentV1;
 
 use crate::file_authority::ValidatedFileAuthorityProof;
 
-/// One F15 root commitment and one text-manifest commitment.
+/// One F15 root commitment, one text-manifest commitment, and one mutation plan.
 ///
 /// No decoded source bodies, normalized strings, posting maps, or query handles survive
 /// a validation call. Changing identity/manifest/policy requires a new proof.
@@ -13,6 +13,7 @@ use crate::file_authority::ValidatedFileAuthorityProof;
 pub(crate) struct PublicationProofs {
     pub(crate) file: Option<ValidatedFileAuthorityProof>,
     pub(crate) text: Option<ValidatedTextAuthorityProof>,
+    pub(crate) file_plan: crate::file_authority::FileAuthorityPlanCache,
 }
 
 pub(crate) struct ValidatedTextAuthorityProof {

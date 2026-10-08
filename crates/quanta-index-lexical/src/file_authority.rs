@@ -24,7 +24,10 @@ use sha2::{Digest as _, Sha256};
 use crate::channel_payloads::{decode_replace_scope_payload, decode_tombstone_scope_payload};
 
 mod codec;
+mod plan;
 mod producer;
+
+pub(crate) use plan::{FileAuthorityPlanCache, plan_ops};
 mod publication_proof;
 
 pub(crate) use publication_proof::{
@@ -1059,6 +1062,20 @@ pub(crate) fn root_path(generation_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn read_root(generation_dir: &Path) -> Result<Option<root::AuthorityRoot>, CoreError> {
+    read_root_bytes(generation_dir)?
+        .map(|bytes| decode_root_bytes(generation_dir, &bytes))
+        .transpose()
+}
+
+fn decode_root_bytes(
+    generation_dir: &Path,
+    bytes: &[u8],
+) -> Result<root::AuthorityRoot, CoreError> {
+    root::AuthorityRoot::decode(bytes, policy())
+        .map_err(|reason| corrupt(generation_dir, &format!("{DIR}/{ROOT}"), &reason))
+}
+
+fn read_root_bytes(generation_dir: &Path) -> Result<Option<Vec<u8>>, CoreError> {
     let name = format!("{DIR}/{ROOT}");
     let mut file =
         match crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name)) {
@@ -1070,9 +1087,7 @@ pub(crate) fn read_root(generation_dir: &Path) -> Result<Option<root::AuthorityR
         .map_err(|error| CoreError::Storage(format!("lexical: root byte ceiling: {error}")))?;
     let bytes = crate::sealed_generation::read_opened_bounded(&mut file, maximum)
         .map_err(|error| corrupt(generation_dir, &name, &format!("read: {error}")))?;
-    root::AuthorityRoot::decode(&bytes, policy())
-        .map(Some)
-        .map_err(|reason| corrupt(generation_dir, &name, &reason))
+    Ok(Some(bytes))
 }
 
 fn file_name(digest: &[u8; 32]) -> String {
@@ -1163,6 +1178,22 @@ pub(crate) fn decode_verified_manifest(
 pub(crate) fn read_manifest(
     generation_dir: &Path,
 ) -> Result<Option<Vec<FileManifestRow>>, CoreError> {
+    read_manifest_bytes(generation_dir)?.map_or_else(
+        || {
+            read_root(generation_dir).map(|root| {
+                root.map(|root| {
+                    root.sources
+                        .into_iter()
+                        .map(|row| (row.source, row.posting_memberships))
+                        .collect()
+                })
+            })
+        },
+        |bytes| decode_verified_manifest(&bytes, generation_dir).map(Some),
+    )
+}
+
+fn read_manifest_bytes(generation_dir: &Path) -> Result<Option<Vec<u8>>, CoreError> {
     let path = manifest_path(generation_dir);
     let mut file = match crate::sealed_generation::open_regular_nofollow(
         generation_dir,
@@ -1179,14 +1210,7 @@ pub(crate) fn read_manifest(
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(CoreError::Storage(format!("lexical: inspect legacy file authority {}: {error}", legacy.display()))),
             }
-            return read_root(generation_dir).map(|root| {
-                root.map(|root| {
-                    root.sources
-                        .into_iter()
-                        .map(|row| (row.source, row.posting_memberships))
-                        .collect()
-                })
-            });
+            return Ok(None);
         }
         Err(error) => {
             return Err(CoreError::Storage(format!(
@@ -1197,30 +1221,32 @@ pub(crate) fn read_manifest(
     };
     let bytes = crate::sealed_generation::read_opened_bounded(&mut file, MAX_MANIFEST_BYTES)
         .map_err(|error| corrupt(generation_dir, MANIFEST, &format!("read: {error}")))?;
-    decode_verified_manifest(&bytes, generation_dir).map(Some)
+    Ok(Some(bytes))
 }
 
 #[derive(Debug)]
 pub(crate) struct FileAuthorityDelta {
     sources: Vec<FileManifestRow>,
-    writes: BTreeMap<[u8; 32], Vec<u8>>,
+    writes: BTreeMap<[u8; 32], usize>,
     encoded: Vec<u8>,
+    inherited_source_bytes: Vec<Option<u64>>,
+    operations_sha256: [u8; 32],
 }
 
 /// Validate the net file authority before the index writer is changed.
 /// The returned delta is the only input to persistence after the commit.
-pub(crate) fn plan_ops(
-    generation_dir: &Path,
+fn derive_plan_ops(
     ops: &[LexicalChannelOp],
+    inherited_root: Option<&root::AuthorityRoot>,
+    input_manifest: Vec<FileManifestRow>,
+    operations_sha256: [u8; 32],
 ) -> Result<FileAuthorityDelta, CoreError> {
-    let inherited_root = read_root(generation_dir)?;
-    let mut files: BTreeMap<SourceFileKey, FileManifestRow> = read_manifest(generation_dir)?
-        .unwrap_or_default()
+    let mut files: BTreeMap<SourceFileKey, FileManifestRow> = input_manifest
         .into_iter()
         .map(|row| (row.0.file.clone(), row))
         .collect();
     let mut bitmap = None;
-    let mut writes: BTreeMap<[u8; 32], Vec<u8>> = BTreeMap::new();
+    let mut writes: BTreeMap<[u8; 32], usize> = BTreeMap::new();
     for op in ops {
         match op {
             LexicalChannelOp::ReplaceLexicalScope(payload) => {
@@ -1239,7 +1265,7 @@ pub(crate) fn plan_ops(
                 }
                 let bitmap = bitmap.get_or_insert_with(|| vec![0_u8; TRIGRAM_BITMAP_BYTES]);
                 let count = source_posting_memberships(&source, &bytes, text_admitted, bitmap)?;
-                let _prior = writes.insert(observed, bytes);
+                let _prior = writes.insert(observed, bytes.len());
                 let _prior = files.insert(source.file.clone(), (source, count));
             }
             LexicalChannelOp::TombstoneLexicalScope(payload) => {
@@ -1277,10 +1303,41 @@ pub(crate) fn plan_ops(
     if encoded.len() > MAX_MANIFEST_BYTES {
         return Err(invalid("file authority manifest exceeds 16 MiB"));
     }
+    let inherited_source_bytes = sources
+        .iter()
+        .map(|(source, _)| {
+            inherited_root.and_then(|root| {
+                // The root decoder proves this strict ordering. Retain only the
+                // exact row's byte count, never an inherited body or success flag.
+                let row = match root
+                    .sources
+                    .binary_search_by(|row| row.source.file.cmp(&source.file))
+                {
+                    Ok(index) => root.sources.get(index),
+                    Err(_insertion_point) => None,
+                };
+                row.filter(|row| row.source == *source)
+                    .map(|row| row.source_bytes)
+            })
+        })
+        .collect();
+    Ok(FileAuthorityDelta {
+        sources,
+        writes,
+        encoded,
+        inherited_source_bytes,
+        operations_sha256,
+    })
+}
+
+fn validate_plan_storage(
+    generation_dir: &Path,
+    plan: &FileAuthorityDelta,
+) -> Result<(), CoreError> {
     let mut total = 0_usize;
-    for (source, _) in &sources {
-        let bytes = if let Some(bytes) = writes.get(&source.source_sha256) {
-            bytes.len()
+    for ((source, _), inherited) in plan.sources.iter().zip(&plan.inherited_source_bytes) {
+        let bytes = if let Some(bytes) = plan.writes.get(&source.source_sha256) {
+            *bytes
         } else {
             let name = artifact_name(source);
             match crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name))
@@ -1298,30 +1355,14 @@ pub(crate) fn plan_ops(
                     CoreError::Storage(format!("lexical: file authority size {name}: {error}"))
                 })?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    let row = inherited_root
-                        .as_ref()
-                        .and_then(|root| {
-                            // read_root proves strict SourceFileKey order. Keep the
-                            // exact revision check while avoiding a whole-root scan
-                            // for every unchanged packed source.
-                            match root
-                                .sources
-                                .binary_search_by(|row| row.source.file.cmp(&source.file))
-                            {
-                                Ok(index) => {
-                                    root.sources.get(index).filter(|row| row.source == *source)
-                                }
-                                Err(_insertion_point) => None,
-                            }
-                        })
-                        .ok_or_else(|| {
-                            corrupt(
-                                generation_dir,
-                                &name,
-                                "source has neither staged bytes nor inherited root row",
-                            )
-                        })?;
-                    usize::try_from(row.source_bytes).map_err(|error| {
+                    let inherited = inherited.ok_or_else(|| {
+                        corrupt(
+                            generation_dir,
+                            &name,
+                            "source has neither staged bytes nor inherited root row",
+                        )
+                    })?;
+                    usize::try_from(inherited).map_err(|error| {
                         CoreError::Storage(format!(
                             "lexical: inherited source size {name}: {error}"
                         ))
@@ -1346,23 +1387,57 @@ pub(crate) fn plan_ops(
             ));
         }
     }
-    Ok(FileAuthorityDelta {
-        sources,
-        writes,
-        encoded,
-    })
+    Ok(())
+}
+
+/// The canonical admitted plan plus its changed payloads, held only while the
+/// writer consumes it. Publication custody retains metadata, not source bodies.
+pub(crate) struct FileAuthorityWrite {
+    plan: FileAuthorityDelta,
+    writes: BTreeMap<[u8; 32], Vec<u8>>,
+}
+
+impl FileAuthorityDelta {
+    pub(crate) fn materialize(
+        self,
+        ops: &[LexicalChannelOp],
+    ) -> Result<FileAuthorityWrite, CoreError> {
+        if plan::operations_sha256(ops)? != self.operations_sha256 {
+            return Err(invalid(
+                "file authority plan belongs to different operations",
+            ));
+        }
+        let mut writes = BTreeMap::new();
+        for op in ops {
+            if let LexicalChannelOp::ReplaceLexicalScope(payload) = op {
+                let (_, _, scope) = decode_replace_scope_payload(&payload.payload)?;
+                let digest = scope.coverage.source.source_sha256;
+                if self.writes.get(&digest) != Some(&scope.source_bytes.len())
+                    || <[u8; 32]>::from(Sha256::digest(&scope.source_bytes)) != digest
+                {
+                    return Err(invalid("changed source differs from its admitted plan"));
+                }
+                let _previous = writes.insert(digest, scope.source_bytes);
+            }
+        }
+        if writes.len() != self.writes.len() {
+            return Err(invalid(
+                "changed source inventory differs from its admitted plan",
+            ));
+        }
+        Ok(FileAuthorityWrite { plan: self, writes })
+    }
 }
 
 /// Persist the prevalidated delta after the Tantivy commit. The writer lock
 /// spans both writes; a crash between them leaves an unsealed generation.
 pub(crate) fn apply_plan(
     generation_dir: &Path,
-    plan: FileAuthorityDelta,
+    publication: FileAuthorityWrite,
 ) -> Result<u64, CoreError> {
+    let FileAuthorityWrite { plan, writes } = publication;
     let FileAuthorityDelta {
-        sources,
-        writes,
-        encoded,
+        sources, encoded, ..
     } = plan;
     let dir = generation_dir.join(DIR).join("staging");
     ensure_local_dir(&generation_dir.join(DIR))?;
@@ -1907,6 +1982,146 @@ mod tests {
                 message,
             }) if message.contains("source has neither staged bytes nor inherited root row")
         ));
+    }
+
+    #[test]
+    fn admitted_plan_reuses_metadata_across_cloned_targets_and_consumes_once() {
+        let base_temp = tempfile::tempdir().expect("base");
+        let base = base_temp.path().canonicalize().expect("canonical base");
+        let target_temp = tempfile::tempdir().expect("target");
+        let target = target_temp.path().canonicalize().expect("canonical target");
+        let _sources = packed_planner_fixture(base.as_path());
+        let mut cache = super::FileAuthorityPlanCache::default();
+        cache.prepare(base.as_path(), &[]).expect("first preflight");
+        cache
+            .prepare(base.as_path(), &[])
+            .expect("locked preflight");
+        std::fs::create_dir(target.as_path().join(super::DIR)).expect("target authority");
+        std::fs::hard_link(
+            super::root_path(base.as_path()),
+            super::root_path(target.as_path()),
+        )
+        .expect("immutable cloned root");
+        let plan = cache.take(target.as_path(), &[]).expect("target plan");
+        assert_eq!(plan.sources.len(), 3);
+        assert_eq!(cache.preparations(), 1);
+        let _write = plan.materialize(&[]).expect("matching payloads");
+        let _next = cache
+            .take(target.as_path(), &[])
+            .expect("fresh plan after consumption");
+        assert_eq!(cache.preparations(), 2);
+    }
+
+    #[test]
+    fn admitted_plan_rechecks_current_stage_admission_and_recovers() {
+        let dir_temp = tempfile::tempdir().expect("generation");
+        let dir = dir_temp
+            .path()
+            .canonicalize()
+            .expect("canonical generation");
+        let sources = packed_planner_fixture(dir.as_path());
+        let mut cache = super::FileAuthorityPlanCache::default();
+        cache.prepare(dir.as_path(), &[]).expect("initial plan");
+        std::fs::create_dir(dir.as_path().join(super::DIR).join("staging")).expect("staging");
+        let staged = dir.as_path().join(super::artifact_name(&sources[2]));
+        std::fs::File::create(&staged)
+            .expect("staged source")
+            .set_len(u64::from(super::MAX_TOTAL_SOURCE_BYTES) + 1)
+            .expect("oversized source");
+        assert!(matches!(cache.prepare(dir.as_path(), &[]),
+            Err(quanta_index_core::CoreError::InvalidContract(message))
+                if message.contains("128 MiB source byte admission")));
+        std::fs::remove_file(&staged).expect("remove oversized source");
+        let external = dir.as_path().join("external");
+        std::fs::write(&external, b"a").expect("external fixture");
+        std::os::unix::fs::symlink(&external, &staged).expect("stage symlink");
+        assert!(matches!(
+            cache.prepare(dir.as_path(), &[]),
+            Err(quanta_index_core::CoreError::Storage(_))
+        ));
+        std::fs::remove_file(&staged).expect("restore packed source");
+        cache.prepare(dir.as_path(), &[]).expect("repaired source");
+        assert_eq!(cache.preparations(), 1);
+    }
+
+    #[test]
+    fn admitted_plan_authenticates_manifest_bytes_and_root_presence() {
+        let dir_temp = tempfile::tempdir().expect("generation");
+        let dir = dir_temp
+            .path()
+            .canonicalize()
+            .expect("canonical generation");
+        let _sources = packed_planner_fixture(dir.as_path());
+        let plan = super::plan_ops(dir.as_path(), &[]).expect("initial plan");
+        std::fs::create_dir(dir.as_path().join(super::DIR).join("staging")).expect("staging");
+        let manifest = super::manifest_path(dir.as_path());
+        std::fs::write(&manifest, &plan.encoded).expect("valid staged manifest");
+        let modified = std::fs::metadata(&manifest)
+            .expect("metadata")
+            .modified()
+            .expect("mtime");
+        let mut cache = super::FileAuthorityPlanCache::default();
+        cache.prepare(dir.as_path(), &[]).expect("initial custody");
+        let mut changed = plan.sources.clone();
+        changed.first_mut().expect("source row").0.revision_id =
+            RevisionId::new("bad-revi").expect("same length revision");
+        let changed =
+            crate::channel_payloads::encode_cbor(&changed, "changed manifest").expect("encode");
+        assert_eq!(changed.len(), plan.encoded.len());
+        std::fs::write(&manifest, changed).expect("same-inode same-size mutation");
+        std::fs::File::open(&manifest)
+            .expect("manifest")
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .expect("restored mtime");
+        assert!(matches!(
+            cache.prepare(dir.as_path(), &[]),
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ));
+        std::fs::write(&manifest, &plan.encoded).expect("restore manifest");
+        cache
+            .prepare(dir.as_path(), &[])
+            .expect("restored manifest admitted");
+        let root = super::root_path(dir.as_path());
+        let root_bytes = std::fs::read(&root).expect("root");
+        std::fs::remove_file(&root).expect("remove root");
+        assert!(cache.prepare(dir.as_path(), &[]).is_err());
+        std::fs::write(&root, root_bytes).expect("restore root");
+        cache
+            .prepare(dir.as_path(), &[])
+            .expect("restored root admitted");
+        assert_eq!(cache.preparations(), 1);
+    }
+
+    #[test]
+    fn admitted_plan_rebinds_mutations_and_refuses_mismatched_payloads() {
+        use quanta_index_contract::channel::{ClearLexicalSurface, LexicalChannelOp};
+        let dir_temp = tempfile::tempdir().expect("generation");
+        let dir = dir_temp
+            .path()
+            .canonicalize()
+            .expect("canonical generation");
+        let _sources = packed_planner_fixture(dir.as_path());
+        let mut cache = super::FileAuthorityPlanCache::default();
+        cache.prepare(dir.as_path(), &[]).expect("initial plan");
+        let ops = [LexicalChannelOp::ClearLexicalSurface(ClearLexicalSurface {
+            repo_id: RepoId::new("repo").expect("repo"),
+            revision_id: RevisionId::new("revision").expect("revision"),
+            generation: quanta_index_contract::ManifestGeneration::new(2),
+            base_generation: Some(quanta_index_contract::ManifestGeneration::new(1)),
+            surface: quanta_index_contract::SearchScopeSurface::Chunk,
+        })];
+        let plan = cache
+            .take(dir.as_path(), &ops)
+            .expect("changed operation plan");
+        assert_eq!(cache.preparations(), 2);
+        assert!(plan.sources.is_empty());
+        assert!(
+            matches!(plan.materialize(&[]), Err(quanta_index_core::CoreError::InvalidContract(message))
+            if message.contains("different operations"))
+        );
     }
 
     #[test]

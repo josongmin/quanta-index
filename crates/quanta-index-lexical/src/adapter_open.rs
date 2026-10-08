@@ -84,13 +84,18 @@ impl LexicalAdapter {
         handle: &Arc<Mutex<GenerationWriter>>,
         key: &GenKey,
         ops: &[LexicalChannelOp],
+        file_plan: Option<&mut crate::file_authority::FileAuthorityPlanCache>,
     ) -> Result<LexicalMutationTimings, CoreError> {
         let mut guarded = handle
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
         let writer_started = Instant::now();
         let generation_dir = self.index_path(key);
-        let file_plan = crate::file_authority::plan_ops(&generation_dir, ops)?;
+        let file_plan = match file_plan {
+            Some(cache) => cache.take(&generation_dir, ops)?,
+            None => crate::file_authority::plan_ops(&generation_dir, ops)?,
+        }
+        .materialize(ops)?;
         // Planned before any op runs: the retired documents are only
         // nameable while the pre-mutation index still holds them, and the
         // doc ids the ops store come from the plan's watermark.

@@ -308,6 +308,67 @@ They establish executed diagnostic scope, not qualified speed or a guarantee
 that all validation cost is removed. No broader source-body or mtime cache was
 introduced; cold custody and new-generation validation remain independent.
 
+### Publication plan custody and remaining structural cost
+
+The repeated plan computation is separate from the six proof envelopes above.
+`preflight_file_authority_batch` originally derived the complete file manifest
+before intent, under the operation lock, and during build; the writer derived
+it a fourth time against the cloned target. Every derivation decoded the root,
+rebuilt the ordered source map, counted memberships and encoded the manifest.
+This is whole-corpus metadata work even for one changed file. The earlier
+binary-search repair removed a quadratic lookup inside each invocation, not
+these repeated invocations. The residual 2.959s in the XL partition is not a
+measurement of this planner; it contains other work too.
+
+The lexical adapter now keeps one canonical `FileAuthorityDelta` in the
+publication owner's private `FileAuthorityPlanCache`. Reuse requires the exact
+current root and staged-manifest bytes, policy and file-affecting operations.
+Every invocation still opens current staged sources without following symlinks
+and checks byte-size admission. The writer checks the actual target, consumes
+the plan once, and attaches the matching changed payloads before applying any
+index mutation. A different target root/manifest, including a partial retry,
+derives a fresh plan. Custody retains only bounded metadata, source lengths
+and encoded manifest bytes; changed source bodies live only in the writer's
+materialized plan. Raw channel callers use the same planner with fresh custody.
+
+This removes repeated semantic plan construction without changing the
+same-inode/size/restored-mtime fault contract. It does not remove the six
+generation proofs, repeated current-byte reads, or all unchanged-source stats.
+The new prepare/revalidate diagnostic spans cover derivation/storage admission;
+root/manifest reads and operation binding occur before those spans. They must
+not be presented as the complete planner wall time. No XL timing is attributed
+to this new change until a matching executable is measured.
+
+Owner verification used `./scripts/cargow --lane test-scale-f15-lane` with
+`-p quanta-index-lexical --all-features --locked`. The library plus
+`--test l2_file_mutation -- --test-threads=1 --quiet` passed368 library tests
+(one private subprocess entrypoint ignored) and36 integration tests. The
+initial two-thread library run failed one history BM25 test with writer
+`LockBusy`; its isolated run and the complete serial rerun passed. Following
+mechanical Clippy fixes, `test --lib plan -- --test-threads=1` passed31 and
+`test --test l2_file_mutation -- --test-threads=1 --quiet` passed36 again.
+`clippy --lib --tests -- -D warnings`, format, hexagonal boundaries, module
+discipline/cycles and no-allow checks passed. Full daemon and new matching XL
+execution remain `NOT_RUN` for this plan-custody change.
+
+The main remaining cost owner is publication validation: cold validation uses
+the query-oriented `verify_authority` and a `DiscardingVisitor`, reconstructing
+source/normalization/posting evidence before dropping query materialization.
+A publication-only verifier can avoid retaining those query objects, but it
+must prove the same invariants. Inherited packs/postings and Tantivy segments
+already reuse immutable objects; swapping the underlying engine alone does
+not remove caller-owned whole-generation verification. Coverage already uses
+a persistent shared tree; cloning coverage is not an additional whole-map
+copy defect.
+
+An end-to-end O(delta) claim also conflicts with the current requirement to
+detect arbitrary edits of unchanged local files at every refusal boundary.
+Inode, length, restored mtime, or a Merkle root alone cannot prove that current
+mutable file bytes still match their commitments. A future storage capability
+that enforces immutability could change that cost boundary; relaxing validation
+silently is not a repair. Until then, separate unavoidable byte authentication
+from redundant reconstruction and measure both under the existing contract.
+
 ## Paged term directory
 
 Main `b262925b` replaces the retained per-term offset/count/hash directory with

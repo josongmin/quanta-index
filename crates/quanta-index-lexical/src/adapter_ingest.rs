@@ -311,7 +311,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             return Ok(());
         }
         let _planned = self.plan_batch_coverage(batch, &identity, &directory, read_phase, owner)?;
-        self.preflight_file_authority_batch(batch)?;
+        self.preflight_file_authority_batch(batch, owner)?;
         Ok(())
     }
 
@@ -389,7 +389,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         }
         let ops = legacy_ops_for_batch(batch, batch.seal)?;
         let preflight_started = Instant::now();
-        self.preflight_file_authority_batch(batch)?;
+        self.preflight_file_authority_batch(batch, owner)?;
         let prep_file_authority_preflight_ns = elapsed_stage_ns(preflight_started)?;
         let coverage = self.plan_batch_coverage(
             batch,
@@ -412,6 +412,13 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             batch.generation,
             &ops,
             true,
+            Some(
+                &mut owner
+                    .proof_state::<crate::sealed_generation::publication_proof::PublicationProofs>(
+                        SearchPlaneTrackKind::Lexical,
+                    )?
+                    .file_plan,
+            ),
         )?;
         let mut stages = LexicalBuildStageDurationsV1 {
             preparation_ns,
@@ -607,10 +614,13 @@ impl LexicalIndexBuildPort for LexicalAdapter {
         let base = declared_delta_base_generation(ops)?;
         let _mutation = self.generation_build_guards(&key, base)?;
         let _lifecycle = self.directory_lifecycle_read_guard()?;
-        self.build_ops(repo, revision, generation, ops, false)
+        self.build_ops(repo, revision, generation, ops, false, None)
             .map(|_timings| ())
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 impl LexicalAdapter {
     fn plan_batch_coverage(
@@ -786,6 +796,7 @@ impl LexicalAdapter {
     fn preflight_file_authority_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
     ) -> Result<(), CoreError> {
         let source_generation = batch.base_generation.unwrap_or(batch.generation);
         let source_dir = self.index_path(&GenKey {
@@ -794,8 +805,12 @@ impl LexicalAdapter {
             generation: source_generation,
         });
         let ops = legacy_ops_for_batch(batch, false)?;
-        let _planned = crate::file_authority::plan_ops(&source_dir, &ops)?;
-        Ok(())
+        owner
+            .proof_state::<crate::sealed_generation::publication_proof::PublicationProofs>(
+                SearchPlaneTrackKind::Lexical,
+            )?
+            .file_plan
+            .prepare(&source_dir, &ops)
     }
 
     fn build_ops(
@@ -805,6 +820,7 @@ impl LexicalAdapter {
         generation: ManifestGeneration,
         ops: &[LexicalChannelOp],
         source_batch: bool,
+        file_plan: Option<&mut crate::file_authority::FileAuthorityPlanCache>,
     ) -> Result<LexicalMutationTimings, CoreError> {
         if ops.is_empty() && !source_batch {
             return Ok(LexicalMutationTimings::default());
@@ -859,7 +875,7 @@ impl LexicalAdapter {
             return Ok(LexicalMutationTimings::default());
         }
         let handle = self.writer_handle(&key)?;
-        self.commit_ops_under_lock(&handle, &key, ops)
+        self.commit_ops_under_lock(&handle, &key, ops, file_plan)
     }
 }
 
