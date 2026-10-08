@@ -650,3 +650,69 @@ fn render_generation_status_pretty_lists_tracks() {
     assert!(text.contains("1. track=Lexical manifest_generation=11 manifest_digest=lex"));
     assert!(text.contains("2. track=Semantic manifest_generation=12 manifest_digest=sem"));
 }
+
+#[test]
+fn activation_after_publish_preserves_cause_exit_and_original_publication() {
+    use quanta_index_contract::{
+        BatchPublishReceipt, GenerationSnapshot, SearchPlaneTrackKind, SourcePublicationBinding,
+        SourcePublicationEvent,
+    };
+    let publication = SourcePublicationBinding {
+        event: SourcePublicationEvent {
+            stream_id: "publication-stream".into(),
+            event_id: "publication-event".into(),
+            expected_base_event_id: None,
+            payload_sha256: [3; 32],
+        },
+        target: GenerationSnapshot {
+            repo_id: RepoId::new("publication-repo").expect("repo"),
+            revision_id: RevisionId::new("publication-revision").expect("revision"),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: ManifestGeneration::new(7),
+            manifest_digest: "publication-manifest".into(),
+        },
+        batch_digest: "c".repeat(64),
+    };
+    let receipt = BatchPublishReceipt::empty_for(
+        publication.target.manifest_generation,
+        Some(publication.target.manifest_digest.clone()),
+        publication.batch_digest.clone(),
+    )
+    .recorded_at(7);
+    let evidence = quanta_index_sdk::PublishedBatchEvidence {
+        publication,
+        receipt,
+    };
+    let cases: [(fn() -> SdkError, u8); 3] = [
+        (
+            || SdkError::Protocol("cause-protocol".into()),
+            EXIT_PROTOCOL,
+        ),
+        (
+            || SdkError::PlaneUnavailable { plane: "search" },
+            EXIT_USAGE,
+        ),
+        (
+            || SdkError::Remote {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::from_wire_str("QUERY_TIMEOUT")
+                    .expect("known code"),
+                message: "cause-remote".into(),
+                repair: None,
+            },
+            EXIT_REMOTE,
+        ),
+    ];
+    for (source, exit_code) in cases {
+        let expected = map_sdk_error(source());
+        let actual = map_sdk_error(SdkError::ActivationAfterPublish {
+            evidence: Box::new(evidence.clone()),
+            source: Box::new(source()),
+        });
+        assert_eq!(actual.exit_code, exit_code);
+        assert!(actual.message.starts_with(&expected.message));
+        assert!(actual.message.contains("Activation"));
+        assert!(actual.message.contains("publication-revision"));
+        assert!(actual.message.contains("publication-manifest"));
+        assert!(actual.message.contains("durable_sequence: 7"));
+    }
+}

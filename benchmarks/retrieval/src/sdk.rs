@@ -695,6 +695,61 @@ mod empty_status_tests {
         }
     }
 
+    #[test]
+    fn activation_after_publish_classification_preserves_cause_without_payload() {
+        use quanta_index_contract::{
+            BatchPublishReceipt, GenerationSnapshot, SearchPlaneTrackKind,
+            SourcePublicationBinding, SourcePublicationEvent,
+        };
+        let publication = SourcePublicationBinding {
+            event: SourcePublicationEvent {
+                stream_id: "publication-stream".into(),
+                event_id: "publication-event".into(),
+                expected_base_event_id: None,
+                payload_sha256: [3; 32],
+            },
+            target: GenerationSnapshot {
+                repo_id: RepoId::new("publication-repo").expect("repo"),
+                revision_id: RevisionId::new("publication-revision").expect("revision"),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(7),
+                manifest_digest: "publication-manifest".into(),
+            },
+            batch_digest: "c".repeat(64),
+        };
+        let receipt = BatchPublishReceipt::empty_for(
+            publication.target.manifest_generation,
+            Some(publication.target.manifest_digest.clone()),
+            publication.batch_digest.clone(),
+        )
+        .recorded_at(7);
+        let evidence = quanta_index_sdk::PublishedBatchEvidence {
+            publication,
+            receipt,
+        };
+        for source in [
+            SdkError::Protocol("cause-protocol".into()),
+            SdkError::PlaneUnavailable { plane: "search" },
+            SdkError::Transport(quanta_index_ipc::IpcError::Timeout {
+                operation: quanta_index_ipc::IpcIoOperation::Read,
+                timeout: Duration::from_secs(1),
+            }),
+        ] {
+            let expected = classify_sdk_error(&source);
+            let error = SdkError::ActivationAfterPublish {
+                evidence: Box::new(evidence.clone()),
+                source: Box::new(source),
+            };
+            let actual = classify_sdk_error(&error);
+            assert_eq!(actual.0, expected.0);
+            assert_eq!(actual.1, expected.1);
+            assert!(actual.2.contains(&expected.2));
+            assert!(actual.2.contains("Activation"));
+            assert!(!actual.2.contains("publication-revision"));
+            assert!(!actual.2.contains("publication-event"));
+        }
+    }
+
     fn forged_identity() -> BatchIdentity {
         BatchIdentity::new("bench-repo", "bench-rev", 7, "manifest:forged".to_string())
             .expect("identity")
@@ -1257,6 +1312,14 @@ fn symbol_hit(candidate: &quanta_index_contract::SymbolCandidate) -> RankedHit {
 #[must_use]
 pub fn classify_sdk_error(err: &SdkError) -> (&'static str, String, String) {
     match err {
+        SdkError::ActivationAfterPublish { source, .. } => {
+            let (status, code, message) = classify_sdk_error(source);
+            (
+                status,
+                code,
+                format!("Activation after publication: {message}"),
+            )
+        }
         SdkError::Transport(ipc) => {
             let text = ipc.to_string();
             if is_timeout_ipc(ipc) {

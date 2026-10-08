@@ -297,6 +297,14 @@ fn map_sdk_error(error: SdkError) -> CliError {
         SdkError::PlaneUnavailable { plane } => CliError::usage(format!(
             "{plane} transport is not configured for this client profile"
         )),
+        SdkError::ActivationAfterPublish { evidence, source } => {
+            let mut cause = map_sdk_error(*source);
+            cause.message = format!(
+                "{}\n  after publication stage: Activation\n  publication: {:?}\n  receipt: {:?}",
+                cause.message, evidence.publication, evidence.receipt
+            );
+            cause
+        }
     }
 }
 
