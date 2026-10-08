@@ -29,6 +29,436 @@ SDK lifecycle/cache 및 hosted checkpoint의 source·명령·범위는 아래 AD
 Staged upload, EOF cancellation, checked memory/deadline, scanner custody와 P11 공통
 producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비용·반례 또는 target 계약으로 결정한다.
 
+### SDK 구현 후보 통합 재감사 — 2026-10-08
+
+이 절은 preparation SDK와 publication/V5 소비자의 남은 통합을 소유한다.
+**독립 단위는 local main에 반영했고, breaking publication/V5 전체 merge는 보류한다.**
+아래 과거 candidate proof와 이번 main 실행을 합산하지 않는다.
+
+#### 현재 위치와 변경 소유권
+
+| 저장소·위치 | 현재 소스·판정 |
+| --- | --- |
+| Quanta local main | `433a9363`: consumer backport `c75668c7`, 독립 tooling `23b5659f`, preparation `433a9363` 통합. 기존 `ActivationAfterPublish` 유지 |
+| Quanta `codex/sdk-preparation-final` | base `09387a9a`, code checkpoint `0dd6ce81`(38경로): canonicalization/budget/양-stage CLI 회귀 포함. Breaking publication/contract/consumer/API는 여기에 보존 |
+| Semantica `codex/semantic-publication-v5` | HEAD `1193ea8024e`: 기존 `6f5dc8fc13f` + transition/baseline/feature 회귀3파일 커밋. Owned27 inventory; foreign parser/native dirty는 feature가 아님 |
+| 최신 canonical Semantica pair | `/Users/songmin/.codex/worktrees/sdk-canonical-final/semantica-sdk`: main `3b8f86dd9ea` + 시점 고정한 현재 dirty3,976경로 + owned25 Rust + 현재 lock에 SDK2edges 결합. Sibling Quanta는 위 후보, QGLang은 clean `9a9212da9526d50f9b264d7ee34dbe4cd0b03fd9` |
+| Semantica shared main | 다른 owner가 진행 중. 이 작업의 production 변경은 아직 미적용. Kernel4 경로 claim은 검증 중 확보 후 미적용 상태로 해제. 재통합 시 lock·겹치는 test owner 조정과 claim 재획득 필요 |
+
+Canonical capture는 path 집합과 실제 bytes를 두 번 대조해 고정했다. Capture digest는
+`0f899aa554a8775cec3afd224997fde670aacf43c718de52152eb159d7d9f84b`이며
+per-run 입력은 checkout 밖 `/tmp/sem-sdk-canonical-final-capture.json`에만 뒀다.
+옛 foreign capture의 `217 composable / 50 conflicts`는 owned27 conflict 수가 아니다.
+그50수리나 옛 Runtime19오류를 최신 main에 적용·재사용하지 않았다.
+
+#### 최종 채택 판정: 전체 merge 대신 계약 단위로 분리
+
+| 단위 | 현재 처분 | 정확한 경계·남은 조건 |
+| --- | --- | --- |
+| A · Nextest reporter2 | **main 통합 `23b5659f`** | `run-local-test-scope.py`와 테스트. `--status-level leak`으로 이름을 보존; timeout/selection/native 실행정책 유지 |
+| B · 운영 경로2 | **main 통합 `23b5659f`** | `proof_operational_result.py`와 테스트. 정규 절대 경로, root/별칭/install-state overlap를 actor 전에 거부. 실제 symlink/권한/설치 proof는 아님 |
+| C · preparation9경로/shared hunk | **main 통합 `433a9363`** | `src/preparation/{mod.rs,tests.rs}`, external `preparation_public.rs`, SDK Cargo.toml·lock, lib.rs·lexical.rs·API baseline·L2 scenario. 기존 batch/publication API로 독립 검증 |
+| D · publication25경로/shared hunk + Sem kernel4 | **보존; 실제 aggregate caller acceptance 후 결합** | `AfterPublish`/explicit API/committed receipt·CLI/benchmark/SDK/runtime/API를 함께 반영. Kernel28만으로 수용하지 않음. 현재 main의 새 consumer regression은 새 enum 양 stage로 전환해 유지 |
+| E · V5 contract5 + Runtime15 | **20 Rust 전체 보존; 별도 수용** | writer/reader/snapshot/issuer/aggregate/cleanup/test 단일 계약. V4 전환·feature·Runtime·durable6·process2 필요 |
+| F · native test1 | **독립 보존** | `native_corpus_policy_tests_v3.rs`의 import/visibility만. 선택된 lib(test)에 필요하면 별도 선행 반영 |
+| Sem lock2·foreign source | **옛 snapshot 복사 금지** | 현재 root/nested lock의 다른 dependency edge를 유지하며 SDK `ciborium`/`sha2`만 결합. Foreign dirty3,976경로는 소유 feature commit에 포함 금지 |
+| 추가 플랫폼 설계 | **범위 제외** | daemon plugin registry·새 wire IR·native media engine·SDK durable store·V4/V5 병렬 내부 IR 필요 없음 |
+
+#### 이번 main 수리와 실행
+
+- **기존 main consumer compile 수리:** base `09387a9a` CLI/benchmark의
+  `ActivationAfterPublish` 누락 E0004를 `c75668c7`로 수리. 원 cause exit/status와 원
+  publication/receipt를 보존하며 benchmark diagnostic은 payload를 노출하지 않는다.
+  `./scripts/cargow test -p quanta-index-searchctl -p quanta-index-retrieval-bench --lib --locked`:
+  `VERIFIED`, CLI46 + benchmark125passed. 두 package strict Clippy도 통과.
+- **Membership no-op 수리:** batch builder와 preparation이
+  `canonicalize_semantic_cluster_memberships_v1`을 공유한다. 순서만 바뀐 public regression을
+  실제 실패시킨 뒤 hash 전에 동일 정렬로 수리했다. 동일 wire/prior, CBOR resume, no-op과
+  실제 mutation replace를 함께 검사한다.
+- **Budget 계약:** `max_emitted_text_bytes`는 chunk+semantic text 합계다.
+  원본은 input limit, symbol/semantic metadata와 전체 serialized contribution·wire는 batch
+  limit이다. 정확한 경계와1byte 초과, input>text limit, combined text, metadata를 검사한다.
+  RSS/allocator 또는 O(changed-files) 보장으로 해석하지 않는다.
+- **SDK:** `./scripts/cargow test -p quanta-index-sdk --lib --test preparation_public --locked -- --quiet`:
+  `VERIFIED`,145unit +7external. Strict Clippy, `just rust-public-api`,
+  `just rust-cargo-modules`, `just rust-hexagonal`: 모두 `VERIFIED`.
+- **Shared:** `just rust-profile validate-shared-surface`: `VERIFIED`, 선택 compile,
+  1,079shared +248integration(8skip) +25CLIpassed. 역사적 후보1,087과 다른 현재 split이다.
+- **실제 main daemon:** `./scripts/cargow --lane daemon-lane build -p quanta-index-searchd-runtime
+  --bin quanta-index-searchd --all-features --locked --message-format=json-render-diagnostics` 성공.
+  실제 artifact SHA256 `1005ff0b3034dd881c3d89875573d382530105db5e6ffb741b20101acca0fbdd`를
+  사용해 `QUANTA_INDEX_L2_TEST_BINARY=<artifact> ./scripts/cargow test -p quanta-index-sdk
+  --test l2_daemon_publication --locked prepared_text_and_markdown_move_delete_noop_survive_restart
+  -- --ignored --nocapture --test-threads=1`: `VERIFIED`,1passed/4filtered.
+  현재 main의 full/move/delete/no-op/prior resume/restart query이며 전체5개·8cuts 또는
+  전체 daemon300을 이번에 다시 실행했다는 뜻은 아니다.
+- **독립 Python4파일:** `uv run --frozen --extra dev python -m pytest
+  tools/ci/tests/test_run_local_test_scope.py tools/ci/tests/test_proof_operational_result.py
+  -q -o cache_dir=/tmp/qi-final-integration-pytest`:75passed와 Ruff clean, `VERIFIED`.
+- **미수행:** 이번 main의 remote CI/push·installed Linux·scale/performance는 `NOT_RUN`.
+  실제 host/destination/backup/observer 입력이 필요한 운영 수용은 계속 `BLOCKED`.
+
+#### 현재 pair 실행과 남은 수용
+
+격리 Quanta 후보의 이번 보완도 별도로 실행했다:
+`./scripts/cargow test -p quanta-index-sdk --lib --test preparation_public --locked -- --quiet`는
+156unit +7external, `./scripts/cargow test -p quanta-index-searchctl
+-p quanta-index-retrieval-bench --lib --locked`는46CLI +125benchmarkpassed다.
+새 CLI regression은 main backport의 cause3종·원 publication 검사를 Observation/Activation
+양 stage로 확장했다. 이는 후보 범위이며 main의145unit과 합산하지 않는다.
+SDK/CLI/benchmark strict Clippy와 contract/SDK public API baseline도 `VERIFIED`다.
+Canonical pair의 Quanta sibling은 실제 detached `3c08aab5` + SDK/API overlay5개다.
+`0dd6ce81`의 SDK/contract source·SDK manifest·lock98경로와 바이트가 같은지 확인했다.
+
+Canonical 최신 입력에서 lane token을 정식 발급하고 owning QBC를 실행했다.
+Kernel `index_sdk_ingress::publish`는 `VERIFIED`:28passed/81filtered, exit0.
+`/tmp/sem-sdk-canonical-final-kernel.json`이 실제 finished receipt를 가리킨다.
+등록되지 않은 lane으로 시작한 첫 요청은 test 실행 전 중단됐고, token 발급 후 재실행했다.
+Runtime 첫 요청의 누락 QGLang sibling은 제공했다. 첫 정식 Runtime 실행은
+source-authority wire의 unused import2개 때문에 compile `FAILED`, exit101/0test body,
+finished QBC `RED`였다. 격리 snapshot에서만 import2개와 rustdoc 경로를 정리한 재실행도
+`FAILED`: `quanta-runtime-query-surface-build-context/src/build_context/mod.rs:446`의
+`VerifiedSharedQueryOutputV1<BuildContextOutput>.as_ref().clone()`가 새 carrier에 존재하지 않아
+E0599/exit101/0test body. 이 caller는 현재 shared main에도 같은 바이트로 존재한다.
+두 번째 source digest는 `cb75211dccc0f8bf4ab6c6a1efadfaebebaa3e42470a0fff11c685e07c4ac4b8`,
+finished receipt는 QBC `sdk-publish-recovery/verification-results/20261008T103358.653448Z-a18a1560678b/receipt.json`
+이며 verdict `RED`다. 옛19diagnostics를 현재 오류 수로 재사용하지 않았다.
+
+Artifact 계약은 별도 owning execution으로 분리했다. `prepared_commit_receipt`9/9는
+GREEN이다. 넓힌 `indexing::indexing_tests` 선택은297passed/1failed/415filtered, QBC RED였다.
+`commit_and_lane_status.rs:143`의 baseline 자체가 RiskIndexDoc lane-local coverage가 manifest에
+없다는 이유로 거부됐다. 이 넓은 선택을 통과로 처리하지 않았으며 원인 귀속은 별도다.
+새 V4 baseline 거부 회귀는 exact selector로1passed/712filtered, QBC GREEN 및
+publication-complete를 확인했다. Exact V5 snapshot-byte/digest/closed-serde 회귀도
+1passed/712filtered, QBC GREEN 및 publication-complete가 receipt SHA에 결속됨을 확인했다.
+두 exact 선택은 같은 immutable source digest
+`0d16667bd0160f3ff6f0c7e316c743deeb324906ea39a35189abe4a1bdc21138`의 immutable
+snapshot에서 실행했다. 첫 exact 요청이 symlink sibling topology로 거부돼, 동일 후보 bytes의
+실제 detached Quanta sibling을 제공한 뒤 재실행했다. Runtime의 기존 실패를 숨기지 않는다.
+
+이 실패는 SDK ingress가 아닌 canonical output-owner migration closure다.
+`VerifiedSharedQueryOutputV1`의 context 없는 raw getter/Clone을 되살리거나 feature를 빼지 않는다.
+BuildContext output의 checked read/copy와 current/output authority를 도달 caller와 함께
+완결해야 Runtime·durable·process를 실행할 수 있다. Private import 수리2파일은 owned V5
+27파일에 포함되지 않으며 shared main에는 적용하지 않았다.
+
+**다음 수용 조건:**
+
+- 넓은 artifact 계약 선택의 manifest-lane baseline 실패를 독립 owner가 분류·수리하고
+  같은 선택을 재실행한다. 새 V4/V5 exact 성공을 이 실패의 해소로 처리하지 않는다.
+
+1. Canonical BuildContext output-owner closure를 수리한 뒤 Runtime
+   `shadow_delta_orchestration`, durable6, ignored process2를 같은 canonical pair에서
+   실제 실행. Kernel28이나 다른 source의 성공으로 대체하지 않는다.
+2. 새 test3파일은 V4 artifact의 V5 baseline 거부, shadow on/off lexical full/delta,
+   실제 G1→G2 predecessor 누락 시 activation0/원 active 유지→artifact 복구 후 retry를
+   검사한다. G1/G2→prune/restart→G3도 유지한다. V4 artifact 거부는 위 exact 실행으로
+   `VERIFIED`; feature/Runtime/process는 `NOT_RUN`. Completed V4→명시적
+   V5 full→delta 전체 process 전환은 별도 구현·실행해야 한다. Active base가 존재하면
+   현재 `aggregate_prepare.rs`는 planned delta를 유지하며 `SourceBoundProjectionControlsV1`에
+   explicit full 선택도 없다. Producer의 기존 full-replacement plan을 선택하는 명시적
+   entrypoint를 소유 경계에 결합하고 event ancestry/frozen CAS를 그대로 유지해야 한다.
+   SDK의 replace-generation primitive 존재만으로 Runtime upgrade 경로 구현을 선언하지 않는다.
+3. 현재 main의 aggregate authority도 이미 `sqlite-store`와 retrieval/workspace bundle을
+   요구한다(`authority_assembly.rs`). No-SQLite aggregate 거부만으로 새 회귀라고 하지 않는다.
+   실제 지원 feature 조합과 shadow on/off를 owning rail로 확정한다.
+4. D의 기존 V4 aggregate publication/replay/CAS/restart acceptance를 확보하거나 D/E를
+   완결된 pair로 수용한 뒤 반영. API와 main에 추가한 consumer test를 함께 결합하고 영향
+   SDK/API/shared/daemon rail을 최종 source에서 재검증한다.
+5. Sem shared main의 test/lock owner·barrier를 조정하고 정확한 owned 경로만 commit.
+   Foreign source·선행 unpublished ancestor를 이 작업으로 stage/push하지 않는다.
+6. Projection-root 전체 cold restart와 Linux 운영은 현재 fixture의 수용 범위 밖이다.
+   Manifest로 root를 추정하거나 source-preparation에 두 번째 durable protocol을 만들지 않는다.
+7. 과거 Nextest300pass 중 leaky1는 원인 미확인 P2 triage다. Reporter 통합으로 다음
+   재현의 test 이름을 보존한다. 실제 영향 cleanup 실패가 재현되면 해당 owner scope를 막는다.
+
+B1–B3는 아래 canonical dependency의 소유 경계이며 이번 feature commit 목록이 아니다.
+
+- **B1 · Runtime identity/controlled output** — `quanta-runtime-kernel-contract/src/domain/contracts/`
+  의 `query_{pre_key_admission_v1,source_execution_authority_v1,output_read_context_v3}`와
+  `shared_query_source_v3.rs`; `src/ports/{input_cell_store.rs,query_executor_port.rs,
+  query_executor_port/,pre_native_function_build_authority_port_v1/,
+  runtime_ctx/runtime_services/telemetry/}`. 도달하는 `quanta-runtime-query-executor-owner`,
+  `quanta-runtime-query-surface-foundation`, `quanta-contract-error-shared` consumer를 같이 확인.
+  `canonical_verified_operations_v3.rs`는 현재 존재하므로 옛 missing-file blocker는 종료;
+  전체 source authority/copy 계약의 컴파일은 별도 미검증이다.
+- **B2 · Parser/Java retained authority** — `quanta-adapters-parser/src/language_host_adapter/`
+  의 `java_workspace_resolution_syntax_v1/`, `java_callable_lowering_view_v1/`,
+  `java_resolved_type_identity_catalog_v1/`,
+  `java_workspace_generation_authority/ordinary_generation_materialization_v1.rs`,
+  `semantic_expression_identity_ledger_v1/`, `semantic_module_v3/`와 `src/` 바로 아래의
+  `semantic_attribution_java_workspace_production_owner_v1/`. `packages/core/`의
+  `codegraph-lang-{common,java}`, `codegraph-cfg-dfg-kernel`, `codegraph-defuse-extractor-java`
+  계약까지 actual enabled closure로 확인. 예전 격리 parser 수리를 최신 producer에 덮어쓰지 않음.
+- **B3 · PTA/native carrier** — `quanta-analysis-interproc-contract/src/ports/pta_solver/`의
+  `delta_result_{carrier,substrate}_v1`, `incidence_index_v1`, `pair_delta_v1`, `state_v2.rs`;
+  `quanta-contract-pta-result-shared`와 `quanta-adapters-pta/src/`의 production workspace,
+  prepared native payload, constraint extraction/handoff 소비자. `packages/core/codegraph-native-allocation-core`
+  의 admitted storage/copy와 `quanta-taint-solver` 도달 edge도 유지.
+
+**Coverage 수리 구조:** 새 digest나 중복 metadata 필드 대신 기존 `SourceFileCoverage`를
+`PriorSourceEntry`의 canonical owner로 보관한다. source/profile/unit-set getter는 그 값에서
+파생하고 no-op은 coverage 전체와 semantic stamp를 비교한다. 아직 미게시된 새 prior tuple은
+한 형식으로 수정하고 이전 incomplete tuple은 거부한다. 새 wire protocol·legacy reader 없음.
+
+#### Coupled D/E의 소유 코드 결합 순서
+
+아래 순서는 D/E 전체를 통합하는 경우의 절차다. A/B/C에 V5 선행 조건을 부과하지 않는다.
+
+1. 현재 canonical producer의 완결된 source와 실제 enabled dependency closure를 먼저 확보한다.
+   stale foreign proof 수리50개를 억지로 재생하기보다 새 격리 producer 기반에 owned27파일을
+   적용하는 것을 우선 검토한다. 어떤 선택이든 기존 dirty 작업은 보존하고 동일 invariant
+   충돌은 해당 owner와 결합한다. 단순 파일 수나 source 정적 검사로 compile 완료 판정 금지.
+2. Quanta 후보의 coverage 수리와 benchmark consumer 변경을 공개 생성자·serde·API baseline과 함께 결합한다.
+   두 결함의 집중 회귀 및 공개 API 검사는 완료했다. 최종 pair 검증은 별도다.
+   canonical source가 같아도 global revision 변경은 chunk identity/replacement를 바꾼다.
+   이 구현을 O(changed-files) 또는 embedding reuse 보장으로 홍보하지 않는다.
+3. Semantica owned 목록은 `git diff --name-only 109fd7575d2 6f5dc8fc13f`, Quanta 목록은
+   `git diff --name-only 09387a9a <final-sdk-head>`로 확인한다. 초기37 inventory에 CLI
+   `tests/control.rs` 회귀가 추가되어 현재 후보 경로는38개다. Semantica 두 lock의 SDK
+   `ciborium`/`sha2` edge와 새 canonical path dependency edge를 결합한다. 기존 registry 버전
+   upgrade는 이 작업의 요구가 아니며 자동 lock 재생성 부수 변경을 그대로 채택하지 않는다.
+   이전 snapshot의 root lock 차이는7 package row, nested는3 row였다. 현재 lock은 다시 대조한다. Root의 indexing-control-plane,
+   runtime-pta-consult-shared, runtime-test-support-pta, sdk-runtime-executor,
+   sdk-session-backend-owner, taint-solver edge와 nested의 contract-error-shared,
+   taint-solver edge를 보존하고 양쪽 index-sdk의 `ciborium`/`sha2`를 결합한다.
+4. 실제 Semantica manifest가 선택하는 sibling Quanta를 최종 SDK 소스와 일치시키고 QBC
+   dependency resolution으로 확인한다. 이번 canonical pair의 actual sibling은 preparation canonicalization/budget 보완을 포함한
+   SDK 후보 checkout이다. 예전 `e3499fce` bytes와 동일하다고 판정하지 않는다.
+   다른 checkout의 성공·옛 바이너리·서로 다른
+   source receipt를 합쳐 pair 성공으로 처리하지 않는다.
+5. 아래 검증을 기존 warm lane에서 직렬 실행한다. 실패 시 owner 원인을 수리하고 같은 rail로
+   재검증한다. 소스 변경이 없는 기존 Quanta proof는 범위를 비교해 재사용하고 무관한 XL
+   benchmark를 반복하지 않는다. API 변경 이후 baseline과 영향 SDK 테스트는 다시 실행한다.
+6. pair 검증 후 **shared main에 적용하기 전에** Semantica의 정확한 owned 경로 claim,
+   두 lock owner 조정, 현재 HEAD와 integration barrier를 확보한다. 적용 후 실제 main의
+   source/lock·sibling dependency가 검증한 pair와 같은지 대조하고 달라진 영향 proof를
+   재실행한 다음 `tools/shared-main/shared-main` coordinator로 commit/push한다. Quanta main의
+   owned dirty 문서는 후보와 대조·결합하고 기존 내용을 버리는 reset/checkout으로 merge를
+   통과시키지 않는다. 필요한 CI와 두 repository의 실제 게시 SHA는 별도로 확인한다.
+
+#### 실제 결합 파일
+
+아래는 owned bundle의 정확한 경로다. B1–B3 foreign dependency owner 목록과 구분한다.
+Quanta 경로는 repository root 기준이고, Semantica Rust 경로는
+`packages/analysis/quanta-v2/crates/` 기준이다. 두 lock은 Semantica root 기준이다.
+최종 적용 직전 위 `git diff --name-only`로 추가 변경이 없는지 다시 대조한다.
+
+**Quanta38 (기존37 + main backport에서 확장한 CLI regression1경로):**
+
+```text
+Cargo.lock
+benchmarks/retrieval/src/sdk.rs
+crates/quanta-index-contract/src/ipc/ingest_observation.rs
+crates/quanta-index-sdk/Cargo.toml
+crates/quanta-index-sdk/src/binding.rs
+crates/quanta-index-sdk/src/client.rs
+crates/quanta-index-sdk/src/error.rs
+crates/quanta-index-sdk/src/generations.rs
+crates/quanta-index-sdk/src/lexical.rs
+crates/quanta-index-sdk/src/lib.rs
+crates/quanta-index-sdk/src/preparation/mod.rs
+crates/quanta-index-sdk/src/preparation/tests.rs
+crates/quanta-index-sdk/src/tests.rs
+crates/quanta-index-sdk/src/tests/control_tests.rs
+crates/quanta-index-sdk/src/tests/corpus_ingest_tests.rs
+crates/quanta-index-sdk/src/tests/explicit_activation_adversarial_tests.rs
+crates/quanta-index-sdk/src/tests/published_activation_tests.rs
+crates/quanta-index-sdk/src/tests/replay_tests.rs
+crates/quanta-index-sdk/tests/l2_daemon_publication.rs
+crates/quanta-index-sdk/tests/preparation_public.rs
+crates/quanta-index-searchctl/src/lib.rs
+crates/quanta-index-searchctl/src/render.rs
+crates/quanta-index-searchctl/src/tests/control.rs
+crates/quanta-index-searchd-runtime/tests/e2e_ingest_preflight.rs
+crates/quanta-index-searchd-runtime/tests/e2e_lifecycle_history.rs
+crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs
+crates/quanta-index-searchd-runtime/tests/sdk_frontdoor/failure_tests.rs
+crates/quanta-index-searchd-runtime/tests/sdk_frontdoor/matrix_tests.rs
+docs/adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md
+docs/adr/OCT-04-003-source-preparation-sdk.md
+docs/adr/OCT-05-003-active-query-and-runtime-lifecycle.md
+docs/plans/oct-4-parallel-closure/tickets/INDEX.md
+tools/ci/lint/baselines/public-api/quanta-index-contract.txt
+tools/ci/lint/baselines/public-api/quanta-index-sdk.txt
+tools/ci/proof_operational_result.py
+tools/ci/run-local-test-scope.py
+tools/ci/tests/test_proof_operational_result.py
+tools/ci/tests/test_run_local_test_scope.py
+```
+
+**Semantica27:**
+
+```text
+Cargo.lock
+packages/analysis/quanta-v2/Cargo.lock
+quanta-contract-retrieval/src/indexing_tests/prepared_commit_receipt.rs
+quanta-contract-retrieval/src/indexing_tests/prepared_commit_receipt/handoff_cleanup_fixtures_v3.rs
+quanta-contract-retrieval/src/indexing_writer_ports/admitted_decode_v3/native_corpus_policy_tests_v3.rs
+quanta-contract-retrieval/src/indexing_writer_ports/part_2.rs
+quanta-contract-retrieval/src/indexing_writer_ports/prepared_identity_v3.rs
+quanta-contract-retrieval/src/indexing_writer_ports_serde/part_1.rs
+quanta-runtime-retrieval-kernel/src/index_sdk_ingress/error.rs
+quanta-runtime-retrieval-kernel/src/index_sdk_ingress/publish.rs
+quanta-runtime-retrieval-kernel/src/index_sdk_ingress/publish/frozen_publication_tests_v1.rs
+quanta-runtime-retrieval-kernel/src/index_sdk_ingress/publish/sdk_error_classification_v1.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/mod.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/prepared_commit_artifact_v2.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/prepared_commit_artifact_v2/orphan_inventory_v1.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/prepared_commit_artifact_v2/orphan_inventory_v1_tests.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/prepared_commit_artifact_v2/source_bound_cleanup_unlink_v2.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/prepared_aggregate_issuer_v1.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/prepared_aggregate_owner_pipeline_v1.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/search_plane_handoff_dispatch.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/search_plane_handoff_dispatch/aggregate_prepare.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/search_plane_handoff_dispatch/semantic_plan.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/search_plane_handoff_dispatch/semantic_state.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/search_plane_handoff_dispatch/tests/shadow_delta_orchestration.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/search_plane_handoff_dispatch/tests/shadow_delta_orchestration/completed_v5_publication.rs
+quanta-runtime/src/retrieval/port_impls/index_projection_writer/tests.rs
+quanta-runtime/src/sdk/search_builder/source_bound/snapshot_collector/source_closure_witness.rs
+```
+
+#### 과거 격리 Runtime owner 결과와 선행 수리
+
+현재 canonical 실행은 위 절이 소유한다. 다음은 그 이전 격리 source 결과다.
+
+당시 최종 SDK code `e3499fce`를 actual sibling에 결합하고 R3 고정 oracle을 포함해 아래 Runtime
+module owner를 재실행했다. **`FAILED`**: finished owner verdict `RED`, exit101,
+`quanta-runtime-kernel-contract`의19진단(typed15 + unused-import4), 테스트 본문0개.
+즉 R3 테스트·Runtime aggregate 동작은 `NOT_RUN`이며 oracle 구현만으로 종료하지 않는다.
+새 결과는 `/tmp/sem-sdk-r3-audit-20261008-result.json`, run ID
+`20261008T093148.297111Z-f43087e4a43c`, source digest
+`2d2669674eef6208f5ff61a93f046e43b15cb02cc3b49df86db6d0ca9eda1399`에 묶였다.
+R3의 후속 local commit `6f5dc8fc13f`는 실행한 test source와 같은 바이트다.
+
+19진단의 primary14경로는 다음과 같으며 **전부 현재 shared main과 바이트가 다르다**.
+접두 경로는 `packages/analysis/quanta-v2/crates/quanta-runtime-kernel-contract/src/`다.
+
+```text
+domain/contracts/query_output_read_context_v3.rs
+domain/contracts/query_pre_key_admission_v1.rs
+domain/contracts/query_pre_key_admission_v1/source_paths_v1/exact_member_v3.rs
+domain/contracts/query_source_execution_authority_v1.rs
+domain/contracts/query_source_execution_authority_v1/original_identity_v3.rs
+domain/contracts/query_source_execution_authority_v1/serving_issuance_v1.rs
+domain/contracts/shared_query_source_v3.rs
+ports/input_cell_store.rs
+ports/pre_native_function_build_authority_port_v1/original_result_resource_v3.rs
+ports/query_executor_port.rs
+ports/query_executor_port/typed_input_v3.rs
+ports/query_executor_port/validation.rs
+ports/runtime_ctx/runtime_services/telemetry/query_ops.rs
+ports/runtime_ctx/runtime_services/telemetry/read_ops.rs
+```
+
+- Source identity/admission: 옛 authority exports와 controlled identity type, generic error
+  변환, `CanonicalIdentityMaterialErrorV3`/serving error 전달, `Cow` 오류 인자 계약의 불일치.
+- Telemetry/read: `RuntimeCtxPayloadV1`과 `RuntimeCtx` 경계, `SharedSourceTextV1`의
+  소유 read/copy 계약이 caller와 어긋난다.
+- First-refusal/output: fallible observer를 `Result`에서 꺼내지 않은 소비,
+  `FallibleTypedOutputCopyV3` bound, RuntimeCtx 복사 계약, 이동된 envelope의 재사용.
+
+이 경로만 옛 candidate에서 수정하는 것은 수용 조건이 아니다. 최신 B1–B3 canonical source
+전체와 owned27파일을 결합한 fresh pair를 만들고 이 owner부터 재실행한다. 현재 main 자체의
+compile은 여전히 `NOT_RUN`; 이번19는 **격리 pair**의 실제 결과이며 main 오류 수가 아니다.
+
+#### Owner-local / integration test plan
+
+아래 실행 수치는 이전 full-candidate 기록이다. 이번 main/후보 보완 실행은 위 절이
+소유하며, command recipe는 D/E 최종 source의 재검증에 사용한다.
+
+- **Quanta 공개 coverage RED→GREEN:**
+  `./scripts/cargow test -p quanta-index-sdk --test preparation_public --locked public_reconcile_replaces -- --nocapture`.
+  수리 전2실패/exit101을 실제 확인했다. 잘못된 selector로 실행된0tests는 검증이 아니다.
+  수리 후 아래 SDK 명령은152 unit+5 external 성공, SDK/CLI lib+tests strict Clippy도 성공했다.
+  이어 `./scripts/cargow test -p quanta-index-sdk --lib --test preparation_public --locked`,
+  SDK/CLI strict Clippy와 `python3 tools/ci/lint/check-public-api.py --packages quanta-index-contract quanta-index-sdk`.
+- **Quanta benchmark consumer:**
+  `./scripts/cargow test -p quanta-index-retrieval-bench --lib --locked classification -- --nocapture`.
+  수정 전 E0004로 테스트 본문0개, 수정 후2passed/123filtered다. 두 failure stage에서
+  원 timeout/unavailable/error·code와 stage를 보존하고 publication payload는 출력하지 않는다.
+  `./scripts/cargow clippy -p quanta-index-retrieval-bench --lib --tests --locked -- -D warnings`의
+  결과도 `VERIFIED`다. 실제 retrieval benchmark 실행·속도 판정은 `NOT_RUN`.
+- **이전 full-candidate Quanta 실행 결과:** SDK152+external5, 공개 API 양쪽 baseline 검사 `VERIFIED`.
+  fresh daemon build와 SDK L2의5process/8crash cuts도 `VERIFIED`.
+  compiler artifact는 `/Users/songmin/Library/Caches/quanta-index/target/b83f409f3af32ff0/daemon-lane/debug/quanta-index-searchd`,
+  실행 직전 SHA256은 `0bbd47275904d0cf595a4bc195cd412af3092dbe0e503412530d85da0982bcdb`였다.
+  경로만으로 같은 바이너리라고 판단하지 말고 Semantica process 실행 시 다시 검증한다.
+- **Lifecycle consumer RED→GREEN:** 첫 `just rust-profile test-daemon`은 history CAS 오류
+  분류 누락으로 `FAILED`: 52/300실행,51pass/1fail/10skipped,248미실행.
+  `./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked e2e_lifecycle_history::sdk_source_delete_append_pin_cas_duplicate_reorder_rollback_restart_history -- --nocapture --test-threads=1`
+  은 수리 후1passed/94filtered. 원본 증거의 binding·durability를 검증한 Activation CAS 충돌만
+  history의 Conflict로 취급하며, fail-fast 미실행248개를 성공으로 합산하지 않는다.
+- **최종 daemon rail:** `just rust-profile test-daemon` 재실행은 `VERIFIED`:
+  25catalog rows/5binaries,300passed/10skipped,2slow/1leaky,301.377s, exit0.
+  test result 성공과 child/FD cleanup 완결을 구분한다. 기본 fail-only reporter로는 leaky
+  테스트 이름을 알 수 없어 같은 command의 status/final-status만 all로 바꿔 추적한다.
+  `./scripts/cargow --lane daemon-lane clippy -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked -- -D warnings`도 `VERIFIED`.
+  같은 generated command의 reporter만 all로 바꾼 추가 실행도300passed/10skipped,
+  2slow/0leaky,329.747s, exit0이었다. 같은300개를 두 번 실행한 것이며600개 독립 coverage가 아니다.
+  원래 leak의 이름·원인은 이 미재현 실행으로 복원할 수 없으며 cleanup 수리 완료로 처리하지 않는다.
+- **공통 reporter 수리:** `tools/ci/run-local-test-scope.py`는 `--status-level leak`으로
+  failed/slow/leaky 이름을 보존하고 성공 test body 출력은 계속 끈다. 최종 요약은 fail-only다.
+  설치된 Nextest help의 live status-level에는 leak이 있지만 final-status-level에는 없으므로
+  잘못된 final-level 옵션을 만들지 않는다. `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_run_local_test_scope.py -q -o cache_dir=/tmp/qi-sdk-local-scope-pytest-20261008`
+  은14passed, 두 영향 Python 파일의 `uv run --frozen --extra dev python -m ruff check`도 통과했다.
+  Rust 실행 입력·timeout·concurrency·선택 inventory 변경은 없다.
+- **Shared surface:** `just rust-profile validate-shared-surface`는 `VERIFIED`.
+  all-target/all-feature compile 뒤 shared5binaries1,087passed,
+  integration-fast15binaries248passed/8skipped, CLI2binaries25passed다.
+  이 결과는 daemon 또는 Semantica Runtime proof를 포함하지 않는다.
+- **Semantica owning QBC:** 아래 공통 요청을 `owner resolve`에서 확인한 뒤 같은 flags로
+  `owner run --lane sdk-publish-recovery --jobs 2 --result-json </absolute/outside-checkout.json>`.
+  `--execution-kind test --target-kind lib --max-test-threads 1 --ignored-policy exclude`를 사용한다.
+  - `--package quanta-runtime-retrieval-kernel --selector-mode module --selector index_sdk_ingress::publish
+    --compile-policy feature-isolation:quanta-runtime-retrieval-kernel.no-default.ed0772b29304`.
+    기존 finished receipt는28passed/81filtered. retarget는 activation0회·원본 증거 유지,
+    동일 identity replay는 정상 활성화. 실제 control IPC/전체 aggregate 재개 증거와 구분한다.
+  - `--package quanta-contract-retrieval --compile-policy package-all-features`:
+    `--selector-mode module --selector prepared_commit_receipt` 이름 필터와 exact
+    `indexing::indexing_tests::source_bound_v5_artifact_requires_digest_bound_snapshot_bytes_v1`.
+    전자는 `indexing_tests.rs`의 `include!`에 들어간 libtest 이름9건의 selection이며 파일 전체
+    모듈 검증이라는 뜻이 아니다. 기존9+1GREEN은 artifact contract 범위이며 Runtime payload
+    의미 검증이 아니다.
+  - `--package quanta-runtime --selector-mode module --selector shadow_delta_orchestration
+    --compile-policy feature-isolation:quanta-runtime.no-default.9c3270892708`.
+    G1→G2→G3, unchanged/rename/delete/clear, scope3축, typed membership, canonical serde,
+    missing/foreign predecessor·mutation tamper 거부를 실제 실행한다.
+  - 같은 Runtime policy로 [기존 durable barrier6개](#o4-i0-03)를 exact 실행한다.
+    각 selector의 witness와 finished receipt를 확인하며0tests/compile-only는 실패한 수용이다.
+- **R3 expected partition:** 이전 owner 집합과 현재 producer emission을 fixture 입력으로
+  고정하고 replace/tombstone/unchanged를 명시한다. 테스트 expected set을 SUT planner의
+  출력에서 만들지 않는다. delete·rename·parent membership·다른 kind의 동일 ID·surface clear를
+  검사하고, 의도한 replace/tombstone을 제거한 negative case도 검출해야 한다.
+  기존 `shadow_exact_delta_production_orchestration_reopens_and_persists_derived_delta_v1`에
+  이 oracle을 구현했다. Test-only1파일172줄이며 production planner 변경은 없다.
+  관측 오류 수를 줄이는 로직이나 두 번째 production planner를 추가하는 작업이 아니다.
+- **실제 aggregate process:** exact
+  `retrieval::port_impls::index_projection_writer::source_bound_projection_assembly::authority_assembly::search_plane_handoff_dispatch::tests::shadow_delta_orchestration::completed_v5_publication::completed_v5_publication_prune_restart_then_g3_delta_v1`,
+  및 같은 module의 `completed_v5_baseline_refuses_missing_predecessor_before_activation_then_retries_v1`을
+  각각 exact selector로 실행한다. 위 Runtime policy·`--ignored-policy only`. 최종 소스로 산출한 daemon의 actual compiler artifact를
+  `QUANTA_INDEX_SEARCHD_BIN`과 실제 SHA256으로 전달한다. G1/G2 완료→G1 삭제→SQLite/reader와
+  SearchPlane 재시작→production G3를 실행한다. Projection owner와 테스트 observer 유지 범위를 기록.
+  기존 daemon 경로의 bytes가 바뀌었으므로 옛 SHA를 그대로 재사용하지 않는다.
+- **Quanta 최종 영향 경계:** SDK process L2의 full/move/delete/no-op/restart,
+  `runtime_fast_suite`의 `sdk_frontdoor`, `runtime_extended_suite`의 `e2e_ingest_preflight`,
+  공유 surface/activation 변경에 요구되는 `just rust-profile validate-shared-surface`와
+  `just rust-profile test-daemon`을 최종 묶음에서 확인한다. Frontdoor 집중 성공을 전체 rail
+  성공으로 승격하지 않는다. Full/release/remote CI·성능은 선택된 계약의 별도 상태로 남긴다.
+
+**Merge 종료 조건:** 아래 채택 단위마다 필요한 owning check를 통과시킨다. V5 전체 통합은
+Runtime owner·durable6·process·최종 dependency binding이 필요하다. 독립 tooling/preparation을
+이 미실행 V5 proof 때문에 일괄 보류하지 않는다. Breaking publication은 실제 Semantica
+consumer와 함께 검증한다. 해당 검증을 생략하기 위해 V5 파일을 임의로 덜어내지는 않는다.
+
+Nextest leaky1은 별도 P2 관측이다. exit0/300passed와 동일 inventory의 미재현만으로
+cleanup 수리를 주장하지 않되, 원인이 불명확한 관측 하나를 모든 SDK 변경의 무조건 merge
+금지 조건으로 두지도 않는다. 다음 재현에서 owner를 보존하고, 변경 관련 child/FD 수명
+결함이나 요구된 cleanup 계약 실패가 확인되면 해당 범위의 gate로 처리한다. Reporter 수리와
+leak timeout은 유지한다. 전체 cold-root 복구·Linux operations·qualified performance는
+별도 계약/입력이 필요하며 이번 SDK merge의 통과 증거로 혼용하지 않는다.
+
 ### 구조적 수리 우선순위
 
 | 순서·경계 | 확인된 원인 또는 입력 상태 | 처리·수용 조건 |
@@ -150,9 +580,23 @@ Source/fixture/static 조사는 병렬 가능하다. 실제 build/test/model/Doc
   qrel-only reuse도 원 native binding이 허용해야 한다. 옛 raw의 digest/revision을 바꾸지 않는다.
 - unknown/unresolved/missing을 grade0/no-answer/empty success로 채우지 않는다.
   capped/timeout/capacity refusal·common-eligible0은 각각의 outcome으로 남긴다.
-- 조건부 [config/generation policy](../../../adr/OCT-04-002-configuration-and-generation-policy.md),
-  [preparation SDK](../../../adr/OCT-04-003-source-preparation-sdk.md)는 `Proposed`다.
-  실제 operator 요구·producer fixture 없이 구현/API 변경으로 승격하지 않는다.
+- [Config/generation policy](../../../adr/OCT-04-002-configuration-and-generation-policy.md)는
+  별도 operator 요구에 따른 `Proposed`다. [Preparation SDK](../../../adr/OCT-04-003-source-preparation-sdk.md)는
+  2026-10-08 직접 구현 요청에 따라 격리 후보로 구현했다: typed adapter, text/Markdown,
+  caller prior manifest, 완전 source universe의 변경·이동·삭제·no-op 조정,
+  `publish_outcome`과 원 receipt 기반 `activate_published`다. 새 wire/daemon registry는 없다.
+  게시 후 observation 실패도 `AfterPublish` 증거를 유지하며 Semantica 소비자의 retry barrier를
+  함께 변경한다. Candidate 구현과 shared-main·consumer 통합, 실행·release 판정을 구분한다.
+  현재 후보의 SDK152·외부공개 API5·계약9와 SDK/searchctl strict·public API baseline은
+  `VERIFIED`다. Fresh debug daemon5/5 및8 crash cuts도 `VERIFIED`이며 text/Markdown의
+  이동·삭제·재시작 후 manifest 복구·no-op·별도 activation을 포함한다.
+  Actual SDK frontdoor21/21(47 filtered)와 ingest preflight2/2(93 filtered)도 `VERIFIED`이며
+  provider/release 판정이 아니다.
+  Semantica 후보의 게시 후 오류 분류 QBC1/1은 `GREEN`; 두 failure stage를 함께 검사한다.
+  Prepared receipt QBC9/9와 exact V5 artifact1/1도 `GREEN`이다.
+  Runtime shadow-delta rail은109fd+후보 source에서 parser271 diagnostics/exit101로
+  `FAILED`, 테스트 본문은 `NOT_RUN`이다. Restart/migration 및 coupled main·remote 통합은
+  별도 경계이며 이 focused 결과를 release 수용으로 승격하지 않는다.
 
 ## E1
 
@@ -446,6 +890,10 @@ compiler/focused/local/full/release를 구분하고 과거 결과를 최신 sour
 구현 잔여 · concrete deploy/activate/restore-forward adapters·independent pre/post contract.
 실제 Linux host/config/state/retention/rollback 입력은 `BLOCKED`이며 dependent action은 미실행이다.
 공통 typed producer/parser/checker/recipes는 완료됐다.
+2026-10-08 격리 후보의 operational contract는 root/경로 alias 및 binary·config·state의
+ancestor overlap을 실행 전 거부한다. `uv run --frozen --extra dev python -m pytest -q
+tools/ci/tests/test_proof_operational_result.py`는61 passed로 `VERIFIED`다. 경로 문자열 검증은
+실제 target filesystem의 symlink authority·independent observer·배포/복원 실행 증거가 아니다.
 별도 exact-pair caller는 producer 컴파일 `FAILED`, kernel1/1은 `VERIFIED`; paired/operational acceptance는 `BLOCKED`다.
 Runner-candidate-only는 operational receipt가 아니다.
 2026-10-08 최초 Semantica 확인 시 `77bc829ad70bd32b9c22f92c849a9d6a2aa6b9da`에서
@@ -511,12 +959,95 @@ Sibling kernel을 별도 실제 list/run하여 exact-full-bundle/transition-v2 r
 다수 dirty 변경이 있어 clean repaired producer bundle은 아직 없다. Caller 재실행은
 그 완전한 producer 수리 후에만 수행한다. Resolution preflight로 이 테스트를 대체하지 않는다.
 외부 작업을 reset/stage하거나 dirty pair를 qualified로 발행하지 않는다.
-외부 Semantica R3 expected semantic partition/omission 검증은 producer owner의 별도 연동 잔여다.
+외부 Semantica R3 fixed partition/omission oracle은 `6f5dc8fc13f`에 구현했다.
+현재 Runtime compile 실패로 실행 수용은 남았다. 최신 경로·결과는
+[SDK 재감사](#sdk-구현-후보-통합-재감사--2026-10-08)가 소유한다.
 기존 producer의 prior-state binding·plan assembly와 독립 expected-partition 검증을 구분한다.
 고정77bc source의 `load_prior_shadow_semantic_state_v1`는 이전 lexical batch가 delta이면
-누적 semantic 상태의 복원을 거부한다. 연속 G1→G2→G3 semantic 발행 수용은 `NOT_RUN`이며,
-producer의 누적 상태·digest·event lineage 수리가 별도 필요하다. Source 거부 경로 확인을
-실행 재현으로 발행하거나 Quanta full rebuild로 우회하지 않는다.
+누적 semantic 상태의 복원을 거부한다. 이 과거 source 관찰은 새 Runtime 검증 결과가 아니다.
+다음은 격리 native recovery의 **과거 실행 순서**다. Current-main 오류 수나 최신 소스
+수리 목록으로 재사용하지 않는다. 최신 fresh pair 결과는 위 재감사에 기록했다.
+2026-10-08 Semantica109fd 후보는 기존 prepared artifact V5에 canonical current semantic-owner
+snapshot을 넣고, 정확한 직전 completed aggregate·Lexical member·terminal receipt를 통해
+다음 delta의 prior 상태를 읽는다. 새 durable protocol이나 누적 batch-history 목록을 만들지 않는다.
+Snapshot은 repo/revision/base/current generation·manifest/batch digest·source event를 검사하고
+V3/V4 predecessor의 missing state를 추측하지 않는다. G1 payload 제거 후 G3 계획, untouched
+owner·rename/delete·surface clear·V5 canonical serde/restart·독립 partition oracle 테스트를 추가했다.
+기존 prepared receipt QBC9/9 및 exact V5 artifact snapshot bytes/closed-serde/reference 검증1/1은
+`GREEN`이다. Actual Runtime shadow-delta QBC는109fd+후보의 parser271 diagnostics로
+`FAILED`; 테스트 본문은 `NOT_RUN`이다. 이 수치는 current shared main의 오류 수가 아니다.
+Missing nested modules·native admission/borrow/port contracts의 complete caller repair를 진행하며,
+Kernel 오류 분류1/1 성공을 G1→G2→G3 동작 수용으로 승격하지 않는다.
+추가 adversarial review는 replacement 본문 일치, tombstone/clear 이후 부재,
+ReplaceGeneration의 정확한 scope 집합과 owner identity/digest 검증을 보강했다.
+Owner kind가 다른 동일 ID와 ClusterCard membership의 재개방·변조 거부 회귀도 추가했다.
+이 추가 Runtime 테스트는 아직 `NOT_RUN`이다. 실제 completed V5 aggregate publication 이후
+G1 artifact prune→restart→G3 경로도 별도 실행이 필요하다. Planner 재개방이나
+`aggregate_publication_v2: None` fixture는 그 증거가 아니다.
+Parser source는 다른 owner의 native allocation 계약 migration과 연결되어,
+1,726개 외부 차이 파일을 frozen proof 입력으로만 격리했다. 이 파일은 우리 변경으로 stage/
+게시하지 않는다. 모듈 경로 검사와 영향 boundary preflight6정책은 `VERIFIED`다.
+후속 Runtime owner 실행은 `--locked` 입력 불일치로 `FAILED`, 실행된 테스트는0개다.
+Lock 복구는 registry package/version을 유지하고 path package7개의 dependency 목록만
+후보 source에 맞췄다. 다음 actual Runtime QBC는 외부
+`quanta-analysis-interproc-contract` 컴파일91 diagnostics로 `FAILED`, 테스트 본문은0개다.
+이는 captured 입력의 결과다. Baseline 파일까지 포함한 전체 비교에서 이후 owner 수정은
+4개 파일·기존9개 진단 위치에 대응한다. 나머지82개 진단 위치는 main과 같지만,
+82는 재컴파일 오류 수가 아니다. Current shared-main의 오류 수로 재표기하지 않는다.
+후속 격리 검증은 최신 interproc/PTA owner35파일을 갱신하고 해당 crate 컴파일을 통과했다.
+이어 Java hierarchy 오류 transfer의 source admission 인자 누락1건으로 exit101이었다.
+격리 수리 후 다음 실행은 Java literal iterator lifetime1건으로 exit101이었다.
+두 실행 모두 테스트 본문0개이며 current shared-main 판정이 아니다. Java의 두 국소 수리는
+별도 외부 검증 입력으로 남기며 SDK/V5 변경에 섞어 게시하지 않는다.
+최신 외부 입력 read-only 대조는 목록58경로 외 referenced child8개 부재·2개 차이도 확인했다.
+초기 조회에서 없던 `canonical_verified_operations_v3.rs`는 이후 owner가 생성했다.
+두 Java 수리 이후 Runtime QBC는 외부 `quanta-runtime-kernel-contract` 컴파일19오류,
+exit101/테스트 본문0개로 `FAILED`다. 이 역시 captured 후보의 결과이며 current-main 오류 수가
+아니다. 최신283 dependency crate roots의 source 대조는 결합 가능 차이217개와 기존 격리
+parser/PTA proof repair와의 충돌50개를 찾았다. 이 추가 capture는 적용하지 않았다.
+두 lockfile은 SDK의 `ciborium`/`sha2` edge와 새 foreign edge를 결합해야 한다. 충돌 없는
+일부만 가져오거나 legacy getter/Clone/current loan 우회로 통과시키지 않는다. 완결된
+canonical foreign owner bundle을 결합한 뒤 동일 feature 계약으로 Runtime 테스트를 다시 실행한다.
+Root/nested 두 `Cargo.lock` 모두 SDK의 기존 `ciborium`/`sha2` version을 재사용한다. 초기 root lock
+거부 및 V5 match tuple compile 실패를 보존한다. Contract lib(test)의 native corpus import/helper
+visibility 오류도 실제 관측 후 test-only owner에서 수리했으며, 수리 후 위 세 QBC selection이 성공했다.
+초기 Semantica boundary build는236 PASS/2 FAIL로 `FAILED`였으며, 두 실패는 이번 수정 밖의
+executor/parser authority와 response receipt posture 경로다. Foreign 입력을 포함한 후속 full build는
+232 PASS/6 FAIL이다. 하나는 fixture ignore 속성 편집 중 source 변경으로 verdict가 거부됐다.
+Canonical initializer3개 소비자는 공통 constant로 수리했고 해당 guard는 `VERIFIED`다.
+편집 동결 후 canonical repo-identity guard도 재실행해 `VERIFIED`를 확인했다.
+나머지 unowned4개 실패는 analysis-port foundation manifest, executor shell extraction,
+native carrier derive contract, response receipt posture다. 이전 preflight7/7, 최신 parser6정책
+preflight 및 initializer/python-min/identity focused PASS를 full/release gate로 승격하지 않는다.
+Parser gate closeout의 default language substrate 및 기존 inventory/source-corpora 거부는 별도
+전역 gate 잔여다. Consumer feature 제거·policy 완화·Quanta full rebuild로 우회하지 않는다.
+최종 결합 감사는 frozen aggregate replay의 visibility 오류도 찾았다. SDK가 원본 A를
+복구·활성화한 뒤 consumer가 제출 대상 B와 receipt digest를 비교하면 활성화 후 Terminal이
+될 수 있다. 후보는 `publish_outcome`의 원본 binding과 frozen 제출 binding을 CAS 전에
+비교하며 불일치 시 원본 `AfterPublish` 증거를 보존하고 activation을 호출하지 않는다.
+동일 identity replay의 정상 활성화도 유지한다. Kernel owner `index_sdk_ingress::publish`
+QBC는 finished owner receipt `GREEN`:28passed/81filtered였고 신규 회귀2개를 실제 실행했다.
+이는 activation adapter 호출 전 owner 결정의 검증이며 실제 control IPC나 전체 Runtime
+aggregate process 검증은 아니다. Pre-fix runtime 재현은 `NOT_RUN`, 결함 근거는 reachable
+source 경로였다.
+Runtime compile 복구 후 다음 durable barrier를 `quanta-runtime`, `test/lib`, `exact`,
+`feature-isolation:quanta-runtime.no-default.9c3270892708`로 각각 실행한다. 아직 `NOT_RUN`이다.
+
+- `retrieval::port_impls::index_projection_writer::tests::source_bound_v9_preparing_with_durable_v3_ref_advances_after_restart_v1`
+- `retrieval::port_impls::index_projection_writer::tests::prepared_artifact_existing_final_retry_syncs_directory_before_receipt_v2`
+- `retrieval::port_impls::index_projection_writer::tests::published_token_custody_survives_writer_drop_gc_and_pending_replay_v2`
+- `retrieval::port_impls::index_projection_writer::tests::source_bound_v9_cas_rejects_foreign_published_manifest_after_ready_v1`
+- `indexing_machine_v2::store::pending_aggregate_replay_v2::tests::v16_migration_preserves_active_reference_and_installs_releasing_state_v2`
+- `indexing_machine_v2::store::pending_aggregate_replay_v2::tests::v16_migration_rejects_ambiguous_prepared_reference_edge_v2`
+
+실제 aggregate G1/G2 완료·G1 artifact 삭제·SQLite/새 reader 재개·SearchPlane 재시작·G3
+publication fixture도 구현했다. 정확한 selector와 daemon BIN/SHA 및 ignored-policy는
+[SDK remaining integration](../../../adr/OCT-04-003-source-preparation-sdk.md#remaining-coupled-integration)이 소유한다.
+이 fixture는 projection/manifest owner를 유지하며 전체 projection-store cold restart를
+증명하지 않는다. `AtomicIndexProjectionWriterV1::new`의 빈 root 초기화와 artifact-store attach의
+root 미복구, `maybe_reuse_persisted_prepared_commit_v1`·
+`published_chunk_identities_by_path_for_generation_v1`의 existing-root 요구가 별도 source gap이다.
+Native reproducer는 `NOT_RUN`; manifest-only root 추측이나 새 durable protocol로 우회하지 않는다.
 Target/Linux 입력 부족이 upstream 검증 코드 구현의 선행은 아니다.
 [Installed/pair/action ADR](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance)와
 [release/proof](#release-and-proof)가 P00–P12/provider/installed/state/pair/operations의
@@ -588,12 +1119,12 @@ Proof ID/target/host/staging/graph는 [실행 registry](../../../../tools/ci/pro
 | R0 / P00 | 선택된 final-source raw nonzero inventory·actual producer/native/SDK 및 relocated replay. Wrong counts/source/binary/host/run·partial/tamper refusal; trusted runner authority |
 | R1 / P03–08 | 등록된 concrete release targets와 독립 oracle: activation/exact ACK/publish-only; held physical view·GC/churn/cancel; fixed quality IDs/order/windows; actual SDK wrong identity; real provider identity/egress/budget/cancel; process signal/child/readiness/FD/lease/shutdown |
 | R2 / P09 | 실제 release process의 active-root stale/missing/divergent/backend-loss/restoration·cadence. Admin ring denial/caps/wrap/drop/gap/instance/restart/two-UID/request correlation. Existing root probe는 full-content scrub이 아님 |
-| R3 / upstream | Semantica aggregate handoff의 별도 expected replace/tombstone/unchanged partition oracle. Supplied scope/prior binding·plan assembly와 구분; 현재 caller/source를 다시 확인하고 producer owner가 구현/검증. 관측된 omission 사고로 표기하지 않음 |
+| R3 / upstream | Semantica `6f5dc8fc13f`에 fixed replace/tombstone/unchanged·부모 membership·omission negative oracle 구현. Runtime compile `FAILED`로 test body `NOT_RUN`; canonical producer 결합 후 owning QBC 실행이 남음. Supplied scope/prior binding과 구분하며 관측된 omission 사고로 표기하지 않음 |
 | R4 / S21-11 / P10 | Current-format exclusive-lease backup/verify/restore 및 native exporter mutation/replay·release/authorized target root. Disposable owner fixture는 실제 data/host qualification이 아님 |
 | R5 / S21-12 / P11 pair | 두 clean source와 실제 상대 Cargo dependency/lock·fresh build/test/daemon·V2 positive/negative/exact replay. 기존 candidate-only caller archive는 운영 proof가 아님 |
 | R6 / S21-12/13 / P11–12 | Concrete deploy/activate/restore-forward adapters·독립 pre/post observer 및 authorized Linux/config/state/retention/rollback 입력. 이어 P12A와 final require-all/bind-source graph; CODE/DEPLOYED/ACTIVATED/ROLLBACK 별도 verdict |
 
-R3 upstream oracle 구현에는 Linux/운영 입력이 선행하지 않는다.
+R3 upstream oracle의 owning Runtime 실행에는 Linux/운영 입력이 선행하지 않는다.
 실제 target 입력 부재가 dependent action만 막는다. Historical handoff 감사는 현재 release와 별도다.
 
 ## Legacy scope routes

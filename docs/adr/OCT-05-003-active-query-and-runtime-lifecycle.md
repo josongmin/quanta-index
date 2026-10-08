@@ -94,7 +94,7 @@ the receipt alone cannot reconstruct the original binding.
 
 Quanta local main `0760680de8367bb9078f31438b017c227b776c27` retains both
 `SourcePublicationBinding` and `BatchPublishReceipt` in boxed
-`SdkError::ActivationAfterPublish` evidence, with the original typed cause.
+`SdkError::ActivationAfterPublish` evidence at that historical source, with the original typed cause.
 The getters return the verified original publication and receipt. All errors
 after the validated publish outcome use that boundary, including observation,
 activation request/response, transport and timing errors. Invalid expected-head
@@ -182,7 +182,7 @@ that repository. A replay's revision/generation are unknown until the verified
 publish outcome; the existing contract-owned full CAS validation then checks
 that original candidate against the unchanged explicit expectation. The SDK
 does not redirect or synthesize an expected head. A well-formed expectation that
-cannot be advanced by the original publication returns `ActivationAfterPublish`
+cannot be advanced by the original publication returns the post-publication failure variant
 with its durable evidence and sends no activation request. It is not a pre-publish
 refusal, because the submitted target cannot establish that relation for a replay.
 
@@ -218,3 +218,30 @@ selector and the same debug daemon:1/1 passed in4.90s, retaining
 This is a local hash-dev debug-daemon process regression. Semantica Runtime
 restart/migration, installed-provider/release and qualified performance remain
 separate scopes.
+
+### Explicit publication and activation candidate
+
+Main `433a9363` includes independent offline preparation; it retains the existing
+`ActivationAfterPublish` contract. CLI/benchmark cause mapping and original
+publication diagnostics were repaired in `c75668c7` (46 + 125 library tests).
+The following breaking explicit-publication API remains isolated and requires
+paired consumer/aggregate acceptance before integration.
+
+The 2026-10-08 SDK candidate preserves the original-publication CAS rule above
+and exposes `search_corpus().publish_outcome` followed by
+`activate_published(&PublishedBatchEvidence, expected_active)`. The latter does
+not ingest or embed again. Both calls use canonical receipt and CAS validation.
+The breaking error contract is now `SdkError::AfterPublish`, with
+`PublishedBatchFailureStage::{Observation, Activation}`, original evidence, and
+a boxed typed cause. Missing observation after a verified publication also
+retains that evidence. The Semantica ingress consumer changes with this API;
+its retry barrier must reject both stages as automatic ingest retry candidates.
+A durable published receipt requires a positive journal sequence even for an
+empty apply or replay; internal precommit drafts still use their separate validator.
+
+Latest SDK focused checks and the fresh real-daemon five-scenario run, including
+eight crash cuts, are recorded in
+[Source preparation SDK](OCT-04-003-source-preparation-sdk.md#verification-and-acceptance-boundary).
+The historical 130/130 and four-scenario evidence above remains attached to its
+older source. Actual cross-repository Runtime and installed/release outcomes
+remain separate from this SDK process proof.

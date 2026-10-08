@@ -6,6 +6,14 @@ Decided: 2026-05-27
 
 Consolidated: 2026-09-27
 
+Implementation note (2026-10-08): optional source preparation is integrated in
+local main `433a9363`, using the existing `SearchCorpusBatch` primitive. The
+breaking `publish_outcome`, `activate_published`, and `SdkError::AfterPublish`
+contract remains on `codex/sdk-preparation-final`; paired Semantica Runtime
+acceptance is pending. Main retains `ActivationAfterPublish`; CLI and benchmark
+consumers now handle it (`c75668c7`). See
+[OCT-04-003](OCT-04-003-source-preparation-sdk.md#remaining-coupled-integration).
+
 Source programs: May-24 lexical/indexing closeout and May-25 SDK/ingest IPC
 cutover
 
@@ -58,12 +66,33 @@ returned receipt and response correspond to the request it sent.
 Publish, seal, activation and query visibility are separate service operations
 and claims. Activation uses an explicit compare-and-swap lifecycle.
 
-The current SDK also exposes `publish_and_activate`. Its `Result<(receipt,
-activation), error>` shape cannot return the successful publish receipt when a
-later activation step errors. This accepted ADR does not classify that helper
-as atomic or recovery-safe. The active Sep-24 SDK DSL proposal owns any API
-change that preserves post-publish recovery metadata; callers requiring that
-property must use the explicit two-stage operations until it is resolved.
+Main `433a9363` exposes `SearchCorpusNamespace::publish` and
+`publish_and_activate`; verified post-publication failures retain original
+evidence in `ActivationAfterPublish`. These calls are not atomic.
+
+**Isolated breaking candidate:**
+`SearchCorpusNamespace::publish_outcome(&batch)` returns the validated
+`SearchCorpusPublishOutcome` with the original
+`SourcePublicationBinding` and committed `BatchPublishReceipt`. This matters for
+source-event replay, where the original publication target can differ from
+the submitted batch target. `PublishedBatchEvidence::from(&outcome)` packages
+that identity and receipt; callers use
+`SearchCorpusNamespace::activate_published(&evidence, expected_active)` for a
+separate, explicit activation CAS; activation requires a sealed receipt.
+Invalid evidence or expected-head input is refused before control I/O, while
+control failures retain the checked evidence in `AfterPublish`. The SDK also retains the convenience
+`publish_and_activate` path. Both paths perform separate service operations,
+not an atomic transaction.
+
+After a verified publish, a later observation or activation error carries the
+original evidence and typed cause in `SdkError::AfterPublish`, with stage
+`PublishedBatchFailureStage::Observation` or `Activation`. The caller can
+recover it through `SdkError::published_evidence()`,
+`published_receipt()`, or `published_publication()` and reconcile the
+original publication before retrying. A transport or response failure before
+a validated publish outcome remains uncertain and does not manufacture a
+receipt. `GenerationNamespace` and `ControlClient` do not own this
+search-corpus activation CAS; the method is on `SearchCorpusNamespace`.
 
 ### Retired paths
 
@@ -80,8 +109,9 @@ source or the later semantic-generation ADR.
 - Generic namespace plumbing stays internal. Public APIs remain family-shaped.
 - Current support is read from SDK exports, contract route inventories and
   current runtime code, not from archived ticket status.
-- The convenience publish/activate recovery gap remains open and cannot be
-  hidden by the historical cutover closeout label.
+- Verified post-publish observation or activation failure retains original
+  typed evidence. Pre-outcome uncertainty still requires event-identity and
+  active-head reconciliation; neither public activation path is atomic.
 - Cross-repository producer adoption, installed-process behavior and release
   qualification remain separate from this accepted repo-local boundary.
 
@@ -92,7 +122,7 @@ source or the later semantic-generation ADR.
 - [SEP-21-001](SEP-21-001-canonical-identity-and-digest-domains.md)
 - [SEP-21-002](SEP-21-002-durable-authority-and-operation-lifecycle.md)
 - [SEP-21-003](SEP-21-003-read-view-continuation-and-provider-policy.md)
-- [Optional source-preparation SDK proposal](OCT-04-003-source-preparation-sdk.md)
+- [Source-preparation SDK](OCT-04-003-source-preparation-sdk.md)
 
 ## Historical record
 
