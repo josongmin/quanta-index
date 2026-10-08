@@ -336,7 +336,7 @@ in the [closure ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md).
 The audit compared Quanta base `09387a9a` with candidate `3c08aab5`, and
 Semantica main `3b8f86dd9ea` with candidate `6f5dc8fc13f`. The 37/27 paths
 are historical inventories, not indivisible merge units. The current candidate
-code checkpoint is `0dd6ce81` (38 paths including the new CLI regression). Its
+code checkpoint is `36e16d5d` (38 paths including the new CLI regression). Its
 SDK156+external7 and CLI46+benchmark125 selections, strict Clippy, and both
 public API checks passed after the current repairs. These candidate results do
 not qualify main or the Semantica Runtime. Main now includes:
@@ -347,7 +347,7 @@ not qualify main or the Semantica Runtime. Main now includes:
 | Nextest reporter + operational paths (4 files) | `23b5659f`: retain leaked-test diagnostics; reject lexical path aliases/overlap before actors |
 | Offline preparation (9 paths/shared hunks) | `433a9363`: coverage owner, shared membership canonicalization, precise text budgets, public regressions and existing-API L2 |
 | Breaking publication + Semantica kernel4 | Held for current-pair ingress and actual aggregate caller/replay/CAS/restart proof |
-| V5 contract/runtime20 Rust | Held as one writer/reader/test contract, requiring transition, Runtime, durable and process proof |
+| V5 contract/runtime28 Rust | Includes8 typed rebaseline paths; held as one writer/reader/intent/test contract, requiring transition, Runtime, durable and process proof |
 | Native helper1 + Semantica lock2 | Separate helper if required; reconcile current lock edges rather than copy stale snapshots |
 
 The reproduced main E0004 omissions and both preparation findings are repaired
@@ -373,32 +373,53 @@ owns the exact remaining files, final pair inputs and acceptance sequence.
 
 ## Remaining coupled integration
 
-### Current canonical pair result
+### Current pair inputs and result
 
-A fresh private pair captures Semantica main `3b8f86dd9ea` plus 3,976 current
-canonical dirty paths, then applies the owned 25 Rust files and reconciles the
-SDK dependency edges in both current lockfiles. Actual siblings are the final
-Quanta candidate and clean QGLang `9a9212da9526d50f9b264d7ee34dbe4cd0b03fd9`.
-Owning ingress QBC passed 28 tests (81 filtered). Runtime QBC failed before test
-bodies: two unused imports first; after a private import-only repair, E0599 at
-`quanta-runtime-query-surface-build-context/src/build_context/mod.rs:446`.
-That current canonical caller uses removed `.as_ref().clone()` on the verified
-output carrier. The second finished owner receipt is RED at source digest
-`cb75211dccc0f8bf4ab6c6a1efadfaebebaa3e42470a0fff11c685e07c4ac4b8`.
-Repair the canonical BuildContext controlled output read/copy closure; do not
-restore raw getters, invent current loans or disable features. Shared Semantica
-main is untouched. Thus D/E integration remains held, with durable/process
-`NOT_RUN`. Kernel success does not qualify the aggregate caller. Prepared-receipt selection
-passed 9 tests; exact V4 baseline refusal and V5 snapshot/digest binding each
-passed 1, with finished GREEN and hash-bound publication-complete markers. A wider artifact selection
-failed (297 passed, 1 failed) at the manifest-lane fixture baseline coverage check
-(`commit_and_lane_status.rs:143`). The fixture used a helper slot with a different
-reason from the manifest's exact Risk slot. Reusing the declared slot preserves
-all duplicate-lane refusal assertions. After that seven-line fixture repair,
-the same selection passed 298 tests (415 filtered), with finished GREEN and a
-hash-bound publication-complete marker. This does not qualify Runtime or process
-behavior. The independent repair is saved as `6c3922fb219`; the preserved
-Semantica inventory is now 28 paths.
+Two Semantica input sets are distinct. The earlier private canonical capture
+was main `3b8f86dd9ea` plus 3,976 foreign working-tree paths and the owned SDK/V5
+bundle. Its ingress28 and artifact selections (prepared receipt9, wider indexing
+298, exact V4 refusal1 and V5 snapshot binding1) have finished QBC GREEN and
+hash-bound publication-complete markers. Runtime has not executed test bodies.
+The latest owning QBC execution finished RED/exit101 with334 parser diagnostics
+across126 primary source files, source digest
+`816a260c609bcc63dc2a67289ad098adc3cdec4150b550f9f830589b770891af`,
+run `20261008T152558.067342Z-f3564a380bae`.
+The private source includes checked BuildContext reads, symbol/foundation/import-graph,
+relation/execution custody repairs and parser module/export corrections. Compilation
+now reaches raw tree/Clone consumers, admission traits and Original callback lifetimes.
+This diagnostic count belongs to that captured pair, not current shared main.
+The scoped parser boundary also retains9 interprocedural source-contract failures;
+raw accessors, Clone restoration or weaker checks are not acceptable repairs.
+Those private migration changes remain separate from the SDK36-path bundle and
+have not been integrated to main. The ticket records their scope and exact resumption contract.
+
+The original owned Rust26 preimages were compared directly with committed main
+`3b8f86dd`:24 identical,2 absent in both,mismatch0. The new isolated input is
+`/Users/songmin/.codex/worktrees/sdk-committed-final/semantica-sdk`, branch
+`codex/sdk-publication-complete`, with that committed base, the owned Rust bundle
+and only the SDK `ciborium`/`sha2` edges in both base lockfiles. Physical siblings
+are Quanta candidate `36e16d5d` and QGLang `9a9212d`. This permits an independent
+committed-base SDK/V5 proof without adopting the foreign migration. Its owning
+Runtime compile nevertheless failed with101existing parser diagnostics,exit101
+and0test bodies,source digest `42f301a8c09a43c16b74c881cb3000bea5b287e3f41865c2b34d16365aaa3b93`.
+The feature36paths are preserved as `2ce4f205ffa`, with exact negative contract oracles
+in `f60a6bd5a81` and `34cc31cab7c`; normal staged hooks passed.
+The artifact-ref unit uses declared references, not two materialized full/delta artifacts.
+Canonical working-tree closure repair and actual Runtime/durable/process
+acceptance remain required. Neither input qualifies the dirty shared main.
+
+The final Quanta candidate was rebuilt and checked independently. The actual
+daemon SHA256 is `0bbd47275904d0cf595a4bc195cd412af3092dbe0e503412530d85da0982bcdb`.
+All5 `l2_daemon_publication` ignored process tests and8 named crash cuts passed
+with that binary. `just rust-profile test-daemon` completed300passed/10skipped,
+2slow,375.138s,exit0,with no leak report. This is correctness execution duration,
+not a performance benchmark. The candidate's SDK156+external7,CLI46+benchmark125,
+strict Clippy and API results remain distinct from main's split proof above.
+
+The [integration ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md#sdk-구현-후보-통합-재감사--2026-10-08)
+owns the exact current path set, committed-base execution and remaining
+shared-main claim/lock/consumer integration. No Runtime or process success is
+inferred from the separate contract or Quanta results.
 
 ### Preserved candidate and historical dependency attempts
 
@@ -437,20 +458,20 @@ qualify that split. No such split has been integrated.
    composition with the SDK dependency edges. Reconcile the canonical owner
    bundle as a whole; do not apply only the non-conflicting subset or fabricate
    old accessors, copies or current loans to make the build pass. The current
-   audit found 64 of those 217 old input paths had changed again. The 50 conflicts
-   were between foreign proof inputs, not the owned 27-file feature: current main
-   still has 23 unchanged owned Rust preimages, two absent new files and only
-   two overlapping lockfiles. Prefer the complete canonical producer source
-   plus the owned 25 Rust changes and reconciled locks over replaying stale
+   historical audit found 64 of those 217 old input paths had changed again. The 50 conflicts
+   were between foreign proof inputs, not the owned 27-file feature. The later committed-main comparison above supersedes that inventory:
+   the final feature has34 Rust paths and two locks. Prefer the complete canonical
+   producer source plus that owned bundle and reconciled locks over replaying stale
    foreign repairs. See the ticket for the precise owner and test sequence.
 2. Run the Runtime `shadow_delta_orchestration` module through
    `scripts/quanta-build-cli owner run`, package `quanta-runtime`, `test/lib`,
    compile policy `feature-isolation:quanta-runtime.no-default.9c3270892708`,
    `--ignored-policy exclude`. Then run the six durable barrier selectors listed
    in the closure ticket through that same owner.
-3. Run both ignored process selectors: the exact selector ending in
+3. Run all three ignored process selectors: the exact selector ending in
    `shadow_delta_orchestration::completed_v5_publication::completed_v5_publication_prune_restart_then_g3_delta_v1`
-   and `shadow_delta_orchestration::completed_v5_publication::completed_v5_baseline_refuses_missing_predecessor_before_activation_then_retries_v1`,
+   `shadow_delta_orchestration::completed_v5_publication::completed_v5_baseline_refuses_missing_predecessor_before_activation_then_retries_v1`,
+   and `shadow_delta_orchestration::completed_v5_publication::completed_v4_to_explicit_v5_full_then_v5_delta_v1`,
    with `--ignored-policy only`, `QUANTA_INDEX_SEARCHD_BIN`, and a verified
    `QUANTA_INDEX_SEARCHD_SHA256`. The process test is explicitly ignored by default;
    it must not silently pass without its daemon. It completes real aggregate
@@ -460,7 +481,7 @@ qualify that split. No such split has been integrated.
    and its owner-issued `cfg(test)` closure helper are implemented but `NOT_RUN`.
 4. Integrate publication recovery with its full SDK/contract/CLI/benchmark/test/API
    consumer bundle and Semantica's four ingress files after the selected pair
-   passes. V5's 20 producer/reader/test files require the separate transition,
+   passes. V5's28 producer/reader/intent/test files require the separate transition,
    owner and process proof above. Source-based splitting does not authorize
    arbitrary partial V5 application. Recheck the selected final pair before
    publication. Passing Quanta tests does not qualify Semantica Runtime.
