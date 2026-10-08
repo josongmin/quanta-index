@@ -198,8 +198,9 @@ def build_command(
             "never",
             "--failure-output",
             "immediate-final",
+            # Keep leaked-output owners visible without printing successful tests.
             "--status-level",
-            "fail",
+            "leak",
             "--final-status-level",
             "fail",
         ]

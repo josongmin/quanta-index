@@ -54,8 +54,30 @@ def _absolute(value: Any) -> bool:
     return (
         isinstance(value, str)
         and Path(value).is_absolute()
+        and os.path.normpath(value) == value
+        and not value.startswith("//")
+        and Path(value) != Path("/")
         and ".." not in Path(value).parts
         and not any(ord(char) < 32 for char in value)
+    )
+
+
+def _validate_target_paths(target: dict[str, Any]) -> None:
+    """Refuse ambiguous or overlapping install/state destinations before actors run."""
+    names = ("binary_path", "config_path", "state_root")
+    paths = [target[name] for name in names]
+    _require(
+        all(_absolute(path) for path in paths),
+        "operational target paths must be normalized absolute paths below root",
+    )
+    parsed = [Path(path) for path in paths]
+    _require(
+        all(
+            not left.is_relative_to(right) and not right.is_relative_to(left)
+            for index, left in enumerate(parsed)
+            for right in parsed[index + 1 :]
+        ),
+        "operational binary, config and state paths must not overlap",
     )
 
 
@@ -115,11 +137,7 @@ def validate_contract(root: Path, proof: dict[str, Any], raw: bytes) -> dict[str
         and re.fullmatch(r"sha256:[0-9a-f]{64}", target["host_identity_digest"]) is not None,
         "operational host identity differs",
     )
-    paths = [target[name] for name in ("binary_path", "config_path", "state_root")]
-    _require(
-        all(_absolute(path) for path in paths) and len(set(paths)) == 3,
-        "operational target paths must be distinct absolute paths",
-    )
+    _validate_target_paths(target)
     actors = _object(contract["actors"], set(PHASES), "operational actors")
     actor_bytes = {}
     for phase, path in actors.items():

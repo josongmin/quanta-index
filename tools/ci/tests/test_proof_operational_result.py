@@ -343,6 +343,45 @@ def test_observer_cannot_be_the_action_producer(evidence):
         module.validate_contract(root, proof, json.dumps(contract).encode())
 
 
+@pytest.mark.parametrize(
+    "field,path",
+    (
+        ("binary_path", "/"),
+        ("binary_path", "//opt/quanta/bin/searchd"),
+        ("binary_path", "/opt/quanta/./bin/searchd"),
+        ("binary_path", "/opt/quanta/bin/searchd/"),
+        ("binary_path", "/var/lib/quanta/state/bin/searchd"),
+        ("config_path", "/opt/quanta/bin"),
+        ("state_root", "/etc/quanta"),
+        ("state_root", "/opt/quanta/bin/searchd"),
+    ),
+)
+def test_operational_target_refuses_broad_aliasing_or_overlapping_paths(
+    evidence, field, path
+):
+    root, proof, _, result, _ = evidence
+    contract = json.loads((root / result["contract"]).read_text())
+    contract["target"][field] = path
+    with pytest.raises(ValueError, match="target paths|paths must not overlap"):
+        module.validate_contract(root, proof, json.dumps(contract).encode())
+
+
+def test_overlapping_target_refuses_before_host_probe_or_actor(evidence, monkeypatch):
+    root, proof, binding, result, _ = evidence
+    contract_path = root / result["contract"]
+    contract = json.loads(contract_path.read_text())
+    contract["target"]["binary_path"] = contract["target"]["state_root"] + "/searchd"
+    contract_path.write_text(json.dumps(contract))
+    monkeypatch.setattr(
+        module, "observed_host_identity", lambda: pytest.fail("host probed before validation")
+    )
+    monkeypatch.setattr(module, "execute", lambda *a, **k: pytest.fail("actor executed"))
+    output = root / "raw-overlapping-target"
+    with pytest.raises(ValueError, match="paths must not overlap"):
+        module.run_action(root, proof, binding, output, paired_checkout=root / "pair")
+    assert not output.exists()
+
+
 def test_staged_action_refuses_before_output_or_process(evidence, monkeypatch):
     root, proof, binding, _, _ = evidence
     proof["authority_state"] = "staged"

@@ -70,7 +70,7 @@ def test_combined_scopes_build_one_nextest_command(tmp_path: Path, monkeypatch) 
     assert command.count("run") == 1
     assert command.count("-p") == 2
     assert command.count("--test") == 2
-    assert command[command.index("--status-level") + 1] == "fail"
+    assert command[command.index("--status-level") + 1] == "leak"
     assert command[command.index("--final-status-level") + 1] == "fail"
 
 
