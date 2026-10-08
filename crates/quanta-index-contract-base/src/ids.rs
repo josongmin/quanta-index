@@ -6,6 +6,18 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest as _, Sha256};
 use unicode_normalization::UnicodeNormalization as _;
 
+#[cfg(feature = "quanta-native-identity-v1")]
+mod native_manifest_decode_v1;
+#[cfg(feature = "quanta-native-identity-v1")]
+pub use native_manifest_decode_v1::NativeManifestGenerationDecodeDataV1;
+#[cfg(feature = "quanta-native-identity-v1")]
+mod native_decode_data_v1;
+#[cfg(feature = "quanta-native-identity-v1")]
+pub use native_decode_data_v1::{
+    NativeIdentityDecodeDataRefusalV1, NativeIdentityDecodeDataV1, NativeIdentityDecodeLoanV1,
+    NativeIdentityDecodeRunnerV1,
+};
+
 const IDENTITY_MAX_UTF8_BYTES: usize = 512;
 const REPOSITORY_REVISION_DOMAIN: &str = "quanta-index/repository-revision/v1";
 const LOGICAL_GENERATION_DOMAIN: &str = "quanta-index/logical-generation/v1";
@@ -289,41 +301,99 @@ fn validate_native_identity_into_v1<P: unicode_normalization::NativeNormalizatio
 /// policy alone cannot account for those allocations.
 #[cfg(feature = "quanta-native-identity-v1")]
 pub trait NativeIdentityDecodeAdmissionV1 {
-    type Error: fmt::Display;
-    fn repo_id_from_owned_v1(&self, value: String) -> Result<RepoId, Self::Error>;
-    fn repo_id_from_borrowed_v1(&self, value: &str) -> Result<RepoId, Self::Error>;
-    fn revision_id_from_owned_v1(&self, value: String) -> Result<RevisionId, Self::Error>;
-    fn revision_id_from_borrowed_v1(&self, value: &str) -> Result<RevisionId, Self::Error>;
+    type OriginalError;
+    type Funding;
+    type Error: fmt::Display + Copy;
+    fn repo_id_from_owned_v1(
+        &mut self,
+        loan: &mut NativeIdentityDecodeLoanV1<'_, '_, RepoId, Self::OriginalError, Self::Funding>,
+    ) -> Result<(), Self::Error>;
+    fn repo_id_from_borrowed_v1(
+        &mut self,
+        loan: &mut NativeIdentityDecodeLoanV1<'_, '_, RepoId, Self::OriginalError, Self::Funding>,
+    ) -> Result<(), Self::Error>;
+    fn revision_id_from_owned_v1(
+        &mut self,
+        loan: &mut NativeIdentityDecodeLoanV1<
+            '_,
+            '_,
+            RevisionId,
+            Self::OriginalError,
+            Self::Funding,
+        >,
+    ) -> Result<(), Self::Error>;
+    fn revision_id_from_borrowed_v1(
+        &mut self,
+        loan: &mut NativeIdentityDecodeLoanV1<
+            '_,
+            '_,
+            RevisionId,
+            Self::OriginalError,
+            Self::Funding,
+        >,
+    ) -> Result<(), Self::Error>;
 }
 
 trait IdentityConstructionPolicyV1<T> {
     type Error: fmt::Display;
-    fn build_owned_v1(&self, value: String) -> Result<T, Self::Error>;
-    fn build_borrowed_v1(&self, value: &str) -> Result<T, Self::Error>;
+    type Output;
+    fn begin_v1(&mut self) -> bool;
+    fn build_owned_v1(self, value: String) -> Result<Self::Output, Self::Error>;
+    fn build_borrowed_v1(self, value: &str) -> Result<Self::Output, Self::Error>;
 }
 struct OrdinaryIdentityConstructionV1;
 #[cfg(feature = "quanta-native-identity-v1")]
-struct NativeIdentityConstructionV1<'a, P: ?Sized>(&'a P);
+struct NativeIdentityConstructionV1<'a, T, P: NativeIdentityDecodeAdmissionV1 + ?Sized> {
+    admission: &'a mut P,
+    data: &'a mut NativeIdentityDecodeDataV1<T, P::OriginalError, P::Funding>,
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+enum NativeIdentityVisitorRefusalV1<E> {
+    Policy(E),
+    InvalidNativeProducer,
+}
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<E: fmt::Display> fmt::Display for NativeIdentityVisitorRefusalV1<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Policy(cause) => fmt::Display::fmt(cause, formatter),
+            Self::InvalidNativeProducer => {
+                formatter.write_str("native identity producer did not fill its external DATA")
+            }
+        }
+    }
+}
 
 trait IdentityDecodeValueV1: Sized {
-    fn decode_with_policy_v1<'de, D, P>(deserializer: D, policy: P) -> Result<Self, D::Error>
+    fn decode_with_policy_v1<'de, D, P>(deserializer: D, policy: P) -> Result<P::Output, D::Error>
     where
         D: Deserializer<'de>,
         P: IdentityConstructionPolicyV1<Self>;
 }
 
 #[cfg(feature = "quanta-native-identity-v1")]
-struct IdentityDecodeSeedV1<T, P> {
-    policy: P,
-    value: core::marker::PhantomData<T>,
+struct IdentityDecodeSeedV1<'a, T, P: NativeIdentityDecodeAdmissionV1 + ?Sized> {
+    admission: &'a mut P,
+    data: &'a mut NativeIdentityDecodeDataV1<T, P::OriginalError, P::Funding>,
 }
 #[cfg(feature = "quanta-native-identity-v1")]
-impl<'de, T: IdentityDecodeValueV1, P: IdentityConstructionPolicyV1<T>> de::DeserializeSeed<'de>
-    for IdentityDecodeSeedV1<T, P>
+impl<'de, T: IdentityDecodeValueV1, P: NativeIdentityDecodeAdmissionV1 + ?Sized>
+    de::DeserializeSeed<'de> for IdentityDecodeSeedV1<'_, T, P>
+where
+    for<'a> NativeIdentityConstructionV1<'a, T, P>: IdentityConstructionPolicyV1<T, Output = ()>,
 {
-    type Value = T;
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<T, D::Error> {
-        T::decode_with_policy_v1(deserializer, self.policy)
+    type Value = ();
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        T::decode_with_policy_v1(
+            deserializer,
+            NativeIdentityConstructionV1 {
+                admission: self.admission,
+                data: &mut *self.data,
+            },
+        )?;
+        self.data.state.phase = native_decode_data_v1::NativeIdentityDecodePhaseV1::Completed;
+        Ok(())
     }
 }
 
@@ -442,12 +512,26 @@ macro_rules! validated_identity {
             /// The caller's deserializer must admit owned and escaped string
             /// backing before allocation, as required by the admission trait.
             #[cfg(feature = "quanta-native-identity-v1")]
-            pub fn native_decode_seed_v1<'de, P: NativeIdentityDecodeAdmissionV1 + ?Sized>(
-                admission: &P,
-            ) -> impl de::DeserializeSeed<'de, Value = Self> + '_ {
-                IdentityDecodeSeedV1::<Self, _> {
-                    policy: NativeIdentityConstructionV1(admission),
-                    value: core::marker::PhantomData,
+            pub fn native_decode_seed_v1<'data, 'de, P: NativeIdentityDecodeAdmissionV1 + ?Sized>(
+                admission: &'data mut P,
+                data: &'data mut NativeIdentityDecodeDataV1<Self, P::OriginalError, P::Funding>,
+            ) -> impl de::DeserializeSeed<'de, Value = ()> + 'data {
+                IdentityDecodeSeedV1::<Self, P> { admission, data }
+            }
+
+            /// Unit driver that parks the complete deserializer error outside
+            /// Source. The caller retains both external slots through finishing.
+            #[cfg(feature = "quanta-native-identity-v1")]
+            pub fn try_decode_into_v1<'de, D: Deserializer<'de>, P: NativeIdentityDecodeAdmissionV1 + ?Sized>(
+                deserializer: D, admission: &mut P,
+                data: &mut NativeIdentityDecodeDataV1<Self, P::OriginalError, P::Funding>,
+                failure: &mut Option<D::Error>,
+            ) -> Result<(), NativeIdentityDecodeDataRefusalV1> {
+                if failure.is_some() { return Err(NativeIdentityDecodeDataRefusalV1::OccupiedOutput); }
+                if !data.is_fresh_v1() { return Err(NativeIdentityDecodeDataRefusalV1::UsedData); }
+                match de::DeserializeSeed::deserialize(Self::native_decode_seed_v1(admission, data), deserializer) {
+                    Ok(()) => Ok(()),
+                    Err(cause) => { *failure = Some(cause); Err(NativeIdentityDecodeDataRefusalV1::OperationRefused) }
                 }
             }
 
@@ -544,26 +628,81 @@ macro_rules! validated_identity {
 
         impl IdentityConstructionPolicyV1<$name> for OrdinaryIdentityConstructionV1 {
             type Error = IdentityValidationErrorV1;
-            fn build_owned_v1(&self, value: String) -> Result<$name, Self::Error> { $name::new(value) }
-            fn build_borrowed_v1(&self, value: &str) -> Result<$name, Self::Error> { $name::new(value) }
+            type Output = $name;
+            fn begin_v1(&mut self) -> bool { true }
+            fn build_owned_v1(self, value: String) -> Result<$name, Self::Error> { $name::new(value) }
+            fn build_borrowed_v1(self, value: &str) -> Result<$name, Self::Error> { $name::new(value) }
         }
         #[cfg(feature = "quanta-native-identity-v1")]
         impl<P: NativeIdentityDecodeAdmissionV1 + ?Sized> IdentityConstructionPolicyV1<$name>
-            for NativeIdentityConstructionV1<'_, P>
+            for NativeIdentityConstructionV1<'_, $name, P>
         {
-            type Error = P::Error;
-            fn build_owned_v1(&self, value: String) -> Result<$name, Self::Error> { self.0.$owned_v1(value) }
-            fn build_borrowed_v1(&self, value: &str) -> Result<$name, Self::Error> { self.0.$borrowed_v1(value) }
+            type Error = NativeIdentityVisitorRefusalV1<P::Error>;
+            type Output = ();
+            fn begin_v1(&mut self) -> bool { self.data.begin_v1() }
+            fn build_owned_v1(self, value: String) -> Result<(), Self::Error> {
+                self.data.state.backing = value;
+                self.admission.$owned_v1(&mut self.data.loan_v1(native_decode_data_v1::NativeIdentityDecodeInputV1::Owned)).map_err(Self::Error::Policy)?;
+                if !self.data.is_complete_v1() { return Err(Self::Error::InvalidNativeProducer); }
+                Ok(())
+            }
+            fn build_borrowed_v1(self, value: &str) -> Result<(), Self::Error> {
+                self.admission.$borrowed_v1(&mut self.data.loan_v1(native_decode_data_v1::NativeIdentityDecodeInputV1::Borrowed(value))).map_err(Self::Error::Policy)?;
+                if !self.data.is_complete_v1() { return Err(Self::Error::InvalidNativeProducer); }
+                Ok(())
+            }
+        }
+
+        #[cfg(feature = "quanta-native-identity-v1")]
+        impl<E> NativeIdentityDecodeRunnerV1<'_, '_, $name, E> {
+            /// Fill only the exact wire input bound by the canonical visitor.
+            /// All backing and complete failures stay in its external DATA.
+            pub fn try_fill_v1<P>(
+                &mut self,
+                normalization: &mut P,
+                copy: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+            ) -> Result<(), NativeIdentityDecodeDataRefusalV1>
+            where P: unicode_normalization::NativeNormalizationAdmissionV1<Error = E>,
+            {
+                if self.state.construction_attempted || self.state.output.is_some()
+                    || self.state.failure.is_some() {
+                    return Err(NativeIdentityDecodeDataRefusalV1::UsedData);
+                }
+                let result = match self.input {
+                    native_decode_data_v1::NativeIdentityDecodeInputV1::Borrowed(value) => {
+                        $name::try_from_str_into_with_native_admission_v1(
+                            value, &mut self.state.backing, &mut self.state.output,
+                            &mut self.state.construction_attempted,
+                            &mut self.state.normalization, normalization, copy,
+                        )
+                    }
+                    native_decode_data_v1::NativeIdentityDecodeInputV1::Owned => {
+                        self.state.construction_attempted = true;
+                        (|| {
+                            validate_native_identity_into_v1(
+                                &self.state.backing, &mut self.state.normalization, normalization,
+                            )?;
+                            normalization.checkpoint_work_v1(0).map_err(|cause|
+                                NativeIdentityConstructionErrorV1::Normalization(
+                                    unicode_normalization::NativeNormalizationErrorV1::Admission(cause)
+                                ))?;
+                            self.state.output = Some($name(core::mem::take(&mut self.state.backing)));
+                            Ok(())
+                        })()
+                    }
+                };
+                self.record_v1(result)
+            }
         }
 
         impl IdentityDecodeValueV1 for $name {
-            fn decode_with_policy_v1<'de, D, P>(deserializer: D, policy: P) -> Result<Self, D::Error>
+            fn decode_with_policy_v1<'de, D, P>(deserializer: D, mut policy: P) -> Result<P::Output, D::Error>
             where D: Deserializer<'de>, P: IdentityConstructionPolicyV1<Self>,
             {
                 struct IdentityVisitor<P>(P);
 
                 impl<'de, P: IdentityConstructionPolicyV1<$name>> de::Visitor<'de> for IdentityVisitor<P> {
-                    type Value = $name;
+                    type Value = P::Output;
 
                     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                         formatter.write_str(concat!("a canonical ", stringify!($name), " string"))
@@ -584,6 +723,9 @@ macro_rules! validated_identity {
                     }
                 }
 
+                if !policy.begin_v1() {
+                    return Err(de::Error::custom("native identity DATA is already used"));
+                }
                 deserializer.deserialize_string(IdentityVisitor(policy))
             }
         }
@@ -1422,5 +1564,59 @@ mod native_raw_identity_tests_v1 {
         assert_eq!(backing, "rev/test");
         assert_eq!(backing.as_ptr(), pointer);
         assert_eq!(admission.polls, polls);
+    }
+    macro_rules! native_decode_method_v1 {
+        ($method:ident, $identity:ty) => {
+            fn $method(
+                &mut self,
+                loan: &mut NativeIdentityDecodeLoanV1<'_, '_, $identity, u8, ()>,
+            ) -> Result<(), &'static str> {
+                loan.with_funding_v1(|runner, funding| {
+                    *funding = Some(());
+                    runner
+                        .try_fill_v1(self, |_, birth| Ok(birth()))
+                        .map_err(|_status| "native identity refused")
+                })
+                .map_err(|_status| "native identity loan refused")?
+            }
+        };
+    }
+    impl NativeIdentityDecodeAdmissionV1 for Admission {
+        type OriginalError = u8;
+        type Funding = ();
+        type Error = &'static str;
+        native_decode_method_v1!(repo_id_from_owned_v1, RepoId);
+        native_decode_method_v1!(repo_id_from_borrowed_v1, RepoId);
+        native_decode_method_v1!(revision_id_from_owned_v1, RevisionId);
+        native_decode_method_v1!(revision_id_from_borrowed_v1, RevisionId);
+    }
+    #[test]
+    fn owned_serde_refusal_retains_original_wire_backing_before_source_finishing_v1() {
+        let input = String::from("e\u{301}");
+        let pointer = input.as_ptr();
+        let capacity = input.capacity();
+        let mut data = NativeIdentityDecodeDataV1::new_v1();
+        let mut admission = Admission::default();
+        let mut error = None;
+        assert_eq!(
+            RepoId::try_decode_into_v1(
+                serde::de::value::StringDeserializer::<serde_json::Error>::new(input),
+                &mut admission,
+                &mut data,
+                &mut error
+            ),
+            Err(NativeIdentityDecodeDataRefusalV1::OperationRefused)
+        );
+        assert!(error.is_some());
+        assert_eq!(data.state.backing, "e\u{301}");
+        assert_eq!(data.state.backing.as_ptr(), pointer);
+        assert_eq!(data.state.backing.capacity(), capacity);
+        assert!(matches!(
+            data.failure_v1(),
+            Some(NativeIdentityConstructionErrorV1::Validation(
+                IdentityValidationErrorV1::NonCanonical
+            ))
+        ));
+        assert!(data.state.output.is_none());
     }
 }

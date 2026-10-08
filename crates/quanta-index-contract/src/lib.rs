@@ -80,11 +80,14 @@ pub mod lex;
 #[cfg(feature = "quanta-native-identity-v1")]
 pub use quanta_index_contract_base::{
     NativeIdentityConstructionErrorV1, NativeIdentityDecodeAdmissionV1,
+    NativeIdentityDecodeDataRefusalV1, NativeIdentityDecodeDataV1, NativeIdentityDecodeLoanV1,
+    NativeIdentityDecodeRunnerV1, NativeManifestGenerationDecodeDataV1,
 };
 
 #[cfg(feature = "quanta-native-identity-v1")]
 pub use quanta_index_contract_base::{
     NativeActivationTokenDataFailureV1, NativeActivationTokenDecodeAdmissionV1,
+    NativeActivationTokenDecodeDataV1,
 };
 
 #[cfg(feature = "quanta-native-identity-v1")]

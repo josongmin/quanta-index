@@ -40,11 +40,17 @@ NATIVE_CORPUS_DECODE_ADMISSION_V1 = """
 pub trait NativeCorpusDecodeAdmissionV1:
     quanta_index_contract_base::NativeIdentityDecodeAdmissionV1<Error = NativeCorpusDecodeRefusalV1>
     + quanta_index_contract_base::NativeActivationTokenDecodeAdmissionV1<
+        ControlError = Self::OriginalError,
         Error = NativeCorpusDecodeRefusalV1,
     >
 {
-    fn consume_corpus_work_v1(&self, units: u64) -> Result<(), NativeCorpusDecodeRefusalV1>;
-    fn refuse_corpus_work_arithmetic_v1(&self) -> NativeCorpusDecodeRefusalV1;
+    fn consume_corpus_work_v1(&mut self, units: u64) -> Result<(), Self::OriginalError>;
+    fn refuse_corpus_work_arithmetic_v1(&mut self) -> Self::OriginalError;
+    fn admit_corpus_string_birth_v1(
+        &mut self,
+        bytes: usize,
+        birth: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, Self::OriginalError>;
     fn corpus_invalid_data_v1(
         &self,
         cause: NativeCorpusDataFailureV1,

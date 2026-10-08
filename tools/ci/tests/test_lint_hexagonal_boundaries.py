@@ -55,8 +55,8 @@ def test_native_dto_construction_protocol_does_not_admit_service_ports(
         native.read_text()
         .replace("\npub trait StoragePort {}\n", "")
         .replace(
-            "    fn consume_corpus_work_v1(&self, units: u64) -> Result<(), NativeCorpusDecodeRefusalV1>;",
-            "    fn consume_corpus_work_v1(&self, units: u64) -> Result<(), NativeCorpusDecodeRefusalV1>;\n"
+            "    fn consume_corpus_work_v1(&mut self, units: u64) -> Result<(), Self::OriginalError>;",
+            "    fn consume_corpus_work_v1(&mut self, units: u64) -> Result<(), Self::OriginalError>;\n"
             "    fn storage_port(&self);",
             1,
         )

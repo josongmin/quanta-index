@@ -1,10 +1,10 @@
 #[path = "control/native_decode_v1.rs"]
 mod native_decode_v1;
 use core::fmt;
-use native_decode_v1::{CorpusDecodeModeV1, CorpusDecodeValueV1, CorpusKeySeedV1};
 #[cfg(feature = "quanta-native-identity-v1")]
 pub use native_decode_v1::{
-    NativeCorpusDataFailureV1, NativeCorpusDecodeAdmissionV1, NativeCorpusDecodeRefusalV1,
+    NativeCorpusDataFailureV1, NativeCorpusDecodeAdmissionV1, NativeCorpusDecodeDataV1,
+    NativeCorpusDecodeFailureV1, NativeCorpusDecodeRefusalV1,
 };
 
 use serde::{
@@ -45,53 +45,12 @@ impl Serialize for SearchPlaneTrackKind {
     }
 }
 
-struct SearchPlaneTrackKindVisitor<'a>(CorpusDecodeModeV1<'a>);
-
-impl Visitor<'_> for SearchPlaneTrackKindVisitor<'_> {
-    type Value = SearchPlaneTrackKind;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchPlaneTrackKind string")
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        match value {
-            "Lexical" => Ok(SearchPlaneTrackKind::Lexical),
-            "Semantic" => Ok(SearchPlaneTrackKind::Semantic),
-            "Structural" => Ok(SearchPlaneTrackKind::Structural),
-            other => Err(self
-                .0
-                .semantic_v1(|| de::Error::unknown_variant(other, SearchPlaneTrackKind::VARIANTS))),
-        }
-    }
-
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        self.visit_str(value.as_str())
-    }
-}
-
 impl<'de> Deserialize<'de> for SearchPlaneTrackKind {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        Self::decode_v1(deserializer, CorpusDecodeModeV1::ordinary_v1())
-    }
-}
-
-impl CorpusDecodeValueV1 for SearchPlaneTrackKind {
-    fn decode_v1<'de, D: Deserializer<'de>>(
-        deserializer: D,
-        mode: CorpusDecodeModeV1<'_>,
-    ) -> Result<Self, D::Error> {
-        mode.work_v1(1)?;
-        deserializer.deserialize_str(SearchPlaneTrackKindVisitor(mode))
+        native_decode_v1::ordinary_track_v1(deserializer)
     }
 }
 
@@ -184,74 +143,9 @@ impl Serialize for SemanticContentRootsV1 {
     }
 }
 
-struct SemanticContentRootsV1Visitor<'a>(CorpusDecodeModeV1<'a>);
-
-impl<'de> Visitor<'de> for SemanticContentRootsV1Visitor<'_> {
-    type Value = SemanticContentRootsV1;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SemanticContentRootsV1 map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        self.0.work_v1(1)?;
-        let mut row_root_digest: Option<String> = None;
-        let mut membership_root_digest: Option<String> = None;
-        while let Some(key) =
-            map.next_key_seed(CorpusKeySeedV1(self.0, SEMANTIC_CONTENT_ROOTS_V1_FIELDS))?
-        {
-            match key.as_str() {
-                "row_root_digest" => {
-                    if row_root_digest.is_some() {
-                        return Err(self.0.duplicate_v1("row_root_digest"));
-                    }
-                    row_root_digest = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                "membership_root_digest" => {
-                    if membership_root_digest.is_some() {
-                        return Err(self.0.duplicate_v1("membership_root_digest"));
-                    }
-                    membership_root_digest = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                other => {
-                    return Err(self.0.unknown_v1(other, SEMANTIC_CONTENT_ROOTS_V1_FIELDS));
-                }
-            }
-        }
-        let roots = SemanticContentRootsV1 {
-            row_root_digest: row_root_digest.ok_or_else(|| self.0.missing_v1("row_root_digest"))?,
-            membership_root_digest: membership_root_digest
-                .ok_or_else(|| self.0.missing_v1("membership_root_digest"))?,
-        };
-        self.0.bytes_v1(roots.row_root_digest.len())?;
-        self.0.bytes_v1(roots.membership_root_digest.len())?;
-        if !roots.is_canonical_v1() {
-            return Err(self.0.semantic_v1(|| {
-                de::Error::custom("semantic content roots must be canonical sha256 digests")
-            }));
-        }
-        Ok(roots)
-    }
-}
-
-impl CorpusDecodeValueV1 for SemanticContentRootsV1 {
-    fn decode_v1<'de, D: Deserializer<'de>>(
-        deserializer: D,
-        mode: CorpusDecodeModeV1<'_>,
-    ) -> Result<Self, D::Error> {
-        deserializer.deserialize_struct(
-            "SemanticContentRootsV1",
-            SEMANTIC_CONTENT_ROOTS_V1_FIELDS,
-            SemanticContentRootsV1Visitor(mode),
-        )
-    }
-}
 impl<'de> Deserialize<'de> for SemanticContentRootsV1 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::decode_v1(deserializer, CorpusDecodeModeV1::ordinary_v1())
+        native_decode_v1::ordinary_roots_v1(deserializer)
     }
 }
 
@@ -495,89 +389,9 @@ impl Serialize for SearchCorpusActiveHeadV1 {
     }
 }
 
-struct SearchCorpusActiveHeadV1Visitor<'a>(CorpusDecodeModeV1<'a>);
-
-impl<'de> Visitor<'de> for SearchCorpusActiveHeadV1Visitor<'_> {
-    type Value = SearchCorpusActiveHeadV1;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchCorpusActiveHeadV1 map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        self.0.work_v1(1)?;
-        let mut generation = None;
-        let mut activation_token = None;
-        while let Some(key) =
-            map.next_key_seed(CorpusKeySeedV1(self.0, SEARCH_CORPUS_ACTIVE_HEAD_V1_FIELDS))?
-        {
-            match key.as_str() {
-                "generation" => {
-                    if generation.is_some() {
-                        return Err(self.0.duplicate_v1("generation"));
-                    }
-                    generation = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                "activation_token" => {
-                    if activation_token.is_some() {
-                        return Err(self.0.duplicate_v1("activation_token"));
-                    }
-                    activation_token = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                other => {
-                    return Err(self
-                        .0
-                        .unknown_v1(other, SEARCH_CORPUS_ACTIVE_HEAD_V1_FIELDS));
-                }
-            }
-        }
-        let value = SearchCorpusActiveHeadV1 {
-            generation: generation.ok_or_else(|| self.0.missing_v1("generation"))?,
-            activation_token: activation_token
-                .ok_or_else(|| self.0.missing_v1("activation_token"))?,
-        };
-        for value_v1 in [
-            value.generation.lexical.repo_id.as_str(),
-            value.generation.lexical.revision_id.as_str(),
-            value.generation.semantic.repo_id.as_str(),
-            value.generation.semantic.revision_id.as_str(),
-            value.generation.lexical.manifest_digest.as_str(),
-            value.generation.semantic.manifest_digest.as_str(),
-            value.generation.semantic_content.row_root_digest.as_str(),
-            value
-                .generation
-                .semantic_content
-                .membership_root_digest
-                .as_str(),
-        ] {
-            self.0.bytes_v1(value_v1.len())?;
-        }
-        self.0.work_v1(1)?;
-        value
-            .validate_v1()
-            .map_err(|cause| self.0.semantic_v1(|| de::Error::custom(cause)))?;
-        Ok(value)
-    }
-}
-
-impl CorpusDecodeValueV1 for SearchCorpusActiveHeadV1 {
-    fn decode_v1<'de, D: Deserializer<'de>>(
-        deserializer: D,
-        mode: CorpusDecodeModeV1<'_>,
-    ) -> Result<Self, D::Error> {
-        deserializer.deserialize_struct(
-            "SearchCorpusActiveHeadV1",
-            SEARCH_CORPUS_ACTIVE_HEAD_V1_FIELDS,
-            SearchCorpusActiveHeadV1Visitor(mode),
-        )
-    }
-}
 impl<'de> Deserialize<'de> for SearchCorpusActiveHeadV1 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::decode_v1(deserializer, CorpusDecodeModeV1::ordinary_v1())
+        native_decode_v1::ordinary_head_v1(deserializer)
     }
 }
 
@@ -778,77 +592,9 @@ impl Serialize for SearchCorpusGenerationIdentityV1 {
     }
 }
 
-struct SearchCorpusGenerationIdentityV1Visitor<'a>(CorpusDecodeModeV1<'a>);
-
-impl<'de> Visitor<'de> for SearchCorpusGenerationIdentityV1Visitor<'_> {
-    type Value = SearchCorpusGenerationIdentityV1;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchCorpusGenerationIdentityV1 map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        self.0.work_v1(1)?;
-        let mut lexical: Option<GenerationSnapshot> = None;
-        let mut semantic: Option<GenerationSnapshot> = None;
-        let mut semantic_content: Option<SemanticContentRootsV1> = None;
-        while let Some(key) = map.next_key_seed(CorpusKeySeedV1(
-            self.0,
-            SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS,
-        ))? {
-            match key.as_str() {
-                "lexical" => {
-                    if lexical.is_some() {
-                        return Err(self.0.duplicate_v1("lexical"));
-                    }
-                    lexical = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                "semantic" => {
-                    if semantic.is_some() {
-                        return Err(self.0.duplicate_v1("semantic"));
-                    }
-                    semantic = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                "semantic_content" => {
-                    if semantic_content.is_some() {
-                        return Err(self.0.duplicate_v1("semantic_content"));
-                    }
-                    semantic_content = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                other => {
-                    return Err(self
-                        .0
-                        .unknown_v1(other, SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS));
-                }
-            }
-        }
-        Ok(Self::Value {
-            lexical: lexical.ok_or_else(|| self.0.missing_v1("lexical"))?,
-            semantic: semantic.ok_or_else(|| self.0.missing_v1("semantic"))?,
-            semantic_content: semantic_content
-                .ok_or_else(|| self.0.missing_v1("semantic_content"))?,
-        })
-    }
-}
-
-impl CorpusDecodeValueV1 for SearchCorpusGenerationIdentityV1 {
-    fn decode_v1<'de, D: Deserializer<'de>>(
-        deserializer: D,
-        mode: CorpusDecodeModeV1<'_>,
-    ) -> Result<Self, D::Error> {
-        deserializer.deserialize_struct(
-            "SearchCorpusGenerationIdentityV1",
-            SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS,
-            SearchCorpusGenerationIdentityV1Visitor(mode),
-        )
-    }
-}
 impl<'de> Deserialize<'de> for SearchCorpusGenerationIdentityV1 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::decode_v1(deserializer, CorpusDecodeModeV1::ordinary_v1())
+        native_decode_v1::ordinary_generation_v1(deserializer)
     }
 }
 
@@ -1367,90 +1113,9 @@ impl Serialize for GenerationSnapshot {
     }
 }
 
-struct GenerationSnapshotVisitor<'a>(CorpusDecodeModeV1<'a>);
-
-impl<'de> Visitor<'de> for GenerationSnapshotVisitor<'_> {
-    type Value = GenerationSnapshot;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a GenerationSnapshot map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        self.0.work_v1(1)?;
-        let mut repo_id: Option<RepoId> = None;
-        let mut revision_id: Option<RevisionId> = None;
-        let mut track: Option<SearchPlaneTrackKind> = None;
-        let mut manifest_generation: Option<ManifestGeneration> = None;
-        let mut manifest_digest: Option<String> = None;
-        while let Some(key) =
-            map.next_key_seed(CorpusKeySeedV1(self.0, GENERATION_SNAPSHOT_FIELDS))?
-        {
-            match key.as_str() {
-                "repo_id" => {
-                    if repo_id.is_some() {
-                        return Err(self.0.duplicate_v1("repo_id"));
-                    }
-                    repo_id = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                "revision_id" => {
-                    if revision_id.is_some() {
-                        return Err(self.0.duplicate_v1("revision_id"));
-                    }
-                    revision_id = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                "track" => {
-                    if track.is_some() {
-                        return Err(self.0.duplicate_v1("track"));
-                    }
-                    track = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                "manifest_generation" => {
-                    if manifest_generation.is_some() {
-                        return Err(self.0.duplicate_v1("manifest_generation"));
-                    }
-                    manifest_generation = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                "manifest_digest" => {
-                    if manifest_digest.is_some() {
-                        return Err(self.0.duplicate_v1("manifest_digest"));
-                    }
-                    manifest_digest = Some(map.next_value_seed(self.0.seed_v1())?);
-                }
-                other => {
-                    return Err(self.0.unknown_v1(other, GENERATION_SNAPSHOT_FIELDS));
-                }
-            }
-        }
-        Ok(GenerationSnapshot {
-            repo_id: repo_id.ok_or_else(|| self.0.missing_v1("repo_id"))?,
-            revision_id: revision_id.ok_or_else(|| self.0.missing_v1("revision_id"))?,
-            track: track.ok_or_else(|| self.0.missing_v1("track"))?,
-            manifest_generation: manifest_generation
-                .ok_or_else(|| self.0.missing_v1("manifest_generation"))?,
-            manifest_digest: manifest_digest.ok_or_else(|| self.0.missing_v1("manifest_digest"))?,
-        })
-    }
-}
-
-impl CorpusDecodeValueV1 for GenerationSnapshot {
-    fn decode_v1<'de, D: Deserializer<'de>>(
-        deserializer: D,
-        mode: CorpusDecodeModeV1<'_>,
-    ) -> Result<Self, D::Error> {
-        deserializer.deserialize_struct(
-            "GenerationSnapshot",
-            GENERATION_SNAPSHOT_FIELDS,
-            GenerationSnapshotVisitor(mode),
-        )
-    }
-}
 impl<'de> Deserialize<'de> for GenerationSnapshot {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::decode_v1(deserializer, CorpusDecodeModeV1::ordinary_v1())
+        native_decode_v1::ordinary_snapshot_v1(deserializer)
     }
 }
 
@@ -3051,155 +2716,5 @@ mod qi_act_01_tests {
             return;
         };
         assert!(err.to_string().contains("missing field `track`"));
-    }
-}
-
-#[cfg(all(test, feature = "quanta-native-identity-v1"))]
-mod native_corpus_decode_tests_v1 {
-    use super::*;
-    use core::cell::Cell;
-    use serde::de::DeserializeSeed as _;
-
-    #[derive(Default)]
-    struct Admission {
-        borrowed_ids: Cell<u32>,
-        owned_ids: Cell<u32>,
-        work: Cell<u64>,
-    }
-
-    impl quanta_index_contract_base::NativeIdentityDecodeAdmissionV1 for Admission {
-        type Error = NativeCorpusDecodeRefusalV1;
-
-        fn repo_id_from_owned_v1(&self, value: String) -> Result<RepoId, Self::Error> {
-            self.owned_ids.set(
-                self.owned_ids
-                    .get()
-                    .checked_add(1)
-                    .ok_or(Self::Error::Admission)?,
-            );
-            RepoId::new(value).map_err(Self::Error::Identity)
-        }
-
-        fn repo_id_from_borrowed_v1(&self, value: &str) -> Result<RepoId, Self::Error> {
-            self.borrowed_ids.set(
-                self.borrowed_ids
-                    .get()
-                    .checked_add(1)
-                    .ok_or(Self::Error::Admission)?,
-            );
-            RepoId::new(value).map_err(Self::Error::Identity)
-        }
-
-        fn revision_id_from_owned_v1(&self, value: String) -> Result<RevisionId, Self::Error> {
-            self.owned_ids.set(
-                self.owned_ids
-                    .get()
-                    .checked_add(1)
-                    .ok_or(Self::Error::Admission)?,
-            );
-            RevisionId::new(value).map_err(Self::Error::Identity)
-        }
-
-        fn revision_id_from_borrowed_v1(&self, value: &str) -> Result<RevisionId, Self::Error> {
-            self.borrowed_ids.set(
-                self.borrowed_ids
-                    .get()
-                    .checked_add(1)
-                    .ok_or(Self::Error::Admission)?,
-            );
-            RevisionId::new(value).map_err(Self::Error::Identity)
-        }
-    }
-
-    impl quanta_index_contract_base::NativeActivationTokenDecodeAdmissionV1 for Admission {
-        type Error = NativeCorpusDecodeRefusalV1;
-
-        fn consume_token_work_v1(&self, units: u64) -> Result<(), Self::Error> {
-            self.consume_corpus_work_v1(units)
-        }
-
-        fn token_invalid_data_v1(
-            &self,
-            cause: quanta_index_contract_base::NativeActivationTokenDataFailureV1,
-            field: Option<&'static str>,
-        ) -> Self::Error {
-            let cause = match cause {
-                quanta_index_contract_base::NativeActivationTokenDataFailureV1::UnknownField => {
-                    NativeCorpusDataFailureV1::UnknownField
-                }
-                quanta_index_contract_base::NativeActivationTokenDataFailureV1::DuplicateField => {
-                    NativeCorpusDataFailureV1::DuplicateField
-                }
-                quanta_index_contract_base::NativeActivationTokenDataFailureV1::MissingField => {
-                    NativeCorpusDataFailureV1::MissingField
-                }
-                quanta_index_contract_base::NativeActivationTokenDataFailureV1::Semantic => {
-                    NativeCorpusDataFailureV1::Semantic
-                }
-            };
-            Self::Error::InvalidData(cause, field)
-        }
-    }
-
-    impl NativeCorpusDecodeAdmissionV1 for Admission {
-        fn consume_corpus_work_v1(&self, units: u64) -> Result<(), NativeCorpusDecodeRefusalV1> {
-            let work = self
-                .work
-                .get()
-                .checked_add(units)
-                .ok_or(NativeCorpusDecodeRefusalV1::Admission)?;
-            self.work.set(work);
-            Ok(())
-        }
-
-        fn refuse_corpus_work_arithmetic_v1(&self) -> NativeCorpusDecodeRefusalV1 {
-            NativeCorpusDecodeRefusalV1::Admission
-        }
-
-        fn corpus_invalid_data_v1(
-            &self,
-            cause: NativeCorpusDataFailureV1,
-            field: Option<&'static str>,
-        ) -> NativeCorpusDecodeRefusalV1 {
-            NativeCorpusDecodeRefusalV1::InvalidData(cause, field)
-        }
-    }
-
-    fn decode_native(
-        source: &str,
-        admission: &Admission,
-    ) -> Result<SearchCorpusActiveHeadV1, serde_json::Error> {
-        let mut deserializer = serde_json::Deserializer::from_str(source);
-        let head = SearchCorpusActiveHeadV1::native_decode_seed_v1(admission)
-            .deserialize(&mut deserializer)?;
-        deserializer.end()?;
-        Ok(head)
-    }
-
-    #[test]
-    fn native_corpus_seed_uses_borrowed_identity_policy_and_rejects_invalid_wire() {
-        let head = super::qi_act_01_tests::corpus_head(3, "digest-3", 1);
-        let wire = serde_json::to_string(&head).expect("encode fixture");
-        let admission = Admission::default();
-        assert_eq!(
-            decode_native(&wire, &admission).expect("decode native head"),
-            head
-        );
-        assert_eq!(admission.borrowed_ids.get(), 4);
-        assert_eq!(admission.owned_ids.get(), 0);
-        assert!(admission.work.get() > 0);
-
-        let invalid_identity = wire.replacen("\"repo\"", "\"e\\u0301\"", 1);
-        let error = decode_native(&invalid_identity, &Admission::default()).unwrap_err();
-        assert!(error.to_string().contains("Identity(NonCanonical)"));
-
-        let invalid_track = wire.replacen("\"Lexical\"", "\"Unknown\"", 1);
-        let error = decode_native(&invalid_track, &Admission::default()).unwrap_err();
-        assert!(error.to_string().contains("InvalidData(Semantic, None)"));
-        let ordinary = serde_json::from_str::<SearchPlaneTrackKind>("\"Unknown\"").unwrap_err();
-        assert!(ordinary.to_string().contains("unknown variant `Unknown`"));
-
-        let error = decode_native("{\"unknown\": 1}", &Admission::default()).unwrap_err();
-        assert!(error.to_string().contains("UnknownField"));
     }
 }

@@ -19,6 +19,7 @@ mod activation_token;
 pub mod ids;
 pub mod query;
 pub mod results;
+mod retained_scalar_decode_v1;
 mod source_file;
 
 pub use source_file::{SourceFileKey, SourceFileRevision};
@@ -57,11 +58,16 @@ pub use results::{
 };
 
 #[cfg(feature = "quanta-native-identity-v1")]
-pub use ids::{NativeIdentityConstructionErrorV1, NativeIdentityDecodeAdmissionV1};
+pub use ids::{
+    NativeIdentityConstructionErrorV1, NativeIdentityDecodeAdmissionV1,
+    NativeIdentityDecodeDataRefusalV1, NativeIdentityDecodeDataV1, NativeIdentityDecodeLoanV1,
+    NativeIdentityDecodeRunnerV1, NativeManifestGenerationDecodeDataV1,
+};
 
 #[cfg(feature = "quanta-native-identity-v1")]
 pub use activation_token::{
     NativeActivationTokenDataFailureV1, NativeActivationTokenDecodeAdmissionV1,
+    NativeActivationTokenDecodeDataV1,
 };
 
 // Consumers implement admission against this exact producer dependency;
