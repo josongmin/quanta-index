@@ -64,7 +64,8 @@ pub use quanta_index_contract_base::{
     QueryResultWindowV1, QueryResultWindowV2, RepoId, RepoRelativePath,
     RepositoryRevisionIdentityV1, RevisionId, SearchCorpusActivationTokenV1,
     TOP_K_OUT_OF_RANGE_CODE, TopKOutOfRangeV1, continuation_fetch_size,
-    try_copy_string_with_native_birth_v1, validate_internal_fetch_size, validate_public_top_k,
+    try_copy_string_into_with_native_birth_v1, try_copy_string_with_native_birth_v1,
+    validate_internal_fetch_size, validate_public_top_k,
 };
 pub use query::*;
 pub use repomap::*;

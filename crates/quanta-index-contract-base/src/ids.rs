@@ -68,17 +68,21 @@ impl<E: fmt::Display> fmt::Display for NativeIdentityCopyErrorV1<E> {
 }
 impl<E: std::error::Error + 'static> std::error::Error for NativeIdentityCopyErrorV1<E> {}
 
-/// Copy only the supplied borrowed bytes.
+/// Copy only the supplied borrowed bytes into caller-owned backing.
 ///
-/// Typed owners preserve their private validation seal by wrapping this result
-/// without re-validating the input.
-/// The caller admits copy work and retains its native backing grant.
-pub fn try_copy_string_with_native_birth_v1<E>(
+/// The destination must be empty with zero capacity. It is never cleared or
+/// replaced on failure: backing allocated by the native callback remains in
+/// the destination even when admission refuses after invoking that callback.
+/// The caller owns this slot and its grant through failure settlement.
+pub fn try_copy_string_into_with_native_birth_v1<E>(
     source: &str,
+    value: &mut String,
     admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
-) -> Result<String, NativeIdentityCopyErrorV1<E>> {
+) -> Result<(), NativeIdentityCopyErrorV1<E>> {
+    if !value.is_empty() || value.capacity() != 0 {
+        return Err(NativeIdentityCopyErrorV1::InvalidNativeProducer);
+    }
     let bytes = source.len();
-    let mut value = String::new();
     let mut invoked = false;
     let mut repeated = false;
     let mut native_success = false;
@@ -102,6 +106,19 @@ pub fn try_copy_string_with_native_birth_v1<E>(
         return Err(NativeIdentityCopyErrorV1::InvalidNativeCapacity);
     }
     value.push_str(source);
+    Ok(())
+}
+
+/// Owned convenience over the same native copy body.
+///
+/// Callers retaining backing through a late refusal must use the into-slot
+/// API and keep its destination with their original grant.
+pub fn try_copy_string_with_native_birth_v1<E>(
+    source: &str,
+    admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+) -> Result<String, NativeIdentityCopyErrorV1<E>> {
+    let mut value = String::new();
+    try_copy_string_into_with_native_birth_v1(source, &mut value, admission)?;
     Ok(value)
 }
 
@@ -351,15 +368,38 @@ macro_rules! validated_identity {
                 validate_native_identity_v1(value, normalization_admission)
             }
 
-            /// Copy these exact private canonical bytes without re-running NFC
-            /// or constructing a second identity authority. The caller admits
-            /// copy work before this call, admits actual backing before the
-            /// supplied native callback, and retains its grant with the result.
+            /// Copy exact private canonical bytes into caller-owned slots
+            /// without re-running identity/NFC validation. `backing` must be
+            /// empty with zero capacity and `output` must be None.
+            ///
+            /// Admission failure, including refusal after actual native birth,
+            /// leaves backing in the caller's String and output unpopulated.
+            /// Only complete success moves that same backing into the typed
+            /// output. The caller keeps both slots with its original grant.
+            pub fn try_clone_into_with_native_birth_v1<E>(
+                &self,
+                backing: &mut String,
+                output: &mut Option<Self>,
+                admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+            ) -> Result<(), NativeIdentityCopyErrorV1<E>> {
+                if output.is_some() {
+                    return Err(NativeIdentityCopyErrorV1::InvalidNativeProducer);
+                }
+                try_copy_string_into_with_native_birth_v1(self.0.as_str(), backing, admission)?;
+                *output = Some(Self(core::mem::take(backing)));
+                Ok(())
+            }
+
+            /// Owned convenience over the same sealed into-slot copy body.
+            /// Use that API when partial backing must outlive a late refusal.
             pub fn try_clone_with_native_birth_v1<E>(
                 &self,
                 admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
             ) -> Result<Self, NativeIdentityCopyErrorV1<E>> {
-                try_copy_string_with_native_birth_v1(self.0.as_str(), admission).map(Self)
+                let mut backing = String::new();
+                let mut output = None;
+                self.try_clone_into_with_native_birth_v1(&mut backing, &mut output, admission)?;
+                output.ok_or(NativeIdentityCopyErrorV1::InvalidNativeProducer)
             }
 
             #[must_use]

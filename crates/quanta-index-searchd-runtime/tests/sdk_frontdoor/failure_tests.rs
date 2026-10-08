@@ -28,6 +28,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Transport(_)
         | SdkError::Remote { .. }
         | SdkError::Binding { .. }
+        | SdkError::ActivationAfterPublish { .. }
         | SdkError::PlaneUnavailable { .. }) => {
             return Err(format!("unexpected lexical timeout error: {other:?}").into());
         }
@@ -78,6 +79,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Transport(_)
         | SdkError::Remote { .. }
         | SdkError::Binding { .. }
+        | SdkError::ActivationAfterPublish { .. }
         | SdkError::PlaneUnavailable { .. }) => {
             return Err(format!("unexpected structural timeout error: {other:?}").into());
         }
@@ -103,6 +105,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Transport(_)
         | SdkError::Remote { .. }
         | SdkError::Binding { .. }
+        | SdkError::ActivationAfterPublish { .. }
         | SdkError::PlaneUnavailable { .. }) => {
             return Err(format!("unexpected typed-hole error: {other:?}").into());
         }
@@ -245,6 +248,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         | SdkError::Transport(_)
         | SdkError::Remote { .. }
         | SdkError::Binding { .. }
+        | SdkError::ActivationAfterPublish { .. }
         | SdkError::PlaneUnavailable { .. }) => {
             return Err(format!("unexpected patterntype error: {other:?}").into());
         }

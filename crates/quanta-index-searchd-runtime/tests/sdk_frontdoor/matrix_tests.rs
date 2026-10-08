@@ -326,6 +326,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                     | SdkError::Transport(_)
                     | SdkError::Remote { .. }
                     | SdkError::Binding { .. }
+                    | SdkError::ActivationAfterPublish { .. }
                     | SdkError::PlaneUnavailable { .. }) => {
                         return Err(format!(
                             "{} typed error drifted: expected code={} fragment={:?}, got {other:?}",

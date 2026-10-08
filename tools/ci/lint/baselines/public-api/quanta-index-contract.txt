@@ -102,6 +102,7 @@ pub use quanta_index_contract::TextQueryRequest
 pub use quanta_index_contract::TextQuerySyntax
 pub use quanta_index_contract::TopKOutOfRangeV1
 pub use quanta_index_contract::continuation_fetch_size
+pub use quanta_index_contract::try_copy_string_into_with_native_birth_v1
 pub use quanta_index_contract::try_copy_string_with_native_birth_v1
 pub use quanta_index_contract::valid_code_search_component_query
 pub use quanta_index_contract::valid_code_search_typo_identifier

@@ -1154,6 +1154,7 @@ fn expect_remote_code(err: SdkError, expected: &str) -> TestResult {
         | SdkError::Transport(_)
         | SdkError::Remote { .. }
         | SdkError::Binding { .. }
+        | SdkError::ActivationAfterPublish { .. }
         | SdkError::PlaneUnavailable { .. }) => {
             Err(format!("expected remote code {expected}, got {other:?}").into())
         }
