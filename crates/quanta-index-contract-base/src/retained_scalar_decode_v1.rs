@@ -5,6 +5,11 @@ use serde::{
     de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor},
 };
 
+#[cfg(feature = "quanta-native-identity-v1")]
+mod native_decode_v1;
+#[cfg(feature = "quanta-native-identity-v1")]
+pub use native_decode_v1::{NativeRetainedScalarDecodeDataV1, NativeRetainedScalarLeafV1};
+
 pub(crate) struct ScalarDataV1<T> {
     pub(crate) output: Option<T>,
     pub(crate) refused_string: Option<String>,

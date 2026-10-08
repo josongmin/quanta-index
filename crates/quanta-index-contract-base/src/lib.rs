@@ -70,6 +70,9 @@ pub use activation_token::{
     NativeActivationTokenDecodeDataV1,
 };
 
+#[cfg(feature = "quanta-native-identity-v1")]
+pub use retained_scalar_decode_v1::{NativeRetainedScalarDecodeDataV1, NativeRetainedScalarLeafV1};
+
 // Consumers implement admission against this exact producer dependency;
 // they must not select a second package instance to name its policy types.
 #[cfg(feature = "quanta-native-identity-v1")]

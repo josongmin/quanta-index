@@ -190,7 +190,63 @@ default-features **401 PASS**다. 두 contract crate의 all-targets/all-features
 이 결과는 앞선 430/401 결과에 합산하지 않으며 Native 공개 API는 feature compile/test로
 검사했다. default public-api snapshot에는 이 feature 전용 메서드가 포함되지 않는다.
 
+### Closed scalar leaf의 retained unit decode 공개 — 2026-10-09
+
+`8c0d7726` 이후의 별도 producer delta다. 같은 private `ScalarDataV1<T>`와
+`decode_scalar_into_v1`/RetainedDeserializer/Visitor를 그대로 호출하는
+`NativeRetainedScalarDecodeDataV1<T>`를 contract-base root에서 공개했다.
+`NativeRetainedScalarLeafV1`은 sealed trait이며 현재 허용 타입은 정확히
+`u32`, `u64`, `[u8;32]`다. 임의 `Copy + Deserialize` 타입, nested Copy tuple,
+borrowed output은 받지 않는다. private retained String/bytes Option은 두 번째
+owned 입력으로 덮어쓸 수 있으므로 일반적인 recursive custody API로 공개하지 않았다.
+numeric visitor는 첫 wrong owned string/bytes에서 종료하며, byte array도 같은
+u8 visitor가 첫 잘못된 element에서 종료한다. native 입력 deserializer는
+self-describing `deserialize_any`를 제공하고 입력 tree의 남은 backing은 부모가 보존한다.
+
+정확한 호출 ABI:
+
+```rust
+let mut data = NativeRetainedScalarDecodeDataV1::<u64>::new_v1();
+let mut full_error = None;
+data.try_decode_into_v1(deserializer, &mut full_error)?; // finite DATA status
+data.complete_into_slot_v1(&mut parent_output)?;       // pure transfer
+// Alternatively: data.native_decode_seed_v1(), DeserializeSeed<Value = ()>.
+```
+
+`try_decode_into_v1`은 완전한 non-Copy `D::Error`를 별도 외부 slot에 먼저 이동한다.
+used DATA/occupied error는 decoder를 poll하지 않고 기존 원본을 보존한다.
+`retained_string_v1`/`retained_bytes_v1`은 실제 parked backing의 read-only borrow다.
+직접 unit seed를 쓰는 부모도 반환된 full error를 highest Source finisher 이전에 보존해야 한다.
+동적 error 정책은 입력 `D::Error`의 `serde::de::Error` 구현에 속한다. 기존 scalar
+predicate/visitor의 invalid type/value/length를 새 parser나 diagnostic String으로
+대체하지 않는다. leaf DATA는 control/work/funding issuer가 아니며 부모의 기존
+wire walk/work admission과 실제 입력 funding을 대신하지 않는다.
+
+Semantica `quanta-contract-kernel/src/ids/snapshot_id.rs`의 현행 SnapshotId
+Deserialize는 `Ok(Self(u64::deserialize(deserializer)?))`다. 수신부는 이 동일한
+u64 leaf를 decode하고 성공 후 기존 `SnapshotId::new`로 감쌀 수 있다. 이 API가
+arbitrary external SnapshotId 타입을 직접 decode하거나 별도 snapshot validator를
+제공한다고 주장하지 않는다. Semantica receiver 변경과 Original Source 검증은 별도다.
+
+새 회귀는 integer boundary/overflow, owned string/bytes의 동일 pointer, byte array의
+첫 오류 후 두 번째 owned 입력 no-poll, 기존 u8/length 오류, exact Box full cause,
+occupied/used DATA 및 pure output move를 검사한다. borrowed/nested 타입 거부는
+compile-fail doctest로 검사한다. 기존 433/401 및 SDK 167/176 결과에 합산하지 않는다.
+
+이번 delta의 별도 실행: 두 contract crate의 all-features **439 PASS**와 doctest
+**3 PASS**(compile-fail 2개 포함), default **401 PASS**다.
+`./scripts/cargow --lane test-canonical-identity-lane test -p quanta-index-contract-base -p quanta-index-contract [--all-features] --locked --quiet`
+및 동일 package/lane의 `clippy --all-targets --all-features --locked -- -D warnings`를
+실행했다. Clippy, scoped fmt, hexagonal 및 diff check는 **VERIFIED**다.
+private scalar decoder/visitor 전체 body는 `8c0d7726`와 동일함을 확인했다.
+Native receiver/actual Source, 설치 E2E, remote CI는 **NOT_RUN**이며 이 로컬 결과로
+수용 완료나 main 통합 승인을 주장하지 않는다.
+
 ### SDK connect native 경계의 추가 대조 — 2026-10-09
+
+아래는 transport-owner/native producer 구현 전의 역사적 source 대조다.
+후속 구현 후보 `c2820b16`과 `a645aa9e`, 현재 exact ABI 및 receiver 잔여 경계는
+[SDK ingress ADR](../../../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md#native-connect-producer-and-open-receiver-co-cut)에 기록했다.
 
 **정적 대조 완료, 새 connect producer/receiver ABI와 Native 실행은 `NOT_RUN`.**
 `ConnectOptions::from_state_root` (`sdk/src/config.rs:56`)는 state-root PathBuf 하나를
