@@ -278,6 +278,11 @@ fn validate_native_identity_into_v1<P: unicode_normalization::NativeNormalizatio
     data: &mut unicode_normalization::NativeNormalizationDataV1<P::Error>,
     admission: &mut P,
 ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>> {
+    if !data.is_fresh_v1() {
+        return Err(NativeIdentityConstructionErrorV1::Normalization(
+            unicode_normalization::NativeNormalizationErrorV1::InvalidNativeProducer,
+        ));
+    }
     match validate_identity_with_policy_v1(
         value,
         &mut NativeIdentityValidationV1 { admission, data },
@@ -546,6 +551,32 @@ macro_rules! validated_identity {
                 P: unicode_normalization::NativeNormalizationAdmissionV1,
             {
                 validate_native_identity_v1(value, normalization_admission)
+            }
+
+            /// Validate borrowed bytes with the SAME predicate/NFC producer,
+            /// retaining all actual NFC scratch in the caller's external DATA.
+            /// No identity String, typed identity, or authority is constructed.
+            ///
+            /// Retain DATA and the returned full non-Copy failure through the
+            /// highest Source finisher, then drop DATA before its actual funding
+            /// bank. This function never releases normalization grants. Used or
+            /// retired normalization DATA rejects before any input/admission
+            /// polling and preserves the original result and backing.
+            ///
+            /// Predicate or work refusal before NFC leaves normalization DATA
+            /// fresh because no normalization attempt began. The enclosing
+            /// validation owner must retain that full error and its own attempt
+            /// state; normalization DATA is not a whole-validation retry guard.
+            #[cfg(feature = "quanta-native-identity-v1")]
+            pub fn validate_str_into_with_native_admission_v1<P>(
+                value: &str,
+                normalization_data: &mut unicode_normalization::NativeNormalizationDataV1<P::Error>,
+                normalization_admission: &mut P,
+            ) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>>
+            where
+                P: unicode_normalization::NativeNormalizationAdmissionV1,
+            {
+                validate_native_identity_into_v1(value, normalization_data, normalization_admission)
             }
 
             /// Copy exact private canonical bytes into caller-owned slots
@@ -1141,6 +1172,103 @@ mod native_raw_identity_tests_v1 {
             );
             assert_eq!(admission.births, expected_births);
             assert_eq!(admission.releases, 2);
+        }
+    }
+
+    #[test]
+    fn borrowed_validation_into_data_preserves_canonical_predicate_order_v1() {
+        let too_long_control = format!("\n{}", "x".repeat(512));
+        for (source, expected) in [
+            ("", IdentityValidationErrorV1::Empty),
+            (
+                too_long_control.as_str(),
+                IdentityValidationErrorV1::TooLong,
+            ),
+            ("\n", IdentityValidationErrorV1::ControlCharacter),
+            ("e\u{301}", IdentityValidationErrorV1::NonCanonical),
+        ] {
+            for revision in [false, true] {
+                let mut data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+                let mut admission = Admission::default();
+                let result = if revision {
+                    RevisionId::validate_str_into_with_native_admission_v1(
+                        source,
+                        &mut data,
+                        &mut admission,
+                    )
+                } else {
+                    RepoId::validate_str_into_with_native_admission_v1(
+                        source,
+                        &mut data,
+                        &mut admission,
+                    )
+                };
+                assert!(
+                    matches!(result, Err(NativeIdentityConstructionErrorV1::Validation(cause)) if cause == expected)
+                );
+                assert_eq!(RepoId::new(source), Err(expected));
+                assert_eq!(admission.releases, 0);
+                if expected != IdentityValidationErrorV1::NonCanonical {
+                    assert_eq!(admission.births, 0);
+                    assert!(
+                        data.is_fresh_v1(),
+                        "raw predicate refusal did not start NFC"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn borrowed_validation_into_data_rejects_used_and_retired_scratch_without_poll_v1() {
+        let source = format!("q{}", "\u{301}".repeat(20));
+        for revision in [false, true] {
+            let mut data = unicode_normalization::NativeNormalizationDataV1::new_v1();
+            let mut admission = Admission::default();
+            let first = if revision {
+                RevisionId::validate_str_into_with_native_admission_v1(
+                    &source,
+                    &mut data,
+                    &mut admission,
+                )
+            } else {
+                RepoId::validate_str_into_with_native_admission_v1(
+                    &source,
+                    &mut data,
+                    &mut admission,
+                )
+            };
+            assert!(first.is_ok());
+            assert!(admission.births >= 2);
+            assert_eq!(admission.releases, 0);
+            let work = admission.work;
+            let births = admission.births;
+            for retired in [false, true] {
+                if retired {
+                    data.release_scratch_v1(&mut admission);
+                }
+                // Even an empty input cannot bypass the freshness check or
+                // replace the first successful NFC result with a raw error.
+                let retry = RepoId::validate_str_into_with_native_admission_v1(
+                    "",
+                    &mut data,
+                    &mut admission,
+                );
+                assert!(matches!(
+                    retry,
+                    Err(NativeIdentityConstructionErrorV1::Normalization(
+                        NativeNormalizationErrorV1::InvalidNativeProducer
+                    ))
+                ));
+                assert_eq!(
+                    data.result_v1(),
+                    Some(Ok(
+                        unicode_normalization::NativeNormalizationOutcomeV1::IsNfc(true)
+                    ))
+                );
+                assert_eq!(admission.work, work);
+                assert_eq!(admission.births, births);
+            }
         }
     }
 

@@ -24,6 +24,60 @@ struct Normalizer<'a> {
     funding: &'a mut Funding,
     late: Option<Box<u8>>,
 }
+
+#[test]
+fn borrowed_scope_validation_retains_full_cause_and_funding_outside_loan() {
+    struct ScopeData {
+        normalization: quanta_index_contract_base::NativeNormalizationDataV1<Box<u8>>,
+        result: Option<Result<(), NativeIdentityConstructionErrorV1<Box<u8>>>>,
+        funding: Funding,
+    }
+    for refused in [false, true] {
+        let alive = Rc::new(Cell::new(0));
+        let mut data = ScopeData {
+            normalization: quanta_index_contract_base::NativeNormalizationDataV1::new_v1(),
+            result: None,
+            funding: Funding {
+                grants: [None, None, None],
+                alive: Rc::clone(&alive),
+            },
+        };
+        let cause = Box::new(47);
+        let pointer = std::ptr::from_ref(cause.as_ref());
+        let source = format!("q{}", "\u{301}".repeat(20));
+        {
+            let mut normalizer = Normalizer {
+                funding: &mut data.funding,
+                late: refused.then_some(cause),
+            };
+            data.result = Some(RevisionId::validate_str_into_with_native_admission_v1(
+                &source,
+                &mut data.normalization,
+                &mut normalizer,
+            ));
+        }
+        // The transient policy is gone; actual native scratch and its actual
+        // grant objects remain in external DATA for the parent's finisher.
+        assert!(alive.get() > 0);
+        assert!(!data.normalization.is_fresh_v1());
+        if refused {
+            assert!(
+                matches!(data.result.as_ref(), Some(Err(NativeIdentityConstructionErrorV1::Normalization(
+                quanta_index_contract_base::NativeNormalizationErrorV1::Admission(cause)
+            ))) if std::ptr::from_ref(cause.as_ref()) == pointer && **cause == 47)
+            );
+            assert!(
+                data.normalization.result_v1().is_none(),
+                "full error moved to the parent's external result"
+            );
+        } else {
+            assert!(matches!(data.result, Some(Ok(()))));
+        }
+        assert!(alive.get() > 0);
+        drop(data);
+        assert_eq!(alive.get(), 0);
+    }
+}
 impl NativeNormalizationAdmissionV1 for Normalizer<'_> {
     type Error = Box<u8>;
     fn checkpoint_work_v1(&mut self, _: u64) -> Result<(), Self::Error> {

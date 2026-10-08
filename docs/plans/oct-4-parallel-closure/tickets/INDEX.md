@@ -159,6 +159,37 @@ cycle가 생기는 경계이며, storage/transport/service port는 추가하지 
 확인했다. 이 테스트는 Semantica actual Source,
 collection admission, daemon E2E, remote CI 또는 paired publication proof를 대신하지 않는다.
 
+### Borrowed scope validation의 외부 NFC DATA 확장 — 2026-10-09
+
+`2bf2353d` corpus candidate 이후 발견한 별도 producer delta다. RepoId와 RevisionId에
+`validate_str_into_with_native_admission_v1(value, &mut NativeNormalizationDataV1<E>, &mut P)`를
+공개했다. 반환형은 `Result<(), NativeIdentityConstructionErrorV1<E>>`이고 full non-Copy E를
+그대로 이동한다. 기존 `validate_native_identity_into_v1`/동일 predicate/NFC producer만
+호출하며 identity String/typed identity를 만들거나 normalize/revalidate하지 않는다.
+이 경로는 scratch/grant를 해제하지 않는다. 부모가 full result와 실제 DATA/funding bank를
+highest Source finisher까지 보유하고 DATA를 bank보다 먼저 drop해야 한다.
+
+같은 private validator에 freshness guard를 먼저 두었다. 이미 시도/retire된 normalization
+DATA는 raw predicate나 admission을 poll하기 전에 거절하며 원래 결과·backing을 보존한다.
+**NFC 이전 raw predicate/work 거절에서는 normalization DATA가 fresh로 남는다.**
+이 타입은 normalization attempt storage이며 전체 scope validation retry guard가 아니다.
+Semantica 부모는 별도의 scope attempt 상태와 complete returned error를 보존해야 한다.
+이를 새 normalizer/issuer나 vendor DATA state 확장으로 대체하지 않았다.
+
+새 oracle은 양 ID의 기존 error order, 실제 long NFC scratch의 success/retire/reuse no-poll,
+late normalization refusal의 동일 Box 원본 주소 및 transient policy 종료 후 실제 funding
+객체의 생존이다. 기존 `2bf2353d`의 430/401 결과와 새 delta 실행 결과는 별도로 기록한다.
+Semantica Scope/recursive receiver 채택과 Original Source 수용은 계속 `NOT_RUN`이다.
+
+이번 delta의 별도 로컬 실행 결과는 all-features **433 PASS**(새 회귀 3개 포함),
+default-features **401 PASS**다. 두 contract crate의 all-targets/all-features Clippy
+`-D warnings`, scoped fmt, default public-api, hexagonal 및 diff check는 **VERIFIED**다.
+실행 명령은 앞 절과 같은 `./scripts/cargow --lane test-canonical-identity-lane`
+`test -p quanta-index-contract-base -p quanta-index-contract [--all-features] --locked --quiet`와
+동일 package의 `clippy --all-targets --all-features --locked -- -D warnings`다.
+이 결과는 앞선 430/401 결과에 합산하지 않으며 Native 공개 API는 feature compile/test로
+검사했다. default public-api snapshot에는 이 feature 전용 메서드가 포함되지 않는다.
+
 ### SDK connect native 경계의 추가 대조 — 2026-10-09
 
 **정적 대조 완료, 새 connect producer/receiver ABI와 Native 실행은 `NOT_RUN`.**
