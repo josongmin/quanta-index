@@ -507,6 +507,26 @@ matching-source contract/SDK receipts and fresh product capture remain required;
 old native records cannot be rebound to the newly issued suite. SQLAlchemy and
 Tailscale keep their incomplete judgment scopes separately.
 
+An input-dependency recheck at Quanta `6686c0d3` separately validated the existing
+Zellij local-use AI license against the new NL suite and the original 422-file
+corpus manifest (`cf5303ed123ba60f2087a5d71765956222389ba11aeb67d4e155a28992724a30`).
+Repository commit, full universe and all 20 source-split families match. This is
+retained authorization for local source-bound ingestion/search/internal metrics;
+it supplies no human, redistribution or final qualification claim.
+
+The old model-binding receipt points to an absent `/private/tmp/qi-c5-pair-cache-0bca6def-20261004-v3/cache/5/hf`.
+Current `semble.resolve_model_revision` correctly refused that path. The retained
+Gin20 capture still contains the exact `minishlab/potion-code-16M-v2` revision
+`e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b` and asset digest
+`ea909b7defe7804ce18bf003ef60a437b54782541819ab6b7004c36fd9eea5d0`.
+Canonical `materialize_model_cache` restored all 6 members/33,521,569 bytes to the
+fresh disjoint `/private/tmp/qi-c3-model-recovery-_9m96xlc/hf`; current resolution
+reproduces the original revision/digest. Its manifest, original capture/model
+receipt and adapter source hashes are under the recovery root. Original receipts
+were preserved. Final-source Contract/SDK receipts, host/cache/lockfile bindings
+and new-suite admission/capture remain incomplete; recovering model bytes does
+not issue those claims.
+
 ## ARB current policy and official file scoring
 
 The frozen88-case official population has three separately prepared arms under

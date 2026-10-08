@@ -29,6 +29,20 @@ SDK lifecycle/cache 및 hosted checkpoint의 source·명령·범위는 아래 AD
 Staged upload, EOF cancellation, checked memory/deadline, scanner custody와 P11 공통
 producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비용·반례 또는 target 계약으로 결정한다.
 
+### 구조적 수리 우선순위
+
+| 순서·경계 | 확인된 원인 또는 입력 상태 | 처리·수용 조건 |
+| --- | --- | --- |
+| P0 · SDK publish recovery | Publish 성공 후 activation/CAS 실패에서 검증된 receipt가 오류 경로에서 소실된다 | `프로필, 설정` 채팅이 SDK와 Semantica 분류/caller를 같은 묶음으로 수리 중. Published/activation-unknown 상태를 보존하고 무조건 재시도하지 않으며, 단위·daemon 실패 경로와 public API 영향 검증 후 통합 |
+| P1 · E4-01 publication planning | 같은 publish 요청에서 `plan_ops`를 반복 계산한다. Coverage는 공유 트리여서 전체 데이터 복제로 계산하지 않는다. 부모/새 세대 full loader와 current-byte 인증 비용은 별도 존재한다 | `Quanta Scale · Large/XL 용량 검증 (2)` 채팅이 RCA/수리 소유. 요청 단위 typed plan/owner로 중복을 통합하고 cold open/scrub와 publication 책임을 구분. 기존 unchanged-file tamper-before-update 계약을 캐시 성공값으로 우회하지 않음 |
+| P1 · I0-03 R5 caller | Frozen producer의 parser retained-projection type/export 및 `first_refusal_v1` 계약이 컴파일되지 않는다. Actual 56 diagnostics/exit101 | 완전한 producer 수리와 clean source가 선행. Consumer feature 제거·오류 무시로 통과시키지 않으며 같은 pair의 caller list/run/restart를 재개. Kernel1/1 성공은 별도 |
+| P1 · E1-01/03 review → admission | SQLAlchemy/Tailscale 판단은 unresolved/invalid source line으로 실제 실패. Zellij20은 판단 완료이며 기존 source license/split이 맞는다. 옛 model-cache 경로는 부재하지만 동일 assets는 별도 retained capture에서 복구 가능하다 | 최종 판단과 source-bound 검증을 유지. Zellij license/split/model 입력 재검증은 아래 ADR로 이관하고, 최종 source의 Contract/SDK·host/cache/lockfile·새 suite admission/capture를 연결. 오래된 receipt의 source/hash를 변경하지 않음 |
+| 외부 입력 · holdout/operations/performance | 독립 gold/acceptance, OSA24 원 corpus, 설치 대상·observer/rollback, qualified host가 없다 | 각 입력이 존재하는 scope만 재개. Proposed SDK/policy나 fixture를 실제 target/qualification의 대체물로 추가 구현하지 않음 |
+
+두 코드 수리 경계는 병렬이며 shared Cargo/schema/CI 및 무거운 build/native 실행은 직렬 통합한다.
+Source-bound admission은 수리된 최종 SDK/producer proof 이후에 발행한다. 미완료 판단과 target 입력은
+코드 결함과 구분하며, 완료된 ARB/B09/XL을 반복 실행해 이 선행 조건을 대체하지 않는다.
+
 ### 코드·테스트 대조 결과
 
 아래는 현재 구현/테스트 범위와 실제 잔여의 구분이다. 테스트 소스가 있다는 사실은
@@ -181,7 +195,11 @@ historical replay를 발행하지 않는다. 현재 union의 review는 준비된
 
 `NOT_RUN` · ready9 후속 final-source 및 SQLAlchemy/Zellij/Tailscale admission ISSUE.
 Zellij canonical AI labels/NL suite20tasks는 발행됐고 retained split의 commit/universe/20families와 일치한다.
-새 suite에 결속된 full admission·license/model·matching contract/SDK bindings가 없어 actual native는 `BLOCKED`다.
+기존 local-source license의422files와 새 suite/corpus/split 결속은 재검증됐다. 옛 HF cache 경로 부재는
+동일 revision/asset의 retained Gin20 cache에서 fresh external root로 복구했다. 이 입력 복구는
+[C3 ADR](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md#selected-c3-ai-review-and-issuance)이 소유한다.
+새 suite의 full admission·matching final-source Contract/SDK 및 host/cache/lockfile bindings가
+미완료여서 admitted native는 `BLOCKED`다. 새 판단이나 license 재승인을 임의로 생성하지 않는다.
 SQLAlchemy/Tailscale의 미완료 판단은 [E1-01](#o4-e1-01)이 한 번만 소유한다.
 5796 재발행 packet의 임시 경로는 부재해 원본 replay는 `BLOCKED`다. Bat409 merged qrels/suite/pack,
 각 repo source/runtime·split/license/review·matching proof를 동일 bytes로 검증한다.
