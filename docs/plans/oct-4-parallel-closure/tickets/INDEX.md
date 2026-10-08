@@ -41,8 +41,8 @@ producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비
 | --- | --- |
 | Quanta local main | `433a9363`: consumer backport `c75668c7`, 독립 tooling `23b5659f`, preparation `433a9363` 통합. 기존 `ActivationAfterPublish` 유지 |
 | Quanta `codex/sdk-preparation-final` | base `09387a9a`, code checkpoint `0dd6ce81`(38경로): canonicalization/budget/양-stage CLI 회귀 포함. Breaking publication/contract/consumer/API는 여기에 보존 |
-| Semantica `codex/semantic-publication-v5` | HEAD `1193ea8024e`: 기존 `6f5dc8fc13f` + transition/baseline/feature 회귀3파일 커밋. Owned27 inventory; foreign parser/native dirty는 feature가 아님 |
-| 최신 canonical Semantica pair | `/Users/songmin/.codex/worktrees/sdk-canonical-final/semantica-sdk`: main `3b8f86dd9ea` + 시점 고정한 현재 dirty3,976경로 + owned25 Rust + 현재 lock에 SDK2edges 결합. Sibling Quanta는 위 후보, QGLang은 clean `9a9212da9526d50f9b264d7ee34dbe4cd0b03fd9` |
+| Semantica `codex/semantic-publication-v5` | HEAD `6c3922fb219`: 회귀3파일 `1193ea8024e` + manifest fixture1파일 수리. Owned28 inventory; foreign parser/native dirty는 feature가 아님 |
+| 최신 canonical Semantica pair | `/Users/songmin/.codex/worktrees/sdk-canonical-final/semantica-sdk`: main `3b8f86dd9ea` + 시점 고정한 dirty3,976경로 + owned25 Rust·추가 fixture1·격리 import 수리2 + 현재 lock의 SDK2edges. Sibling Quanta는 아래 physical snapshot, QGLang은 clean `9a9212da9526d50f9b264d7ee34dbe4cd0b03fd9` |
 | Semantica shared main | 다른 owner가 진행 중. 이 작업의 production 변경은 아직 미적용. Kernel4 경로 claim은 검증 중 확보 후 미적용 상태로 해제. 재통합 시 lock·겹치는 test owner 조정과 claim 재획득 필요 |
 
 Canonical capture는 path 집합과 실제 bytes를 두 번 대조해 고정했다. Capture digest는
@@ -61,6 +61,7 @@ per-run 입력은 checkout 밖 `/tmp/sem-sdk-canonical-final-capture.json`에만
 | D · publication25경로/shared hunk + Sem kernel4 | **보존; 실제 aggregate caller acceptance 후 결합** | `AfterPublish`/explicit API/committed receipt·CLI/benchmark/SDK/runtime/API를 함께 반영. Kernel28만으로 수용하지 않음. 현재 main의 새 consumer regression은 새 enum 양 stage로 전환해 유지 |
 | E · V5 contract5 + Runtime15 | **20 Rust 전체 보존; 별도 수용** | writer/reader/snapshot/issuer/aggregate/cleanup/test 단일 계약. V4 전환·feature·Runtime·durable6·process2 필요 |
 | F · native test1 | **독립 보존** | `native_corpus_policy_tests_v3.rs`의 import/visibility만. 선택된 lib(test)에 필요하면 별도 선행 반영 |
+| F2 · manifest fixture1 | **후보 수리·검증 완료 `6c3922fb219`** | `indexing_tests/commit_and_lane_status.rs`. 선언된 정확한 Risk slot 재사용; duplicate-lane 첫 거부 assertion 유지. Artifact 선택298passed |
 | Sem lock2·foreign source | **옛 snapshot 복사 금지** | 현재 root/nested lock의 다른 dependency edge를 유지하며 SDK `ciborium`/`sha2`만 결합. Foreign dirty3,976경로는 소유 feature commit에 포함 금지 |
 | 추가 플랫폼 설계 | **범위 제외** | daemon plugin registry·새 wire IR·native media engine·SDK durable store·V4/V5 병렬 내부 IR 필요 없음 |
 
@@ -95,7 +96,9 @@ per-run 입력은 checkout 밖 `/tmp/sem-sdk-canonical-final-capture.json`에만
 - **독립 Python4파일:** `uv run --frozen --extra dev python -m pytest
   tools/ci/tests/test_run_local_test_scope.py tools/ci/tests/test_proof_operational_result.py
   -q -o cache_dir=/tmp/qi-final-integration-pytest`:75passed와 Ruff clean, `VERIFIED`.
-- **미수행:** 이번 main의 remote CI/push·installed Linux·scale/performance는 `NOT_RUN`.
+- **게시 경계:** 이번 작업에서 push 명령은 실행하지 않았다. 후속 `git ls-remote origin refs/heads/main`에서
+  원격 main `433a9363ed7ce52cd60a7c33842e9a391a815481`과 코드3커밋의 존재를 직접 확인했다.
+  최신 문서 커밋은 로컬이다. Remote CI·installed Linux·scale/performance는 `NOT_RUN`.
   실제 host/destination/backup/observer 입력이 필요한 운영 수용은 계속 `BLOCKED`.
 
 #### 현재 pair 실행과 남은 수용
@@ -127,7 +130,11 @@ finished receipt는 QBC `sdk-publish-recovery/verification-results/20261008T1033
 Artifact 계약은 별도 owning execution으로 분리했다. `prepared_commit_receipt`9/9는
 GREEN이다. 넓힌 `indexing::indexing_tests` 선택은297passed/1failed/415filtered, QBC RED였다.
 `commit_and_lane_status.rs:143`의 baseline 자체가 RiskIndexDoc lane-local coverage가 manifest에
-없다는 이유로 거부됐다. 이 넓은 선택을 통과로 처리하지 않았으며 원인 귀속은 별도다.
+없다는 이유로 거부됐다. 서로 다른 `reason`을 가진 helper slot이 원인이었다. Manifest의 정확한
+Risk slot을 재사용하는7줄 fixture 수리 후 같은 선택은298passed/0failed/415filtered,
+QBC GREEN 및 hash-bound publication-complete로 종료했다. Duplicate-lane 첫 거부 assertion은
+유지했다. 최종 source digest는 `da114db9d664f3509e981e24af4cd5da02923bfddb8530602cc0befc26804616`,
+run ID는 `20261008T105556.316087Z-472850948704`다. 이전 RED를 덮어쓰지 않았다.
 새 V4 baseline 거부 회귀는 exact selector로1passed/712filtered, QBC GREEN 및
 publication-complete를 확인했다. Exact V5 snapshot-byte/digest/closed-serde 회귀도
 1passed/712filtered, QBC GREEN 및 publication-complete가 receipt SHA에 결속됨을 확인했다.
@@ -144,8 +151,8 @@ BuildContext output의 checked read/copy와 current/output authority를 도달 c
 
 **다음 수용 조건:**
 
-- 넓은 artifact 계약 선택의 manifest-lane baseline 실패를 독립 owner가 분류·수리하고
-  같은 선택을 재실행한다. 새 V4/V5 exact 성공을 이 실패의 해소로 처리하지 않는다.
+- Artifact 계약의 fixture 실패는 위298passed로 종료했다. Runtime compile과 process acceptance는
+  이 계약 결과와 별도이며 계속 미완료다.
 
 1. Canonical BuildContext output-owner closure를 수리한 뒤 Runtime
    `shadow_delta_orchestration`, durable6, ignored process2를 같은 canonical pair에서
@@ -287,12 +294,13 @@ tools/ci/tests/test_proof_operational_result.py
 tools/ci/tests/test_run_local_test_scope.py
 ```
 
-**Semantica27:**
+**Semantica28 (기존27 + 독립 manifest fixture1):**
 
 ```text
 Cargo.lock
 packages/analysis/quanta-v2/Cargo.lock
 quanta-contract-retrieval/src/indexing_tests/prepared_commit_receipt.rs
+quanta-contract-retrieval/src/indexing_tests/commit_and_lane_status.rs
 quanta-contract-retrieval/src/indexing_tests/prepared_commit_receipt/handoff_cleanup_fixtures_v3.rs
 quanta-contract-retrieval/src/indexing_writer_ports/admitted_decode_v3/native_corpus_policy_tests_v3.rs
 quanta-contract-retrieval/src/indexing_writer_ports/part_2.rs

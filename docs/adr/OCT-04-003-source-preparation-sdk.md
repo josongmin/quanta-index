@@ -258,8 +258,11 @@ limits; emitted text is not an allocator or RSS limit.
 The fresh main daemon SHA-256 was
 `1005ff0b3034dd881c3d89875573d382530105db5e6ffb741b20101acca0fbdd`.
 The process command consumed the actual compiler artifact. No prior candidate
-binary was substituted. Remote CI, push, installed-host and scale qualification
-are `NOT_RUN` for this integration.
+binary was substituted. This task did not execute a push. A subsequent
+`git ls-remote origin refs/heads/main` confirmed remote main at
+`433a9363ed7ce52cd60a7c33842e9a391a815481`, including the three integrated code
+commits; the latest documentation remains local. Remote CI, installed-host and
+scale qualification are `NOT_RUN` for this integration.
 
 ### Historical full-candidate selection
 
@@ -389,7 +392,13 @@ main is untouched. Thus D/E integration remains held, with durable/process
 passed 9 tests; exact V4 baseline refusal and V5 snapshot/digest binding each
 passed 1, with finished GREEN and hash-bound publication-complete markers. A wider artifact selection
 failed (297 passed, 1 failed) at the manifest-lane fixture baseline coverage check
-(`commit_and_lane_status.rs:143`); it is not a green contract-suite result.
+(`commit_and_lane_status.rs:143`). The fixture used a helper slot with a different
+reason from the manifest's exact Risk slot. Reusing the declared slot preserves
+all duplicate-lane refusal assertions. After that seven-line fixture repair,
+the same selection passed 298 tests (415 filtered), with finished GREEN and a
+hash-bound publication-complete marker. This does not qualify Runtime or process
+behavior. The independent repair is saved as `6c3922fb219`; the preserved
+Semantica inventory is now 28 paths.
 
 ### Preserved candidate and historical dependency attempts
 
