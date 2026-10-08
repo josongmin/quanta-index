@@ -1210,6 +1210,9 @@ pub fn quanta_index_sdk::QuantaIndex::structural(&self) -> quanta_index_sdk::Str
 pub fn quanta_index_sdk::QuantaIndex::symbol(&self) -> quanta_index_sdk::SymbolNamespace<'_>
 impl core::clone::Clone for quanta_index_sdk::QuantaIndex
 pub fn quanta_index_sdk::QuantaIndex::clone(&self) -> quanta_index_sdk::QuantaIndex
+impl core::ops::deref::Deref for quanta_index_sdk::QuantaIndex
+pub type quanta_index_sdk::QuantaIndex::Target = quanta_index_sdk::QuantaIndexClientPayloadV1
+pub fn quanta_index_sdk::QuantaIndex::deref(&self) -> &Self::Target
 impl core::marker::Freeze for quanta_index_sdk::QuantaIndex
 impl core::marker::Send for quanta_index_sdk::QuantaIndex
 impl core::marker::Sync for quanta_index_sdk::QuantaIndex

@@ -194,6 +194,11 @@ Owned and borrowed options use the SAME generic `ConnectOptions<P>` carrier,
 root/socket decisions, raw path producer, and I/O-policy validator. Ordinary
 and native construction call the SAME payload factory; all SDK namespaces and
 dispatch methods borrow that payload. There is no native RPC implementation.
+Ordinary `QuantaIndex` also implements `Deref<Target = QuantaIndexClientPayloadV1>`.
+A receiving ingress can therefore use the SAME typed client-owner bound for
+the ordinary client and Core's actual `NativeSharedValueV3` and return a borrowed
+payload from `client_ref`. This borrow neither retains a shared counter nor
+adopts the ordinary client's Arc as a Native allocation.
 The native port lends path/shared birth only during the synchronous producer
 call. Its receiver contract forbids Source, current-control, input references,
 or callbacks in retained DATA or funding.

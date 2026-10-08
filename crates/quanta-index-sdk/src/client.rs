@@ -144,6 +144,14 @@ pub struct QuantaIndex {
     inner: Arc<QuantaIndexClientPayloadV1>,
 }
 
+impl std::ops::Deref for QuantaIndex {
+    type Target = QuantaIndexClientPayloadV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 impl QuantaIndex {
     pub fn connect(options: ConnectOptions) -> Result<Self, SdkError> {
         let resolved = options.resolve()?;
