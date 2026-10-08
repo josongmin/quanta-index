@@ -33,8 +33,8 @@ producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비
 
 | 순서·경계 | 확인된 원인 또는 입력 상태 | 처리·수용 조건 |
 | --- | --- | --- |
-| P0 · SDK publish recovery | Publish 성공 후 activation/CAS 실패에서 검증된 receipt가 오류 경로에서 소실된다 | `프로필, 설정` 채팅이 SDK와 Semantica 분류/caller를 같은 묶음으로 수리 중. Published/activation-unknown 상태를 보존하고 무조건 재시도하지 않으며, 단위·daemon 실패 경로와 public API 영향 검증 후 통합 |
-| P1 · E4-01 publication planning | 같은 publish 요청에서 `plan_ops`를 반복 계산한다. Coverage는 공유 트리여서 전체 데이터 복제로 계산하지 않는다. 부모/새 세대 full loader와 current-byte 인증 비용은 별도 존재한다 | `Quanta Scale · Large/XL 용량 검증 (2)` 채팅이 RCA/수리 소유. 요청 단위 typed plan/owner로 중복을 통합하고 cold open/scrub와 publication 책임을 구분. 기존 unchanged-file tamper-before-update 계약을 캐시 성공값으로 우회하지 않음 |
+| P0 · SDK publish recovery | Publish 성공 후 activation/CAS 실패에서 검증된 receipt가 소실되고, Runtime outbox에는 문자열 오류만 남는다. Source-event replay는 제출한 target과 다른 원 publication을 반환할 수 있다 | `프로필, 설정` 채팅이 SDK 오류·원 publication binding·Runtime durable outbox를 같은 묶음으로 수리 중. Published/activation-unknown evidence를 SQLite에 보존하고 자동 재발행에서 제외하며, restart/migration·원 target replay·public API 영향 검증 후 통합. Runtime 전체 검증은 별도 producer parser 장애로 막힘 |
+| P1 · E4-01 publication validation | 중복 `plan_ops`는 main `4647097d`에서 요청 단위 typed plan으로 수리 완료. Cold publication 검증은 조회용 source/posting 자료구조를 만든 뒤 버린다. Coverage는 공유 트리이며 current-byte 인증 비용은 별도다 | `Quanta Scale · Large/XL 용량 검증 (2)` 채팅이 publication-only typed proof 수리 소유. Canonical 검증 순서·normalization/membership/admission·inventory/pinned identity와 기존 unchanged-file tamper-before-update 거부를 유지하면서 serving materialization 보관만 제거. Cold query open/scrub는 독립 full proof 유지 |
 | P1 · I0-03 R5 caller | Frozen producer의 parser retained-projection type/export 및 `first_refusal_v1` 계약이 컴파일되지 않는다. Actual 56 diagnostics/exit101 | 완전한 producer 수리와 clean source가 선행. Consumer feature 제거·오류 무시로 통과시키지 않으며 같은 pair의 caller list/run/restart를 재개. Kernel1/1 성공은 별도 |
 | P1 · E1-01/03 review → admission | SQLAlchemy/Tailscale 판단은 unresolved/invalid source line으로 실제 실패. Zellij20은 판단 완료이며 기존 source license/split이 맞는다. 옛 model-cache 경로는 부재하지만 동일 assets는 별도 retained capture에서 복구 가능하다 | 최종 판단과 source-bound 검증을 유지. Zellij license/split/model 입력 재검증은 아래 ADR로 이관하고, 최종 source의 Contract/SDK·host/cache/lockfile·새 suite admission/capture를 연결. 오래된 receipt의 source/hash를 변경하지 않음 |
 | 외부 입력 · holdout/operations/performance | 독립 gold/acceptance, OSA24 원 corpus, 설치 대상·observer/rollback, qualified host가 없다 | 각 입력이 존재하는 scope만 재개. Proposed SDK/policy나 fixture를 실제 target/qualification의 대체물로 추가 구현하지 않음 |
@@ -343,6 +343,12 @@ e227 matching XL32,768 실제 실행은352.747s exit0이며 canonical profile �
 변조 거부를 우회하지 않는다.
 Remaining: cold 전수 검증·metadata/custody 읽기·hash/fold, delete-mask O(max_doc), correction/
 NoMerge segment fanout, transient peak 및 foreground/maintenance CPU/read/write/fsync 분해.
+반복 file plan은 main `4647097d`에서 publication-owner metadata custody로 수리했다.
+현재 root/manifest bytes·operation/policy binding과 staged-source admission을 매번 확인하며
+writer가 실제 target의 plan을 한 번 소비한다. 최종 plan31/파일 변경36·strict Clippy는
+`VERIFIED`; library 직렬368passed/1ignored도 확인했다. 첫 병렬 실행의 writer-lock 실패는
+보존한다. 새 daemon 및 matching XL은 `NOT_RUN`이며 과거42.517s를 새 수리의 수치로 쓰지 않는다.
+완료와 publication-only materialization 잔여는 [계획 custody 경계](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#publication-plan-custody-and-remaining-structural-cost)가 소유한다.
 Causal producer의 source/binary와 independent markers를 결속한다. Seal retention gauge는 unique-inode
 regular-file st_size이며 restart gauge0·st_blocks·physical I/O/true peak와 구분한다.
 완료: 원인별 exclusive 비용·명시적 clock/resource domain·fresh rebuild score/page parity.
