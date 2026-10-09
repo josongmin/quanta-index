@@ -99,6 +99,45 @@ across products from this diagnostic smoke.
 
 ## Complete comparison is the default
 
+### Comparison admission and source-only identifier tasks
+
+Five-product natural-language captures retain native defaults: Quanta token OR
+and external keyword AND are unequal request semantics. Their
+`comparison_validity.status` is `BLOCKED`; they cannot issue a cross-product
+quality ranking. Do not repair this by choosing an OR/AND conversion after seeing
+scores. A matched-semantics experiment needs a separately frozen request contract.
+
+Native and external file scoring use the same complete-pool judgment exclusion.
+An unjudged returned file excludes that task under `complete_ranked_pool_v1`;
+it is never silently scored as irrelevant for one product. Every report retains
+requested, eligible and excluded populations. A partial common intersection
+cannot issue a full-population score. Mechanical source-oracle labels instead
+describe exhaustive matches within their explicit lexical domain.
+
+Prepare an engine-independent content-identifier diagnostic before any search:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.source_oracle_suite \
+  --repo /external/clean-repository --corpus-manifest /external/manifest.json \
+  --suite-id content-identifier-v1 --seed 20261010 \
+  --per-stratum 15 --negatives 10 --output-root /external/fresh-suite
+```
+
+The builder samples short/medium/long identifiers and single/multiple-file
+occurrence strata by seeded hash, excludes case collisions and near duplicates,
+retains underfilled strata, and derives complete file alternatives from source.
+It never reads engine results. Its negative probes require exhaustive default
+code-search absence. Use `code_search_file` and Semble `lexical-file` with the
+same suite/pack for all five products. This is native file relevance for ASCII
+content tokens, including tokens in comments and strings; it is not declaration
+conformance, natural-language relevance, or an independent unseen holdout.
+Keep negative-query empty rates separate from positive-query relevance.
+
+All-distinct-file results now declare equivalent result units; historical
+chunk-projected rows retain their separate units. Speed still has unlike native
+timing boundaries. Independent review/holdout, backend indexed scope and
+qualified performance require their own admission; this diagnostic grants none.
+
 When asked to run a code-search benchmark, run every applicable cell below. Do
 not stop after a Quanta--Semble pair or after rescoring recorded lexical rows.
 For each repository and mode query family, freeze the same commit,

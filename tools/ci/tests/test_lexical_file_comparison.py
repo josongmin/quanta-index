@@ -332,6 +332,63 @@ def test_external_oracle_rescore_keeps_capture_gold_and_uses_independent_multifi
         )
 
 
+@pytest.mark.parametrize("product", ["sourcegraph", "opengrok", "cs"])
+def test_external_unjudged_files_cannot_be_silently_scored_as_irrelevant(tmp_path, product):
+    expected = {"Q1": ("Needle", ["answer.go"])}
+    row = {
+        "lane": "symbol_only",
+        "task_id": "Q1",
+        "submitted_query": "Needle",
+        "gold_paths": ["answer.go"],
+        "file_hit_at_10": True,
+        "elapsed_ms": 1.0,
+    }
+    if product == "cs":
+        row.update(exit_code=0, paths=["unknown.go", "answer.go"])
+    else:
+        row.update(http_status=200, error=None, file_paths_top_10=["unknown.go", "answer.go"])
+        if product == "opengrok":
+            row["field"] = "full"
+    path = tmp_path / "rows.jsonl"
+    path.write_text(json.dumps(row) + "\n")
+    result = product_result(
+        product,
+        path,
+        expected,
+        {"answer.go", "unknown.go"},
+        file_judgments={"Q1": [{"path": "answer.go", "grade": 3}]},
+        judgment_policies={"Q1": "complete_ranked_pool_v1"},
+    )
+    assert result["per_query"][0]["eligible"] is False
+    assert result["per_query"][0]["reason"] == "unjudged_ranked_file"
+    assert result["file_hit_rate_at_10"] == "not_applicable"
+    assert result["file_recall_at_10"] == "not_applicable"
+    assert result["file_ndcg_at_10"] == "not_applicable"
+    assert result["judgment_coverage"]["eligible_answerable"] == 0
+
+
+def test_natural_language_native_defaults_cannot_issue_comparable_quality():
+    from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
+
+    products = {
+        name: {"rank_unit": "distinct_file", "per_query": [{"task_id": "Q1", "eligible": True}]}
+        for name in ("quanta_lexical", "semble_lexical_file", "sourcegraph", "opengrok", "cs")
+    }
+    result = comparison_validity({"Q1"}, {"Q1"}, products, "natural_language_file")
+    assert result["status"] == "BLOCKED"
+    assert "unequal_natural_language_query_semantics" in result["reasons"]
+    assert result["quality_ranking_permitted"] is False
+
+
+def test_partial_judgment_intersection_cannot_be_a_full_population_score():
+    from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
+
+    result = comparison_validity({"Q1", "Q2"}, {"Q1"}, {}, "code_search_file")
+    assert result["status"] == "BLOCKED"
+    assert "incomplete_common_judgments_or_capabilities" in result["reasons"]
+    assert result["coverage_fraction"] == 0.5
+
+
 def test_external_oracle_rescore_rejects_partial_or_off_view_judgments(tmp_path):
     expected = {"S01": ("Needle", ["src/original.go"])}
     path = tmp_path / "rows.jsonl"
@@ -580,6 +637,7 @@ def test_product_result_separates_answerable_recall_and_no_gold_empty_rate(tmp_p
     assert result["no_gold_empty_rate_at_10"] == 1.0
     assert next(row for row in result["per_query"] if row["task_id"] == "negative") == {
         "task_id": "negative",
+        "eligible": True,
         "file_hit_at_10": "not_applicable",
         "file_recall_at_10": "not_applicable",
         "no_gold_empty_at_10": True,

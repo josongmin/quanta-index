@@ -15,6 +15,34 @@ from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import source_oracle_suite
 
 
+def test_identifier_word_sampling_is_source_only_and_keeps_complete_alternatives(tmp_path):
+    files = {
+        "a.go": b"package fixture\n// UniqueIdentifierAlpha SharedIdentifierOmega tiny\n",
+        "b.go": b"package fixture\n// SharedIdentifierOmega peer\n",
+    }
+    repo, commit, _files = _source_repo(tmp_path, files)
+    manifest = {
+        "repository_commit": commit,
+        "files": [
+            {"path": path, "file_sha256": ev.digest(raw)} for path, raw in sorted(files.items())
+        ],
+    }
+    args = {"suite_id": "source-only-test", "per_stratum": 10, "negatives": 2}
+    suite, pack, policy = source_oracle_suite.identifier_word_suite(repo, manifest, **args)
+    repeated = source_oracle_suite.identifier_word_suite(repo, manifest, **args)
+    assert (suite, pack, policy) == repeated
+    shared = next(task for task in suite["tasks"] if task["query"] == "SharedIdentifierOmega")
+    assert [row["path"] for row in shared["file_judgments"]] == ["a.go", "b.go"]
+    assert sum(not task["answerable"] for task in suite["tasks"]) == 2
+    assert policy["selection_inputs"] == "frozen_source_only_no_product_outputs"
+    assert any(row["underfilled"] for row in policy["strata"].values())
+    assert all("gold" not in task for task in pack["tasks"])
+    corrupted = copy.deepcopy(manifest)
+    corrupted["files"][0]["file_sha256"] = "0" * 64
+    with pytest.raises(ev.EvidenceError, match="hash"):
+        source_oracle_suite.identifier_word_suite(repo, corrupted, **args)
+
+
 def test_name_span_gold_is_independent_of_same_line_usage(tmp_path):
     raw = b"package p\nfunc Same() { Same() }; func Peer() {}\n"
     repo, commit, files = _source_repo(tmp_path, {"a.go": raw})

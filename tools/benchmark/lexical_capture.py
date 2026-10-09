@@ -90,9 +90,11 @@ def require_registration(registry: dict) -> None:
 
 
 def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
+    current_file = suite.get("routes") == owner.FILE_ROUTES
+    expected_equivalence = "equivalent_distinct_file_units" if current_file else "non_equivalent"
     if (
         summary.get("status") != "diagnostic_unqualified"
-        or summary.get("rank_unit_equivalence") != "non_equivalent"
+        or summary.get("rank_unit_equivalence") != expected_equivalence
         or summary.get("metric") != "gold_file_recall_in_native_top_10"
     ):
         raise EvidenceError("lexical capture claims an unsupported rank comparison")
@@ -101,7 +103,6 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
         raise EvidenceError("lexical query inventory is empty or duplicate")
     judged = owner._tasks(suite, pack)
     products = {**summary["products"], **summary["pair"]["routes"]}
-    current_file = suite.get("routes") == owner.FILE_ROUTES
     inventory = FILE_PRODUCTS if current_file else PRODUCTS
     if set(products) != set(inventory):
         raise EvidenceError("lexical scorer product inventory is incomplete")
@@ -130,7 +131,7 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
                     }
                 )
                 continue
-            if current_file and row.get("eligible") is False and judged[task][1]:
+            if current_file and row.get("eligible") is False:
                 typed_rows.append(
                     {
                         "query_id": task,
