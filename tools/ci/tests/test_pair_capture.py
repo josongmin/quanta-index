@@ -159,6 +159,39 @@ def test_file_pair_bridge_publishes_only_independent_file_judgments(tmp_path):
         assert {row["metric"] for row in payload["rows"]} == {"file_recall_at_10"}
 
 
+@pytest.mark.parametrize(
+    "policy,authority",
+    [("complete_ranked_pool_v1", "pooled"), ("source_oracle_complete_v1", "mechanically_labeled")],
+)
+def test_file_pair_payload_retains_judgment_authority(tmp_path, policy, authority):
+    # Formatter-only metadata check; altered fixtures are not admitted as replay evidence.
+    stage = fixture(tmp_path, file_current=True)
+    native, manifest = stage["stage"], stage["manifest"]
+    suite_path = native / manifest["artifacts"]["suite"]
+    suite = json.loads(suite_path.read_bytes())
+    for task in suite["tasks"]:
+        task["judgment_policy"] = policy
+    suite_path.write_text(json.dumps(suite))
+    for payload in bridge.typed_payloads(native, manifest).values():
+        assert payload["judgments"] == authority
+
+
+@pytest.mark.parametrize("eligible", [None, 1, "true"])
+def test_file_pair_payload_requires_explicit_judgment_eligibility(tmp_path, eligible):
+    stage = fixture(tmp_path, file_current=True)
+    native, manifest = stage["stage"], stage["manifest"]
+    path = native / manifest["artifacts"]["reports"][0]
+    report = json.loads(path.read_bytes())
+    row = report["judgment_metrics"]["file_judgments"]["per_query"][0]
+    if eligible is None:
+        row.pop("eligible")
+    else:
+        row["eligible"] = eligible
+    path.write_text(json.dumps(report))
+    with pytest.raises(bridge.EvidenceError, match="explicit scoring eligibility"):
+        bridge.typed_payloads(native, manifest)
+
+
 def test_file_pair_bridge_preserves_unjudged_and_no_answer_states(tmp_path):
     native = tmp_path / "native"
     native.mkdir()
@@ -166,7 +199,7 @@ def test_file_pair_bridge_preserves_unjudged_and_no_answer_states(tmp_path):
     record = {
         "captures": captures,
         "results": [
-            {"task_id": task, "route": "lexical", "status": status}
+            {"task_id": task, "route": "lexical", "status": status, "candidates": []}
             for task, status in (
                 ("hit", "success"),
                 ("pool-gap", "success"),
@@ -175,7 +208,22 @@ def test_file_pair_bridge_preserves_unjudged_and_no_answer_states(tmp_path):
         ],
     }
     (native / "record.json").write_text(json.dumps(record))
-    manifest = {"artifacts": {"records": ["record.json"]}}
+    (native / "suite.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_id": task,
+                        "answerable": task != "absent",
+                        "judgment_policy": "complete_ranked_pool_v1",
+                        "file_judgments": [],
+                    }
+                    for task in ("hit", "pool-gap", "absent")
+                ]
+            }
+        )
+    )
+    manifest = {"artifacts": {"records": ["record.json"], "suite": "suite.json"}}
     report = {
         "captures": captures,
         "judgment_metrics": {
@@ -205,6 +253,124 @@ def test_file_pair_bridge_preserves_unjudged_and_no_answer_states(tmp_path):
     report["judgment_metrics"]["file_judgments"]["per_query"].pop()
     with pytest.raises(bridge.EvidenceError, match="omit or add"):
         bridge.file_report_rows(native, manifest, report)
+
+
+@pytest.mark.parametrize(
+    "status,returned",
+    [
+        ("abstained", []),
+        ("success", ["unknown.go"]),
+        ("capped", ["unknown.go"]),
+        ("success", ["irrelevant.go"]),
+        ("capped", ["irrelevant.go"]),
+    ],
+)
+def test_file_pair_negative_observations_require_judged_ranked_files(tmp_path, status, returned):
+    native = tmp_path / "native"
+    native.mkdir()
+    captures = {"q0": {}}
+    (native / "record.json").write_text(
+        json.dumps(
+            {
+                "captures": captures,
+                "results": [
+                    {
+                        "task_id": "negative",
+                        "route": "lexical",
+                        "status": status,
+                        "candidates": [{"path": path} for path in returned],
+                    }
+                ],
+            }
+        )
+    )
+    (native / "suite.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_id": "negative",
+                        "answerable": False,
+                        "judgment_policy": "complete_ranked_pool_v1",
+                        "file_judgments": [{"path": "irrelevant.go", "grade": 0}],
+                    }
+                ]
+            }
+        )
+    )
+    manifest = {"artifacts": {"records": ["record.json"], "suite": "suite.json"}}
+    report = {
+        "captures": captures,
+        "judgment_metrics": {"file_judgments": {"per_query": []}},
+        "no_answer": {"routes": {"lexical": {"task_ids": ["negative"]}}},
+    }
+    row = bridge.file_report_rows(native, manifest, report)[0]
+    if returned == ["unknown.go"]:
+        assert row["eligible"] is False
+        assert row["reason"] == "unjudged_ranked_file"
+        assert bridge.typed_state(row, "file", "file_recall_at_10", None) == ("unjudged", None)
+    else:
+        assert row["eligible"] is True
+
+
+@pytest.mark.parametrize("status,state", [("timeout", "timeout"), ("unavailable", "unsupported")])
+def test_file_pair_execution_failure_takes_precedence_over_judgment_exclusion(status, state):
+    row = {
+        "status": status,
+        "answerable": True,
+        "eligible": False,
+        "reason": "execution_status_" + status,
+    }
+    assert bridge.typed_state(row, "file", "file_recall_at_10", None) == (state, None)
+
+
+@pytest.mark.parametrize(
+    "status,state",
+    [("timeout", "timeout"), ("unavailable", "unsupported"), ("error", "unsupported")],
+)
+@pytest.mark.parametrize("answerable", [True, False])
+def test_file_pair_payload_preserves_failed_execution_instead_of_unjudged(
+    tmp_path, status, state, answerable
+):
+    # Exercise the formatter over altered fixture inputs, not canonical replay admission.
+    stage = fixture(tmp_path, file_current=True)
+    native, manifest = stage["stage"], stage["manifest"]
+    report_path = native / manifest["artifacts"]["reports"][0]
+    report = json.loads(report_path.read_bytes())
+    target = report["judgment_metrics"]["file_judgments"]["per_query"][0]
+    target.update(eligible=False, reason="execution_status_" + status)
+    target.pop("scores")
+    if not answerable:
+        report["judgment_metrics"]["file_judgments"]["per_query"].remove(target)
+        report["no_answer"]["routes"][target["route"]]["task_ids"].append(target["task_id"])
+        suite_path = native / manifest["artifacts"]["suite"]
+        suite = json.loads(suite_path.read_bytes())
+        for task in suite["tasks"]:
+            if task["task_id"] == target["task_id"]:
+                task.update(answerable=False, gold=[], file_judgments=[])
+        suite_path.write_text(json.dumps(suite))
+        # The other route must keep the same frozen answerability too.
+        other = next(
+            row
+            for row in report["judgment_metrics"]["file_judgments"]["per_query"]
+            if row["task_id"] == target["task_id"]
+        )
+        report["judgment_metrics"]["file_judgments"]["per_query"].remove(other)
+        report["no_answer"]["routes"][other["route"]]["task_ids"].append(other["task_id"])
+    report_path.write_text(json.dumps(report))
+    for ref in manifest["artifacts"]["records"]:
+        path = native / ref
+        record = json.loads(path.read_bytes())
+        for row in record["results"]:
+            if (row["task_id"], row["route"]) == (target["task_id"], target["route"]):
+                row.update(status=status, candidates=[])
+        path.write_text(json.dumps(record))
+    payloads = bridge.typed_payloads(native, manifest)
+    payload = payloads["whole_file." + target["route"] + ".file"]
+    row = next(row for row in payload["rows"] if row["query_id"] == target["task_id"])
+    assert row["state"] == state and row["value"] is None
+    assert row["metric"] == ("file_recall_at_10" if answerable else "no_answer_abstention")
+    assert payload["unjudged"] == 0
 
 
 @pytest.mark.parametrize("disagrees", [False, True])

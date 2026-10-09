@@ -294,8 +294,20 @@ def typed_state(row: dict, space: str, metric: str, span: dict | None) -> tuple[
         return "timeout", None
     if status == "unavailable":
         return "unsupported", None
+    if status == "error" and row.get("eligible") is False:
+        return "unsupported", None
     if status not in (*evaluator.SCORED_STATUSES, "abstained"):
         raise EvidenceError("pair row lacks an admissible terminal scored state")
+    if row.get("eligible") is False:
+        reason = row.get("reason")
+        if not isinstance(reason, str) or not reason:
+            raise EvidenceError("ineligible pair row lacks an explicit exclusion reason")
+        return (
+            "unjudged"
+            if reason in {"unjudged_ranked_file", "missing_independent_judgments"}
+            else "unsupported",
+            None,
+        )
     if not row["answerable"]:
         return "no_answer", float(status == "abstained")
     if space == "span" and span is None:
@@ -311,7 +323,11 @@ def typed_state(row: dict, space: str, metric: str, span: dict | None) -> tuple[
 
 def file_report_rows(native: Path, manifest: dict, report: dict) -> list[dict]:
     """Keep independent file judgments and no-answer outcomes in their own unit."""
-    statuses = {}
+    suite = owner.read_json(
+        owner._resolve_artifact(native, manifest["artifacts"]["suite"], "suite")
+    )
+    tasks = {row["task_id"]: row for row in suite["tasks"]}
+    observations = {}
     for ref in manifest["artifacts"]["records"]:
         record = owner.read_json(owner._resolve_artifact(native, ref, "file pair record"))
         captures = record["captures"]
@@ -319,18 +335,20 @@ def file_report_rows(native: Path, manifest: dict, report: dict) -> list[dict]:
             continue
         for row in record["results"]:
             key = (row["task_id"], row["route"])
-            if key in statuses:
+            if key in observations:
                 raise EvidenceError("file pair native task/route inventory is duplicate")
-            statuses[key] = row["status"]
+            observations[key] = row
     rows = []
     for row in report["judgment_metrics"]["file_judgments"]["per_query"]:
         key = (row["task_id"], row["route"])
-        if key not in statuses:
+        if key not in observations or tasks.get(row["task_id"], {}).get("answerable") is not True:
             raise EvidenceError("file pair judgment lacks its captured task/route")
+        if type(row.get("eligible")) is not bool:
+            raise EvidenceError("file pair judgment lacks explicit scoring eligibility")
         rows.append(
             {
                 **row,
-                "status": statuses[key],
+                "status": observations[key]["status"],
                 "answerable": True,
                 "file_recall_at_10": row.get("scores", {}).get("recall_at_10"),
             }
@@ -338,12 +356,20 @@ def file_report_rows(native: Path, manifest: dict, report: dict) -> list[dict]:
     for route, negative in report["no_answer"]["routes"].items():
         for task in negative["task_ids"]:
             key = (task, route)
-            if key not in statuses:
+            if key not in observations or tasks.get(task, {}).get("answerable") is not False:
                 raise EvidenceError("file pair no-answer task lacks its captured task/route")
+            observation = observations[key]
             rows.append(
-                {"task_id": task, "route": route, "status": statuses[key], "answerable": False}
+                {
+                    "task_id": task,
+                    "route": route,
+                    "answerable": False,
+                    **evaluator.no_answer_observation(tasks[task], observation),
+                }
             )
-    if {(row["task_id"], row["route"]) for row in rows} != set(statuses):
+    if len(rows) != len(observations) or {(row["task_id"], row["route"]) for row in rows} != set(
+        observations
+    ):
         raise EvidenceError("file pair judgments omit or add captured task/routes")
     return rows
 
@@ -360,6 +386,18 @@ def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
     strategies = protocol["strategies"]
     routes = [*protocol["quanta_routes"], protocol["semble_route"]]
     file_pair = protocol["execution_profiles"]["quanta"]["policy"] in owner.qp.FILE_PAIR_POLICIES
+    label_authority = "judged"
+    if file_pair:
+        suite = owner.read_json(owner._resolve_artifact(native, artifacts["suite"], "suite"))
+        label_authority = (
+            "mechanically_labeled"
+            if all(
+                task.get("judgment_policy") == evaluator.SOURCE_ORACLE_JUDGMENT_POLICY
+                for task in suite["tasks"]
+                if task["task_id"] in tasks
+            )
+            else "pooled"
+        )
     if len(strategies) != len(set(strategies)) or len(routes) != len(set(routes)):
         raise EvidenceError("pair strategy/route inventory is duplicate")
     reports = {}
@@ -420,11 +458,7 @@ def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
                 typed = []
                 for task in tasks:
                     row = indexed[(task, route)]
-                    state, value = (
-                        ("unjudged", None)
-                        if file_pair and row.get("eligible") is False
-                        else typed_state(row, space, metric, spans.get((task, route)))
-                    )
+                    state, value = typed_state(row, space, metric, spans.get((task, route)))
                     if state in {"judged", "no_answer"}:
                         if (
                             type(value) not in (int, float)
@@ -438,7 +472,7 @@ def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
                     typed.append(
                         {
                             "query_id": task,
-                            "metric": metric if state != "no_answer" else "no_answer_abstention",
+                            "metric": metric if row["answerable"] else "no_answer_abstention",
                             "unit": "ratio",
                             "value": value,
                             "state": state,
@@ -448,7 +482,7 @@ def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
                     "kind": "retrieval",
                     "lane": "native_default" if native_default else "controlled_mechanism",
                     "metric_space": space,
-                    "judgments": "pooled" if file_pair else "judged",
+                    "judgments": label_authority,
                     "unjudged": sum(row["state"] == "unjudged" for row in typed),
                     "universe_attested": False,
                     "corpus_digest": "sha256:" + manifest["provenance"]["corpus"]["digest"],

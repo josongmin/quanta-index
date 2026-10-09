@@ -348,6 +348,10 @@ def fixture(policy="keyword_file"):
         "no_answer": {
             "task_ids": [],
             "sample_count": 0,
+            "eligible_task_ids": [],
+            "eligible_count": 0,
+            "excluded": [],
+            "metric_denominator": "eligible_judged_successful_no_answer_tasks",
             "abstained": 0,
             "abstention_rate": evaluator.NOT_APPLICABLE,
             "nonempty_results": 0,
@@ -734,7 +738,7 @@ def test_output_is_exclusive_and_outside_checkout(tmp_path):
         _write_output(corpus / "report.json", "bad", repo=corpus)
 
 
-def test_no_answer_success_with_candidates_is_visible():
+def negative_fixture(status="success"):
     suite, census, record, diagnostic = fixture()
     suite["tasks"].append(
         {
@@ -744,6 +748,7 @@ def test_no_answer_success_with_candidates_is_visible():
             "split": "eval",
             "answerable": False,
             "file_judgments": [],
+            "judgment_policy": evaluator.SOURCE_ORACLE_JUDGMENT_POLICY,
             "source_oracle": {
                 "contract": "go_declaration_name_prefix_v1",
                 "unit": "distinct_file",
@@ -768,8 +773,8 @@ def test_no_answer_success_with_candidates_is_visible():
             "route": "lexical",
             "rank_unit": "distinct_file",
             "ordering": "score_desc_path_tiebreak",
-            "status": "success",
-            "candidates": [{"path": "unrelated.go"}],
+            "status": status,
+            "candidates": [{"path": "unrelated.go"}] if status == "success" else [],
         }
     )
     diagnostic["suite_commitment_sha256"] = evaluator.digest(evaluator.canonical(suite))
@@ -778,18 +783,36 @@ def test_no_answer_success_with_candidates_is_visible():
     diagnostic["no_answer"] = {
         "task_ids": ["N1"],
         "sample_count": 1,
+        "eligible_task_ids": ["N1"] if status == "success" else [],
+        "eligible_count": int(status == "success"),
+        "excluded": []
+        if status == "success"
+        else [{"task_id": "N1", "reason": "execution_status_" + status}],
+        "metric_denominator": "eligible_judged_successful_no_answer_tasks",
         "abstained": 0,
-        "abstention_rate": 0.0,
-        "nonempty_results": 1,
-        "nonempty_result_rate": 1.0,
-        "status_counts": {"success": 1},
+        "abstention_rate": 0.0 if status == "success" else evaluator.NOT_APPLICABLE,
+        "nonempty_results": int(status == "success"),
+        "nonempty_result_rate": 1.0 if status == "success" else evaluator.NOT_APPLICABLE,
+        "status_counts": {status: 1},
     }
+    return suite, census, record, diagnostic
+
+
+def test_no_answer_success_with_candidates_is_visible():
+    suite, census, record, diagnostic = negative_fixture()
     output = compose(suite, census, record, diagnostic, "prefix")
     assert output["strata"]["no_answer"]["admitted"] == 1
+    assert output["strata"]["no_answer"]["eligible"] == 1
+    assert output["eligible_answerable"] == 3 and output["eligible_no_answer"] == 1
+    assert output["eligible"] == 4
     assert output["evaluation_intent"] == "declaration_name_file_retrieval_diagnostic"
     assert output["no_answer"] == {
         "negative_reference_scope": "declaration_local_name_absent",
         "sample_count": 1,
+        "eligible_task_ids": ["N1"],
+        "eligible_count": 1,
+        "excluded": [],
+        "metric_denominator": "eligible_judged_successful_no_answer_tasks",
         "abstained": 0,
         "abstention_rate": 0.0,
         "nonempty_results": 1,
@@ -798,6 +821,20 @@ def test_no_answer_success_with_candidates_is_visible():
     }
     diagnostic["no_answer"]["task_ids"] = []
     with pytest.raises(ValueError, match="no-answer task ID mismatch"):
+        compose(suite, census, record, diagnostic, "prefix")
+
+
+@pytest.mark.parametrize("status", ["error", "timeout", "unavailable"])
+def test_failed_negative_report_preserves_unavailable_rates(status):
+    suite, census, record, diagnostic = negative_fixture(status)
+    output = compose(suite, census, record, diagnostic, "prefix")
+    assert output["no_answer"]["eligible_count"] == 0
+    assert output["no_answer"]["abstention_rate"] == evaluator.NOT_APPLICABLE
+    assert output["no_answer"]["nonempty_result_rate"] == evaluator.NOT_APPLICABLE
+    assert output["eligible"] == output["eligible_answerable"] == 3
+    assert output["eligible_no_answer"] == output["strata"]["no_answer"]["eligible"] == 0
+    diagnostic["no_answer"]["nonempty_result_rate"] = 0.0
+    with pytest.raises(ValueError, match="no-answer nonempty_result_rate mismatch"):
         compose(suite, census, record, diagnostic, "prefix")
 
 
@@ -832,6 +869,7 @@ def test_new_content_absence_contract_is_separate_from_legacy(
             "split": "eval",
             "answerable": False,
             "file_judgments": [],
+            "judgment_policy": evaluator.SOURCE_ORACLE_JUDGMENT_POLICY,
             "source_oracle": {"contract": contract, "unit": "distinct_file"},
         }
     ]
@@ -875,6 +913,10 @@ def test_new_content_absence_contract_is_separate_from_legacy(
     diagnostic["no_answer"] = {
         "task_ids": ["NOC1"],
         "sample_count": 1,
+        "eligible_task_ids": ["NOC1"],
+        "eligible_count": 1,
+        "excluded": [],
+        "metric_denominator": "eligible_judged_successful_no_answer_tasks",
         "abstained": 1,
         "abstention_rate": 1.0,
         "nonempty_results": 0,

@@ -27,6 +27,7 @@ from tools.benchmark.evidence import (
 from tools.benchmark.retrieval.evaluator import (
     canonical,
     digest,
+    no_answer_observation,
     ranked_file_judgment_exclusion,
     validate_comparison_contract,
 )
@@ -377,6 +378,19 @@ def product_result(
         )
     ):
         raise ValueError(f"{product}: invalid scoring gold inventory")
+    # Independent graded relevance does not redefine the suite's answerability
+    # threshold. Legacy source-oracle rescoring deliberately supplies a new gold
+    # population without independent file judgments.
+    answerable_by_task = {
+        task: bool(
+            gold if file_judgments is not None or scoring_gold is None else scoring_gold[task]
+        )
+        for task, (_, gold) in expected.items()
+    }
+    if file_judgments is not None and any(
+        not set(gold).issubset(scoring_gold[task]) for task, (_, gold) in expected.items()
+    ):
+        raise ValueError(f"{product}: file judgments omit the frozen positive gold")
     raw = RawFile.capture(path)
 
     def consume(lines):
@@ -418,6 +432,9 @@ def product_result(
                     {
                         "task_id": task_id,
                         "status": "unsupported",
+                        "answerable": answerable_by_task[task_id],
+                        "eligible": False,
+                        "reason": "unsupported_query_capability",
                         "capability_reason": capability["reason"],
                         "file_hit_at_10": "not_applicable",
                         "file_recall_at_10": "not_applicable",
@@ -458,6 +475,7 @@ def product_result(
             if row.get("file_hit_at_10") is not bool(set(paths) & set(gold)):
                 raise ValueError(f"{product}: {task_id} hit flag differs from paths")
             judged_gold = scoring_gold[task_id] if scoring_gold is not None else gold
+            answerable_task = answerable_by_task[task_id]
             hit = bool(set(paths) & set(judged_gold))
             reason = (
                 ranked_file_judgment_exclusion(
@@ -467,8 +485,8 @@ def product_result(
                 else None
             )
             eligible = reason is None
-            hits += hit and eligible
-            if not judged_gold and eligible:
+            hits += hit and eligible and answerable_task
+            if not answerable_task and eligible:
                 empty_no_gold += not paths
             elapsed.append(row.get("elapsed_ms"))
             completed_ms = None
@@ -494,16 +512,18 @@ def product_result(
             per_query.append(
                 {
                     "task_id": task_id,
+                    "status": "success",
+                    "answerable": answerable_task,
                     "eligible": eligible,
                     **({"reason": reason} if reason else {}),
-                    "file_hit_at_10": hit if judged_gold and eligible else "not_applicable",
+                    "file_hit_at_10": hit if answerable_task and eligible else "not_applicable",
                     "file_recall_at_10": (
                         len(set(paths) & set(judged_gold)) / len(judged_gold)
-                        if judged_gold and eligible
+                        if answerable_task and eligible
                         else "not_applicable"
                     ),
                     "no_gold_empty_at_10": not paths
-                    if not judged_gold and eligible
+                    if not answerable_task and eligible
                     else "not_applicable",
                     "query_latency_ms": row.get("elapsed_ms"),
                     "completed_query_latency_ms": completed_ms,
@@ -524,9 +544,9 @@ def product_result(
                     if value in judged_gold
                 )
                 per_query[-1]["file_ndcg_at_10"] = (
-                    observed / ideal if judged_gold and eligible else "not_applicable"
+                    observed / ideal if answerable_task and eligible else "not_applicable"
                 )
-            if file_judgments is not None and judged_gold and eligible:
+            if file_judgments is not None and answerable_task and eligible:
                 from tools.benchmark.retrieval.evaluator import file_ndcg_at_k
 
                 per_query[-1]["file_ndcg_at_10"] = file_ndcg_at_k(
@@ -542,15 +562,9 @@ def product_result(
     hits, empty_no_gold, elapsed, completed_elapsed, per_query, unsupported = raw.consume_lines(
         consume
     )
-    answerable = sum(
-        bool(scoring_gold[task_id] if scoring_gold is not None else gold)
-        for task_id, (_, gold) in expected.items()
-    )
+    answerable = sum(answerable_by_task.values())
     no_gold = len(expected) - answerable
-    supported_answerable = answerable - sum(
-        bool(scoring_gold[task_id] if scoring_gold is not None else expected[task_id][1])
-        for task_id in unsupported
-    )
+    supported_answerable = answerable - sum(answerable_by_task[task_id] for task_id in unsupported)
     supported_no_gold = no_gold - (len(unsupported) - (answerable - supported_answerable))
     eligible_answerable = sum(row["file_recall_at_10"] != "not_applicable" for row in per_query)
     eligible_no_gold = sum(row.get("no_gold_empty_at_10") != "not_applicable" for row in per_query)
@@ -832,7 +846,15 @@ def pair_result_raw(raw: list[bytes], pack: dict, suite: dict, task_count: int) 
             "file_recall_at_10": recall,
             "file_hit_rate_at_10": hits / answerable if answerable else "not_applicable",
             "no_gold_empty_rate_at_10": (empty_no_gold / no_gold if no_gold else "not_applicable"),
-            "per_query": sorted(route_rows, key=lambda row: row["task_id"]),
+            "per_query": [
+                {
+                    **row,
+                    "no_gold_empty_at_10": row["candidates"] == 0
+                    if not row["answerable"]
+                    else "not_applicable",
+                }
+                for row in sorted(route_rows, key=lambda row: row["task_id"])
+            ],
             "latency_ms": latency,
         }
     return {
@@ -877,6 +899,43 @@ def _replay_file_pair_verdict(
 
     if canonical(run.build_verdict(repo, suite_path, manifest_path)) != canonical(verdict):
         raise ValueError("current file pair verdict differs from canonical replay")
+
+
+def _file_pair_observation(observation: dict, task: dict, judgments: dict | None) -> dict:
+    """Retain execution and judgment exclusions for positive and no-answer tasks."""
+    answerable = task["answerable"]
+    status = observation["status"]
+    paths = [row["path"] for row in observation["candidates"]]
+    if judgments is None:
+        if answerable:
+            raise ValueError("answerable raw record lacks its replayed file judgments")
+        judgments = no_answer_observation(task, observation)
+    if status not in {"success", "capped", "abstained"}:
+        judgments = {"eligible": False, "reason": "execution_status_" + status}
+    eligible = judgments["eligible"]
+    reason = judgments.get("reason")
+    if not eligible and not reason:
+        raise ValueError("ineligible raw file observation lacks its exclusion reason")
+    scores = judgments.get("scores", {})
+    return {
+        "task_id": observation["task_id"],
+        "route": observation["route"],
+        "status": status,
+        "answerable": answerable,
+        "candidates": len(paths),
+        "paths": paths,
+        "eligible": eligible,
+        **({"reason": reason} if reason else {}),
+        "no_gold_empty_at_10": not paths if not answerable and eligible else "not_applicable",
+        "file_hit_at_10": bool(scores["hit_at_10"])
+        if eligible and answerable
+        else "not_applicable",
+        "file_recall_at_10": scores["recall_at_10"]
+        if eligible and answerable
+        else "not_applicable",
+        "file_ndcg_at_10": scores["ndcg_at_10"] if eligible and answerable else "not_applicable",
+        "query_latency_ms": observation["timings"]["query_latency_ms"],
+    }
 
 
 def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) -> dict:
@@ -1141,42 +1200,10 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
             if observation["route"] != route:
                 continue
             task_id = observation["task_id"]
-            gold = bool(expected[task_id][1])
-            judgments = scored.get((task_id, route))
-            if judgments is None:
-                if gold:
-                    raise ValueError("answerable raw record lacks its replayed file judgments")
-                task = suite_tasks[task_id]
-                reason = ranked_file_judgment_exclusion(
-                    task["judgment_policy"],
-                    task["file_judgments"],
-                    [row["path"] for row in observation["candidates"]],
-                )
-                judgments = {"eligible": reason is None}
-            scores = judgments.get("scores", {})
             rows.append(
-                {
-                    "task_id": task_id,
-                    "route": route,
-                    "status": observation["status"],
-                    "answerable": gold,
-                    "candidates": len(observation["candidates"]),
-                    "paths": [row["path"] for row in observation["candidates"]],
-                    "eligible": judgments["eligible"],
-                    "no_gold_empty_at_10": not observation["candidates"]
-                    if not gold and judgments["eligible"]
-                    else "not_applicable",
-                    "file_hit_at_10": bool(scores["hit_at_10"])
-                    if judgments["eligible"] and gold
-                    else "not_applicable",
-                    "file_recall_at_10": scores["recall_at_10"]
-                    if judgments["eligible"] and gold
-                    else "not_applicable",
-                    "file_ndcg_at_10": scores["ndcg_at_10"]
-                    if judgments["eligible"] and gold
-                    else "not_applicable",
-                    "query_latency_ms": observation["timings"]["query_latency_ms"],
-                }
+                _file_pair_observation(
+                    observation, suite_tasks[task_id], scored.get((task_id, route))
+                )
             )
         result[label] = {
             "tasks": len(expected),
@@ -1226,18 +1253,121 @@ def read_spec(path: Path) -> dict[str, Path]:
     return {role: Path(spec[role]) for role in roles}
 
 
-def comparison_validity(
-    requested: set[str], eligible: set[str], products: dict, policy: str
-) -> dict:
-    """Prevent a partial/native-default diagnostic from issuing a product ranking."""
+def validate_file_observation(row: dict, product: str) -> bool:
+    """Admit normalized file scores without treating absent evidence as success."""
+    if type(row.get("eligible")) is not bool or type(row.get("answerable")) is not bool:
+        raise ValueError(f"{product}: file observation lacks explicit eligibility/answerability")
+    terminal = {"success"} if product in PRODUCTS else {"success", "capped", "abstained"}
+    failed = {"unsupported", "error", "timeout", "unavailable"}
+    status = row.get("status")
+    if not isinstance(status, str) or status not in terminal | failed:
+        raise ValueError(f"{product}: file observation lacks an admissible explicit terminal state")
+    score_fields = ("file_hit_at_10", "file_recall_at_10", "file_ndcg_at_10")
+    if not row["eligible"]:
+        if not isinstance(row.get("reason"), str) or not row["reason"]:
+            raise ValueError(f"{product}: ineligible file row lacks an explicit exclusion reason")
+        if any(
+            row.get(field, "not_applicable") != "not_applicable"
+            for field in (*score_fields, "no_gold_empty_at_10")
+        ):
+            raise ValueError(f"{product}: ineligible file observation carries a score")
+        return False
+    if status not in terminal:
+        raise ValueError(f"{product}: failed file observation claims scoring eligibility")
+    if row["answerable"]:
+        if type(row.get("file_hit_at_10")) is not bool or any(
+            not is_finite_json_number(row.get(field)) or not 0 <= row[field] <= 1
+            for field in ("file_recall_at_10", "file_ndcg_at_10")
+        ):
+            raise ValueError(f"{product}: file observation has malformed relevance scores")
+        if (
+            any(
+                row["file_hit_at_10"] is not (row[field] > 0)
+                for field in ("file_recall_at_10", "file_ndcg_at_10")
+            )
+            or row.get("no_gold_empty_at_10") != "not_applicable"
+        ):
+            raise ValueError(f"{product}: file relevance scores disagree with answerability/hit")
+    elif (
+        any(row.get(field) != "not_applicable" for field in score_fields)
+        or type(row.get("no_gold_empty_at_10")) is not bool
+    ):
+        raise ValueError(f"{product}: no-answer file observation lacks its empty-result metric")
+    return True
+
+
+def comparison_validity(requested: set[str], products: dict, policy: str) -> dict:
+    """Derive coverage from the complete product observations, never caller counts."""
     reasons = []
+    current_inventory = {*PRODUCTS, "quanta_lexical", "semble_lexical_file"}
+    legacy_inventory = {*PRODUCTS, "quanta_lexical", "semble_lexical_only"}
+    current_file = set(products) == current_inventory
+    complete_inventory = set(products) in (current_inventory, legacy_inventory)
+    if not complete_inventory:
+        reasons.append("incomplete_product_inventory")
+    if not requested:
+        reasons.append("empty_requested_population")
+    eligible = requested.copy() if complete_inventory else set()
+    coverage = {}
+    rank_units = set()
+    answerability: dict[str, set[bool]] = {}
+    for name, product in products.items():
+        unit = product.get("rank_unit")
+        expected_unit = (
+            "chunk"
+            if set(products) == legacy_inventory and name not in PRODUCTS
+            else "distinct_file"
+        )
+        if unit != expected_unit:
+            reasons.append("invalid_product_rank_unit")
+        if isinstance(unit, str):
+            rank_units.add(unit)
+        rows = product.get("per_query")
+        observed = set()
+        if (
+            not isinstance(rows, list)
+            or any(not isinstance(row, dict) for row in rows)
+            or any(not isinstance(row.get("task_id"), str) for row in rows)
+            or len(rows) != len(requested)
+            or {row["task_id"] for row in rows} != requested
+        ):
+            reasons.append("incomplete_or_duplicate_product_observations")
+        elif current_file:
+            for row in rows:
+                try:
+                    admitted = validate_file_observation(row, name)
+                except ValueError:
+                    reasons.append("malformed_product_observation")
+                    continue
+                answerability.setdefault(row["task_id"], set()).add(row["answerable"])
+                if admitted:
+                    observed.add(row["task_id"])
+        else:
+            terminal = {"success"} if name in PRODUCTS else {"success", "capped", "abstained"}
+            observed = {
+                row["task_id"]
+                for row in rows
+                if row.get("status") in terminal and row.get("eligible", True) is True
+            }
+        if unit != expected_unit:
+            observed.clear()
+        eligible &= observed
+        coverage[name] = {
+            "requested": len(requested),
+            "eligible": len(observed),
+            "ineligible_task_ids": sorted(requested - observed),
+        }
+    inconsistent = {task for task, values in answerability.items() if len(values) != 1}
+    if inconsistent:
+        reasons.append("inconsistent_product_answerability")
+        eligible -= inconsistent
     if policy == "natural_language_file":
         reasons.append("unequal_natural_language_query_semantics")
     elif policy != "code_search_file":
         reasons.append("unmatched_external_request_policy")
     if requested != eligible:
         reasons.append("incomplete_common_judgments_or_capabilities")
-    if len({row["rank_unit"] for row in products.values()}) > 1:
+    if len(rank_units) > 1:
         reasons.append("non_equivalent_rank_units")
     return {
         "status": "BLOCKED" if reasons else "VERIFIED_DIAGNOSTIC",
@@ -1246,10 +1376,39 @@ def comparison_validity(
         else "native_defaults_diagnostic",
         "requested_tasks": len(requested),
         "common_eligible_tasks": len(eligible),
+        "common_eligible_task_ids": sorted(eligible),
+        "capability_coverage": coverage,
         "coverage_fraction": len(eligible) / len(requested) if requested else 0.0,
-        "reasons": reasons,
+        "reasons": list(dict.fromkeys(reasons)),
         "quality_ranking_permitted": False,
         "qualification": "independent_holdout_and_review_not_admitted",
+    }
+
+
+def common_product_metrics(product: dict, eligible: set[str]) -> dict:
+    """Aggregate positives and negative controls on the same admitted cohort."""
+    rows = [row for row in product["per_query"] if row["task_id"] in eligible]
+    if len(rows) != len(eligible) or {row["task_id"] for row in rows} != eligible:
+        raise ValueError("common metric observations differ from the admitted cohort")
+    positive = [row for row in rows if row["answerable"] is True]
+    negative = [row for row in rows if row["answerable"] is False]
+    if len(positive) + len(negative) != len(rows) or any(
+        type(row.get("no_gold_empty_at_10")) is not bool for row in negative
+    ):
+        raise ValueError("common metric observations lack explicit answerability/empty results")
+    metrics = {}
+    for field in ("file_hit_at_10", "file_recall_at_10", "file_ndcg_at_10"):
+        values = [row[field] for row in positive if field in row and row[field] != "not_applicable"]
+        metrics[field] = math.fsum(values) / len(values) if values else "not_applicable"
+    return {
+        "tasks": len(rows),
+        "answerable_tasks": len(positive),
+        "no_gold_tasks": len(negative),
+        **metrics,
+        "no_gold_empty_rate_at_10": math.fsum(row["no_gold_empty_at_10"] for row in negative)
+        / len(negative)
+        if negative
+        else "not_applicable",
     }
 
 
@@ -1340,42 +1499,18 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
     result["cross_unit_comparison"] = "not_permitted"
     products = {**result["products"], **result["pair"]["routes"]}
     requested = set(expected)
-    eligible = requested.copy()
-    coverage = {}
-    for name, product in products.items():
-        observed = {
-            row["task_id"]
-            for row in product["per_query"]
-            if row.get("status") != "unsupported" and row.get("eligible", True)
-        }
-        eligible &= observed
-        coverage[name] = {
-            "requested": len(requested),
-            "eligible": len(observed),
-            "ineligible_task_ids": sorted(requested - observed),
-        }
-    result["capability_coverage"] = coverage
+    validity = comparison_validity(requested, products, file_policy)
+    eligible = set(validity["common_eligible_task_ids"])
+    result["capability_coverage"] = validity["capability_coverage"]
     result["common_eligible_task_ids"] = sorted(eligible)
     result["common_eligible_tasks"] = len(eligible)
     result["common_denominator_policy"] = (
         "intersection_of_explicit_product_capability_and_judgment_eligibility"
     )
-    result["comparison_validity"] = comparison_validity(requested, eligible, products, file_policy)
-    result["common_eligible_products"] = {}
-    for name, product in products.items():
-        rows = [row for row in product["per_query"] if row["task_id"] in eligible]
-        scored_rows = [row for row in rows if row["file_recall_at_10"] != "not_applicable"]
-        metrics = {}
-        for field in ("file_hit_at_10", "file_recall_at_10", "file_ndcg_at_10"):
-            values = [
-                row[field] for row in scored_rows if field in row and row[field] != "not_applicable"
-            ]
-            metrics[field] = math.fsum(values) / len(values) if values else "not_applicable"
-        result["common_eligible_products"][name] = {
-            "tasks": len(rows),
-            "answerable_tasks": len(scored_rows),
-            **metrics,
-        }
+    result["comparison_validity"] = validity
+    result["common_eligible_products"] = {
+        name: common_product_metrics(product, eligible) for name, product in products.items()
+    }
     return result
 
 

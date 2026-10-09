@@ -487,8 +487,7 @@ def test_malformed_or_unrepresentable_rows_refuse(tmp_path, change, lexical_rele
         )
 
 
-@pytest.mark.parametrize("answerable", [True, False])
-def test_unjudged_file_results_remain_unavailable_for_every_product(tmp_path, answerable):
+def _file_payload_fixture(tmp_path, answerable=True):
     _, _, suite, pack = fixture_inputs(tmp_path)
     suite["routes"] = pack["routes"] = capture.owner.FILE_ROUTES
     task_id = suite["tasks"][0]["task_id"]
@@ -503,8 +502,13 @@ def test_unjudged_file_results_remain_unavailable_for_every_product(tmp_path, an
                 {
                     "task_id": task["task_id"],
                     "status": "success",
+                    "answerable": task["answerable"],
                     "eligible": task["task_id"] != task_id,
+                    **({"reason": "unjudged_ranked_file"} if task["task_id"] == task_id else {}),
                     "file_recall_at_10": "not_applicable" if task["task_id"] == task_id else 1.0,
+                    "file_hit_at_10": "not_applicable" if task["task_id"] == task_id else True,
+                    "file_ndcg_at_10": "not_applicable" if task["task_id"] == task_id else 1.0,
+                    "no_gold_empty_at_10": "not_applicable",
                 }
                 for task in suite["tasks"]
             ],
@@ -522,11 +526,108 @@ def test_unjudged_file_results_remain_unavailable_for_every_product(tmp_path, an
             }
         },
     }
+    return suite, pack, summary, task_id
+
+
+@pytest.mark.parametrize("product", capture.FILE_PRODUCTS)
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"status": "invented"},
+        {"status": None},
+        {"eligible": None},
+        {"eligible": 1},
+        {"answerable": False},
+        {"file_hit_at_10": False},
+        {"file_ndcg_at_10": float("inf")},
+    ],
+)
+def test_file_payload_rejects_unproved_or_inconsistent_scored_observations(
+    tmp_path, product, change
+):
+    suite, pack, summary, _task_id = _file_payload_fixture(tmp_path)
+    products = {**summary["products"], **summary["pair"]["routes"]}
+    products[product]["per_query"][1].update(change)
+    with pytest.raises(ValueError):
+        capture.payloads(summary, suite, pack)
+
+
+@pytest.mark.parametrize("field", ["status", "eligible", "answerable"])
+def test_file_payload_requires_explicit_observation_evidence(tmp_path, field):
+    suite, pack, summary, _task_id = _file_payload_fixture(tmp_path)
+    summary["products"]["cs"]["per_query"][1].pop(field)
+    with pytest.raises(ValueError):
+        capture.payloads(summary, suite, pack)
+
+
+@pytest.mark.parametrize("product", ["cs", "quanta_lexical"])
+def test_lexical_payload_rejects_shadowed_product_ownership(tmp_path, product):
+    suite, pack, summary, _task_id = _file_payload_fixture(tmp_path)
+    if product == "cs":
+        summary["pair"]["routes"][product] = summary["products"][product]
+    else:
+        summary["products"][product] = summary["pair"]["routes"][product]
+    with pytest.raises(ValueError, match="product inventory"):
+        capture.payloads(summary, suite, pack)
+
+
+@pytest.mark.parametrize("answerable", [True, False])
+def test_unjudged_file_results_remain_unavailable_for_every_product(tmp_path, answerable):
+    suite, pack, summary, task_id = _file_payload_fixture(tmp_path, answerable)
     for payload in capture.payloads(summary, suite, pack).values():
         assert payload["rows"][0] == {
             "query_id": task_id,
-            "metric": "gold_file_recall_in_top_10_distinct_files",
+            "metric": "gold_file_recall_in_top_10_distinct_files"
+            if answerable
+            else "no_gold_empty_at_10",
             "unit": "ratio",
             "value": None,
-            "state": "unsupported",
+            "state": "unjudged",
         }
+        assert payload["unjudged"] == 1
+        assert payload["judgments"] == "pooled"
+
+
+def test_ineligible_file_result_requires_its_actual_exclusion_reason(tmp_path):
+    suite, pack, summary, _task_id = _file_payload_fixture(tmp_path)
+    summary["products"]["cs"]["per_query"][0].pop("reason")
+    with pytest.raises(ValueError, match="exclusion reason"):
+        capture.payloads(summary, suite, pack)
+
+
+@pytest.mark.parametrize("status", ["timeout", "error", "unavailable", "unsupported"])
+@pytest.mark.parametrize("answerable", [True, False])
+def test_failed_file_result_preserves_missing_value_and_intended_metric(
+    tmp_path, status, answerable
+):
+    suite, pack, summary, task_id = _file_payload_fixture(tmp_path, answerable)
+    products = {**summary["products"], **summary["pair"]["routes"]}
+    for product in products.values():
+        product["per_query"][0]["status"] = status
+    for payload in capture.payloads(summary, suite, pack).values():
+        assert payload["rows"][0] == {
+            "query_id": task_id,
+            "metric": "gold_file_recall_in_top_10_distinct_files"
+            if answerable
+            else "no_gold_empty_at_10",
+            "unit": "ratio",
+            "value": None,
+            "state": "timeout" if status == "timeout" else "unsupported",
+        }
+        assert payload["unjudged"] == 0
+
+
+@pytest.mark.parametrize(
+    "policy,expected",
+    [("source_oracle_complete_v1", "mechanically_labeled"), ("complete_ranked_pool_v1", "pooled")],
+)
+def test_file_payload_labels_follow_source_authority_and_native_adapter(tmp_path, policy, expected):
+    suite, pack, summary, _task_id = _file_payload_fixture(tmp_path)
+    for task in suite["tasks"]:
+        task["judgment_policy"] = policy
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    for name, payload in capture.payloads(summary, suite, pack).items():
+        assert payload["judgments"] == expected
+        assert payload["lane"] == (
+            "native_default" if name in capture.owner.PRODUCTS else "controlled_mechanism"
+        )

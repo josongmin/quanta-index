@@ -14869,7 +14869,13 @@ def test_single_route_diagnostic_keeps_no_answer_status_distinct():
                 "answerable": True,
                 "file_judgments": [{"path": "a.go", "grade": 3}],
             },
-            {"task_id": "N", "split": "eval", "answerable": False, "file_judgments": []},
+            {
+                "task_id": "N",
+                "split": "eval",
+                "answerable": False,
+                "file_judgments": [],
+                "judgment_policy": ev.UNJUDGED_POLICY,
+            },
         ],
     }
     run = {
@@ -14904,6 +14910,10 @@ def test_single_route_diagnostic_keeps_no_answer_status_distinct():
     assert diagnostic["no_answer"] == {
         "task_ids": ["N"],
         "sample_count": 1,
+        "eligible_task_ids": [],
+        "eligible_count": 0,
+        "excluded": [{"task_id": "N", "reason": "execution_status_timeout"}],
+        "metric_denominator": "eligible_judged_successful_no_answer_tasks",
         "reference_contracts": [
             {
                 "source_oracle_contract": "not_declared",
@@ -14912,9 +14922,9 @@ def test_single_route_diagnostic_keeps_no_answer_status_distinct():
             }
         ],
         "abstained": 0,
-        "abstention_rate": 0.0,
+        "abstention_rate": ev.NOT_APPLICABLE,
         "nonempty_results": 0,
-        "nonempty_result_rate": 0.0,
+        "nonempty_result_rate": ev.NOT_APPLICABLE,
         "status_counts": {"timeout": 1},
     }
     run["results"][1]["status"] = "abstained"
@@ -14932,6 +14942,10 @@ def test_no_answer_diagnostic_separates_nonempty_results_from_failures():
     assert summary == {
         "task_ids": ["A", "B", "C"],
         "sample_count": 3,
+        "eligible_task_ids": ["A", "B"],
+        "eligible_count": 2,
+        "excluded": [{"task_id": "C", "reason": "execution_status_timeout"}],
+        "metric_denominator": "eligible_judged_successful_no_answer_tasks",
         "reference_contracts": [
             {
                 "source_oracle_contract": "not_declared",
@@ -14940,9 +14954,9 @@ def test_no_answer_diagnostic_separates_nonempty_results_from_failures():
             }
         ],
         "abstained": 1,
-        "abstention_rate": 1 / 3,
+        "abstention_rate": 1 / 2,
         "nonempty_results": 1,
-        "nonempty_result_rate": 1 / 3,
+        "nonempty_result_rate": 1 / 2,
         "status_counts": {"success": 1, "abstained": 1, "timeout": 1},
     }
     tasks["A"]["source_oracle"] = {

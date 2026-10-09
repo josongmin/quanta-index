@@ -45,6 +45,7 @@ if str(ROOT) not in sys.path:
 import corpus_binding  # noqa: E402
 
 from tools.benchmark.retrieval import lexical_file_comparison as owner  # noqa: E402
+from tools.benchmark.retrieval.evaluator import SOURCE_ORACLE_JUDGMENT_POLICY  # noqa: E402
 
 PROFILE = "lexical-diagnostic"
 FAMILY = "lexical-file-comparison"
@@ -102,10 +103,12 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
     if not tasks or len(tasks) != len(set(tasks)):
         raise EvidenceError("lexical query inventory is empty or duplicate")
     judged = owner._tasks(suite, pack)
-    products = {**summary["products"], **summary["pair"]["routes"]}
     inventory = FILE_PRODUCTS if current_file else PRODUCTS
-    if set(products) != set(inventory):
+    if set(summary["products"]) != set(owner.PRODUCTS) or set(summary["pair"]["routes"]) != (
+        set(inventory) - set(owner.PRODUCTS)
+    ):
         raise EvidenceError("lexical scorer product inventory is incomplete")
+    products = {**summary["products"], **summary["pair"]["routes"]}
     result = {}
     for product in inventory:
         rank_unit = products[product].get("rank_unit")
@@ -118,13 +121,19 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
         typed_rows = []
         for task in tasks:
             row = by_id[task]
+            no_gold = not judged[task][1]
+            metric = "no_gold_empty_at_10" if no_gold else METRICS[rank_unit]
+            if current_file:
+                owner.validate_file_observation(row, product)
+                if row["answerable"] is not (not no_gold):
+                    raise EvidenceError("file observation answerability differs from frozen suite")
             if row.get("status") == "unsupported" or (
                 current_file and row.get("status") in {"error", "timeout", "unavailable"}
             ):
                 typed_rows.append(
                     {
                         "query_id": task,
-                        "metric": METRICS[rank_unit],
+                        "metric": metric,
                         "unit": "ratio",
                         "value": None,
                         "state": "timeout" if row["status"] == "timeout" else "unsupported",
@@ -132,18 +141,22 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
                 )
                 continue
             if current_file and row.get("eligible") is False:
+                reason = row.get("reason")
+                if not isinstance(reason, str) or not reason:
+                    raise EvidenceError("ineligible file row lacks an explicit exclusion reason")
                 typed_rows.append(
                     {
                         "query_id": task,
-                        "metric": METRICS[rank_unit],
+                        "metric": metric,
                         "unit": "ratio",
                         "value": None,
-                        "state": "unsupported",
+                        "state": "unjudged"
+                        if reason in {"unjudged_ranked_file", "missing_independent_judgments"}
+                        else "unsupported",
                     }
                 )
                 continue
             value = row.get("file_recall_at_10")
-            no_gold = not judged[task][1]
             if no_gold:
                 if value != "not_applicable":
                     raise EvidenceError("no-gold lexical row must not carry recall")
@@ -194,10 +207,17 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
             )
         payload = {
             "kind": "retrieval",
-            "lane": "controlled_mechanism",
+            "lane": "native_default" if product in owner.PRODUCTS else "controlled_mechanism",
             "metric_space": "file",
-            "judgments": "mechanically_labeled",
-            "unjudged": 0,
+            "judgments": "mechanically_labeled"
+            if not current_file
+            or all(
+                item.get("judgment_policy") == SOURCE_ORACLE_JUDGMENT_POLICY
+                for item in suite["tasks"]
+                if item["task_id"] in by_id
+            )
+            else "pooled",
+            "unjudged": sum(item["state"] == "unjudged" for item in typed_rows),
             "universe_attested": False,
             "corpus_digest": "sha256:" + summary["file_universe_digest"],
             "query_pack_digest": "sha256:" + summary["query_pack_sha256"],

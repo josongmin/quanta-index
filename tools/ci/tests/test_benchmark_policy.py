@@ -144,6 +144,12 @@ def test_execution_regressions_are_registered_to_the_real_owner_scope():
             "retrieval/identifier_robustness_multiproduct_report.py",
             True,
         ),
+        ("test_no_answer_evidence.py", "retrieval/evaluator.py", True),
+        (
+            "test_identifier_robustness_report.py",
+            "retrieval/identifier_robustness_report.py",
+            True,
+        ),
         ("test_identifier_robustness_strata.py", "retrieval/identifier_robustness_suite.py", True),
     ):
         path = f"tools/ci/tests/{filename}"
@@ -176,6 +182,8 @@ def test_execution_regression_owners_have_nonempty_live_collection(tmp_path):
         "test_holdout_c4_projection.py",
         "test_identifier_robustness_fresh_join.py",
         "test_identifier_robustness_multiproduct_report.py",
+        "test_no_answer_evidence.py",
+        "test_identifier_robustness_report.py",
         "test_identifier_robustness_strata.py",
     )
     inventory = tmp_path / "inventory.json"

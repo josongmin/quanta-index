@@ -4017,31 +4017,72 @@ def evaluate(
     return output
 
 
+def no_answer_observation(task: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Classify a validated negative result before assigning any empty-result score."""
+    require(task["answerable"] is False, "no-answer observation requires a negative task")
+    status = result["status"]
+    require(status in RESULT_STATUSES, "unknown no-answer execution status")
+    candidates = result["candidates"]
+    require(isinstance(candidates, list), "no-answer candidates must be a list")
+    require(
+        bool(candidates) == (status in SCORED_STATUSES),
+        "no-answer candidate presence disagrees with execution status",
+    )
+    reason = None
+    if status not in (*SCORED_STATUSES, "abstained"):
+        reason = "execution_status_" + status
+    elif "file_judgments" in task:
+        reason = ranked_file_judgment_exclusion(
+            task["judgment_policy"], task["file_judgments"], [row["path"] for row in candidates]
+        )
+    return {
+        "status": status,
+        "eligible": reason is None,
+        **({"reason": reason} if reason else {}),
+        "no_gold_empty_at_10": not candidates if reason is None else NOT_APPLICABLE,
+    }
+
+
 def no_answer_diagnostics(
     eval_tasks: dict[str, dict[str, Any]],
     results: dict[tuple[str, str], dict[str, Any]],
     route: str,
 ) -> dict[str, Any]:
-    """Count nonempty results without assuming an absent label forbids content hits."""
+    """Keep requested negatives separate from successful, judged scoring coverage."""
     task_ids = sorted(task_id for task_id, task in eval_tasks.items() if not task["answerable"])
     status_counts: dict[str, int] = {}
+    eligible_ids = []
+    excluded = []
+    abstained = 0
     nonempty_results = 0
     for task_id in task_ids:
         result = results[(task_id, route)]
-        status = _result_status(result)
+        observation = no_answer_observation(eval_tasks[task_id], result)
+        status = observation["status"]
         status_counts[status] = status_counts.get(status, 0) + 1
-        nonempty_results += bool(_ordered_candidates(result))
-    abstained = status_counts.get("abstained", 0)
+        if observation["eligible"]:
+            eligible_ids.append(task_id)
+            abstained += observation["no_gold_empty_at_10"]
+            nonempty_results += not observation["no_gold_empty_at_10"]
+        else:
+            excluded.append({"task_id": task_id, "reason": observation["reason"]})
+    eligible_count = len(eligible_ids)
     return {
         "task_ids": task_ids,
         "sample_count": len(task_ids),
+        "eligible_task_ids": eligible_ids,
+        "eligible_count": eligible_count,
+        "excluded": excluded,
+        "metric_denominator": "eligible_judged_successful_no_answer_tasks",
         "reference_contracts": diagnostic_reference_contracts(
             {task_id: eval_tasks[task_id] for task_id in task_ids}
         ),
         "abstained": abstained,
-        "abstention_rate": abstained / len(task_ids) if task_ids else NOT_APPLICABLE,
+        "abstention_rate": abstained / eligible_count if eligible_count else NOT_APPLICABLE,
         "nonempty_results": nonempty_results,
-        "nonempty_result_rate": nonempty_results / len(task_ids) if task_ids else NOT_APPLICABLE,
+        "nonempty_result_rate": nonempty_results / eligible_count
+        if eligible_count
+        else NOT_APPLICABLE,
         "status_counts": status_counts,
     }
 
@@ -4219,6 +4260,16 @@ def complete_scored_file_rows(
         and comparison["sample_count"] == len(answerable),
         "complete scored file comparison lacks paired answerable coverage",
     )
+    for route in (baseline, candidate):
+        negative = report["no_answer"]["routes"][route]
+        require(
+            all(status in (*SCORED_STATUSES, "abstained") for status in negative["status_counts"]),
+            f"complete scored file evidence has failed no-answer observations: {route}",
+        )
+        require(
+            negative["eligible_count"] == negative["sample_count"] and not negative["excluded"],
+            f"complete scored file comparison lacks complete no-answer judgments: {route}",
+        )
     scores = {
         (row["task_id"], row["route"]): row["scores"]["ndcg_at_10"]
         for row in file_metrics["per_query"]
@@ -4244,21 +4295,17 @@ def evaluate_complete_scored_file_evidence(
     negative_ids = sorted(task_id for task_id, task in eval_tasks.items() if not task["answerable"])
     # Positive-only cohorts measure ranked retrieval, not abstention. The
     # existing summary represents zero controls as not applicable, never zero.
-    negative_status = {
-        (task_id, route): _result_status(results[task_id, route])
+    negative_observations = {
+        (task_id, route): no_answer_observation(eval_tasks[task_id], results[task_id, route])
         for task_id in negative_ids
         for route in (baseline, candidate)
     }
-    require(
-        all(status in (*SCORED_STATUSES, "abstained") for status in negative_status.values()),
-        "complete scored file evidence has failed no-answer observations",
-    )
     negative_rows = [
         (
             task_id,
             eval_tasks[task_id],
-            float(negative_status[task_id, candidate] == "abstained")
-            - float(negative_status[task_id, baseline] == "abstained"),
+            float(negative_observations[task_id, candidate]["no_gold_empty_at_10"])
+            - float(negative_observations[task_id, baseline]["no_gold_empty_at_10"]),
         )
         for task_id in negative_ids
     ]
@@ -4283,7 +4330,7 @@ def evaluate_complete_scored_file_evidence(
             {
                 "task_id": task_id,
                 "route": route,
-                "status": negative_status[task_id, route],
+                "status": negative_observations[task_id, route]["status"],
             }
             for route in (baseline, candidate)
         )

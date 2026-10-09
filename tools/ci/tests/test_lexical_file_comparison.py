@@ -371,10 +371,13 @@ def test_natural_language_native_defaults_cannot_issue_comparable_quality():
     from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
 
     products = {
-        name: {"rank_unit": "distinct_file", "per_query": [{"task_id": "Q1", "eligible": True}]}
+        name: {
+            "rank_unit": "distinct_file",
+            "per_query": [{"task_id": "Q1", "status": "success", "eligible": True}],
+        }
         for name in ("quanta_lexical", "semble_lexical_file", "sourcegraph", "opengrok", "cs")
     }
-    result = comparison_validity({"Q1"}, {"Q1"}, products, "natural_language_file")
+    result = comparison_validity({"Q1"}, products, "natural_language_file")
     assert result["status"] == "BLOCKED"
     assert "unequal_natural_language_query_semantics" in result["reasons"]
     assert result["quality_ranking_permitted"] is False
@@ -383,10 +386,368 @@ def test_natural_language_native_defaults_cannot_issue_comparable_quality():
 def test_partial_judgment_intersection_cannot_be_a_full_population_score():
     from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
 
-    result = comparison_validity({"Q1", "Q2"}, {"Q1"}, {}, "code_search_file")
+    products = _comparison_products()
+    for product in products.values():
+        product["per_query"].append({"task_id": "Q2", "status": "success", "eligible": False})
+    result = comparison_validity({"Q1", "Q2"}, products, "code_search_file")
     assert result["status"] == "BLOCKED"
     assert "incomplete_common_judgments_or_capabilities" in result["reasons"]
     assert result["coverage_fraction"] == 0.5
+
+
+def _comparison_products():
+    return {
+        name: {
+            "rank_unit": "distinct_file",
+            "per_query": [
+                {
+                    "task_id": "Q1",
+                    "status": "success",
+                    "eligible": True,
+                    "answerable": True,
+                    "file_hit_at_10": True,
+                    "file_recall_at_10": 1.0,
+                    "file_ndcg_at_10": 1.0,
+                    "no_gold_empty_at_10": "not_applicable",
+                }
+            ],
+        }
+        for name in ("quanta_lexical", "semble_lexical_file", "sourcegraph", "opengrok", "cs")
+    }
+
+
+def test_complete_observed_file_population_is_diagnostic_only():
+    from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
+
+    result = comparison_validity({"Q1"}, _comparison_products(), "code_search_file")
+    assert result["status"] == "VERIFIED_DIAGNOSTIC"
+    assert result["common_eligible_task_ids"] == ["Q1"]
+    assert result["coverage_fraction"] == 1.0
+    assert result["quality_ranking_permitted"] is False
+
+
+@pytest.mark.parametrize("product", ["quanta_lexical", "semble_lexical_file", "sourcegraph"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"eligible": None},
+        {"eligible": 1},
+        {"answerable": None},
+        {"file_hit_at_10": 1},
+        {"file_recall_at_10": "not_applicable"},
+        {"file_recall_at_10": float("nan")},
+        {"file_ndcg_at_10": 1.1},
+        {"file_hit_at_10": False},
+    ],
+)
+def test_common_population_requires_explicit_coherent_file_scores(product, change):
+    from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
+
+    products = _comparison_products()
+    products[product]["per_query"][0].update(change)
+    result = comparison_validity({"Q1"}, products, "code_search_file")
+    assert result["status"] == "BLOCKED"
+    assert result["common_eligible_task_ids"] == []
+
+
+def test_common_population_rejects_cross_product_answerability_disagreement():
+    from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
+
+    products = _comparison_products()
+    products["cs"]["per_query"][0].update(
+        answerable=False,
+        file_hit_at_10="not_applicable",
+        file_recall_at_10="not_applicable",
+        file_ndcg_at_10="not_applicable",
+        no_gold_empty_at_10=True,
+    )
+    result = comparison_validity({"Q1"}, products, "code_search_file")
+    assert result["status"] == "BLOCKED"
+    assert "inconsistent_product_answerability" in result["reasons"]
+    assert result["common_eligible_task_ids"] == []
+
+
+@pytest.mark.parametrize("field", ["eligible", "answerable", "file_ndcg_at_10"])
+def test_missing_file_evidence_cannot_default_into_common_population(field):
+    from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
+
+    products = _comparison_products()
+    products["cs"]["per_query"][0].pop(field)
+    result = comparison_validity({"Q1"}, products, "code_search_file")
+    assert result["status"] == "BLOCKED"
+    assert result["common_eligible_task_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "fault,reason",
+    [
+        ("empty_products", "incomplete_product_inventory"),
+        ("missing_product", "incomplete_product_inventory"),
+        ("extra_product", "incomplete_product_inventory"),
+        ("empty_tasks", "empty_requested_population"),
+        ("duplicate", "incomplete_or_duplicate_product_observations"),
+        ("foreign_task", "incomplete_or_duplicate_product_observations"),
+        ("missing_task", "incomplete_or_duplicate_product_observations"),
+        ("rank_unit", "invalid_product_rank_unit"),
+    ],
+)
+def test_comparison_admission_requires_complete_actual_observations(fault, reason):
+    from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
+
+    products = _comparison_products()
+    requested = {"Q1"}
+    if fault == "empty_products":
+        products = {}
+    elif fault == "missing_product":
+        products.pop("cs")
+    elif fault == "extra_product":
+        products["unknown"] = products["cs"]
+    elif fault == "empty_tasks":
+        requested = set()
+        for product in products.values():
+            product["per_query"] = []
+    elif fault == "duplicate":
+        products["cs"]["per_query"] *= 2
+    elif fault == "foreign_task":
+        products["cs"]["per_query"][0]["task_id"] = "foreign"
+    elif fault == "missing_task":
+        products["cs"]["per_query"] = []
+    else:
+        for product in products.values():
+            product["rank_unit"] = "invented"
+    result = comparison_validity(requested, products, "code_search_file")
+    assert result["status"] == "BLOCKED"
+    assert reason in result["reasons"]
+    assert result["quality_ranking_permitted"] is False
+    if fault == "rank_unit":
+        assert result["common_eligible_task_ids"] == []
+
+
+@pytest.mark.parametrize("status", ["timeout", "error", "unavailable", "unsupported", None])
+@pytest.mark.parametrize("product", ["quanta_lexical", "semble_lexical_file", "sourcegraph"])
+def test_failed_execution_cannot_enter_common_comparison_population(product, status):
+    from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
+
+    products = _comparison_products()
+    products[product]["per_query"][0]["status"] = status
+    result = comparison_validity({"Q1"}, products, "code_search_file")
+    assert result["status"] == "BLOCKED"
+    assert result["common_eligible_task_ids"] == []
+    assert result["common_eligible_tasks"] == 0
+    assert result["capability_coverage"][product]["ineligible_task_ids"] == ["Q1"]
+
+
+@pytest.mark.parametrize("product", ["sourcegraph", "opengrok", "cs"])
+@pytest.mark.parametrize("returned", [[], ["partial.go"]])
+def test_partial_relevance_does_not_change_negative_answerability(tmp_path, product, returned):
+    row = {
+        "lane": "symbol_only",
+        "task_id": "Q1",
+        "submitted_query": "Needle",
+        "gold_paths": [],
+        "file_hit_at_10": False,
+        "elapsed_ms": 1.0,
+    }
+    if product == "cs":
+        row.update(exit_code=0, paths=returned)
+    else:
+        row.update(http_status=200, error=None, file_paths_top_10=returned)
+        if product == "opengrok":
+            row["field"] = "full"
+    path = tmp_path / "rows.jsonl"
+    path.write_text(json.dumps(row) + "\n")
+    result = product_result(
+        product,
+        path,
+        {"Q1": ("Needle", [])},
+        {"partial.go"},
+        file_judgments={"Q1": [{"path": "partial.go", "grade": 1}]},
+        judgment_policies={"Q1": "complete_ranked_pool_v1"},
+    )
+    assert result["answerable_tasks"] == 0
+    assert result["no_gold_tasks"] == 1
+    assert result["hits"] == 0
+    assert result["file_hit_rate_at_10"] == "not_applicable"
+    assert result["file_ndcg_at_10"] == "not_applicable"
+    assert result["no_gold_empty_rate_at_10"] == (1.0 if not returned else 0.0)
+    assert result["per_query"][0]["answerable"] is False
+
+
+def test_answerable_query_retains_partial_relevance_gains(tmp_path):
+    row = {
+        "lane": "symbol_only",
+        "task_id": "Q1",
+        "submitted_query": "Needle",
+        "gold_paths": ["answer.go"],
+        "http_status": 200,
+        "error": None,
+        "file_paths_top_10": ["partial.go"],
+        "file_hit_at_10": False,
+        "elapsed_ms": 1.0,
+    }
+    path = tmp_path / "rows.jsonl"
+    path.write_text(json.dumps(row) + "\n")
+    result = product_result(
+        "sourcegraph",
+        path,
+        {"Q1": ("Needle", ["answer.go"])},
+        {"answer.go", "partial.go"},
+        file_judgments={
+            "Q1": [{"path": "answer.go", "grade": 3}, {"path": "partial.go", "grade": 1}]
+        },
+        judgment_policies={"Q1": "complete_ranked_pool_v1"},
+    )
+    assert result["answerable_tasks"] == 1
+    assert result["file_recall_at_10"] == 0.5
+    assert result["file_ndcg_at_10"] == pytest.approx(1 / (7 + 1 / math.log2(3)))
+
+
+def test_validated_grade_threshold_survives_external_scoring(tmp_path):
+    from tools.benchmark.retrieval import evaluator as ev
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    raw = b"package fixture\n// Needle is only partially relevant.\n"
+    (repo / "partial.go").write_bytes(raw)
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "partial.go"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Benchmark Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "test: pin graded source",
+        ],
+        check=True,
+    )
+    commit = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+    files = [{"path": "partial.go", "file_sha256": digest(raw)}]
+    judgments = [{**files[0], "grade": 1}]
+    _, _, suite, _ = fixture_inputs(tmp_path)
+    suite.update(
+        repository_commit=commit,
+        diagnostic_policy=ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
+        routes=["lexical", "semble-lexical-file"],
+        file_universe=files,
+        file_universe_digest=ev.universe_digest(files),
+        tasks=[
+            {
+                "task_id": "Q1",
+                "split": "eval",
+                "query": "Needle",
+                "query_intent": "bare_symbol",
+                "query_sha256": digest(b"Needle"),
+                "query_family_id": "threshold-negative",
+                "answerable": False,
+                "answerability_min_grade": 2,
+                "gold": [],
+                "file_judgments": judgments,
+                "judgment_policy": "complete_ranked_pool_v1",
+                "label_review": {
+                    "assessment": "reviewed_unambiguous",
+                    "reviewer_id": "synthetic-unit-fixture",
+                    "evidence_sha256": digest(b"synthetic unit fixture, not human gold"),
+                },
+                "evaluation_contract": {
+                    "request_mode": "default_file_search",
+                    "gold_unit": "distinct_file",
+                    "result_unit": "distinct_file",
+                },
+            }
+        ],
+    )
+    checked, pack, _source = ev.validate_suite(repo, suite)
+    expected = _tasks(checked, pack)
+    assert expected == {"Q1": ("Needle", [])}
+    path = tmp_path / "graded-rows.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "lane": "symbol_only",
+                "task_id": "Q1",
+                "submitted_query": "Needle",
+                "gold_paths": [],
+                "http_status": 200,
+                "error": None,
+                "file_paths_top_10": ["partial.go"],
+                "file_hit_at_10": False,
+                "elapsed_ms": 1.0,
+            }
+        )
+        + "\n"
+    )
+    result = product_result(
+        "sourcegraph",
+        path,
+        expected,
+        {"partial.go"},
+        file_judgments={"Q1": judgments},
+        judgment_policies={"Q1": "complete_ranked_pool_v1"},
+    )
+    assert result["answerable_tasks"] == 0
+    assert result["no_gold_empty_rate_at_10"] == 0.0
+    assert result["file_recall_at_10"] == "not_applicable"
+
+
+@pytest.mark.parametrize("status", ["timeout", "error", "unavailable"])
+@pytest.mark.parametrize("answerable", [True, False])
+def test_native_failed_observation_cannot_become_empty_result_success(status, answerable):
+    from tools.benchmark.retrieval.lexical_file_comparison import _file_pair_observation
+
+    task = {
+        "answerable": answerable,
+        "judgment_policy": "complete_ranked_pool_v1",
+        "file_judgments": [],
+    }
+    observation = {
+        "task_id": "Q1",
+        "route": "lexical",
+        "status": status,
+        "candidates": [],
+        "timings": {"query_latency_ms": None},
+    }
+    judgments = (
+        {"eligible": True, "scores": {"hit_at_10": 1.0, "recall_at_10": 1.0, "ndcg_at_10": 1.0}}
+        if answerable
+        else None
+    )
+    row = _file_pair_observation(observation, task, judgments)
+    assert row["eligible"] is False
+    assert row["reason"] == "execution_status_" + status
+    assert row["no_gold_empty_at_10"] == "not_applicable"
+    assert row["file_hit_at_10"] == "not_applicable"
+
+
+def test_native_negative_observation_retains_unjudged_reason():
+    from tools.benchmark.retrieval.lexical_file_comparison import _file_pair_observation
+
+    row = _file_pair_observation(
+        {
+            "task_id": "Q1",
+            "route": "lexical",
+            "status": "success",
+            "candidates": [{"path": "unknown.go"}],
+            "timings": {"query_latency_ms": 1.0},
+        },
+        {"answerable": False, "judgment_policy": "complete_ranked_pool_v1", "file_judgments": []},
+        None,
+    )
+    assert row["eligible"] is False
+    assert row["reason"] == "unjudged_ranked_file"
+    assert row["no_gold_empty_at_10"] == "not_applicable"
 
 
 def test_external_oracle_rescore_rejects_partial_or_off_view_judgments(tmp_path):
@@ -637,6 +998,8 @@ def test_product_result_separates_answerable_recall_and_no_gold_empty_rate(tmp_p
     assert result["no_gold_empty_rate_at_10"] == 1.0
     assert next(row for row in result["per_query"] if row["task_id"] == "negative") == {
         "task_id": "negative",
+        "status": "success",
+        "answerable": False,
         "eligible": True,
         "file_hit_at_10": "not_applicable",
         "file_recall_at_10": "not_applicable",

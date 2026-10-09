@@ -597,44 +597,39 @@ def compose(
         "diagnostic status counts mismatch",
     )
     no_answer_ids = set(tasks) - answerable
-    abstained = sum(results[task_id]["status"] == "abstained" for task_id in no_answer_ids)
     no_answer_report = (
         diagnostic["no_answer"]["routes"][route] if paired else diagnostic["no_answer"]
     )
-    _require(
-        sum(no_answer_report["status_counts"].values()) == len(tasks) - len(answerable),
-        "no-answer status count mismatch",
-    )
-    _require(
-        dict(Counter(results[task_id]["status"] for task_id in tasks if task_id not in answerable))
-        == no_answer_report["status_counts"],
-        "no-answer status mismatch",
-    )
     _require(set(no_answer_report["task_ids"]) == no_answer_ids, "no-answer task ID mismatch")
-    _require(no_answer_report["sample_count"] == len(no_answer_ids), "no-answer count mismatch")
-    _require(no_answer_report["abstained"] == abstained, "no-answer abstained count mismatch")
-    _require(
-        no_answer_report["abstention_rate"]
-        == (abstained / len(no_answer_ids) if no_answer_ids else evaluator.NOT_APPLICABLE),
-        "no-answer abstention rate mismatch",
+    expected_no_answer = evaluator.no_answer_diagnostics(
+        tasks, {(task, route): result for task, result in results.items()}, route
     )
-    nonempty_no_answer = sum(bool(results[task_id]["candidates"]) for task_id in no_answer_ids)
-    _require(
-        no_answer_report["nonempty_results"] == nonempty_no_answer,
-        "no-answer nonempty result count mismatch",
-    )
-    _require(
-        no_answer_report["nonempty_result_rate"]
-        == (nonempty_no_answer / len(no_answer_ids) if no_answer_ids else evaluator.NOT_APPLICABLE),
-        "no-answer nonempty result rate mismatch",
-    )
+    for field in (
+        "task_ids",
+        "sample_count",
+        "eligible_task_ids",
+        "eligible_count",
+        "excluded",
+        "metric_denominator",
+        "abstained",
+        "abstention_rate",
+        "nonempty_results",
+        "nonempty_result_rate",
+        "status_counts",
+    ):
+        _require(
+            evaluator.canonical(no_answer_report.get(field))
+            == evaluator.canonical(expected_no_answer[field]),
+            f"no-answer {field} mismatch",
+        )
+    eligible_no_answer = set(expected_no_answer["eligible_task_ids"])
 
     breakdown: dict[str, dict[str, int | None]] = {}
     for label in ("unique", "ambiguous", "no_answer"):
         admitted_ids = {task_id for task_id, value in strata.items() if value == label}
-        eligible_ids = admitted_ids & eligible
+        eligible_ids = admitted_ids & (eligible_no_answer if label == "no_answer" else eligible)
         hits = 0
-        for task_id in eligible_ids:
+        for task_id in eligible_ids if label != "no_answer" else ():
             score = scored_rows[task_id]["scores"]["hit_at_10"]
             _require(score in (0.0, 1.0), "invalid evaluator hit value")
             hits += int(score)
@@ -648,7 +643,8 @@ def compose(
         "stratum sum mismatch",
     )
     _require(
-        sum(int(row["eligible"]) for row in breakdown.values()) == len(eligible),
+        sum(int(row["eligible"]) for row in breakdown.values())
+        == len(eligible) + len(eligible_no_answer),
         "eligible stratum sum mismatch",
     )
     admitted_records = {
@@ -740,11 +736,17 @@ def compose(
         "not_admitted": not_admitted,
         "unsupported_query_form": len(unsupported) if lane not in NEGATIVE_LANES else 0,
         "submitted": len(tasks),
-        "eligible": len(eligible),
+        "eligible": len(eligible) + len(eligible_no_answer),
+        "eligible_answerable": len(eligible),
+        "eligible_no_answer": len(eligible_no_answer),
         "status_counts": dict(sorted(statuses.items())),
         "no_answer": {
             "negative_reference_scope": negative_reference_scope,
             "sample_count": no_answer_report["sample_count"],
+            "eligible_task_ids": no_answer_report["eligible_task_ids"],
+            "eligible_count": no_answer_report["eligible_count"],
+            "excluded": no_answer_report["excluded"],
+            "metric_denominator": no_answer_report["metric_denominator"],
             "abstained": no_answer_report["abstained"],
             "abstention_rate": no_answer_report["abstention_rate"],
             "nonempty_results": no_answer_report["nonempty_results"],

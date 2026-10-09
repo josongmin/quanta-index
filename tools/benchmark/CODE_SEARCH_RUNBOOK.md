@@ -117,6 +117,39 @@ requested, eligible and excluded populations. A partial common intersection
 cannot issue a full-population score. Mechanical source-oracle labels instead
 describe exhaustive matches within their explicit lexical domain.
 
+The comparison owner derives its common cohort from the complete five-product
+task inventory and explicit successful terminal states. Empty or duplicate
+observations, missing products, and failed queries cannot establish full
+coverage. Preserve the suite's answerability threshold separately from partial
+relevance grades: a grade-1 file does not turn a threshold-2 no-answer task into
+an answerable task. Failed no-answer requests are unavailable observations,
+never successful empty responses. Typed output retains judgment exclusions as
+`unjudged` rows with an explicit count and preserves native external adapter
+and pooled/source-oracle label provenance.
+
+Current file observations require explicit eligibility and answerability,
+admissible terminal states, and coherent finite hit/recall/nDCG values. The
+common cohort rejects cross-product answerability disagreements and invalid
+result units. The typed formatter uses the same observation validator and
+rejects products that shadow another capture owner's inventory. The paired
+Quanta–Semble formatter also excludes unjudged negative results under the
+complete-pool policy and preserves execution failures separately from judgment
+exclusions.
+
+The evaluator owns negative-result eligibility through `no_answer_observation`.
+No-answer diagnostics retain requested `sample_count`, raw status counts,
+eligible task IDs/count, and exclusions. Empty/nonempty rates use only eligible,
+successful observations; zero eligible rows produce `not_applicable`. A
+complete-scored file report requires complete negative coverage on both routes,
+including complete-pool file judgments. Robustness reports replay this same
+contract. Common five-product summaries expose separate positive/negative
+counts and `no_gold_empty_rate_at_10` on the common cohort.
+
+Diagnostic reports containing the older no-answer summary must be re-derived
+for the current scorer contract. Preserve the original artifacts and their
+frozen scorer for historical replay; a current scorer must reject differing
+derived report bytes rather than silently accepting stale summary fields.
+
 Prepare an engine-independent content-identifier diagnostic before any search:
 
 ```sh
@@ -135,6 +168,13 @@ same suite/pack for all five products. This is native file relevance for ASCII
 content tokens, including tokens in comments and strings; it is not declaration
 conformance, natural-language relevance, or an independent unseen holdout.
 Keep negative-query empty rates separate from positive-query relevance.
+
+ASCII word boundaries can split a Unicode word into ASCII fragments. Engines
+with Unicode-aware token boundaries may disagree with that oracle even when
+both implement their declared search behavior. Source-only generation avoids
+product-output-conditioned selection; it does not establish a neutral developer
+workload. Retain these cases and declare the boundary contract rather than
+turning tokenizer differences into an overall product-quality verdict.
 
 All-distinct-file results now declare equivalent result units; historical
 chunk-projected rows retain their separate units. Speed still has unlike native
