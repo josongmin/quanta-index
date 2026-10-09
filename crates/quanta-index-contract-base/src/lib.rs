@@ -30,8 +30,9 @@ pub use activation_token::{
 };
 pub use ids::{
     FileId, GenerationId, IdentityValidationErrorV1, LogicalGenerationIdentityV1, ManifestDigest,
-    ManifestGeneration, NativeIdentityCopyErrorV1, RepoId, RepoRelativePath,
-    RepositoryRevisionIdentityV1, RevisionId, try_copy_string_into_with_native_birth_v1,
+    ManifestGeneration, NativeIdentityCopyErrorV1, NativeIdentityCopyRefusalV1, RepoId,
+    RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,
+    try_copy_string_into_slots_with_native_birth_v1, try_copy_string_into_with_native_birth_v1,
     try_copy_string_with_native_birth_v1,
 };
 pub use query::{

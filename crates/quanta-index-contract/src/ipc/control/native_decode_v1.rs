@@ -519,11 +519,15 @@ impl<P: NativeCorpusDecodeAdmissionV1 + ?Sized> CorpusPolicyV1 for NativeCorpusP
             })
         {
             let marker = match &cause {
-                NativeIdentityCopyErrorV1::Admission(_) => NativeCorpusDecodeRefusalV1::Admission,
-                NativeIdentityCopyErrorV1::NativeAllocationFailed => {
+                NativeIdentityCopyErrorV1::Admission(_)
+                | NativeIdentityCopyErrorV1::AdmissionAfterReserveFailure { .. } => {
+                    NativeCorpusDecodeRefusalV1::Admission
+                }
+                NativeIdentityCopyErrorV1::NativeAllocationFailed(_) => {
                     NativeCorpusDecodeRefusalV1::NativeAllocation
                 }
                 NativeIdentityCopyErrorV1::InvalidNativeProducer
+                | NativeIdentityCopyErrorV1::InvalidNativeProducerAfterReserveFailure(_)
                 | NativeIdentityCopyErrorV1::InvalidNativeCapacity => {
                     NativeCorpusDecodeRefusalV1::InvalidNativeProducer
                 }

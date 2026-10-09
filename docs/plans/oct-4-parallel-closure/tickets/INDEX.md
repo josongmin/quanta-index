@@ -348,10 +348,104 @@ input/policy lifetime 종료 후 DATA 보존을 검사한다. 이 delta의 실�
   합산하거나 최초 attempt를 GREEN으로 바꾸지 않는다. 이 결과는 기존 ordinary daemon
   activation/query/restart/history의 영향 검증이며 Native Core/Original Source 수용이 아니다.
 - 위 실행 결과는 코드 후보 `c41ba2509d59ff08c81b822533c30b8b58f87b60`에 속한다.
-  이후 문서 정정 후속 후보는 이 INDEX.md만 변경하며 코드·테스트·설정·API baseline 입력은
-  동일하다. 문서 정정 후 Rust/daemon 재실행은 **NOT_RUN**이다.
+  문서 정정 후보 `79bea4c0f5c538c45c9af31329490850c0cfe62c`는 이 INDEX.md만 변경하며
+  코드·테스트·설정·API baseline 입력은 동일하다. 문서 정정 후 Rust/daemon 재실행은
+  **NOT_RUN**이다. 아래 retained-copy 추가 source의 검증 결과로 재사용하지 않는다.
 - Semantica actual Core/Original Source 수용, installed E2E, remote CI는 **NOT_RUN**이다.
   main/remote 통합은 전체 producer/receiver/Source cohort 수용과 별도다.
+
+### Retained native String / typed-ID copy — 2026-10-09
+
+기존 `79bea4c0`의 canonical String producer는 callback에서
+`String::try_reserve_exact(bytes).is_ok()`로 전체 `TryReserveError`를 버렸다.
+Runtime의 unit wrapper나 Copy 분류만으로 이미 사라진 원본을 복구할 수 없었다.
+이 추가 source는 `79bea4c0`를 부모로 하는 별도 **Source-only / authored-not-run**
+후보다. 기존 qualified producer ref와 `c41ba250` 코드 실행 증거는 별도로 보존한다.
+
+같은 physical reserve/callback body를 `admit_native_copy_backing_v1`로 추출했다.
+reserve 실패 원본을 이동해 보존하고, 추가 admission/protocol 거절이 발생하면 두 원인을
+함께 보존한다. 기존 `NativeIdentityCopyErrorV1<E>`는 `Copy`를 제거했으며 정확한
+새 shape는 다음과 같다. `Clone/Eq/PartialEq/Debug`는 유지하지만 producer는 원본을
+clone하지 않는다.
+
+```rust
+pub enum NativeIdentityCopyErrorV1<E> {
+    Admission(E),
+    AdmissionAfterReserveFailure {
+        admission: E,
+        reserve: std::collections::TryReserveError,
+    },
+    NativeAllocationFailed(std::collections::TryReserveError),
+    InvalidNativeProducer,
+    InvalidNativeProducerAfterReserveFailure(std::collections::TryReserveError),
+    InvalidNativeCapacity,
+}
+// Borrow both complete original causes from an externally retained failure:
+// reserve_failure_v1(&self) -> Option<&TryReserveError>
+// admission_failure_v1(&self) -> Option<&E>
+```
+
+새 finite `NativeIdentityCopyRefusalV1`은 `OccupiedOutput`, `UsedData`,
+`OperationRefused`만 반환한다. 아래 두 unit ABI는 feature gating 없이 Contract-base 및
+Contract umbrella에서 노출된다. 기존 copy/clone/constructor 함수 서명은 유지한다.
+
+```rust
+pub fn try_copy_string_into_slots_with_native_birth_v1<E>(
+    source: &str,
+    value: &mut String,
+    attempted: &mut bool,
+    failure: &mut Option<NativeIdentityCopyErrorV1<E>>,
+    admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+) -> Result<(), NativeIdentityCopyRefusalV1>;
+
+// Implemented on BOTH RepoId and RevisionId:
+pub fn try_clone_into_slots_with_native_birth_v1<E>(
+    &self,
+    backing: &mut String,
+    output: &mut Option<Self>,
+    attempted: &mut bool,
+    failure: &mut Option<NativeIdentityCopyErrorV1<E>>,
+    admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+) -> Result<(), NativeIdentityCopyRefusalV1>;
+```
+
+raw unit driver → shared attempt/parking helper → existing raw copy → SAME physical
+reserve body 순서다. typed unit driver는 같은 attempt helper에서 기존 sealed clone을
+호출하므로 private validated bytes/typed sealing도 같은 owner가 유지한다. 기존 ID
+constructor와 decode runner도 같은 raw copy를 사용하므로 full reserve cause가 기존
+`NativeIdentityConstructionErrorV1::Copy` 및 외부 decode DATA에 그대로 남는다.
+Corpus String producer는 같은 full error를 기존 `StringDataV1.failure`에 보존하고,
+Serde marker 분류만 새 variant까지 확장했다. 새로운 allocator/normalizer/issuer나
+추가 ID validation, work charge, funding bank는 없다.
+
+호출자는 highest Source 밖에 `String`, `attempted=false`, `failure=None`, typed clone이면
+`output=None`을 먼저 둔다. occupied error/backing/output 및 used attempt는 input/admission
+poll 전에 거절하고 모든 기존 슬롯을 보존한다. attempt는 zero-byte 성공과 pre-birth 거절도
+소비한다. full error는 외부 `failure`로 pure move되며 반환 unit만으로 원인을 대체하지 않는다.
+반복 callback은 두 번째 reserve를 실행하지 않으므로 첫 물리 원본이 덮어써지지 않는다.
+late admission E의 기존 우선순위는 유지하면서 reserve 원본도 함께 남긴다. 성공/부분
+String, full error, 실제 funding bank와 반환 status는 enclosing owner가 finisher까지
+보유한다. producer는 funding을 소유·release하지 않으며 input/control/callback을 저장하지 않는다.
+
+Semantica dense/ManifestDigest owner의 co-cut은 새 full enum의 exhaustive match와 외부
+failure bank를 연결해야 한다. sealed RepoId/RevisionId clone에는 위 typed unit ABI를 쓴다.
+private ManifestDigest clone도 이 raw unit body 또는 기존 private clone의 full error를
+보존하는 같은 external-slot adapter로 연결한다. ordinary `new`/String copy/NFC 재검증을
+다시 구현하지 않는다. admission+reserve 두 원인을 한 classification으로 지우지 않는다.
+Semantica source는 이 후보에서 수정하지 않았다.
+
+- **VERIFIED (static only)** — scoped canonical formatter, `git diff --check`,
+  producer/caller/re-export source 대조. 로컬 std 문서에서도 `TryReserveError`의
+  Clone/Eq/PartialEq 지원과 Copy 부재를 확인했다. 컴파일 결과가 아니다.
+- **AUTHORED / NOT_RUN** — owner 회귀6개: 실제 std capacity-overflow 원본과 late E의
+  동시 보존, callback 반복/잘못된 report, first-cause/re-entry no-poll, partial backing 및
+  외부 mock funding, sealed typed bytes, occupied slots, empty/pre-birth attempt 상태.
+  overflow는 SAME private reserve body에 `usize::MAX` demand를 주며 forged str/실제 OOM
+  또는 대체 allocator를 사용하지 않는다. mock admission은 Original Source proof가 아니다.
+- **NOT_RUN** — 이 추가 source의 Rust compile/Clippy/unit/daemon, public-API snapshot 및
+  module/hexagonal gate 실행. baseline은 이전 후보 그대로 보존했으며 새 enum/API의
+  snapshot 갱신·검증이 남아 있다. guard를 억제하거나 기존 GREEN을 새 source에 붙이지 않는다.
+- Native Core/Original Source/installed/remote CI, main 통합·push는 **NOT_RUN**이다.
 
 ### SDK connect native 경계의 추가 대조 — 2026-10-09
 
