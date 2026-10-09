@@ -3969,6 +3969,7 @@ pub quanta_index_contract::ipc::SourcePublicationBinding::target: quanta_index_c
 impl quanta_index_contract::SourcePublicationBinding
 pub fn quanta_index_contract::SourcePublicationBinding::for_batch(batch: &quanta_index_contract::SearchCorpusIngestBatch) -> Self
 impl quanta_index_contract::SourcePublicationBinding
+pub fn quanta_index_contract::SourcePublicationBinding::validate_published_receipt(&self, requested: &Self, sealed: bool, receipt: &quanta_index_contract::BatchPublishReceipt) -> core::result::Result<(), alloc::string::String>
 pub fn quanta_index_contract::SourcePublicationBinding::validate_receipt(&self, requested: &Self, sealed: bool, receipt: &quanta_index_contract::BatchPublishReceipt) -> core::result::Result<(), alloc::string::String>
 impl core::clone::Clone for quanta_index_contract::SourcePublicationBinding
 pub fn quanta_index_contract::SourcePublicationBinding::clone(&self) -> quanta_index_contract::SourcePublicationBinding
@@ -15698,6 +15699,7 @@ pub quanta_index_contract::SourcePublicationBinding::target: quanta_index_contra
 impl quanta_index_contract::SourcePublicationBinding
 pub fn quanta_index_contract::SourcePublicationBinding::for_batch(batch: &quanta_index_contract::SearchCorpusIngestBatch) -> Self
 impl quanta_index_contract::SourcePublicationBinding
+pub fn quanta_index_contract::SourcePublicationBinding::validate_published_receipt(&self, requested: &Self, sealed: bool, receipt: &quanta_index_contract::BatchPublishReceipt) -> core::result::Result<(), alloc::string::String>
 pub fn quanta_index_contract::SourcePublicationBinding::validate_receipt(&self, requested: &Self, sealed: bool, receipt: &quanta_index_contract::BatchPublishReceipt) -> core::result::Result<(), alloc::string::String>
 impl core::clone::Clone for quanta_index_contract::SourcePublicationBinding
 pub fn quanta_index_contract::SourcePublicationBinding::clone(&self) -> quanta_index_contract::SourcePublicationBinding

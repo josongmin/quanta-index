@@ -1774,7 +1774,7 @@ pub(crate) fn bind_ingest_response(
             .ok_or_else(|| SdkError::Protocol("missing search corpus request binding".into()))?;
         outcome
             .publication
-            .validate_receipt(requested, *sealed, &outcome.receipt)
+            .validate_published_receipt(requested, *sealed, &outcome.receipt)
             .map_err(|error| {
                 binding_error(
                     route,
