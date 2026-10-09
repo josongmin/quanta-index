@@ -20,8 +20,9 @@ use crate::{ClientProfile, ConnectOptions, QuantaIndexClientPayloadV1};
 
 /// Borrowed authentic construction policy.
 ///
-/// Implementations retain actual
-/// funding outside payloads and shared handles, through physical header drop.
+/// Implementations retain actual funding in the external DATA through path and
+/// pending-header birth. Successful header birth moves the whole funding bank
+/// into `Shared`; a completed handle must own its funding through final drop.
 /// `Funding` must contain no Source/control/input reference or callback.
 pub trait NativeSdkConnectAdmissionV1 {
     type OriginalError;
@@ -32,8 +33,9 @@ pub trait NativeSdkConnectAdmissionV1 {
     fn consume_connect_work_v1(&mut self, units: u64) -> Result<(), Self::OriginalError>;
 
     /// Admit the SDK's actual `PathBuf` reserve before invoking birth exactly
-    /// once. Preserve the returned native success. Keep real funding in the
-    /// external bank even if admission refuses after physical birth.
+    /// once. Preserve the returned native success. A positive successful
+    /// reserve leaves real funding in the external bank, including after a
+    /// later admission refusal. A zero-byte path has no reserve callback.
     fn admit_path_birth_v1(
         &mut self,
         bytes: usize,
@@ -48,7 +50,10 @@ pub trait NativeSdkConnectAdmissionV1 {
     /// counter.
     ///
     /// An error, including after header birth, leaves every candidate in the
-    /// supplied external slots and retains actual header funding in the bank.
+    /// supplied external slots. On success, move the actual funding bank into
+    /// `Shared`, leaving the funding slot empty. For zero-byte paths, the
+    /// header birth may create its own bank. The SDK will not publish a handle
+    /// while the bank remains separately owned by DATA.
     fn birth_client_into_slots_v1(
         &mut self,
         payload: &mut Option<QuantaIndexClientPayloadV1>,
@@ -85,9 +90,9 @@ pub enum NativeSdkConnectFailureV1<E> {
 /// Allocation-free storage for one construction attempt.
 ///
 /// Physical state drops
-/// FIRST; complete errors next; the actual funding bank LAST. Retain the entire
-/// DATA through the highest Source finisher. After a pure output transfer the
-/// bank must still outlive every strong/weak handle and dependent backing.
+/// FIRST; complete errors next; any untransferred funding bank LAST. Retain the
+/// entire DATA through the highest Source finisher. After a pure output transfer,
+/// the completed handle itself owns the bank through every strong/weak alias.
 /// DATA and a successful producer status do not issue Source authority.
 pub struct NativeSdkConnectDataV1<E, F, H> {
     shared: Option<H>,
@@ -101,6 +106,10 @@ pub struct NativeSdkConnectDataV1<E, F, H> {
 }
 
 impl<E, F, H> NativeSdkConnectDataV1<E, F, H> {
+    fn has_sealed_shared_v1(&self) -> bool {
+        self.shared.is_some() && self.payload.is_none() && self.funding.is_none()
+    }
+
     #[must_use]
     pub const fn new_v1() -> Self {
         Self {
@@ -131,8 +140,7 @@ impl<E, F, H> NativeSdkConnectDataV1<E, F, H> {
     pub fn is_complete_v1(&self) -> bool {
         self.attempted
             && self.completed
-            && self.shared.is_some()
-            && self.payload.is_none()
+            && self.has_sealed_shared_v1()
             && self.failure.is_none()
             && self.reserve_failure.is_none()
     }
@@ -222,6 +230,9 @@ fn reserve_path_v1<P: NativeSdkConnectAdmissionV1 + ?Sized>(
     }
     if path.capacity() != bytes {
         return Err(NativeSdkConnectFailureV1::InvalidNativeCapacity);
+    }
+    if funding.is_none() {
+        return Err(NativeSdkConnectFailureV1::InvalidNativeProducer);
     }
     Ok(())
 }
@@ -363,7 +374,7 @@ pub fn try_connect_native_into_v1<P: NativeSdkConnectAdmissionV1 + ?Sized>(
         admission
             .birth_client_into_slots_v1(&mut data.payload, &mut data.shared, &mut data.funding)
             .map_err(NativeSdkConnectFailureV1::Admission)?;
-        if data.payload.is_some() || data.shared.is_none() {
+        if !data.has_sealed_shared_v1() {
             return Err(NativeSdkConnectFailureV1::InvalidNativeProducer);
         }
         admission

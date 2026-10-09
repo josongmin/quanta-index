@@ -5,11 +5,14 @@ use std::time::{Duration, Instant};
 
 // A typed inline test double, not a shared allocator or Core/Source proof.
 // Real shared-header construction and alias lifetime belong to the receiver.
-struct InlineOwner(QuantaIndexClientPayloadV1);
+struct InlineOwner {
+    payload: QuantaIndexClientPayloadV1,
+    _funding: Funding,
+}
 impl Deref for InlineOwner {
     type Target = QuantaIndexClientPayloadV1;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.payload
     }
 }
 struct Funding {
@@ -28,6 +31,8 @@ enum BirthMode {
     Repeat,
     Lie,
     SkipHeader,
+    NoFunding,
+    HeaderOnly,
 }
 #[derive(Default)]
 struct Admission {
@@ -82,7 +87,7 @@ impl NativeSdkConnectAdmissionV1 for Admission {
         } else {
             success
         };
-        if receipt {
+        if receipt && !matches!(self.mode, BirthMode::NoFunding) {
             let bank = funding.get_or_insert_with(|| Funding {
                 count: Rc::clone(&self.alive),
             });
@@ -101,7 +106,7 @@ impl NativeSdkConnectAdmissionV1 for Admission {
         &mut self,
         payload: &mut Option<QuantaIndexClientPayloadV1>,
         shared: &mut Option<InlineOwner>,
-        _: &mut Option<Funding>,
+        funding: &mut Option<Funding>,
     ) -> Result<(), Box<u8>> {
         if let Some(cause) = self.early_header.take() {
             return Err(cause);
@@ -109,8 +114,19 @@ impl NativeSdkConnectAdmissionV1 for Admission {
         if matches!(self.mode, BirthMode::SkipHeader) {
             return Ok(());
         }
+        if matches!(self.mode, BirthMode::HeaderOnly) && funding.is_none() {
+            *funding = Some(Funding {
+                count: Rc::clone(&self.alive),
+            });
+            self.alive.set(1);
+        }
         self.headers = self.headers.checked_add(1).expect("fixture header count");
-        *shared = payload.take().map(InlineOwner);
+        if payload.is_some() && funding.is_some() {
+            *shared = Some(InlineOwner {
+                payload: payload.take().expect("checked SDK payload"),
+                _funding: funding.take().expect("checked actual funding"),
+            });
+        }
         if let Some(cause) = self.late_header.take() {
             return Err(cause);
         }
@@ -192,10 +208,13 @@ fn native_refusal_keeps_full_noncopy_error_and_partial_paths() {
         if stage == 3 {
             assert!(data.payload.is_some());
             assert!(data.shared.is_none());
+            assert!(data.funding.is_some());
         }
         if stage >= 4 {
             assert!(data.payload.is_none());
             assert!(data.shared.is_some());
+            assert!(data.funding.is_none());
+            assert!(data.complete_shared_v1().is_none());
         }
         let polls = admission.polls;
         let births = admission.births;
@@ -301,25 +320,25 @@ fn query_only_never_builds_unused_planes_and_output_transfer_is_pure() {
     ));
     let mut output = None;
     assert!(data.complete_into_slot_v1(&mut output).is_ok());
-    let pointer = std::ptr::from_ref(&output.as_ref().expect("client").0);
+    let pointer = std::ptr::from_ref(&output.as_ref().expect("client").payload);
     assert_eq!(
         data.complete_into_slot_v1(&mut output),
         Err(NativeSdkConnectRefusalV1::OccupiedOutput)
     );
     assert_eq!(
-        std::ptr::from_ref(&output.as_ref().expect("client").0),
+        std::ptr::from_ref(&output.as_ref().expect("client").payload),
         pointer
     );
     let alive = Rc::clone(&admission.alive);
     drop(admission);
     assert_eq!(alive.get(), 1);
-    drop(output);
+    drop(data);
     assert_eq!(
         alive.get(),
         1,
-        "external funding survives successful transfer and client destruction"
+        "funding moved into the handle survives source DATA destruction"
     );
-    drop(data);
+    drop(output);
     assert_eq!(alive.get(), 0);
 }
 
@@ -698,6 +717,7 @@ fn late_admission_wins_without_erasing_first_receipt_or_native_error() {
 // not the genuine future funded Core handle or its admitted payload read.
 struct OpaqueOwner {
     _payload: QuantaIndexClientPayloadV1,
+    _funding: Funding,
 }
 #[derive(Default)]
 struct OpaqueAdmission {
@@ -722,7 +742,7 @@ impl NativeSdkConnectAdmissionV1 for OpaqueAdmission {
         &mut self,
         payload: &mut Option<QuantaIndexClientPayloadV1>,
         shared: &mut Option<OpaqueOwner>,
-        _: &mut Option<Funding>,
+        funding: &mut Option<Funding>,
     ) -> Result<(), Box<u8>> {
         if matches!(self.inner.mode, BirthMode::SkipHeader) {
             return Ok(());
@@ -732,9 +752,12 @@ impl NativeSdkConnectAdmissionV1 for OpaqueAdmission {
             .headers
             .checked_add(1)
             .expect("fixture header count");
-        *shared = payload
-            .take()
-            .map(|payload| OpaqueOwner { _payload: payload });
+        if payload.is_some() && funding.is_some() {
+            *shared = Some(OpaqueOwner {
+                _payload: payload.take().expect("checked SDK payload"),
+                _funding: funding.take().expect("checked actual funding"),
+            });
+        }
         if let Some(cause) = self.inner.late_header.take() {
             return Err(cause);
         }
@@ -821,4 +844,145 @@ fn opaque_shared_completion_borrows_only_complete_handles_and_preserves_slots() 
             original
         );
     }
+}
+
+struct UnfundedOwner {
+    _payload: QuantaIndexClientPayloadV1,
+}
+
+#[derive(Default)]
+struct RetainedFundingAdmission {
+    inner: Admission,
+}
+
+impl NativeSdkConnectAdmissionV1 for RetainedFundingAdmission {
+    type OriginalError = Box<u8>;
+    type Funding = Funding;
+    type Shared = UnfundedOwner;
+
+    fn consume_connect_work_v1(&mut self, units: u64) -> Result<(), Box<u8>> {
+        self.inner.consume_connect_work_v1(units)
+    }
+
+    fn admit_path_birth_v1(
+        &mut self,
+        bytes: usize,
+        funding: &mut Option<Funding>,
+        birth: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, Box<u8>> {
+        self.inner.admit_path_birth_v1(bytes, funding, birth)
+    }
+
+    fn birth_client_into_slots_v1(
+        &mut self,
+        payload: &mut Option<QuantaIndexClientPayloadV1>,
+        shared: &mut Option<UnfundedOwner>,
+        _: &mut Option<Funding>,
+    ) -> Result<(), Box<u8>> {
+        self.inner.headers = self
+            .inner
+            .headers
+            .checked_add(1)
+            .expect("fixture header count");
+        *shared = payload
+            .take()
+            .map(|payload| UnfundedOwner { _payload: payload });
+        Ok(())
+    }
+}
+
+#[test]
+fn host_cannot_publish_handle_while_funding_remains_in_data() {
+    let mut admission = RetainedFundingAdmission::default();
+    let alive = Rc::clone(&admission.inner.alive);
+    let mut data = NativeSdkConnectDataV1::new_v1();
+    assert_eq!(
+        try_connect_native_into_v1(
+            ConnectOptions::borrow_state_root_v1(Path::new("root")),
+            ClientProfile::QueryOnly,
+            &mut admission,
+            &mut data,
+        ),
+        Err(NativeSdkConnectRefusalV1::OperationRefused)
+    );
+    assert!(matches!(
+        data.failure_v1(),
+        Some(NativeSdkConnectFailureV1::InvalidNativeProducer)
+    ));
+    assert!(
+        data.shared.is_some(),
+        "the physical candidate stays in DATA"
+    );
+    assert!(data.funding.is_some(), "the actual bank stays in DATA");
+    assert!(!data.is_complete_v1());
+    assert!(data.complete_shared_v1().is_none());
+    let mut output = None;
+    assert_eq!(
+        data.complete_into_slot_v1(&mut output),
+        Err(NativeSdkConnectRefusalV1::MissingResult)
+    );
+    assert!(output.is_none());
+    drop(admission);
+    assert_eq!(alive.get(), 1);
+    drop(data);
+    assert_eq!(alive.get(), 0);
+}
+
+#[test]
+fn host_cannot_publish_without_a_path_funding_bank() {
+    let mut admission = Admission {
+        mode: BirthMode::NoFunding,
+        ..Admission::default()
+    };
+    let mut data = Data::new_v1();
+    assert_eq!(
+        try_connect_native_into_v1(
+            ConnectOptions::borrow_state_root_v1(Path::new("root")),
+            ClientProfile::QueryOnly,
+            &mut admission,
+            &mut data,
+        ),
+        Err(NativeSdkConnectRefusalV1::OperationRefused)
+    );
+    assert!(matches!(
+        data.failure_v1(),
+        Some(NativeSdkConnectFailureV1::InvalidNativeProducer)
+    ));
+    assert_eq!(admission.headers, 0);
+    assert!(data.paths[0].capacity() > 0);
+    assert!(data.paths[0].as_os_str().is_empty());
+    assert!(data.payload.is_none());
+    assert!(data.shared.is_none());
+    assert!(data.funding.is_none());
+    assert!(!data.is_complete_v1());
+    assert!(data.complete_shared_v1().is_none());
+}
+
+#[test]
+fn zero_byte_explicit_path_can_be_funded_by_header_birth() {
+    let mut admission = Admission {
+        mode: BirthMode::HeaderOnly,
+        ..Admission::default()
+    };
+    let alive = Rc::clone(&admission.alive);
+    let mut data = Data::new_v1();
+    assert!(
+        try_connect_native_into_v1(
+            ConnectOptions::borrow_query_socket_v1(Path::new("")),
+            ClientProfile::QueryOnly,
+            &mut admission,
+            &mut data,
+        )
+        .is_ok()
+    );
+    assert_eq!((admission.births, admission.headers), (0, 1));
+    assert!(data.is_complete_v1());
+    let mut output = None;
+    data.complete_into_slot_v1(&mut output)
+        .expect("header-funded completion");
+    drop(admission);
+    drop(data);
+    assert_eq!(alive.get(), 1);
+    drop(output);
+    assert_eq!(alive.get(), 0);
 }

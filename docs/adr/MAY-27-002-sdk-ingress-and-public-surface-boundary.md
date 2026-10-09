@@ -163,12 +163,12 @@ The remaining interface decision has two concrete owners:
   their existing semantics, including non-Unicode Unix paths; a String bridge
   is not a substitute. Occupied/reused DATA must reject before any poll or birth.
 - Semantica owns the concrete shared handle and actual funding custody. Its
-  receiver calls Core's existing
-  `admitted_shared_value_into_slots_v3(admission, payload_slot, shared_slot)`
-  with `NativeSharedValueV3<IndexClientPayload>` as the concrete output. Paid
-  aliases use the same Core
-  `admitted_retain_shared_value_into_slot_v3` and counter. Neither an ordinary
-  std Arc nor a newly implemented reference counter satisfies this seam.
+  receiver moves the whole private pending-header/grant bank into the SDK's
+  opaque `Shared` slot. After the highest Source accepts, the existing Wire
+  owner installs those grants into the same Core header and issues a funded
+  `NativeSharedValueV3<IndexClientPayload, Funding>` behind its private carrier.
+  Paid aliases use Core's existing counter. Neither an ordinary std Arc nor a
+  newly implemented reference counter satisfies this seam.
 
 The SDK port `native_connect_v1::NativeSdkConnectAdmissionV1` has associated
 `OriginalError`, `Funding`, and opaque `Shared` types. Construction requires no
@@ -177,17 +177,23 @@ The SDK port `native_connect_v1::NativeSdkConnectAdmissionV1` has associated
 `birth_client_into_slots_v1`. The latter receives mutable external
 `Option<QuantaIndexClientPayloadV1>`, `Option<Shared>`, and `Option<Funding>`
 slots. The payload has private construction and no infallible native clone.
-The receiver binds `Shared` to the actual Core type; Index has no dependency on
-Semantica's source, funding, or allocator crates.
+The receiver binds `Shared` to its exact private pending bank until Wire
+completion; Index has no dependency on Semantica's source, funding, or allocator
+crates.
 
 `try_connect_native_into_v1(ConnectOptions<&Path>, ClientProfile, &mut policy,
 &mut NativeSdkConnectDataV1<OriginalError, Funding, Shared>)` returns only a
 finite attempt status. Complete admission and `IpcError` causes are observed
 through `failure_v1`; an actual `TryReserveError` has its own
 `reserve_failure_v1` slot, preserving it even if admission also refuses after
-the physical callback. `complete_into_slot_v1` is a pure move; occupied output
-and used DATA reject without polling admission or replacing state.
-`is_complete_v1(&self) -> bool` observes producer completion, and
+the physical callback. A positive path reserve must leave its actual funding
+bank in DATA before path publication. An explicit empty socket path has zero
+reserve bytes and may receive its bank only at header birth. Successful header
+birth must move the bank from DATA into opaque `Shared`; a missing bank after a
+positive reserve or a separately retained bank after header birth is an invalid
+native producer and cannot publish or expose the handle. `complete_into_slot_v1` is a
+pure move; occupied output and used DATA reject without polling admission or
+replacing state. `is_complete_v1(&self) -> bool` observes producer completion, and
 `complete_shared_v1(&self) -> Option<&H>` borrows only a completed opaque handle.
 Both mask incomplete/refused/invalid state; neither reads a payload, retains a
 counter, transfers funding, or issues Source authority. The existing
@@ -200,11 +206,11 @@ root/socket decisions, raw path producer, and I/O-policy validator. Ordinary
 and native construction call the SAME payload factory; all SDK namespaces and
 dispatch methods borrow that payload. There is no native RPC implementation.
 Ordinary `QuantaIndex` also implements `Deref<Target = QuantaIndexClientPayloadV1>`.
-The genuine funded Core handle need not implement `Deref`. A receiving ingress
-borrows that opaque completed handle, then uses its existing Core admitted
-payload-read loan before calling the SAME SDK payload. Constructor completion
-does not grant that read. No SDK controller, adopter, new counter, raw payload
-getter, or infallible handle read is introduced by this seam.
+The genuine funded Core handle need not implement `Deref`. After Wire completes
+the pending bank, a receiving ingress uses its existing admitted payload-read
+loan before calling the SAME SDK payload. Constructor completion does not grant
+that read. No SDK controller, adopter, new counter, raw payload getter, or
+infallible handle read is introduced by this seam.
 The native port lends path/shared birth only during the synchronous producer
 call. Its receiver contract forbids Source, current-control, input references,
 or callbacks in retained DATA or funding.
@@ -230,24 +236,22 @@ String conversion, environment-created input, or unadmitted path copy occurs.
 The receiving owner must accept this work model and retain its complete
 Original Source cause through the highest finisher.
 
-The existing Semantica host seam is
-`OriginalCanonicalAdmissionV3::try_from_original_group_v3` followed by
-`native_temporary_v3(&OriginalCanonicalNativeStorageRefusalV3)`.
-`OriginalCanonicalNativeStorageV3` implements Core's
-`NativeAllocationAdmissionV3`; its birth method delegates to the authentic
-control's `admit_owned_native_birth_v3` on that SAME externally retained group.
-The receiver can lend this existing admission to both the actual path callback
-and `admitted_shared_value_into_slots_v3`, retaining the group and refusal DATA
-outside the client. This is source inspection of an available seam, not an
-executed receiver binding. Do not substitute the normalization-only three-slot
-funding carrier, create another allocator, or wrap an ordinary client in a
-native header.
+The current Semantica intermediate receiver lends the sealed Source to the
+existing Wire admission. The Wire bank retains the actual three path grants and
+exclusive pending Core header during SDK construction. SDK header birth moves
+that entire bank into opaque `Shared`, leaving SDK funding empty. Only after the
+highest Source accepts can Wire complete the pending header and install its
+exact grants as Core header funding. This is source inspection of the receiver
+seam, not an executed product binding. Do not create another allocator or wrap
+an ordinary client in a native header.
 
-All physical state and output slots precede the actual funding bank in DATA's
-drop order. The bank is not inside the shared payload: physical header release
-can occur after the last payload destructor. The caller retains that bank
-through the highest Source finisher and until every strong/weak handle and
-dependent backing has dropped, including after a successful output transfer.
+Physical state and output slots precede any untransferred funding bank in
+DATA's drop order. Before header birth, refusal keeps that bank in DATA. After
+header birth, refusal keeps it inside the parked opaque handle. Successful
+completion moves the whole bank out of DATA; Wire then installs its grants into
+the funded Core header, which retains them through every strong/weak alias and
+dependent backing. No caller must keep SDK DATA alive merely to fund an escaped
+handle.
 Late cancellation, deadline or header checkpoint refusal must leave candidate
 state and full original failure in DATA for the same terminal classification;
 no retry may restart the absolute deadline or replace the original cause.
@@ -285,6 +289,17 @@ open receiver seams are recorded once in the
 [Index ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md#local-producer-closeout-2026-10-09).
 That repo-local verification does not establish genuine Core funding, highest
 Original Source acceptance, installed-process proof or remote CI.
+
+Opaque funding closure (2026-10-09): the producer now rejects a missing bank
+after a positive path reserve and a separately retained bank after header birth.
+Zero-byte explicit paths skip path reserve and may fund only at header birth.
+The same sealed-state predicate gates completion, opaque borrowing, and pure
+handle transfer. Inline and opaque diagnostics move their funding into the
+handle; new regressions assert that a missing or retained bank cannot expose
+that handle while a zero-byte explicit path can use a header-funded bank. These
+new regression bodies are AUTHORED / NOT_RUN;
+Rust formatting check is VERIFIED. The older successful SDK test counts above
+precede this closure and do not verify this source revision.
 
 Historical focused candidate validation (2026-10-09, before the Source-only
 constructor follow-up): SDK
