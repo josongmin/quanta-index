@@ -131,6 +131,29 @@ fn explicit_activation_refuses_zero_sequence_on_applied_receipt_before_io() {
 }
 
 #[test]
+fn publish_outcome_refuses_applied_receipt_without_durable_sequence() {
+    let (batch, mut evidence) = original_evidence();
+    evidence.receipt.applied = true;
+    evidence.receipt.durable_sequence = 0;
+    let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(evidence.receipt));
+    let control = unused_control();
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest.clone());
+    let error = client
+        .producer()
+        .publish_search_corpus_outcome(&batch)
+        .expect_err("an applied publication must identify its durable catalog sequence");
+    assert!(matches!(
+        error,
+        crate::SdkError::Binding {
+            axis: crate::ResponseBindingAxis::BatchCommitment,
+            ..
+        }
+    ));
+    assert_eq!(ok_or_fail!(ingest.requests.lock()).len(), 1);
+    assert!(ok_or_fail!(control.requests.lock()).is_empty());
+}
+
+#[test]
 fn observed_publish_missing_observation_retains_verified_original_evidence() {
     let (batch, evidence) = original_evidence();
     let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(
