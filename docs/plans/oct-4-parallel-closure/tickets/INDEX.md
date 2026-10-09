@@ -697,6 +697,16 @@ QBC publication-complete marker exists for run
 This current frozen shared-source result is not a qualification of the authored
 receiver branch or of its Runtime/Product/native consumers.
 
+The retained result JSON is outside the checkout:
+`/Users/songmin/Library/Caches/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/semantica-codegraph-v2-765ad5e47fc0/lanes/01a1062b-e4a5-71f1-8554-a097114448ec-snapshot-artifact/verification-results/20261009T094133.688808Z-fdf3142d7774/receipt.json`.
+It binds Semantica HEAD `8217a38bf04d6c2fb2a535d43753408ac4621972` plus captured
+dirty overlay `c126dfb411ad94504a97c7d77c02559d` and sibling overlay
+`32258f46b15d423814b0`. The compiler included the four frozen-publication tests,
+but this selector ran only the one classification test; those four tests and
+any C4 native consumer are **NOT_RUN** by this result. Canonical QBC GC has
+since reclaimed that CAS checkout; the retained receipt must not be used to
+pretend the original source tree is still available for peer-path comparison.
+
 ```sh
 ./scripts/quanta-build-cli owner run \
   --lane 01a1062b-e4a5-71f1-8554-a097114448ec \
