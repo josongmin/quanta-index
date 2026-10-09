@@ -593,8 +593,11 @@ was introduced. The managed candidate checkout is
 code is committed as `92e01fc18332c0f7d0eb8bef95d8d75a9777be4b` on
 `codex/index-publication-native-cohort`. Main
 `47f2456e36f535b5cac42fe32cc3d07f23e36d7b` was merged into that candidate at
-`bb98b2de4d2334311415f06ca7aac2e52b168bc9`; only documentation changed and the
-56-path tested code digest remained identical.
+`bb98b2de4d2334311415f06ca7aac2e52b168bc9`. The later main documentation commit
+`b61655ed0a1be1e0984e7b816be41183ed8da214` was merged at
+`1179ee409d6231f2d75e8df5f5a22dff7a76889b`. Only documentation changed in these
+main updates; the 56-path tested code digest remained identical, and the
+physical checkout has the SAME bytes on all 56 paths.
 
 - **VERIFIED** — the preparation facade repair is independently committed in
   main. Existing implementation and tests moved without body changes; public
@@ -636,6 +639,38 @@ code is committed as `92e01fc18332c0f7d0eb8bef95d8d75a9777be4b` on
   source, not a Rust/native/product verdict. Kernel's separately captured
   focused execution is recorded below; Runtime V5/Product/native qualification
   is not implied by that one test.
+
+
+- **AUTHORED / Runtime body NOT_RUN** — the earlier full-cause statement applies
+  to the Kernel boundary, not to the original V5 row updater. Review found the
+  actual activation caller and `into_parts_v1` converted the original ingress
+  failure to text. The SAME `SearchPlaneDispatchFailureV1` now owns the non-Clone
+  `IngressError`; its Clone/Eq derives were removed. Durable row projection
+  borrows the failure and writes message plus original portable evidence, then
+  returns the live failure. Each claim is attempted and persisted individually;
+  completion CAS is observed before returning failure. A CAS refusal keeps the
+  original failure as the primary Error source with a separate RuntimeError
+  diagnostic, so it cannot claim durable evidence or replace the first cause.
+  Replay now propagates failed attempts instead of returning a successful row
+  count. Bootstrap uses the existing typed governed worker and makes the public
+  RuntimeError text projection only at its final explicit consumer/drop.
+  No new runtime/wire IR, decoder, controller or production SDK dependency was
+  introduced. The SDK edge is dev-only for actual typed transport fixtures.
+  Tests assert fixed receipt/publication bytes, ConnectionReset kind, the same
+  boxed I/O cause pointer, preservation on successful/failed completion CAS,
+  and exactly one drop at final public projection. Timeout/cancellation remains
+  a distinct path: the worker owns the cause until its result/drop, while only
+  actually persisted row state can support restart reconciliation; that path
+  and the complete live V5 IPC route are NOT_RUN.
+  The complete authored receiver successor is
+  `431de3f8d4cbfdbfbeb4a09dc525d1a50593b346` on
+  `codex/index-publication-native-receiver`, with 13 paths in this new cut.
+  Its new-cut aggregate digest is
+  `c50ba60b49ae4a2b0f9095ce958399af0f7d12449e371d4df758b05332d62a8f`.
+  Mixed-owner facade/manifest/lock paths include only this lane's hunks in that
+  candidate; shared staged/unstaged work was preserved. Commit-tree hooks are
+  NOT_RUN, and shared-source QBC results do not qualify this authored branch.
+
 
 Executed against the coupled Index source, with 56 code/test/tooling/API
 paths differing from main and aggregate SHA256 `de0f081c9c7a52d2404f89e0b9d08c85ac2987ca1f7b74e2cd117da826cc7a3d` (sorted UTF-8 path,
@@ -739,6 +774,42 @@ Restoring an owned-value compatibility helper or creating DATA inside that
 Source would lose custody. Runtime compilation is **FAILED** at this cut; its
 V5 test bodies are **NOT_RUN**. No foreign process, admission policy or shared
 target binding changed.
+
+
+**FAILED (latest Runtime compile), NOT_RUN (V5 behavior)** — run
+`20261009T103001.474688Z-17b3e1501c61` used the same reviewed Runtime feature
+closure and the exact delivery/evidence/cause regression selector below.
+The owner receipt reports RED, exit 101, zero passed/failed/ignored/filtered
+bodies, source snapshot digest
+`30ec450f930e21ec451bd81f61c0baf3ed1d9916c4051bd613319b0376a01932`.
+Compilation stopped at the SAME two removed `into_retained_v1` callers,
+`final_refresh.rs:44` and `exporter.rs:515`; Runtime itself was not compiled.
+The lower handoff also reports `source_ready=false` / `native_ready=false`.
+The required external retain-birth banks are still absent; no compatibility
+helper or local Source-owned DATA was restored. The receipt is retained at
+`/Users/songmin/Library/Caches/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/semantica-codegraph-v2-1e4ef57d0339/lanes/01a1062b-e4a5-71f1-8554-a097114448ec-snapshot-artifact/verification-results/20261009T103001.474688Z-17b3e1501c61/receipt.json`.
+No publication-complete marker exists for this failed result.
+
+```sh
+./scripts/quanta-build-cli owner run \
+  --lane 01a1062b-e4a5-71f1-8554-a097114448ec \
+  --package quanta-runtime --execution-kind test --target-kind lib \
+  --selector-mode exact \
+  --selector retrieval::port_impls::index_projection_writer::source_bound_projection_assembly::authority_assembly::search_plane_handoff_dispatch::tests::proof_projection::lexical_delivery_requires_matching_composite_activation_ack_v1 \
+  --compile-policy feature-isolation:quanta-runtime.no-default.32c001bdd540 \
+  --max-test-threads 1 --wait-seconds 45
+```
+
+Canonical edition-2021 formatter and scoped diff checks are VERIFIED. Scoped
+boundary-guard preflight for Runtime Cargo.toml and port_impls/mod.rs passed
+53 impacted build policies using the repository Python resolver. The default
+system Python 3.9 failed tool startup; the Python >=3.12 resolver removed that
+interpreter failure. The gate closeout cannot provide a stable GREEN: it
+reported source-changed-during-policy-verification and existing foreign
+Runtime cfg-neutral macro/cfg-admission/orchestration policy violations.
+Pre-edit RED was NOT_RUN because this Runtime target was already blocked by
+its lower SSA dependency. No subsequent native build/test was started.
+
 
 **BLOCKED** — whole native/product main merge still requires the actual
 factory/worker/RPC receivers and a SAME Relation query-unit admission loan.
