@@ -59,6 +59,15 @@ GC 후 역사적 receipt 복구, 복수 독립 store handle, 새 corruption/alia
 caller가 생성한 bytes를 그대로 expected로 쓰지 말고 request/response literal을 고정한다.
 새 allocation 상태와 기존 Pending/Staged/Active를 함께 검사하며 두 번째 activation 상태 축은 만들지 않는다.
 
+## Lexical bundle admission
+
+| 시나리오 | 합격 조건 |
+| --- | --- |
+| malformed CBOR 및 과거 `b"manifest"` sentinel | preflight와 build 모두 `InvalidContract`. source publication 및 generation 준비 전 거절하며 state root에 파일을 만들지 않음 |
+| raw replacement 뒤 malformed full bundle | 앞선 replacement도 쓰지 않고 전체 요청을 `InvalidContract`로 거절. state root는 비어 있음 |
+
+기존 `l2_file_mutation`의 `malformed_bundle_` 회귀 두 개를 아래 중앙 실행 배치에 포함한다.
+
 ## 체크 순서와 실행 범위
 
 1. D의 기존 false-positive panic oracle을 고정하고 A/D/C5의 직접 실패를 owning test target에서
@@ -86,6 +95,7 @@ just rust-profile test-read-view-lifetime-owner
 just rust-profile test-candidate-activation-owner
 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-core --lib domains::source_publication::tests --all-features --locked
 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-search-plane --lib readiness::activation_catalog::tests --all-features --locked
+./scripts/cargow --lane test-daemon-lane test -p quanta-index-lexical --test l2_file_mutation malformed_bundle_ --all-features --locked
 ./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk --all-features --locked
 ```
 
@@ -114,6 +124,10 @@ just rust-profile test-candidate-activation-owner
 이번 문서 수정의 성능 검증은 `NOT_RUN`이다.
 
 ## Release and consumer
+
+C5 선발급 API는 외부 producer의 필수 전환 조건이 아니다. 기존 명시적 generation publish도
+같은 durable 점유·high-water admission을 통과한다. Semantica의 aggregate/replay generation을
+선발급 번호로 바꾸는 작업을 이번 잔여 작업으로 추가하지 않는다.
 
 외부 producer 전체 수용과 운영/release는 이번 gate에서 제외한다. 기존
 [Source SDK 계약](../../adr/OCT-04-003-source-preparation-sdk.md)과
