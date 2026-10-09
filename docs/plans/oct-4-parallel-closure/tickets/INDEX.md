@@ -1386,10 +1386,11 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
 
 #### Oct-10 main comparison and branch/worktree disposition
 
-- **VERIFIED — comparison baseline:** Quanta committed main was `b61655ed`.
-  `codex/index-publication-native-cohort` at `ebbd9183` contains that main;
-  its aggregate diff is 58 paths, including 56 non-documentation paths that are byte-identical
-  to the shared main **working tree**. This is source presence, not a committed merge.
+- **VERIFIED — latest comparison:** Quanta committed main is `3966ddb7`.
+  `codex/index-publication-native-cohort` at `8d830dd0` contains that main;
+  its aggregate diff is 57 paths, including 56 non-documentation paths that are
+  byte-identical to the shared main **working tree**. The remaining path is the
+  SDK boundary ADR. This is source presence, not a committed native merge.
 - **BLOCKED — native/publication bundle:** preserve the complete candidate and its
   Semantica consumer. The actual factory/worker/RPC path still needs one Relation
   query-unit admission loan, and Core final-drop custody is not qualified. Runtime
@@ -1401,42 +1402,68 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   (`Ok(())` → `Ok(Ok(()))`). The integration owner verified that file against its
   passing Kernel snapshot and committed through the shared-main coordinator;
   this does not qualify the SDK/Runtime bundle.
-- **VERIFIED — latest main propagation:** Index documentation main `80fadc3c`
-  was merged into the native candidate at `1101da9a`; Semantica main `e234efb0`
+- **VERIFIED — latest code propagation:** Index main `3966ddb7` was merged into
+  the native candidate at `8d830dd0`; Semantica main `e234efb0`
   was reconciled into receiver candidate `c0bd1df1` without changing its tree
   (`2eb4e5f040b64bd83de4a9f0ad5de224bc400e41`). The 56 non-documentation
   Index paths still match the shared working source byte for byte, with aggregate
   digest `de0f081c9c7a52d2404f89e0b9d08c85ac2987ca1f7b74e2cd117da826cc7a3d`.
   The final Runtime dependency compile failure is recorded above; it leaves
   the complete native/consumer bundle unqualified.
-- **VERIFIED — current cleanup transactions:** removed 38 visible local branch refs:
+- **Integrated independent CI repair:** main `3966ddb7` registers the already
+  committed SDK `preparation_public.rs` integration target in the existing
+  `pr-workspace-nextest` rail. This is a six-line catalog repair, independent of
+  the SDK/native candidate and the rejected old CI branch. The integration owner
+  independently ran `just rust-test-authority` (PASS) and
+  `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_circleci_authority.py -q -p no:cacheprovider`
+  (21 passed, exit 0). Rust execution and remote CI are **NOT_RUN** for this repair.
+- **VERIFIED — Oct-10 cleanup transactions:** removed 39 visible local branch refs:
   12 main patch-equivalent or superseded lexical refs, 10 ancestors of the retained
   native cohort, 2 ancestors of the upload chain, and 14 source-audited superseded
-  benchmark/operational/recovery refs. Exact tips remain under
+  benchmark/operational/recovery refs, and 1 rejected CI proposal. Exact tips remain under
   `refs/codex/cleanup/oct10-main-equivalent/`,
   `refs/codex/cleanup/oct10-cohort-contained/`, and
-  `refs/codex/cleanup/oct10-main-semantic-contained/`. The last category is
-  semantic containment, not a claim of identical patch IDs. No remote ref was deleted.
-- **VERIFIED — current worktree cleanup:** removed 4 old Quanta worktrees:
+  `refs/codex/cleanup/oct10-main-semantic-contained/`, and
+  `refs/codex/cleanup/oct10-rejected-ci/circleci-integration` (`5a1f0e3d`).
+  The 14 source-audited refs are semantic containment, not a claim of identical
+  patch IDs. No remote ref was deleted.
+- **VERIFIED — first Oct-10 worktree cleanup:** removed 4 old Quanta worktrees:
   `engine-audit-search-plane`, `engine-audit-semantic`, `publication-plan-custody`,
   and `sdk-canonical-final`. The first 3 were clean with retained history. The last
   had 5 dirty paths; the exact tree and parent history were saved and each dirty
   blob verified before removal, at `refs/codex/cleanup/oct10-sdk-canonical-final`
   (`87cde660da66c65ef818ac9795f65354d1e40ea6`). This was an unmanaged worktree,
   so its recovery is a Git ref rather than an app archive.
+- **VERIFIED — follow-up worktree cleanup:** removed the clean, inactive
+  `qi-local-scale-703d-ky1zujs_/source` (`703d0e68`), `ci-timeout-repair`
+  (`8642fa9b`), and `oct6-index-token-visitor` (`38eda80a`) checkouts. Their exact
+  heads are ancestors of current main; only disposable Python caches were
+  discarded from the CI checkout. Removed `scale-delta-trace` after preserving
+  its exact non-ancestor head `82bca2f25a94e8c33bcf73f72bf38c7ed6315efd` at
+  `refs/codex/cleanup/oct10-retired-worktrees/scale-delta-trace`. Its two unique
+  commits remain recoverable; equivalent current behavior is not being called
+  identical patch history. Before each removal, status, locks, processes and
+  open files were rechecked. Current Cargo/config source dependencies in 43
+  Semantica and 48 QGLang registered worktrees and the bound QBC state/leases
+  contained no active reference to these four paths. Historical checkpoint text
+  for the visitor remains; it is not a live Cargo dependency. The shared main
+  index was unchanged by both removal transactions.
 - The preceding cleanup already archived 3 managed Quanta worktrees, removed 1 clean
   duplicate checkout, deleted 7 visible local branches with retained ancestry or
   snapshots, and pruned 37 missing unlocked registrations. These are separate
-  transactions; the cumulative totals are 45 local branch refs and 8 physical Quanta
+  transactions; the cumulative totals are 46 local branch refs and 12 physical Quanta
   worktrees. The missing **locked** `weekly-audit-merge-recovery` registration,
   frozen qualification checkouts, and Semantica dirty/evidence worktrees remain.
-- Remaining inventory at this checkpoint: 4 local branches including `main`, and
-  52 worktree registrations. Keep `codex/index-publication-native-cohort` for the
+- Remaining inventory at this checkpoint: 3 local branches including `main`, and
+  48 worktree registrations. Keep `codex/index-publication-native-cohort` for the
   unqualified complete SDK/native candidate, `codex/borrowed-head-cas-validation`
-  at the historical qualified `79bea4c0`, and `codex/circleci-integration` for its
-  unfinished independent manual-benchmark intent. The old CI job cannot be
+  at the historical qualified `79bea4c0`. Preserve dirty `arb-official-scorer`
+  and `lexical-publication-proof` source, and the frozen source/dependency peers.
+  The old CI proposal is archived at the exact ref above. Its job cannot be
   imported as-is: required warm/cold approved baselines are absent in both its
   tree and main, and the current CI authority parser does not admit its new gate.
+  `git merge-tree --write-tree 3966ddb7 5a1f0e3d` also produced 19 conflicting
+  paths; no conflicted tree was installed into main or the shared index.
   An old branch's missing later-main code is not proof that a three-way merge
   would delete that code; disposition above uses individual intent/function/test
   comparison, ancestry and retained exact tips.
