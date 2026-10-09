@@ -1,7 +1,7 @@
 # 검증 계획
 
-[최종 구현안](README.md)의 직접 변경에 대한 검증만 관리한다. 아래 코드 검증은 모두
-`NOT_RUN`이다. 문서 검사·컴파일·owner 테스트·실제 daemon 결과는 구분한다.
+[최종 구현안](README.md)의 직접 변경에 대한 검증만 관리한다. 별도 실행 결과가 명시되지 않은
+코드 검증은 `NOT_RUN`이다. 문서 검사·컴파일·owner 테스트·실제 daemon 결과는 구분한다.
 
 ## Semantic compatibility
 
@@ -63,10 +63,13 @@ caller가 생성한 bytes를 그대로 expected로 쓰지 말고 request/respons
 
 | 시나리오 | 합격 조건 |
 | --- | --- |
-| malformed CBOR 및 과거 `b"manifest"` sentinel | preflight와 build 모두 `InvalidContract`. source publication 및 generation 준비 전 거절하며 state root에 파일을 만들지 않음 |
+| malformed CBOR 및 과거 `b"manifest"` sentinel | 두 preflight phase와 typed build 모두 metadata decoder의 `InvalidContract`. 각 호출 직후 state root에 파일이 없음 |
 | raw replacement 뒤 malformed full bundle | 앞선 replacement도 쓰지 않고 전체 요청을 `InvalidContract`로 거절. state root는 비어 있음 |
+| 유효한 metadata 뒤 명시적 empty payload | 실제 metadata 파일 생성 후 제거. generation directory는 보존 |
 
-기존 `l2_file_mutation`의 `malformed_bundle_` 회귀 두 개를 아래 중앙 실행 배치에 포함한다.
+기존 `l2_file_mutation`의 `bundle_` 회귀 세 개를 아래 중앙 실행 배치에 포함한다.
+이 rail은 lexical adapter admission/storage를 검증한다. source catalog 예약, publication journal 및
+daemon 결과는 별도 owning rail로 검증하며 이 테스트의 성공으로 대체하지 않는다.
 
 ## 체크 순서와 실행 범위
 
@@ -95,7 +98,7 @@ just rust-profile test-read-view-lifetime-owner
 just rust-profile test-candidate-activation-owner
 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-core --lib domains::source_publication::tests --all-features --locked
 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-search-plane --lib readiness::activation_catalog::tests --all-features --locked
-./scripts/cargow --lane test-daemon-lane test -p quanta-index-lexical --test l2_file_mutation malformed_bundle_ --all-features --locked
+./scripts/cargow --lane test-daemon-lane test -p quanta-index-lexical --test l2_file_mutation bundle_ --all-features --locked
 ./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk --all-features --locked
 ```
 

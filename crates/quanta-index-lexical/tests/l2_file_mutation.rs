@@ -24,8 +24,8 @@ use quanta_index_contract::{
     source_file_unit_set_sha256,
 };
 use quanta_index_core::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
-    SearchCorpusBatchBuildPort, SearchCorpusPreflightPhaseV1,
+    CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher,
+    RequestBudgetV1, SearchCorpusBatchBuildPort, SearchCorpusPreflightPhaseV1,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -598,8 +598,19 @@ fn oversized_published_source_is_refused_before_target_creation() -> TestResult 
     Ok(())
 }
 
+fn assert_metadata_payload_refusal(result: &Result<(), CoreError>, step: &str) {
+    assert!(
+        matches!(
+            result,
+            Err(CoreError::InvalidContract(message))
+                if message.starts_with("lexical: repo metadata payload decode:")
+        ),
+        "{step} must refuse the metadata payload itself: {result:?}"
+    );
+}
+
 #[test]
-fn malformed_bundle_is_refused_before_source_publication_or_generation_preparation() -> TestResult {
+fn malformed_bundle_is_refused_before_generation_preparation() -> TestResult {
     for invalid_payload in [&[0xff][..], b"manifest".as_slice()] {
         let dir = tempfile::tempdir()?;
         let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
@@ -608,18 +619,20 @@ fn malformed_bundle_is_refused_before_source_publication_or_generation_preparati
         request.source_event.payload_sha256 = source_event_payload_sha256(&request)?;
         request.validate_v1()?;
         request.validate_surface_mutations_v1()?;
-        for result in [
-            adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
-            adapter.build_batch(&request).map(|_stages| ()),
+        for phase in [
+            SearchCorpusPreflightPhaseV1::BeforeIntent,
+            SearchCorpusPreflightPhaseV1::UnderOperationLock,
         ] {
-            assert!(
-                matches!(
-                    result,
-                    Err(quanta_index_core::CoreError::InvalidContract(_))
-                ),
-                "invalid metadata must be an admission error: {result:?}"
+            assert_metadata_payload_refusal(
+                &adapter.preflight_batch(&request, phase),
+                &format!("preflight {phase:?}"),
             );
+            assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
         }
+        assert_metadata_payload_refusal(
+            &adapter.build_batch(&request).map(|_stages| ()),
+            "typed build",
+        );
         assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
     }
     Ok(())
@@ -657,17 +670,59 @@ fn malformed_bundle_after_a_raw_replacement_refuses_before_any_write() -> TestRe
                 payload: invalid_payload.to_vec(),
             }),
         ];
-        assert!(matches!(
-            adapter.build(
+        assert_metadata_payload_refusal(
+            &adapter.build(
                 &request.repo_id,
                 &request.revision_id,
                 request.generation,
-                &ops
+                &ops,
             ),
-            Err(quanta_index_core::CoreError::InvalidContract(_))
-        ));
+            "raw build after replacement",
+        );
         assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
     }
+    Ok(())
+}
+
+#[test]
+fn bundle_empty_payload_removes_existing_typed_metadata() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let request = batch(1, None, Vec::new())?;
+    let generation_dir =
+        quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+            &request.repo_id,
+            &request.revision_id,
+        )
+        .generation_dir(dir.path(), request.generation);
+    let metadata = generation_dir.join("repo-metadata.cbor");
+    // Independent literal: false fork/archived, public visibility, no contexts.
+    let mut bundle = quanta_index_contract::LexicalFullBundle {
+        repo_id: request.repo_id.clone(),
+        revision_id: request.revision_id.clone(),
+        generation: request.generation,
+        payload: b"\xa4\x64fork\xf4\x68archived\xf4\x6avisibility\x66public\x68contexts\x80"
+            .to_vec(),
+    };
+    adapter.build(
+        &request.repo_id,
+        &request.revision_id,
+        request.generation,
+        &[LexicalChannelOp::FullBundle(bundle.clone())],
+    )?;
+    assert!(metadata.is_file(), "typed metadata must be written first");
+    bundle.payload.clear();
+    adapter.build(
+        &request.repo_id,
+        &request.revision_id,
+        request.generation,
+        &[LexicalChannelOp::FullBundle(bundle)],
+    )?;
+    assert!(!metadata.try_exists()?, "empty bundle must remove metadata");
+    assert!(
+        generation_dir.is_dir(),
+        "clear must preserve the generation"
+    );
     Ok(())
 }
 
