@@ -592,8 +592,8 @@ was introduced. The managed candidate checkout is
 `/Users/songmin/.codex/worktrees/native-coupled-closeout/quanta-index`; the tested
 code is committed as `92e01fc18332c0f7d0eb8bef95d8d75a9777be4b` on
 `codex/index-publication-native-cohort`. Main
-`432836af3485a814d3bc6389068e1bfaca7a3686` was merged into that candidate at
-`9b15a1d3e7d9c3d6e6c677924063712772bb7c21`; only documentation changed and the
+`47f2456e36f535b5cac42fe32cc3d07f23e36d7b` was merged into that candidate at
+`bb98b2de4d2334311415f06ca7aac2e52b168bc9`; only documentation changed and the
 56-path tested code digest remained identical.
 
 - **VERIFIED** — the preparation facade repair is independently committed in
@@ -717,10 +717,16 @@ pretend the original source tree is still available for peer-path comparison.
   --max-test-threads 1 --wait-seconds 45
 ```
 
-The first Runtime V5 exact retry stopped before compilation because the QGLang
-sibling overlay changed during source capture. No Runtime tests ran in that
-attempt; a fresh canonical capture/run is pending. No foreign process,
-admission policy or shared target binding changed.
+A Runtime V5 exact attempt stopped before compilation because the QGLang
+sibling overlay changed during source capture. A later capture compiled but
+exited 101 before Runtime test bodies: DFG source-assignment birth returned its
+original native allocation error without the existing typed wrapper, and Java
+archive helpers were re-exported one private scope too far. Two narrow repairs
+preserve the same native error via `OriginalFactRowBirthErrorV3::from` and narrow
+the archive import to private; canonical edition-2021 formatter and diff checks
+passed. Another capture encountered QGLang overlay drift; fresh canonical
+verification is pending. No Runtime tests ran in those attempts. No foreign
+process, admission policy or shared target binding changed.
 
 **BLOCKED** — whole native/product main merge still requires the actual
 factory/worker/RPC receivers and a SAME Relation query-unit admission loan.
@@ -759,6 +765,16 @@ closeout/attempt identity exists before prepare; the final batch payload
 commitment is built later and must bind the same reservation before publication.
 No allocator, public raw-digest setter, source redefinition or parallel store
 was added by this lane. This remains **BLOCKED** for the coupled C5 product cut.
+
+C4 capacity remains a separate missing supply boundary in the same existing
+SDK ticket. Index's `SOURCE_PUBLICATION_UPLOAD_MAX_BYTES` (512 MiB) bounds a
+SearchCorpus upload, and its `DecodePermit` accounts frame/body and retained
+text. Its CBOR preflight explicitly does not inspect the schema inside byte
+strings. Neither is a verified demand model for Semantica's V5 outer artifact,
+nested semantic-owner decode and concurrent scope clones. No such V5 schema
+model/permit API was found in current Index owners. Preserve Unknown/Unsupported
+rather than minting a grant from encoded length, RSS or an invented multiplier;
+no second decoder/capacity owner was introduced.
 
 ### SDK connect native 경계의 추가 대조 — 2026-10-09
 
