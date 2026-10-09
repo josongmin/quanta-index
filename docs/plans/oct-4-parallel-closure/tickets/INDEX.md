@@ -241,63 +241,215 @@ Kernel closeout run `20261009T083457.674225Z-c0a4b86bd839`도 같은 digest에 �
 captured dirty75경로 변경/17경로 추가를 관측했으므로 이 결과를 변동한 main 전체의
 오류 수로 표기하지 않는다. 최신 native owner의 완결 bundle을 재결합한 뒤 재실행한다.
 
-**남은 결합 순서 / owner blocker:**
+##### Oct-9 SDK code-first plan
 
-1. Quanta owned22경로는 native owner commit의 preimages를 다시 대조한 뒤
-   해당 native source와 결합한다. Closeout의 main working source22경로가 이미
-   반영됐으므로 이 patch를 다시 적용하지 않는다. Candidate와의 차이는
-   SDK test module 순서, replay assertion formatting, stricter lifecycle fixture다. SDK의 canonical validator/dispatcher, error/public API,
-   CLI/benchmark/daemon consumers를 부분 복사하지 않는다. Committed main은 기존 enum이며 working main은 `AfterPublish`다. Late working-main
-   선택 SDK/contract 및 lifecycle 검증은 기존 isolated proof와 분리한다.
-   Admission timeout 실행을 test failure로 집계하지 않는다. 기존 native owner 실행이
-   종료된 뒤 SDK/contract 위 명령과
-   `./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked e2e_lifecycle_history:: -- --nocapture --test-threads=1`
-   을 순서대로 실행한다. 다른 owner의 lease/process를 중단하거나 우회하지 않는다.
-2. **P0 Source retained-text birth owner:** captured
-   `quanta-contract-types-core/src/values/input_cell_value.rs:150,174`는 제거된
-   `SharedSourceTextV1::try_retain_v3`/`try_retain_header_for_metadata_v3` 호출이다.
-   Canonical `RetainedSourceTextBirthV3`와 `try_retain_into_v3`/metadata-into,
-   `move_text_into_slot_v3`를 사용한다. Birth DATA는 최고 Source loan 밖에서 생성하고
-   partial/funding/failure를 최종 guard 뒤까지 유지한다. Local birth→return `Self` 호환
-   wrapper는 실패 DATA 수명 경계를 다시 끊으므로 금지한다.
-   첫 연결 파일은 contract `values/change_set/original_paid_v3.rs`, Source wire의
-   `original_repository_source_scan_v3/capture_v3/{shared_text_backing_v3.rs,shared_text_backing_v3/common_birth_v3.rs,retain_closed_v3.rs,workspace_capture_v3.rs}`,
-   Foundation `in_memory/core/{snapshot_history.rs,input_cell_store_file_content_ports_v1.rs,input_cell_store_prepared_changeset_v1.rs}`,
-   SDK backend `repository_indexing_v1/original_source_publication_v3.rs`다.
-   Existing `row_birth_v3.rs`/`cas_birth_v3.rs`/`original_unit_snapshot_read_v3.rs`의 외부
-   birth handoff를 재사용한다. 추가 호출 잔여는 static risk이며 현재 실행된2오류에 합산하지 않는다.
-3. **Java Original generation 출력권한 owner:**
-   `RequestScopedProductionJavaWorkspaceBuildTypeResolutionOwnerV1::with_request_scoped_original_v3`
-   → `produce_original_java_parser_build_owner_sealed_output_v3`
-   → `into_canonical_inventory_batch_v3`의 기존 request/live-current rail을 사용한다.
-   `ProductionJavaWorkspaceGenerationAuthorityIssuerV1::produce_sealed_java_workspace_generation_v1`,
-   `SealedJavaWorkspaceGenerationAuthorityV1`, `CapturedJavaWorkspaceGenerationV1`,
-   raw attribution `capture`와 후속 generation owner를 같은 Original custody 출력 계약으로 닫는다.
-   Fragment 발급/검증, full-closure receipt/semantic publication, native-lowering workspace,
-   retained callable selection census까지 함께 바뀌어야 한다. Ordinary 출력 adopter,
-   removed raw getter 복원, 임의 current 및 parallel IR은 허용하지 않는다.
-4. 직접 관련 파일은 `quanta-adapters-parser/src/language_host_adapter/`의
-   `java_workspace_generation_authority.rs`,
-   `java_workspace_generation_authority/{ordinary_generation_materialization_v1,original_generation_files_v3}.rs`,
-   `java_workspace_generation_relation_inventories_v1.rs`,
-   `java_workspace_resolution_syntax_v1/part_3.rs`,
-   `java_workspace_generation_owned_input.rs`,
-   `java_workspace_generation_owned_input/{original_sealed_output_v3,retained_callable_selection_birth_v3}.rs`;
-   `quanta-sdk-session-backend-owner/src/production_normal_source_java_workspace_generation_port_v1.rs`
-   및 `production_normal_source_attribution_generation_owner_v1/retained_callable_selection_v3.rs`다.
-   이것은 caller closure 시작점이며 전체 owner API 변경 inventory가 확정됐다는 뜻이 아니다.
-   새 Source platform control 설계가 필요한 증거는 없고 기존 session live current를 전달한다.
-5. **Producer restore owner:** daemon/V9 artifact reopen과 producer restart를 분리한다.
-   `index_projection_writer/mod.rs`의 canonical authority factory를 old issuer pin으로
-   복구하지 않는다. Durable store/terminal custody의 유효한 owner-issued recovery 입력과
-   fresh source closure로 재수용하는 production 경로를 정의한 뒤, 새 producer G3 delta,
-   unchanged/delete/GC parity 및 exact frozen expected-active를 검증한다. 지금은 성공 fixture 없음.
-6. Kernel owner 완료 → 실제 Runtime `shadow_delta_orchestration` → durable6 → 실제
-   searchd process6 순으로 같은 physical pair에서 실행한다. V5 cumulative snapshot binding,
-   V4 missing baseline/noactivation, explicit rebaseline 조건, artifact-ref retry immutability를
-   함께 수용한 뒤 coupled main merge. Private137경로 수리 patch 또는 foreign4,854경로 전체 복사 금지.
-7. 새 registry/wire IR/native media engine/SDK durable store로 scope를 늘리지 않는다.
-   Producer adapter 확장은 기존 source-bound batch 계약 안에서 수행한다.
+**코드 우선 실행 계획 — 2026-10-09 재확인**
+
+이 계획은 앞선 남은 결합 목록을 대체한다. 구현·연결·검증 작업을 기존 owner와
+현재 소스에 배정하며, 동일 기능의 새 epic/SDK/IR/adapter를 만들지 않는다.
+이번 계획 작성에서는 source/test를 변경하거나 native test를 실행하지 않았다.
+아래 현재 코드 관측은 **VERIFIED**(bounded static read), 현재 동작은 **NOT_RUN**이다.
+앞선 Kernel/Runtime E0599 2건은 frozen pair 결과이며 최신 main 오류 수가 아니다.
+
+관측 기준: Quanta HEAD `23cfadd2cd88`, Semantica HEAD `8217a38bf04d`와 각 working
+source. Semantica index에는 다른 owner의 staged 변경이 있으므로 이 계획은
+해당 index/HEAD를 변경하지 않는다. Shared source는 계속 변하므로 구현 직전에
+관련 path/hunk와 live claim을 다시 대조한다. Historical inventory의40/36/39는
+기능 경계 참고이며 현재 전체 dirty 파일 수나 아직 구현할 파일 수가 아니다.
+
+| 기존 코드 / 후보 | 현재 확인한 구현 | 이번 작업의 처분 |
+| --- | --- | --- |
+| Preparation | `preparation/mod.rs` facade, `implementation.rs`의 `SourceAdapter`, PlainText/Markdown, budgets/profile, `PreparedSource`, prior manifest/reconcile, `ReconcileIntent::apply_to_batch` 존재 | **재사용**. Chunker·plugin registry·별도 source/batch 모델 추가 없음. 다른 포맷은 이 계약의 adapter 구현으로 확장 |
+| Quanta publication22 | 현재 working source가 후보와19동일; module 순서/replay formatting2차이, stricter lifecycle1차이. 공통 receipt validator/activation dispatcher와 explicit APIs 존재 | **재적용 금지**. 기존22경로 inventory를 유지하고 변경된 lifecycle를 현재 소스에서 검증 |
+| Kernel ingress | 현재 main에 `client_ref`, `AfterPublish` retry/evidence/stage/receipt/publication, `publish_search_corpus_outcome_v1`, `activate_published_search_corpus_v1` 존재 | **차이만 통합**. 후보 publish.rs 전체 복사는 현재 explicit API2개를 삭제하므로 금지. Frozen aggregate의 retarget 방어·회귀만 C3에서 추가 |
+| Input-cell Source retain | `InputCellValueHistoryRetainBirthV3`, `try_retain_header_for_history_into_birth_v3`와 prepared changeset의 외부 birth 보관이 이미 존재. 종료 전에는 Foundation `CellEntry`/`DeltaEntry`의 into API와 `DeltaEntryHistoryRetainBirthV3`도 추가됨 | **기존 owner 작업 계속**. Primitive와 history API를 다시 만들지 않음. Foundation·SDK 잔여 호출과 drop 순서가 C1의 대상 |
+| Semantica39-path 후보 | 최초 bounded 비교에서 main 대비 candidate 동일2(root lock/native policy test), old captured 동일33(부재2포함), 별도 drift4(nested lock와 Kernel3). Native body 실행은 없음 | **기능별 의미 통합**. 같은 root-lock 수리를 반복하지 않음; drift4를 overwrite하지 않음. 필요한 V5/intent delta는 C4에서 통합하고 실행 직전 재대조 |
+| V5 process 회귀 | Clean feature `16a522722d2`에6개 ignored scenarios가 존재하고 현재 main에는 해당 child file이 없음 | **기존 테스트 가져오기**. 같은 rejection/restart 시나리오를 새 파일에 중복 작성하지 않음. Kernel child test 역시 현재 main 부재이며 C3에서 연결 |
+
+경로 표기: Quanta는 이 저장소 기준. 아래 Semantica의 `core`, `foundation`,
+`wire`, `kernel`, `retrieval`, `runtime`, `parser`, `backend`는 각각
+`packages/analysis/quanta-v2/crates/quanta-{contract-types-core,adapters-foundation,runtime-source-authority-wire,runtime-retrieval-kernel,contract-retrieval,runtime,adapters-parser,sdk-session-backend-owner}` 기준이다.
+Native Source text primitive는 `packages/core/codegraph-native-allocation-core/`의
+기존 owner를 사용한다. Path alias는 계획 표기이며 새 코드 추상화가 아니다.
+
+**C0 — 통합 전 차이 분류·소유권 확정 (통합 담당1명)**
+
+- 앞선 Quanta22/Semantica39 inventory를 입력으로 각 hunk를 `already-present`,
+  `candidate-only`, `owner-diverged`, `obsolete`로 분류한다. 해시 불일치는 새 기능
+  부재를 뜻하지 않으므로 symbol/caller/body를 비교한다.
+- Quanta strict lifecycle 변경과 main의 native DATA를 유지한다. Semantica의 현재
+  explicit ingress APIs, replay custody, Acked pin/reader, Source births를 유지한다.
+- `tools/shared-main/shared-main status`의 active claim과 정확한 write hunk를 대조한다.
+  Claim은 독점 lock이 아니지만 같은 invariant/proof 수정은 기존 owner와 묶는다.
+  Source/Core/Java 작업을 새 담당자에게 다시 배정하지 않는다.
+- 산출물은 이 티켓의 dispatch 상태 갱신과 충돌 없는 feature delta다. 전체 dirty
+  capture 복사, patch 재적용, 준비된 old private repair137경로 일괄 적용 없음.
+
+**C1 — Source/history retained DATA 호출부 완료 (현재 W1 owner 재사용)**
+
+- 이미 존재하는 `core/src/values/input_cell_value.rs`의 history birth를 사용한다.
+  `core/src/values/change_set/original_paid_v3.rs`의 per-value birth와 pending
+  change를 그대로 연결하며 fresh local birth→return-value shim으로 대체하지 않는다.
+- 직접 변경 대상: `foundation/src/in_memory/core/snapshot_history.rs`,
+  `input_cell_store_prepared_changeset_v1.rs`,
+  `snapshot_history/prepared_original_apply_v3/{apply_delta_v3,capacity_replay_v3,clone_existing_v3,pin_target_v3}.rs`,
+  `snapshot_history/prepared_original_apply_v3.rs`.
+  `CellEntry`/`DeltaEntry`/clone/capacity replay/commit 호출을 한 번에 연결한다.
+  종료 전 재확인에서 `snapshot_history.rs`는 이미 `try_retain_history_header_into_v3`
+  와 `DeltaEntryHistoryRetainBirthV3`로 바뀌었으므로 그 API 구현을 다시 배정하지 않는다.
+- 재확인 시 prepared changeset `duplicate_cell_value_v3`에는 core에서 제거된
+  `try_retain_header_for_history_with_current_v3`, `duplicate_cell_entry_v3`에는 교체된
+  `try_retain_history_header_v3` 호출이 남았다. 이는 static caller mismatch이며 이번
+  계획에서 실행한 compiler 오류가 아니다. 진행 중 owner가 연결하면 해당 hunk는 즉시
+  재사용/검증으로 전환한다. Provenance의 supported/refused 계약도 독립적으로 확인하고
+  성공 결과에서 metadata를 조용히 제거하지 않는다.
+- `backend/src/repository_indexing_v1/original_source_publication_v3.rs`와
+  `original_source_publication_v3/full_batch_v3.rs`의 selected→input→prepared batch를
+  동일 birth/result slot에 연결한다. 현재 `history_birth_v3` field가 있지만 selected
+  text 경로의 `try_retain_v3` 호출이 남아 있어 연결이 완료됐다고 표기하지 않는다.
+- `wire/src/original_repository_source_scan_v3/capture_v3/`의 기존
+  `read_birth_v3.rs`, `retain_closed_v3/row_birth_v3.rs`,
+  `shared_text_backing_v3/cas_birth_v3.rs`를 재사용한다. `retain_closed_v3.rs`,
+  `workspace_capture_v3.rs`, `shared_text_backing_v3/common_birth_v3.rs` 및 실제
+  backing trait issuer의 잔여를 타입별로 확인한다. 같은 이름의 funding retain을
+  regex로 함께 제거하지 않는다.
+- 종료 조건: 최고 Source loan 밖의 DATA가 callback 후 마지막 checkpoint까지
+  partial/value/funding을 보유; first cause 보존; 실패 시 value/history/producer
+  publication 변경 없음; 성공 시 원 backing 보존. Ordinary clone의 별도 계약도 유지.
+- 기존 W1 claims: `OCT9-W1-INPUT-CELL-HISTORY-EXTERNAL-BIRTH-A`,
+  `OCT9-W1-FOUNDATION-HISTORY-EXTERNAL-RETAIN-A`,
+  `OCT9-W1-INPUT-RETAIN-SDK-SLOT-A`, `OCT9-W1-RETAINED-BTREE-VALUE-SLOT-A`.
+  Native BTree/Source text lower primitive는 해당 기존 owner의 공급물을 사용한다.
+- 기존 owner-local tests를 보완해 one-short funding, callback 성공 후 checkpoint
+  거절, repeated attempt, partial drop 순서, insert/update/delete/compaction을 검증한다.
+  동일 ordinary getter/retain 메서드를 되살려 compile만 통과시키지 않는다.
+
+**C2 — Java Original 출력에서 실제 SDK 소비자까지 연결 (현재 D4/31 owner 재사용)**
+
+- 기존 request/live-current와
+  `produce_original_java_parser_build_owner_sealed_output_v3` →
+  `into_canonical_inventory_batch_v3`/original native handoff visitor를 사용한다.
+  Generation 파일/metadata/nominal/retained selection producer를 새로 만들지 않는다.
+- Parser 변경은 기존 `src/language_host_adapter/java_workspace_generation_authority/`
+  의 `original_generation_file_v3.rs`, `original_generation_files_v3.rs`,
+  `original_function_projection_v3.rs`와
+  `java_workspace_generation_owned_input/{original_sealed_output_v3,retained_callable_selection_birth_v3}.rs`
+  에서 필요한 출력 계약만 기존 owner가 확정한다. Production/test getter를 구분한다.
+- 직접 consumer 대상: `backend/src/production_normal_source_java_workspace_generation_port_v1.rs`,
+  child `original_native_workspace_input_v3.rs`,
+  `production_normal_source_native_lowering_generation_issuer_v1.rs`,
+  `production_normal_source_attribution_generation_owner_v1/retained_callable_selection_v3.rs`.
+  현재 production issuer는 ordinary owner output→sealed native output→fragment/closure
+  receipts로 진행하므로 Original inventory 생성만으로 완료되지 않는다.
+- 하나의 Original output에 exact source identity, generation fragment, full-closure
+  receipt, native workspace handoff, callable selection census가 일치하도록 producer와
+  consumer를 함께 변경한다. 기존 port/authority를 변경하며 parallel output IR,
+  ordinary-to-Original adopter, 임의 current, 새 Source control을 만들지 않는다.
+- 기존 claim 연결: `OCT7-JAVA-PRODUCTION-GENERATION-MATERIALIZER`,
+  `PTA-SOURCE233-SDK-CANONICAL-INVENTORY-CALLERS`,
+  `PTA-SOURCE285-SDK-ORIGINAL-NATIVE-INPUT-CONSUMERS`와 current J0/D4/31 registry.
+  같은 파일의 다른 retained-selection/fixture owner hunk도 C0에서 대조한다.
+- 종료 조건: 실제 SDK→Runtime/Parser 경로의 generation/receipt/handoff 일치;
+  foreign current/missing member/one-short refusal에서 partial publication 없음;
+  payload-before-keeper drop 순서. 기존 backend owner tests를 사용하며 fixture-only
+  Original 성공을 production 수용으로 승격하지 않는다.
+
+**C3 — Kernel frozen-publication 방어만 의미 통합 (replay owner와 같은 hunk 조정)**
+
+- 대상: `kernel/src/index_sdk_ingress/publish.rs`,
+  `publish/frozen_publication_tests_v1.rs`, 필요 시 `error.rs`와
+  `publish/sdk_error_classification_v1.rs`의 실제 missing caller projection.
+- 기존 explicit publish/activate APIs와 `client_ref`를 유지하고 frozen aggregate만
+  publish outcome→원 publication full binding 비교→explicit activation으로 연결한다.
+  Retarget replay는 원 evidence를 가진 `AfterPublish`로 거절하고 CAS 호출0회를 보장한다.
+- 후보의 helper/negative tests를 재사용한다. 이미 존재하는 error accessors와
+  분류 코드를 다시 작성하지 않는다. `published_cause_v1` 같은 추가 projection은
+  실제 caller 필요가 있을 때만 연결; 단순 comment/메서드 순서 차이는 버린다.
+- `OCT9-REPLAY-EXTERNAL-DATA-CUSTODY-72`가 현재 publish.rs를 포함해 custody 작업 중이다.
+  이 helper와 caller contract를 같은 physical source에 통합하며 통째로 덮어쓰지 않는다.
+- 종료 조건: submitted repo/revision/generation/manifest/batch/source-event binding
+  retarget 거절, valid same-identity replay 허용, frozen full expected-active 전달,
+  evidence/cause 보존 및 자동 retry 없음. Generic SDK replay 허용 계약은 바꾸지 않는다.
+
+**C4 — V5 누적 semantic snapshot·typed intent 연결 (후보 통합 담당1명)**
+
+- 새로운 V5 writer를 작성하지 않고 기존 후보의 canonical snapshot encode/decode,
+  content digest, completed predecessor readback과 artifact-ref retry guard를 통합한다.
+- Contract: `retrieval/src/indexing_writer_ports/{part_2,prepared_identity_v3}.rs`,
+  `indexing_writer_ports_serde/part_1.rs`; Runtime:
+  `prepared_commit_artifact_v2.rs`와 기존 children,
+  `source_bound_projection_assembly/authority_assembly/{prepared_aggregate_issuer_v1,prepared_aggregate_owner_pipeline_v1}.rs`,
+  `search_plane_handoff_dispatch/{semantic_plan,semantic_state,aggregate_prepare}.rs`.
+  나머지 소비자는 앞선36 conceptual inventory의 caller closure를 사용한다.
+- Intent는 기존 후보의 SDK `SearchPlanePublicationIntentV1`→host controls→
+  source-bound assembly→issuer 경로로 전달한다. `search_builder.rs`,
+  `source_bound_final_assembly/projection_controls_v1.rs`,
+  `sdk/search_builder/index_owner_env_authority/aggregate_publication_authority.rs`
+  및 `retrieval/assembly_data/source_bound_aggregate_coordinator_v2.rs`를 함께 확인한다.
+- lower replay DATA6개 겹침과 `mod.rs`의 `OCT9-ROOT-ACKED-PIN-EXTERNAL-DATA`를 보존한다.
+  Artifact field만 cherry-pick하지 않으며 V4 missing baseline은 typed refusal로 유지한다.
+  SDK에 별도 durable store/semantic ownership을 추가하지 않는다.
+- 기존 `16a522722d2` process6와 candidate의 durable6/owner-local tests를 가져오고
+  existing parent modules에 연결한다. G1 rebaseline refusal, mismatched active,
+  V4→explicit V5 full→delta, prior-epoch refusal, artifact prune+daemon restart를 유지한다.
+- 종료 조건: G1 full→G2 delta→G3 delta 결과가 독립 full rebuild와 같고 unchanged,
+  delete/move/tombstone/GC를 포함; incomplete snapshot/changed artifact ref는 활성화 전
+  거절; retry마다 새 head를 읽어 frozen expected-active를 바꾸지 않음.
+
+**C5 — Producer cold restart의 최소 계약 확정·구현 (C4 이후 같은 owner)**
+
+- 현재 `runtime/src/retrieval/port_impls/index_projection_writer/mod.rs`의 canonical
+  factory는 fresh non-restorable owner와 empty manifest store를 발급한다. V9 artifact
+  reopen은 이 owner의 prior-epoch pin 복구를 허용하지 않는다.
+- Candidate `RebaselineExistingPredecessor`는 producer predecessor가 없는 G1에서
+  거절한다. 따라서 기존 enum으로 cold producer recovery가 된다고 추정하지 않는다.
+- 기본 구현 방향은 **fresh source closure에서 full rebuild·새 custody 발급**이다.
+  Durable verified facts와 Index composite active head는 검증/동시성 입력이며 old
+  owner grant나 producer predecessor로 변환하지 않는다. 투명한 epoch/pin 부활이나
+  새 범용 recovery framework보다 이 좁은 경로를 먼저 닫는다.
+- 쓰기 전 최소 계약을 기존 producer owner가 확정: canonical recovery 입력 issuer,
+  exact repo/revision/source closure와 generation 선택, 새 terminal owner 발급,
+  old active head의 full identity CAS, recovery/refusal 이후 durable completion·retry.
+  현재 Source/terminal owner가 이 입력을 공급하지 못하면 **BLOCKED**를 유지하며
+  fake pin/ordinary adoption이나 `RebaselineExistingPredecessor` 조건 완화로 우회하지 않는다.
+- 대상은 `mod.rs`, `prepared_commit_artifact_v2.rs`, aggregate issuer/prepare,
+  기존 SDK intent/controls의 해당 경로. 새 intent가 필요하면 의미가 다른 cold
+  recovery를 existing-predecessor rebaseline과 구분하고 이 한 경로의 callers를 같이 변경한다.
+- 실제 producer instance A 종료→fresh B와 fresh authority→full rebuild→새 publication→
+  후속 delta를 기존 process suite에서 검증한다. Daemon-only restart와 별도 test이며
+  old custody negative test는 그대로 둔다. 이 계약/실행 없이는 full restart 지원 미완료다.
+
+**C6 — 같은 결합 소스 검증·단위별 수용 (통합 담당, native 실행 직렬)**
+
+- Lock/Rustix/CFG prerequisite는 기존 owners의 current diff를 채택한다. Root lock은
+  candidate와 이미 같으므로 재생성하지 않는다. Nested lock4-way drift는 owner 그래프와
+  비교하며 무관한 registry version 교체를 추가하지 않는다.
+- Quanta existing22 + native source에 SDK/contract→stricter lifecycle→CLI/benchmark
+  consumers/strict Clippy/API/module/hexagonal→실제 daemon L2 순서로 필요한 rail 실행.
+  Main admission timeout은 executor0이며 기존 isolated PASS를 새 main PASS로 바꾸지 않는다.
+- Semantica C1/C2 supplier closure 후 같은 physical pair에서 QBC
+  `index_sdk_ingress::publish`→`shadow_delta_orchestration`→durable6→actual searchd process6.
+  기존 `sdk-publish-recovery` lane/profile와 parent-supplied verified daemon binary를 사용한다.
+  Exact QBC selectors/compile policies는 위 proof table을 재사용하고 실행 전 resolve한다.
+- Changed Source/Java proof closure만 추가로 실행하되 Kernel/Runtime acceptance를 건너뛰지
+  않는다. Test filter는 lib(test) compile 범위를 줄이지 않으므로 build를 병렬 실행하지 않는다.
+- Breaking SDK·CLI/benchmark/daemon·Semantica contract/Runtime bundle이 같은 계약으로
+  통과한 뒤 main에 수용한다. Source 구현 완료, owner test, process proof, commit/push를
+  각각 기록하며 current staged foreign paths를 한 feature commit에 섞지 않는다.
+  Cold restart/scale/relevance/installed-host는 해당 rail 전까지 별도 미완료다.
+
+**병렬 배치와 선후관계**
+
+- A: C1은 기존 W1/Source owner가 계속한다. B: C2는 기존 D4/31이 계속한다.
+  C: C3/C4의 읽기·test 검토는 동시에 가능하지만 겹치는 replay contract/SDK/Kernel
+  hunk는 해당 existing owner와 통합 담당1명이 순서대로 반영한다.
+- Quanta lane은 재구현 없이 현재22경로의 integration/static review를 진행한다.
+  Native 실행은 C6 담당1명이 전체 빌드 lease와 foreign owner 실행을 존중해 직렬 수행한다.
+- 핵심 경로: `C0 → (C1 ∥ C2 ∥ C3/C4 준비) → C3/C4 결합 → C6`.
+  C5 계약 읽기는 병렬 가능하나 writer/issuer/intent 변경은 C4와 같은 owner가 처리한다.
+  C5 구현·실제 cold process 검증도 최종 full-recovery 완료 조건에 포함한다.
+- 새 에이전트를 동일 Source/Java/lock/retainer 파일에 또 투입하지 않는다. 기존 writer의
+  source handoff를 받아 missing hunk만 반영하고, 이 절을 단일 작업 목록으로 갱신한다.
 
 #### Oct-8 checkpoint: 위치와 변경 소유권
 
