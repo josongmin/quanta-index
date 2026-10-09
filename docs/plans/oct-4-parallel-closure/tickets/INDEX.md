@@ -124,8 +124,8 @@ Semantica source reconciliation, avoiding duplicate work:
   Original producer-to-SDK cut is complete; reconcile the actual selected path.
 - **Receiver source present:** recursive corpus DATA/unit decoding, native
   connect DATA, frozen publication admission and typed dispatch causes already
-  exist. Candidate `codex/index-publication-native-receiver` at `c0bd1df1`
-  still has 20 paths relative to its merge base with main. Integrate its complete
+  exist. Candidate `codex/index-publication-native-receiver` at `0e1e486b`
+  includes main `6e9596685cc` and retains 20 feature paths. Integrate its complete
   semantic change with current supplier hunks; do not overwrite staged files or
   cherry-pick only the new Core primitive. Its existing Kernel result does not
   qualify Runtime, actual RPC admission or genuine funding.
@@ -1644,6 +1644,16 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   `6e9596685cc` adds the nine missing public rustix documentation lines through
   the shared-main coordinator. No native behavior or foreign staged hunk changed;
   the isolated probe advanced past rustix to the Core caller mismatch above.
+- **FAILED — Semantica remote publication:** local main retains `e234efb0` and
+  `6e9596685cc`; remote main remains `8217a38bf04d`. The coordinator recovered
+  the attested Core commit and tried its exact next-child push before the docs
+  commit. Exact pre-push failed: Cargo metadata reports that
+  `third_party/ciborium/Cargo.toml` believes it belongs to a workspace that does
+  not admit it, and `native_temporary_vec_v3/retired_v3.rs` has no classified
+  owner-test lane. Static safety/Semgrep passed; no Clippy/owner verdict or
+  remote update was produced. Preserve the queue and repair the metadata and
+  owner mapping through their existing control-plane owners; do not bypass the
+  failed gate or stage the unrelated shared working tree.
 - **Historical code propagation:** Index main `3966ddb7` was merged into
   the native candidate at `8d830dd0`; Semantica main `e234efb0`
   was reconciled into receiver candidate `c0bd1df1` without changing its tree
