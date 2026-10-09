@@ -905,6 +905,22 @@ was refused because the Index sibling overlay changed after capture, before
 its test execution. These tool/source-capture failures do not revalidate the
 repaired Runtime or replace the earlier failed compiler receipt.
 
+The next exact QBC attempt did execute Cargo and is **FAILED**:
+`20261009T154357.765692Z-e97930d388cb`, execution root `4dc25938372b`,
+source snapshot `17a0d232be0c44e24a145e425f60385a8d717a753aac0618201381fc5fcbcaf2`.
+It used the exact `lexical_delivery_requires_matching_composite_activation_ack_v1`
+selector above with `feature-isolation:quanta-runtime.no-default.9c3270892708`.
+Cargo exited 101 after 81.026 seconds; the owner result is RED, with zero observed
+test witnesses and no publication-complete marker. The dependency
+`quanta-contract-pta-result-shared/src/retained_storage_copy_v3.rs` failed at
+line 24 (E0583, unresolved child module `exterior_fields_v3`) and line 20
+(`-D unused-imports`, `storage_visit_error_v3`). The live child source exists
+under `retained_storage_copy_v3/exterior_fields_v3.rs`; its parent is mounted by
+`#[path]` in `lib.rs`. These paths belong to another owner's staged, ongoing
+source cut and were not changed by this integration. This is a new dependency
+compile failure, not a Runtime test failure or a source-capture refusal.
+Runtime test bodies and the seven new SSA test bodies remain **NOT_RUN**.
+
 
 **BLOCKED** — whole native/product main merge still requires the actual
 factory/worker/RPC receivers and a SAME Relation query-unit admission loan.
@@ -1385,6 +1401,14 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   (`Ok(())` → `Ok(Ok(()))`). The integration owner verified that file against its
   passing Kernel snapshot and committed through the shared-main coordinator;
   this does not qualify the SDK/Runtime bundle.
+- **VERIFIED — latest main propagation:** Index documentation main `80fadc3c`
+  was merged into the native candidate at `1101da9a`; Semantica main `e234efb0`
+  was reconciled into receiver candidate `c0bd1df1` without changing its tree
+  (`2eb4e5f040b64bd83de4a9f0ad5de224bc400e41`). The 56 non-documentation
+  Index paths still match the shared working source byte for byte, with aggregate
+  digest `de0f081c9c7a52d2404f89e0b9d08c85ac2987ca1f7b74e2cd117da826cc7a3d`.
+  The final Runtime dependency compile failure is recorded above; it leaves
+  the complete native/consumer bundle unqualified.
 - **VERIFIED — current cleanup transactions:** removed 38 visible local branch refs:
   12 main patch-equivalent or superseded lexical refs, 10 ancestors of the retained
   native cohort, 2 ancestors of the upload chain, and 14 source-audited superseded
