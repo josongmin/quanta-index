@@ -158,7 +158,7 @@ Updated: 2026-10-09 (KST).
 <a id="oct-9-sdk-reconciliation"></a>
 #### Oct-9 SDK reconciliation
 
-현재 통합 pair는 Quanta main `bd73045a`와 isolated `16792d87` + 최신 native
+검증한 통합 pair는 Quanta preparation source `bd73045a`와 isolated `16792d87` + 최신 native
 owner source + main preparation facade refactor, Semantica `a63f536b` + frozen
 working source4,854경로 + reconciled SDK/V5/intent다. QGLang sibling은 clean
 `231707d`다. 과거 source의101/334오류·Kernel28·daemon300을 이 pair에 합산하지 않는다.
@@ -166,7 +166,7 @@ working source4,854경로 + reconciled SDK/V5/intent다. QGLang sibling은 clean
 | 단위 | 현재 소스 상태 및 변경 소유권 |
 | --- | --- |
 | Main 독립 단위 | Preparation `433a9363`, facade/implementation 분리 `bd73045a`, post-commit receipt 검증 `029014be`. Dispatcher draft의 sequence0와 published apply/replay의 sequence>0 계약 분리 |
-| Quanta publication | 남은 owned22경로의 delta는 current main apply 검사 통과. `AfterPublish`/원 evidence, `publish_outcome`/`activate_published`, 공통 activation validator/dispatcher, CLI·benchmark·daemon consumers를 같이 보유. Breaking main merge는 미적용 |
+| Quanta publication | Owned22경로의 delta는 earlier current-main apply 검사 통과. Closeout에서 shared-main working tree에 source 반영을 관측함; writer 미확인, 코드 commit 없음. Candidate와19동일/2format-only/1lifecycle fixture 차이. `AfterPublish`/원 evidence, `publish_outcome`/`activate_published`, 공통 activation validator/dispatcher, CLI·benchmark·daemon consumers를 같이 보유. Coupled source commit/Runtime acceptance는 미완료 |
 | Native 경계 | Canonical `QuantaIndexClientPayloadV1`를 borrow하며 기존 transports/receiver DATA를 보존. Native owner source를 feature commit으로 stage하지 않음; 새 client·decoder·ordinary-to-native adopter 없음 |
 | Semantica producer/consumer | Conceptual36경로 중 kernel4 + V5/intent29가 captured source 대비 변경됨. Lock2와 native policy test는 처음에 이미 필요한 SDK edges/내용을 보유. 이전 충돌5경로는 private pair에서 의미 보존 결합; 이후 root lock의 missing native wire edge를 별도 수리 |
 | 추가 회귀 | Clean feature branch `codex/sdk-publication-complete`의 `16a522722d2`에 normal hooks로 저장. G1 rebaseline 거절, planned predecessor/native active 불일치 거절·no-activation, 이전 epoch custody의 fresh authority 거절을 기존 process test1파일에 추가. 기존 restart scenario를 daemon restart로 명명; 새 producer 복구 성공으로 표기하지 않음 |
@@ -187,6 +187,7 @@ working source4,854경로 + reconciled SDK/V5/intent다. QGLang sibling은 clean
 | Runtime QBC `shadow_delta_orchestration`, `feature-isolation:quanta-runtime.no-default.9c3270892708` | **FAILED** (dependency compile), body **NOT_RUN** | 기존 external-state module path를 실제 child source에 연결하고 Rustix close DATA 문서3건을 보완한 최종 source에서 동일 E0599 2건, exit101/body0. 전체 오류 inventory가 아니라 현재 compile frontier |
 | Durable6 및 process6 | **NOT_RUN** | Runtime lib dependency closure 미완료. Ignored tests를 삭제·성공으로 변경하거나 feature gate를 약화하지 않음 |
 | Full cold producer restore | **BLOCKED** | 확인한 production 경로의 유효한 복구 입력·계약이 제시되지 않음. Canonical factory는 fresh non-restorable terminal owner를 발급하고 prior-epoch admitted custody를 거절. Old pin/digest로 authority 재구성 금지 |
+| Late shared-main working source: SDK/contract + stricter lifecycle fixture | **BLOCKED** (resource admission); native bodies **NOT_RUN** | Main의 `./scripts/cargow test -p quanta-index-sdk -p quanta-index-contract --locked`는 공유 build-test lease 수용을300초 기다린 뒤 exit124, native executor0/body0. Source22경로 존재는 관측했지만 main 테스트 성공을 뜻하지 않음. Lifecycle 별도 실행도 **NOT_RUN**. Isolated518/daemon300/L2 proof를 main execution으로 재사용하지 않음 |
 | Linux/installed-host, full projection cold-root, scale/relevance, remote CI/push | **NOT_RUN** | 로컬 correctness 또는 compile/static 결과로 승격하지 않음 |
 
 Lock 수리는 private root에만 했다. `generate-lockfile --offline`의 불필요한
@@ -243,8 +244,15 @@ captured dirty75경로 변경/17경로 추가를 관측했으므로 이 결과�
 **남은 결합 순서 / owner blocker:**
 
 1. Quanta owned22경로는 native owner commit의 preimages를 다시 대조한 뒤
-   해당 native source와 결합한다. SDK의 canonical validator/dispatcher, error/public API,
-   CLI/benchmark/daemon consumers를 부분 복사하지 않는다. 현재 main은 기존 enum을 유지한다.
+   해당 native source와 결합한다. Closeout의 main working source22경로가 이미
+   반영됐으므로 이 patch를 다시 적용하지 않는다. Candidate와의 차이는
+   SDK test module 순서, replay assertion formatting, stricter lifecycle fixture다. SDK의 canonical validator/dispatcher, error/public API,
+   CLI/benchmark/daemon consumers를 부분 복사하지 않는다. Committed main은 기존 enum이며 working main은 `AfterPublish`다. Late working-main
+   선택 SDK/contract 및 lifecycle 검증은 기존 isolated proof와 분리한다.
+   Admission timeout 실행을 test failure로 집계하지 않는다. 기존 native owner 실행이
+   종료된 뒤 SDK/contract 위 명령과
+   `./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked e2e_lifecycle_history:: -- --nocapture --test-threads=1`
+   을 순서대로 실행한다. 다른 owner의 lease/process를 중단하거나 우회하지 않는다.
 2. **P0 Source retained-text birth owner:** captured
    `quanta-contract-types-core/src/values/input_cell_value.rs:150,174`는 제거된
    `SharedSourceTextV1::try_retain_v3`/`try_retain_header_for_metadata_v3` 호출이다.

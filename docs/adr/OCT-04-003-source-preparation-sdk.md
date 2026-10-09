@@ -2,19 +2,23 @@
 
 Status: **Offline preparation integrated in local main `433a9363`; focused
 verification `VERIFIED`** (2026-10-08). **Committed-receipt response validation
-is integrated in local main `029014be`** (2026-10-09). **Breaking publication recovery and
-Semantica V5 remain isolated candidates.** This is not release, installed-host,
+is integrated in local main `029014be`** (2026-10-09). **Breaking publication recovery is now present in the shared main working
+tree but remains uncommitted; Semantica V5 remains an isolated candidate.** This is not release, installed-host,
 performance, or cross-repository acceptance.
 [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) owns the public
 ingress and publication boundary.
 
 ## 2026-10-09 integration checkpoint
 
-Current Quanta main is `bd73045a`; the independent committed-receipt fix is
+The verified pair uses Quanta preparation source checkpoint `bd73045a`; the independent committed-receipt fix is
 `029014be`, and preparation implementation now lives behind the existing
 public facade. Publication recovery is isolated on `codex/sdk-publication-oct9`
 (`3dbc3e46` + `16792d87`) with the current native client/decode owner changes
-and the facade refactor. The remaining feature delta is 22 paths. These owner
+and the facade refactor. The publication feature inventory is 22 paths. At closeout a shared-main
+working-tree change applied it without a source commit: 19 paths equal this
+isolated candidate, two differ only in formatting/module order, and the lifecycle
+fixture uses a stricter publication-identity check and direct typed conflict
+classification. The writer was not established by this audit. These owner
 changes are not silently included in the feature's commit inventory.
 
 Explicit and combined activation share one receipt-to-request validator and
@@ -66,7 +70,13 @@ behavior failure. Root lock, vendored item documentation and an existing child
 module path were repaired privately; no legacy API or feature-gate fallback was
 introduced. Durable and process tests remain **NOT_RUN**. Past 101/334 error
 counts and old Kernel/contract results do not describe this current source.
-The breaking SDK/consumer bundle remains unmerged pending that acceptance.
+The coupled SDK/consumer bundle remains uncommitted and unaccepted pending that
+proof. Shared-main source presence is separate from this isolated pair's proof.
+Its SDK/contract invocation timed out during shared build-test resource admission
+after 300 seconds (exit124); no native executor or test body started. That scope
+is **BLOCKED**, with native verification **NOT_RUN**. The stricter late-main
+lifecycle fixture also remains **NOT_RUN**; the existing owner's release build
+was not interrupted or bypassed. Rerun commands are in the reconciliation ticket.
 
 ## Decision and scope
 
@@ -168,8 +178,9 @@ the prior snapshot; the SDK performs no hidden durable I/O.
 
 ## Publication and recovery
 
-**Candidate-only API:** the following example requires the isolated publication
-recovery bundle. Current main `bd73045a` retains `publish_and_activate` and
+**Uncommitted API:** the following example requires the publication recovery
+source now present in both the isolated candidate and shared-main working tree.
+Committed main `bd73045a` retains `publish_and_activate` and
 `ActivationAfterPublish`; preparation does not require this API change.
 
 `publish_outcome` exposes the validated original publication and committed
@@ -215,7 +226,7 @@ identifies the failed operation, not whether CAS took effect: an acknowledgement
 or elapsed-time conversion can fail after activation. Reconcile the active head
 before retrying or confirming producer state.
 
-## Current implementation audit and caller contracts
+## 2026-10-08 implementation audit and caller contracts
 
 The 2026-10-08 source audit distinguishes shared main `09387a9a`, the isolated
 Quanta candidate, Semantica owned commits `5873774c51a` / `53b86d09049` /
@@ -224,8 +235,9 @@ foreign producer migration inputs. The actionable path inventory, execution
 order and merge conditions are in the
 [SDK integration ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md#sdk-구현-후보-통합-재감사--2026-10-08).
 Offline preparation is now integrated in local main `433a9363`; the explicit
-publication API and V5 consumer remain isolated. The audit and candidate results
-below predate the split; current main verification is recorded in the next section.
+publication API and V5 consumer were isolated at that checkpoint. The audit and candidate results
+below predate the split; the Oct-9 integration checkpoint above supersedes their
+source-presence and verification status.
 
 The audit reproduced a preparation defect through two public API tests: with
 identical source, recipe and unit set, a symbol coverage state change or empty
