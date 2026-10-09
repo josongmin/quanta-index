@@ -613,7 +613,7 @@ code is committed as `92e01fc18332c0f7d0eb8bef95d8d75a9777be4b` on
   causes. Another writer included them and the minimal root lock dependency
   edge in Semantica `8217a38bf04d6c2fb2a535d43753408ac4621972`; this lane did not
   stage or commit Semantica. The ProductQuery test checks its retained copy cause.
-- **AUTHORED / NOT_RUN** — Semantica ingress now receives typed `AfterPublish`
+- **AUTHORED / scoped verification below** — Semantica ingress now receives typed `AfterPublish`
   stage, complete original evidence and underlying cause. It exposes the SAME
   SDK `publish_outcome` and `activate_published` through the existing ingress.
   The V5 caller uses these two operations and rejects a replay's target mismatch
@@ -627,13 +627,15 @@ code is committed as `92e01fc18332c0f7d0eb8bef95d8d75a9777be4b` on
   operation/semantic-count mismatch regressions assert Aborted and byte-identical
   original evidence. These latest two-file changes are statically checked only.
   Semantica candidate
-  `9c494dc83c597448b606cac10e4de2a9f3a72512` on
+  `0a7a67472e30f5e40a018edc06dac16732996e58` (successor of
+  `9c494dc83c597448b606cac10e4de2a9f3a72512`) on
   `codex/index-publication-native-receiver` preserves these seven owned paths
   including the Core return repair. Canonical edition-2021 formatting with
   `config/rust/rustfmt.toml` and diff checks passed. The receiver candidate used
   a private index and `commit-tree`, so commit hooks did not run; it is authored
-  source, not a Rust/native/product verdict. No successful affected Semantica
-  test run is claimed.
+  source, not a Rust/native/product verdict. Kernel's separately captured
+  focused execution is recorded below; Runtime V5/Product/native qualification
+  is not implied by that one test.
 
 Executed against the coupled Index source, with 56 code/test/tooling/API
 paths differing from main and aggregate SHA256 `de0f081c9c7a52d2404f89e0b9d08c85ac2987ca1f7b74e2cd117da826cc7a3d` (sorted UTF-8 path,
@@ -679,8 +681,36 @@ Five comments were added without changing logic or suppressing lints. The next
 kernel exact run passed those boundaries and exited 101 in
 `quanta-contract-retrieval`: missing policy-aware replay serializers, a macro
 path resolving in the caller scope, and denied stale imports (26 diagnostics).
-Affected receiver test bodies did not run. No foreign process, admission policy
-or shared target binding changed.
+Those failed attempts ran no receiver test bodies. A minimal repair connected
+four existing replay serializer shapes to their policy-aware trait, retaining
+wire order and optional-field rules, qualified the macro path, and removed
+stale imports. The next run compiled these boundaries, then failed on three
+new frozen-publication test sites using the retired String transport shape.
+Both fixtures now retain actual `IpcError::Io(ConnectionReset)` causes and
+verify kind plus full message, without a string-conversion shim.
+
+**VERIFIED (Kernel focused)** — the canonical command below exited 0 and ran
+1 PASS, 0 FAIL, 0 ignored, 111 filtered. Owner execution result is GREEN and the
+QBC publication-complete marker exists for run
+`20261009T094133.688808Z-fdf3142d7774`, snapshot digest
+`e7a71556c037af6d2adf3bf9fb1c441951622894023b1f6320e40b7ffa6f8bad`.
+This current frozen shared-source result is not a qualification of the authored
+receiver branch or of its Runtime/Product/native consumers.
+
+```sh
+./scripts/quanta-build-cli owner run \
+  --lane 01a1062b-e4a5-71f1-8554-a097114448ec \
+  --package quanta-runtime-retrieval-kernel --execution-kind test --target-kind lib \
+  --selector-mode exact \
+  --selector index_sdk_ingress::publish::sdk_error_classification_v1::tests::post_publish_failures_preserve_stage_evidence_and_original_cause \
+  --compile-policy feature-isolation:quanta-runtime-retrieval-kernel.no-default.ed0772b29304 \
+  --max-test-threads 1 --wait-seconds 45
+```
+
+The first Runtime V5 exact retry stopped before compilation because the QGLang
+sibling overlay changed during source capture. No Runtime tests ran in that
+attempt; a fresh canonical capture/run is pending. No foreign process,
+admission policy or shared target binding changed.
 
 **BLOCKED** — whole native/product main merge still requires the actual
 factory/worker/RPC receivers and a SAME Relation query-unit admission loan.
@@ -703,6 +733,22 @@ closure admission, canonical file resolution with original completion/window,
 retained composite capture, and actual typed join/Index-on-off installed oracle
 remain their own gates. The ordinary publication regressions above do not close
 those gates or the main campaign's Index-independent first two-fact join.
+
+C5's cold-publication reservation is an actual missing supply contract, not
+`active_generation + 1`. The existing Index `ActivationCatalog` repository
+mutation/envelope and `SourcePublicationCatalogPort::reserve_source_event` own
+durability and event idempotency; the latter persists a caller-supplied target
+and does not allocate generations. Track adapters own occupied/unsealed
+inventories. A correct supply must bind the stable producer attempt, one
+reserved generation and exact optional full active CAS head under that existing
+owner, persist a nonreusable high-water, then validate the reservation at ingest.
+Semantica consumes it BEFORE its existing manifest binding/receipt issuance;
+the current local store starts at zero after cold restart and allocates before
+aggregate preparation reads the full active head. The generation-independent
+closeout/attempt identity exists before prepare; the final batch payload
+commitment is built later and must bind the same reservation before publication.
+No allocator, public raw-digest setter, source redefinition or parallel store
+was added by this lane. This remains **BLOCKED** for the coupled C5 product cut.
 
 ### SDK connect native 경계의 추가 대조 — 2026-10-09
 
