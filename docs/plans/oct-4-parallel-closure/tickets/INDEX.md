@@ -26,6 +26,16 @@ Semantica는 외부 producer이며 fact resolution/join/completion은 그 저장
 
 ### Index library integration scope — 2026-10-10
 
+**Integration: VERIFIED.** Main advanced from `4c84a3f3` to
+`3aeebae88a0b74e17f57e24fe5ec41567776fed0` with all 58 candidate paths.
+The completed `codex/index-publication-native-cohort` branch and its clean,
+inactive worktree were removed after ancestry and source checks. Recovery ref:
+`refs/codex/cleanup/oct10-integrated/index-publication-native-cohort`.
+Five unrelated dirty/untracked files were preserved byte-for-byte; their index
+entries were unchanged. Remote push and remote CI are **NOT_RUN** for this
+integration. `codex/borrowed-head-cas-validation` remains a historical proof
+reference and is not promoted to a new qualification result.
+
 Index library integration and Semantica native/product acceptance have separate
 owners and observable contracts. The complete Index candidate includes native
 construction/decode primitives, publication evidence and explicit activation,
