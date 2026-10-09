@@ -589,7 +589,9 @@ The lexical helpers were reconciled around the SAME borrowed
 `QuantaIndexClientPayloadV1`; there is one publication dispatcher and one CAS
 request validator/dispatcher. No duplicate client, controller or owned proxy
 was introduced. The managed candidate checkout is
-`/Users/songmin/.codex/worktrees/native-coupled-closeout/quanta-index`.
+`/Users/songmin/.codex/worktrees/native-coupled-closeout/quanta-index`; the tested
+code is committed as `92e01fc18332c0f7d0eb8bef95d8d75a9777be4b` on
+`codex/index-publication-native-cohort`. Its working tree is clean.
 
 - **VERIFIED** — the preparation facade repair is independently committed in
   main. Existing implementation and tests moved without body changes; public
@@ -614,8 +616,16 @@ was introduced. The managed candidate checkout is
   The V5 caller uses these two operations and rejects a replay's target mismatch
   before CAS, preserving original evidence. It uses only the original frozen
   expected head and performs no fresh head capture. Focused tests cover both
-  error stages and frozen target rejection. Formatting and diff checks passed;
-  no successful affected Semantica test run is claimed.
+  error stages, frozen target rejection and full original evidence after plain
+  pre-CAS Protocol or local delivery-validation failure. Delivery projection
+  borrows the receipt instead of cloning it. Semantica candidate
+  `9c494dc83c597448b606cac10e4de2a9f3a72512` on
+  `codex/index-publication-native-receiver` preserves these seven owned paths
+  including the Core return repair. Canonical edition-2021 formatting with
+  `config/rust/rustfmt.toml` and diff checks passed. The receiver candidate used
+  a private index and `commit-tree`, so commit hooks did not run; it is authored
+  source, not a Rust/native/product verdict. No successful affected Semantica
+  test run is claimed.
 
 Executed against the coupled Index source, with 56 code/test/tooling/API
 paths differing from main and aggregate SHA256 `de0f081c9c7a52d2404f89e0b9d08c85ac2987ca1f7b74e2cd117da826cc7a3d` (sorted UTF-8 path,
@@ -637,9 +647,17 @@ runs first encountered concurrent source-capture drift and then a stale root
 lock dependency. The minimal local dependency edge removed that lock failure.
 The next actual compiler run exited 101 at Core
 `native_temporary_vec_v3/retired_v3.rs:77`: `Ok(())` had the wrong nested Result
-shape. The one-line `Ok(Ok(()))` repair is authored and statically checked;
-affected QBC execution is pending. Test bodies did not run in those failed
-attempts. No foreign process, admission policy or shared target binding changed.
+shape. The one-line `Ok(Ok(()))` repair is authored, canonically formatted and
+compiled successfully in the next attempt. That attempt then failed at
+`quanta-contract-types-core/src/values/input_cell_value.rs:155`: the old
+SourceText metadata-retain call required a coordinated external-birth migration.
+Another owner subsequently removed that call. A new all-workspace lock check
+then exposed another omitted local edge,
+`quanta-runtime-test-support-pta -> codegraph-cfg-dfg-kernel`. Only that edge was
+added, excluding the diagnostic regeneration's unrelated registry upgrades.
+Verification of the current coupled source is pending. Test bodies did not run
+in those failed attempts.
+No foreign process, admission policy or shared target binding changed.
 
 **BLOCKED** — whole native/product main merge still requires the actual
 factory/worker/RPC receivers and a SAME Relation query-unit admission loan.
