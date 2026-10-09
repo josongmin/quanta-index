@@ -662,14 +662,42 @@ physical checkout has the SAME bytes on all 56 paths.
   a distinct path: the worker owns the cause until its result/drop, while only
   actually persisted row state can support restart reconciliation; that path
   and the complete live V5 IPC route are NOT_RUN.
-  The complete authored receiver successor is
+  The typed-cause cut was committed as
   `431de3f8d4cbfdbfbeb4a09dc525d1a50593b346` on
-  `codex/index-publication-native-receiver`, with 13 paths in this new cut.
-  Its new-cut aggregate digest is
+  `codex/index-publication-native-receiver`, with 13 paths and aggregate digest
   `c50ba60b49ae4a2b0f9095ce958399af0f7d12449e371d4df758b05332d62a8f`.
+  Its current successor is `6eb8df7c30ed02d0eda13d1d8ec9536e7213ed5e`, after
+  full-binding admission and actual-consumer regressions in
+  `d713441339fed8fd846992b303dea16a03017072`. All eight paths changed after
+  the typed-cause cut match the live shared source. This includes the same
+  non-Clone transport pointer/drop fixture through the actual governed worker.
   Mixed-owner facade/manifest/lock paths include only this lane's hunks in that
   candidate; shared staged/unstaged work was preserved. Commit-tree hooks are
   NOT_RUN, and shared-source QBC results do not qualify this authored branch.
+
+
+- **AUTHORED / Kernel verification below; Runtime body NOT_RUN** — a further
+  V5 review found that target-only admission could activate an original replay
+  before rejecting its batch digest. Two valid Delta inputs can share source
+  event, payload and target while bases 5 and 6 produce different batch
+  digests. The existing Kernel complete-binding check is now the one public
+  `validate_frozen_search_corpus_publication_v1`; both Kernel's combined helper
+  and V5 call it before activation. Full event/target/batch identity must match.
+  A refusal retains the original receipt/publication and typed AfterPublish
+  evidence, performs zero activation calls, and never rereads the frozen CAS
+  head. The new fixed Delta regression exercises legitimate general SDK replay
+  before asserting the stricter frozen-caller refusal; this uses a closure
+  counter, not daemon/Core execution. No second validator/decoder was added.
+- **AUTHORED / NOT_RUN** — failed attempts stop replay after the first row's
+  completion persistence; later rows remain unclaimed, including after a
+  retryable failure. A real temporary machine-store regression deletes the
+  first canonical payload and asserts first Aborted/attempt 1, second
+  ReadyToDispatch/attempt 0 with no error. The existing corrupt-payload product
+  contract now flips one byte while preserving length, expects the fixed
+  emission-digest mismatch to propagate, and checks Aborted while already
+  delivered rows remain Delivered. Its old success/DispatchFailed oracle was
+  inconsistent with the verified custody loader. These Runtime/product bodies
+  remain unexecuted behind the lower SSA compile failure.
 
 
 Executed against the coupled Index source, with 56 code/test/tooling/API
@@ -729,7 +757,7 @@ verify kind plus full message, without a string-conversion shim.
 QBC publication-complete marker exists for run
 `20261009T094133.688808Z-fdf3142d7774`, snapshot digest
 `e7a71556c037af6d2adf3bf9fb1c441951622894023b1f6320e40b7ffa6f8bad`.
-This current frozen shared-source result is not a qualification of the authored
+This earlier frozen shared-source result is not a qualification of the authored
 receiver branch or of its Runtime/Product/native consumers.
 
 The retained result JSON is outside the checkout:
@@ -751,6 +779,36 @@ pretend the original source tree is still available for peer-path comparison.
   --compile-policy feature-isolation:quanta-runtime-retrieval-kernel.no-default.ed0772b29304 \
   --max-test-threads 1 --wait-seconds 45
 ```
+
+
+**VERIFIED (five Kernel focused witnesses)** — the five exact frozen-publication
+regressions below each ran 1 PASS, 0 FAIL, 0 ignored, 112 filtered with the SAME
+Kernel feature policy shown above. Each owner result is GREEN and has its own
+publication-complete marker. The two earlier runs before shared-validator
+extraction were rerun and superseded here. Captured `publish.rs`, its fixed test
+file and root Cargo.lock hashes match current live bytes for all five results:
+Kernel publish SHA256 `8fd13309370c36fca4aa0c91c6105a4ebcf7487b0725cec07527230162b21c91`,
+test file SHA256 `1be47dc4c634ed1496847957fff4d30cd9b920709d2719942ed381d94860ad0b`.
+Each capture retains its own full snapshot digest; these are five focused
+executions, not one whole-tree or receiver-candidate qualification.
+
+Witness names use prefix `index_sdk_ingress::publish::frozen_publication_tests_v1::`.
+Result paths use
+`/Users/songmin/Library/Caches/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/<root>/lanes/01a1062b-e4a5-71f1-8554-a097114448ec-snapshot-artifact/verification-results/<run>/receipt.json`.
+
+| Exact witness suffix | Run | Root |
+| --- | --- | --- |
+| `activation_failure_preserves_evidence_and_refuses_automatic_retry_v1` | `20261009T144317.028186Z-fe8a64edd9f5` | `semantica-codegraph-v2-e333f92df2b3` |
+| `already_wrapped_activation_failure_keeps_one_original_cause_v1` | `20261009T144510.104330Z-c2274ca5bb1c` | `semantica-codegraph-v2-8da920d9224c` |
+| `retargeted_replay_preserves_original_evidence_without_control_ipc_v1` | `20261009T145049.181597Z-f3e5efc844b1` | `semantica-codegraph-v2-2174f34b46d1` |
+| `same_identity_replay_reaches_activation_and_returns_original_receipt_v1` | `20261009T145253.220381Z-916ffcd2b8b1` | `semantica-codegraph-v2-e8abbf2c9983` |
+| `same_target_replay_with_different_delta_base_is_refused_before_activation_v1` | `20261009T144123.509612Z-cc2ccf8ed821` | `semantica-codegraph-v2-37bc7cb50290` |
+
+These tests exercise actual shared publication admission and preserve the
+frozen expected head, original receipt/evidence and original typed activation
+cause. They do not execute V5 bootstrap, native RPC/Core, installed E2E or
+restart reconciliation. Canonical snapshot GC may reclaim the source checkout;
+retained receipts are not proof that a CAS source directory still exists.
 
 A Runtime V5 exact attempt stopped before compilation because the QGLang
 sibling overlay changed during source capture. A later capture compiled but
@@ -776,9 +834,13 @@ V5 test bodies are **NOT_RUN**. No foreign process, admission policy or shared
 target binding changed.
 
 
-**FAILED (latest Runtime compile), NOT_RUN (V5 behavior)** — run
-`20261009T103001.474688Z-17b3e1501c61` used the same reviewed Runtime feature
-closure and the exact delivery/evidence/cause regression selector below.
+**FAILED (earlier Runtime compile)** — run
+`20261009T103001.474688Z-17b3e1501c61` requested the delivery/evidence/cause
+selector with policy `quanta-runtime.no-default.32c001bdd540`. That policy
+supports the inline published-evidence tests but omits `search-plane-proof-support`,
+so it cannot execute the requested `tests::proof_projection` body even if
+compilation succeeds. This result is retained only as a failed compilation
+record; it supplies no Runtime behavioral proof.
 The owner receipt reports RED, exit 101, zero passed/failed/ignored/filtered
 bodies, source snapshot digest
 `30ec450f930e21ec451bd81f61c0baf3ed1d9916c4051bd613319b0376a01932`.
@@ -790,13 +852,27 @@ helper or local Source-owned DATA was restored. The receipt is retained at
 `/Users/songmin/Library/Caches/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/semantica-codegraph-v2-1e4ef57d0339/lanes/01a1062b-e4a5-71f1-8554-a097114448ec-snapshot-artifact/verification-results/20261009T103001.474688Z-17b3e1501c61/receipt.json`.
 No publication-complete marker exists for this failed result.
 
+**FAILED (latest Runtime compile), NOT_RUN (V5 behavior)** — corrected run
+`20261009T144643.515684Z-459bc882b63f` uses the declared
+`quanta-runtime.no-default.9c3270892708` policy, whose feature is
+`search-plane-sdk-ingress-proof` and includes the test's proof-support gate.
+It still exits 101 at the SAME two SSA `into_retained_v1` callers before
+Runtime compilation. Owner result is RED, all body counts are zero, and no
+publication-complete marker exists. Source snapshot digest is
+`ae001f82a516b3ced1af2527d2b8c082ea2e787ffdcfa86adfeb550f20ea0797`.
+The exact result is retained outside the checkout at
+`/Users/songmin/Library/Caches/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/semantica-codegraph-v2-10b1df944ea5/lanes/01a1062b-e4a5-71f1-8554-a097114448ec-snapshot-artifact/verification-results/20261009T144643.515684Z-459bc882b63f/receipt.json`.
+The command below therefore records an executed compile failure, not a passed
+delivery, bootstrap, store or product test. Repeating it without the Source
+owner's external retain-birth migration cannot close those scopes.
+
 ```sh
 ./scripts/quanta-build-cli owner run \
   --lane 01a1062b-e4a5-71f1-8554-a097114448ec \
   --package quanta-runtime --execution-kind test --target-kind lib \
   --selector-mode exact \
   --selector retrieval::port_impls::index_projection_writer::source_bound_projection_assembly::authority_assembly::search_plane_handoff_dispatch::tests::proof_projection::lexical_delivery_requires_matching_composite_activation_ack_v1 \
-  --compile-policy feature-isolation:quanta-runtime.no-default.32c001bdd540 \
+  --compile-policy feature-isolation:quanta-runtime.no-default.9c3270892708 \
   --max-test-threads 1 --wait-seconds 45
 ```
 
@@ -804,11 +880,13 @@ Canonical edition-2021 formatter and scoped diff checks are VERIFIED. Scoped
 boundary-guard preflight for Runtime Cargo.toml and port_impls/mod.rs passed
 53 impacted build policies using the repository Python resolver. The default
 system Python 3.9 failed tool startup; the Python >=3.12 resolver removed that
-interpreter failure. The gate closeout cannot provide a stable GREEN: it
+interpreter failure. The subsequent shared-validator/dispatch preflight also
+passed all 18 impacted policies. The gate closeout cannot provide a stable GREEN: it
 reported source-changed-during-policy-verification and existing foreign
 Runtime cfg-neutral macro/cfg-admission/orchestration policy violations.
 Pre-edit RED was NOT_RUN because this Runtime target was already blocked by
-its lower SSA dependency. No subsequent native build/test was started.
+its lower SSA dependency. The corrected Runtime run above executed no test
+bodies. Kernel focused passes do not qualify these Runtime/native scopes.
 
 
 **BLOCKED** — whole native/product main merge still requires the actual
