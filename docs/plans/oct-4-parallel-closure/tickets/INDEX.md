@@ -724,9 +724,21 @@ original native allocation error without the existing typed wrapper, and Java
 archive helpers were re-exported one private scope too far. Two narrow repairs
 preserve the same native error via `OriginalFactRowBirthErrorV3::from` and narrow
 the archive import to private; canonical edition-2021 formatter and diff checks
-passed. Another capture encountered QGLang overlay drift; fresh canonical
-verification is pending. No Runtime tests ran in those attempts. No foreign
-process, admission policy or shared target binding changed.
+passed. Another capture encountered QGLang overlay drift. A final frozen run
+passed those repaired boundaries and exited 101 at SSA exporter compilation:
+`controlled_active_reads_v3::abort_active_reads_v3` needed common-ancestor
+visibility, and `final_refresh.rs:44` / `exporter.rs:515` still called removed
+`CanonicalSemanticTemporaryVecV1::into_retained_v1`. Visibility was narrowed to
+`crate::solver::ssa_braun::canonical_exporter` and statically checked. The two
+retirement callers were left for their active Source owner: the replacement
+`retain_into_v3` consumes caller-created `NativeTemporaryVecRetainBirthV3<T>`
+and transfers through a destination slot after successful unit status. Phi
+construction and refresh are repeated occurrences; their current highest Source
+has no external per-occurrence bank retaining backing, funding and full errors.
+Restoring an owned-value compatibility helper or creating DATA inside that
+Source would lose custody. Runtime compilation is **FAILED** at this cut; its
+V5 test bodies are **NOT_RUN**. No foreign process, admission policy or shared
+target binding changed.
 
 **BLOCKED** — whole native/product main merge still requires the actual
 factory/worker/RPC receivers and a SAME Relation query-unit admission loan.
