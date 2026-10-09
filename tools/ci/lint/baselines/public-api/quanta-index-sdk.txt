@@ -671,6 +671,25 @@ impl core::marker::Unpin for quanta_index_sdk::binding::ExpectedQueryResponseV1
 impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::ExpectedQueryResponseV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::ExpectedQueryResponseV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::ExpectedQueryResponseV1
+#[non_exhaustive] pub enum quanta_index_sdk::PublishedBatchFailureStage
+pub quanta_index_sdk::PublishedBatchFailureStage::Activation
+pub quanta_index_sdk::PublishedBatchFailureStage::Observation
+impl core::clone::Clone for quanta_index_sdk::PublishedBatchFailureStage
+pub fn quanta_index_sdk::PublishedBatchFailureStage::clone(&self) -> quanta_index_sdk::PublishedBatchFailureStage
+impl core::cmp::Eq for quanta_index_sdk::PublishedBatchFailureStage
+impl core::cmp::PartialEq for quanta_index_sdk::PublishedBatchFailureStage
+pub fn quanta_index_sdk::PublishedBatchFailureStage::eq(&self, other: &quanta_index_sdk::PublishedBatchFailureStage) -> bool
+impl core::fmt::Debug for quanta_index_sdk::PublishedBatchFailureStage
+pub fn quanta_index_sdk::PublishedBatchFailureStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::PublishedBatchFailureStage
+impl core::marker::StructuralPartialEq for quanta_index_sdk::PublishedBatchFailureStage
+impl core::marker::Freeze for quanta_index_sdk::PublishedBatchFailureStage
+impl core::marker::Send for quanta_index_sdk::PublishedBatchFailureStage
+impl core::marker::Sync for quanta_index_sdk::PublishedBatchFailureStage
+impl core::marker::Unpin for quanta_index_sdk::PublishedBatchFailureStage
+impl core::marker::UnsafeUnpin for quanta_index_sdk::PublishedBatchFailureStage
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::PublishedBatchFailureStage
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::PublishedBatchFailureStage
 pub enum quanta_index_sdk::RefMutation
 pub quanta_index_sdk::RefMutation::Delete
 pub quanta_index_sdk::RefMutation::Delete::name: alloc::string::String
@@ -729,9 +748,10 @@ impl core::marker::UnsafeUnpin for quanta_index_sdk::ResponseBindingAxis
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ResponseBindingAxis
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ResponseBindingAxis
 pub enum quanta_index_sdk::SdkError
-pub quanta_index_sdk::SdkError::ActivationAfterPublish
-pub quanta_index_sdk::SdkError::ActivationAfterPublish::evidence: alloc::boxed::Box<quanta_index_sdk::PublishedBatchEvidence>
-pub quanta_index_sdk::SdkError::ActivationAfterPublish::source: alloc::boxed::Box<quanta_index_sdk::SdkError>
+pub quanta_index_sdk::SdkError::AfterPublish
+pub quanta_index_sdk::SdkError::AfterPublish::evidence: alloc::boxed::Box<quanta_index_sdk::PublishedBatchEvidence>
+pub quanta_index_sdk::SdkError::AfterPublish::source: alloc::boxed::Box<quanta_index_sdk::SdkError>
+pub quanta_index_sdk::SdkError::AfterPublish::stage: quanta_index_sdk::PublishedBatchFailureStage
 pub quanta_index_sdk::SdkError::Binding
 pub quanta_index_sdk::SdkError::Binding::actual: alloc::string::String
 pub quanta_index_sdk::SdkError::Binding::axis: quanta_index_sdk::ResponseBindingAxis
@@ -748,6 +768,8 @@ pub quanta_index_sdk::SdkError::Serialization(alloc::string::String)
 pub quanta_index_sdk::SdkError::Transport(quanta_index_ipc::error::IpcError)
 pub quanta_index_sdk::SdkError::Usage(alloc::string::String)
 impl quanta_index_sdk::SdkError
+pub fn quanta_index_sdk::SdkError::published_evidence(&self) -> core::option::Option<&quanta_index_sdk::PublishedBatchEvidence>
+pub fn quanta_index_sdk::SdkError::published_failure_stage(&self) -> core::option::Option<quanta_index_sdk::PublishedBatchFailureStage>
 pub fn quanta_index_sdk::SdkError::published_publication(&self) -> core::option::Option<&quanta_index_contract::ipc::ingest_observation::SourcePublicationBinding>
 pub fn quanta_index_sdk::SdkError::published_receipt(&self) -> core::option::Option<&quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt>
 impl core::error::Error for quanta_index_sdk::SdkError
@@ -1157,12 +1179,14 @@ impl<'a> core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::Observabi
 impl<'a> core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ObservabilityNamespace<'a>
 pub struct quanta_index_sdk::ProducerClient<'a>
 impl<'a> quanta_index_sdk::ProducerClient<'a>
+pub fn quanta_index_sdk::ProducerClient<'a>::activate_published_search_corpus(&self, evidence: &quanta_index_sdk::PublishedBatchEvidence, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_dirty(&self, batch: &quanta_index_sdk::DirtyBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_history(&self, batch: &quanta_index_sdk::HistoryBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_repomap(&self, request: &quanta_index_contract::repomap::terminal_receipt_v2::RepoMapPublishBundleRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_search_corpus<const SEALED: bool>(&self, batch: &quanta_index_sdk::SearchCorpusBatch<SEALED>) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_search_corpus_and_activate(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<(quanta_index_sdk::BatchReceipt, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck), quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_search_corpus_observed<const SEALED: bool>(&self, batch: &quanta_index_sdk::SearchCorpusBatch<SEALED>) -> core::result::Result<quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ProducerClient<'a>::publish_search_corpus_outcome<const SEALED: bool>(&self, batch: &quanta_index_sdk::SearchCorpusBatch<SEALED>) -> core::result::Result<quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_structural<const SEALED: bool>(&self, batch: &quanta_index_sdk::StructuralBatch<SEALED>) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 impl<'a> core::clone::Clone for quanta_index_sdk::ProducerClient<'a>
 pub fn quanta_index_sdk::ProducerClient<'a>::clone(&self) -> quanta_index_sdk::ProducerClient<'a>
@@ -1182,6 +1206,8 @@ pub fn quanta_index_sdk::PublishedBatchEvidence::clone(&self) -> quanta_index_sd
 impl core::cmp::Eq for quanta_index_sdk::PublishedBatchEvidence
 impl core::cmp::PartialEq for quanta_index_sdk::PublishedBatchEvidence
 pub fn quanta_index_sdk::PublishedBatchEvidence::eq(&self, other: &quanta_index_sdk::PublishedBatchEvidence) -> bool
+impl core::convert::From<&quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome> for quanta_index_sdk::PublishedBatchEvidence
+pub fn quanta_index_sdk::PublishedBatchEvidence::from(outcome: &quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome) -> Self
 impl core::fmt::Debug for quanta_index_sdk::PublishedBatchEvidence
 pub fn quanta_index_sdk::PublishedBatchEvidence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_sdk::PublishedBatchEvidence
@@ -1575,9 +1601,11 @@ impl<const SEALED: bool> core::panic::unwind_safe::RefUnwindSafe for quanta_inde
 impl<const SEALED: bool> core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::SearchCorpusBatch<SEALED>
 pub struct quanta_index_sdk::SearchCorpusNamespace<'a>
 impl<'a> quanta_index_sdk::SearchCorpusNamespace<'a>
+pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::activate_published(&self, evidence: &quanta_index_sdk::PublishedBatchEvidence, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish<const SEALED: bool>(&self, batch: &quanta_index_sdk::SearchCorpusBatch<SEALED>) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish_and_activate(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<(quanta_index_sdk::BatchReceipt, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck), quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish_and_activate_observed(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<(quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck, quanta_index_sdk::SdkPublishActivateDurationsV1), quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish_outcome<const SEALED: bool>(&self, batch: &quanta_index_sdk::SearchCorpusBatch<SEALED>) -> core::result::Result<quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::SearchCorpusNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::SearchCorpusNamespace<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::SearchCorpusNamespace<'a>

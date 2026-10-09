@@ -173,7 +173,7 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
         .publish_search_corpus_and_activate(&batch, None)
         .expect_err("activation response with a different request id must fail");
     assert!(
-        matches!(&activation_error, crate::SdkError::ActivationAfterPublish { source, .. }
+        matches!(&activation_error, crate::SdkError::AfterPublish { source, .. }
             if matches!(source.as_ref(), crate::SdkError::Protocol(message) if message.contains("control response request_id"))),
         "activation request-id mismatch must be a protocol error, got {activation_error:?}"
     );

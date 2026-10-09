@@ -894,6 +894,23 @@ impl<'a> ProducerClient<'a> {
         self.client.search_corpus().publish(batch)
     }
 
+    pub fn publish_search_corpus_outcome<const SEALED: bool>(
+        &self,
+        batch: &crate::SearchCorpusBatch<SEALED>,
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, SdkError> {
+        self.client.search_corpus().publish_outcome(batch)
+    }
+
+    pub fn activate_published_search_corpus(
+        &self,
+        evidence: &crate::PublishedBatchEvidence,
+        expected_active: Option<quanta_index_contract::SearchCorpusActiveHeadV1>,
+    ) -> Result<quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck, SdkError> {
+        self.client
+            .search_corpus()
+            .activate_published(evidence, expected_active)
+    }
+
     /// Publish with this call's transient server observation. Missing
     /// observations are protocol errors, never fabricated measurements.
     pub fn publish_search_corpus_observed<const SEALED: bool>(

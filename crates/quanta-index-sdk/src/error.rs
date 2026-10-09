@@ -5,12 +5,29 @@ use quanta_index_contract::{
 
 use thiserror::Error;
 
-/// Verified original publication retained when the following activation
-/// fails. The boxed owner keeps successful SDK results small.
+/// Original publication evidence retained across post-publication failure.
+/// The boxed error owner keeps successful SDK results small.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublishedBatchEvidence {
     pub publication: SourcePublicationBinding,
     pub receipt: BatchPublishReceipt,
+}
+
+impl From<&quanta_index_contract::SearchCorpusPublishOutcome> for PublishedBatchEvidence {
+    fn from(outcome: &quanta_index_contract::SearchCorpusPublishOutcome) -> Self {
+        Self {
+            publication: outcome.publication.clone(),
+            receipt: outcome.receipt.clone(),
+        }
+    }
+}
+
+/// The operation that failed after a verified durable publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PublishedBatchFailureStage {
+    Observation,
+    Activation,
 }
 
 #[derive(Debug, Error)]
@@ -59,11 +76,11 @@ pub enum SdkError {
         repair: Option<QueryErrorRepair>,
     },
 
-    /// Publication returned a validated sealed receipt, but the subsequent
-    /// activation did not return a verified CAS acknowledgement. The caller
-    /// must reconcile the active head before deciding whether to retry.
-    #[error("activation after successful publication: {source}")]
-    ActivationAfterPublish {
+    /// A verified publication succeeded before a later operation failed.
+    /// The caller must reconcile that evidence before deciding whether to retry.
+    #[error("{stage:?} after successful publication: {source}")]
+    AfterPublish {
+        stage: PublishedBatchFailureStage,
         evidence: Box<PublishedBatchEvidence>,
         #[source]
         source: Box<SdkError>,
@@ -71,11 +88,11 @@ pub enum SdkError {
 }
 
 impl SdkError {
-    /// A verified publication receipt retained across an activation failure.
+    /// Original publication evidence available for explicit status reconciliation.
     #[must_use]
-    pub fn published_receipt(&self) -> Option<&BatchPublishReceipt> {
+    pub fn published_evidence(&self) -> Option<&PublishedBatchEvidence> {
         match self {
-            Self::ActivationAfterPublish { evidence, .. } => Some(&evidence.receipt),
+            Self::AfterPublish { evidence, .. } => Some(evidence),
             Self::Usage(_)
             | Self::Protocol(_)
             | Self::Serialization(_)
@@ -86,12 +103,11 @@ impl SdkError {
         }
     }
 
-    /// Original publication selected by the source-event catalog. On a
-    /// replay, its target can differ from the attempted batch's target.
+    /// The failed operation after a verified publication, if any.
     #[must_use]
-    pub fn published_publication(&self) -> Option<&SourcePublicationBinding> {
+    pub fn published_failure_stage(&self) -> Option<PublishedBatchFailureStage> {
         match self {
-            Self::ActivationAfterPublish { evidence, .. } => Some(&evidence.publication),
+            Self::AfterPublish { stage, .. } => Some(*stage),
             Self::Usage(_)
             | Self::Protocol(_)
             | Self::Serialization(_)
@@ -100,6 +116,20 @@ impl SdkError {
             | Self::PlaneUnavailable { .. }
             | Self::Remote { .. } => None,
         }
+    }
+
+    /// A verified publication receipt retained across a later failure.
+    #[must_use]
+    pub fn published_receipt(&self) -> Option<&BatchPublishReceipt> {
+        self.published_evidence().map(|evidence| &evidence.receipt)
+    }
+
+    /// Original publication selected by the source-event catalog. On a
+    /// replay, its target can differ from the attempted batch's target.
+    #[must_use]
+    pub fn published_publication(&self) -> Option<&SourcePublicationBinding> {
+        self.published_evidence()
+            .map(|evidence| &evidence.publication)
     }
 
     /// Build a [`SdkError::Protocol`] for the namespace-receipt /

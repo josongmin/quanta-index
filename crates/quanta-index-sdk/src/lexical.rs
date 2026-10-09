@@ -375,6 +375,37 @@ impl<'a> SearchCorpusNamespace<'a> {
         dispatch_search_corpus_publish_v1(self.client, batch)
     }
 
+    /// Publish once and return the verified original target, receipt and optional
+    /// transient observation. A replay can name a different original target.
+    pub fn publish_outcome<const SEALED: bool>(
+        &self,
+        batch: &SearchCorpusBatch<SEALED>,
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, SdkError> {
+        dispatch_search_corpus_publish_outcome_v1(self.client, batch)
+    }
+
+    /// Explicit CAS for a previously published sealed batch. This performs no
+    /// ingest or embedding work. Validate the original evidence and expected
+    /// head before I/O; reconcile an uncertain acknowledgement with `active_head`.
+    pub fn activate_published(
+        &self,
+        evidence: &crate::PublishedBatchEvidence,
+        expected_active: Option<SearchCorpusActiveHeadV1>,
+    ) -> Result<SearchPlaneSearchCorpusActivationCasAck, SdkError> {
+        let request = activation_request_from_published_v1(
+            &evidence.publication,
+            &evidence.receipt,
+            expected_active,
+        )?;
+        dispatch_activation_request_v1(self.client, request).map_err(|source| {
+            SdkError::AfterPublish {
+                stage: crate::PublishedBatchFailureStage::Activation,
+                evidence: Box::new(evidence.clone()),
+                source: Box::new(source),
+            }
+        })
+    }
+
     /// Publishes a sealed search-corpus batch and atomically promotes the
     /// complete lexical + semantic identity against an explicit composite
     /// active identity. If promotion conflicts, the batch remains sealed but
@@ -445,6 +476,7 @@ impl<'a> SearchCorpusNamespace<'a> {
         }
         let publish_started = Instant::now();
         let outcome = dispatch_search_corpus_publish_outcome_v1(self.client, batch)?;
+        let mut failure_stage = crate::PublishedBatchFailureStage::Observation;
         let activation_result = (|| {
             let publish_ns = sdk_elapsed_ns(publish_started)?;
             let activation_started = Instant::now();
@@ -453,40 +485,13 @@ impl<'a> SearchCorpusNamespace<'a> {
                     "search corpus observation is missing".to_string(),
                 ));
             }
-            let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
-                candidate: search_corpus_identity_from_sealed_receipt_v1(&outcome)?,
+            failure_stage = crate::PublishedBatchFailureStage::Activation;
+            let request = activation_request_from_published_v1(
+                &outcome.publication,
+                &outcome.receipt,
                 expected_active,
-            };
-            request.validate_v1().map_err(|error| {
-                SdkError::Protocol(format!("composite activation request is invalid: {error}"))
-            })?;
-            let response = self.client.dispatch_control(
-                SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request),
             )?;
-            let activation = match response {
-                SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => ack,
-                other @ (SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
-                | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
-                | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
-                | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
-                | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
-                | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
-                | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
-                | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-                | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-                | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
-                | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
-                    return Err(SdkError::Protocol(format!(
-                        "expected composite search corpus activation CAS ack, got {}",
-                        QuantaIndexClientPayloadV1::control_response_kind(&other)
-                    )));
-                }
-                SearchPlaneControlIpcResponse::Error(_) => {
-                    return Err(SdkError::Protocol(
-                        "control dispatch leaked an error response".to_string(),
-                    ));
-                }
-            };
+            let activation = dispatch_activation_request_v1(self.client, request)?;
             let activation_ns = sdk_elapsed_ns(activation_started)?;
             Ok((
                 activation,
@@ -496,34 +501,86 @@ impl<'a> SearchCorpusNamespace<'a> {
                 },
             ))
         })();
-        let (activation, timings) =
-            activation_result.map_err(|source| SdkError::ActivationAfterPublish {
-                evidence: Box::new(crate::PublishedBatchEvidence {
-                    publication: outcome.publication.clone(),
-                    receipt: outcome.receipt.clone(),
-                }),
-                source: Box::new(source),
-            })?;
+        let (activation, timings) = activation_result.map_err(|source| SdkError::AfterPublish {
+            stage: failure_stage,
+            evidence: Box::new(crate::PublishedBatchEvidence {
+                publication: outcome.publication.clone(),
+                receipt: outcome.receipt.clone(),
+            }),
+            source: Box::new(source),
+        })?;
         Ok((outcome, activation, timings))
+    }
+}
+
+fn activation_request_from_published_v1(
+    publication: &quanta_index_contract::SourcePublicationBinding,
+    receipt: &BatchReceipt,
+    expected_active: Option<SearchCorpusActiveHeadV1>,
+) -> Result<SearchPlaneActivateSearchCorpusGenerationCasRequest, SdkError> {
+    publication
+        .validate_published_receipt(publication, true, receipt)
+        .map_err(|error| {
+            SdkError::Protocol(format!("invalid published search corpus evidence: {error}"))
+        })?;
+    let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
+        candidate: search_corpus_identity_from_sealed_receipt_v1(publication, receipt)?,
+        expected_active,
+    };
+    request.validate_v1().map_err(|error| {
+        SdkError::Protocol(format!("composite activation request is invalid: {error}"))
+    })?;
+    Ok(request)
+}
+
+fn dispatch_activation_request_v1(
+    client: &QuantaIndexClientPayloadV1,
+    request: SearchPlaneActivateSearchCorpusGenerationCasRequest,
+) -> Result<SearchPlaneSearchCorpusActivationCasAck, SdkError> {
+    let response = client.dispatch_control(
+        SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request),
+    )?;
+    match response {
+        SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => Ok(ack),
+        other @ (SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+        | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+        | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+        | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+        | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+        | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
+        | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+        | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+        | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+        | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+        | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
+            Err(SdkError::Protocol(format!(
+                "expected composite search corpus activation CAS ack, got {}",
+                QuantaIndexClientPayloadV1::control_response_kind(&other)
+            )))
+        }
+        SearchPlaneControlIpcResponse::Error(_) => Err(SdkError::Protocol(
+            "control dispatch leaked an error response".to_string(),
+        )),
     }
 }
 
 /// The original publication on both tracks and its attested semantic roots.
 /// A replay must never activate the caller's unmaterialized retarget.
 fn search_corpus_identity_from_sealed_receipt_v1(
-    outcome: &quanta_index_contract::SearchCorpusPublishOutcome,
+    publication: &quanta_index_contract::SourcePublicationBinding,
+    receipt: &BatchReceipt,
 ) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
-    let Some(semantic_content) = outcome.receipt.semantic_content.clone() else {
+    let Some(semantic_content) = receipt.semantic_content.clone() else {
         return Err(SdkError::Protocol(
             "sealed receipt attests no semantic content roots; the candidate cannot name what the plane sealed"
                 .to_string(),
         ));
     };
     let identity = SearchCorpusGenerationIdentityV1 {
-        lexical: outcome.publication.target.clone(),
+        lexical: publication.target.clone(),
         semantic: quanta_index_contract::GenerationSnapshot {
             track: SearchPlaneTrackKind::Semantic,
-            ..outcome.publication.target.clone()
+            ..publication.target.clone()
         },
         semantic_content,
     };
@@ -575,9 +632,13 @@ pub(crate) fn dispatch_search_corpus_publish_observed_v1<const SEALED: bool>(
 ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, SdkError> {
     let outcome = dispatch_search_corpus_publish_outcome_v1(client, batch)?;
     if outcome.observation.is_none() {
-        return Err(SdkError::Protocol(
-            "search corpus observation is missing".to_string(),
-        ));
+        return Err(SdkError::AfterPublish {
+            stage: crate::PublishedBatchFailureStage::Observation,
+            evidence: Box::new(crate::PublishedBatchEvidence::from(&outcome)),
+            source: Box::new(SdkError::Protocol(
+                "search corpus observation is missing".to_string(),
+            )),
+        });
     }
     Ok(outcome)
 }

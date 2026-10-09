@@ -581,52 +581,78 @@ merge or push is performed while those receiving seams remain open.
 
 #### Coupled closure follow-up 2026-10-09
 
-The earlier local result table is tied to its recorded producer inputs. The
-following successor changes are separate source; the earlier 454/183 passes and
-producer digest are not transferred to it.
+The earlier local result table belongs to its recorded producer inputs. This
+successor combines native producer `758c9df85c1e6aa89a679ae3f57c29ec365553e7`,
+current main's facade repair `bd73045aee0b8e5ded13359c2cb52f8d06d7e00b`, and the
+complete publication recovery delta from `16792d875b88b89895a2b91774bd598f54065a39`.
+The lexical helpers were reconciled around the SAME borrowed
+`QuantaIndexClientPayloadV1`; there is one publication dispatcher and one CAS
+request validator/dispatcher. No duplicate client, controller or owned proxy
+was introduced. The managed candidate checkout is
+`/Users/songmin/.codex/worktrees/native-coupled-closeout/quanta-index`.
 
-- **VERIFIED** — SDK preparation facade repair is independently committed in
-  main `bd73045aee0b8e5ded13359c2cb52f8d06d7e00b`. Existing implementation and tests
-  moved without body changes; public API is unchanged. The module-discipline,
-  hexagonal, cargo-module, public-API and formatter checks pass. Command
+- **VERIFIED** — the preparation facade repair is independently committed in
+  main. Existing implementation and tests moved without body changes; public
+  API is unchanged. Module discipline now passes all 41 facades. The focused
   `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-sdk preparation --all-features --locked --quiet`
-  executed 15 unit tests and 1 process test successfully.
-  `just rust-profile dev-all-targets` also passed (8 existing vendor warnings).
-- **AUTHORED / NOT_RUN** — SDK opaque completion now requires the same sealed
-  predicate: shared present, payload absent, funding absent. The host must move
-  its actual funding bank into the opaque handle. A positive path birth without
-  external funding is refused immediately; zero-byte paths perform no reserve
-  and may obtain funding at header birth. Partial handle, path, funding and full
-  causes remain in DATA on refusal. Existing diagnostic fixtures now own funding
-  inside H; new regressions cover retained-bank refusal, missing positive-birth
-  funding and header-only funding. These mocks are not genuine Core proof.
-- **VERIFIED (static only)** — Semantica Scope repo/revision, provider repository
-  and ProductQuery manifest now use the SAME external DATA/unit producers. Full
-  construction/copy causes remain in parent DATA. Exact source changes are
-  `scope_native_identity_data_v3.rs`, `provider_request_v3.rs`,
-  `product_query_storage_v3.rs`; the existing ProductQuery regression checks its
-  retained copy cause. Formatting and diff checks passed. Other writers staged
-  the three source files; this lane did not stage or commit Semantica changes.
-- **FAILED (verification infrastructure)** — first QBC module run needed lane
-  registration; after canonical registration its source identity capture failed
-  because another writer changed `selected_python_literal_pair_chunk_v1.rs`
-  during hashing. No receiver test success is claimed. Exact-selector automatic
-  CAS snapshot execution is the subsequent verification path.
-- **NOT_RUN (resource admission)** — the first successor native SDK test attempt
-  waited 300 seconds for the existing daemon lease and exited 124 before tests
-  started. No admission policy was bypassed and no foreign process was stopped.
-- **VERIFIED (apply check only)** — the independent publication recovery delta
-  has been manually reconciled with the current canonical payload in a temporary
-  21-path patch (its 22nd path is the SDK API snapshot to regenerate). CAS request
-  validation and dispatch have one body each. No working-main publication cut or
-  partial breaking merge is implied.
+  passed 15 unit tests and 1 process test.
+- **VERIFIED (diagnostics)** — opaque completion, borrowing and transfer use
+  the same sealed predicate: H present, payload absent, funding absent. The
+  host must move its actual bank into H. Missing funding after a positive path
+  reserve is refused; zero-byte paths skip reserve and may fund at header
+  birth. Refusal retains partial H, path, funding and full causes in DATA. All
+  18 `native_connect_v1` tests pass, including DATA-first drop, hostile retained
+  funding and zero-byte header-funded fixtures. These mocks are not Core proof.
+- **VERIFIED (static only)** — the three Semantica Scope/provider/ProductQuery
+  receiving seams use the SAME external DATA/unit producers and retain full
+  causes. Another writer included them and the minimal root lock dependency
+  edge in Semantica `8217a38bf04d6c2fb2a535d43753408ac4621972`; this lane did not
+  stage or commit Semantica. The ProductQuery test checks its retained copy cause.
+- **AUTHORED / NOT_RUN** — Semantica ingress now receives typed `AfterPublish`
+  stage, complete original evidence and underlying cause. It exposes the SAME
+  SDK `publish_outcome` and `activate_published` through the existing ingress.
+  The V5 caller uses these two operations and rejects a replay's target mismatch
+  before CAS, preserving original evidence. It uses only the original frozen
+  expected head and performs no fresh head capture. Focused tests cover both
+  error stages and frozen target rejection. Formatting and diff checks passed;
+  no successful affected Semantica test run is claimed.
 
-**BLOCKED** — full native/product merge still requires actual factory/worker/RPC
-receivers, admitted SDK request encoder/response decoder, genuine funded Core
-read and final-deallocation custody, plus the coupled AfterPublish/V5 receiving
-cut. Existing ordinary transport remains an ordinary path. The new Wire/SDK
-construction cohort and its diagnostics alone do not establish product use.
-Core/Original Source, installed E2E and remote CI remain **NOT_RUN**.
+Executed against the coupled Index source, with 56 code/test/tooling/API
+paths differing from main and aggregate SHA256 `de0f081c9c7a52d2404f89e0b9d08c85ac2987ca1f7b74e2cd117da826cc7a3d` (sorted UTF-8 path,
+NUL, lowercase file SHA256, LF):
+
+| Scope / command | Observed result and limit |
+| --- | --- |
+| `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk --all-features --locked --quiet` | **VERIFIED**: Contract family 454 PASS; SDK 196 PASS; 3 Contract-base doctests PASS; 6 SDK process tests ignored. |
+| Same command without `--all-features` | **VERIFIED**: Contract family 410 PASS; SDK 196 PASS; 6 SDK process tests ignored. |
+| `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-searchctl -p quanta-index-retrieval-bench --lib --all-features --locked --quiet` | **VERIFIED**: CLI 46 PASS; retrieval-bench 125 PASS. These are library regressions, not a performance comparison. |
+| Same lane `clippy -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk -p quanta-index-searchctl -p quanta-index-retrieval-bench --all-targets --all-features --locked -- -D warnings` | **VERIFIED**. |
+| `just rust-profile dev-all-targets` | **VERIFIED**: workspace all-targets/all-features compile; 8 existing vendor warnings. This is not workspace test qualification. |
+| `env -u QUANTA_PROOF_RAW_DIR just rust-profile test-daemon` | **VERIFIED**: 300 PASS, 10 SKIP, 2 slow, 371.815s. Fresh coupled build. Ordinary process regressions do not qualify native Core/Original Source. |
+| Formatter, module discipline, hexagonal boundaries, cargo module snapshots, module cycles, wire inventory, Contract/SDK public API snapshots, `git diff --check` | **VERIFIED**. Intended publication API snapshot regenerated; no cycle baseline expansion or guard suppression. |
+
+A first SDK attempt waited 300 seconds for resource admission and exited 124
+before any tests started; the subsequent diagnostic run passed. Semantica QBC
+runs first encountered concurrent source-capture drift and then a stale root
+lock dependency. The minimal local dependency edge removed that lock failure.
+The next actual compiler run exited 101 at Core
+`native_temporary_vec_v3/retired_v3.rs:77`: `Ok(())` had the wrong nested Result
+shape. The one-line `Ok(Ok(()))` repair is authored and statically checked;
+affected QBC execution is pending. Test bodies did not run in those failed
+attempts. No foreign process, admission policy or shared target binding changed.
+
+**BLOCKED** — whole native/product main merge still requires the actual
+factory/worker/RPC receivers and a SAME Relation query-unit admission loan.
+Current Wire read supplies only `&T` while holding `&mut Relation`; the callback
+cannot dynamically admit decoder allocations through that Relation. Native RPC
+must cover the canonical request/body/frame writer, seeded nested response DTO,
+and the SDK binding's generation copy and full error births, not only socket
+I/O. Genuine Core final-deallocation custody remains unqualified.
+The durable V5 row still holds after-publication failures for explicit
+reconciliation; a complete restart/epoch recovery policy is not claimed by the
+API/caller cut. Core/Original Source, installed E2E, remote CI, whole-bundle main
+merge and push remain **NOT_RUN**. The tested coupled candidate is preserved
+without advancing the historical qualified `79bea4c0` ref.
 
 ### SDK connect native 경계의 추가 대조 — 2026-10-09
 

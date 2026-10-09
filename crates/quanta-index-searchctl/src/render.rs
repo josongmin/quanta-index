@@ -14,6 +14,7 @@ use quanta_index_contract::{
         QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
     },
 };
+use quanta_index_sdk::{PublishedBatchEvidence, PublishedBatchFailureStage};
 use std::fmt::Write as _;
 use std::io::Write;
 
@@ -1257,6 +1258,19 @@ fn hex_digit(nibble: u8) -> CliResult<char> {
 
 fn fmt_ok(result: std::fmt::Result) -> CliResult<()> {
     result.map_err(|_err| CliError::protocol("string formatting failed".to_string()))
+}
+
+/// Keep the original SDK error rendering and exit classification while making
+/// the committed publication available for reconciliation after a later error.
+pub(super) fn render_after_publish_error_text(
+    stage: PublishedBatchFailureStage,
+    evidence: &PublishedBatchEvidence,
+    source_text: &str,
+) -> String {
+    format!(
+        "{source_text}\n  after publication stage: {stage:?}\n  publication: {:?}\n  receipt: {:?}",
+        evidence.publication, evidence.receipt
+    )
 }
 
 /// Render a typed remote error for the pretty CLI path (J7Q-06).

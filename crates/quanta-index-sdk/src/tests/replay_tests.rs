@@ -174,7 +174,7 @@ fn l2_source_replay_retains_verified_receipt_when_activation_fails() {
     );
     assert!(matches!(
         error,
-        crate::SdkError::ActivationAfterPublish { source, .. }
+        crate::SdkError::AfterPublish { source, .. }
             if matches!(*source, crate::SdkError::Remote { code: SearchPlaneErrorCodeV2::Internal, .. })
     ));
     assert_eq!(ok_or_fail!(control.requests.lock()).len(), 1);
@@ -241,10 +241,8 @@ fn l2_source_replay_does_not_redirect_explicit_cas_expectation() {
         .expect_err("original target cannot advance the requested revision's head");
     assert_eq!(error.published_receipt(), Some(&outcome.receipt));
     assert_eq!(error.published_publication(), Some(&outcome.publication));
-    assert!(
-        matches!(error, crate::SdkError::ActivationAfterPublish { source, .. }
-            if matches!(*source, crate::SdkError::Protocol(ref message) if message.contains("composite activation request is invalid")))
-    );
+    assert!(matches!(error, crate::SdkError::AfterPublish { source, .. }
+            if matches!(*source, crate::SdkError::Protocol(ref message) if message.contains("composite activation request is invalid"))));
     assert!(ok_or_fail!(control.requests.lock()).is_empty());
 }
 

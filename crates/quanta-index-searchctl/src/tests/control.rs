@@ -652,7 +652,7 @@ fn render_generation_status_pretty_lists_tracks() {
 }
 
 #[test]
-fn activation_after_publish_preserves_cause_exit_and_original_publication() {
+fn after_publish_preserves_cause_exit_and_original_publication_for_both_stages() {
     use quanta_index_contract::{
         BatchPublishReceipt, GenerationSnapshot, SearchPlaneTrackKind, SourcePublicationBinding,
         SourcePublicationEvent,
@@ -702,17 +702,23 @@ fn activation_after_publish_preserves_cause_exit_and_original_publication() {
             EXIT_REMOTE,
         ),
     ];
-    for (source, exit_code) in cases {
-        let expected = map_sdk_error(source());
-        let actual = map_sdk_error(SdkError::ActivationAfterPublish {
-            evidence: Box::new(evidence.clone()),
-            source: Box::new(source()),
-        });
-        assert_eq!(actual.exit_code, exit_code);
-        assert!(actual.message.starts_with(&expected.message));
-        assert!(actual.message.contains("Activation"));
-        assert!(actual.message.contains("publication-revision"));
-        assert!(actual.message.contains("publication-manifest"));
-        assert!(actual.message.contains("durable_sequence: 7"));
+    for stage in [
+        quanta_index_sdk::PublishedBatchFailureStage::Observation,
+        quanta_index_sdk::PublishedBatchFailureStage::Activation,
+    ] {
+        for (source, exit_code) in cases {
+            let expected = map_sdk_error(source());
+            let actual = map_sdk_error(SdkError::AfterPublish {
+                stage,
+                evidence: Box::new(evidence.clone()),
+                source: Box::new(source()),
+            });
+            assert_eq!(actual.exit_code, exit_code);
+            assert!(actual.message.starts_with(&expected.message));
+            assert!(actual.message.contains(&format!("{stage:?}")));
+            assert!(actual.message.contains("publication-revision"));
+            assert!(actual.message.contains("publication-manifest"));
+            assert!(actual.message.contains("durable_sequence: 7"));
+        }
     }
 }

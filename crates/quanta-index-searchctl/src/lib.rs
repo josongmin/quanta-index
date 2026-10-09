@@ -20,9 +20,9 @@ use parse::parse_focus_subject;
 use parse::{CliRequest, CommandKind, OutputMode, ParsedCommand};
 
 use render::{
-    render_doctor, render_generation_status, render_metrics, render_process_readiness,
-    render_quarantine_discard, render_quarantine_inventory, render_remote_error_text,
-    render_request_events, render_response, validate_response_kind,
+    render_after_publish_error_text, render_doctor, render_generation_status, render_metrics,
+    render_process_readiness, render_quarantine_discard, render_quarantine_inventory,
+    render_remote_error_text, render_request_events, render_response, validate_response_kind,
 };
 
 const REQUEST_ID: u64 = 1;
@@ -297,12 +297,13 @@ fn map_sdk_error(error: SdkError) -> CliError {
         SdkError::PlaneUnavailable { plane } => CliError::usage(format!(
             "{plane} transport is not configured for this client profile"
         )),
-        SdkError::ActivationAfterPublish { evidence, source } => {
+        SdkError::AfterPublish {
+            stage,
+            evidence,
+            source,
+        } => {
             let mut cause = map_sdk_error(*source);
-            cause.message = format!(
-                "{}\n  after publication stage: Activation\n  publication: {:?}\n  receipt: {:?}",
-                cause.message, evidence.publication, evidence.receipt
-            );
+            cause.message = render_after_publish_error_text(stage, &evidence, &cause.message);
             cause
         }
     }

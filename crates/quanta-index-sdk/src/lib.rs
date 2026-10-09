@@ -35,9 +35,9 @@ pub use client::{
     ControlClient, ProducerClient, QuantaIndex, ReaderClient,
 };
 pub use config::{ClientProfile, ConnectOptions};
-pub use error::PublishedBatchEvidence;
 pub use error::ResponseBindingAxis;
 pub use error::SdkError;
+pub use error::{PublishedBatchEvidence, PublishedBatchFailureStage};
 pub use generations::GenerationNamespace;
 pub use history::{
     DiffHunkMutation, FileContributorBatch, FileContributorMutation, FileOwnershipBatch,

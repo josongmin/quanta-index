@@ -18,9 +18,9 @@ use quanta_index_contract::{
     SemanticSourceScopeKeyV1,
 };
 use quanta_index_sdk::{
-    ChunkId, ChunkRecord, GenerationPin, LanguageCode, ManifestGeneration, QuantaIndex, RepoId,
-    RepoRelativePath, RevisionId, SdkError, SearchCorpusBatch, SearchPlaneTrackKind, SourceFileKey,
-    SourcePublicationEvent,
+    ChunkId, ChunkRecord, GenerationPin, LanguageCode, ManifestGeneration,
+    PublishedBatchFailureStage, QuantaIndex, RepoId, RepoRelativePath, RevisionId, SdkError,
+    SearchCorpusBatch, SearchPlaneTrackKind, SourceFileKey, SourcePublicationEvent,
 };
 use quanta_index_searchd_harness::{
     fixture_source_scope_v1, private_tempdir, semantic_source_scopes_for_chunk_records,
@@ -248,39 +248,41 @@ fn activate_at_gate(
                     },
                     Some(ack.active),
                 )),
-                Err(error) => {
-                    // The SDK retains successful publication evidence around
-                    // activation failures. Classify its typed cause while the
-                    // complete wrapper stays alive; unexpected errors preserve it.
-                    let cause = match &error {
-                        SdkError::ActivationAfterPublish { source, .. } => source.as_ref(),
-                        cause @ (SdkError::Usage(_)
-                        | SdkError::Protocol(_)
-                        | SdkError::Serialization(_)
-                        | SdkError::Transport(_)
-                        | SdkError::Binding { .. }
-                        | SdkError::PlaneUnavailable { .. }
-                        | SdkError::Remote { .. }) => cause,
-                    };
-                    match cause {
-                        SdkError::Remote {
-                            code: SearchPlaneErrorCodeV2::CompositeActivationCasConflict,
-                            ..
-                        } => Ok((Observation::Conflict(Cas::Activate), None)),
-                        SdkError::Remote {
-                            code: SearchPlaneErrorCodeV2::NotReady,
-                            ..
-                        } => Ok((Observation::SourceEventRefusal, None)),
-                        SdkError::Usage(_)
-                        | SdkError::Protocol(_)
-                        | SdkError::Serialization(_)
-                        | SdkError::Transport(_)
-                        | SdkError::Binding { .. }
-                        | SdkError::PlaneUnavailable { .. }
-                        | SdkError::Remote { .. }
-                        | SdkError::ActivationAfterPublish { .. } => Err(error.into()),
+                Err(SdkError::AfterPublish {
+                    stage: PublishedBatchFailureStage::Activation,
+                    evidence,
+                    source,
+                }) if matches!(
+                    *source,
+                    SdkError::Remote {
+                        code: SearchPlaneErrorCodeV2::CompositeActivationCasConflict,
+                        ..
                     }
+                ) =>
+                {
+                    evidence.publication.validate_published_receipt(
+                        &evidence.publication,
+                        true,
+                        &evidence.receipt,
+                    )?;
+                    if evidence.publication.target.repo_id != *batch.repo_id()
+                        || evidence.publication.target.revision_id != *batch.revision_id()
+                        || evidence.publication.target.manifest_generation != batch.generation()
+                        || evidence.publication.target.manifest_digest != batch.manifest_digest()
+                        || evidence.publication.batch_digest != batch.batch_digest()?
+                        || evidence.receipt.generation.get() != generation
+                    {
+                        return Err(
+                            "activation conflict lost the fixture publication identity".into()
+                        );
+                    }
+                    Ok((Observation::Conflict(Cas::Activate), None))
                 }
+                Err(SdkError::Remote {
+                    code: SearchPlaneErrorCodeV2::NotReady,
+                    ..
+                }) => Ok((Observation::SourceEventRefusal, None)),
+                Err(error) => Err(error.into()),
             }
         },
     )

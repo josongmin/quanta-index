@@ -528,7 +528,15 @@ fn activation_failure_preserves_original_publication_across_restart() -> TestRes
         .publish_and_activate_observed(&second, None)
         .expect_err("existing G1 must reject activation expecting an empty head");
     let retained = match failure {
-        SdkError::ActivationAfterPublish { evidence, source } => {
+        SdkError::AfterPublish {
+            stage,
+            evidence,
+            source,
+        } => {
+            assert_eq!(
+                stage,
+                quanta_index_sdk::PublishedBatchFailureStage::Activation
+            );
             assert!(matches!(
                 *source,
                 SdkError::Remote {
@@ -592,7 +600,7 @@ fn activation_failure_preserves_original_publication_across_restart() -> TestRes
     );
     assert!(matches!(
         replay_failure,
-        SdkError::ActivationAfterPublish { source, .. }
+        SdkError::AfterPublish { source, .. }
             if matches!(*source, SdkError::Remote {
                 code: SearchPlaneErrorCodeV2::CompositeActivationCasConflict,
                 ..
@@ -986,11 +994,12 @@ fn prepared_text_and_markdown_move_delete_noop_survive_restart() -> TestResult {
     )?;
     let (full, planned) =
         first.apply_to_batch(corpus(1, None, revision()?, "prepared-one", None, &[])?)?;
-    let (receipt, active) = daemon
-        .client
-        .search_corpus()
-        .publish_and_activate(&full, None)?;
-    assert_eq!(receipt.accepted_replace_scopes, 3);
+    let outcome = daemon.client.search_corpus().publish_outcome(&full)?;
+    assert_eq!(outcome.receipt.accepted_replace_scopes, 3);
+    let active = daemon.client.search_corpus().activate_published(
+        &quanta_index_sdk::PublishedBatchEvidence::from(&outcome),
+        None,
+    )?;
     let prior = planned; // Adoption occurs only after the intended publication/activation is confirmed.
     assert_eq!(query(&daemon.client, 1, "oldneedle")?.len(), 1);
     assert_eq!(query(&daemon.client, 1, "untouchedneedle")?.len(), 1);
@@ -1012,12 +1021,13 @@ fn prepared_text_and_markdown_move_delete_noop_survive_restart() -> TestResult {
         Some("prepared-one"),
         &[],
     )?)?;
-    let (receipt, active) = daemon
-        .client
-        .search_corpus()
-        .publish_and_activate(&batch, Some(active.active))?;
-    assert_eq!(receipt.accepted_replace_scopes, 1);
-    assert_eq!(receipt.accepted_tombstone_scopes, 2);
+    let outcome = daemon.client.search_corpus().publish_outcome(&batch)?;
+    let active = daemon.client.search_corpus().activate_published(
+        &quanta_index_sdk::PublishedBatchEvidence::from(&outcome),
+        Some(active.active),
+    )?;
+    assert_eq!(outcome.receipt.accepted_replace_scopes, 1);
+    assert_eq!(outcome.receipt.accepted_tombstone_scopes, 2);
     assert!(query(&daemon.client, 2, "newneedle")?.is_empty());
     assert_eq!(query(&daemon.client, 2, "untouchedneedle")?.len(), 1);
     let original_id = query(&daemon.client, 1, "oldneedle")?;
@@ -1047,12 +1057,13 @@ fn prepared_text_and_markdown_move_delete_noop_survive_restart() -> TestResult {
         Some("prepared-two"),
         &[],
     )?)?;
-    let (receipt, activated) = daemon
-        .client
-        .search_corpus()
-        .publish_and_activate(&batch, Some(active.active))?;
-    assert_eq!(receipt.accepted_replace_scopes, 0);
-    assert_eq!(receipt.accepted_tombstone_scopes, 0);
+    let outcome = daemon.client.search_corpus().publish_outcome(&batch)?;
+    assert_eq!(outcome.receipt.accepted_replace_scopes, 0);
+    assert_eq!(outcome.receipt.accepted_tombstone_scopes, 0);
+    let activated = daemon.client.search_corpus().activate_published(
+        &quanta_index_sdk::PublishedBatchEvidence::from(&outcome),
+        Some(active.active),
+    )?;
     assert_eq!(
         activated.active.generation.lexical.manifest_generation,
         ManifestGeneration::new(3)

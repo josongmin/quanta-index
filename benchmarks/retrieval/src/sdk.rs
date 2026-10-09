@@ -696,57 +696,98 @@ mod empty_status_tests {
     }
 
     #[test]
-    fn activation_after_publish_classification_preserves_cause_without_payload() {
+    fn after_publish_classification_preserves_cause_and_stage() {
         use quanta_index_contract::{
             BatchPublishReceipt, GenerationSnapshot, SearchPlaneTrackKind,
             SourcePublicationBinding, SourcePublicationEvent,
         };
+        use quanta_index_sdk::{PublishedBatchEvidence, PublishedBatchFailureStage};
+
+        let digest = "c".repeat(64);
         let publication = SourcePublicationBinding {
             event: SourcePublicationEvent {
-                stream_id: "publication-stream".into(),
-                event_id: "publication-event".into(),
+                stream_id: "private-stream".into(),
+                event_id: "private-event".into(),
                 expected_base_event_id: None,
                 payload_sha256: [3; 32],
             },
             target: GenerationSnapshot {
-                repo_id: RepoId::new("publication-repo").expect("repo"),
-                revision_id: RevisionId::new("publication-revision").expect("revision"),
+                repo_id: RepoId::new("private-repo").expect("valid fixture repo"),
+                revision_id: RevisionId::new("private-revision").expect("valid fixture revision"),
                 track: SearchPlaneTrackKind::Lexical,
                 manifest_generation: ManifestGeneration::new(7),
-                manifest_digest: "publication-manifest".into(),
+                manifest_digest: "private-manifest".into(),
             },
-            batch_digest: "c".repeat(64),
+            batch_digest: digest.clone(),
         };
-        let receipt = BatchPublishReceipt::empty_for(
+        let mut receipt = BatchPublishReceipt::empty_for(
             publication.target.manifest_generation,
             Some(publication.target.manifest_digest.clone()),
-            publication.batch_digest.clone(),
-        )
-        .recorded_at(7);
-        let evidence = quanta_index_sdk::PublishedBatchEvidence {
+            digest,
+        );
+        receipt.durable_sequence = 1;
+        publication
+            .validate_published_receipt(&publication, false, &receipt)
+            .expect("durable publication fixture");
+        let evidence = PublishedBatchEvidence {
             publication,
             receipt,
         };
-        for source in [
-            SdkError::Protocol("cause-protocol".into()),
-            SdkError::PlaneUnavailable { plane: "search" },
-            SdkError::Transport(quanta_index_ipc::IpcError::Timeout {
-                operation: quanta_index_ipc::IpcIoOperation::Read,
-                timeout: Duration::from_secs(1),
-            }),
+        for stage in [
+            PublishedBatchFailureStage::Observation,
+            PublishedBatchFailureStage::Activation,
         ] {
-            let expected = classify_sdk_error(&source);
-            let error = SdkError::ActivationAfterPublish {
-                evidence: Box::new(evidence.clone()),
-                source: Box::new(source),
-            };
-            let actual = classify_sdk_error(&error);
-            assert_eq!(actual.0, expected.0);
-            assert_eq!(actual.1, expected.1);
-            assert!(actual.2.contains(&expected.2));
-            assert!(actual.2.contains("Activation"));
-            assert!(!actual.2.contains("publication-revision"));
-            assert!(!actual.2.contains("publication-event"));
+            for (cause, expected_status, expected_code) in [
+                (
+                    SdkError::Remote {
+                        code: SearchPlaneErrorCodeV2::from_wire_str("QUERY_TIMEOUT")
+                            .expect("known timeout code"),
+                        message: "timed out".into(),
+                        repair: None,
+                    },
+                    "timeout",
+                    "QUERY_TIMEOUT",
+                ),
+                (
+                    SdkError::Protocol("invalid response".into()),
+                    "error",
+                    "sdk_protocol",
+                ),
+                (
+                    SdkError::PlaneUnavailable { plane: "search" },
+                    "unavailable",
+                    "plane_unavailable",
+                ),
+            ] {
+                let error = SdkError::AfterPublish {
+                    stage,
+                    evidence: Box::new(evidence.clone()),
+                    source: Box::new(cause),
+                };
+                let (status, code, message) = classify_sdk_error(&error);
+                assert_eq!(status, expected_status);
+                assert_eq!(code, expected_code);
+                assert!(message.contains(&format!("{stage:?} after successful publication")));
+                assert!(
+                    message.contains(
+                        &std::error::Error::source(&error)
+                            .expect("original cause")
+                            .to_string()
+                    )
+                );
+                for secret in [
+                    "private-stream",
+                    "private-event",
+                    "private-repo",
+                    "private-revision",
+                    "private-manifest",
+                ] {
+                    assert!(
+                        !message.contains(secret),
+                        "publication evidence must stay out of diagnostics"
+                    );
+                }
+            }
         }
     }
 
@@ -1312,14 +1353,6 @@ fn symbol_hit(candidate: &quanta_index_contract::SymbolCandidate) -> RankedHit {
 #[must_use]
 pub fn classify_sdk_error(err: &SdkError) -> (&'static str, String, String) {
     match err {
-        SdkError::ActivationAfterPublish { source, .. } => {
-            let (status, code, message) = classify_sdk_error(source);
-            (
-                status,
-                code,
-                format!("Activation after publication: {message}"),
-            )
-        }
         SdkError::Transport(ipc) => {
             let text = ipc.to_string();
             if is_timeout_ipc(ipc) {
@@ -1336,6 +1369,10 @@ pub fn classify_sdk_error(err: &SdkError) -> (&'static str, String, String) {
         SdkError::Remote { code, message, .. } => {
             let wire = code.as_wire_str().to_string();
             (remote_status(code), wire, message.clone())
+        }
+        SdkError::AfterPublish { source, .. } => {
+            let (status, code, _) = classify_sdk_error(source);
+            (status, code, err.to_string())
         }
         SdkError::Usage(message) => ("error", "sdk_usage".to_string(), message.clone()),
         SdkError::Protocol(message) => ("error", "sdk_protocol".to_string(), message.clone()),

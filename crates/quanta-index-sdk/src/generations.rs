@@ -12,8 +12,9 @@ use crate::{QuantaIndexClientPayloadV1, SdkError};
 /// Read and rollback administration for already-published generations.
 ///
 /// New activation authority belongs exclusively to
-/// [`crate::SearchCorpusNamespace::publish_and_activate`], whose input carries
-/// one validated lexical + semantic composite identity.
+/// [`crate::SearchCorpusNamespace::publish_and_activate`] or explicit
+/// [`crate::SearchCorpusNamespace::activate_published`], both of which bind one
+/// validated lexical + semantic composite identity from the original receipt.
 pub struct GenerationNamespace<'a> {
     client: &'a QuantaIndexClientPayloadV1,
 }

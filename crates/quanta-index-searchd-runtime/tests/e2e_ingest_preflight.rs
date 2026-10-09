@@ -359,7 +359,7 @@ fn remote_code(error: &SdkError) -> Option<&str> {
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
         | SdkError::Binding { .. }
-        | SdkError::ActivationAfterPublish { .. }
+        | SdkError::AfterPublish { .. }
         | SdkError::PlaneUnavailable { .. } => None,
     }
 }

@@ -297,9 +297,12 @@ The same sealed-state predicate gates completion, opaque borrowing, and pure
 handle transfer. Inline and opaque diagnostics move their funding into the
 handle; new regressions assert that a missing or retained bank cannot expose
 that handle while a zero-byte explicit path can use a header-funded bank. These
-new regression bodies are AUTHORED / NOT_RUN;
-Rust formatting check is VERIFIED. The older successful SDK test counts above
-precede this closure and do not verify this source revision.
+new regression bodies are VERIFIED by
+`./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-sdk native_connect_v1 --all-features --locked --quiet`:
+18 diagnostic tests passed. Rust formatting also passed. This does not qualify
+genuine Core/Original Source or native RPC. The older successful SDK test counts
+above precede this closure; the coupled successor's results are recorded in the
+[Index ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md#coupled-closure-follow-up-2026-10-09).
 
 Historical focused candidate validation (2026-10-09, before the Source-only
 constructor follow-up): SDK
