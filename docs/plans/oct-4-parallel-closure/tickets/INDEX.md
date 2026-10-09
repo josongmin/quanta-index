@@ -714,44 +714,44 @@ Updated: 2026-10-09 (KST).
 <a id="oct-9-sdk-reconciliation"></a>
 #### Oct-9 SDK reconciliation
 
-이번 source comparison은 Quanta committed main `4729a1a1`, Semantica main
-`a63f536b`, Semantica 기능 후보 `34cc31cab7c`를 기준으로 한다. 아래 Oct-8
-checkpoint 및 과거 native 실행 결과를 최신 main proof로 승격하지 않는다.
+검증한 통합 pair는 Quanta preparation source `bd73045a`와 isolated `16792d87` + 최신 native
+owner source + main preparation facade refactor, Semantica `a63f536b` + frozen
+working source4,854경로 + reconciled SDK/V5/intent다. QGLang sibling은 clean
+`231707d`다. 과거 source의101/334오류·Kernel28·daemon300을 이 pair에 합산하지 않는다.
 
-| 단위 | 최종 결합 경계 |
+| 단위 | 현재 소스 상태 및 변경 소유권 |
 | --- | --- |
-| Committed receipt | 기존 contract validator에 post-commit 검사 추가; SDK 응답 binding에서 재사용. Apply/replay 모두 sequence0 거부. Dispatcher의 pre-commit draft 검사 유지. V5·새 error enum 없이 main `029014be`의 owned4경로에 반영 |
-| Publication recovery | 최신 Quanta main 기반 owned25경로 `3dbc3e46` + 회귀 단일화 `16792d87`, branch `codex/sdk-publication-oct9`. 옛 후보 전체 복사·main 덮어쓰기 대신 delta만 재적용 |
-| Native client 결합 | 외부 owner의 tracked29/untracked11 소스를 격리 tree에 결합. Canonical payload와 기존 transport 유지; lexical helper는 payload를 직접 borrow. Lifecycle 충돌 분류는 full wrapper를 보유하며 stage와 원 publication 증거를 확인 |
-| Semantica V5·intent | owned36경로 중25 clean/11 dirty; 경로별 apply 검사31통과/5충돌. 전체 적용·실행 성공이 아님. Current main에 V5 baseline/intent 없음 |
+| Main 독립 단위 | Preparation `433a9363`, facade/implementation 분리 `bd73045a`, post-commit receipt 검증 `029014be`. Dispatcher draft의 sequence0와 published apply/replay의 sequence>0 계약 분리 |
+| Quanta publication | Owned22경로의 delta는 earlier current-main apply 검사 통과. Closeout에서 shared-main working tree에 source 반영을 관측함; writer 미확인, 코드 commit 없음. Candidate와19동일/2format-only/1lifecycle fixture 차이. `AfterPublish`/원 evidence, `publish_outcome`/`activate_published`, 공통 activation validator/dispatcher, CLI·benchmark·daemon consumers를 같이 보유. Coupled source commit/Runtime acceptance는 미완료 |
+| Native 경계 | Canonical `QuantaIndexClientPayloadV1`를 borrow하며 기존 transports/receiver DATA를 보존. Native owner source를 feature commit으로 stage하지 않음; 새 client·decoder·ordinary-to-native adopter 없음 |
+| Semantica producer/consumer | Conceptual36경로 중 kernel4 + V5/intent29가 captured source 대비 변경됨. Lock2와 native policy test는 처음에 이미 필요한 SDK edges/내용을 보유. 이전 충돌5경로는 private pair에서 의미 보존 결합; 이후 root lock의 missing native wire edge를 별도 수리 |
+| 추가 회귀 | Clean feature branch `codex/sdk-publication-complete`의 `16a522722d2`에 normal hooks로 저장. G1 rebaseline 거절, planned predecessor/native active 불일치 거절·no-activation, 이전 epoch custody의 fresh authority 거절을 기존 process test1파일에 추가. 기존 restart scenario를 daemon restart로 명명; 새 producer 복구 성공으로 표기하지 않음 |
+| Java caller closure | 소스 편집 없음. 단순 getter/control 전달 문제가 아니라 Original generation fragment·receipt·handoff 출력권한 계약이 production까지 미연결. 아래 owner blocker로 분리 |
 
-**실행 판정:**
+**현재 pair 검증:**
 
-- Main `029014be`: `./scripts/cargow test -p quanta-index-sdk -p quanta-index-contract --locked`
-  **VERIFIED**, SDK161 포함508passed/0failed/6ignored. SDK observed-ingest fixture가
-  post-commit sequence를 누락해 첫 실행은160passed/1failed였다. Fixture에 sequence7을
-  명시하고 receipt에서도7을 확인한 뒤 위 전체 선택 범위를 재실행했다. Assertion을 약화하지 않았다.
-- `16792d87` + native owner overlay: 같은 SDK/contract 명령 **VERIFIED**.
-  Native client와 공통 activation helper 결합을 검사하며, authentic Core/Source receiver proof가 아니다.
-- Candidate API/module/hexagonal/no-allow 검사는 최종 결합 source에서 **VERIFIED**.
-  Initial scan 중 overlay를 결합해 발생한 module drift는 폐기하고 고정 source에서 재실행했다.
-- `./scripts/cargow clippy -p quanta-index-sdk -p quanta-index-searchctl
-  -p quanta-index-retrieval-bench --all-targets --locked -- -D warnings`: **VERIFIED**.
-  최초에는 존재하지 않는 benchmark package 이름으로 exit101; 실제 package 이름으로 재실행했다.
-- `./scripts/cargow test -p quanta-index-searchctl -p quanta-index-retrieval-bench --lib --locked`:
-  candidate 결합 source **VERIFIED**, benchmark125/CLI46passed. Benchmark harness의 회귀 테스트이며
-  성능·relevance 실행이 아니다. Main contract public API 검사도 **VERIFIED**.
-- 첫 native SDK와 main contract 단독 실행은 자원 대기300초로 exit124/native executor0이었다.
-  자원 lease를 유지한 채 후속 실행으로 수용됐으며 foreign daemon을 중단하거나 정책을 우회하지 않았다.
-- Main의 native source를 보존한 최종 publication delta는 **22경로**, `git apply --check`
-  통과. 새 helper는 기존 canonical payload를 borrow하며 transport/decoder를 중복하지 않는다.
-  실제 main의 enum은 아직 `ActivationAfterPublish`; breaking API/consumer 수용은 별도다.
-- `just rust-profile dev-all-targets` (workspace/all-targets/all-features/locked):
-  최종 candidate 결합 source **VERIFIED**. Lifecycle fixture의 borrowed manifest 비교에서
-  `Option<&str>`/`&str` 타입 불일치를 발견해 `Some(batch.manifest_digest())`로 수정하고 재실행했다.
-  Vendor Tantivy warning8개가 있으며 check 성공을 warning-free 또는 test 실행으로 표기하지 않는다.
-- Semantica current-main compile 및 새 cohort의 Runtime/process/scale/remote CI는 **NOT_RUN**.
-  과거101/334오류 또는300daemon pass를 이 source 판정으로 합산하지 않는다.
+| Command / scope | 상태 | 관측 결과 및 한계 |
+| --- | --- | --- |
+| `./scripts/cargow --lane daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --all-features --locked --message-format=json-render-diagnostics` | **VERIFIED** | Native/publication 계약으로 실제 binary 생성. Binary SHA-256 `25aa7b131523d283ecda655dcf1d33f085516c438cdb33882732dce2e417fd02` |
+| `QUANTA_INDEX_L2_TEST_BINARY=<that binary> ./scripts/cargow test -p quanta-index-sdk --test l2_daemon_publication --locked -- --ignored --nocapture --test-threads=1` | **VERIFIED** | 실제 daemon5scenarios/8named crash cuts. Activation failure evidence, 원 lineage/restart, text/Markdown move/delete/no-op 및 stream-order recovery. Performance/relevance 또는 Semantica proof가 아님 |
+| `just rust-profile test-daemon` | **VERIFIED** | Updated preparation/native/publication tree에서300passed/0failed/10scope-skipped. Large scoped-corpus restart와 full corpus2tests가slow였으나 완료. 시각화된 scale benchmark/격리 latency 결과 아님 |
+| `./scripts/cargow test -p quanta-index-sdk -p quanta-index-contract --locked` | **VERIFIED** | Latest pair518passed/0failed/6ignored; SDK171. 별도 실제 L2를 위 행에 귀속 |
+| `./scripts/cargow test -p quanta-index-searchctl -p quanta-index-retrieval-bench --lib --locked` | **VERIFIED** | Latest pair CLI46 + benchmark125passed. Error/evidence consumer 회귀이며 benchmark throughput/relevance 실행 아님 |
+| `./scripts/cargow clippy -p quanta-index-sdk -p quanta-index-searchctl -p quanta-index-retrieval-bench --all-targets --locked -- -D warnings` | **VERIFIED** | Latest pair 선택3packages strict Clippy. Workspace 전체 또는 Semantica compile proof 아님 |
+| `just rust-public-api`, `just rust-cargo-modules`, `just rust-hexagonal`, `just rust-no-allow` | **VERIFIED** | Latest pair API/module baselines 및 owner 경계. Authentic Source/Core receipt 수용 전체를 뜻하지 않음 |
+| Semantica QBC `owner run`, kernel `index_sdk_ingress::publish`, `feature-isolation:quanta-runtime-retrieval-kernel.no-default.ed0772b29304` | **FAILED** (dependency compile), body **NOT_RUN** | Lock/native Rustix 문서 prerequisite를 수리한 뒤 captured input-cell의 removed retained-text calls에서 E0599 2건, exit101/body0. Publication 코드·회귀 동작 실패로 분류하지 않음 |
+| Runtime QBC `shadow_delta_orchestration`, `feature-isolation:quanta-runtime.no-default.9c3270892708` | **FAILED** (dependency compile), body **NOT_RUN** | 기존 external-state module path를 실제 child source에 연결하고 Rustix close DATA 문서3건을 보완한 최종 source에서 동일 E0599 2건, exit101/body0. 전체 오류 inventory가 아니라 현재 compile frontier |
+| Durable6 및 process6 | **NOT_RUN** | Runtime lib dependency closure 미완료. Ignored tests를 삭제·성공으로 변경하거나 feature gate를 약화하지 않음 |
+| Full cold producer restore | **BLOCKED** | 확인한 production 경로의 유효한 복구 입력·계약이 제시되지 않음. Canonical factory는 fresh non-restorable terminal owner를 발급하고 prior-epoch admitted custody를 거절. Old pin/digest로 authority 재구성 금지 |
+| Late shared-main working source: SDK/contract + stricter lifecycle fixture | **BLOCKED** (resource admission); native bodies **NOT_RUN** | Main의 `./scripts/cargow test -p quanta-index-sdk -p quanta-index-contract --locked`는 공유 build-test lease 수용을300초 기다린 뒤 exit124, native executor0/body0. Source22경로 존재는 관측했지만 main 테스트 성공을 뜻하지 않음. Lifecycle 별도 실행도 **NOT_RUN**. Isolated518/daemon300/L2 proof를 main execution으로 재사용하지 않음 |
+| Linux/installed-host, full projection cold-root, scale/relevance, remote CI/push | **NOT_RUN** | 로컬 correctness 또는 compile/static 결과로 승격하지 않음 |
+
+Lock 수리는 private root에만 했다. `generate-lockfile --offline`의 불필요한
+21개 registry version 교체는 폐기하고, `scripts/quanta-build-cli cargo --lane
+sdk-publish-recovery -- update --offline -p quanta-runtime-retrieval-kernel`의
+missing edge와 canonical dependency 순서만 채택했다. Nested lock의 native
+wire/allocator edges는 별도 source-owner 정합성 대상이며 root 실행 결과로 수용하지 않는다.
+외장 cache는 실행별 `QUANTA_BUILD_TARGET_ROOT`로 선택했고 공유 target binding은 유지했다.
 
 <details>
 <summary>최종 Quanta publication delta: 22 paths</summary>
@@ -785,34 +785,75 @@ tools/ci/lint/baselines/public-api/quanta-index-sdk.txt
 40경로와 Semantica36경로를 이22경로 feature commit으로 stage하지 않는다.
 </details>
 
-**잔여 통합 순서 및 금지된 부분 병합:**
+Final declared inventory는 feature36 + private prerequisite source3의39경로이며
+captured tree 대비 실제 변경37경로다. Nested lock과 native policy test2경로는 그대로다.
+Private prerequisite 변경은 root lock1, vendored Rustix2파일의 item docs,
+`codegraph-cfg-dfg-kernel/src/ports/language_plugin_port/temporary_backing_v1.rs`의
+existing child module path1이다. 새로운 구현·허용 lint·Ordinary fallback 없음.
+Runtime 최종 QBC run `20261009T083220.158301Z-8d9485779fa2`의 source digest는
+`6d7540dcdd88cba294feb09e04335ed9a3bf1fc19edfea8aa6d02f89ad7ceba9`다.
+Kernel closeout run `20261009T083457.674225Z-c0a4b86bd839`도 같은 digest에 묶였다.
+두 owner result는 각각 RED/body0이며 current frozen source 판정이다. 실행 중 live Semantica에서는
+captured dirty75경로 변경/17경로 추가를 관측했으므로 이 결과를 변동한 main 전체의
+오류 수로 표기하지 않는다. 최신 native owner의 완결 bundle을 재결합한 뒤 재실행한다.
 
-1. **완료 `029014be`**: Main의 독립 committed-receipt contract/binding/공통 회귀/API baseline을 함께 검증·commit.
-   SDK receipt 회귀는 common primitive 한 곳에 두고 새 API의 같은 조건 테스트를 중복하지 않는다.
-2. Native payload/decode owner의 producer/receiver co-cut을 보존한다. SDK의
-   `activation_request_from_published_v1`과 `dispatch_activation_request_v1`을 canonical
-   payload에 연결하며 새 std Arc client/ordinary-to-native adopter를 만들지 않는다.
-3. Semantica 충돌5경로: 두 `Cargo.lock`, `admitted_decode_v3/native_corpus_policy_tests_v3.rs`,
-   `sdk/search_builder.rs`, `sdk/search_builder/index_owner_env_authority/aggregate_publication_authority.rs`.
-   Lock의 SDK dependency edges만 결합하고 새 receiver DATA·Acked reader 및 prepared-receipt
-   test owner와 hunk/invariant를 조정한다. 겹치는 claim11개와 barrier 없음은 source 비교 사실이다.
-4. Parser producer의 current loan/visitor를 실제 소비자에 연결한다:
-   `java_workspace_generation_authority/ordinary_generation_materialization_v1.rs`,
+**남은 결합 순서 / owner blocker:**
+
+1. Quanta owned22경로는 native owner commit의 preimages를 다시 대조한 뒤
+   해당 native source와 결합한다. Closeout의 main working source22경로가 이미
+   반영됐으므로 이 patch를 다시 적용하지 않는다. Candidate와의 차이는
+   SDK test module 순서, replay assertion formatting, stricter lifecycle fixture다. SDK의 canonical validator/dispatcher, error/public API,
+   CLI/benchmark/daemon consumers를 부분 복사하지 않는다. Committed main은 기존 enum이며 working main은 `AfterPublish`다. Late working-main
+   선택 SDK/contract 및 lifecycle 검증은 기존 isolated proof와 분리한다.
+   Admission timeout 실행을 test failure로 집계하지 않는다. 기존 native owner 실행이
+   종료된 뒤 SDK/contract 위 명령과
+   `./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked e2e_lifecycle_history:: -- --nocapture --test-threads=1`
+   을 순서대로 실행한다. 다른 owner의 lease/process를 중단하거나 우회하지 않는다.
+2. **P0 Source retained-text birth owner:** captured
+   `quanta-contract-types-core/src/values/input_cell_value.rs:150,174`는 제거된
+   `SharedSourceTextV1::try_retain_v3`/`try_retain_header_for_metadata_v3` 호출이다.
+   Canonical `RetainedSourceTextBirthV3`와 `try_retain_into_v3`/metadata-into,
+   `move_text_into_slot_v3`를 사용한다. Birth DATA는 최고 Source loan 밖에서 생성하고
+   partial/funding/failure를 최종 guard 뒤까지 유지한다. Local birth→return `Self` 호환
+   wrapper는 실패 DATA 수명 경계를 다시 끊으므로 금지한다.
+   첫 연결 파일은 contract `values/change_set/original_paid_v3.rs`, Source wire의
+   `original_repository_source_scan_v3/capture_v3/{shared_text_backing_v3.rs,shared_text_backing_v3/common_birth_v3.rs,retain_closed_v3.rs,workspace_capture_v3.rs}`,
+   Foundation `in_memory/core/{snapshot_history.rs,input_cell_store_file_content_ports_v1.rs,input_cell_store_prepared_changeset_v1.rs}`,
+   SDK backend `repository_indexing_v1/original_source_publication_v3.rs`다.
+   Existing `row_birth_v3.rs`/`cas_birth_v3.rs`/`original_unit_snapshot_read_v3.rs`의 외부
+   birth handoff를 재사용한다. 추가 호출 잔여는 static risk이며 현재 실행된2오류에 합산하지 않는다.
+3. **Java Original generation 출력권한 owner:**
+   `RequestScopedProductionJavaWorkspaceBuildTypeResolutionOwnerV1::with_request_scoped_original_v3`
+   → `produce_original_java_parser_build_owner_sealed_output_v3`
+   → `into_canonical_inventory_batch_v3`의 기존 request/live-current rail을 사용한다.
+   `ProductionJavaWorkspaceGenerationAuthorityIssuerV1::produce_sealed_java_workspace_generation_v1`,
+   `SealedJavaWorkspaceGenerationAuthorityV1`, `CapturedJavaWorkspaceGenerationV1`,
+   raw attribution `capture`와 후속 generation owner를 같은 Original custody 출력 계약으로 닫는다.
+   Fragment 발급/검증, full-closure receipt/semantic publication, native-lowering workspace,
+   retained callable selection census까지 함께 바뀌어야 한다. Ordinary 출력 adopter,
+   removed raw getter 복원, 임의 current 및 parallel IR은 허용하지 않는다.
+4. 직접 관련 파일은 `quanta-adapters-parser/src/language_host_adapter/`의
+   `java_workspace_generation_authority.rs`,
+   `java_workspace_generation_authority/{ordinary_generation_materialization_v1,original_generation_files_v3}.rs`,
    `java_workspace_generation_relation_inventories_v1.rs`,
-   `java_workspace_resolution_syntax_v1/part_3.rs`에 제거된 getter/tree 호출이 남는다.
-   이는 source상 잔여이며 새 compiler 오류 수가 아니다. Private137경로 patch를 통째로 적용하지 않는다.
-5. Semantica AfterPublish kernel4는 새 native ingress의 `client_ref()`로 payload를
-   borrow하며 Source DATA를 옮기지 않는다. Current dirty publish.rs의 generic 인자 hunk와
-   후보의 publish/evidence/activate 본문 hunk는 겹치지 않으며 combined apply 검사 통과.
-   다만 같은 publication invariant의 활성 DATA claim과 수용 조정은 필요하다.
-   Kernel owning resolve의 selector는 `index_sdk_ingress::publish::frozen_publication_tests_v1`,
-   compile policy는 `feature-isolation:quanta-runtime-retrieval-kernel.no-default.ed0772b29304`다.
-   Resolve 성공은 test 실행이 아니다. 이 kernel4와 V5 snapshot/issuer/predecessor/replay/intent 묶음을
-   의미 보존해 결합한 뒤 owning QBC로 kernel, `shadow_delta_orchestration`, durable6,
-   V4→explicit V5 full→delta 및 prune/restart→G3 process를 실제 실행한다.
-6. Quanta actual daemon을 최종 결합 source에서 build해 L2의5scenarios/8cuts 및 owning
-   daemon rail을 실행한 뒤 coupled API/consumer를 merge한다. Past300pass·old binary는
-   새 native cohort proof가 아니다. Projection-root 전체 cold restart/Linux/scale/remote CI는 별도다.
+   `java_workspace_resolution_syntax_v1/part_3.rs`,
+   `java_workspace_generation_owned_input.rs`,
+   `java_workspace_generation_owned_input/{original_sealed_output_v3,retained_callable_selection_birth_v3}.rs`;
+   `quanta-sdk-session-backend-owner/src/production_normal_source_java_workspace_generation_port_v1.rs`
+   및 `production_normal_source_attribution_generation_owner_v1/retained_callable_selection_v3.rs`다.
+   이것은 caller closure 시작점이며 전체 owner API 변경 inventory가 확정됐다는 뜻이 아니다.
+   새 Source platform control 설계가 필요한 증거는 없고 기존 session live current를 전달한다.
+5. **Producer restore owner:** daemon/V9 artifact reopen과 producer restart를 분리한다.
+   `index_projection_writer/mod.rs`의 canonical authority factory를 old issuer pin으로
+   복구하지 않는다. Durable store/terminal custody의 유효한 owner-issued recovery 입력과
+   fresh source closure로 재수용하는 production 경로를 정의한 뒤, 새 producer G3 delta,
+   unchanged/delete/GC parity 및 exact frozen expected-active를 검증한다. 지금은 성공 fixture 없음.
+6. Kernel owner 완료 → 실제 Runtime `shadow_delta_orchestration` → durable6 → 실제
+   searchd process6 순으로 같은 physical pair에서 실행한다. V5 cumulative snapshot binding,
+   V4 missing baseline/noactivation, explicit rebaseline 조건, artifact-ref retry immutability를
+   함께 수용한 뒤 coupled main merge. Private137경로 수리 patch 또는 foreign4,854경로 전체 복사 금지.
+7. 새 registry/wire IR/native media engine/SDK durable store로 scope를 늘리지 않는다.
+   Producer adapter 확장은 기존 source-bound batch 계약 안에서 수행한다.
 
 #### Oct-8 checkpoint: 위치와 변경 소유권
 
