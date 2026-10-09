@@ -24,6 +24,150 @@ Semantica는 외부 producer이며 fact resolution/join/completion은 그 저장
 
 ## 현재 코드 잔여
 
+### Latest-source residual audit — 2026-10-10
+
+Rechecked local/remote main `6d676fc8856e796220b54fbc8d98ae3366412614`.
+`git fetch origin main` succeeded; `main...origin/main` was `0 0`.
+Since `79bc00c0`, only the benchmark runbook and lexical-capture Python tests
+changed; the inspected Index Rust paths were clean and unchanged. The existing
+ticket edits and untracked Oct-8 hardening plan were preserved. This is a source/caller/test
+audit of the remaining SDK, semantic, RepoMap, generation and capacity seams;
+it is not exhaustive repository, release, quality or performance qualification.
+
+| Order / existing workstream | Current source and actual remaining change | Decisive acceptance |
+| --- | --- | --- |
+| 1 / A semantic compatibility | `semantic/src/generation_contract.rs::GenerationContract` omits embedding `policy_digest` and `view_policy_digest`. `build.rs::prepare_staging_dataset` checks the base dataset/seal but does not compare base and target embedding contracts. `search_corpus.rs::preflight_delta_base_v1` validates both track identities and chunk authority, not their model compatibility. Persist the required model/policy contract and use one semantic-owned compatibility check before embedding/reservation, repeat under the operation lock, and protect the direct adapter before its first window. | Different model/revision/policy at equal dimension refuses with zero provider calls and no publication mutation. Same-contract delta equals independent full rebuild. Keep query/document compatibility distinct from document inheritance. Old incomplete formats refuse typed and require rebuild. Mixed-model execution reproducer is **NOT_RUN**. |
+| 1 / D RepoMap lifecycle | `repomap/src/store.rs::acquire_pinned` releases activation/registry guards before `RepoMapPinLease::new`; `gc_retired_objects` releases its pin guard before unlink. `commit_activation` and `commit_bundle` use separate protection. Unify acquisition, retirement, pin and reclaim under the existing store lifecycle, with one lock order and no new ownership registry. | Deterministic barriers cover acquire-versus-retire/GC and publish-versus-acquire. A successfully pinned view keeps its object until drop; retired generations reject new acquire. The view currently queries an in-memory `Arc`, so physical custody loss is not proof of a query crash. Concurrent execution reproducer is **NOT_RUN**. |
+| 1 / D test oracle | `repomap/tests/read_view_lifetime_owner_v1.rs::panic_and_early_release_return_the_pin_and_gc_proceeds` activates G2 before trying to acquire G1. The acquire `expect` panics and the test passes without reaching the intended query panic. Acquire an active view first, assert pin=1 and an entry marker, identify the exact panic payload, then assert pin=0 and reclaim. | **VERIFIED defect reproduction:** the current exact test reports `acquire: NotFound(...generation 1...activated generation 2...)` and still passes. This is a broken oracle, not successful unwind coverage. |
+| 2 / C5 cold producer restart | Existing `reserve_source_event` accepts an already selected target. It is not an occupied-generation allocator; SDK generations only expose read/rollback administration. Semantica's current factory still creates a fresh manifest store and non-restorable terminal owner. Supply durable atomic generation reservation from the existing Index generation/storage owner and connect the fresh Source full-rebuild grant in Semantica. | Same attempt reuses its reservation, concurrent attempts cannot collide, rollback/sealed/in-flight occupied numbers are not reused, and optional full active CAS is exact. Real producer A exit → fresh B full rebuild → later delta; prior-epoch authority remains rejected. Current reservation API is absent in the inspected public/canonical paths; product scenario is **NOT_RUN**. |
+| 3 / B long-lived event history | `repository_envelope.rs` caps each repository at 8,192 events, 256 streams, 256 active revision roots and a 16 MiB envelope. `reserve_source_event` and activation refuse capacity; no source-event retirement/rollover path is present. This is a safe finite capacity limit, not evidence of corruption. Define root retirement and event expiry/rollover with producer lineage when the supported lifetime exceeds that envelope. | Pending events, required receipts and rollback/read references survive; late retired events cannot become fresh work. Test capacity refusal, revision-root retirement and admitted rollover/restart. Do not increase caps or delete replay identities as a substitute. |
+| 4 / C and resource costs | Publication proof reuse is already implemented for one exact generation/root/body, with current byte hashing. Cross-generation bucket reuse, bounded source-root/chunk pages, Lance metadata-walk reduction, and operation-wide resource reservations remain design work in the Oct-8 plan. Ingest intentionally checks cancellation at entry and completes admitted publication; `semantic_derive.rs::embed_window` calls `embed_batch`, not a remaining-operation-budget method. | First measure verification CPU, authenticated bytes, metadata entries/fragments and concurrent memory/disk separately. Any interruptible path must reconcile the original durable attempt; do not add a mid-commit timeout that reports an unproved nonpublication. No new speed/RSS/deadline claim is established by this audit. |
+
+Already implemented; do not allocate duplicate code work:
+
+- The complete SDK/native-construction/publication/activation caller bundle is
+  on Index main. Cross-repository native acceptance still has its own owners.
+- `SourceAdapter<Input>`, preparation profiles/budgets, complete-universe
+  reconciliation and the exact UTF-8 text/Markdown adapters exist. Other formats
+  require actual source-bound adapters and fixtures; the extension point alone
+  is not support for every format. A daemon plugin registry or second engine IR
+  is not required for adding such an adapter.
+- Semantica's current **staged working source** `dispatch_replay.rs` retains
+  `IngressError` in `Ingress`/`PublishedAwaitingActivation`, borrows durable
+  diagnostic projections and returns the original failure through row updates.
+  Its previous typed-cause code-gap entry below is superseded at the source
+  level. Commit/main integration and matching Runtime proof are not established
+  by this Index audit.
+
+Executed narrow check:
+`env QUANTA_INDEX_SCCACHE=0 ./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-repomap --test read_view_lifetime_owner_v1 --locked panic_and_early_release_return_the_pin_and_gc_proceeds -- --exact --nocapture`:
+1 PASS / 6 filtered, but the output proves the oracle defect above.
+`env QUANTA_INDEX_SCCACHE=0 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-semantic --test persisted_semantic --all-features --locked open_with_forged_model -- --nocapture --test-threads=1`:
+**VERIFIED**, 2 PASS / 38 filtered. Existing manifest model-ID/revision forgery
+guards work; these tests do not exercise base-to-target model inheritance.
+Concrete write sets for the next implementation, reusing existing owners/tests:
+
+- A: `quanta-index-semantic/src/{generation_contract,manifest,build}.rs`, the
+  relevant existing semantic core port, and
+  `quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs`; extend
+  existing `persisted_semantic`, `generation_delta_reuse`, stream and paired
+  ingest tests. Change the persisted format and all its readers together.
+- D: `quanta-index-repomap/src/{store,pinned}.rs` and existing
+  `tests/read_view_lifetime_owner_v1.rs`; include publish/activation callers in
+  the same lifecycle change, rather than moving only the pin increment.
+- C5: existing activation catalog/envelope, source-publication/control ports,
+  dispatcher and SDK generations front door as required by the reservation
+  contract; connect Semantica's current projection-writer factory/prepare/intent
+  callers and real producer process fixtures as one feature. Do not relax the
+  prior-epoch refusal to make a restart test pass.
+- B/C/resources: use the existing Oct-8 detailed plan after reconciling A/D/C5.
+  Keep source-format adapters separate from storage/lifecycle ownership.
+
+No production code was changed by this audit. Semantic mixed-model behavior,
+RepoMap concurrent schedules, cold producer restart, long-history rollover and
+full workspace/remote CI execution remain **NOT_RUN** in this audit.
+
+### Repository ownership and final remaining work — 2026-10-10
+
+Scope: the Index SDK, source preparation, incremental publication and their
+actual consumer/dependency seams. Supporting repositories were checked for
+ownership and dependencies; this is not a whole-codebase qualification of each.
+Semantica advanced from `e234efb0c1b` to `6e9596685cc` during inspection through
+a rustix documentation-only commit. Its observed working tree has 868 changed
+paths, mostly staged. Source-present observations below refer to that working
+tree, not to a clean committed consumer or a passing Runtime build.
+
+| Repository / observed revision | Code work actually owned here | Completion boundary |
+| --- | --- | --- |
+| **quanta-index / `6d676fc8`** | A: persist the complete semantic model/policy contract and check base compatibility before provider work. D: serialize RepoMap acquire/pin/retire/publish/GC and repair its panic-test oracle. C5: implement durable occupied-generation reservation in the existing catalog/storage owner. B: define admitted event/root retirement when the supported lifetime requires it. | A/D owner regressions first; persisted format/readers and all actual callers change together. C5 is accepted with the Semantica cold-producer scenario. Existing SDK/preparation/native ABI are integrated; do not rebuild them. |
+| **semantica-codegraph-v2 / `6e9596685cc` + staged source** | Reconcile the complete Core/Source/history/Parser supplier cut with the existing Kernel/V5 receiver candidate. Add schema-owned decoded-memory admission for prepared artifacts and nested semantic snapshots. Connect fresh Source authority to Index generation reservation for cold full rebuild. | Matching supplier/receiver owner execution, then actual Runtime full/delta/delete/no-op, failure/retry, durable barriers and producer-process restart. Existing lower-layer compilation failures are historical observations; a fresh owner command is required for a current verdict. |
+| **quanta-gqlang-v2 / `6470a7c`** | No additional frontend change identified for these Index seams. Existing frontend intent and downstream runtime integration remain separate owners. Four documentation paths became dirty during inspection and were preserved. | Keep Index SDK clients, manifest pins and runtime handles out of frontend bytes. A new syntax/normalized-IR task requires an actual frontend contract requirement. The unrelated V4 substrate campaign continues under its own plan. |
+| **quanta-memory-platform / `8ea7748`, clean** | No new library primitive is established by this audit. Existing `reserve_owned` and managed charging already exist. Schema-specific decode demand and host admission belong to Semantica; Index operation admission belongs to Index. | Exercise real permit lifetime, refusal and release through the host. Semantica currently pins `472048ac…`; sibling HEAD is not its linked implementation. Change the pin only with an intentional compatible consumer cut. |
+| **quanta-taskmesh / `ad39e14`, clean** | No new scheduler is justified. Connect host execution budgets/cancellation using the existing governed worker and custody contract if required by the selected operation profile. | Response timeout must not imply worker termination or released capacity. Semantica pins `e5c209ce…`, so current sibling tests do not qualify the actual consumer dependency. |
+| **code-retrieval-bench / unborn branch, no HEAD** | Optional independent comparison, freshness/recovery and isolated performance execution under its existing revision48 plan. It is not the Index publication/lifecycle implementation owner. Observed 527 staged/untracked paths were preserved. | No committed-source or new benchmark qualification exists from this inspection. Keep independent gold and matching source/operation boundaries; do not create a duplicate of Index's existing benchmark harness. |
+
+Semantica source reconciliation, avoiding duplicate work:
+
+- **C1 source changed:** prepared changeset duplication no longer calls the
+  removed history-retain methods. Native duplication explicitly refuses;
+  ordinary duplication uses its separate fallible clone contract. The SDK full
+  batch passes `history_birth_v3` into `prepare_initial_original_changes_into_v3`
+  and takes its prepared result from that same birth. `RetainedInputSourceFundingV3::try_retain_v3`
+  retains funding and is not the removed text-retain convenience. Reuse this
+  source; prove the supported native prepare path and refusal/drop invariants.
+- **C2 partially source-present:** `original_native_workspace_input_v3.rs`
+  keeps validation errors outside the highest Source callback; lowering capture
+  validates under the request's Original session; retained callable selection
+  uses `JavaRetainedCallableSelectionBirthV3` and accepts after outer Source
+  success. The separate production Java authority still seals ordinary owner
+  output into fragment/full-closure receipts. This is not proof that the entire
+  Original producer-to-SDK cut is complete; reconcile the actual selected path.
+- **Receiver source present:** recursive corpus DATA/unit decoding, native
+  connect DATA, frozen publication admission and typed dispatch causes already
+  exist. Candidate `codex/index-publication-native-receiver` at `c0bd1df1`
+  still has 20 paths relative to its merge base with main. Integrate its complete
+  semantic change with current supplier hunks; do not overwrite staged files or
+  cherry-pick only the new Core primitive. Its existing Kernel result does not
+  qualify Runtime, actual RPC admission or genuine funding.
+- **Static decoded-memory gap:** `prepared_commit_artifact_v2.rs` caps wire
+  artifacts at 512 MiB and calls `canonical_decode`; `semantic_state.rs::decode_v1`
+  decodes/re-encodes/validates the nested snapshot. No schema demand/permit path
+  was found in the inspected projection-writer closure. Charge decoded
+  containers, nested allocations and simultaneous decode/re-encode work through
+  the existing owner before allocation. Wire size alone is not a RAM bound.
+  This is a static admission gap, not an executed OOM reproduction.
+
+Repository-wide acceptance remains separate from the code repairs above:
+
+- **Quality:** E1 judgments/holdout/admission and E2 required native cells use
+  the existing sections below. Missing independent labels are **BLOCKED** inputs,
+  not an invitation to manufacture gold or implement another scorer.
+- **Performance:** E4 owns matching whole-caller capture, verified bytes/CPU,
+  metadata/fragments, concurrency and memory. Formal Linux comparison needs
+  the existing host and schedule inputs. C1/C2/C3 optimizations in the Oct-8
+  hardening plan are measurement-driven; they are distinct from Semantica's
+  similarly named Source workstreams. Preserve current-byte authentication.
+- **Formats/config:** text/Markdown and external chunk producers are supported
+  paths. Implement additional source-bound adapters only for selected formats
+  with provenance/move/delete/no-op fixtures. Config-policy ADR remains Proposed;
+  do not turn all historical knobs or a daemon plugin registry into mandatory work.
+- **Release:** current affected CI, installed native/provider and paired
+  processes, backup/restore and authorized operational targets retain their
+  own acceptance. Local library tests do not close those scopes.
+
+Execution order: Index A and D are independent; Semantica supplier/receiver
+reconciliation and schema demand can proceed independently of those repairs.
+Define Index C5 before wiring the Semantica cold grant, then execute the real
+producer restart. Serialize shared Cargo/schema/lock integration and expensive
+native runs. Use existing owner tests and the existing
+[Semantica integration plan](../../../../../semantica-codegraph-v2/docs/plans/oct-4-index-semantica-integration/ACTIONS.md)
+for retained capture, resolution, paging, exact fallback and typed joins;
+Index candidate retrieval does not implement those semantic consumers.
+
+This follow-up executed source/dependency/branch/dirty-state inspection and
+document checks only. Fresh Rust/QBC, concurrent race schedules, mixed-model
+execution, process restart, remote CI and formal performance are **NOT_RUN**.
+
 ### Index library integration scope — 2026-10-10
 
 **Integration: VERIFIED.** Main advanced from `4c84a3f3` to
@@ -32,8 +176,9 @@ The completed `codex/index-publication-native-cohort` branch and its clean,
 inactive worktree were removed after ancestry and source checks. Recovery ref:
 `refs/codex/cleanup/oct10-integrated/index-publication-native-cohort`.
 Five unrelated dirty/untracked files were preserved byte-for-byte; their index
-entries were unchanged. Remote push and remote CI are **NOT_RUN** for this
-integration. `codex/borrowed-head-cas-validation` remains a historical proof
+entries were unchanged. The bundle was subsequently pushed: remote main
+`6d676fc8856e796220b54fbc8d98ae3366412614` contains the complete integration.
+Remote CI is **NOT_RUN**. `codex/borrowed-head-cas-validation` remains a historical proof
 reference and is not promoted to a new qualification result.
 
 Index library integration and Semantica native/product acceptance have separate
@@ -90,6 +235,12 @@ Current local validation on the same 56 code paths:
 
 No native Source/RPC qualification, performance comparison, release acceptance
 or remote CI success is implied by this library integration decision.
+
+The independent benchmark follow-up `6d676fc8` adds two unavailable/unjudged
+capture regressions and reconciles the runbook with current collection and
+comparison admission. **VERIFIED:** `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_lexical_capture.py -q`
+reported 26 passed; scoped Ruff check and format check passed. This is tooling
+regression coverage, not a new product relevance or performance result.
 
 2026-10-08 코드·실행 대조는 main의 packed-source planner·publication typed proof·공식 ARB/BCY scorer·paired R5 owner recipe 수리를 포함한다. 기존 `b9c058e1`의 완료된 F15/query/restart·paged directory,
 SDK lifecycle/cache 및 hosted checkpoint의 source·명령·범위는 아래 ADR가 소유한다.
@@ -1264,16 +1415,17 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   `CellEntry`/`DeltaEntry`/clone/capacity replay/commit 호출을 한 번에 연결한다.
   종료 전 재확인에서 `snapshot_history.rs`는 이미 `try_retain_history_header_into_v3`
   와 `DeltaEntryHistoryRetainBirthV3`로 바뀌었으므로 그 API 구현을 다시 배정하지 않는다.
-- 재확인 시 prepared changeset `duplicate_cell_value_v3`에는 core에서 제거된
-  `try_retain_header_for_history_with_current_v3`, `duplicate_cell_entry_v3`에는 교체된
-  `try_retain_history_header_v3` 호출이 남았다. 이는 static caller mismatch이며 이번
-  계획에서 실행한 compiler 오류가 아니다. 진행 중 owner가 연결하면 해당 hunk는 즉시
-  재사용/검증으로 전환한다. Provenance의 supported/refused 계약도 독립적으로 확인하고
-  성공 결과에서 metadata를 조용히 제거하지 않는다.
+- 이전 static caller mismatch는 Oct-10 staged-source 재대조로 갱신한다.
+  `duplicate_cell_value_v3`/`duplicate_cell_entry_v3`의 제거된 retain 호출은 더 이상
+  없으며 native admission이 있으면 명시적으로 거절하고 ordinary 경로는 fallible clone을
+  사용한다. 따라서 이 두 호출의 교체를 다시 배정하지 않는다. 실제 native prepared
+  path의 지원·거절 계약과 provenance 보존, owner 실행은 아직 별도로 확인해야 한다.
 - `backend/src/repository_indexing_v1/original_source_publication_v3.rs`와
   `original_source_publication_v3/full_batch_v3.rs`의 selected→input→prepared batch를
-  동일 birth/result slot에 연결한다. 현재 `history_birth_v3` field가 있지만 selected
-  text 경로의 `try_retain_v3` 호출이 남아 있어 연결이 완료됐다고 표기하지 않는다.
+  동일 birth/result slot을 유지한다. Oct-10 staged source는 그 birth를 initial prepare에
+  전달하고 같은 birth에서 prepared result를 받는다. 남은 `RetainedInputSourceFundingV3::try_retain_v3`
+  는 funding retain이므로 text API 잔여로 잘못 배정하지 않는다. 전체 Source 수용은
+  기존 owner의 실제 prepare/commit/refusal/drop 검증 이후에 판정한다.
 - `wire/src/original_repository_source_scan_v3/capture_v3/`의 기존
   `read_birth_v3.rs`, `retain_closed_v3/row_birth_v3.rs`,
   `shared_text_backing_v3/cas_birth_v3.rs`를 재사용한다. `retain_closed_v3.rs`,
@@ -1375,17 +1527,17 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   계수를 추측하거나 새 decoder를 추가하지 않는다. Schema owner가 실제 materialization
   수요와 original permit을 확정한 뒤 별도 owner proof가 필요하다. Native 실행 없음.
 
-- **Runtime typed-cause co-cut / OPEN (2026-10-09):** 기존 실제 V5 consumer 수정
-  owner는 `gqlang -> quanta-index xhdgkq` (`01a1062b-e4a5-71f1-8554-a097114448ec`).
-  Current `dispatch_replay.rs`의 `PublishedAwaitingActivation`은 message/evidence만
-  보유하며 activation map_err가 원 `IngressError`를 문자열로 변환한다.
-  `published_batch_failure_from_outcome_v5` → `into_parts_v1` →
-  `update_dispatch_after_attempt_v1`까지 publication evidence는 남지만 typed cause는
-  사라진다. Envelope·실제 activation caller·delivery/state consumer를 기존 owner가
-  함께 변경하도록 전달했다. Live cause 수명과 durable 진단 문구를 구분하고,
-  Clone/Eq용 string shim 없이 원 I/O cause와 evidence를 마지막 소비자까지 보존해야 한다.
-  Kernel cause 보존만으로 이 Runtime 경계가 완료되지 않는다. Actual owner의 구현 ACK와
-  matching Runtime proof는 미수령; 동작 재현 **NOT_RUN**, static gap **OPEN**.
+- **Runtime typed-cause co-cut / source present, Runtime proof NOT_RUN
+  (2026-10-10 recheck):** 기존 실제 V5 consumer 수정 owner는
+  `gqlang -> quanta-index xhdgkq` (`01a1062b-e4a5-71f1-8554-a097114448ec`).
+  Oct-9의 message/evidence-only static gap은 현재 Semantica staged working source에서
+  수정됐다. `dispatch_replay.rs`의 `Ingress`/`PublishedAwaitingActivation`이 원
+  `IngressError`를 보유하고, `published_batch_failure_from_outcome_v5`가 cause를
+  전달하며, `update_dispatch_after_attempt_v1`은 borrowed `durable_parts_v1`로 진단을
+  만든 뒤 원 failure를 반환한다. 최종 public RuntimeError 경계에서의 projection과
+  durable 문자열은 live 원 cause와 별도다. 이 Index 감사는 Semantica commit/main 통합,
+  전체 consumer closure 또는 matching Runtime 실행을 검증하지 않았다. 기존 owner가
+  실제 source·회귀를 수용하며 같은 구현을 다시 배정하지 않는다.
 
 **C5 — Producer cold restart의 최소 계약 확정·구현 (C4 이후 같은 owner)**
 
@@ -1455,23 +1607,44 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
 
 #### Oct-10 main comparison and branch/worktree disposition
 
-- **VERIFIED — latest comparison:** Quanta committed main is `3966ddb7`.
-  `codex/index-publication-native-cohort` at `8d830dd0` contains that main;
-  its aggregate diff is 57 paths, including 56 non-documentation paths that are
-  byte-identical to the shared main **working tree**. The remaining path is the
-  SDK boundary ADR. This is source presence, not a committed native merge.
-- **BLOCKED — native/publication bundle:** preserve the complete candidate and its
-  Semantica consumer. The actual factory/worker/RPC path still needs one Relation
-  query-unit admission loan, and Core final-drop custody is not qualified. Runtime
-  acceptance and durable/process regressions cannot be inferred from SDK/Kernel
-  checks. Do not import old SDK publication files separately or advance the
-  historical qualified `codex/borrowed-head-cas-validation` ref.
+- **VERIFIED — latest Index comparison:** the complete 58-path library bundle is
+  committed at `3aeebae8` and included in remote main `6d676fc8`; its completed
+  cohort branch/worktree was removed with the recovery ref recorded above.
+  The older working-tree-only comparison and blanket Index hold are superseded
+  by the Oct-10 library integration scope, not by native/product qualification.
+- **Semantica receiver — implementation present, integration pending:** retain
+  `codex/index-publication-native-receiver` at `0e1e486b` as the complete 20-path
+  candidate. Main `6e9596685cc` was merged into the prior `c0bd1df1` candidate
+  without changing its 20 feature paths or the shared index/worktree.
+  Fifteen paths match current shared source; the two lockfiles,
+  Runtime manifest, projection-writer module and dispatch parent have foreign
+  overlapping changes. Its Kernel focused results do not qualify Runtime,
+  durable/process behavior or the actual Source/RPC funding path.
+- **FAILED — isolated Kernel integration probe:** current Semantica main
+  `e234efb0` plus only the five Kernel candidate paths failed before test bodies.
+  The first run found missing public documentation in vendored rustix; after
+  applying the existing documentation-only repair, the next run failed at
+  `quanta-contract-types-core/src/values/input_cell_value.rs:155`, whose caller
+  still uses removed `try_retain_header_for_metadata_v3`. The current staged
+  replacement changes the public history-retain API and needs its complete
+  consumer cut; do not cherry-pick that one file or restore a compatibility shim.
+  Command: `scripts/quanta-build-cli owner run --lane 01a1062b-e4a5-71f1-8554-a097114448ec --package quanta-runtime-retrieval-kernel --execution-kind test --target-kind lib --selector-mode module --selector index_sdk_ingress::publish --compile-policy feature-isolation:quanta-runtime-retrieval-kernel.no-default.ed0772b29304 --seed-policy auto`.
+  Both runs exited 101 with zero tests (run IDs
+  `20261009T165200.860733Z-50a318cb8b0a` and
+  `20261009T165334.686345Z-7755c7bb2e82`).
+  The source was an isolated main-based checkout, not the shared staged snapshot
+  used by the earlier five passing Kernel regressions. The receiver remains
+  unmerged; this is a prerequisite compile failure, not a failed test body.
 - **Integrated independent repair:** Semantica main `e234efb0c1b` fixes the nested
   reservation result in `native_temporary_vec_v3/retired_v3.rs`
   (`Ok(())` → `Ok(Ok(()))`). The integration owner verified that file against its
   passing Kernel snapshot and committed through the shared-main coordinator;
   this does not qualify the SDK/Runtime bundle.
-- **VERIFIED — latest code propagation:** Index main `3966ddb7` was merged into
+- **Integrated independent documentation repair:** Semantica main
+  `6e9596685cc` adds the nine missing public rustix documentation lines through
+  the shared-main coordinator. No native behavior or foreign staged hunk changed;
+  the isolated probe advanced past rustix to the Core caller mismatch above.
+- **Historical code propagation:** Index main `3966ddb7` was merged into
   the native candidate at `8d830dd0`; Semantica main `e234efb0`
   was reconciled into receiver candidate `c0bd1df1` without changing its tree
   (`2eb4e5f040b64bd83de4a9f0ad5de224bc400e41`). The 56 non-documentation
