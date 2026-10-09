@@ -542,26 +542,30 @@ impl SearchPlaneActivateSearchCorpusGenerationCasRequest {
         candidate_scope: &GenerationSnapshot,
         expected_active: Option<&SearchCorpusActiveHeadV1>,
     ) -> Result<(), SearchCorpusActivationValidationErrorV1> {
-        let Some(expected_active) = expected_active else {
-            return Ok(());
-        };
-        expected_active
-            .validate_v1()
-            .map_err(SearchCorpusActivationValidationErrorV1::ExpectedActiveIdentity)?;
-        if candidate_scope.repo_id != expected_active.generation.lexical.repo_id {
-            return Err(SearchCorpusActivationValidationErrorV1::RepoMismatch);
-        }
-        if candidate_scope.revision_id != expected_active.generation.lexical.revision_id {
-            return Err(SearchCorpusActivationValidationErrorV1::RevisionMismatch);
-        }
-        if candidate_scope.manifest_generation.get()
-            <= expected_active.generation.lexical.manifest_generation.get()
-        {
-            return Err(
-                SearchCorpusActivationValidationErrorV1::CandidateGenerationMustAdvanceExpectedActive,
-            );
-        }
-        Ok(())
+        Self::validate_expected_active_scope_v1(
+            &candidate_scope.repo_id,
+            &candidate_scope.revision_id,
+            candidate_scope.manifest_generation,
+            expected_active,
+        )
+    }
+
+    /// Validate the SAME CAS expectation using only the established candidate
+    /// scope. No snapshot, digest, identity copy, or content-root construction.
+    /// The expected head is validated before repo/revision/advance checks.
+    /// An absent expectation imposes no additional candidate constraints.
+    pub fn validate_expected_active_scope_v1(
+        candidate_repo: &RepoId,
+        candidate_revision: &RevisionId,
+        candidate_generation: ManifestGeneration,
+        expected_active: Option<&SearchCorpusActiveHeadV1>,
+    ) -> Result<(), SearchCorpusActivationValidationErrorV1> {
+        native_decode_v1::validate_expected_active_scope_v1(
+            candidate_repo,
+            candidate_revision,
+            candidate_generation,
+            expected_active,
+        )
     }
 }
 
@@ -2407,6 +2411,33 @@ mod qi_act_01_tests {
         let error = SearchCorpusGenerationIdentityV1::deserialize(missing_semantic)
             .expect_err("lexical-only identity must not deserialize");
         assert!(error.to_string().contains("missing field `semantic`"));
+    }
+
+    #[test]
+    fn borrowed_cas_scope_preserves_snapshot_api_order_and_absence_behavior() {
+        let expected = corpus_head(3, "digest-3", 1);
+        let mut invalid = expected.clone();
+        invalid.generation.semantic.track = SearchPlaneTrackKind::Lexical;
+        for (repo, revision, generation, head, wanted) in [
+            ("other", "other", 0, &invalid, Some(SearchCorpusActivationValidationErrorV1::ExpectedActiveIdentity(SearchCorpusGenerationIdentityValidationErrorV1::SemanticTrackRequired))),
+            ("other", "other", 0, &expected, Some(SearchCorpusActivationValidationErrorV1::RepoMismatch)),
+            ("repo", "other", 0, &expected, Some(SearchCorpusActivationValidationErrorV1::RevisionMismatch)),
+            ("repo", "rev", 3, &expected, Some(SearchCorpusActivationValidationErrorV1::CandidateGenerationMustAdvanceExpectedActive)),
+            ("repo", "rev", 4, &expected, None),
+        ] {
+            let mut scope = corpus_identity(generation, "ignored-candidate-digest").lexical;
+            scope.repo_id = RepoId::new(repo).unwrap();
+            scope.revision_id = RevisionId::new(revision).unwrap();
+            // This API validates only an established candidate scope, not its
+            // track/digest/content. The full request separately validates them.
+            scope.track = SearchPlaneTrackKind::Structural;
+            scope.manifest_digest.clear();
+            let wanted = wanted.map_or(Ok(()), Err);
+            assert_eq!(SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_v1(&scope, Some(head)), wanted);
+            assert_eq!(SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_scope_v1(&scope.repo_id, &scope.revision_id, scope.manifest_generation, Some(head)), wanted);
+            assert_eq!(SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_v1(&scope, None), Ok(()));
+            assert_eq!(SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_scope_v1(&scope.repo_id, &scope.revision_id, scope.manifest_generation, None), Ok(()));
+        }
     }
 
     #[test]

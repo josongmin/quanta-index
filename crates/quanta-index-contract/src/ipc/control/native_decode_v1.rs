@@ -19,6 +19,10 @@ use quanta_index_contract_base::{
 };
 use serde::de::DeserializeSeed;
 
+#[path = "native_decode_v1/borrowed_validation_v1.rs"]
+mod borrowed_validation_v1;
+pub(super) use borrowed_validation_v1::validate_expected_active_scope_v1;
+
 macro_rules! corpus_data_failure_v1 {
     ($visibility:vis) => { #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         $visibility enum NativeCorpusDataFailureV1 { UnknownField, DuplicateField, MissingField, Semantic }
@@ -217,6 +221,9 @@ impl<E, F> GenerationDataV1<E, F> {
 }
 struct HeadDataV1<E, F> {
     output: Option<SearchCorpusActiveHeadV1>,
+    validation_failure: Option<super::SearchCorpusGenerationIdentityValidationErrorV1>,
+    #[cfg(feature = "quanta-native-identity-v1")]
+    activation_failure: Option<super::SearchCorpusActivationValidationErrorV1>,
     generation: GenerationDataV1<E, F>,
     token: TokenDataV1<E>,
     keys: KeyDataV1<E>,
@@ -225,6 +232,9 @@ impl<E, F> HeadDataV1<E, F> {
     fn new_v1() -> Self {
         Self {
             output: None,
+            validation_failure: None,
+            #[cfg(feature = "quanta-native-identity-v1")]
+            activation_failure: None,
             generation: GenerationDataV1::new_v1(),
             token: TokenDataV1::new_v1(),
             keys: KeyDataV1::new_v1(),
@@ -239,6 +249,8 @@ pub enum NativeCorpusDecodeFailureV1<'a, E> {
     Work(&'a E),
     Copy(&'a NativeIdentityCopyErrorV1<E>),
     Identity(&'a quanta_index_contract_base::NativeIdentityConstructionErrorV1<E>),
+    Validation(&'a super::SearchCorpusGenerationIdentityValidationErrorV1),
+    Activation(&'a super::SearchCorpusActivationValidationErrorV1),
 }
 /// One head occurrence.
 ///
@@ -308,6 +320,12 @@ impl<E, F> NativeCorpusDecodeDataV1<E, F> {
         .next()
         {
             return Some(NativeCorpusDecodeFailureV1::Identity(cause));
+        }
+        if let Some(cause) = self.state.activation_failure.as_ref() {
+            return Some(NativeCorpusDecodeFailureV1::Activation(cause));
+        }
+        if let Some(cause) = self.state.validation_failure.as_ref() {
+            return Some(NativeCorpusDecodeFailureV1::Validation(cause));
         }
         None
     }
@@ -979,26 +997,12 @@ impl<P: CorpusPolicyV1> NodeV1<P> for HeadNodeV1 {
             .output
             .as_ref()
             .ok_or_else(|| E::custom("missing head candidate"))?;
-        for field in [
-            value.generation.lexical.repo_id.as_str(),
-            value.generation.lexical.revision_id.as_str(),
-            value.generation.semantic.repo_id.as_str(),
-            value.generation.semantic.revision_id.as_str(),
-            value.generation.lexical.manifest_digest.as_str(),
-            value.generation.semantic.manifest_digest.as_str(),
-            value.generation.semantic_content.row_root_digest.as_str(),
-            value
-                .generation
-                .semantic_content
-                .membership_root_digest
-                .as_str(),
-        ] {
-            policy.bytes_v1(&mut data.keys.failure, field.len())?;
-        }
-        policy.work_v1(&mut data.keys.failure, 1)?;
-        value
-            .validate_v1()
-            .map_err(|cause| policy.semantic_v1(|| E::custom(cause)))
+        borrowed_validation_v1::validate_head_with_policy_v1(
+            value,
+            policy,
+            &mut data.keys.failure,
+            &mut data.validation_failure,
+        )
     }
 }
 

@@ -141,9 +141,13 @@ crate quanta_index_contract
 │   │       ├── struct TokenSeedV1: pub(self)
 │   │       │   └── type Value: pub(self)
 │   │       ├── struct TrackDataV1: pub(self)
-│   │       └── struct TrackSeedV1: pub(self)
-│   │           ├── type Value: pub(self)
-│   │           └── type Value: pub(self)
+│   │       ├── struct TrackSeedV1: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       └── mod borrowed_validation_v1: pub(self)
+│   │           ├── trait ExpectedActivePolicyV1: pub(self)
+│   │           └── struct OrdinaryExpectedActiveV1: pub(self)
+│   │               └── type Error: pub(self)
 │   ├── mod diagnostic_events: pub(self)
 │   │   ├── enum ProcessRequestEventPlaneV1: pub
 │   │   ├── enum ProcessRequestEventStageV1: pub

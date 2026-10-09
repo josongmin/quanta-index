@@ -115,6 +115,8 @@ struct Admission {
     borrowed: u32,
     owned: u32,
     work: u64,
+    work_calls: u32,
+    invalid_calls: Cell<u32>,
     copies: usize,
     alive: Rc<Cell<u32>>,
     late_copy: Option<Box<u8>>,
@@ -210,6 +212,10 @@ impl NativeActivationTokenDecodeAdmissionV1 for Admission {
 }
 impl NativeCorpusDecodeAdmissionV1 for Admission {
     fn consume_corpus_work_v1(&mut self, units: u64) -> Result<(), Box<u8>> {
+        self.work_calls = self
+            .work_calls
+            .checked_add(1)
+            .ok_or_else(|| Box::new(250))?;
         let work = self.work.checked_add(units).ok_or_else(|| Box::new(251))?;
         if self.work_limit.is_some_and(|limit| work > limit) {
             return Err(self.work_cause.take().unwrap_or_else(|| Box::new(252)));
@@ -237,9 +243,14 @@ impl NativeCorpusDecodeAdmissionV1 for Admission {
         cause: NativeCorpusDataFailureV1,
         field: Option<&'static str>,
     ) -> NativeCorpusDecodeRefusalV1 {
+        self.invalid_calls
+            .set(self.invalid_calls.get().saturating_add(1));
         NativeCorpusDecodeRefusalV1::InvalidData(cause, field)
     }
 }
+
+#[path = "native_decode_v1/borrowed_validation_tests_v1.rs"]
+mod borrowed_validation_tests_v1;
 fn decode_native(
     source: &str,
     admission: &mut Admission,

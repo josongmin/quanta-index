@@ -252,6 +252,101 @@ compile/lint **VERIFIED**다. default-feature public API snapshot도 unchanged�
 기존 439/401/SDK 176 결과는 앞선 producer 후보의 실행 결과이며 이 alias delta에서
 다시 실행한 테스트로 표기하지 않는다. 실제 Semantica Source 수용은 계속 **NOT_RUN**이다.
 
+### Borrowed whole-Head / CAS scope validation — 2026-10-09
+
+`8d8a06ad` 이후의 별도 producer delta다. 기존 `Head::validate_v1`은 allocation 없는
+borrowed predicate이나 Native work admission을 호출하지 않는다. decode finisher의
+기존 8개 field-byte charge와 node charge를 `validate_head_with_policy_v1`로 추출했고,
+decode 및 새 borrowed Native 진입점이 같은 helper, 같은 `NativeCorpusPolicyV1`,
+같은 `Head::validate_v1`을 사용한다. scalar/identity/NFC validation을 복제하지 않는다.
+
+정확한 공개 ABI는 `quanta_index_contract` root의 기존 타입에 붙는다.
+Native 메서드는 기존 `quanta-native-identity-v1` feature에 속한다.
+
+```rust
+// P: NativeCorpusDecodeAdmissionV1 + ?Sized, E: serde::de::Error
+let mut head_data = NativeCorpusDecodeDataV1::<P::OriginalError, P::Funding>::new_v1();
+let mut head_error: Option<E> = None;
+let head_status = head.validate_into_with_native_admission_v1(
+    &mut admission, &mut head_data, &mut head_error,
+); // Result<(), NativeIdentityDecodeDataRefusalV1>
+
+// Ordinary pure borrowed scope API. Native callers use the entry below.
+SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_scope_v1(
+    &candidate_repo, &candidate_revision, candidate_generation, expected_head.as_ref(),
+)?; // Result<(), SearchCorpusActivationValidationErrorV1>
+
+let mut cas_data = NativeCorpusDecodeDataV1::<P::OriginalError, P::Funding>::new_v1();
+let mut cas_error: Option<E> = None;
+let cas_status = SearchPlaneActivateSearchCorpusGenerationCasRequest::
+    validate_expected_active_scope_into_with_native_admission_v1(
+        &candidate_repo, &candidate_revision, candidate_generation, expected_head.as_ref(),
+        &mut admission, &mut cas_data, &mut cas_error,
+    ); // Result<(), NativeIdentityDecodeDataRefusalV1>
+```
+
+실제 수신부는 위 DATA를 임시 값으로 버리면 안 된다. 모든 DATA와 full-error
+slot을 highest Source 외부 부모에 먼저 만들고 finisher까지 보유한다. borrowed Head,
+candidate scope와 실제 funding bank도 그 부모가 보유한다. 검증 DATA에는 input/control/
+policy loan이나 callback을 저장하지 않는다. 성공해도 owned Head output이 생기지 않고
+`complete_into_slot_v1`은 MissingResult다. 같은 DATA는 decode/Head-validation/CAS 중
+정확히 한 번만 사용한다. occupied full-error slot과 used DATA는 input/admission poll
+이전에 거절한다. 반환된 unit status도 부모가 기존 Source terminal classification까지 보존한다.
+
+`failure_v1`의 기존 Work/Copy/Identity view에 `Validation(&SearchCorpusGenerationIdentityValidationErrorV1)`과
+`Activation(&SearchCorpusActivationValidationErrorV1)`을 추가했다. complete original
+non-Copy admission E는 기존 DATA에, 실제 semantic cause는 새 typed slot에 남는다.
+기존 policy가 만든 complete dynamic `serde::de::Error`도 별도 외부 `Option<E>`에
+먼저 이동한다. marker를 지우는 새 unit-error adapter나 diagnostic String producer는 없다.
+수신부의 exhaustive failure-view match는 이 두 variant까지 같은 terminal 정책으로 처리해야 한다.
+
+CAS의 유일한 borrowed body는 expected Head 검증 → repo 비교 → revision 비교 →
+candidate generation의 strict advance 순서다. 기존 Snapshot 기반 API 및 request
+validator도 이 body에 위임한다. expected None은 head/candidate validation과 admission
+poll을 하지 않으며, Native DATA 자체의 one-shot 상태만 소비한다. caller는 이미 확인한
+publication scope를 제공한다. candidate track/digest/content validation은 full request의
+기존 책임이며 scope API에 새 조건을 추가하지 않았다. Snapshot/RepoId/RevisionId/
+digest String을 만들거나 clone하지 않는다.
+
+Native CAS는 expected Head의 기존 byte-work + 1을 먼저 지불한다. 그 뒤 각 repo/
+revision 비교는 1 + 양쪽 encoded string byte lengths, generation 비교는 1을 비교 전에
+지불한다. checked usize→u64 변환과 원본 arithmetic refusal은 기존 Native policy가
+처리한다. None의 work는 0이다. borrowed validation 자체에는 allocation/birth/funding
+issuance가 없다. SDK는 같은 Head 타입도 재수출하고 기존 CAS request 재수출에서 같은
+메서드가 노출된다. contract-base 변경이나 두 번째 package dependency는 필요 없다.
+
+새 owner 회귀는 whole-Head의 모든 기존 오류 순서, CAS의 expected-
+head-first/scope/strict-advance/None 동작, prepaid work 거절의 exact Box 원본, full dynamic
+error 보존, occupied/used DATA의 no-poll, decode와 borrowed 경로의 같은 semantic cause,
+input/policy lifetime 종료 후 DATA 보존을 검사한다. 이 delta의 실행 결과는 앞선
+439/401/SDK176 결과와 분리한다.
+
+- **VERIFIED** — `./scripts/cargow --lane test-canonical-identity-lane test -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk --all-features --locked --quiet`:
+  Contract 계열(base + facade)446 + doctest3, SDK176; SDK doctest6 ignored. 같은 packages의
+  default-feature 실행은 Contract 계열402, SDK176; SDK doctest6 ignored.
+- **VERIFIED** — Contract/SDK `clippy --all-targets --all-features --locked -- -D warnings`,
+  scoped format, public-API snapshots, Contract/Core module inventory, hexagonal boundary,
+  `git diff --check`. 새 API는 기존 feature 아래 있으므로 default API snapshot은 unchanged다.
+- **FAILED** — 첫 `env -u QUANTA_PROOF_RAW_DIR just rust-profile test-daemon`은
+  selected300 중50 PASS/1 FAIL, fail-fast로249 NOT_RUN이었다. 별도로10 SKIP이다. 실패한
+  `e2e_lifecycle_history::sdk_source_delete_append_pin_cas_duplicate_reorder_rollback_restart_history`
+  의 단독 재실행도 같은 CAS 충돌에서 실패했다. 성공한 publication 이후 activation 오류는
+  기존 SDK가 `ActivationAfterPublish { source: Remote(...) }`로 보존하는데, harness는
+  direct `Remote`만 정상 CAS 충돌로 분류했다. 관련 SDK와 harness의 pre-fix source는
+  `8d8a06ad`와 blob-exact 동일했다. `8d8a06ad` 자체의 runtime baseline 실행은 **NOT_RUN**이다.
+- Harness만 typed source를 빌려 읽도록 수리했다. complete wrapper를 유지하며 예상한
+  `CompositeActivationCasConflict`/`NotReady`만 기존 observation으로 분류하고, 그 밖의
+  오류는 원래 wrapper 전체를 반환한다. production SDK semantics와 경쟁 CAS의
+  exactly-one-winner oracle은 변경하지 않았다. 수정 후 같은 단독 history는 **VERIFIED**:1 PASS.
+  수정된 runtime test의 `clippy --all-features --locked -- -D warnings`와 세 영향 package의
+  format check는 **VERIFIED**다.
+- **VERIFIED** — 수리 후 같은 `env -u QUANTA_PROOF_RAW_DIR just rust-profile test-daemon`:
+  catalog25/5 binaries,300 PASS/10 SKIP,297.421s(2 slow), exit0. 최초 실패의50 PASS를
+  합산하거나 최초 attempt를 GREEN으로 바꾸지 않는다. 이 결과는 기존 ordinary daemon
+  activation/query/restart/history의 영향 검증이며 Native Core/Original Source 수용이 아니다.
+- Semantica actual Core/Original Source 수용, installed E2E, remote CI는 **NOT_RUN**이다.
+  main/remote 통합은 전체 producer/receiver/Source cohort 수용과 별도다.
+
 ### SDK connect native 경계의 추가 대조 — 2026-10-09
 
 아래는 transport-owner/native producer 구현 전의 역사적 source 대조다.

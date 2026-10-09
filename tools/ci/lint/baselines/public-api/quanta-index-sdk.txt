@@ -76,6 +76,7 @@ pub use quanta_index_sdk::RepoMapSymbolNode
 pub use quanta_index_sdk::RepoRelativePath
 pub use quanta_index_sdk::RevisionId
 pub use quanta_index_sdk::RuntimeMetadataCursorV1
+pub use quanta_index_sdk::SearchCorpusActiveHeadV1
 pub use quanta_index_sdk::SearchCorpusGenerationIdentityV1
 pub use quanta_index_sdk::SearchCorpusIngestObservation
 pub use quanta_index_sdk::SearchCorpusPublishOutcome

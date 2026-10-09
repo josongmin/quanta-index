@@ -248,15 +248,39 @@ fn activate_at_gate(
                     },
                     Some(ack.active),
                 )),
-                Err(SdkError::Remote {
-                    code: SearchPlaneErrorCodeV2::CompositeActivationCasConflict,
-                    ..
-                }) => Ok((Observation::Conflict(Cas::Activate), None)),
-                Err(SdkError::Remote {
-                    code: SearchPlaneErrorCodeV2::NotReady,
-                    ..
-                }) => Ok((Observation::SourceEventRefusal, None)),
-                Err(error) => Err(error.into()),
+                Err(error) => {
+                    // The SDK retains successful publication evidence around
+                    // activation failures. Classify its typed cause while the
+                    // complete wrapper stays alive; unexpected errors preserve it.
+                    let cause = match &error {
+                        SdkError::ActivationAfterPublish { source, .. } => source.as_ref(),
+                        cause @ (SdkError::Usage(_)
+                        | SdkError::Protocol(_)
+                        | SdkError::Serialization(_)
+                        | SdkError::Transport(_)
+                        | SdkError::Binding { .. }
+                        | SdkError::PlaneUnavailable { .. }
+                        | SdkError::Remote { .. }) => cause,
+                    };
+                    match cause {
+                        SdkError::Remote {
+                            code: SearchPlaneErrorCodeV2::CompositeActivationCasConflict,
+                            ..
+                        } => Ok((Observation::Conflict(Cas::Activate), None)),
+                        SdkError::Remote {
+                            code: SearchPlaneErrorCodeV2::NotReady,
+                            ..
+                        } => Ok((Observation::SourceEventRefusal, None)),
+                        SdkError::Usage(_)
+                        | SdkError::Protocol(_)
+                        | SdkError::Serialization(_)
+                        | SdkError::Transport(_)
+                        | SdkError::Binding { .. }
+                        | SdkError::PlaneUnavailable { .. }
+                        | SdkError::Remote { .. }
+                        | SdkError::ActivationAfterPublish { .. } => Err(error.into()),
+                    }
+                }
             }
         },
     )
