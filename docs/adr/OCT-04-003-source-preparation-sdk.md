@@ -2,13 +2,51 @@
 
 Status: **Offline preparation integrated in local main `433a9363`; focused
 verification `VERIFIED`** (2026-10-08). **Committed-receipt response validation
-is integrated in local main `029014be`** (2026-10-09). **Breaking publication recovery is now present in the shared main working
-tree but remains uncommitted; Semantica V5 remains an isolated candidate.** This is not release, installed-host,
+is integrated in local main `029014be`** (2026-10-09). **Breaking publication recovery and Semantica C3/C4 V5 integration are present
+in their shared main working trees but remain uncommitted and unaccepted as a coupled bundle.** This is not release, installed-host,
 performance, or cross-repository acceptance.
 [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) owns the public
 ingress and publication boundary.
 
 ## 2026-10-09 integration checkpoint
+
+### Current-main follow-up
+
+Quanta HEAD `432836af` working source passed SDK/contract521, stricter daemon
+lifecycle8, CLI46/benchmark-harness125 and selected strict Clippy/API/module/
+hexagonal/no-allow checks. SDK/contract and selected strict Clippy passed again
+after the typed I/O-error supplier changed. A newly built shared-main daemon
+(SHA-256 `7e2b00a6aafa2768dd41bc4d1be63661d9e4b968693920e0e64c50441b65524b`)
+passed actual SDK L2 five tests/eight named crash cuts. These are fresh executions,
+separate from the earlier isolated518/daemon300/L2 pair below. They do not qualify Semantica.
+
+Semantica HEAD `8217a38bf04d` now has the narrow frozen-publication guard and four
+regressions in two Kernel paths, plus the existing V5/typed-intent candidate in
+28 paths and a wrapper delegating completed readback to the canonical Acked
+validator. Completed predecessor readback now validates the canonical snapshot
+against its Lexical batch before returning. V5 contract validation is explicitly
+an envelope check. Encoded-length checks precede snapshot/artifact encoding and
+the issuer takes snapshot bytes by move. The512MiB wire limit is not a peak-memory
+or decode-work limit: validation allocations, nested decode expansion and full
+scope copying remain capacity risks without a reproduced OOM or performance run.
+Existing explicit APIs, custody changes and foreign staged work are preserved. Matching Kernel QBC stopped before execution when a foreign source
+file changed during hashing; compiler and test bodies are **NOT_RUN**. Boundary
+preflight passed all24 impacted policies on the final explicit31 paths. Earlier14
+result-taxonomy failures are historical; the current metadata is aligned with
+other owners' typed-error caller contracts. This is static proof, not test execution.
+
+Fresh producer recovery is **BLOCKED** by a concrete generation supply boundary:
+identical recovered Source identity reuses the revision, while a fresh manifest
+store assigns1 and Index may retain immutable sealed1/2. Active-plus-one misses
+sealed generations after rollback. The existing Index owner must supply an
+atomic durable occupied-generation reservation and exact optional composite
+active head. The existing Source/SDK owner must bind that reservation to a new,
+authenticated full source closure and current host/root custody before prepare;
+no old predecessor/pin or public intent setter supplies recovery authority.
+These tasks were sent to the existing owner chats. Their contract and proof
+acceptance remain open in the [single code-first plan](../plans/oct-4-parallel-closure/tickets/INDEX.md#oct-9-sdk-code-first-plan).
+
+### Historical isolated pair
 
 The verified pair uses Quanta preparation source checkpoint `bd73045a`; the independent committed-receipt fix is
 `029014be`, and preparation implementation now lives behind the existing

@@ -172,7 +172,7 @@ working source4,854경로 + reconciled SDK/V5/intent다. QGLang sibling은 clean
 | 추가 회귀 | Clean feature branch `codex/sdk-publication-complete`의 `16a522722d2`에 normal hooks로 저장. G1 rebaseline 거절, planned predecessor/native active 불일치 거절·no-activation, 이전 epoch custody의 fresh authority 거절을 기존 process test1파일에 추가. 기존 restart scenario를 daemon restart로 명명; 새 producer 복구 성공으로 표기하지 않음 |
 | Java caller closure | 소스 편집 없음. 단순 getter/control 전달 문제가 아니라 Original generation fragment·receipt·handoff 출력권한 계약이 production까지 미연결. 아래 owner blocker로 분리 |
 
-**현재 pair 검증:**
+**Historical isolated pair 검증 (아래 current-main 갱신과 구분):**
 
 | Command / scope | 상태 | 관측 결과 및 한계 |
 | --- | --- | --- |
@@ -247,9 +247,9 @@ captured dirty75경로 변경/17경로 추가를 관측했으므로 이 결과�
 
 이 계획은 앞선 남은 결합 목록을 대체한다. 구현·연결·검증 작업을 기존 owner와
 현재 소스에 배정하며, 동일 기능의 새 epic/SDK/IR/adapter를 만들지 않는다.
-이번 계획 작성에서는 source/test를 변경하거나 native test를 실행하지 않았다.
-아래 현재 코드 관측은 **VERIFIED**(bounded static read), 현재 동작은 **NOT_RUN**이다.
-앞선 Kernel/Runtime E0599 2건은 frozen pair 결과이며 최신 main 오류 수가 아니다.
+계획 작성 시점에는 source/test를 변경하거나 native test를 실행하지 않았다.
+후속 실행에서는 C3/C4를 shared source에 통합하고 아래 current-main rail을 실행했다.
+앞선 Kernel/Runtime E0599 2건은 historical frozen pair 결과이며 최신 main 오류 수가 아니다.
 
 관측 기준: Quanta HEAD `23cfadd2cd88`, Semantica HEAD `8217a38bf04d`와 각 working
 source. Semantica index에는 다른 owner의 staged 변경이 있으므로 이 계획은
@@ -271,6 +271,52 @@ source. Semantica index에는 다른 owner의 staged 변경이 있으므로 이 
 `packages/analysis/quanta-v2/crates/quanta-{contract-types-core,adapters-foundation,runtime-source-authority-wire,runtime-retrieval-kernel,contract-retrieval,runtime,adapters-parser,sdk-session-backend-owner}` 기준이다.
 Native Source text primitive는 `packages/core/codegraph-native-allocation-core/`의
 기존 owner를 사용한다. Path alias는 계획 표기이며 새 코드 추상화가 아니다.
+
+**후속 구현·검증 갱신 — 같은 날 current working source**
+
+- Quanta 기준 HEAD `432836af`, Semantica 기준 HEAD `8217a38bf04d`.
+  C3 Kernel2경로와 C4 V5/intent28경로 + existing Acked readback wrapper1경로를
+  shared Semantica source에 반영했다. 다른 owner의 staged index/Source/Java hunk는
+  보존했으며, 이 source 통합은 code commit·cross-repository 수용과 구분한다.
+- C3는 기존 explicit publish/activate API를 유지한다. Frozen path만 full submitted
+  publication binding과 원 outcome을 비교하고 retarget을 CAS 전에 거절한다.
+  회귀4개는 retarget/CAS0, same-identity replay/frozen-head 전달, 불확실 activation의
+  원 evidence 보존, 이미 포장된 원 cause 보존을 검사한다. 실행은 아직 **NOT_RUN**.
+- C4는 candidate의 V5 누적 snapshot·typed intent·durable/process 회귀를 재사용한다.
+  Completed readback은 기존 `load_and_revalidate_source_bound_terminal_aggregate_v2`
+  검증에 위임하고, 완료된 predecessor를 반환하기 전 snapshot/Lexical batch의 canonical
+  의미 검증을 필수화했다. V5 contract `validate_v5`는 envelope 검증임을 명시했다.
+  기존 artifact 한도의 사전 encoded-length 검사와 snapshot Vec move로 불필요한
+  출력 버퍼/바이트 복제를 줄였다. 별도 reader/old pin/adoption은 추가하지 않았다.
+- 이 길이 한도는 encoded artifact의512MiB 상한이다. Artifact Serialize의 검증용
+  digest 할당, nested snapshot decode의 객체 확장, delta의 전체 scope 복제는 남는다.
+  전체 RSS/동시 실행 메모리 상한이나 성능 개선의 실행 증거로 표기하지 않는다.
+  후속 capacity owner는 기존 canonical decode demand primitive와 실제 schema 모델로
+  decode 전 admission·concurrency 한도를 검증해야 한다. OOM 재현은 **NOT_RUN**.
+- Typed `SdkError::Transport(IpcError)` supplier 변경 후 caller fixture는 실제 I/O
+  cause로 연결했다. SDK/contract521과 선택 strict Clippy는 변경 후 재실행해 통과했다.
+  원 cause의 pointer/Kind와 publication evidence 보존 단언을 유지한다.
+
+| Current-main command / scope | 상태 | 실행 결과 및 한계 |
+| --- | --- | --- |
+| `./scripts/cargow test -p quanta-index-sdk -p quanta-index-contract --locked` | **VERIFIED** | 521passed/0failed/6ignored. Earlier resource-admission timeout을 대신하는 새 실행이며 isolated518과 합산하지 않음 |
+| `./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked e2e_lifecycle_history:: -- --nocapture --test-threads=1` | **VERIFIED** | Stricter current lifecycle8passed/0failed/87filtered. Daemon restart이며 fresh producer recovery 아님 |
+| `./scripts/cargow test -p quanta-index-searchctl -p quanta-index-retrieval-bench --lib --locked` | **VERIFIED** | CLI46 + benchmark harness125passed. Performance/relevance 측정 아님 |
+| `./scripts/cargow --lane clippy-lane clippy -p quanta-index-sdk -p quanta-index-contract -p quanta-index-searchctl -p quanta-index-retrieval-bench --all-targets --all-features --locked -- -D warnings` | **VERIFIED** | 선택4packages strict Clippy. Workspace 전체·Semantica compile proof 아님 |
+| `./scripts/cargow --lane daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --all-features --locked --message-format=json-render-diagnostics` 및 `QUANTA_INDEX_L2_TEST_BINARY=<new binary> ./scripts/cargow test -p quanta-index-sdk --test l2_daemon_publication --locked -- --ignored --nocapture --test-threads=1` | **VERIFIED** | Fresh shared-main binary SHA-256 `7e2b00a6aafa2768dd41bc4d1be63661d9e4b968693920e0e64c50441b65524b`. Actual daemon5tests/8named crash cuts 모두 통과. Fresh producer 복구·성능 측정 아님 |
+| Public API / cargo module / hexagonal / no-allow canonical lints | **VERIFIED** | Existing baseline·owner 경계 통과. Baseline 자동 갱신 없음 |
+| Semantica boundary preflight, explicit own31paths | **VERIFIED** | 최종24/24policies PASS, exit0. 이전 적용 전·후 sdk-result-family-taxonomy14FAIL은 historical 결과. 다른 owner가 actual typed error 계약에 taxonomy metadata14항목을 연결한 current source를 사용; C3/C4가 caller14개를 고쳤다는 claim 없음. Static boundary PASS는 native proof가 아님 |
+| Semantica matching Kernel QBC, `sdk-publish-recovery` | **BLOCKED**; bodies **NOT_RUN** | Main lane 등록 후 source hashing 중 foreign `quanta-adapters-pta/src/native_extracted_constraint_binding_v1.rs` 변경 감지, exit1/executor0. Compiler failure가 아님; 안정된 supplier handoff 후 같은 rail 실행 |
+| Runtime owner / durable6 / Semantica actual daemon process6 | **NOT_RUN** | Current coupled source에 대한 Runtime·process 수용은 미완료. Historical private proof로 대체하지 않음 |
+
+**전달 완료한 기존 owner와 미완료 계약**
+
+| 기존 담당 채팅 / 경계 | 전달한 실제 작업 | 수용 조건 |
+| --- | --- | --- |
+| `IR C1·C2·C5 00 · 통합·검증·최종 인계` / existing Source·SDK owners | C1 current retained callers, C2 Original generation fragment/closure/native handoff, C5 canonical cold Source/host grant | Current supplier source 및 owner proof handoff. Root는 existing owners로 전달을 수락; 31의 durable recovery는 source-material-only이며 전체 grant는 W1/Source publisher 경계. Source 전체는 HOLD |
+| `IR 잔여 · Java world·artifact 원 authority` / D4 | Original parser producer→actual backend SDK consumer의 동일 generation/receipt/handoff | D4의 retained-member 부분 proof와 production 전체를 구분. SourceReady/NativeReady는 아직 false |
+| `gqlang -> quanta-index xhdgkq` / existing Index native owner | C5 same-revision cold restart를 위한 occupied-generation reservation 공급 경계 | Existing ActivationCatalog generation/storage owner의 durable atomic reservation + exact optional composite active CAS head. 기존 API 미구현 확인, 아직 공급물 미수령 |
+| Existing SDK/replay owners | C3 frozen hunk, C4 artifact/issuer/intent/readback의 충돌 없는 통합 | Replay owner는 해당 C3/C4 hunk active-write0 확인. Foreign custody·serde 변경 보존 |
 
 **C0 — 통합 전 차이 분류·소유권 확정 (통합 담당1명)**
 
@@ -396,6 +442,18 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   delete/move/tombstone/GC를 포함; incomplete snapshot/changed artifact ref는 활성화 전
   거절; retry마다 새 head를 읽어 frozen expected-active를 바꾸지 않음.
 
+- **P2 / NOT_RUN (2026-10-09, C4 decode RAM admission):** Semantica IR의
+  `canonical_cbor_decode_logical_bytes_v1`는 allocation-free wire scan을 제공하지만
+  `CanonicalCborDecodeDemandModelV1`의 item/container/slot/payload 계수는 decoded
+  schema owner가 공급해야 한다. 현재 V5 `CanonicalShadowSemanticOwnerSnapshotV1`
+  및 nested `SemanticSourceReplaceScopeV1`/record/membership에 대응하는 검증된
+  supplier와 decode 전 RAM permit 연결은 확인되지 않았다. 현재 512 MiB 한도는
+  encoded artifact/snapshot wire bytes에만 적용되며 peak decoded RAM 보증이 아니다.
+  Artifact serde가 snapshot `Vec<u8>`를 먼저 만들므로 nested decode 직전 검사만으로는
+  outer artifact decode의 RAM 상한을 증명하지 못한다.
+  계수를 추측하거나 새 decoder를 추가하지 않는다. Schema owner가 실제 materialization
+  수요와 original permit을 확정한 뒤 별도 owner proof가 필요하다. Native 실행 없음.
+
 **C5 — Producer cold restart의 최소 계약 확정·구현 (C4 이후 같은 owner)**
 
 - 현재 `runtime/src/retrieval/port_impls/index_projection_writer/mod.rs`의 canonical
@@ -407,9 +465,18 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   Durable verified facts와 Index composite active head는 검증/동시성 입력이며 old
   owner grant나 producer predecessor로 변환하지 않는다. 투명한 epoch/pin 부활이나
   새 범용 recovery framework보다 이 좁은 경로를 먼저 닫는다.
-- 쓰기 전 최소 계약을 기존 producer owner가 확정: canonical recovery 입력 issuer,
-  exact repo/revision/source closure와 generation 선택, 새 terminal owner 발급,
-  old active head의 full identity CAS, recovery/refusal 이후 durable completion·retry.
+- Cold restart에서 committed Source identity가 같으면 revision도 같다. 새 manifest
+  store는0→첫 prepare1이므로 기존 sealed generation과 충돌한다. Rollback active1 뒤
+  sealed2가 남을 수 있어 `active + 1`은 allocator가 아니다. Index의 canonical owner가
+  양track·sealed·in-flight occupied 번호를 포함하는 durable atomic reservation을
+  발급해야 한다. 같은 attempt는 같은 예약을 재사용하고, 번호를 재사용하지 않으며,
+  reservation과 exact optional full active head를 함께 검증한다.
+- Existing producer owner는 canonical full FileText closure·committed Source identity·
+  현재 host/root custody·Index reservation을 결합하는 private cold-publication grant를
+  prepare 이전에 공급한다. 빈 store의 번호 선택과 실제 predecessor 여부를 분리하여
+  `delta_from_generation=None`을 유지한다. 공개 enum setter/임의 digest/가짜 manifest는
+  recovery authority가 아니다. 새 terminal owner, exact active CAS, durable completion과
+  interrupted-attempt retry까지 같은 계약에 묶는다.
   현재 Source/terminal owner가 이 입력을 공급하지 못하면 **BLOCKED**를 유지하며
   fake pin/ordinary adoption이나 `RebaselineExistingPredecessor` 조건 완화로 우회하지 않는다.
 - 대상은 `mod.rs`, `prepared_commit_artifact_v2.rs`, aggregate issuer/prepare,
