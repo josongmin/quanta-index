@@ -245,12 +245,10 @@ impl<E> NativeIdentityCopyDataV1<E> {
     }
     fn refuse_protocol_v1(&mut self) -> Result<(), NativeIdentityCopyRefusalV1> {
         self.phase = NativeIdentityCopyPhaseV1::Refused;
-        self.failure = Some(match self.reserve_failure.take() {
-            Some(reserve) => {
-                NativeIdentityCopyErrorV1::InvalidNativeProducerAfterReserveFailure(reserve)
-            }
-            None => NativeIdentityCopyErrorV1::InvalidNativeProducer,
-        });
+        self.failure = Some(self.reserve_failure.take().map_or_else(
+            || NativeIdentityCopyErrorV1::InvalidNativeProducer,
+            NativeIdentityCopyErrorV1::InvalidNativeProducerAfterReserveFailure,
+        ));
         Err(NativeIdentityCopyRefusalV1::OperationRefused)
     }
 }
@@ -282,7 +280,8 @@ fn reserve_native_copy_step_v1<E>(
 ) -> bool {
     if data.invoked {
         data.repeated = true;
-        return false;
+        // Repetition invalidates the protocol, not the first physical receipt.
+        return data.native_success;
     }
     data.invoked = true;
     data.native_success = match value.try_reserve_exact(bytes) {
@@ -328,8 +327,9 @@ fn admit_native_copy_backing_v1<E>(
     Ok(())
 }
 
-/// Unit producer over caller-owned backing AND phase/error DATA. The physical
-/// callback retains reserve failure immediately in this external DATA. The
+/// Unit producer over caller-owned backing and phase/error DATA.
+///
+/// The physical callback retains reserve failure immediately in this external DATA. The
 /// caller holds DATA/backing/actual funding through its highest Source finisher.
 /// Used DATA and occupied backing reject before input/admission polling. No
 /// full-error owned publisher or convenience wrapper is on this unit path.
@@ -356,10 +356,10 @@ fn owned_native_copy_result_v1<E>(
         return Ok(());
     }
     let mut failure = None;
-    if data.failure_into_slot_v1(&mut failure).is_ok() {
-        if let Some(cause) = failure {
-            return Err(cause);
-        }
+    if data.failure_into_slot_v1(&mut failure).is_ok()
+        && let Some(cause) = failure
+    {
+        return Err(cause);
     }
     Err(NativeIdentityCopyErrorV1::InvalidNativeProducer)
 }
@@ -1273,7 +1273,7 @@ mod tests {
         assert_eq!(
             original.try_clone_with_native_birth_v1(|_, birth| {
                 assert!(birth());
-                assert!(!birth());
+                assert!(birth(), "repeat keeps first physical receipt");
                 Ok::<_, u8>(true)
             }),
             Err(NativeCopy::InvalidNativeProducer)

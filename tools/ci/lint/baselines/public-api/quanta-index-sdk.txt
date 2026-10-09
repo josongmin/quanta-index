@@ -219,7 +219,9 @@ impl<E, F, H: core::ops::deref::Deref<Target = quanta_index_sdk::QuantaIndexClie
 pub fn quanta_index_sdk::native_connect_v1::NativeSdkConnectDataV1<E, F, H>::client_v1(&self) -> core::option::Option<&quanta_index_sdk::QuantaIndexClientPayloadV1>
 impl<E, F, H> quanta_index_sdk::native_connect_v1::NativeSdkConnectDataV1<E, F, H>
 pub fn quanta_index_sdk::native_connect_v1::NativeSdkConnectDataV1<E, F, H>::complete_into_slot_v1(&mut self, output: &mut core::option::Option<H>) -> core::result::Result<(), quanta_index_sdk::native_connect_v1::NativeSdkConnectRefusalV1>
+pub fn quanta_index_sdk::native_connect_v1::NativeSdkConnectDataV1<E, F, H>::complete_shared_v1(&self) -> core::option::Option<&H>
 pub fn quanta_index_sdk::native_connect_v1::NativeSdkConnectDataV1<E, F, H>::failure_v1(&self) -> core::option::Option<&quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1<E>>
+pub fn quanta_index_sdk::native_connect_v1::NativeSdkConnectDataV1<E, F, H>::is_complete_v1(&self) -> bool
 pub const fn quanta_index_sdk::native_connect_v1::NativeSdkConnectDataV1<E, F, H>::new_v1() -> Self
 pub fn quanta_index_sdk::native_connect_v1::NativeSdkConnectDataV1<E, F, H>::reserve_failure_v1(&self) -> core::option::Option<&alloc::collections::TryReserveError>
 impl<E, F, H> core::default::Default for quanta_index_sdk::native_connect_v1::NativeSdkConnectDataV1<E, F, H>
@@ -234,7 +236,7 @@ impl<E, F, H> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::native
 pub trait quanta_index_sdk::native_connect_v1::NativeSdkConnectAdmissionV1
 pub type quanta_index_sdk::native_connect_v1::NativeSdkConnectAdmissionV1::Funding
 pub type quanta_index_sdk::native_connect_v1::NativeSdkConnectAdmissionV1::OriginalError
-pub type quanta_index_sdk::native_connect_v1::NativeSdkConnectAdmissionV1::Shared: core::ops::deref::Deref<Target = quanta_index_sdk::QuantaIndexClientPayloadV1>
+pub type quanta_index_sdk::native_connect_v1::NativeSdkConnectAdmissionV1::Shared
 pub fn quanta_index_sdk::native_connect_v1::NativeSdkConnectAdmissionV1::admit_path_birth_v1(&mut self, bytes: usize, funding: &mut core::option::Option<Self::Funding>, birth: &mut dyn core::ops::function::FnMut() -> bool) -> core::result::Result<bool, Self::OriginalError>
 pub fn quanta_index_sdk::native_connect_v1::NativeSdkConnectAdmissionV1::birth_client_into_slots_v1(&mut self, payload: &mut core::option::Option<quanta_index_sdk::QuantaIndexClientPayloadV1>, shared: &mut core::option::Option<Self::Shared>, funding: &mut core::option::Option<Self::Funding>) -> core::result::Result<(), Self::OriginalError>
 pub fn quanta_index_sdk::native_connect_v1::NativeSdkConnectAdmissionV1::consume_connect_work_v1(&mut self, units: u64) -> core::result::Result<(), Self::OriginalError>

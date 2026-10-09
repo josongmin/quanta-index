@@ -435,6 +435,15 @@ E의 기존 오류 우선순위를 유지하면서 reserve 원본도 함께 남�
 caller에 남고 producer는 funding을 소유하거나 release하지 않는다. 기존 work 요금과
 identity/NFC 판정 순서, private typed seal은 바꾸지 않았다.
 
+후속 receipt 정정은 repeated callback의 반환 bool도 첫 physical
+결과로 유지한다. 첫 성공 뒤 반복은 true를 반환하고 첫 실패 뒤 반복은 false를 반환한다.
+반복 protocol은 여전히 거절하며 실제 backing/funding receipt를 뒤집지 않는다.
+`d751052b`의 기존 Source-only 상태와 검증 부재는 그대로다. 초기 handoff에서는 새 hunk의
+Rust/format/test도 **NOT_RUN**이었으며, 이후 실행 결과는 아래 local closeout에 구분했다.
+기존 ordinary/retained 회귀의 반복 bool 기대만 같은 규칙으로
+수정했고 SDK의 같은 문제도 동일하게 정정했다. SDK opaque handle ABI·진단6개 및 실제
+수신부 잔여는 [SDK ingress ADR](../../../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md#native-connect-producer-and-open-receiver-co-cut)에 기록했다.
+
 #### Constructor / decode / corpus co-cut
 
 borrowed constructor에도 SAME predicate/NFC/fee body를 호출하는 unit entry를 추가했다.
@@ -474,6 +483,9 @@ slot으로 pure move된다. 이 두 unit 경로에는 full owned-error helper �
 
 #### Actual old-convenience callsite census
 
+The table was refreshed after the producer closeout source edits. Semantica rows
+are current static observations, not executed receiver acceptance.
+
 아래 Semantica 경로는 `/Users/songmin/Documents/code-new/semantica-codegraph-v2` 기준
 현재 physical source의 read-only 대조다. stale callsite가 없다는 전체 runtime verdict가
 아니며 Semantica 파일은 이 Index 후보에서 편집하지 않았다.
@@ -485,29 +497,87 @@ slot으로 pure move된다. 이 두 unit 경로에는 full owned-error helper �
 | Semantica `packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/assembly_data/dense_sample_source_authority/native_generation_copy_v3.rs` | Repo/Revision 각각 actual `copy_data_v3[0/1]`를 새 unit clone에 전달하는 source 확인. Receiver authored-not-run이며 전체 Source 수용은 별도 |
 | `packages/analysis/quanta-v2/crates/quanta-sdk-runtime-executor/src/client/query_handlers/gqlang_handler/dense_factory_v3/provider_request_v3.rs` | RepoId의 old `try_from_str_into_with_native_admission_v1` 호출이 남음. external copy DATA 및 construction loan/unit entry로 co-cut 필요 |
 | `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_writer_ports/scope_native_identity_data_v3.rs` | RepoId/RevisionId의 old borrowed constructor 두 호출이 남음. 각각 외부 copy DATA와 기존 독립 NFC/funding owner를 유지하며 unit entry로 연결 필요 |
-| `packages/analysis/quanta-v2/crates/quanta-runtime/src/sdk/search_builder/index_owner_env_authority/aggregate_publication_authority/query_source_admission_v3.rs` | old Repo/Revision clone 둘과 published-generation V3 clone 호출이 남음. 각각 외부 copy DATA + full-error custody co-cut 필요 |
-| `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_errors.rs::ManifestDigestV1` | private clone이 old raw String copy를 호출함. 새 raw unit DATA를 받아 SAME private digest seal을 유지하는 V3 unit adapter 필요 |
-| `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_writer_ports/published_generation_ref_v1.rs` | published-generation clone이 old private ManifestDigest clone을 호출함. manifest DATA를 parent에서 넘기는 SAME unit chain 필요. 이 파일의 별도 old convenience 테스트는 Source 증거가 아님 |
+| `packages/analysis/quanta-v2/crates/quanta-runtime/src/sdk/search_builder/index_owner_env_authority/aggregate_publication_authority/query_source_admission_v3.rs` | Repo/Revision 및 published-generation이 각각 외부 `identity_copy_v3[0/1/2]`를 새 unit clone으로 전달함. full error를 DATA에서 빌려 projection하는 현재 source 확인; Source 수용은 NOT_RUN |
+| `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_errors/digest_types_v3.rs::ManifestDigestV1` | 새 raw unit DATA를 받아 SAME private digest seal을 유지하는 V3 unit adapter가 현재 source에 있음. old owned convenience도 남지만 Source entry는 새 unit adapter를 사용해야 함 |
+| `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_writer_ports/published_generation_ref_v1.rs` | 새 unit clone은 manifest DATA를 parent에서 받아 SAME private ManifestDigest unit adapter에 전달함. old convenience·테스트도 남음; 실제 Source caller의 채택 및 수용은 별도 |
 | `packages/analysis/quanta-v2/crates/quanta-sdk-runtime-executor/src/client/daemon_search_execution/product_query_storage_v3.rs` | actual old ManifestDigest clone 호출 뒤 owned error projection. 외부 copy DATA와 complete original cause retention을 함께 연결해야 함 |
 
 Index의 나머지 old copy/clone/constructor 참조는 owned conveniences, reexports 및 기존
-ordinary 테스트다. Semantica의 위 old Source callsites는 남은 의존성이며 convenience
+ordinary 테스트다. 표에서 명시한 Semantica old Source callsites는 남은 의존성이며 convenience
 유지나 outer unit wrapper만으로 닫혔다고 보지 않는다. private ManifestDigest의 ordinary
 `new`/String copy/NFC를 새로 구현해 우회하지 않는다. full enum의 새 variant와 unit refusal의
 MissingResult도 receiving exhaustive match에 연결해야 한다.
 
-- **VERIFIED (static only)** — scoped canonical formatter, `git diff --check`, actual
+- `d751052b` 당시 **VERIFIED (static only)** — scoped canonical formatter, `git diff --check`, actual
   producer/caller/re-export source 대조. std의 Clone/Eq/PartialEq 지원 및 Copy 부재도 로컬
   std 문서로 확인했다. compile/test/Source acceptance 결과가 아니다.
-- **AUTHORED / NOT_RUN** — owner 회귀7개: actual reserve step 직후·admission 복귀 전 외부
+- `d751052b` 당시 **AUTHORED / NOT_RUN** — owner 회귀7개: actual reserve step 직후·admission 복귀 전 외부
   reserve/phase 보존, late E/잘못된 report/repeated callback, first cause와 pure external
   transfer/re-entry, partial backing 및 mock funding, sealed bytes, occupied output/backing,
   empty/pre-birth state. `usize::MAX`로 실제 std capacity overflow를 유발하는 SAME private
   reserve step을 사용하며 forged str/실제 OOM/대체 allocator는 사용하지 않는다.
-- **NOT_RUN** — 이 source 후속의 Rust compile/Clippy/unit/daemon, public-API snapshot 및
+- `d751052b` 당시 **NOT_RUN** — 이 source 후속의 Rust compile/Clippy/unit/daemon, public-API snapshot 및
   module/hexagonal gate 실행. baseline은 기존 후보 그대로이며 DATA/loan/enum/API 변경의
   갱신·검증이 남았다. guard 억제나 이전 GREEN 재사용은 없다.
 - Native Core/Original Source/installed/remote CI, main 통합·push는 **NOT_RUN**이다.
+
+#### Local producer closeout 2026-10-09
+
+Current producer follow-up preserves one canonical String/typed-ID copy body,
+one PathBuf reserve callback, one SDK payload/dispatch body and one completion
+predicate. Repeated callback returns the first physical bool without a second
+reserve; the protocol still refuses repetition. Full reserve/admission errors,
+partial backing and actual external funding are preserved. SDK `Shared` is
+opaque; `is_complete_v1` and `complete_shared_v1` share the predicate used by pure
+transfer. Constructor code does not read the shared payload.
+
+Native corpus tests now use canonical module paths below
+`ipc/control/native_decode_v1/native_corpus_decode_tests_v1.rs` and its matching
+child directory. Redundant path aliases were removed; test module names and
+bodies remain byte-identical after removing the old child path attribute.
+No duplicate test body, decoder, policy, issuer, allocator or allowlist was added.
+
+Latest repo-local results include the independent committed-receipt fix now in
+main `029014bee9a7f7e201883c5679e57b83678c2388`. The owned physical producer bundle
+has 42 paths, excluding the other owner's preparation ADR and Oct-9 SDK
+reconciliation hunks later in this ticket. Code/test/tooling/API inputs are 40
+paths with SHA256 `1eea64614f5da58f79730921f6728e5720166c2ffc69897ab76174760058655d`.
+Documentation edits do not change these executed Rust inputs.
+
+| Scope / command | Observed result and limit |
+| --- | --- |
+| `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk --all-features --locked --quiet` | **VERIFIED**: Contract family 454 PASS, SDK 183 PASS; 3 Contract-base doctests PASS, 6 SDK process tests ignored. Includes all 13 new owner regressions. Earlier source before the independent receipt delta had 453/182; do not combine the counts. |
+| Same command without `--all-features` | **VERIFIED**: Contract family 410 PASS, SDK 183 PASS, 6 SDK process tests ignored. Earlier default source had 409/182. |
+| Same package/lane `clippy --all-targets --all-features --locked -- -D warnings` | **VERIFIED**. Fixed three production style diagnostics, checked fixture drop arithmetic, and moved repeated-receipt assertions out of the Result-returning mock. No lint suppression. |
+| `just rust-profile dev-all-targets` | **VERIFIED**: workspace all-targets/all-features check after module-path and receipt changes. Compilation is not workspace test qualification. |
+| `./scripts/cargow --lane fmt-lane fmt --all -- --check` | **VERIFIED**. |
+| `python3 tools/ci/lint/check-public-api.py` | **VERIFIED** after generating the intended DATA/unit exports, completion getters and opaque Shared declaration; the current snapshot also retains main's committed-receipt API. |
+| `python3 tools/ci/lint/check-cargo-modules-snapshot.py`, `check-module-cycles.py`, `lint-hexagonal-boundaries.py`, `check-wire-inventory.py`, `git diff --check` | **VERIFIED**. No cycle baseline expansion or guard suppression. |
+| `python3 -m pytest tools/ci/tests/test_lint_hexagonal_boundaries.py -q -o cache_dir=/tmp/quanta-index-native-closeout-pytest` | **VERIFIED**: 8 PASS. An earlier unittest discovery selected zero tests and is not proof. |
+| `env -u QUANTA_PROOF_RAW_DIR just rust-profile test-daemon` | **VERIFIED** for that earlier build: 300 PASS, 10 SKIP, 311.133s, 2 slow. This ran before the subsequent independent receipt source was committed; it is ordinary daemon regression, not latest native receiver/Original Source proof. |
+| `python3 tools/ci/lint/check-module-discipline.py` | **FAILED**: implementation items in the existing `quanta-index-sdk/src/preparation/mod.rs` facade. That file is unchanged from main and outside this producer bundle. Repository-wide structural GREEN is not claimed. |
+
+The first compile failed on a new PathBuf test's nonexistent `is_empty` method;
+the test now reads `as_os_str().is_empty`. Strict Clippy failures above were
+repaired and rerun. A later combined SDK run failed because the concurrent
+receipt guard rejected a positive observation fixture's zero journal sequence;
+that owner corrected the fixture to sequence 7 in main `029014be`, and the
+current combined tests passed. One queued test attempt timed out before resource
+admission and executed no tests; it was rerun after the daemon completed.
+
+**BLOCKED** — whole breaking-bundle main integration: current Semantica Scope
+repo/revision constructors and provider request still call the old owned-error
+convenience; ProductQueryStorage still uses the old ManifestDigest clone. The
+native SDK ingress still calls `client_v1` rather than connecting its opaque
+completed funded handle through the canonical admitted Core read. These files
+are active receiving-owner work and were not edited by this Index producer.
+Existing direct Runtime and ManifestDigest unit adapters in the census above
+are current source, not executed highest-Source acceptance.
+
+The complete producer tree is preserved as a candidate on top of current main;
+it does not advance the historical qualified `79bea4c0` ref. Actual Core/Original
+Source, installed E2E and remote CI remain **NOT_RUN**. No partial native main
+merge or push is performed while those receiving seams remain open.
 
 ### SDK connect native 경계의 추가 대조 — 2026-10-09
 

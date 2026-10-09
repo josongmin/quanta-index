@@ -41,6 +41,7 @@ struct Admission {
     early_header: Option<Box<u8>>,
     late_header: Option<Box<u8>>,
     final_work: Option<Box<u8>>,
+    path_receipts: [Option<bool>; 2],
     mode: BirthMode,
 }
 impl NativeSdkConnectAdmissionV1 for Admission {
@@ -73,14 +74,19 @@ impl NativeSdkConnectAdmissionV1 for Admission {
         }
         self.births = self.births.checked_add(1).expect("fixture birth count");
         let success = birth();
-        if success {
+        self.path_receipts[0] = Some(success);
+        let receipt = if matches!(self.mode, BirthMode::Repeat) {
+            let receipt = birth();
+            self.path_receipts[1] = Some(receipt);
+            receipt
+        } else {
+            success
+        };
+        if receipt {
             let bank = funding.get_or_insert_with(|| Funding {
                 count: Rc::clone(&self.alive),
             });
             bank.count.set(1);
-        }
-        if matches!(self.mode, BirthMode::Repeat) && birth() {
-            return Err(Box::new(250));
         }
         if let Some(cause) = self.late_path.take() {
             return Err(cause);
@@ -551,4 +557,268 @@ fn native_payload_uses_same_three_uds_routes_codec_binding_and_request_counter()
     assert!(
         matches!(ingest_result,Err(crate::SdkError::Remote {message,..}) if message == "ingest-route")
     );
+}
+
+// Source-only diagnostic probes. These mocks exercise SDK protocol/custody;
+// they do not qualify genuine Core handles, funding, or Original Source.
+#[test]
+fn repeated_success_preserves_first_commit_receipt_and_external_funding() {
+    let mut admission = Admission {
+        mode: BirthMode::Repeat,
+        ..Admission::default()
+    };
+    let alive = Rc::clone(&admission.alive);
+    let mut path = PathBuf::new();
+    let mut failure = None;
+    let mut funding = None;
+    assert!(matches!(
+        reserve_path_v1(9, &mut path, &mut failure, &mut funding, &mut admission),
+        Err(NativeSdkConnectFailureV1::InvalidNativeProducer)
+    ));
+    assert_eq!(admission.path_receipts, [Some(true), Some(true)]);
+    assert_eq!(admission.births, 1);
+    assert_eq!(path.capacity(), 9);
+    assert!(path.as_os_str().is_empty());
+    assert!(failure.is_none());
+    assert_eq!(
+        alive.get(),
+        1,
+        "live backing keeps its first commit funding"
+    );
+    drop(path);
+    assert_eq!(alive.get(), 1);
+    drop(funding);
+    assert_eq!(alive.get(), 0);
+}
+
+#[test]
+fn repeated_reserve_failure_preserves_first_false_and_full_native_error() {
+    let expected = PathBuf::new()
+        .try_reserve_exact(usize::MAX)
+        .expect_err("capacity overflow");
+    let mut admission = Admission {
+        mode: BirthMode::Repeat,
+        ..Admission::default()
+    };
+    let mut path = PathBuf::new();
+    let mut failure = None;
+    let mut funding = None;
+    assert!(matches!(
+        reserve_path_v1(
+            usize::MAX,
+            &mut path,
+            &mut failure,
+            &mut funding,
+            &mut admission,
+        ),
+        Err(NativeSdkConnectFailureV1::InvalidNativeProducer)
+    ));
+    assert_eq!(admission.path_receipts, [Some(false), Some(false)]);
+    assert_eq!(failure.as_ref(), Some(&expected));
+    assert_eq!(path.capacity(), 0);
+    assert!(funding.is_none());
+}
+
+#[test]
+fn zero_path_reserve_never_calls_admission_or_changes_external_slots() {
+    let mut admission = Admission {
+        mode: BirthMode::Repeat,
+        ..Admission::default()
+    };
+    let mut path = PathBuf::new();
+    let mut failure = None;
+    let mut funding = None;
+    assert!(reserve_path_v1(0, &mut path, &mut failure, &mut funding, &mut admission).is_ok());
+    assert_eq!(admission.path_receipts, [None, None]);
+    assert_eq!(
+        (admission.polls, admission.births, admission.headers),
+        (0, 0, 0)
+    );
+    assert_eq!(path.capacity(), 0);
+    assert!(failure.is_none());
+    assert!(funding.is_none());
+}
+
+#[test]
+fn dishonest_reports_refuse_without_erasing_physical_state_or_error() {
+    for (bytes, mode, receipt, capacity) in [
+        (9, BirthMode::Skip, None, 0),
+        (9, BirthMode::Lie, Some(true), 9),
+        (usize::MAX, BirthMode::Lie, Some(false), 0),
+    ] {
+        let mut admission = Admission {
+            mode,
+            ..Admission::default()
+        };
+        let mut path = PathBuf::new();
+        let mut failure = None;
+        let mut funding = None;
+        assert!(matches!(
+            reserve_path_v1(bytes, &mut path, &mut failure, &mut funding, &mut admission),
+            Err(NativeSdkConnectFailureV1::InvalidNativeProducer)
+        ));
+        assert_eq!(admission.path_receipts, [receipt, None]);
+        assert_eq!(path.capacity(), capacity);
+        assert_eq!(funding.is_some(), receipt == Some(true));
+        assert_eq!(failure.is_some(), receipt == Some(false));
+        drop(path);
+        drop(funding);
+    }
+}
+
+#[test]
+fn late_admission_wins_without_erasing_first_receipt_or_native_error() {
+    for bytes in [9, usize::MAX] {
+        let cause = Box::new(109_u8);
+        let pointer = std::ptr::from_ref(cause.as_ref());
+        let mut admission = Admission {
+            mode: BirthMode::Repeat,
+            late_path: Some(cause),
+            ..Admission::default()
+        };
+        let mut path = PathBuf::new();
+        let mut failure = None;
+        let mut funding = None;
+        assert!(matches!(
+            reserve_path_v1(bytes, &mut path, &mut failure, &mut funding, &mut admission),
+            Err(NativeSdkConnectFailureV1::Admission(cause))
+                if std::ptr::from_ref(cause.as_ref()) == pointer
+        ));
+        let success = bytes == 9;
+        assert_eq!(admission.path_receipts, [Some(success), Some(success)]);
+        assert_eq!(path.capacity(), if success { 9 } else { 0 });
+        assert_eq!(failure.is_some(), !success);
+        assert_eq!(funding.is_some(), success);
+        drop(path);
+        drop(funding);
+    }
+}
+
+// Intentionally has no Deref implementation. This is an inline type witness,
+// not the genuine future funded Core handle or its admitted payload read.
+struct OpaqueOwner {
+    _payload: QuantaIndexClientPayloadV1,
+}
+#[derive(Default)]
+struct OpaqueAdmission {
+    inner: Admission,
+}
+impl NativeSdkConnectAdmissionV1 for OpaqueAdmission {
+    type OriginalError = Box<u8>;
+    type Funding = Funding;
+    type Shared = OpaqueOwner;
+    fn consume_connect_work_v1(&mut self, units: u64) -> Result<(), Box<u8>> {
+        self.inner.consume_connect_work_v1(units)
+    }
+    fn admit_path_birth_v1(
+        &mut self,
+        bytes: usize,
+        funding: &mut Option<Funding>,
+        birth: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, Box<u8>> {
+        self.inner.admit_path_birth_v1(bytes, funding, birth)
+    }
+    fn birth_client_into_slots_v1(
+        &mut self,
+        payload: &mut Option<QuantaIndexClientPayloadV1>,
+        shared: &mut Option<OpaqueOwner>,
+        _: &mut Option<Funding>,
+    ) -> Result<(), Box<u8>> {
+        if matches!(self.inner.mode, BirthMode::SkipHeader) {
+            return Ok(());
+        }
+        self.inner.headers = self
+            .inner
+            .headers
+            .checked_add(1)
+            .expect("fixture header count");
+        *shared = payload
+            .take()
+            .map(|payload| OpaqueOwner { _payload: payload });
+        if let Some(cause) = self.inner.late_header.take() {
+            return Err(cause);
+        }
+        Ok(())
+    }
+}
+type OpaqueData = NativeSdkConnectDataV1<Box<u8>, Funding, OpaqueOwner>;
+
+#[test]
+fn opaque_shared_completion_borrows_only_complete_handles_and_preserves_slots() {
+    let mut admission = OpaqueAdmission::default();
+    let mut data = OpaqueData::new_v1();
+    assert!(!data.is_complete_v1());
+    assert!(data.complete_shared_v1().is_none());
+    try_connect_native_into_v1(
+        ConnectOptions::borrow_state_root_v1(Path::new("root")),
+        ClientProfile::QueryOnly,
+        &mut admission,
+        &mut data,
+    )
+    .expect("opaque handle needs no Deref");
+    assert!(data.is_complete_v1());
+    let pointer = std::ptr::from_ref(data.complete_shared_v1().expect("completed opaque handle"));
+
+    let mut other = OpaqueData::new_v1();
+    let mut other_admission = OpaqueAdmission::default();
+    try_connect_native_into_v1(
+        ConnectOptions::borrow_state_root_v1(Path::new("other-root")),
+        ClientProfile::QueryOnly,
+        &mut other_admission,
+        &mut other,
+    )
+    .expect("other opaque handle");
+    let mut output = None;
+    other
+        .complete_into_slot_v1(&mut output)
+        .expect("pure transfer");
+    let output_pointer = std::ptr::from_ref(output.as_ref().expect("prior opaque output"));
+    assert_eq!(
+        data.complete_into_slot_v1(&mut output),
+        Err(NativeSdkConnectRefusalV1::OccupiedOutput)
+    );
+    assert_eq!(
+        std::ptr::from_ref(data.complete_shared_v1().expect("unchanged opaque handle")),
+        pointer
+    );
+    assert_eq!(
+        std::ptr::from_ref(output.as_ref().expect("prior output")),
+        output_pointer
+    );
+    drop(output.take());
+    data.complete_into_slot_v1(&mut output)
+        .expect("pure opaque transfer");
+    assert!(!data.is_complete_v1());
+    assert!(data.complete_shared_v1().is_none());
+
+    for skipped_header in [false, true] {
+        let mut data = OpaqueData::new_v1();
+        let mut admission = OpaqueAdmission::default();
+        if skipped_header {
+            admission.inner.mode = BirthMode::SkipHeader;
+        } else {
+            admission.inner.late_header = Some(Box::new(113));
+        }
+        assert_eq!(
+            try_connect_native_into_v1(
+                ConnectOptions::borrow_state_root_v1(Path::new("refused-root")),
+                ClientProfile::QueryOnly,
+                &mut admission,
+                &mut data,
+            ),
+            Err(NativeSdkConnectRefusalV1::OperationRefused)
+        );
+        assert!(!data.is_complete_v1());
+        assert!(data.complete_shared_v1().is_none());
+        assert_eq!(data.shared.is_some(), !skipped_header);
+        let original = std::ptr::from_ref(data.failure_v1().expect("original refusal"));
+        assert_eq!(
+            data.complete_into_slot_v1(&mut output),
+            Err(NativeSdkConnectRefusalV1::OccupiedOutput)
+        );
+        assert_eq!(
+            std::ptr::from_ref(data.failure_v1().expect("preserved refusal")),
+            original
+        );
+    }
 }

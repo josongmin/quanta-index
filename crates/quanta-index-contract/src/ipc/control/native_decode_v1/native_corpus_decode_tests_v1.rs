@@ -249,7 +249,6 @@ impl NativeCorpusDecodeAdmissionV1 for Admission {
     }
 }
 
-#[path = "native_decode_v1/borrowed_validation_tests_v1.rs"]
 mod borrowed_validation_tests_v1;
 fn decode_native(
     source: &str,

@@ -115,8 +115,10 @@ pub struct SourcePublicationBinding {
 }
 
 impl SourcePublicationBinding {
-    /// Bind the stored receipt to its original publication and the caller's
-    /// event. Only a replay may differ from the requested transport target.
+    /// Bind a receipt to its original publication and the caller's event.
+    /// This also accepts the dispatcher's pre-commit applied receipt, whose
+    /// journal sequence is stamped only after the source event is committed.
+    /// Use `validate_published_receipt` for externally returned receipts.
     pub fn validate_receipt(
         &self,
         requested: &Self,
@@ -150,6 +152,21 @@ impl SourcePublicationBinding {
         }
         if receipt.applied && self != requested {
             return Err("applied publication differs from the requested target or digest".into());
+        }
+        Ok(())
+    }
+
+    /// Validate a committed publication returned to a caller. Both a fresh
+    /// apply and a replay must carry the original positive journal sequence.
+    pub fn validate_published_receipt(
+        &self,
+        requested: &Self,
+        sealed: bool,
+        receipt: &BatchPublishReceipt,
+    ) -> Result<(), String> {
+        self.validate_receipt(requested, sealed, receipt)?;
+        if receipt.durable_sequence == 0 {
+            return Err("published receipt requires a durable journal sequence".into());
         }
         Ok(())
     }
@@ -365,7 +382,7 @@ impl SearchCorpusIngestObservation {
         publication: &SourcePublicationBinding,
         receipt: &BatchPublishReceipt,
     ) -> Result<(), String> {
-        publication.validate_receipt(requested, sealed, receipt)?;
+        publication.validate_published_receipt(requested, sealed, receipt)?;
         if self.request_id != request_id
             || self.repo_id != requested.target.repo_id
             || self.revision_id != requested.target.revision_id
@@ -625,6 +642,71 @@ mod tests {
     }
 
     #[test]
+    fn published_receipt_requires_sequence_even_for_sealed_empty_apply() -> TestResult {
+        let batch = batch()?;
+        let binding = SourcePublicationBinding::for_batch(&batch);
+        let mut draft = BatchPublishReceipt::empty_for(
+            batch.generation,
+            Some(batch.manifest_digest),
+            batch.batch_digest,
+        );
+        draft.mark_sealed();
+        assert_eq!(draft.accepted_replace_scopes, 0);
+        assert!(draft.applied);
+        assert_eq!(draft.durable_sequence, 0);
+        // The dispatcher checks this draft before it commits the source event.
+        binding.validate_receipt(&binding, true, &draft)?;
+        assert!(
+            binding
+                .validate_published_receipt(&binding, true, &draft)
+                .is_err()
+        );
+
+        let committed = draft.clone().recorded_at(7);
+        binding.validate_published_receipt(&binding, true, &committed)?;
+        let replay = committed.replayed();
+        assert!(!replay.applied);
+        assert_eq!(replay.durable_sequence, 7);
+        binding.validate_published_receipt(&binding, true, &replay)?;
+        let unrecorded_replay = draft.replayed();
+        assert!(
+            binding
+                .validate_published_receipt(&binding, true, &unrecorded_replay)
+                .is_err()
+        );
+
+        let mut observed = outcome()?;
+        let observed_binding = observed.publication.clone();
+        observed
+            .observation
+            .as_ref()
+            .expect("fixture observation")
+            .validate_identity(
+                11,
+                &observed_binding,
+                true,
+                &observed.publication,
+                &observed.receipt,
+            )?;
+        observed.receipt.durable_sequence = 0;
+        assert!(
+            observed
+                .observation
+                .as_ref()
+                .expect("fixture observation")
+                .validate_identity(
+                    11,
+                    &observed_binding,
+                    true,
+                    &observed.publication,
+                    &observed.receipt,
+                )
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn ingest_observation_requires_nullable_fields_and_rejects_unknown_fields() -> TestResult {
         let outcome = outcome()?;
         let wire = serde_json::to_value(&outcome)?;
@@ -800,7 +882,7 @@ mod tests {
         original.receipt = original.receipt.replayed();
         original
             .publication
-            .validate_receipt(&requested, true, &original.receipt)?;
+            .validate_published_receipt(&requested, true, &original.receipt)?;
         let observation = SearchCorpusIngestObservation {
             request_id: 12,
             repo_id: request.repo_id.clone(),
@@ -834,7 +916,7 @@ mod tests {
             mutate(&mut bad);
             assert!(
                 bad.publication
-                    .validate_receipt(&requested, true, &bad.receipt)
+                    .validate_published_receipt(&requested, true, &bad.receipt)
                     .is_err()
             );
         }

@@ -159,7 +159,8 @@ fn real_reserve_cause_survives_later_protocol_and_admission_failures() {
 struct Funding(Rc<Cell<u32>>);
 impl Drop for Funding {
     fn drop(&mut self) {
-        self.0.set(self.0.get() + 1);
+        self.0
+            .set(self.0.get().checked_add(1).expect("fixture drop count"));
     }
 }
 
@@ -334,7 +335,10 @@ fn repeated_successful_callback_keeps_partial_backing_and_protocol_cause() {
         copy("repo/test", &mut backing, &mut data, |bytes, birth| {
             assert_eq!(bytes, 9);
             assert!(birth());
-            assert!(!birth());
+            assert!(
+                birth(),
+                "repeat preserves the first successful physical receipt"
+            );
             Ok::<_, u8>(true)
         }),
         Err(Refusal::OperationRefused)

@@ -26,7 +26,8 @@ use crate::{ClientProfile, ConnectOptions, QuantaIndexClientPayloadV1};
 pub trait NativeSdkConnectAdmissionV1 {
     type OriginalError;
     type Funding;
-    type Shared: Deref<Target = QuantaIndexClientPayloadV1>;
+    /// Construction retains this opaque handle without reading its payload.
+    type Shared;
 
     fn consume_connect_work_v1(&mut self, units: u64) -> Result<(), Self::OriginalError>;
 
@@ -41,9 +42,10 @@ pub trait NativeSdkConnectAdmissionV1 {
     ) -> Result<bool, Self::OriginalError>;
 
     /// Call the existing canonical typed shared owner directly on these slots.
-    /// For Semantica the concrete Shared is `NativeSharedValueV3<SDK payload>`,
-    /// and the producer is `admitted_shared_value_into_slots_v3`. No ordinary
-    /// Arc/adopter, erased owner, or newly implemented reference counter.
+    /// Semantica supplies its genuine funded Core handle and typed into-slot
+    /// producer. Payload reads belong to that owner's admitted read loan.
+    /// No ordinary Arc/adopter, erased owner, or newly implemented reference
+    /// counter.
     ///
     /// An error, including after header birth, leaves every candidate in the
     /// supplied external slots and retains actual header funding in the bank.
@@ -123,6 +125,29 @@ impl<E, F, H> NativeSdkConnectDataV1<E, F, H> {
         self.reserve_failure.as_ref()
     }
 
+    /// Producer completion only. This neither reads the opaque handle nor
+    /// replaces the receiving Source's terminal classification.
+    #[must_use]
+    pub fn is_complete_v1(&self) -> bool {
+        self.attempted
+            && self.completed
+            && self.shared.is_some()
+            && self.payload.is_none()
+            && self.failure.is_none()
+            && self.reserve_failure.is_none()
+    }
+
+    /// Borrow only the completed opaque handle. No retain, payload read,
+    /// funding transfer, or Source authority is issued by this observation.
+    #[must_use]
+    pub fn complete_shared_v1(&self) -> Option<&H> {
+        if self.is_complete_v1() {
+            self.shared.as_ref()
+        } else {
+            None
+        }
+    }
+
     /// Pure transfer; occupied outputs are unchanged and never poll admission.
     pub fn complete_into_slot_v1(
         &mut self,
@@ -131,7 +156,7 @@ impl<E, F, H> NativeSdkConnectDataV1<E, F, H> {
         if output.is_some() {
             return Err(NativeSdkConnectRefusalV1::OccupiedOutput);
         }
-        if !self.completed || self.shared.is_none() {
+        if !self.is_complete_v1() {
             return Err(NativeSdkConnectRefusalV1::MissingResult);
         }
         *output = self.shared.take();
@@ -151,11 +176,7 @@ impl<E, F, H: Deref<Target = QuantaIndexClientPayloadV1>> NativeSdkConnectDataV1
     /// receiving Source's terminal classification or admit RPC allocations.
     #[must_use]
     pub fn client_v1(&self) -> Option<&QuantaIndexClientPayloadV1> {
-        if self.completed {
-            self.shared.as_deref()
-        } else {
-            None
-        }
+        self.complete_shared_v1().map(Deref::deref)
     }
 }
 
@@ -176,7 +197,9 @@ fn reserve_path_v1<P: NativeSdkConnectAdmissionV1 + ?Sized>(
         .admit_path_birth_v1(bytes, funding, &mut || {
             if invoked {
                 repeated = true;
-                return false;
+                // Keep the FIRST physical commit receipt even though the
+                // repeated callback makes the overall protocol invalid.
+                return succeeded;
             }
             invoked = true;
             match path.try_reserve_exact(bytes) {

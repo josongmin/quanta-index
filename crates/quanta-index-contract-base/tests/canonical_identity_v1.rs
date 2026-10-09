@@ -200,7 +200,7 @@ fn invalid_native_callback_keeps_any_born_backing_in_the_caller() {
             try_copy_string_into_with_native_birth_v1("repo/test", &mut backing, |_, birth| {
                 assert!(birth());
                 if repeated {
-                    assert!(!birth());
+                    assert!(birth(), "repeat keeps first physical receipt");
                 }
                 Ok::<_, u8>(repeated)
             }),

@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn search_corpus_publish_requires_committed_sequence_for_apply_and_replay() {
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(7),
+        "manifest:committed-receipt",
+    )
+    .source_event(sample_source_event());
+    for applied in [true, false] {
+        for durable_sequence in [0, 17] {
+            let receipt = BatchPublishReceipt {
+                sealed: true,
+                applied,
+                durable_sequence,
+                semantic_content: Some(semantic_roots(7)),
+                ..BatchPublishReceipt::empty_for(
+                    batch.generation(),
+                    Some(batch.manifest_digest().to_string()),
+                    ok_or_fail!(batch.batch_digest()),
+                )
+            };
+            let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(receipt.clone()));
+            let control = unused_control();
+            let query = unused_query();
+            let client =
+                QuantaIndex::from_transports(query.clone(), control.clone(), ingest.clone());
+            let result = client.producer().publish_search_corpus(&batch);
+            if durable_sequence == 0 {
+                assert!(
+                    matches!(
+                        result,
+                        Err(crate::SdkError::Binding {
+                            axis: crate::ResponseBindingAxis::BatchCommitment,
+                            ..
+                        })
+                    ),
+                    "an uncommitted apply or replay must not escape the SDK"
+                );
+            } else {
+                assert_eq!(ok_or_fail!(result), receipt);
+            }
+            assert_eq!(ok_or_fail!(ingest.requests.lock()).len(), 1);
+            assert!(ok_or_fail!(control.requests.lock()).is_empty());
+            assert!(ok_or_fail!(query.requests.lock()).is_empty());
+        }
+    }
+}
+
+#[test]
 fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_records() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),
@@ -507,6 +556,7 @@ impl IngestTransport for ObservedIngestTransport {
         };
         let receipt = BatchPublishReceipt {
             sealed: true,
+            durable_sequence: 7,
             ..BatchPublishReceipt::empty_for(
                 batch.generation,
                 Some(batch.manifest_digest.clone()),
@@ -598,6 +648,7 @@ fn observed_corpus_publish_propagates_typed_stages_and_rejects_identity_and_repl
         Arc::new(ObservedIngestTransport { mutation: None }),
     );
     let outcome = ok_or_fail!(client.producer().publish_search_corpus_observed(&batch));
+    assert_eq!(outcome.receipt.durable_sequence, 7);
     let observation = outcome.observation.expect("fixture has observed stages");
     assert_eq!(observation.lexical_build_ns, Some(17));
     assert_eq!(observation.finalize_ns, Some(23));

@@ -1,4 +1,3 @@
-#[path = "control/native_decode_v1.rs"]
 mod native_decode_v1;
 use core::fmt;
 #[cfg(feature = "quanta-native-identity-v1")]

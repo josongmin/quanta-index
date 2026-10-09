@@ -19,7 +19,6 @@ use quanta_index_contract_base::{
 use quanta_index_contract_base::{NativeIdentityCopyDataV1, NativeIdentityCopyErrorV1};
 use serde::de::DeserializeSeed;
 
-#[path = "native_decode_v1/borrowed_validation_v1.rs"]
 mod borrowed_validation_v1;
 pub(super) use borrowed_validation_v1::validate_expected_active_scope_v1;
 
@@ -1123,6 +1122,6 @@ impl SearchCorpusActiveHeadV1 {
     }
 }
 
-#[cfg(all(test, feature = "quanta-native-identity-v1"))]
-#[path = "native_decode_tests_v1.rs"]
+#[cfg(feature = "quanta-native-identity-v1")]
+#[cfg(test)]
 mod native_corpus_decode_tests_v1;

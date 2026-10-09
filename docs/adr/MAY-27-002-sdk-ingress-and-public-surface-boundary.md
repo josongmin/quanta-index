@@ -171,8 +171,8 @@ The remaining interface decision has two concrete owners:
   std Arc nor a newly implemented reference counter satisfies this seam.
 
 The SDK port `native_connect_v1::NativeSdkConnectAdmissionV1` has associated
-`OriginalError`, `Funding`, and
-`Shared: Deref<Target = QuantaIndexClientPayloadV1>` types. Its methods are
+`OriginalError`, `Funding`, and opaque `Shared` types. Construction requires no
+`Deref` bound and never reads the shared payload. Its methods are
 `consume_connect_work_v1`, `admit_path_birth_v1`, and
 `birth_client_into_slots_v1`. The latter receives mutable external
 `Option<QuantaIndexClientPayloadV1>`, `Option<Shared>`, and `Option<Funding>`
@@ -187,18 +187,24 @@ through `failure_v1`; an actual `TryReserveError` has its own
 `reserve_failure_v1` slot, preserving it even if admission also refuses after
 the physical callback. `complete_into_slot_v1` is a pure move; occupied output
 and used DATA reject without polling admission or replacing state.
-`client_v1` borrows only a producer-complete payload. Neither observation nor
-transfer performs the receiving Source's terminal classification.
+`is_complete_v1(&self) -> bool` observes producer completion, and
+`complete_shared_v1(&self) -> Option<&H>` borrows only a completed opaque handle.
+Both mask incomplete/refused/invalid state; neither reads a payload, retains a
+counter, transfers funding, or issues Source authority. The existing
+`client_v1` is available only in the separate `H: Deref<Target =
+QuantaIndexClientPayloadV1>` impl, for ordinary/diagnostic handles. Neither
+observation nor transfer performs the receiving Source's terminal classification.
 
 Owned and borrowed options use the SAME generic `ConnectOptions<P>` carrier,
 root/socket decisions, raw path producer, and I/O-policy validator. Ordinary
 and native construction call the SAME payload factory; all SDK namespaces and
 dispatch methods borrow that payload. There is no native RPC implementation.
 Ordinary `QuantaIndex` also implements `Deref<Target = QuantaIndexClientPayloadV1>`.
-A receiving ingress can therefore use the SAME typed client-owner bound for
-the ordinary client and Core's actual `NativeSharedValueV3` and return a borrowed
-payload from `client_ref`. This borrow neither retains a shared counter nor
-adopts the ordinary client's Arc as a Native allocation.
+The genuine funded Core handle need not implement `Deref`. A receiving ingress
+borrows that opaque completed handle, then uses its existing Core admitted
+payload-read loan before calling the SAME SDK payload. Constructor completion
+does not grant that read. No SDK controller, adopter, new counter, raw payload
+getter, or infallible handle read is introduced by this seam.
 The native port lends path/shared birth only during the synchronous producer
 call. Its receiver contract forbids Source, current-control, input references,
 or callbacks in retained DATA or funding.
@@ -252,7 +258,36 @@ funding lifetime tests, and real UDS dispatch. Source review, SDK compilation,
 or ordinary daemon tests alone do not establish native acceptance. Integration
 of this ABI is one coupled producer/receiver change.
 
-Focused candidate validation (2026-10-09): SDK
+Constructor follow-up (2026-10-09): a repeated path
+birth callback returns the FIRST physical bool while marking the protocol
+invalid. It performs no second reserve and cannot turn live backing's `true`
+receipt into `false`. A first failed reserve repeats `false` and preserves its
+full `TryReserveError`. A later admission error retains the existing error
+priority and the separate native error/funding slots. The canonical String
+copy producer has the same receipt rule; its external phase/cause DATA remains
+unchanged. These changes do not qualify the previous source candidate.
+
+The initial source-only handoff had six SDK regressions AUTHORED / NOT_RUN:
+true/false repetition,
+zero demand, dishonest reports, late original error precedence, and a shared
+type with no `Deref` implementation. The opaque test covers completion,
+occupied pure transfer, and masking a physically present but refused handle.
+Mocks do not qualify actual Core funding or Original Source. Rust/format,
+public-API snapshots, runtime, and remote qualification are NOT_RUN for this
+follow-up; existing baselines and Git refs are not updated. The actual
+Semantica `index_sdk_ingress/native_connect_v3.rs::client_ref_v3` still calls
+`client_v1`; its receiving owner must connect the opaque accessor and existing
+admitted Core read when adopting a funded handle without `Deref`.
+
+The later producer closeout executed all six SDK regressions and the seven
+retained-copy regressions. The current command, results, source boundary and
+open receiver seams are recorded once in the
+[Index ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md#local-producer-closeout-2026-10-09).
+That repo-local verification does not establish genuine Core funding, highest
+Original Source acceptance, installed-process proof or remote CI.
+
+Historical focused candidate validation (2026-10-09, before the Source-only
+constructor follow-up): SDK
 `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-sdk --all-features --locked`
 passed 176 tests, with six environment-dependent tests ignored; SDK all-targets,
 all-features Clippy with `-D warnings` passed. The nine added tests cover complete
