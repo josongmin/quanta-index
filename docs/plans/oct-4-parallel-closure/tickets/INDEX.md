@@ -666,9 +666,13 @@ physical checkout has the SAME bytes on all 56 paths.
   `431de3f8d4cbfdbfbeb4a09dc525d1a50593b346` on
   `codex/index-publication-native-receiver`, with 13 paths and aggregate digest
   `c50ba60b49ae4a2b0f9095ce958399af0f7d12449e371d4df758b05332d62a8f`.
-  Its current successor is `6eb8df7c30ed02d0eda13d1d8ec9536e7213ed5e`, after
+  Its authored source cut is `6eb8df7c30ed02d0eda13d1d8ec9536e7213ed5e`, after
   full-binding admission and actual-consumer regressions in
-  `d713441339fed8fd846992b303dea16a03017072`. All eight paths changed after
+  `d713441339fed8fd846992b303dea16a03017072`. Candidate
+  `c0bd1df14b7169b7ca81f7785c11875fbd672c96` reconciles the independent Core
+  repair now committed in main `e234efb0c1b15cd5001c5f129a9f019315a1acc5`;
+  the candidate tree is byte-identical to the authored source cut. This merge
+  metadata used commit-tree, so its hooks are NOT_RUN. All eight paths changed after
   the typed-cause cut match the live shared source. This includes the same
   non-Clone transport pointer/drop fixture through the actual governed worker.
   Mixed-owner facade/manifest/lock paths include only this lane's hunks in that
@@ -852,7 +856,7 @@ helper or local Source-owned DATA was restored. The receipt is retained at
 `/Users/songmin/Library/Caches/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/semantica-codegraph-v2-1e4ef57d0339/lanes/01a1062b-e4a5-71f1-8554-a097114448ec-snapshot-artifact/verification-results/20261009T103001.474688Z-17b3e1501c61/receipt.json`.
 No publication-complete marker exists for this failed result.
 
-**FAILED (latest Runtime compile), NOT_RUN (V5 behavior)** — corrected run
+**FAILED (last completed Runtime compile before SSA repair), NOT_RUN (V5 behavior)** — corrected run
 `20261009T144643.515684Z-459bc882b63f` uses the declared
 `quanta-runtime.no-default.9c3270892708` policy, whose feature is
 `search-plane-sdk-ingress-proof` and includes the test's proof-support gate.
@@ -887,6 +891,19 @@ Runtime cfg-neutral macro/cfg-admission/orchestration policy violations.
 Pre-edit RED was NOT_RUN because this Runtime target was already blocked by
 its lower SSA dependency. The corrected Runtime run above executed no test
 bodies. Kernel focused passes do not qualify these Runtime/native scopes.
+
+
+Oct-10 source delta: the Source owner's eight-file Ordinary SSA repair now
+removes both stale calls and uses the SAME `retain_into_v3` / `values_into_slot_v3`
+with an exterior cumulative journal across three finalizer refresh calls and
+recursive phi work. Static review found no obvious type/control-flow conflict;
+its seven new tests remain authored, unexecuted. This dependency repair is
+outside the receiver candidate, and genuine Original SSA/Facts supply remains
+OPEN. The fresh Runtime owner check encountered source drift during final source
+binding and produced no usable owner verdict. The subsequent exact test snapshot
+was refused because the Index sibling overlay changed after capture, before
+its test execution. These tool/source-capture failures do not revalidate the
+repaired Runtime or replace the earlier failed compiler receipt.
 
 
 **BLOCKED** — whole native/product main merge still requires the actual
@@ -1350,6 +1367,61 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   C5 구현·실제 cold process 검증도 최종 full-recovery 완료 조건에 포함한다.
 - 새 에이전트를 동일 Source/Java/lock/retainer 파일에 또 투입하지 않는다. 기존 writer의
   source handoff를 받아 missing hunk만 반영하고, 이 절을 단일 작업 목록으로 갱신한다.
+
+#### Oct-10 main comparison and branch/worktree disposition
+
+- **VERIFIED — comparison baseline:** Quanta committed main was `b61655ed`.
+  `codex/index-publication-native-cohort` at `ebbd9183` contains that main;
+  its aggregate diff is 58 paths, including 56 non-documentation paths that are byte-identical
+  to the shared main **working tree**. This is source presence, not a committed merge.
+- **BLOCKED — native/publication bundle:** preserve the complete candidate and its
+  Semantica consumer. The actual factory/worker/RPC path still needs one Relation
+  query-unit admission loan, and Core final-drop custody is not qualified. Runtime
+  acceptance and durable/process regressions cannot be inferred from SDK/Kernel
+  checks. Do not import old SDK publication files separately or advance the
+  historical qualified `codex/borrowed-head-cas-validation` ref.
+- **Integrated independent repair:** Semantica main `e234efb0c1b` fixes the nested
+  reservation result in `native_temporary_vec_v3/retired_v3.rs`
+  (`Ok(())` → `Ok(Ok(()))`). The integration owner verified that file against its
+  passing Kernel snapshot and committed through the shared-main coordinator;
+  this does not qualify the SDK/Runtime bundle.
+- **VERIFIED — current cleanup transactions:** removed 38 visible local branch refs:
+  12 main patch-equivalent or superseded lexical refs, 10 ancestors of the retained
+  native cohort, 2 ancestors of the upload chain, and 14 source-audited superseded
+  benchmark/operational/recovery refs. Exact tips remain under
+  `refs/codex/cleanup/oct10-main-equivalent/`,
+  `refs/codex/cleanup/oct10-cohort-contained/`, and
+  `refs/codex/cleanup/oct10-main-semantic-contained/`. The last category is
+  semantic containment, not a claim of identical patch IDs. No remote ref was deleted.
+- **VERIFIED — current worktree cleanup:** removed 4 old Quanta worktrees:
+  `engine-audit-search-plane`, `engine-audit-semantic`, `publication-plan-custody`,
+  and `sdk-canonical-final`. The first 3 were clean with retained history. The last
+  had 5 dirty paths; the exact tree and parent history were saved and each dirty
+  blob verified before removal, at `refs/codex/cleanup/oct10-sdk-canonical-final`
+  (`87cde660da66c65ef818ac9795f65354d1e40ea6`). This was an unmanaged worktree,
+  so its recovery is a Git ref rather than an app archive.
+- The preceding cleanup already archived 3 managed Quanta worktrees, removed 1 clean
+  duplicate checkout, deleted 7 visible local branches with retained ancestry or
+  snapshots, and pruned 37 missing unlocked registrations. These are separate
+  transactions; the cumulative totals are 45 local branch refs and 8 physical Quanta
+  worktrees. The missing **locked** `weekly-audit-merge-recovery` registration,
+  frozen qualification checkouts, and Semantica dirty/evidence worktrees remain.
+- Remaining inventory at this checkpoint: 4 local branches including `main`, and
+  52 worktree registrations. Keep `codex/index-publication-native-cohort` for the
+  unqualified complete SDK/native candidate, `codex/borrowed-head-cas-validation`
+  at the historical qualified `79bea4c0`, and `codex/circleci-integration` for its
+  unfinished independent manual-benchmark intent. The old CI job cannot be
+  imported as-is: required warm/cold approved baselines are absent in both its
+  tree and main, and the current CI authority parser does not admit its new gate.
+  An old branch's missing later-main code is not proof that a three-way merge
+  would delete that code; disposition above uses individual intent/function/test
+  comparison, ancestry and retained exact tips.
+- Verification commands: `git cherry main <branch>`, `git merge-base --is-ancestor`,
+  `git diff --name-only main...<candidate>`, per-path blob comparison,
+  `git worktree list --porcelain`, and exact-old-SHA `git update-ref`.
+  The Index cleanup changed no production source or staged entries. The separate
+  Semantica Core commit preserves all foreign index entries. New native tests and
+  remote publication for this cleanup scope are **NOT_RUN**.
 
 #### Oct-8 checkpoint: 위치와 변경 소유권
 
