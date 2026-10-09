@@ -9,14 +9,14 @@ use super::{
 };
 use core::{convert::Infallible, marker::PhantomData};
 #[cfg(feature = "quanta-native-identity-v1")]
-use quanta_index_contract_base::NativeIdentityCopyErrorV1;
-#[cfg(feature = "quanta-native-identity-v1")]
-use quanta_index_contract_base::try_copy_string_into_with_native_birth_v1;
+use quanta_index_contract_base::try_copy_string_into_slots_with_native_birth_v1;
 #[cfg(feature = "quanta-native-identity-v1")]
 use quanta_index_contract_base::{
     NativeActivationTokenDecodeDataV1, NativeIdentityDecodeDataV1,
     NativeManifestGenerationDecodeDataV1,
 };
+#[cfg(feature = "quanta-native-identity-v1")]
+use quanta_index_contract_base::{NativeIdentityCopyDataV1, NativeIdentityCopyErrorV1};
 use serde::de::DeserializeSeed;
 
 #[path = "native_decode_v1/borrowed_validation_v1.rs"]
@@ -99,6 +99,8 @@ impl<E> KeyDataV1<E> {
 struct StringDataV1<E> {
     backing: String,
     #[cfg(feature = "quanta-native-identity-v1")]
+    copy: NativeIdentityCopyDataV1<E>,
+    #[cfg(feature = "quanta-native-identity-v1")]
     failure: Option<NativeIdentityCopyErrorV1<E>>,
     marker: PhantomData<E>,
 }
@@ -106,6 +108,8 @@ impl<E> StringDataV1<E> {
     const fn new_v1() -> Self {
         Self {
             backing: String::new(),
+            #[cfg(feature = "quanta-native-identity-v1")]
+            copy: NativeIdentityCopyDataV1::new_v1(),
             #[cfg(feature = "quanta-native-identity-v1")]
             failure: None,
             marker: PhantomData,
@@ -513,12 +517,25 @@ impl<P: NativeCorpusDecodeAdmissionV1 + ?Sized> CorpusPolicyV1 for NativeCorpusP
         value: &str,
         data: &mut StringDataV1<P::OriginalError>,
     ) -> Result<(), E> {
-        if let Err(cause) =
-            try_copy_string_into_with_native_birth_v1(value, &mut data.backing, |bytes, birth| {
-                self.0.admit_corpus_string_birth_v1(bytes, birth)
-            })
+        if try_copy_string_into_slots_with_native_birth_v1(
+            value,
+            &mut data.backing,
+            &mut data.copy,
+            |bytes, birth| self.0.admit_corpus_string_birth_v1(bytes, birth),
+        )
+        .is_err()
         {
-            let marker = match &cause {
+            if data.copy.failure_into_slot_v1(&mut data.failure).is_err() {
+                return Err(E::custom(
+                    NativeCorpusDecodeRefusalV1::InvalidNativeProducer,
+                ));
+            }
+            let Some(cause) = data.failure.as_ref() else {
+                return Err(E::custom(
+                    NativeCorpusDecodeRefusalV1::InvalidNativeProducer,
+                ));
+            };
+            let marker = match cause {
                 NativeIdentityCopyErrorV1::Admission(_)
                 | NativeIdentityCopyErrorV1::AdmissionAfterReserveFailure { .. } => {
                     NativeCorpusDecodeRefusalV1::Admission
@@ -532,7 +549,6 @@ impl<P: NativeCorpusDecodeAdmissionV1 + ?Sized> CorpusPolicyV1 for NativeCorpusP
                     NativeCorpusDecodeRefusalV1::InvalidNativeProducer
                 }
             };
-            data.failure = Some(cause);
             return Err(E::custom(marker));
         }
         Ok(())

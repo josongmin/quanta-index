@@ -1,6 +1,6 @@
 //! External physical state for one canonical identity decode occurrence.
 
-use super::NativeIdentityConstructionErrorV1;
+use super::{NativeIdentityConstructionErrorV1, NativeIdentityCopyDataV1};
 use unicode_normalization::NativeNormalizationDataV1;
 
 /// Status only. Full original construction failures remain in external DATA.
@@ -31,6 +31,7 @@ pub(super) struct NativeIdentityDecodeStateV1<T, E> {
     pub(super) backing: String,
     pub(super) output: Option<T>,
     pub(super) normalization: NativeNormalizationDataV1<E>,
+    pub(super) copy: NativeIdentityCopyDataV1<E>,
     pub(super) failure: Option<NativeIdentityConstructionErrorV1<E>>,
     pub(super) phase: NativeIdentityDecodePhaseV1,
     pub(super) construction_attempted: bool,
@@ -58,6 +59,7 @@ impl<T, E, F> NativeIdentityDecodeDataV1<T, E, F> {
                 backing: String::new(),
                 output: None,
                 normalization: NativeNormalizationDataV1::new_v1(),
+                copy: NativeIdentityCopyDataV1::new_v1(),
                 failure: None,
                 phase: NativeIdentityDecodePhaseV1::Fresh,
                 construction_attempted: false,

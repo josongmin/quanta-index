@@ -60,12 +60,13 @@ pub use quanta_index_contract_base::{
     ExhaustionProofV1, FileId, GenerationId, GenerationPin, INTERNAL_FETCH_CEILING,
     INTERNAL_FETCH_OUT_OF_RANGE_CODE, IdentityValidationErrorV1, InternalFetchOutOfRangeV1,
     InterruptedReasonV2, LaneTraceV1, LogicalGenerationIdentityV1, ManifestDigest,
-    ManifestGeneration, NativeIdentityCopyErrorV1, NativeIdentityCopyRefusalV1, PUBLIC_TOP_K_MAX,
-    PUBLIC_TOP_K_MIN, QueryResultWindowV1, QueryResultWindowV2, RepoId, RepoRelativePath,
-    RepositoryRevisionIdentityV1, RevisionId, SearchCorpusActivationTokenV1,
-    TOP_K_OUT_OF_RANGE_CODE, TopKOutOfRangeV1, continuation_fetch_size,
-    try_copy_string_into_slots_with_native_birth_v1, try_copy_string_into_with_native_birth_v1,
-    try_copy_string_with_native_birth_v1, validate_internal_fetch_size, validate_public_top_k,
+    ManifestGeneration, NativeIdentityCopyDataV1, NativeIdentityCopyErrorV1,
+    NativeIdentityCopyRefusalV1, PUBLIC_TOP_K_MAX, PUBLIC_TOP_K_MIN, QueryResultWindowV1,
+    QueryResultWindowV2, RepoId, RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,
+    SearchCorpusActivationTokenV1, TOP_K_OUT_OF_RANGE_CODE, TopKOutOfRangeV1,
+    continuation_fetch_size, try_copy_string_into_slots_with_native_birth_v1,
+    try_copy_string_into_with_native_birth_v1, try_copy_string_with_native_birth_v1,
+    validate_internal_fetch_size, validate_public_top_k,
 };
 pub use query::*;
 pub use repomap::*;
@@ -79,9 +80,9 @@ pub mod lex;
 
 #[cfg(feature = "quanta-native-identity-v1")]
 pub use quanta_index_contract_base::{
-    NativeIdentityConstructionErrorV1, NativeIdentityDecodeAdmissionV1,
-    NativeIdentityDecodeDataRefusalV1, NativeIdentityDecodeDataV1, NativeIdentityDecodeLoanV1,
-    NativeIdentityDecodeRunnerV1, NativeManifestGenerationDecodeDataV1,
+    NativeIdentityConstructionErrorV1, NativeIdentityConstructionSlotsV1,
+    NativeIdentityDecodeAdmissionV1, NativeIdentityDecodeDataRefusalV1, NativeIdentityDecodeDataV1,
+    NativeIdentityDecodeLoanV1, NativeIdentityDecodeRunnerV1, NativeManifestGenerationDecodeDataV1,
     NativeRetainedScalarDecodeDataV1, NativeRetainedScalarLeafV1,
 };
 

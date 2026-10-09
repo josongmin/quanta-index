@@ -358,15 +358,23 @@ input/policy lifetime 종료 후 DATA 보존을 검사한다. 이 delta의 실�
 
 기존 `79bea4c0`의 canonical String producer는 callback에서
 `String::try_reserve_exact(bytes).is_ok()`로 전체 `TryReserveError`를 버렸다.
-Runtime의 unit wrapper나 Copy 분류만으로 이미 사라진 원본을 복구할 수 없었다.
-이 추가 source는 `79bea4c0`를 부모로 하는 별도 **Source-only / authored-not-run**
-후보다. 기존 qualified producer ref와 `c41ba250` 코드 실행 증거는 별도로 보존한다.
+첫 Source-only 후보 `8d2a566f`는 full cause를 보존했지만 reserve 오류를 local 변수에
+둔 채 admission의 후속 poll을 기다렸다. unit wrapper가 helper 반환 뒤 외부 슬롯으로
+옮기는 구조만으로는 highest-Source custody를 만족하지 않았다. 아래 source 후속은
+caller-owned reserve/phase DATA를 실제 canonical callback에 주입한다. `8d2a566f`도
+역사적 Source-only 후보이며 GREEN이 아니다. 기존 qualified ref `79bea4c0`와
+`c41ba250` 코드 실행 증거는 새 source에 적용하지 않는다.
 
-같은 physical reserve/callback body를 `admit_native_copy_backing_v1`로 추출했다.
-reserve 실패 원본을 이동해 보존하고, 추가 admission/protocol 거절이 발생하면 두 원인을
-함께 보존한다. 기존 `NativeIdentityCopyErrorV1<E>`는 `Copy`를 제거했으며 정확한
-새 shape는 다음과 같다. `Clone/Eq/PartialEq/Debug`는 유지하지만 producer는 원본을
-clone하지 않는다.
+`NativeIdentityCopyDataV1<E>`가 raw reserve cause, complete admission E, complete
+joined failure, phase, invoked/repeated/native-success 상태를 모두 외부에서 소유한다.
+SAME `reserve_native_copy_step_v1`이 실패한 실제 `TryReserveError`를 DATA에 즉시
+이동한 뒤 callback bool을 반환한다. admission이 이어서 Source poll/refusal을 수행해도
+원본은 이미 caller DATA 안에 있다. unit 경로의 helper는 full owned error를 반환하지
+않는다. admission E도 unit 거절 전 외부 DATA에 저장한다. 이후 cause 결합은 DATA
+필드 사이의 pure move이며 추가 Source poll, formatting, clone, allocation을 호출하지 않는다.
+
+기존 full-error enum은 `Copy`를 제거했으며 shape는 다음과 같다. `Clone/Eq/PartialEq/Debug`
+는 유지하지만 producer는 원본을 clone하지 않는다.
 
 ```rust
 pub enum NativeIdentityCopyErrorV1<E> {
@@ -380,21 +388,25 @@ pub enum NativeIdentityCopyErrorV1<E> {
     InvalidNativeProducerAfterReserveFailure(std::collections::TryReserveError),
     InvalidNativeCapacity,
 }
-// Borrow both complete original causes from an externally retained failure:
-// reserve_failure_v1(&self) -> Option<&TryReserveError>
-// admission_failure_v1(&self) -> Option<&E>
 ```
 
-새 finite `NativeIdentityCopyRefusalV1`은 `OccupiedOutput`, `UsedData`,
-`OperationRefused`만 반환한다. 아래 두 unit ABI는 feature gating 없이 Contract-base 및
-Contract umbrella에서 노출된다. 기존 copy/clone/constructor 함수 서명은 유지한다.
+DATA 및 full error의 `reserve_failure_v1` / `admission_failure_v1`은 원본을 빌려 준다.
+DATA의 `failure_v1`은 완료된 full error를 빌려 주고, `is_fresh_v1` / `is_complete_v1`은
+phase를 읽는다. `failure_into_slot_v1(&mut Option<NativeIdentityCopyErrorV1<E>>)`은
+external→external pure move 후 unit status만 반환한다. occupied destination은 모두
+보존하며 미완성/이미 이동한 결과는 MissingResult다. 이 transfer 자체는 Source poll이나
+새 owned-error publisher를 호출하지 않는다.
+
+finite `NativeIdentityCopyRefusalV1`은 `OccupiedOutput`, `UsedData`, `OperationRefused`,
+`MissingResult`다. 정확한 public unit ABI는 아래와 같으며 Contract-base 및 Contract
+umbrella의 unconditional surface다. `8d2a566f`의 bool/error-slot unit 서명은 이 DATA
+서명으로 대체됐다. owned convenience의 기존 서명은 유지한다.
 
 ```rust
 pub fn try_copy_string_into_slots_with_native_birth_v1<E>(
     source: &str,
     value: &mut String,
-    attempted: &mut bool,
-    failure: &mut Option<NativeIdentityCopyErrorV1<E>>,
+    data: &mut NativeIdentityCopyDataV1<E>,
     admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
 ) -> Result<(), NativeIdentityCopyRefusalV1>;
 
@@ -403,48 +415,98 @@ pub fn try_clone_into_slots_with_native_birth_v1<E>(
     &self,
     backing: &mut String,
     output: &mut Option<Self>,
-    attempted: &mut bool,
-    failure: &mut Option<NativeIdentityCopyErrorV1<E>>,
+    data: &mut NativeIdentityCopyDataV1<E>,
     admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
 ) -> Result<(), NativeIdentityCopyRefusalV1>;
 ```
 
-raw unit driver → shared attempt/parking helper → existing raw copy → SAME physical
-reserve body 순서다. typed unit driver는 같은 attempt helper에서 기존 sealed clone을
-호출하므로 private validated bytes/typed sealing도 같은 owner가 유지한다. 기존 ID
-constructor와 decode runner도 같은 raw copy를 사용하므로 full reserve cause가 기존
-`NativeIdentityConstructionErrorV1::Copy` 및 외부 decode DATA에 그대로 남는다.
-Corpus String producer는 같은 full error를 기존 `StringDataV1.failure`에 보존하고,
-Serde marker 분류만 새 variant까지 확장했다. 새로운 allocator/normalizer/issuer나
-추가 ID validation, work charge, funding bank는 없다.
+raw unit driver → external phase guard → SAME admission/physical reserve → exact byte fill
+순서다. typed unit clone도 raw unit body 뒤에 기존 private sealed bytes를 같은 typed
+output으로 이동한다. owned String/typed clone convenience만 local DATA를 만들며, SAME
+unit core가 끝난 뒤 owned error로 반환한다. Source unit 경로는 그 convenience를 호출하지
+않는다. Source caller는 enclosing external 부모에 backing, DATA, typed output과 실제
+funding bank를 먼저 두고 highest finisher까지 함께 보유해야 한다. DATA에는 input,
+control, callback, funding bank 또는 새 Source authority가 없다.
 
-호출자는 highest Source 밖에 `String`, `attempted=false`, `failure=None`, typed clone이면
-`output=None`을 먼저 둔다. occupied error/backing/output 및 used attempt는 input/admission
-poll 전에 거절하고 모든 기존 슬롯을 보존한다. attempt는 zero-byte 성공과 pre-birth 거절도
-소비한다. full error는 외부 `failure`로 pure move되며 반환 unit만으로 원인을 대체하지 않는다.
-반복 callback은 두 번째 reserve를 실행하지 않으므로 첫 물리 원본이 덮어써지지 않는다.
-late admission E의 기존 우선순위는 유지하면서 reserve 원본도 함께 남긴다. 성공/부분
-String, full error, 실제 funding bank와 반환 status는 enclosing owner가 finisher까지
-보유한다. producer는 funding을 소유·release하지 않으며 input/control/callback을 저장하지 않는다.
+occupied backing/output은 DATA를 바꾸거나 input/admission을 poll하지 않는다. used DATA는
+zero-byte 성공, pre-birth 거절, full-error transfer 뒤에도 재사용되지 않는다. repeated
+callback은 두 번째 reserve를 실행하지 않아 첫 물리 원본을 덮어쓰지 않는다. late admission
+E의 기존 오류 우선순위를 유지하면서 reserve 원본도 함께 남긴다. partial String과 funding은
+caller에 남고 producer는 funding을 소유하거나 release하지 않는다. 기존 work 요금과
+identity/NFC 판정 순서, private typed seal은 바꾸지 않았다.
 
-Semantica dense/ManifestDigest owner의 co-cut은 새 full enum의 exhaustive match와 외부
-failure bank를 연결해야 한다. sealed RepoId/RevisionId clone에는 위 typed unit ABI를 쓴다.
-private ManifestDigest clone도 이 raw unit body 또는 기존 private clone의 full error를
-보존하는 같은 external-slot adapter로 연결한다. ordinary `new`/String copy/NFC 재검증을
-다시 구현하지 않는다. admission+reserve 두 원인을 한 classification으로 지우지 않는다.
-Semantica source는 이 후보에서 수정하지 않았다.
+#### Constructor / decode / corpus co-cut
 
-- **VERIFIED (static only)** — scoped canonical formatter, `git diff --check`,
-  producer/caller/re-export source 대조. 로컬 std 문서에서도 `TryReserveError`의
-  Clone/Eq/PartialEq 지원과 Copy 부재를 확인했다. 컴파일 결과가 아니다.
-- **AUTHORED / NOT_RUN** — owner 회귀6개: 실제 std capacity-overflow 원본과 late E의
-  동시 보존, callback 반복/잘못된 report, first-cause/re-entry no-poll, partial backing 및
-  외부 mock funding, sealed typed bytes, occupied slots, empty/pre-birth attempt 상태.
-  overflow는 SAME private reserve body에 `usize::MAX` demand를 주며 forged str/실제 OOM
-  또는 대체 allocator를 사용하지 않는다. mock admission은 Original Source proof가 아니다.
-- **NOT_RUN** — 이 추가 source의 Rust compile/Clippy/unit/daemon, public-API snapshot 및
-  module/hexagonal gate 실행. baseline은 이전 후보 그대로 보존했으며 새 enum/API의
-  snapshot 갱신·검증이 남아 있다. guard를 억제하거나 기존 GREEN을 새 source에 붙이지 않는다.
+borrowed constructor에도 SAME predicate/NFC/fee body를 호출하는 unit entry를 추가했다.
+아래 transient loan은 외부 물리 슬롯만 빌리며 input/control/callback을 보유하지 않는다.
+새 allocator, normalizer, canonical-ID substitute 또는 issuer가 아니다. 이 surface는 기존
+`quanta-native-identity-v1` feature에 속한다.
+
+```rust
+pub struct NativeIdentityConstructionSlotsV1<'data, T, E> {
+    pub backing: &'data mut String,
+    pub output: &'data mut Option<T>,
+    pub attempted: &'data mut bool,
+    pub normalization: &'data mut NativeNormalizationDataV1<E>,
+    pub copy: &'data mut NativeIdentityCopyDataV1<E>,
+    pub failure: &'data mut Option<NativeIdentityConstructionErrorV1<E>>,
+}
+// BOTH RepoId and RevisionId; P: NativeNormalizationAdmissionV1:
+pub fn try_from_str_into_slots_with_native_admission_v1<P>(
+    value: &str,
+    slots: NativeIdentityConstructionSlotsV1<'_, Self, P::Error>,
+    normalization_admission: &mut P,
+    copy_admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, P::Error>,
+) -> Result<(), NativeIdentityDecodeDataRefusalV1>;
+```
+
+`NativeIdentityDecodeDataV1`의 state에 실제 copy DATA를 추가했고 borrowed runner는 이
+unit constructor에 기존 backing/output/attempt/NFC/copy/failure 필드를 직접 loan한다.
+기존 owned-input branch는 이미 외부 DATA의 String을 검증·이동하며 copy를 추가하지 않는다.
+old owned-error constructor는 local copy/error DATA에서 SAME unit body를 호출하는
+convenience다. highest Source 수신자는 이 old convenience를 호출하면 안 된다.
+
+`NativeCorpusPolicyV1::string_v1`도 `StringDataV1.copy`를 직접 raw unit producer에 넘긴다.
+거절 뒤 full cause를 기존 external `StringDataV1.failure`로 pure move한 다음 유한 Serde
+marker를 만든다. identity copy 거절도 copy DATA에서 기존 external construction-failure
+slot으로 pure move된다. 이 두 unit 경로에는 full owned-error helper 호출이 없다.
+각 funding bank 및 NFC scratch의 기존 owner/drop 순서는 유지한다.
+
+#### Actual old-convenience callsite census
+
+아래 Semantica 경로는 `/Users/songmin/Documents/code-new/semantica-codegraph-v2` 기준
+현재 physical source의 read-only 대조다. stale callsite가 없다는 전체 runtime verdict가
+아니며 Semantica 파일은 이 Index 후보에서 편집하지 않았다.
+
+| Actual source | Observed route / remaining receiver work |
+| --- | --- |
+| Index `ids.rs::NativeIdentityDecodeRunnerV1::try_fill_v1` + `ids/native_decode_data_v1.rs` | Borrowed input을 새 external construction loan/copy DATA에 직접 연결. old owned constructor 호출 제거; static source만 확인 |
+| Index `ipc/control/native_decode_v1.rs::NativeCorpusPolicyV1::string_v1` | `StringDataV1.copy` → raw unit producer. old owned raw copy 호출 제거; static source만 확인 |
+| Semantica `packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/assembly_data/dense_sample_source_authority/native_generation_copy_v3.rs` | Repo/Revision 각각 actual `copy_data_v3[0/1]`를 새 unit clone에 전달하는 source 확인. Receiver authored-not-run이며 전체 Source 수용은 별도 |
+| `packages/analysis/quanta-v2/crates/quanta-sdk-runtime-executor/src/client/query_handlers/gqlang_handler/dense_factory_v3/provider_request_v3.rs` | RepoId의 old `try_from_str_into_with_native_admission_v1` 호출이 남음. external copy DATA 및 construction loan/unit entry로 co-cut 필요 |
+| `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_writer_ports/scope_native_identity_data_v3.rs` | RepoId/RevisionId의 old borrowed constructor 두 호출이 남음. 각각 외부 copy DATA와 기존 독립 NFC/funding owner를 유지하며 unit entry로 연결 필요 |
+| `packages/analysis/quanta-v2/crates/quanta-runtime/src/sdk/search_builder/index_owner_env_authority/aggregate_publication_authority/query_source_admission_v3.rs` | old Repo/Revision clone 둘과 published-generation V3 clone 호출이 남음. 각각 외부 copy DATA + full-error custody co-cut 필요 |
+| `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_errors.rs::ManifestDigestV1` | private clone이 old raw String copy를 호출함. 새 raw unit DATA를 받아 SAME private digest seal을 유지하는 V3 unit adapter 필요 |
+| `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_writer_ports/published_generation_ref_v1.rs` | published-generation clone이 old private ManifestDigest clone을 호출함. manifest DATA를 parent에서 넘기는 SAME unit chain 필요. 이 파일의 별도 old convenience 테스트는 Source 증거가 아님 |
+| `packages/analysis/quanta-v2/crates/quanta-sdk-runtime-executor/src/client/daemon_search_execution/product_query_storage_v3.rs` | actual old ManifestDigest clone 호출 뒤 owned error projection. 외부 copy DATA와 complete original cause retention을 함께 연결해야 함 |
+
+Index의 나머지 old copy/clone/constructor 참조는 owned conveniences, reexports 및 기존
+ordinary 테스트다. Semantica의 위 old Source callsites는 남은 의존성이며 convenience
+유지나 outer unit wrapper만으로 닫혔다고 보지 않는다. private ManifestDigest의 ordinary
+`new`/String copy/NFC를 새로 구현해 우회하지 않는다. full enum의 새 variant와 unit refusal의
+MissingResult도 receiving exhaustive match에 연결해야 한다.
+
+- **VERIFIED (static only)** — scoped canonical formatter, `git diff --check`, actual
+  producer/caller/re-export source 대조. std의 Clone/Eq/PartialEq 지원 및 Copy 부재도 로컬
+  std 문서로 확인했다. compile/test/Source acceptance 결과가 아니다.
+- **AUTHORED / NOT_RUN** — owner 회귀7개: actual reserve step 직후·admission 복귀 전 외부
+  reserve/phase 보존, late E/잘못된 report/repeated callback, first cause와 pure external
+  transfer/re-entry, partial backing 및 mock funding, sealed bytes, occupied output/backing,
+  empty/pre-birth state. `usize::MAX`로 실제 std capacity overflow를 유발하는 SAME private
+  reserve step을 사용하며 forged str/실제 OOM/대체 allocator는 사용하지 않는다.
+- **NOT_RUN** — 이 source 후속의 Rust compile/Clippy/unit/daemon, public-API snapshot 및
+  module/hexagonal gate 실행. baseline은 기존 후보 그대로이며 DATA/loan/enum/API 변경의
+  갱신·검증이 남았다. guard 억제나 이전 GREEN 재사용은 없다.
 - Native Core/Original Source/installed/remote CI, main 통합·push는 **NOT_RUN**이다.
 
 ### SDK connect native 경계의 추가 대조 — 2026-10-09

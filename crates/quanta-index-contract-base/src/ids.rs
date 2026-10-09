@@ -120,137 +120,265 @@ impl<E: fmt::Display> fmt::Display for NativeIdentityCopyErrorV1<E> {
 }
 impl<E: std::error::Error + 'static> std::error::Error for NativeIdentityCopyErrorV1<E> {}
 
-/// Finite status only; complete copy causes stay in the caller's error slot.
+/// Finite status only; complete copy causes stay in external DATA.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeIdentityCopyRefusalV1 {
     OccupiedOutput,
     UsedData,
     OperationRefused,
+    MissingResult,
 }
 
-/// Copy only the supplied borrowed bytes into caller-owned backing.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum NativeIdentityCopyPhaseV1 {
+    Fresh,
+    Admitting,
+    Completed,
+    Refused,
+    Transferred,
+}
+
+/// Caller-owned phase and complete causes for exactly one native copy.
 ///
-/// The destination must be empty with zero capacity. It is never cleared or
-/// replaced on failure: backing allocated by the native callback remains in
-/// the destination even when admission refuses after invoking that callback.
-/// The caller owns this slot and its grant through failure settlement.
-pub fn try_copy_string_into_with_native_birth_v1<E>(
-    source: &str,
-    value: &mut String,
-    admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
-) -> Result<(), NativeIdentityCopyErrorV1<E>> {
-    if !value.is_empty() || value.capacity() != 0 {
-        return Err(NativeIdentityCopyErrorV1::InvalidNativeProducer);
-    }
-    let bytes = source.len();
-    admit_native_copy_backing_v1(bytes, value, admission)?;
-    value.push_str(source);
-    Ok(())
+/// The physical callback writes a reserve error here BEFORE returning to
+/// admission. Its original cause therefore stays external during every later
+/// admission poll/refusal. No input, control, callback or funding is stored.
+/// Backing and actual funding remain in the enclosing caller, through finishing.
+pub struct NativeIdentityCopyDataV1<E> {
+    reserve_failure: Option<std::collections::TryReserveError>,
+    admission_failure: Option<E>,
+    failure: Option<NativeIdentityCopyErrorV1<E>>,
+    phase: NativeIdentityCopyPhaseV1,
+    invoked: bool,
+    repeated: bool,
+    native_success: bool,
 }
-
-// SAME physical reserve and callback protocol for every String/typed-ID copy.
-// Tests can exercise capacity overflow with an integer demand, without an
-// invalid enormous str, replacement allocator, or synthetic reserve error.
-fn admit_native_copy_backing_v1<E>(
-    bytes: usize,
-    value: &mut String,
-    admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
-) -> Result<(), NativeIdentityCopyErrorV1<E>> {
-    let mut invoked = false;
-    let mut repeated = false;
-    let mut native_success = false;
-    let mut reserve_failure = None;
-    let admitted = admission(bytes, &mut || {
-        if invoked {
-            repeated = true;
-            return false;
+impl<E> NativeIdentityCopyDataV1<E> {
+    #[must_use]
+    pub const fn new_v1() -> Self {
+        Self {
+            reserve_failure: None,
+            admission_failure: None,
+            failure: None,
+            phase: NativeIdentityCopyPhaseV1::Fresh,
+            invoked: false,
+            repeated: false,
+            native_success: false,
         }
-        invoked = true;
-        native_success = match value.try_reserve_exact(bytes) {
-            Ok(()) => true,
-            Err(cause) => {
-                reserve_failure = Some(cause);
-                false
-            }
+    }
+    #[must_use]
+    pub const fn is_fresh_v1(&self) -> bool {
+        matches!(self.phase, NativeIdentityCopyPhaseV1::Fresh)
+    }
+    #[must_use]
+    pub const fn is_complete_v1(&self) -> bool {
+        matches!(self.phase, NativeIdentityCopyPhaseV1::Completed)
+    }
+    #[must_use]
+    pub fn reserve_failure_v1(&self) -> Option<&std::collections::TryReserveError> {
+        self.reserve_failure.as_ref().or_else(|| {
+            self.failure
+                .as_ref()
+                .and_then(NativeIdentityCopyErrorV1::reserve_failure_v1)
+        })
+    }
+    #[must_use]
+    pub fn admission_failure_v1(&self) -> Option<&E> {
+        self.admission_failure.as_ref().or_else(|| {
+            self.failure
+                .as_ref()
+                .and_then(NativeIdentityCopyErrorV1::admission_failure_v1)
+        })
+    }
+    #[must_use]
+    pub fn failure_v1(&self) -> Option<&NativeIdentityCopyErrorV1<E>> {
+        self.failure.as_ref()
+    }
+    /// Pure move between external slots. No Source poll or owned publisher.
+    pub fn failure_into_slot_v1(
+        &mut self,
+        output: &mut Option<NativeIdentityCopyErrorV1<E>>,
+    ) -> Result<(), NativeIdentityCopyRefusalV1> {
+        if output.is_some() {
+            return Err(NativeIdentityCopyRefusalV1::OccupiedOutput);
+        }
+        if self.phase != NativeIdentityCopyPhaseV1::Refused || self.failure.is_none() {
+            return Err(NativeIdentityCopyRefusalV1::MissingResult);
+        }
+        *output = self.failure.take();
+        self.phase = NativeIdentityCopyPhaseV1::Transferred;
+        Ok(())
+    }
+    #[cfg(feature = "quanta-native-identity-v1")]
+    fn failure_into_identity_slot_v1(
+        &mut self,
+        output: &mut Option<NativeIdentityConstructionErrorV1<E>>,
+    ) -> Result<(), NativeIdentityCopyRefusalV1> {
+        if output.is_some() {
+            return Err(NativeIdentityCopyRefusalV1::OccupiedOutput);
+        }
+        if self.phase != NativeIdentityCopyPhaseV1::Refused {
+            return Err(NativeIdentityCopyRefusalV1::MissingResult);
+        }
+        let Some(cause) = self.failure.take() else {
+            return Err(NativeIdentityCopyRefusalV1::MissingResult);
         };
-        native_success
-    });
-    let admitted = match admitted {
-        Ok(admitted) => admitted,
-        Err(admission) => {
-            return Err(match reserve_failure {
-                Some(reserve) => {
-                    NativeIdentityCopyErrorV1::AdmissionAfterReserveFailure { admission, reserve }
-                }
-                None => NativeIdentityCopyErrorV1::Admission(admission),
-            });
-        }
-    };
-    if !invoked || repeated || admitted != native_success {
-        return Err(match reserve_failure {
+        *output = Some(NativeIdentityConstructionErrorV1::Copy(cause));
+        self.phase = NativeIdentityCopyPhaseV1::Transferred;
+        Ok(())
+    }
+    // Only pure moves inside this external DATA; no returned full-error value
+    // and no further Source poll while joining the already-retained causes.
+    fn refuse_admission_v1(&mut self, cause: E) -> Result<(), NativeIdentityCopyRefusalV1> {
+        self.admission_failure = Some(cause);
+        self.phase = NativeIdentityCopyPhaseV1::Refused;
+        let Some(admission) = self.admission_failure.take() else {
+            return Err(NativeIdentityCopyRefusalV1::MissingResult);
+        };
+        self.failure = Some(match self.reserve_failure.take() {
+            Some(reserve) => {
+                NativeIdentityCopyErrorV1::AdmissionAfterReserveFailure { admission, reserve }
+            }
+            None => NativeIdentityCopyErrorV1::Admission(admission),
+        });
+        Err(NativeIdentityCopyRefusalV1::OperationRefused)
+    }
+    fn refuse_protocol_v1(&mut self) -> Result<(), NativeIdentityCopyRefusalV1> {
+        self.phase = NativeIdentityCopyPhaseV1::Refused;
+        self.failure = Some(match self.reserve_failure.take() {
             Some(reserve) => {
                 NativeIdentityCopyErrorV1::InvalidNativeProducerAfterReserveFailure(reserve)
             }
             None => NativeIdentityCopyErrorV1::InvalidNativeProducer,
         });
+        Err(NativeIdentityCopyRefusalV1::OperationRefused)
+    }
+}
+impl<E> Default for NativeIdentityCopyDataV1<E> {
+    fn default() -> Self {
+        Self::new_v1()
+    }
+}
+
+fn begin_native_copy_attempt_v1<E>(
+    value: &String,
+    data: &mut NativeIdentityCopyDataV1<E>,
+) -> Result<(), NativeIdentityCopyRefusalV1> {
+    if !value.is_empty() || value.capacity() != 0 {
+        return Err(NativeIdentityCopyRefusalV1::OccupiedOutput);
+    }
+    if !data.is_fresh_v1() {
+        return Err(NativeIdentityCopyRefusalV1::UsedData);
+    }
+    data.phase = NativeIdentityCopyPhaseV1::Admitting;
+    Ok(())
+}
+
+// SAME physical callback step; the caller DATA owns every state transition.
+fn reserve_native_copy_step_v1<E>(
+    bytes: usize,
+    value: &mut String,
+    data: &mut NativeIdentityCopyDataV1<E>,
+) -> bool {
+    if data.invoked {
+        data.repeated = true;
+        return false;
+    }
+    data.invoked = true;
+    data.native_success = match value.try_reserve_exact(bytes) {
+        Ok(()) => true,
+        Err(cause) => {
+            // External BEFORE returning to admission and its subsequent polls.
+            data.reserve_failure = Some(cause);
+            false
+        }
+    };
+    data.native_success
+}
+
+// SAME admission protocol over the physical callback and external phase DATA.
+fn admit_native_copy_backing_v1<E>(
+    bytes: usize,
+    value: &mut String,
+    data: &mut NativeIdentityCopyDataV1<E>,
+    admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+) -> Result<(), NativeIdentityCopyRefusalV1> {
+    let admitted = match admission(bytes, &mut || {
+        reserve_native_copy_step_v1(bytes, value, data)
+    }) {
+        Ok(admitted) => admitted,
+        Err(cause) => return data.refuse_admission_v1(cause),
+    };
+    if !data.invoked || data.repeated || admitted != data.native_success {
+        return data.refuse_protocol_v1();
     }
     if !admitted {
-        return Err(match reserve_failure {
-            Some(reserve) => NativeIdentityCopyErrorV1::NativeAllocationFailed(reserve),
-            None => NativeIdentityCopyErrorV1::InvalidNativeProducer,
-        });
+        let Some(cause) = data.reserve_failure.take() else {
+            return data.refuse_protocol_v1();
+        };
+        data.failure = Some(NativeIdentityCopyErrorV1::NativeAllocationFailed(cause));
+        data.phase = NativeIdentityCopyPhaseV1::Refused;
+        return Err(NativeIdentityCopyRefusalV1::OperationRefused);
     }
     if value.capacity() != bytes {
-        return Err(NativeIdentityCopyErrorV1::InvalidNativeCapacity);
+        data.failure = Some(NativeIdentityCopyErrorV1::InvalidNativeCapacity);
+        data.phase = NativeIdentityCopyPhaseV1::Refused;
+        return Err(NativeIdentityCopyRefusalV1::OperationRefused);
     }
     Ok(())
 }
 
-fn retain_native_copy_attempt_v1<E>(
-    value: &mut String,
-    attempted: &mut bool,
-    failure: &mut Option<NativeIdentityCopyErrorV1<E>>,
-    operation: impl FnOnce(&mut String) -> Result<(), NativeIdentityCopyErrorV1<E>>,
-) -> Result<(), NativeIdentityCopyRefusalV1> {
-    if failure.is_some() || !value.is_empty() || value.capacity() != 0 {
-        return Err(NativeIdentityCopyRefusalV1::OccupiedOutput);
-    }
-    if *attempted {
-        return Err(NativeIdentityCopyRefusalV1::UsedData);
-    }
-    *attempted = true;
-    match operation(value) {
-        Ok(()) => Ok(()),
-        Err(cause) => {
-            *failure = Some(cause);
-            Err(NativeIdentityCopyRefusalV1::OperationRefused)
-        }
-    }
-}
-
-/// Unit driver over the SAME canonical copy body. Backing, attempt state and
-/// the complete non-Copy failure are external caller-owned slots. No input,
-/// Source/control reference, callback, or funding bank is retained here.
-/// Keep every slot and actual backing funding through the highest finisher.
-/// Occupied/used slots reject before input or admission polling, including
-/// after a zero-byte copy or a refusal before physical birth. A failure never
-/// replaces an earlier cause or releases partially born backing/funding.
+/// Unit producer over caller-owned backing AND phase/error DATA. The physical
+/// callback retains reserve failure immediately in this external DATA. The
+/// caller holds DATA/backing/actual funding through its highest Source finisher.
+/// Used DATA and occupied backing reject before input/admission polling. No
+/// full-error owned publisher or convenience wrapper is on this unit path.
 pub fn try_copy_string_into_slots_with_native_birth_v1<E>(
     source: &str,
     value: &mut String,
-    attempted: &mut bool,
-    failure: &mut Option<NativeIdentityCopyErrorV1<E>>,
+    data: &mut NativeIdentityCopyDataV1<E>,
     admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
 ) -> Result<(), NativeIdentityCopyRefusalV1> {
-    retain_native_copy_attempt_v1(value, attempted, failure, |value| {
-        try_copy_string_into_with_native_birth_v1(source, value, admission)
-    })
+    begin_native_copy_attempt_v1(value, data)?;
+    admit_native_copy_backing_v1(source.len(), value, data, admission)?;
+    value.push_str(source);
+    data.phase = NativeIdentityCopyPhaseV1::Completed;
+    Ok(())
 }
 
-/// Owned convenience over the same native copy body.
-///
-/// Callers retaining backing through a late refusal must use the into-slot
-/// API and keep its destination with their original grant.
+// Owned convenience ONLY. Source receivers call the unit producer with their
+// external DATA directly. This adapter runs after that SAME core has finished.
+fn owned_native_copy_result_v1<E>(
+    status: Result<(), NativeIdentityCopyRefusalV1>,
+    data: &mut NativeIdentityCopyDataV1<E>,
+) -> Result<(), NativeIdentityCopyErrorV1<E>> {
+    if status.is_ok() {
+        return Ok(());
+    }
+    let mut failure = None;
+    if data.failure_into_slot_v1(&mut failure).is_ok() {
+        if let Some(cause) = failure {
+            return Err(cause);
+        }
+    }
+    Err(NativeIdentityCopyErrorV1::InvalidNativeProducer)
+}
+
+/// Owned-error convenience over the SAME unit producer. Highest Source callers
+/// use `try_copy_string_into_slots_with_native_birth_v1` with external DATA.
+pub fn try_copy_string_into_with_native_birth_v1<E>(
+    source: &str,
+    value: &mut String,
+    admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+) -> Result<(), NativeIdentityCopyErrorV1<E>> {
+    let mut data = NativeIdentityCopyDataV1::new_v1();
+    let status =
+        try_copy_string_into_slots_with_native_birth_v1(source, value, &mut data, admission);
+    owned_native_copy_result_v1(status, &mut data)
+}
+
+/// Owned convenience over the SAME native copy body. The Source unit API
+/// retains backing and phase/error DATA with the caller's actual funding.
 pub fn try_copy_string_with_native_birth_v1<E>(
     source: &str,
     admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
@@ -341,6 +469,18 @@ impl<E: fmt::Display> fmt::Display for NativeIdentityConstructionErrorV1<E> {
 }
 #[cfg(feature = "quanta-native-identity-v1")]
 impl<E: std::error::Error + 'static> std::error::Error for NativeIdentityConstructionErrorV1<E> {}
+
+/// Transient loans of caller-owned constructor slots. No input, control,
+/// admission callback or funding is stored in the physical DATA.
+#[cfg(feature = "quanta-native-identity-v1")]
+pub struct NativeIdentityConstructionSlotsV1<'data, T, E> {
+    pub backing: &'data mut String,
+    pub output: &'data mut Option<T>,
+    pub attempted: &'data mut bool,
+    pub normalization: &'data mut unicode_normalization::NativeNormalizationDataV1<E>,
+    pub copy: &'data mut NativeIdentityCopyDataV1<E>,
+    pub failure: &'data mut Option<NativeIdentityConstructionErrorV1<E>>,
+}
 
 #[cfg(feature = "quanta-native-identity-v1")]
 struct NativeIdentityValidationV1<'a, P: unicode_normalization::NativeNormalizationAdmissionV1> {
@@ -541,7 +681,10 @@ macro_rules! validated_identity {
                 Ok(Self(value))
             }
 
-            /// Validate and copy borrowed input into caller-owned attempt slots.
+            /// Owned-error convenience over the SAME unit constructor.
+            /// Highest Source receivers use
+            /// `try_from_str_into_slots_with_native_admission_v1` with external
+            /// copy DATA; this convenience owns local copy/error state.
             ///
             /// `attempted` must be false, `backing` empty with zero capacity,
             /// `output` None, and `normalization_data` fresh. Invalid or reused
@@ -571,26 +714,75 @@ macro_rules! validated_identity {
             where
                 P: unicode_normalization::NativeNormalizationAdmissionV1,
             {
-                if *attempted || output.is_some() || !backing.is_empty() || backing.capacity() != 0
-                    || !normalization_data.is_fresh_v1() {
-                    return Err(NativeIdentityConstructionErrorV1::Copy(
+                let mut copy = NativeIdentityCopyDataV1::new_v1();
+                let mut failure = None;
+                let status = Self::try_from_str_into_slots_with_native_admission_v1(
+                    value,
+                    NativeIdentityConstructionSlotsV1 {
+                        backing, output, attempted, normalization: normalization_data,
+                        copy: &mut copy, failure: &mut failure,
+                    },
+                    normalization_admission, copy_admission,
+                );
+                match status {
+                    Ok(()) => Ok(()),
+                    Err(_) => Err(failure.unwrap_or(NativeIdentityConstructionErrorV1::Copy(
                         NativeIdentityCopyErrorV1::InvalidNativeProducer,
-                    ));
+                    ))),
                 }
-                *attempted = true;
-                validate_native_identity_into_v1(value, normalization_data, normalization_admission)?;
-                let copy_work = u64::try_from(value.len()).map_err(|_| {
-                    NativeIdentityConstructionErrorV1::Normalization(
+            }
+
+            /// SAME constructor over external slots, including the actual
+            /// copy phase/reserve DATA. Source receivers use this unit entry;
+            /// owned-error conveniences never run on this path. Keep all slots
+            /// and actual normalization/copy funding through highest finishing.
+            #[cfg(feature = "quanta-native-identity-v1")]
+            pub fn try_from_str_into_slots_with_native_admission_v1<P>(
+                value: &str,
+                slots: NativeIdentityConstructionSlotsV1<'_, Self, P::Error>,
+                normalization_admission: &mut P,
+                copy_admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, P::Error>,
+            ) -> Result<(), NativeIdentityDecodeDataRefusalV1>
+            where P: unicode_normalization::NativeNormalizationAdmissionV1,
+            {
+                if slots.failure.is_some() {
+                    return Err(NativeIdentityDecodeDataRefusalV1::OccupiedOutput);
+                }
+                if *slots.attempted || slots.output.is_some()
+                    || !slots.backing.is_empty() || slots.backing.capacity() != 0
+                    || !slots.normalization.is_fresh_v1() || !slots.copy.is_fresh_v1() {
+                    return Err(NativeIdentityDecodeDataRefusalV1::InvalidNativeProducer);
+                }
+                *slots.attempted = true;
+                if let Err(cause) = validate_native_identity_into_v1(value, slots.normalization, normalization_admission) {
+                    *slots.failure = Some(cause);
+                    return Err(NativeIdentityDecodeDataRefusalV1::OperationRefused);
+                }
+                let Ok(copy_work) = u64::try_from(value.len()) else {
+                    *slots.failure = Some(NativeIdentityConstructionErrorV1::Normalization(
                         unicode_normalization::NativeNormalizationErrorV1::ArithmeticOverflow,
-                    )
-                })?;
-                normalization_admission.checkpoint_work_v1(copy_work)
-                    .map_err(|cause| NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(cause)))?;
-                try_copy_string_into_with_native_birth_v1(value, backing, copy_admission)
-                    .map_err(NativeIdentityConstructionErrorV1::Copy)?;
-                normalization_admission.checkpoint_work_v1(0)
-                    .map_err(|cause| NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(cause)))?;
-                *output = Some(Self(core::mem::take(backing)));
+                    ));
+                    return Err(NativeIdentityDecodeDataRefusalV1::OperationRefused);
+                };
+                if let Err(cause) = normalization_admission.checkpoint_work_v1(copy_work) {
+                    *slots.failure = Some(NativeIdentityConstructionErrorV1::Copy(
+                        NativeIdentityCopyErrorV1::Admission(cause),
+                    ));
+                    return Err(NativeIdentityDecodeDataRefusalV1::OperationRefused);
+                }
+                if try_copy_string_into_slots_with_native_birth_v1(value, slots.backing, slots.copy, copy_admission).is_err() {
+                    return match slots.copy.failure_into_identity_slot_v1(slots.failure) {
+                        Ok(()) => Err(NativeIdentityDecodeDataRefusalV1::OperationRefused),
+                        Err(_) => Err(NativeIdentityDecodeDataRefusalV1::InvalidNativeProducer),
+                    };
+                }
+                if let Err(cause) = normalization_admission.checkpoint_work_v1(0) {
+                    *slots.failure = Some(NativeIdentityConstructionErrorV1::Copy(
+                        NativeIdentityCopyErrorV1::Admission(cause),
+                    ));
+                    return Err(NativeIdentityDecodeDataRefusalV1::OperationRefused);
+                }
+                *slots.output = Some(Self(core::mem::take(slots.backing)));
                 Ok(())
             }
 
@@ -705,7 +897,7 @@ macro_rules! validated_identity {
                 validate_native_identity_into_v1(value, normalization_data, normalization_admission)
             }
 
-            /// Copy exact private canonical bytes into caller-owned slots
+            /// Owned-error convenience for exact private canonical bytes
             /// without re-running identity/NFC validation. `backing` must be
             /// empty with zero capacity and `output` must be None.
             ///
@@ -713,39 +905,35 @@ macro_rules! validated_identity {
             /// leaves backing in the caller's String and output unpopulated.
             /// Only complete success moves that same backing into the typed
             /// output. The caller keeps both slots with its original grant.
+            /// Highest Source receivers use the unit clone with external copy
+            /// DATA, rather than this local-DATA owned-error convenience.
             pub fn try_clone_into_with_native_birth_v1<E>(
                 &self,
                 backing: &mut String,
                 output: &mut Option<Self>,
                 admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
             ) -> Result<(), NativeIdentityCopyErrorV1<E>> {
-                if output.is_some() {
-                    return Err(NativeIdentityCopyErrorV1::InvalidNativeProducer);
-                }
-                try_copy_string_into_with_native_birth_v1(self.0.as_str(), backing, admission)?;
-                *output = Some(Self(core::mem::take(backing)));
-                Ok(())
+                let mut data = NativeIdentityCopyDataV1::new_v1();
+                let status = self.try_clone_into_slots_with_native_birth_v1(backing, output, &mut data, admission);
+                owned_native_copy_result_v1(status, &mut data)
             }
 
-            /// Unit driver over the SAME sealed clone body. The caller owns
-            /// backing, typed output, one-shot state, complete original error
-            /// and actual funding through its highest Source finisher. No NFC
-            /// work, new identity authority, or additional birth is introduced.
-            /// Occupied slots and used attempts are preserved without polling.
+            /// SAME sealed clone, with caller-owned phase/error DATA injected
+            /// into the physical reserve callback. No owned convenience call,
+            /// repeated NFC work or additional native birth is on this path.
             pub fn try_clone_into_slots_with_native_birth_v1<E>(
                 &self,
                 backing: &mut String,
                 output: &mut Option<Self>,
-                attempted: &mut bool,
-                failure: &mut Option<NativeIdentityCopyErrorV1<E>>,
+                data: &mut NativeIdentityCopyDataV1<E>,
                 admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
             ) -> Result<(), NativeIdentityCopyRefusalV1> {
                 if output.is_some() {
                     return Err(NativeIdentityCopyRefusalV1::OccupiedOutput);
                 }
-                retain_native_copy_attempt_v1(backing, attempted, failure, |backing| {
-                    self.try_clone_into_with_native_birth_v1(backing, output, admission)
-                })
+                try_copy_string_into_slots_with_native_birth_v1(self.0.as_str(), backing, data, admission)?;
+                *output = Some(Self(core::mem::take(backing)));
+                Ok(())
             }
 
             /// Owned convenience over the same sealed into-slot copy body.
@@ -848,11 +1036,18 @@ macro_rules! validated_identity {
                 }
                 let result = match self.input {
                     native_decode_data_v1::NativeIdentityDecodeInputV1::Borrowed(value) => {
-                        $name::try_from_str_into_with_native_admission_v1(
-                            value, &mut self.state.backing, &mut self.state.output,
-                            &mut self.state.construction_attempted,
-                            &mut self.state.normalization, normalization, copy,
-                        )
+                        return $name::try_from_str_into_slots_with_native_admission_v1(
+                            value,
+                            NativeIdentityConstructionSlotsV1 {
+                                backing: &mut self.state.backing,
+                                output: &mut self.state.output,
+                                attempted: &mut self.state.construction_attempted,
+                                normalization: &mut self.state.normalization,
+                                copy: &mut self.state.copy,
+                                failure: &mut self.state.failure,
+                            },
+                            normalization, copy,
+                        );
                     }
                     native_decode_data_v1::NativeIdentityDecodeInputV1::Owned => {
                         self.state.construction_attempted = true;
