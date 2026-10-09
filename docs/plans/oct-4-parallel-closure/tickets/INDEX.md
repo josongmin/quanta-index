@@ -591,10 +591,10 @@ request validator/dispatcher. No duplicate client, controller or owned proxy
 was introduced. The managed candidate checkout is
 `/Users/songmin/.codex/worktrees/native-coupled-closeout/quanta-index`; the tested
 code is committed as `92e01fc18332c0f7d0eb8bef95d8d75a9777be4b` on
-`codex/index-publication-native-cohort`. Latest main
-`23cfadd2cd8829f7ba79446ef9c0599a659934f6` was merged into that candidate at
-`20427aea30a425affefbb29ea7d146ed19dfc35d`; only documentation changed and the
-56-path tested code digest remained identical. Its working tree is clean.
+`codex/index-publication-native-cohort`. Main
+`432836af3485a814d3bc6389068e1bfaca7a3686` was merged into that candidate at
+`9b15a1d3e7d9c3d6e6c677924063712772bb7c21`; only documentation changed and the
+56-path tested code digest remained identical.
 
 - **VERIFIED** — the preparation facade repair is independently committed in
   main. Existing implementation and tests moved without body changes; public
@@ -621,7 +621,12 @@ code is committed as `92e01fc18332c0f7d0eb8bef95d8d75a9777be4b` on
   expected head and performs no fresh head capture. Focused tests cover both
   error stages, frozen target rejection and full original evidence after plain
   pre-CAS Protocol or local delivery-validation failure. Delivery projection
-  borrows the receipt instead of cloning it. Semantica candidate
+  borrows the receipt instead of cloning it. A further receiver review found a
+  post-CAS row-count check could abort without published evidence. V5 now runs
+  the SAME borrowed persisted-row validator while the original outcome is live;
+  operation/semantic-count mismatch regressions assert Aborted and byte-identical
+  original evidence. These latest two-file changes are statically checked only.
+  Semantica candidate
   `9c494dc83c597448b606cac10e4de2a9f3a72512` on
   `codex/index-publication-native-receiver` preserves these seven owned paths
   including the Core return repair. Canonical edition-2021 formatting with
