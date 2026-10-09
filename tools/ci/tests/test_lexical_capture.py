@@ -485,3 +485,48 @@ def test_malformed_or_unrepresentable_rows_refuse(tmp_path, change, lexical_rele
         capture.payloads(
             summary, capture.owner._read(paths["suite"]), capture.owner._read(paths["query_pack"])
         )
+
+
+@pytest.mark.parametrize("answerable", [True, False])
+def test_unjudged_file_results_remain_unavailable_for_every_product(tmp_path, answerable):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    suite["routes"] = pack["routes"] = capture.owner.FILE_ROUTES
+    task_id = suite["tasks"][0]["task_id"]
+    if not answerable:
+        suite["tasks"][0].update(answerable=False, gold=[])
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    products = {}
+    for product in capture.FILE_PRODUCTS:
+        products[product] = {
+            "rank_unit": "distinct_file",
+            "per_query": [
+                {
+                    "task_id": task["task_id"],
+                    "status": "success",
+                    "eligible": task["task_id"] != task_id,
+                    "file_recall_at_10": "not_applicable" if task["task_id"] == task_id else 1.0,
+                }
+                for task in suite["tasks"]
+            ],
+        }
+    summary = {
+        "status": "diagnostic_unqualified",
+        "rank_unit_equivalence": "equivalent_distinct_file_units",
+        "metric": "gold_file_recall_in_native_top_10",
+        "file_universe_digest": suite["file_universe_digest"],
+        "query_pack_sha256": digest(canonical(pack)),
+        "products": {name: products[name] for name in capture.owner.PRODUCTS},
+        "pair": {
+            "routes": {
+                name: products[name] for name in products if name not in capture.owner.PRODUCTS
+            }
+        },
+    }
+    for payload in capture.payloads(summary, suite, pack).values():
+        assert payload["rows"][0] == {
+            "query_id": task_id,
+            "metric": "gold_file_recall_in_top_10_distinct_files",
+            "unit": "ratio",
+            "value": None,
+            "state": "unsupported",
+        }

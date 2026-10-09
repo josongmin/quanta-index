@@ -104,8 +104,11 @@ across products from this diagnostic smoke.
 Five-product natural-language captures retain native defaults: Quanta token OR
 and external keyword AND are unequal request semantics. Their
 `comparison_validity.status` is `BLOCKED`; they cannot issue a cross-product
-quality ranking. Do not repair this by choosing an OR/AND conversion after seeing
-scores. A matched-semantics experiment needs a separately frozen request contract.
+quality ranking under the current shared-contract scorer. Do not repair this by
+choosing an OR/AND conversion after seeing scores. A matched-semantics experiment
+needs a separately frozen request contract. A native-default product usability
+evaluation may retain different query interpreters, but needs its own declared
+task, complete independent relevance judgments, and admission rules.
 
 Native and external file scoring use the same complete-pool judgment exclusion.
 An unjudged returned file excludes that task under `complete_ranked_pool_v1`;
@@ -138,6 +141,15 @@ chunk-projected rows retain their separate units. Speed still has unlike native
 timing boundaries. Independent review/holdout, backend indexed scope and
 qualified performance require their own admission; this diagnostic grants none.
 
+For natural-language relevance, freeze unseen repositories and developer tasks
+before product execution; pool results from every participating product, hide
+product identity from assessors, and review missing alternatives and assessor
+disagreements. An LLM-generated label or source-token match does not establish
+independent developer relevance. Small incomplete pools can bias evaluation
+([NIST](https://www.nist.gov/publications/bias-and-limits-pooling-large-collections));
+CodeSearchNet uses programmer relevance annotations for its natural-language
+evaluation ([GitHub](https://github.blog/engineering/infrastructure/introducing-the-codesearchnet-challenge/)).
+
 When asked to run a code-search benchmark, run every applicable cell below. Do
 not stop after a Quanta--Semble pair or after rescoring recorded lexical rows.
 For each repository and mode query family, freeze the same commit,
@@ -145,12 +157,14 @@ manifest/file universe, task IDs, query bytes, gold labels and comparison
 contract across the Quanta--Semble modes. Route-specific suite and pack bytes
 may differ because each declares its own routes; compare their common task
 projection rather than requiring equal suite/pack digests across modes.
-The external five-product scorer currently accepts bare-symbol lexical queries;
-do not label natural-language external cells as missing work.
+The external collector accepts declared native file-search requests, including
+natural-language captures. Collection support and comparison admission are
+separate: the current shared-contract scorer blocks natural-language quality
+rankings. Unsupported request modes retain explicit capability exclusions.
 
 | Mode | Required execution | Products with live search | Products not applicable |
 | --- | --- | --- | --- |
-| Lexical-only | Bare-symbol supported family: one `benchctl code-search run --spec ...` workflow. Other families: one `retrieval-diagnostic` pair, then validate and replay | Quanta, Semble; Sourcegraph, OpenGrok and cs only on admitted bare-symbol inputs | External products on unsupported query forms |
+| Lexical-only | Supported common-contract family: one `benchctl code-search run --spec ...` workflow. Other families: one `retrieval-diagnostic` pair, then validate and replay; record any native-default external captures separately | Quanta, Semble; Sourcegraph, OpenGrok and cs on admitted native file-search inputs | External products on unsupported request modes |
 | Semantic-only | One `benchctl run retrieval-diagnostic --pair-spec ...`, then validate and replay | Quanta, Semble | Sourcegraph, OpenGrok, cs |
 | Hybrid | One `benchctl run retrieval-diagnostic --pair-spec ...`, then validate and replay | Quanta, Semble | Sourcegraph, OpenGrok, cs |
 
@@ -162,8 +176,8 @@ external search products are `N/A`; they are not silently omitted or filled
 with lexical scores.
 
 For `R` repositories and `F` mode query families, require `3 × R × F`
-Quanta--Semble mode results. Let `B` be the number of bare-symbol query
-families supported by the five-product scorer. Require `R × B` live five-product
+Quanta--Semble mode results. Let `B` be the number of query families admitted
+by the five-product workflow. Require `R × B` live five-product
 workflows. If each workflow's commit, manifest, suite and query pack exactly
 match its corresponding lexical mode cell, that cell counts toward `3 × R × F`
 and `R × (3F - B)` additional pair runs remain. If any input differs, run the
