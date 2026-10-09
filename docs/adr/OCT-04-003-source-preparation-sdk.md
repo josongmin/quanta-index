@@ -78,6 +78,14 @@ is **BLOCKED**, with native verification **NOT_RUN**. The stricter late-main
 lifecycle fixture also remains **NOT_RUN**; the existing owner's release build
 was not interrupted or bypassed. Rerun commands are in the reconciliation ticket.
 
+A later bounded source read at Quanta `23cfadd2` and Semantica `8217a38bf04d`
+found the input-cell external history birth and explicit Kernel publication APIs
+already present in working source. Their remaining callers and frozen-aggregate
+guard still need integration; this is not a fresh compiler or behavior verdict.
+The [code-first dispatch plan](../plans/oct-4-parallel-closure/tickets/INDEX.md#oct-9-sdk-code-first-plan)
+replaces the previous remaining-work list, reuses the live Source/Java owners,
+and requires hunk-level reconciliation instead of copying old candidate files.
+
 ## Decision and scope
 
 Preparation is an optional, offline producer-side layer. The existing
