@@ -263,20 +263,15 @@ def _baseline_from_bytes(raw: bytes) -> dict:
         raise evaluator.EvidenceError(f"invalid baseline JSON: {exc}") from exc
 
 
-def write_suites(repo: Path, baseline_path: Path, output_root: Path) -> dict[str, Any]:
-    """Validate everything before creating a new external output root."""
-    tool_files = _tool_digests()
-    baseline_bytes = read_control(baseline_path)
-    baseline = _baseline_from_bytes(baseline_bytes)
-    suites = derive_suites(repo, baseline)
-    artifacts = []
-    contents: dict[str, bytes] = {}
-    for mode, (suite, pack) in suites.items():
-        for kind, payload in (("suite", suite), ("blind-pack", pack)):
-            name = f"{mode}-{kind}.json"
-            raw = _json_bytes(payload)
-            contents[name] = raw
-            artifacts.append({"path": name, "sha256": evaluator.digest(raw)})
+def _write_bundle(
+    repo: Path,
+    output_root: Path,
+    tool_files: list[dict[str, str]],
+    contents: dict[str, bytes],
+    provenance: dict[str, str],
+) -> dict[str, Any]:
+    """Publish derived artifacts and their exact tool sources through one boundary."""
+    contents = dict(contents)
     tool_root = Path(__file__).resolve().parents[3]
     for item in tool_files:
         name = "tool-sources/" + item["path"]
@@ -285,14 +280,15 @@ def write_suites(repo: Path, baseline_path: Path, output_root: Path) -> dict[str
             evaluator.digest(raw) == item["sha256"], "tool source changed during derivation"
         )
         contents[name] = raw
-        artifacts.append({"path": name, "sha256": item["sha256"]})
     manifest = {
         "schema_version": 1,
         "qualification": "diagnostic_unqualified",
-        "repository_commit": baseline["repository_commit"],
-        "input_suite_sha256": evaluator.digest(baseline_bytes),
+        **provenance,
         "tool_files": tool_files,
-        "artifacts": sorted(artifacts, key=lambda item: item["path"]),
+        "artifacts": [
+            {"path": name, "sha256": evaluator.digest(raw)}
+            for name, raw in sorted(contents.items())
+        ],
     }
     evaluator.require(output_root.is_absolute(), "output root must be absolute")
     evaluator.require(not output_root.exists(), "output root already exists")
@@ -315,6 +311,29 @@ def write_suites(repo: Path, baseline_path: Path, output_root: Path) -> dict[str
     return manifest
 
 
+def write_suites(repo: Path, baseline_path: Path, output_root: Path) -> dict[str, Any]:
+    """Validate everything before creating a new external output root."""
+    tool_files = _tool_digests()
+    baseline_bytes = read_control(baseline_path)
+    baseline = _baseline_from_bytes(baseline_bytes)
+    suites = derive_suites(repo, baseline)
+    contents = {
+        f"{mode}-{kind}.json": _json_bytes(payload)
+        for mode, (suite, pack) in suites.items()
+        for kind, payload in (("suite", suite), ("blind-pack", pack))
+    }
+    return _write_bundle(
+        repo,
+        output_root,
+        tool_files,
+        contents,
+        {
+            "repository_commit": baseline["repository_commit"],
+            "input_suite_sha256": evaluator.digest(baseline_bytes),
+        },
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", required=True, type=Path)
@@ -333,43 +352,29 @@ def main() -> int:
         else:
             evaluator.require(bool(args.suite_id), "identifier suite requires --suite-id")
             tool_files = _tool_digests()
+            corpus_bytes = read_control(args.corpus_manifest)
             suite, pack, policy = identifier_word_suite(
                 args.repo.resolve(),
-                _baseline_from_bytes(read_control(args.corpus_manifest)),
+                _baseline_from_bytes(corpus_bytes),
                 suite_id=args.suite_id,
                 seed=args.seed,
                 per_stratum=args.per_stratum,
                 negatives=args.negatives,
             )
-            output = args.output_root
-            evaluator.require(
-                output.is_absolute() and not output.exists(),
-                "output root must be fresh and absolute",
+            manifest = _write_bundle(
+                args.repo.resolve(),
+                args.output_root,
+                tool_files,
+                {
+                    "suite.json": _json_bytes(suite),
+                    "blind-pack.json": _json_bytes(pack),
+                    "sampling.json": _json_bytes(policy),
+                },
+                {
+                    "repository_commit": suite["repository_commit"],
+                    "input_corpus_manifest_sha256": evaluator.digest(corpus_bytes),
+                },
             )
-            parent = output.parent.resolve(strict=True)
-            for checkout in (args.repo.resolve(), Path(__file__).resolve().parents[3]):
-                evaluator.require(
-                    not parent.is_relative_to(checkout),
-                    "output root must be outside source and tool checkouts",
-                )
-            evaluator.require(
-                _tool_digests() == tool_files, "tool source changed during derivation"
-            )
-            contents = {"suite.json": suite, "blind-pack.json": pack, "sampling.json": policy}
-            manifest = {
-                "schema_version": 1,
-                "qualification": "diagnostic_unqualified",
-                "repository_commit": suite["repository_commit"],
-                "tool_files": tool_files,
-                "artifacts": [
-                    {"path": name, "sha256": evaluator.digest(_json_bytes(value))}
-                    for name, value in contents.items()
-                ],
-            }
-            output.mkdir()
-            for name, value in {**contents, "manifest.json": manifest}.items():
-                with (output / name).open("xb") as stream:
-                    stream.write(_json_bytes(value))
     except (OSError, ValueError, source_oracle.SourceOracleError) as exc:
         parser.exit(2, f"ERROR: {exc}\n")
     print(json.dumps(manifest, sort_keys=True))

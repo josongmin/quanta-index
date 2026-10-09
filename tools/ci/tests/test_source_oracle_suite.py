@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import jsonschema
@@ -13,6 +14,70 @@ import pytest
 
 from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import source_oracle_suite
+
+
+@pytest.mark.parametrize("input_kind", ["corpus-manifest", "baseline-suite"])
+def test_cli_bundles_exact_tool_sources_and_preserves_existing_output(tmp_path, input_kind):
+    repo, commit, files = _source_repo(tmp_path)
+    payload = (
+        {
+            "repository_commit": commit,
+            "files": [
+                {"path": path, "file_sha256": ev.digest(raw)} for path, raw in sorted(files.items())
+            ],
+        }
+        if input_kind == "corpus-manifest"
+        else _baseline(commit, files)
+    )
+    source_input = tmp_path / "input.json"
+    source_input.write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "output"
+    tool_root = Path(__file__).resolve().parents[3]
+    command = [
+        sys.executable,
+        "-m",
+        "tools.benchmark.retrieval.source_oracle_suite",
+        "--repo",
+        str(repo),
+        "--" + input_kind,
+        str(source_input),
+        "--output-root",
+        str(output),
+    ]
+    if input_kind == "corpus-manifest":
+        command.extend(["--suite-id", "cli-custody", "--per-stratum", "1", "--negatives", "1"])
+    completed = subprocess.run(command, cwd=tool_root, capture_output=True, text=True, timeout=120)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    manifest = json.loads((output / "manifest.json").read_bytes())
+    assert json.loads(completed.stdout) == manifest
+    assert manifest["qualification"] == "diagnostic_unqualified"
+    assert manifest["repository_commit"] == commit
+    artifacts = {item["path"]: item["sha256"] for item in manifest["artifacts"]}
+    for name in source_oracle_suite.TOOL_FILES:
+        archived = "tool-sources/" + name
+        assert archived in artifacts
+        raw = (output / archived).read_bytes()
+        assert raw == (tool_root / name).read_bytes()
+        assert ev.digest(raw) == artifacts[archived]
+    for name, digest in artifacts.items():
+        assert ev.digest((output / name).read_bytes()) == digest
+    input_key = (
+        "input_corpus_manifest_sha256" if input_kind == "corpus-manifest" else "input_suite_sha256"
+    )
+    assert manifest[input_key] == ev.digest(source_input.read_bytes())
+    before = {
+        str(path.relative_to(output)): path.read_bytes()
+        for path in output.rglob("*")
+        if path.is_file()
+    }
+    repeated = subprocess.run(command, cwd=tool_root, capture_output=True, text=True, timeout=120)
+    assert repeated.returncode == 2
+    assert "already exists" in repeated.stderr
+    assert {
+        str(path.relative_to(output)): path.read_bytes()
+        for path in output.rglob("*")
+        if path.is_file()
+    } == before
 
 
 def test_identifier_word_sampling_is_source_only_and_keeps_complete_alternatives(tmp_path):
