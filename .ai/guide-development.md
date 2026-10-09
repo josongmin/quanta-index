@@ -18,7 +18,7 @@
 | [`README.md`](../README.md) | 현재 tree truth, build/test entrypoints |
 | [`docs/adr/SEP-21-DECISION-REGISTRY.md`](../docs/adr/SEP-21-DECISION-REGISTRY.md) | accepted search-plane decisions |
 | [`docs/reference/dsl-proof-inventory.md`](../docs/reference/dsl-proof-inventory.md) | DSL proof inventory; current execution is separate |
-| [`SEP-21 decisions`](../docs/adr/SEP-21-DECISION-REGISTRY.md) and [residual ledger](../docs/plans/oct-4-parallel-closure/tickets/INDEX.md#release-and-proof) | Current contract and unfinished readiness work; the Sep-16 audit is historical |
+| [`SEP-21 decisions`](../docs/adr/SEP-21-DECISION-REGISTRY.md) and [release/consumer validation](../docs/plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer) | Current contract and unfinished readiness work; the Sep-16 audit is historical |
 
 Historical only:
 

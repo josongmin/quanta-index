@@ -290,5 +290,5 @@ significance or benchmark-wide quality.
 - Current decisions live in accepted ADRs; unfinished execution work lives in the single residual ledger; accepted comparison/admission contracts live here.
 - A normative SSOT change requires new source-bound proof before current qualification.
 - Current verification and qualification status is maintained in the
-  [execution SSOT](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform),
+  [execution SSOT](../plans/oct-10-index-closeout/VALIDATION.md#affected-checks),
   not in this decision record.

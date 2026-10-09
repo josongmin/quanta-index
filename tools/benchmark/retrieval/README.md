@@ -9,7 +9,7 @@ Permanent scoring, custody and qualification rules live in
 [SEP-26-003](../../../docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md),
 [review/unit contracts](../../../docs/adr/OCT-05-001-review-admission-and-result-identity.md#review-completion-and-diagnostic-units)
 and [response verification](../../../docs/adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-response-verification).
-Open work is in the [single residual ledger](../../../docs/plans/oct-4-parallel-closure/tickets/INDEX.md).
+Open work is in the [single residual ledger](../../../docs/plans/oct-10-index-closeout/README.md).
 This guide declares no
 current capture, quality, speed or default-policy result.
 

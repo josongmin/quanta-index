@@ -7,7 +7,7 @@ Decided: 2026-09-27
 Consolidates completed SEP-21 repair decisions from the execution chronology.
 Extends SEP-21-002/003/004 and SEP-27-004. Historical runs do not qualify the
 current source; remaining release, producer and operational work stays in the
-[SEP-21 residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md#release-and-proof).
+[SEP-21 residual ledger](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer).
 
 ## Decision
 
@@ -316,8 +316,8 @@ bytes across process restarts; its Medium restart/delete and binary-custody
 regressions passed. These focused owner results are not current hosted or
 Large/XL qualification. Original completed owner runs are recorded in
 [OCT-05-004](OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints).
-Current Large/XL cost remains [E4](../plans/oct-4-parallel-closure/tickets/INDEX.md#e4);
-[test/platform](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform)
+Current Large/XL cost remains [E4](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs);
+[test/platform](../plans/oct-10-index-closeout/VALIDATION.md#affected-checks)
 retains broader selected storage-boundary acceptance. The F15 matrix and recovered-query assertions are not missing
 implementation.
 
@@ -327,7 +327,7 @@ Full SDK-only recovery, broader native race detection, long mutation/fuzz and
 release/platform execution retain their independent oracles and scope.
 
 The old QIT progress snapshot/scaffolding is retired. Its unfulfilled acceptance
-is preserved in [the residual board](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform);
+is preserved in [the residual board](../plans/oct-10-index-closeout/VALIDATION.md#affected-checks);
 this consolidation asserts implemented authorities, not SOTA/test qualification.
 
 ### Selected Darwin TSan and contract execution
@@ -423,7 +423,7 @@ Do not shorten sleeps, disable production jitter, weaken errors, share mutable
 global fixtures or delete lower-layer assertions to make timing look better.
 Reproduce a current regression before reopening implementation. Final selected
 functional/installed/platform execution and paired test-cost measurements remain
-in [MISC-05/06](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform).
+in [MISC-05/06](../plans/oct-10-index-closeout/VALIDATION.md#affected-checks).
 
 ### Semantic mutation output admission
 

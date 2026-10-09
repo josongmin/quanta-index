@@ -25,7 +25,7 @@ They preserve existing contracts; conditional optimization, open proposals and
 actual operational targets remain staged. Oct-06/07 completed bounded
 publication, budget, executable-custody, common operational producer and CI
 contracts are consolidated in OCT-05-002/003/004. Current acceptance is owned by
-the [single residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md).
+the [single residual ledger](../plans/oct-10-index-closeout/README.md).
 
 Dated RFC/plan/ticket packets are retired. Their standing corpus/statistics,
 native/update, cost/host, consumer/platform and installed/pair/action acceptance

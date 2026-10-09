@@ -297,7 +297,7 @@ admitted Core read when adopting a funded handle without `Deref`.
 The later producer closeout executed all six SDK regressions and the seven
 retained-copy regressions. The current command, results, source boundary and
 open receiver seams are recorded once in the
-[Index ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md#local-producer-closeout-2026-10-09).
+[Index ticket](../ARCHIVE-INDEX.md#oct-10-plan-retirement).
 That repo-local verification does not establish genuine Core funding, highest
 Original Source acceptance, installed-process proof or remote CI.
 
@@ -313,7 +313,7 @@ new regression bodies are VERIFIED by
 18 diagnostic tests passed. Rust formatting also passed. This does not qualify
 genuine Core/Original Source or native RPC. The older successful SDK test counts
 above precede this closure; the coupled successor's results are recorded in the
-[Index ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md#coupled-closure-follow-up-2026-10-09).
+[Index ticket](../ARCHIVE-INDEX.md#oct-10-plan-retirement).
 
 Historical focused candidate validation (2026-10-09, before the Source-only
 constructor follow-up): SDK

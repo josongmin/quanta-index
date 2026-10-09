@@ -63,7 +63,7 @@ remain available. Their absence from hosted CircleCI is an explicit coverage
 gap, not an implied pass. The new P00 manifest and PR coverage definitions
 still require a passing hosted run on the final source.
 
-[QIT-09](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform)
+[QIT-09](../plans/oct-10-index-closeout/VALIDATION.md#affected-checks)
 tracks provider execution, terminal GitHub status, the exact-commit promotion
 gate and the decision for each former Actions-only rail. A registered trigger,
 valid config, queued or failed-before-checkout job, or pending GitHub context

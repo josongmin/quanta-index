@@ -7,7 +7,7 @@ Decided: 2026-10-05
 Consolidates implemented O4-E2 contracts under
 [SEP-27-004](SEP-27-004-benchmark-capture-and-resource-custody.md).
 It preserves diagnostic qualification boundaries. Fresh cells and remaining
-index authority live in the [OCT-04 residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md#e2).
+index authority live in the [OCT-04 residual ledger](../plans/oct-10-index-closeout/VALIDATION.md#quality-inputs).
 
 ## Context
 
@@ -254,7 +254,7 @@ CLI/Django/Nushell/TypeORM, with zero assigned reviewer identities and zero labe
 changes. Original 191-pair supplemental review inputs are retained separately;
 blank forms are not completed review or human provenance. Independent
 judgments, admission and remaining required inventory stay with
-[E2-04](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e2-04) and E1.
+[E2-04](../plans/oct-10-index-closeout/VALIDATION.md#quality-inputs) and E1.
 
 ## Selected Semble repetition and warmup diagnostic
 

@@ -126,7 +126,7 @@ External comparative claims need independent judged gold and the actual overlap
 subset; learned ranking or new consumer semantics require their own decision.
 
 Open acceptance stays in the
-[quality residual index](../plans/oct-4-parallel-closure/tickets/INDEX.md#legacy-scope-routes),
+[quality residual index](../plans/oct-10-index-closeout/VALIDATION.md#quality-inputs),
 not completed implementation tickets. The gate names/output paths remain
 registry/code-owned; operator usage stays in benchmark and CLI READMEs.
 

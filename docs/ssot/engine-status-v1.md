@@ -41,7 +41,7 @@ Selection itself does not create a lifetime lease; acquired views retain handles
 Stronger pin or resource claims keep their [proposed scope](../adr/OCT-04-001-search-corpus-selection-and-ingest-pressure.md)
 rather than reopening completed E3 implementation scopes.
 
-[OCT-04](../plans/oct-4-parallel-closure/tickets/INDEX.md) owns conditional
+[Index closeout](../plans/oct-10-index-closeout/README.md) owns remaining code and conditional
 optimization, missing inputs and remaining execution.
 Frozen5796 matching release diagnostics confirmed large default build/seal
 timeout and XL posting admission refusal before daemon startup. Current F15
@@ -52,9 +52,9 @@ a bounded term/range/hash directory; queries read admitted posting ranges under
 one request work budget. Logical heap admission does not establish an RSS bound.
 F15 implementation/selected owner checks are consolidated in the accepted ADR;
 matching Large/XL, crash/reopen and release evidence remain capacity/cost boundaries under
-[E4-01/05](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
+[E4-01/05](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs).
 Explicit timeout/retention diagnostic success does not close default capacity.
-[SEP-21](../plans/oct-4-parallel-closure/tickets/INDEX.md#release-and-proof)
+[SEP-21](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer)
 owns installed/paired/Linux/provider/release acceptance. Its R3 gap belongs to
 the external Semantica producer's independent expected semantic partition/omission
 check before dispatch. It is a separate producer-integration obligation, not a
@@ -70,5 +70,5 @@ The [existing cross-repo recipe](../../scripts/verify-repomap-cross-repo.sh) and
 selection, canonical resolver mapping and CLI-owned completion receipts. Their
 `runner-candidate-only` result is distinct from actual exact-pair qualification
 and concrete operational target/observer acceptance. Current execution status belongs
-to [I0-03](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-i0-03).
+to [I0-03](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer).
 Local tests, code presence and documentation cleanup do not issue qualification.

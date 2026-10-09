@@ -1,10 +1,13 @@
 # OCT-04-003 — Source preparation SDK
 
-Status: **Offline preparation integrated in local main `433a9363`; focused
-verification `VERIFIED`** (2026-10-08). **Committed-receipt response validation
-is integrated in local main `029014be`** (2026-10-09). **Breaking publication recovery and Semantica C3/C4 V5 integration are present
-in their shared main working trees but remain uncommitted and unaccepted as a coupled bundle.** This is not release, installed-host,
-performance, or cross-repository acceptance.
+Status: **Index preparation/native/publication/activation bundle integrated in
+main `3aeebae8`**, included in the Oct-10 source `de279c45`. Semantica consumer
+integration and native/product acceptance remain separate. The dated checkpoint
+narrative below is historical; its candidate and uncommitted-state descriptions
+do not override the Index integration decision. Current Index code work is in
+the [Oct-10 plan](../plans/oct-10-index-closeout/README.md), and consumer/release
+acceptance is in its [validation plan](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer).
+This is not new test execution, installed-host, performance or cross-repo qualification.
 [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) owns the public
 ingress and publication boundary.
 
@@ -44,7 +47,8 @@ active head. The existing Source/SDK owner must bind that reservation to a new,
 authenticated full source closure and current host/root custody before prepare;
 no old predecessor/pin or public intent setter supplies recovery authority.
 These tasks were sent to the existing owner chats. Their contract and proof
-acceptance remain open in the [single code-first plan](../plans/oct-4-parallel-closure/tickets/INDEX.md#oct-9-sdk-code-first-plan).
+acceptance remain open in the [Index reservation workstream](../plans/oct-10-index-closeout/README.md#c5-generation-reservation)
+and the external producer owner.
 
 ### Historical isolated pair
 
@@ -71,7 +75,7 @@ it is not throughput, relevance, installed-host or Semantica Runtime proof.
 The complete owning daemon rail passed all 300 selected tests on the updated
 preparation tree; ten tests were skipped by that declared scope.
 Final command results and the binary identity belong to the
-[Oct-9 reconciliation](../plans/oct-4-parallel-closure/tickets/INDEX.md#oct-9-sdk-reconciliation).
+[Oct-9 reconciliation](../ARCHIVE-INDEX.md#oct-10-plan-retirement).
 
 Semantica's private pair starts at `a63f536b`, captures 4,854 current dirty
 paths, and reconciles the candidate's 36 conceptual paths. Its actual feature
@@ -120,7 +124,7 @@ A later bounded source read at Quanta `23cfadd2` and Semantica `8217a38bf04d`
 found the input-cell external history birth and explicit Kernel publication APIs
 already present in working source. Their remaining callers and frozen-aggregate
 guard still need integration; this is not a fresh compiler or behavior verdict.
-The [code-first dispatch plan](../plans/oct-4-parallel-closure/tickets/INDEX.md#oct-9-sdk-code-first-plan)
+The [code-first dispatch plan](../ARCHIVE-INDEX.md#oct-10-plan-retirement)
 replaces the previous remaining-work list, reuses the live Source/Java owners,
 and requires hunk-level reconciliation instead of copying old candidate files.
 
@@ -279,7 +283,7 @@ Quanta candidate, Semantica owned commits `5873774c51a` / `53b86d09049` /
 `6f5dc8fc13f`, and
 foreign producer migration inputs. The actionable path inventory, execution
 order and merge conditions are in the
-[SDK integration ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md#sdk-구현-후보-통합-재감사--2026-10-08).
+[SDK integration ticket](../ARCHIVE-INDEX.md#oct-10-plan-retirement).
 Offline preparation is now integrated in local main `433a9363`; the explicit
 publication API and V5 consumer were isolated at that checkpoint. The audit and candidate results
 below predate the split; the Oct-9 integration checkpoint above supersedes their
@@ -459,7 +463,7 @@ these counts cover separate selected behavior, not a Runtime or paired release.
 The first contract test compilation failed on an existing native-corpus test
 import and private helper visibility; the test-only owner repair preserves its
 validation assertions. Full boundary and parser gate failures remain recorded
-in the [closure ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md).
+in the [closure ticket](../plans/oct-10-index-closeout/README.md).
 
 ## Main comparison and merge disposition
 
@@ -498,7 +502,7 @@ recovery. Aggregate authority already requires `sqlite-store` in current main;
 no-SQLite aggregate refusal is not, by itself, a newly introduced regression.
 The supported feature matrix still needs owning execution.
 
-The [integration ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md#sdk-구현-후보-통합-재감사--2026-10-08)
+The [integration ticket](../ARCHIVE-INDEX.md#oct-10-plan-retirement)
 owns the exact remaining files, final pair inputs and acceptance sequence.
 
 ## Remaining coupled integration
@@ -546,7 +550,7 @@ with that binary. `just rust-profile test-daemon` completed300passed/10skipped,
 not a performance benchmark. The candidate's SDK156+external7,CLI46+benchmark125,
 strict Clippy and API results remain distinct from main's split proof above.
 
-The [integration ticket](../plans/oct-4-parallel-closure/tickets/INDEX.md#sdk-구현-후보-통합-재감사--2026-10-08)
+The [integration ticket](../ARCHIVE-INDEX.md#oct-10-plan-retirement)
 owns the exact current path set, committed-base execution and remaining
 shared-main claim/lock/consumer integration. No Runtime or process success is
 inferred from the separate contract or Quanta results.

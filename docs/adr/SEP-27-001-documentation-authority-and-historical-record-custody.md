@@ -68,7 +68,7 @@ records and completed implementation plans are listed in
 [the recovery index](../ARCHIVE-INDEX.md#historical-record-recovery). The later SEP-26 retrieval
 packet follows the same rule: accepted decisions in SEP-26-001/002/003,
 unfinished execution in the
-[single residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md), normative
+[single residual ledger](../plans/oct-10-index-closeout/README.md), normative
 contracts in the bound Accepted ADRs, and historical detail
 in Git or the verified external content backup for dirty/untracked preimages.
 

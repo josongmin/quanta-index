@@ -130,9 +130,9 @@ qualification split:
 
 ## Active work
 
-- [Residual work](docs/plans/oct-4-parallel-closure/tickets/INDEX.md): remaining code, conditional decisions, required inputs and execution.
-- [Execution order](docs/plans/oct-4-parallel-closure/tickets/INDEX.md#실행-순서): dependencies and owner handoffs.
-- [All acceptance owners](docs/README.md#start-here): benchmark, engine, semantic, quality, CI, paired and operational scopes.
+- [Index closeout](docs/plans/oct-10-index-closeout/README.md): semantic compatibility, RepoMap lifetime and generation reservation.
+- [Execution order](docs/plans/oct-10-index-closeout/README.md#execution-order): dependencies and owner handoffs.
+- [Validation and external inputs](docs/plans/oct-10-index-closeout/VALIDATION.md): owner/daemon checks, quality, performance and release boundaries.
 
 Historical documents and tickets are recoverable through the
 [single recovery index](docs/ARCHIVE-INDEX.md#historical-record-recovery). Use current source and actual gate

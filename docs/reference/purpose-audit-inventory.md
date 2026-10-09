@@ -233,9 +233,9 @@ Production-ready는 필수 process/ops/scale/external 조건까지 통과해야 
 | --- | --- |
 | 정적·owner·adapter·CLI·daemon | [루트 build/verification usage](../../README.md#build-and-verification), Justfile과 test-authority에서 해당 selector를 선택 |
 | Query truth·generation·fault | [검증/품질 결정](../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md), 해당 실제 backend/process oracle |
-| 품질·Linux performance | [벤치 usage](../../tools/benchmark/README.md), [품질 잔여](../plans/oct-4-parallel-closure/tickets/INDEX.md#legacy-scope-routes); 필요 native artifact는 `check-bench-artifacts.py --require`, local fixture/advisory를 qualified 결과로 대체 금지 |
-| Producer·운영·release | [SEP-21 residual plan](../plans/oct-4-parallel-closure/tickets/INDEX.md#release-and-proof), [state usage](../operator/state-cutover-runbook.md) |
-| Test coverage·mutation·model | [검증 잔여 board](../plans/oct-4-parallel-closure/tickets/INDEX.md#test-and-platform) |
+| 품질·Linux performance | [벤치 usage](../../tools/benchmark/README.md), [품질 잔여](../plans/oct-10-index-closeout/VALIDATION.md#quality-inputs); 필요 native artifact는 `check-bench-artifacts.py --require`, local fixture/advisory를 qualified 결과로 대체 금지 |
+| Producer·운영·release | [SEP-21 residual plan](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer), [state usage](../operator/state-cutover-runbook.md) |
+| Test coverage·mutation·model | [검증 잔여 board](../plans/oct-10-index-closeout/VALIDATION.md#affected-checks) |
 
 정적 blocker → owner/adapter → 실제 runtime/process → external/quality 순서로 비용을
 올린다. 전체 recipe 목록을 중복 실행하지 않는다. 같은 source의 quality aggregate가
