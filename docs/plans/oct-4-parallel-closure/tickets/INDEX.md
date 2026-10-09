@@ -24,6 +24,63 @@ Semantica는 외부 producer이며 fact resolution/join/completion은 그 저장
 
 ## 현재 코드 잔여
 
+### Index library integration scope — 2026-10-10
+
+Index library integration and Semantica native/product acceptance have separate
+owners and observable contracts. The complete Index candidate includes native
+construction/decode primitives, publication evidence and explicit activation,
+and all Index SDK/CLI/daemon/Rust benchmark callers. `native_connect_v1` promises
+client construction only; its RPC/resource obligations explicitly remain with
+the receiver. No concrete intrinsic Index blocker was found by the independent
+native-producer and publication-caller static reviews.
+
+The earlier blanket hold on every Index main change is superseded for this
+complete repo-local library bundle. It is not superseded for Semantica native
+adoption or whole-product acceptance. Receiving ABI source is already authored
+in Semantica's external decode policies and `index_sdk_ingress/native_connect_v3`;
+its genuine Core funding, Relation RPC admission, Original Source completion,
+Runtime/restart and installed-process proof remain open. The latest unrelated
+PTA dependency compilation failure is not an Index defect or a successful
+consumer test. Do not remove or relabel that failed evidence.
+
+Current local validation on the same 56 code paths:
+
+- **VERIFIED:** Contract family 454 and SDK 196 tests, plus 3 doctests; 6 process
+  tests ignored by the normal command. Command:
+  `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk --all-features --locked --quiet`.
+- **VERIFIED:** CLI 46 and Rust retrieval-benchmark 125 library tests. Command:
+  `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-searchctl -p quanta-index-retrieval-bench --lib --all-features --locked --quiet`.
+- **VERIFIED:** `just rust-hexagonal rust-module-discipline` and 8 Python boundary
+  regressions; scoped `git diff --check`.
+- **VERIFIED:** `env -u QUANTA_PROOF_RAW_DIR QUANTA_INDEX_SCCACHE=0 just rust-profile test-daemon`:
+  300 passed, 10 skipped, 2 slow, 464.026s. The large scoped-corpus restart and
+  full-corpus scenarios completed successfully. The first attempt was interrupted
+  during compiler inactivity before any test body; the retry completed. The
+  compiler stall's root cause is unconfirmed.
+- **VERIFIED:** fresh daemon build with
+  `env QUANTA_INDEX_SCCACHE=0 ./scripts/cargow --lane test-daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --all-features --locked --quiet`.
+  Binary: `/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-daemon-lane/debug/quanta-index-searchd`,
+  SHA256 `67fa6565464f9bb63c1613e8f912d23ca744eacb4633b5fcebae7fe60236d1b9`.
+- **VERIFIED:** using that binary in `QUANTA_INDEX_L2_TEST_BINARY`,
+  `env QUANTA_INDEX_SCCACHE=0 ./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-sdk --test l2_daemon_publication --all-features --locked -- --ignored --test-threads=1`:
+  all 5 process tests passed, including the 8 named crash cuts, in 53.43s.
+  This covers publication/activation ordering, failure evidence, delta/restart,
+  and prepared text/Markdown move/delete/no-op behavior. The separately ignored
+  L1 socket test was not executed by this L2 command.
+- **VERIFIED:** `just rust-module-cycles rust-no-allow`.
+- **VERIFIED:** `env QUANTA_INDEX_SCCACHE=0 just rust-public-api rust-cargo-modules`:
+  Contract/SDK public API and Contract/Core module snapshots match the intended
+  baselines. No baseline regeneration was needed in this closeout.
+- Source-bound earlier workspace all-targets/all-features compilation and selected
+  strict Clippy results below remain applicable to the unchanged 56-path digest
+  `de0f081c9c7a52d2404f89e0b9d08c85ac2987ca1f7b74e2cd117da826cc7a3d`.
+  They were not freshly rerun in this closeout. Main changes since that source
+  are documentation/Python/catalog changes; no additional Rust/Cargo source changed.
+  Full workspace test execution is **NOT_RUN** for this closeout.
+
+No native Source/RPC qualification, performance comparison, release acceptance
+or remote CI success is implied by this library integration decision.
+
 2026-10-08 코드·실행 대조는 main의 packed-source planner·publication typed proof·공식 ARB/BCY scorer·paired R5 owner recipe 수리를 포함한다. 기존 `b9c058e1`의 완료된 F15/query/restart·paged directory,
 SDK lifecycle/cache 및 hosted checkpoint의 source·명령·범위는 아래 ADR가 소유한다.
 Staged upload, EOF cancellation, checked memory/deadline, scanner custody와 P11 공통
@@ -32,10 +89,10 @@ producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비
 ### Native corpus decode의 외부 DATA 계약 — 2026-10-09
 
 **Index producer 구현 완료, Semantica recursive receiver co-cut/Original Source 수용은
-`NOT_RUN`.** `4729a1a1`에 기록했던 제안 ABI를 아래 실제 구현으로 대체했다. 변경은 아직
-`codex/native-corpus-external-data` 검토 브랜치로 보존하며, 공유 작업트리에도 변경이
-남아 있다. 기존 native owned 반환 trait/seed와 하위 호환하지 않는다. receiver가
-이 계약으로 전환되기 전에는 이 breaking 묶음을 단독 main commit으로 반영하지 않는다.
+`NOT_RUN`.** `4729a1a1`에 기록했던 제안 ABI를 아래 실제 구현으로 대체했다.
+기존 native owned 반환 trait/seed와 하위 호환하지 않는다. 옛 검토 브랜치는 통합 후보에
+포함된 뒤 정리됐으며, 최신 repo-local 병합 경계는 위 Oct-10 결정을 따른다.
+Semantica receiving ABI의 source 전환과 실제 native/product 수용은 별도로 추적한다.
 
 물리 owner와 canonical 경계:
 
@@ -1366,9 +1423,11 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   Exact QBC selectors/compile policies는 위 proof table을 재사용하고 실행 전 resolve한다.
 - Changed Source/Java proof closure만 추가로 실행하되 Kernel/Runtime acceptance를 건너뛰지
   않는다. Test filter는 lib(test) compile 범위를 줄이지 않으므로 build를 병렬 실행하지 않는다.
-- Breaking SDK·CLI/benchmark/daemon·Semantica contract/Runtime bundle이 같은 계약으로
-  통과한 뒤 main에 수용한다. Source 구현 완료, owner test, process proof, commit/push를
-  각각 기록하며 current staged foreign paths를 한 feature commit에 섞지 않는다.
+- Index SDK·CLI/benchmark/daemon 전체 묶음은 위 Oct-10 repo-local 계약과 owning
+  checks를 충족한 뒤 Index main에 수용한다. Semantica contract/Runtime 수신과 native
+  product 수용은 해당 저장소의 같은 계약·actual owner proof를 별도로 충족해야 한다.
+  Source 구현 완료, owner test, process proof, commit/push를 각각 기록하며 current
+  staged foreign paths를 한 feature commit에 섞지 않는다.
   Cold restart/scale/relevance/installed-host는 해당 rail 전까지 별도 미완료다.
 
 **병렬 배치와 선후관계**

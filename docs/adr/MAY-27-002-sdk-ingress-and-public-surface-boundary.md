@@ -259,8 +259,19 @@ no retry may restart the absolute deadline or replace the original cause.
 Acceptance requires the actual receiving Core call and Original Source path,
 pre/post-birth refusal tests, exact path/profile/deadline parity, alias/header
 funding lifetime tests, and real UDS dispatch. Source review, SDK compilation,
-or ordinary daemon tests alone do not establish native acceptance. Integration
-of this ABI is one coupled producer/receiver change.
+or ordinary daemon tests alone do not establish native acceptance. Adoption in
+the native receiving path is one coupled producer/receiver change.
+
+Repo-local integration boundary (2026-10-10): the complete Index library bundle
+may land after its producer contracts, ordinary SDK/daemon behavior, local
+callers and public API baselines pass their owning checks. The library provides
+native construction and decoder primitives; it does not implement native RPC
+or issue Semantica Source authority. Landing these primitives does not certify
+the receiving Core handle, Relation admission, Original Source completion,
+funding lifetime or installed cross-repository behavior. Those receiving and
+product acceptance conditions remain open until their actual owners execute
+the corresponding proof. An unrelated consumer dependency compile failure is
+not evidence of an Index library defect.
 
 Constructor follow-up (2026-10-09): a repeated path
 birth callback returns the FIRST physical bool while marking the protocol
