@@ -10,35 +10,63 @@ ingress and publication boundary.
 
 ## 2026-10-09 integration checkpoint
 
-This checkpoint supersedes the Oct-8 current-main inventory below. Quanta
-committed main was `4729a1a1`; publication recovery was reapplied as the owned
-25-path commit `3dbc3e46`, then its apply/replay receipt regression was
-centralized in `16792d87` on `codex/sdk-publication-oct9`. The current main
-native-client and recursive decode changes are external owners' working-tree
-changes, not part of those feature commits.
+Current Quanta main is `bd73045a`; the independent committed-receipt fix is
+`029014be`, and preparation implementation now lives behind the existing
+public facade. Publication recovery is isolated on `codex/sdk-publication-oct9`
+(`3dbc3e46` + `16792d87`) with the current native client/decode owner changes
+and the facade refactor. The remaining feature delta is 22 paths. These owner
+changes are not silently included in the feature's commit inventory.
 
-The integration tree retains the canonical `QuantaIndexClientPayloadV1`,
-existing transports and external decode DATA. Explicit and combined activation
-share one receipt-to-request validator and one control dispatcher. It does not
-restore `QuantaIndexInner` or add another client, decoder or activation path.
-The independent committed-receipt fix is committed in main `029014be`. It uses
-`validate_published_receipt` at the
-SDK response binding; dispatcher drafts keep `validate_receipt` until commit.
-A zero journal sequence is invalid for both applied and replayed publications.
-`./scripts/cargow test -p quanta-index-sdk -p quanta-index-contract --locked`
-passed 508 tests on main with the retained native owner changes; six process
-tests were ignored. The observed-ingest fixture now supplies sequence 7 rather
-than claiming that an unstamped draft is a committed receipt. The final
-publication delta against that current working tree is 22 paths; application
-check passed without replacing native owner files.
+Explicit and combined activation share one receipt-to-request validator and
+one dispatcher over the canonical borrowed `QuantaIndexClientPayloadV1`.
+`validate_published_receipt` rejects journal sequence zero on applied and
+replayed responses; dispatcher drafts retain their pre-commit validation.
+Neither another client/decoder nor another wire IR is introduced.
 
-Semantica main `a63f536b` still lacks the candidate's V5 baseline and publication
-intent. Its 36-path candidate has five conflicting paths and active receiver,
-reader and lock owners; source inspection still finds removed parser getters.
-The historical 101/334 diagnostics are not a current-main compiler result.
-Actual Runtime/restart/migration acceptance remains required before the breaking
-SDK/consumer bundle is merged. Current execution results and exact merge order
-are owned by the [Oct-9 reconciliation](../plans/oct-4-parallel-closure/tickets/INDEX.md#oct-9-sdk-reconciliation).
+A searchd binary built from this native/publication pair passed all five actual
+SDK L2 scenarios and eight named crash cuts. This is local correctness proof;
+it is not throughput, relevance, installed-host or Semantica Runtime proof.
+The complete owning daemon rail passed all 300 selected tests on the updated
+preparation tree; ten tests were skipped by that declared scope.
+Final command results and the binary identity belong to the
+[Oct-9 reconciliation](../plans/oct-4-parallel-closure/tickets/INDEX.md#oct-9-sdk-reconciliation).
+
+Semantica's private pair starts at `a63f536b`, captures 4,854 current dirty
+paths, and reconciles the candidate's 36 conceptual paths. Its actual feature
+edits are kernel4 + V5/intent29; the two lock files and native policy test already
+contained their required changes at capture time. The subsequent root-lock
+repair adds the missing native source-authority wire edge with no registry
+version changes; the nested lock still needs its owner-specific native edges.
+The five prior merge
+conflicts are resolved in the private pair, preserving receiver DATA and the
+Acked reader. The Java parser closure is blocked: production still consumes ordinary owner
+outputs, while the Original rail issues retained inventories without the
+generation fragment/receipt/handoff output contract needed by production.
+No parser source was edited, no getter was restored and no ordinary-to-Original
+adopter was introduced. Existing live current authority can be reused; its
+absence was not established as the cause.
+
+Static review separates two restart contracts. Daemon restart and durable V5
+artifact readback are included in the existing, still-unexecuted Semantica process scenario; a new producer
+requires a valid recovery contract because each canonical factory issues a
+fresh, non-restorable terminal owner. Reusing a prior-epoch pin with that new
+authority is invalid. Full producer recovery remains **BLOCKED** because a valid recovery input
+contract has not been supplied for the inspected production path, rather than
+being inferred from daemon restart. Initial-generation rebaseline and
+frozen-active/predecessor mismatch rejection and prior-epoch custody refusal
+regressions are now present in the private pair, pending execution.
+The new regression delta is saved with normal hooks as `16a522722d2` on the
+clean feature branch. Owning Kernel and Runtime QBC both reached dependency
+compile failures in captured `InputCellValue` calls to removed retained-text
+APIs; test bodies remain **NOT_RUN**. The Source owner must carry external
+`RetainedSourceTextBirthV3` DATA and result slots through producer and consumer
+loans. A local birth/return-value wrapper would lose failed DATA at the wrong
+lifetime boundary. This is upstream migration work, not a proven publication
+behavior failure. Root lock, vendored item documentation and an existing child
+module path were repaired privately; no legacy API or feature-gate fallback was
+introduced. Durable and process tests remain **NOT_RUN**. Past 101/334 error
+counts and old Kernel/contract results do not describe this current source.
+The breaking SDK/consumer bundle remains unmerged pending that acceptance.
 
 ## Decision and scope
 
@@ -141,7 +169,7 @@ the prior snapshot; the SDK performs no hidden durable I/O.
 ## Publication and recovery
 
 **Candidate-only API:** the following example requires the isolated publication
-recovery bundle. Main `433a9363` retains `publish_and_activate` and
+recovery bundle. Current main `bd73045a` retains `publish_and_activate` and
 `ActivationAfterPublish`; preparation does not require this API change.
 
 `publish_outcome` exposes the validated original publication and committed
@@ -169,13 +197,23 @@ pub fn publish_then_activate(
 }
 ```
 
+This generic SDK example activates the verified original target. A frozen
+aggregate must additionally compare the complete original
+`SourcePublicationBinding` with its frozen submitted binding **before** CAS.
+Semantica's ingress performs that check and retains the original evidence on a
+retarget mismatch without issuing activation. A successful SDK replay alone
+does not authorize advancing a different aggregate's planned manifest.
+
 `SdkError::AfterPublish` retains the original evidence and typed cause when
 observation after a verified publish or activation fails. Its
 `PublishedBatchFailureStage` is `Observation` or `Activation`; callers can read
 `SdkError::published_evidence()`, `published_receipt()`, and
 `published_publication()` for reconciliation. A transport or response failure
 before a validated publish outcome has no verified receipt. Neither the
-explicit calls nor `publish_and_activate` are an atomic transaction.
+explicit calls nor `publish_and_activate` are an atomic transaction. The stage
+identifies the failed operation, not whether CAS took effect: an acknowledgement
+or elapsed-time conversion can fail after activation. Reconcile the active head
+before retrying or confirming producer state.
 
 ## Current implementation audit and caller contracts
 
@@ -339,7 +377,7 @@ Foreign migration inputs are not owned SDK/V5 changes and must not be staged
 as this feature. Current candidate execution and remaining closure are owned by
 the integration ticket; old diagnostic arithmetic is not a new compiler result.
 
-### Frozen publication correctness
+### Oct-8 frozen publication correctness (historical candidate proof)
 
 The final coupled source audit also found a frozen-aggregate replay hazard:
 the SDK may correctly recover an original publication for a retargeted source
@@ -350,7 +388,8 @@ outcome, compares the complete original publication binding with the frozen
 submission before control CAS, and retains original `AfterPublish` evidence on
 mismatch. Same-identity replay still activates. Two owner regressions cover
 zero activation calls on retarget and the successful same-identity replay.
-The QBC kernel `index_sdk_ingress::publish` selection completed with a GREEN
+On the earlier Oct-8 snapshot, the QBC kernel `index_sdk_ingress::publish`
+selection completed with a GREEN
 finished owner receipt: 28 passed, including both new regressions; 81 filtered.
 This proves the ingress owner decision before activation, not a full Runtime
 aggregate process or real control IPC. Pre-fix runtime reproduction was
@@ -501,17 +540,19 @@ qualify that split. No such split has been integrated.
    compile policy `feature-isolation:quanta-runtime.no-default.9c3270892708`,
    `--ignored-policy exclude`. Then run the six durable barrier selectors listed
    in the closure ticket through that same owner.
-3. Run all three ignored process selectors: the exact selector ending in
-   `shadow_delta_orchestration::completed_v5_publication::completed_v5_publication_prune_restart_then_g3_delta_v1`
-   `shadow_delta_orchestration::completed_v5_publication::completed_v5_baseline_refuses_missing_predecessor_before_activation_then_retries_v1`,
-   and `shadow_delta_orchestration::completed_v5_publication::completed_v4_to_explicit_v5_full_then_v5_delta_v1`,
-   with `--ignored-policy only`, `QUANTA_INDEX_SEARCHD_BIN`, and a verified
-   `QUANTA_INDEX_SEARCHD_SHA256`. The process test is explicitly ignored by default;
-   it must not silently pass without its daemon. It completes real aggregate
-   G1/G2 publications, deletes the G1 artifact, reopens SQLite and a fresh artifact
-   reader, restarts SearchPlane, and drives production G3. Fixed owner identities
-   check retained owners, renamed tombstones and parent membership. The fixture
-   and its owner-issued `cfg(test)` closure helper are implemented but `NOT_RUN`.
+3. Run the six ignored tests with module selector
+   `shadow_delta_orchestration::completed_v5_publication`, `--ignored-policy only`,
+   `QUANTA_INDEX_SEARCHD_BIN` and verified `QUANTA_INDEX_SEARCHD_SHA256` through the
+   same Runtime owner. The renamed restart case is
+   `completed_v5_publication_prune_daemon_restart_then_g3_delta_v1`.
+   The module includes V4→explicit V5 full→delta, missing V5 predecessor/no
+   activation/retry, initial G1 rebaseline refusal, planned/native predecessor
+   mismatch refusal and prior-epoch custody refusal by a fresh authority.
+   The daemon-restart case keeps the valid live producer and reopens SQLite and
+   the durable artifact reader after removing the G1 artifact. Fixed owner
+   identities check retained owners, renamed tombstones and parent membership.
+   These source-present fixtures are **NOT_RUN** on the current Semantica pair;
+   they do not claim full producer or projection-store cold restart.
 4. Integrate publication recovery with its full SDK/contract/CLI/benchmark/test/API
    consumer bundle and Semantica's four ingress files after the selected pair
    passes. V5's28 producer/reader/intent/test files require the separate transition,
