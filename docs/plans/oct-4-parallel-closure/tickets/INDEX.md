@@ -1126,6 +1126,18 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   계수를 추측하거나 새 decoder를 추가하지 않는다. Schema owner가 실제 materialization
   수요와 original permit을 확정한 뒤 별도 owner proof가 필요하다. Native 실행 없음.
 
+- **Runtime typed-cause co-cut / OPEN (2026-10-09):** 기존 실제 V5 consumer 수정
+  owner는 `gqlang -> quanta-index xhdgkq` (`01a1062b-e4a5-71f1-8554-a097114448ec`).
+  Current `dispatch_replay.rs`의 `PublishedAwaitingActivation`은 message/evidence만
+  보유하며 activation map_err가 원 `IngressError`를 문자열로 변환한다.
+  `published_batch_failure_from_outcome_v5` → `into_parts_v1` →
+  `update_dispatch_after_attempt_v1`까지 publication evidence는 남지만 typed cause는
+  사라진다. Envelope·실제 activation caller·delivery/state consumer를 기존 owner가
+  함께 변경하도록 전달했다. Live cause 수명과 durable 진단 문구를 구분하고,
+  Clone/Eq용 string shim 없이 원 I/O cause와 evidence를 마지막 소비자까지 보존해야 한다.
+  Kernel cause 보존만으로 이 Runtime 경계가 완료되지 않는다. Actual owner의 구현 ACK와
+  matching Runtime proof는 미수령; 동작 재현 **NOT_RUN**, static gap **OPEN**.
+
 **C5 — Producer cold restart의 최소 계약 확정·구현 (C4 이후 같은 owner)**
 
 - 현재 `runtime/src/retrieval/port_impls/index_projection_writer/mod.rs`의 canonical
