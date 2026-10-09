@@ -31,121 +31,959 @@ producer/parser/checker/recipes도 구현돼 있다. 추가 수리는 실제 비
 
 ### Native corpus decode의 외부 DATA 계약 — 2026-10-09
 
-**상태: ABI 설계와 호출 경로의 정적 대조 완료. 아래 새 decode ABI는 미구현이며
-compile/test/pair 수용은 `NOT_RUN`이다.** Index `48eeccf5`의 NFC DATA/borrowed
-identity 생성자 구현·집중 테스트와 이 decoder 변경을 같은 완료 증거로 취급하지 않는다.
-Semantica의 아래 수신 파일들은 진행 중인 working-tree 입력을 포함한다.
+**Index producer 구현 완료, Semantica recursive receiver co-cut/Original Source 수용은
+`NOT_RUN`.** `4729a1a1`에 기록했던 제안 ABI를 아래 실제 구현으로 대체했다. 변경은 아직
+`codex/native-corpus-external-data` 검토 브랜치로 보존하며, 공유 작업트리에도 변경이
+남아 있다. 기존 native owned 반환 trait/seed와 하위 호환하지 않는다. receiver가
+이 계약으로 전환되기 전에는 이 breaking 묶음을 단독 main commit으로 반영하지 않는다.
 
-현재 canonical 경계의 결함:
+물리 owner와 canonical 경계:
 
-- `contract-base/src/ids.rs`의 `NativeIdentityDecodeAdmissionV1` 네 callback과
-  `RepoId`/`RevisionId::native_decode_seed_v1`은 owned identity를 반환한다.
-  owned String의 validation 실패와 borrowed 생성자의 정상 반환 모두에서 로컬 NFC
-  DATA/실제 scratch가 상위 Source finisher 전에 해제될 수 있다. `48eeccf5`의 외부
-  NFC DATA 인자를 사용하는 생성자가 있어도 이 Serde 경로는 자동으로 전환되지 않는다.
-- `contract/src/ipc/control.rs`의 active-head, corpus-generation, generation-snapshot,
-  semantic-content-roots 네 map visitor는 자식 값을 로컬 `Option`에 보관한다.
-  이후 missing/duplicate/unknown/semantic 또는 work refusal이면 이미 만들어진 자식
-  String/identity/부분 payload가 로컬에서 해제된다. 최종 DTO만 외부 슬롯에 옮기는
-  Semantica `decoder_scratch_v3.rs`의 수리는 이 재귀 부분 상태를 보존하지 못한다.
-- `CorpusKeySeedV1`, track visitor, activation-token key visitor까지 owned/escaped
-  string 입력의 수명을 함께 다뤄야 한다. `deserialize_string`을 사용했다는 사실이나
-  외부의 grant만으로 실제 String/decoder scratch 보존을 증명할 수 없다.
+- `contract-base/src/ids/native_decode_data_v1.rs`의
+  `NativeIdentityDecodeDataV1<T, E, F>`는 실제 wire/copy String, canonical typed output,
+  기존 `NativeNormalizationDataV1<E>`, full `NativeIdentityConstructionErrorV1<E>`,
+  one-attempt phase와 `Option<F>`를 보유한다. `F`는 source/control/callback이 없는 실제
+  funding bank다. declaration/drop 순서는 실제 backing/전체 오류가 bank보다 앞선다.
+- canonical identity visitor만 transient `NativeIdentityDecodeLoanV1<'data, 'input, T, E, F>`를
+  만든다. owned String을 DATA에 먼저 넣고, borrowed input은 loan/runner에서만 빌린다.
+  `with_funding_v1`의 runner에는 입력 교체, typed output setter 또는 NFC verdict 주입
+  API가 없다. `try_fill_v1`은 기존 canonical raw validator/NFC/into-slot producer를 호출한다.
+  `refuse_admission_v1(&mut Option<E>)`는 pre-construction 원본 오류를 순수 이동으로 보관한다.
+- `control/native_decode_v1.rs`의 하나의 map visitor/Node body가 ordinary와 native를
+  처리한다. native recursive seed의 `Value`는 unit이다. 각 schema subtree의 seen 상태,
+  owned key/duplicate pending key, String/identity/token 부분 상태와 완성 candidate를
+  외부 DATA에 채운다. aggregate work/validation 전에 candidate를 DATA에 먼저 저장한다.
+- `activation_token.rs`의 같은 canonical token visitor도 unit fill을 사용한다. owned key,
+  잘못된 owned scalar/array-element 문자열, 원본 token work 오류를 외부 DATA에 보관한다.
+  numeric payload는 기존 Serde scalar/array visitor를 사용하며 새 token issuer를 만들지 않는다.
+- `ids/native_manifest_decode_v1.rs`는 기존 ManifestGeneration numeric visitor의 unit
+  결과를 보관한다. native scalar dispatch는 self-describing `deserialize_any`를 요구하여
+  잘못된 owned 문자열도 기존 numeric visitor가 거부하기 전에 DATA에 넣는다. ordinary
+  token의 typed deserializer dispatch와 기존 JSON/CBOR wire shape는 유지한다.
 
-현재 확인한 직접 정책 구현과 실제 수신 경로:
-
-| Owner | 경로와 역할 |
-| --- | --- |
-| Index | `crates/quanta-index-contract-base/src/ids.rs`: private canonical validator, identity visitor/policy/seed |
-| Index | `crates/quanta-index-contract/src/ipc/control/native_decode_v1.rs`: native policy, key seed, scalar/identity delegation, active-head seed |
-| Index | `crates/quanta-index-contract/src/ipc/control.rs`: 네 map visitor와 `native_corpus_decode_tests_v1::Admission` 테스트 정책 |
-| Index | `crates/quanta-index-contract-base/src/activation_token.rs`: 기존 token/key visitor; 새 token issuer는 필요 없음 |
-| Semantica Contract | `quanta-contract-retrieval/src/indexing_writer_ports/admitted_decode_v3.rs:357`: `ReplayDecodeValueV3`에서 Index native head seed를 실제 호출. 같은 모듈의 policy trait은 `&dyn NativeCorpusDecodeAdmissionV1`을 반환 |
-| Semantica 테스트 | `quanta-contract-retrieval/src/indexing_writer_ports/admitted_decode_v3/native_corpus_policy_tests_v3.rs`: `VectorPolicyV3`가 두 native 정책 구현. `policy_tests_v3.rs`의 dyn 정책 반환 seam도 변경 대상 |
-| Semantica Runtime | `quanta-runtime/src/indexing_machine_v2/store/source_bound_replay_v2/canonical_json_v2/native_corpus_admission_v3.rs`: `OriginalReplayVectorsV3`가 두 native 정책 구현; `decoder_scratch_v3.rs`는 recursive seed 뒤 최종 DTO만 외부 슬롯에 저장 |
-
-위 census는 현재 Index와 Semantica의 지정 crate 경계다. SDK/daemon의 일반
-`SearchCorpusActiveHeadV1` 사용을 이 native policy의 caller 수로 세지 않는다.
-
-**제안하는 물리 ABI:** 아래 타입/메서드 이름은 제안이며 현재 export가 아니다.
-원래 `RepoId`, `RevisionId`, `SearchCorpusActiveHeadV1`과 같은 private validator,
-Serde visitor, NFC iterator를 사용한다. DATA는 부분 상태 보관이며 새 wire IR,
-identity issuer, arena 또는 normalization 알고리즘이 아니다.
+실제 exported ABI (`quanta-native-identity-v1` feature):
 
 ```rust
-// Native policy callbacks fill external attempt data and return status only.
 trait NativeIdentityDecodeAdmissionV1 {
     type OriginalError;
-    type Error: core::fmt::Display; // Finite Serde-facing refusal only.
-
+    type Funding;
+    type Error: core::fmt::Display + Copy; // finite Serde-facing marker
     fn repo_id_from_owned_v1(
         &mut self,
-        data: &mut NativeIdentityDecodeDataV1<RepoId, Self::OriginalError>,
+        loan: &mut NativeIdentityDecodeLoanV1<'_, '_, RepoId, Self::OriginalError, Self::Funding>,
     ) -> Result<(), Self::Error>;
     fn repo_id_from_borrowed_v1(
         &mut self,
-        value: &str,
-        data: &mut NativeIdentityDecodeDataV1<RepoId, Self::OriginalError>,
+        loan: &mut NativeIdentityDecodeLoanV1<'_, '_, RepoId, Self::OriginalError, Self::Funding>,
     ) -> Result<(), Self::Error>;
-    // RevisionId has the corresponding two callbacks.
+    // RevisionId has the corresponding two unit callbacks.
 }
 
-// D::Error is saved in external DATA before the unit-status return.
-fn try_decode_active_head_into_v1<'de, D, P>(
-    deserializer: D,
-    data: &mut NativeCorpusDecodeDataV1<P::OriginalError, D::Error>,
-    admission: &mut P,
-) -> Result<(), NativeCorpusDecodeDataRefusalV1>
-where
-    D: serde::Deserializer<'de>,
-    P: NativeCorpusDecodeAdmissionV1 + ?Sized;
+// RepoId and RevisionId expose the same signatures with their own T.
+RepoId::native_decode_seed_v1(&mut admission, &mut identity_data) // Value = ()
+RepoId::try_decode_into_v1(deserializer, &mut admission, &mut identity_data, &mut full_decoder_error)
 
-// Recursive canonical seeds fill their borrowed external subtree: Value = ().
-// Final publication only moves the existing canonical DTO to another slot.
+// Token policy uses ControlError = OriginalError; consume_token_work_v1
+// returns the complete ControlError, token_work_refusal_v1 returns a finite marker.
+SearchCorpusActivationTokenV1::native_decode_seed_v1(&mut admission, &mut token_data) // Value = ()
+SearchCorpusActivationTokenV1::try_decode_into_v1(deserializer, &mut admission, &mut token_data, &mut full_decoder_error)
+
+// NativeCorpusDecodeAdmissionV1 extends both native traits above; its
+// OriginalError/Funding are the identity policy's associated types.
+// consume_corpus_work_v1(&mut self, u64) -> Result<(), Self::OriginalError>
+// refuse_corpus_work_arithmetic_v1(&mut self) -> Self::OriginalError
+// admit_corpus_string_birth_v1(&mut self, usize, &mut dyn FnMut()->bool)
+//     -> Result<bool, Self::OriginalError>
+// corpus_invalid_data_v1(&self, finite_schema_cause, Option<&'static str>) -> finite_marker
+let mut corpus_data = NativeCorpusDecodeDataV1::<E, F>::new_v1();
+SearchCorpusActiveHeadV1::native_decode_seed_v1(&mut admission, &mut corpus_data) // Value = ()
+SearchCorpusActiveHeadV1::try_decode_into_v1(
+    deserializer, &mut admission, &mut corpus_data, &mut full_decoder_error,
+) // Result<(), NativeIdentityDecodeDataRefusalV1>
+
+// Pure transfer into another EXTERNAL slot, or publication after finishing.
+corpus_data.complete_into_slot_v1(&mut external_head)
+// failure_v1() returns a borrowed view of full Work(E), Copy(error<E>),
+// or Identity(construction_error<E>); it does not format/clone the original.
 ```
 
-필수 ownership 조건:
+각 occurrence에 별도 DATA가 필요하다. 한 head의 네 identity는 schema의 네 필드이며
+전체 replay/collection을 네 identity로 제한하는 전역 슬롯이 아니다. Runtime의 기존
+admitted collection owner가 임의 개수의 head DATA와 container backing을 보유해야 한다.
+DATA에는 입력 참조/Current/Source/control/admission closure를 저장하지 않는다. policy의
+`Funding`은 실제 normalization bank이며, 예를 들어 Semantica SourceWire의
+`OriginalNativeNormalizationFundingV3`가 해당한다. transient admission은 이 bank를 빌린다.
+borrowed String copy와 deserializer backing의 funding은 실제 Runtime 외부 owner가 별도로
+유지해야 한다. byte counter만으로 custody를 충족하지 않는다.
 
-1. identity DATA는 zero-allocation fresh 상태에서 시작한다. 실제 owned wire String은
-   canonical visitor가 admission/validation 전에 먼저 DATA에 저장한다. owned callback은
-   이 슬롯을 받으며 새 String을 인자로 받아 ordinary 값을 native로 입양하지 않는다.
-   borrowed 입력은 transient runner에서만 빌리고 DATA에는 원문 참조를 저장하지 않는다.
-2. identity DATA는 실제 copy backing/typed output, one-attempt 상태,
-   `NativeNormalizationDataV1<OriginalError>`, 전체
-   `NativeIdentityConstructionErrorV1<OriginalError>`를 보관한다. 기존 canonical
-   into-slot body를 호출하며 full error를 저장한 뒤 finite 상태를 반환한다.
-   실제 normalization/copy grant bank는 Runtime의 외부 DATA가 별도로 보유한다.
-3. 하나의 active head에는 RepoId 두 개와 RevisionId 두 개가 있다. 이 네 필드의
-   DATA를 schema 위치별로 보관하되, 네 개를 전체 replay의 identity 상한으로 사용하지
-   않는다. 여러 head/collection occurrence는 각각 별도 외부 DATA loan을 받아야 한다.
-   컨테이너 backing의 선행 admission은 기존 Runtime collection owner가 책임진다.
-4. 각 map의 seen 상태, field partial, escaped key/value backing, token 부분 상태는
-   해당 외부 subtree에서 보관한다. duplicate는 두 번째 value를 읽기 전에 거부하되
-   이미 materialize된 duplicate key도 보존한다. unknown/missing/schema/work/late native
-   refusal 역시 먼저 읽은 모든 자식과 전체 오류를 보존한다. owned track 문자열과
-   token key의 기본 `visit_string -> visit_str` 조기 drop도 함께 제거한다.
-5. 부분 field를 합친 canonical candidate도 외부 슬롯에 먼저 저장하고 기존
-   `validate_v1`/work checkpoint를 실행한다. 완성 객체를 로컬에서 검증하다 실패한 뒤
-   버리지 않는다. 새 predicate나 private canonical ID 복제는 만들지 않는다.
-6. 재귀 seed의 success `Value`는 unit이며 child payload를 반환하지 않는다. 가장 바깥
-   unit driver는 실제 `D::Error`를 외부 결과 슬롯에 저장한 뒤 반환한다. Source finisher
-   전에는 외부 DATA 사이의 순수 이동만 허용하며 raw source/admission/callback을
-   DATA에 저장하지 않는다. DATA 재사용은 decoder/admission poll 전에 거부한다.
-7. 실제 scratch/부분 payload가 먼저 해제되고 funding bank가 나중에 해제돼야 한다.
-   reader-owned escaped scratch와 root/nested decode 결과도 같은 상위 Source finisher
-   순서를 유지한다. byte counter나 finite marker만 남기는 것은 수용 조건이 아니다.
+가장 바깥 `try_decode_into_v1`는 반환된 실제 `D::Error`를 별도 **외부** error 슬롯에
+그대로 저장한 뒤 finite unit status를 반환한다. 중첩 unit seed를 직접 쓰는 Runtime은
+자신의 상위 driver에서 같은 오류 보관을 수행해야 한다. occupied error/output 슬롯은
+보존하며, 사용된 DATA의 재시도는 deserializer/admission poll 전에 거부한다. candidate가
+있더라도 전체 decode가 실패한 DATA에서는 publication transfer를 거부한다. parent로
+순수 이동한 typed payload가 살아 있는 동안 funding DATA도 terminal까지 유지한다.
 
-**결합 변경과 검증:** Index의 위 네 owning 파일, facade export와 회귀를 하나의 변경으로
-준비하고, Semantica Contract의 recursive DATA/seed 및 Runtime 정책·bank 수신을 함께
-맞춘다. native owned-return trait만 단독 변경해 소비자가 깨진 상태를 main에 반영하지 않는다.
-Ordinary Serde와 native unit fill은 같은 visitor의 output/state policy로 분기한다.
+범위 제한: generic Serde implementation 내부에서 방문자 호출 전에 만들어지는 owned
+container/escaped scratch 및 아직 읽지 않은 input backing은 caller-controlled deserializer가
+별도로 admit/retain해야 한다. 이 Index visitor만으로 그 allocation을 통제했다고 주장하지
+않는다. native scalar는 self-describing format을 요구한다. ordinary DTO decode는 같은
+canonical visitor를 사용하지만 Native Source qualification을 제공하지 않는다.
 
-필요한 독립 oracle은 정상 borrowed/escaped identity·field 순서 변화, 모든 nested 단계의
-duplicate/unknown/missing·invalid NFC, 후반 malformed JSON/semantic/work/native refusal,
-비-Copy 원본 오류 동일성, 실제 backing/grant liveness와 해제 순서, 사용된 DATA 재시도
-무-poll, occupied transfer 보존이다. 여러 head/collection occurrence를 실행해 고정 네
-identity 전역 슬롯으로 우회하지 않았음을 검사한다. 기존 NFC owner 테스트는 이 새
-recursive decoder 및 Semantica Original Source의 실행 증거를 대체하지 않는다.
+실제 수신 co-cut 대상 (Semantica, 다른 owner의 working tree):
+
+| Owner | 경로와 역할 |
+| --- | --- |
+| Contract | `quanta-contract-retrieval/src/indexing_writer_ports/admitted_decode_v3.rs`: replay recursive partial DATA/seed; 기존 native head owned 반환 호출과 dyn policy seam 교체 |
+| Contract 테스트 | `admitted_decode_v3/native_corpus_policy_tests_v3.rs`, `policy_tests_v3.rs`: associated OriginalError/Funding, mutable transient policy, unit result |
+| Runtime | `quanta-runtime/src/indexing_machine_v2/store/source_bound_replay_v2/canonical_json_v2/native_corpus_admission_v3.rs`: four wire-bound identity loans, per-occurrence actual funding bank, complete work/copy errors |
+| Runtime | 같은 디렉터리 `decoder_scratch_v3.rs`: recursive DATA/reader scratch/full decoder error를 highest Source 밖에 보관 |
+
+Index 검증 명령 (lane `test-canonical-identity-lane`, 로컬 실행):
+
+- `./scripts/cargow --lane test-canonical-identity-lane test -p quanta-index-contract-base -p quanta-index-contract --all-features --locked --quiet`
+- `./scripts/cargow --lane test-canonical-identity-lane test -p quanta-index-contract-base -p quanta-index-contract --locked --quiet`
+- `./scripts/cargow --lane test-canonical-identity-lane clippy -p quanta-index-contract-base -p quanta-index-contract --all-targets --all-features --locked -- -D warnings`
+
+집중 oracle은 borrowed/owned 입력 및 pointer-preserving owned move, escaped/field-order
+parity, 계층별 missing/unknown 및 owned duplicate 키 보존, late malformed/semantic/work/
+copy/NFC refusal, full non-Copy Box 원본 주소 보존, 실제 NFC funding liveness, 무-poll 재진입,
+occupied transfer 보존이다. 37 head/148 identity의 동시 DATA 보존 회귀도 포함한다.
+최종 로컬 결과: all-features Rust **430 PASS**, default-features Rust **401 PASS**,
+Clippy(all-targets/all-features) **VERIFIED**. `just rust-public-api`,
+`just rust-hexagonal`, `just rust-cargo-modules`, scoped fmt/diff check도 **VERIFIED**다.
+public-api snapshot은 default feature 표면이며 native ABI는 compile/test/Clippy로 검사했다.
+Hexagonal 검사는 DTO canonical construction protocol의 기존 정확한 signature guard를
+새 unit/full-error/native-String-birth 계약에 맞췄다. Core로 옮기면 contract→core 의존
+cycle가 생기는 경계이며, storage/transport/service port는 추가하지 않았다. guard를
+느슨하게 만들지 않았고 service method/별도 port 주입 거부를 포함한 Python 회귀 **8 PASS**를
+확인했다. 이 테스트는 Semantica actual Source,
+collection admission, daemon E2E, remote CI 또는 paired publication proof를 대신하지 않는다.
+
+### Borrowed scope validation의 외부 NFC DATA 확장 — 2026-10-09
+
+`2bf2353d` corpus candidate 이후 발견한 별도 producer delta다. RepoId와 RevisionId에
+`validate_str_into_with_native_admission_v1(value, &mut NativeNormalizationDataV1<E>, &mut P)`를
+공개했다. 반환형은 `Result<(), NativeIdentityConstructionErrorV1<E>>`이고 full non-Copy E를
+그대로 이동한다. 기존 `validate_native_identity_into_v1`/동일 predicate/NFC producer만
+호출하며 identity String/typed identity를 만들거나 normalize/revalidate하지 않는다.
+이 경로는 scratch/grant를 해제하지 않는다. 부모가 full result와 실제 DATA/funding bank를
+highest Source finisher까지 보유하고 DATA를 bank보다 먼저 drop해야 한다.
+
+같은 private validator에 freshness guard를 먼저 두었다. 이미 시도/retire된 normalization
+DATA는 raw predicate나 admission을 poll하기 전에 거절하며 원래 결과·backing을 보존한다.
+**NFC 이전 raw predicate/work 거절에서는 normalization DATA가 fresh로 남는다.**
+이 타입은 normalization attempt storage이며 전체 scope validation retry guard가 아니다.
+Semantica 부모는 별도의 scope attempt 상태와 complete returned error를 보존해야 한다.
+이를 새 normalizer/issuer나 vendor DATA state 확장으로 대체하지 않았다.
+
+새 oracle은 양 ID의 기존 error order, 실제 long NFC scratch의 success/retire/reuse no-poll,
+late normalization refusal의 동일 Box 원본 주소 및 transient policy 종료 후 실제 funding
+객체의 생존이다. 기존 `2bf2353d`의 430/401 결과와 새 delta 실행 결과는 별도로 기록한다.
+Semantica Scope/recursive receiver 채택과 Original Source 수용은 계속 `NOT_RUN`이다.
+
+이번 delta의 별도 로컬 실행 결과는 all-features **433 PASS**(새 회귀 3개 포함),
+default-features **401 PASS**다. 두 contract crate의 all-targets/all-features Clippy
+`-D warnings`, scoped fmt, default public-api, hexagonal 및 diff check는 **VERIFIED**다.
+실행 명령은 앞 절과 같은 `./scripts/cargow --lane test-canonical-identity-lane`
+`test -p quanta-index-contract-base -p quanta-index-contract [--all-features] --locked --quiet`와
+동일 package의 `clippy --all-targets --all-features --locked -- -D warnings`다.
+이 결과는 앞선 430/401 결과에 합산하지 않으며 Native 공개 API는 feature compile/test로
+검사했다. default public-api snapshot에는 이 feature 전용 메서드가 포함되지 않는다.
+
+### Closed scalar leaf의 retained unit decode 공개 — 2026-10-09
+
+`8c0d7726` 이후의 별도 producer delta다. 같은 private `ScalarDataV1<T>`와
+`decode_scalar_into_v1`/RetainedDeserializer/Visitor를 그대로 호출하는
+`NativeRetainedScalarDecodeDataV1<T>`를 contract-base root에서 공개했다.
+`NativeRetainedScalarLeafV1`은 sealed trait이며 현재 허용 타입은 정확히
+`u32`, `u64`, `[u8;32]`다. 임의 `Copy + Deserialize` 타입, nested Copy tuple,
+borrowed output은 받지 않는다. private retained String/bytes Option은 두 번째
+owned 입력으로 덮어쓸 수 있으므로 일반적인 recursive custody API로 공개하지 않았다.
+numeric visitor는 첫 wrong owned string/bytes에서 종료하며, byte array도 같은
+u8 visitor가 첫 잘못된 element에서 종료한다. native 입력 deserializer는
+self-describing `deserialize_any`를 제공하고 입력 tree의 남은 backing은 부모가 보존한다.
+
+정확한 호출 ABI:
+
+```rust
+let mut data = NativeRetainedScalarDecodeDataV1::<u64>::new_v1();
+let mut full_error = None;
+data.try_decode_into_v1(deserializer, &mut full_error)?; // finite DATA status
+data.complete_into_slot_v1(&mut parent_output)?;       // pure transfer
+// Alternatively: data.native_decode_seed_v1(), DeserializeSeed<Value = ()>.
+```
+
+`try_decode_into_v1`은 완전한 non-Copy `D::Error`를 별도 외부 slot에 먼저 이동한다.
+used DATA/occupied error는 decoder를 poll하지 않고 기존 원본을 보존한다.
+`retained_string_v1`/`retained_bytes_v1`은 실제 parked backing의 read-only borrow다.
+직접 unit seed를 쓰는 부모도 반환된 full error를 highest Source finisher 이전에 보존해야 한다.
+동적 error 정책은 입력 `D::Error`의 `serde::de::Error` 구현에 속한다. 기존 scalar
+predicate/visitor의 invalid type/value/length를 새 parser나 diagnostic String으로
+대체하지 않는다. leaf DATA는 control/work/funding issuer가 아니며 부모의 기존
+wire walk/work admission과 실제 입력 funding을 대신하지 않는다.
+
+Semantica `quanta-contract-kernel/src/ids/snapshot_id.rs`의 현행 SnapshotId
+Deserialize는 `Ok(Self(u64::deserialize(deserializer)?))`다. 수신부는 이 동일한
+u64 leaf를 decode하고 성공 후 기존 `SnapshotId::new`로 감쌀 수 있다. 이 API가
+arbitrary external SnapshotId 타입을 직접 decode하거나 별도 snapshot validator를
+제공한다고 주장하지 않는다. Semantica receiver 변경과 Original Source 검증은 별도다.
+
+새 회귀는 integer boundary/overflow, owned string/bytes의 동일 pointer, byte array의
+첫 오류 후 두 번째 owned 입력 no-poll, 기존 u8/length 오류, exact Box full cause,
+occupied/used DATA 및 pure output move를 검사한다. borrowed/nested 타입 거부는
+compile-fail doctest로 검사한다. 기존 433/401 및 SDK 167/176 결과에 합산하지 않는다.
+
+이번 delta의 별도 실행: 두 contract crate의 all-features **439 PASS**와 doctest
+**3 PASS**(compile-fail 2개 포함), default **401 PASS**다.
+`./scripts/cargow --lane test-canonical-identity-lane test -p quanta-index-contract-base -p quanta-index-contract [--all-features] --locked --quiet`
+및 동일 package/lane의 `clippy --all-targets --all-features --locked -- -D warnings`를
+실행했다. Clippy, scoped fmt, hexagonal 및 diff check는 **VERIFIED**다.
+private scalar decoder/visitor 전체 body는 `8c0d7726`와 동일함을 확인했다.
+Native receiver/actual Source, 설치 E2E, remote CI는 **NOT_RUN**이며 이 로컬 결과로
+수용 완료나 main 통합 승인을 주장하지 않는다.
+
+`0129de29` 후보 이후 수신부 import 경계의 누락을 수정했다.
+`quanta-index-contract` root의 기존 `quanta-native-identity-v1` feature-gated
+thin pub use에 `NativeRetainedScalarDecodeDataV1`과 `NativeRetainedScalarLeafV1`을
+추가했다. Semantica는 기존 umbrella dependency로 같은 base producer를 가져온다.
+새 package dependency, scalar body/validator, newtype extension은 추가하지 않았다.
+이 export delta는 `./scripts/cargow --lane test-canonical-identity-lane clippy -p quanta-index-contract --all-targets --all-features --locked -- -D warnings`
+compile/lint **VERIFIED**다. default-feature public API snapshot도 unchanged다.
+기존 439/401/SDK 176 결과는 앞선 producer 후보의 실행 결과이며 이 alias delta에서
+다시 실행한 테스트로 표기하지 않는다. 실제 Semantica Source 수용은 계속 **NOT_RUN**이다.
+
+### Borrowed whole-Head / CAS scope validation — 2026-10-09
+
+`8d8a06ad` 이후의 별도 producer delta다. 기존 `Head::validate_v1`은 allocation 없는
+borrowed predicate이나 Native work admission을 호출하지 않는다. decode finisher의
+기존 8개 field-byte charge와 node charge를 `validate_head_with_policy_v1`로 추출했고,
+decode 및 새 borrowed Native 진입점이 같은 helper, 같은 `NativeCorpusPolicyV1`,
+같은 `Head::validate_v1`을 사용한다. scalar/identity/NFC validation을 복제하지 않는다.
+
+정확한 공개 ABI는 `quanta_index_contract` root의 기존 타입에 붙는다.
+Native 메서드는 기존 `quanta-native-identity-v1` feature에 속한다.
+
+```rust
+// P: NativeCorpusDecodeAdmissionV1 + ?Sized, E: serde::de::Error
+let mut head_data = NativeCorpusDecodeDataV1::<P::OriginalError, P::Funding>::new_v1();
+let mut head_error: Option<E> = None;
+let head_status = head.validate_into_with_native_admission_v1(
+    &mut admission, &mut head_data, &mut head_error,
+); // Result<(), NativeIdentityDecodeDataRefusalV1>
+
+// Ordinary pure borrowed scope API. Native callers use the entry below.
+SearchPlaneActivateSearchCorpusGenerationCasRequest::validate_expected_active_scope_v1(
+    &candidate_repo, &candidate_revision, candidate_generation, expected_head.as_ref(),
+)?; // Result<(), SearchCorpusActivationValidationErrorV1>
+
+let mut cas_data = NativeCorpusDecodeDataV1::<P::OriginalError, P::Funding>::new_v1();
+let mut cas_error: Option<E> = None;
+let cas_status = SearchPlaneActivateSearchCorpusGenerationCasRequest::
+    validate_expected_active_scope_into_with_native_admission_v1(
+        &candidate_repo, &candidate_revision, candidate_generation, expected_head.as_ref(),
+        &mut admission, &mut cas_data, &mut cas_error,
+    ); // Result<(), NativeIdentityDecodeDataRefusalV1>
+```
+
+실제 수신부는 위 DATA를 임시 값으로 버리면 안 된다. 모든 DATA와 full-error
+slot을 highest Source 외부 부모에 먼저 만들고 finisher까지 보유한다. borrowed Head,
+candidate scope와 실제 funding bank도 그 부모가 보유한다. 검증 DATA에는 input/control/
+policy loan이나 callback을 저장하지 않는다. 성공해도 owned Head output이 생기지 않고
+`complete_into_slot_v1`은 MissingResult다. 같은 DATA는 decode/Head-validation/CAS 중
+정확히 한 번만 사용한다. occupied full-error slot과 used DATA는 input/admission poll
+이전에 거절한다. 반환된 unit status도 부모가 기존 Source terminal classification까지 보존한다.
+
+`failure_v1`의 기존 Work/Copy/Identity view에 `Validation(&SearchCorpusGenerationIdentityValidationErrorV1)`과
+`Activation(&SearchCorpusActivationValidationErrorV1)`을 추가했다. complete original
+non-Copy admission E는 기존 DATA에, 실제 semantic cause는 새 typed slot에 남는다.
+기존 policy가 만든 complete dynamic `serde::de::Error`도 별도 외부 `Option<E>`에
+먼저 이동한다. marker를 지우는 새 unit-error adapter나 diagnostic String producer는 없다.
+수신부의 exhaustive failure-view match는 이 두 variant까지 같은 terminal 정책으로 처리해야 한다.
+
+CAS의 유일한 borrowed body는 expected Head 검증 → repo 비교 → revision 비교 →
+candidate generation의 strict advance 순서다. 기존 Snapshot 기반 API 및 request
+validator도 이 body에 위임한다. expected None은 head/candidate validation과 admission
+poll을 하지 않으며, Native DATA 자체의 one-shot 상태만 소비한다. caller는 이미 확인한
+publication scope를 제공한다. candidate track/digest/content validation은 full request의
+기존 책임이며 scope API에 새 조건을 추가하지 않았다. Snapshot/RepoId/RevisionId/
+digest String을 만들거나 clone하지 않는다.
+
+Native CAS는 expected Head의 기존 byte-work + 1을 먼저 지불한다. 그 뒤 각 repo/
+revision 비교는 1 + 양쪽 encoded string byte lengths, generation 비교는 1을 비교 전에
+지불한다. checked usize→u64 변환과 원본 arithmetic refusal은 기존 Native policy가
+처리한다. None의 work는 0이다. borrowed validation 자체에는 allocation/birth/funding
+issuance가 없다. SDK는 같은 Head 타입도 재수출하고 기존 CAS request 재수출에서 같은
+메서드가 노출된다. contract-base 변경이나 두 번째 package dependency는 필요 없다.
+
+새 owner 회귀는 whole-Head의 모든 기존 오류 순서, CAS의 expected-
+head-first/scope/strict-advance/None 동작, prepaid work 거절의 exact Box 원본, full dynamic
+error 보존, occupied/used DATA의 no-poll, decode와 borrowed 경로의 같은 semantic cause,
+input/policy lifetime 종료 후 DATA 보존을 검사한다. 이 delta의 실행 결과는 앞선
+439/401/SDK176 결과와 분리한다.
+
+- **VERIFIED** — `./scripts/cargow --lane test-canonical-identity-lane test -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk --all-features --locked --quiet`:
+  Contract 계열(base + facade)446 + doctest3, SDK176; SDK doctest6 ignored. 같은 packages의
+  default-feature 실행은 Contract 계열402, SDK176; SDK doctest6 ignored.
+- **VERIFIED** — Contract/SDK `clippy --all-targets --all-features --locked -- -D warnings`,
+  scoped format, public-API snapshots, Contract/Core module inventory, hexagonal boundary,
+  `git diff --check`. Native 메서드만 기존 feature 아래 있다. unconditional ordinary
+  `validate_expected_active_scope_v1`은 Contract의 두 exported path에 추가돼 default API
+  snapshot이2줄 늘었고, unconditional SDK `SearchCorpusActiveHeadV1` 재수출로 SDK의
+  default API snapshot도1줄 늘었다. 두 baseline을 갱신한 뒤 검사를 통과했다.
+- **FAILED** — 첫 `env -u QUANTA_PROOF_RAW_DIR just rust-profile test-daemon`은
+  selected300 중50 PASS/1 FAIL, fail-fast로249 NOT_RUN이었다. 별도로10 SKIP이다. 실패한
+  `e2e_lifecycle_history::sdk_source_delete_append_pin_cas_duplicate_reorder_rollback_restart_history`
+  의 단독 재실행도 같은 CAS 충돌에서 실패했다. 성공한 publication 이후 activation 오류는
+  기존 SDK가 `ActivationAfterPublish { source: Remote(...) }`로 보존하는데, harness는
+  direct `Remote`만 정상 CAS 충돌로 분류했다. 관련 SDK와 harness의 pre-fix source는
+  `8d8a06ad`와 blob-exact 동일했다. `8d8a06ad` 자체의 runtime baseline 실행은 **NOT_RUN**이다.
+- Harness만 typed source를 빌려 읽도록 수리했다. complete wrapper를 유지하며 예상한
+  `CompositeActivationCasConflict`/`NotReady`만 기존 observation으로 분류하고, 그 밖의
+  오류는 원래 wrapper 전체를 반환한다. production SDK semantics와 경쟁 CAS의
+  exactly-one-winner oracle은 변경하지 않았다. 수정 후 같은 단독 history는 **VERIFIED**:1 PASS.
+  수정된 runtime test의 `clippy --all-features --locked -- -D warnings`와 세 영향 package의
+  format check는 **VERIFIED**다.
+- **VERIFIED** — 수리 후 같은 `env -u QUANTA_PROOF_RAW_DIR just rust-profile test-daemon`:
+  catalog25/5 binaries,300 PASS/10 SKIP,297.421s(2 slow), exit0. 최초 실패의50 PASS를
+  합산하거나 최초 attempt를 GREEN으로 바꾸지 않는다. 이 결과는 기존 ordinary daemon
+  activation/query/restart/history의 영향 검증이며 Native Core/Original Source 수용이 아니다.
+- 위 실행 결과는 코드 후보 `c41ba2509d59ff08c81b822533c30b8b58f87b60`에 속한다.
+  문서 정정 후보 `79bea4c0f5c538c45c9af31329490850c0cfe62c`는 이 INDEX.md만 변경하며
+  코드·테스트·설정·API baseline 입력은 동일하다. 문서 정정 후 Rust/daemon 재실행은
+  **NOT_RUN**이다. 아래 retained-copy 추가 source의 검증 결과로 재사용하지 않는다.
+- Semantica actual Core/Original Source 수용, installed E2E, remote CI는 **NOT_RUN**이다.
+  main/remote 통합은 전체 producer/receiver/Source cohort 수용과 별도다.
+
+### Retained native String / typed-ID copy — 2026-10-09
+
+기존 `79bea4c0`의 canonical String producer는 callback에서
+`String::try_reserve_exact(bytes).is_ok()`로 전체 `TryReserveError`를 버렸다.
+첫 Source-only 후보 `8d2a566f`는 full cause를 보존했지만 reserve 오류를 local 변수에
+둔 채 admission의 후속 poll을 기다렸다. unit wrapper가 helper 반환 뒤 외부 슬롯으로
+옮기는 구조만으로는 highest-Source custody를 만족하지 않았다. 아래 source 후속은
+caller-owned reserve/phase DATA를 실제 canonical callback에 주입한다. `8d2a566f`도
+역사적 Source-only 후보이며 GREEN이 아니다. 기존 qualified ref `79bea4c0`와
+`c41ba250` 코드 실행 증거는 새 source에 적용하지 않는다.
+
+`NativeIdentityCopyDataV1<E>`가 raw reserve cause, complete admission E, complete
+joined failure, phase, invoked/repeated/native-success 상태를 모두 외부에서 소유한다.
+SAME `reserve_native_copy_step_v1`이 실패한 실제 `TryReserveError`를 DATA에 즉시
+이동한 뒤 callback bool을 반환한다. admission이 이어서 Source poll/refusal을 수행해도
+원본은 이미 caller DATA 안에 있다. unit 경로의 helper는 full owned error를 반환하지
+않는다. admission E도 unit 거절 전 외부 DATA에 저장한다. 이후 cause 결합은 DATA
+필드 사이의 pure move이며 추가 Source poll, formatting, clone, allocation을 호출하지 않는다.
+
+기존 full-error enum은 `Copy`를 제거했으며 shape는 다음과 같다. `Clone/Eq/PartialEq/Debug`
+는 유지하지만 producer는 원본을 clone하지 않는다.
+
+```rust
+pub enum NativeIdentityCopyErrorV1<E> {
+    Admission(E),
+    AdmissionAfterReserveFailure {
+        admission: E,
+        reserve: std::collections::TryReserveError,
+    },
+    NativeAllocationFailed(std::collections::TryReserveError),
+    InvalidNativeProducer,
+    InvalidNativeProducerAfterReserveFailure(std::collections::TryReserveError),
+    InvalidNativeCapacity,
+}
+```
+
+DATA 및 full error의 `reserve_failure_v1` / `admission_failure_v1`은 원본을 빌려 준다.
+DATA의 `failure_v1`은 완료된 full error를 빌려 주고, `is_fresh_v1` / `is_complete_v1`은
+phase를 읽는다. `failure_into_slot_v1(&mut Option<NativeIdentityCopyErrorV1<E>>)`은
+external→external pure move 후 unit status만 반환한다. occupied destination은 모두
+보존하며 미완성/이미 이동한 결과는 MissingResult다. 이 transfer 자체는 Source poll이나
+새 owned-error publisher를 호출하지 않는다.
+
+finite `NativeIdentityCopyRefusalV1`은 `OccupiedOutput`, `UsedData`, `OperationRefused`,
+`MissingResult`다. 정확한 public unit ABI는 아래와 같으며 Contract-base 및 Contract
+umbrella의 unconditional surface다. `8d2a566f`의 bool/error-slot unit 서명은 이 DATA
+서명으로 대체됐다. owned convenience의 기존 서명은 유지한다.
+
+```rust
+pub fn try_copy_string_into_slots_with_native_birth_v1<E>(
+    source: &str,
+    value: &mut String,
+    data: &mut NativeIdentityCopyDataV1<E>,
+    admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+) -> Result<(), NativeIdentityCopyRefusalV1>;
+
+// Implemented on BOTH RepoId and RevisionId:
+pub fn try_clone_into_slots_with_native_birth_v1<E>(
+    &self,
+    backing: &mut String,
+    output: &mut Option<Self>,
+    data: &mut NativeIdentityCopyDataV1<E>,
+    admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+) -> Result<(), NativeIdentityCopyRefusalV1>;
+```
+
+raw unit driver → external phase guard → SAME admission/physical reserve → exact byte fill
+순서다. typed unit clone도 raw unit body 뒤에 기존 private sealed bytes를 같은 typed
+output으로 이동한다. owned String/typed clone convenience만 local DATA를 만들며, SAME
+unit core가 끝난 뒤 owned error로 반환한다. Source unit 경로는 그 convenience를 호출하지
+않는다. Source caller는 enclosing external 부모에 backing, DATA, typed output과 실제
+funding bank를 먼저 두고 highest finisher까지 함께 보유해야 한다. DATA에는 input,
+control, callback, funding bank 또는 새 Source authority가 없다.
+
+occupied backing/output은 DATA를 바꾸거나 input/admission을 poll하지 않는다. used DATA는
+zero-byte 성공, pre-birth 거절, full-error transfer 뒤에도 재사용되지 않는다. repeated
+callback은 두 번째 reserve를 실행하지 않아 첫 물리 원본을 덮어쓰지 않는다. late admission
+E의 기존 오류 우선순위를 유지하면서 reserve 원본도 함께 남긴다. partial String과 funding은
+caller에 남고 producer는 funding을 소유하거나 release하지 않는다. 기존 work 요금과
+identity/NFC 판정 순서, private typed seal은 바꾸지 않았다.
+
+후속 receipt 정정은 repeated callback의 반환 bool도 첫 physical
+결과로 유지한다. 첫 성공 뒤 반복은 true를 반환하고 첫 실패 뒤 반복은 false를 반환한다.
+반복 protocol은 여전히 거절하며 실제 backing/funding receipt를 뒤집지 않는다.
+`d751052b`의 기존 Source-only 상태와 검증 부재는 그대로다. 초기 handoff에서는 새 hunk의
+Rust/format/test도 **NOT_RUN**이었으며, 이후 실행 결과는 아래 local closeout에 구분했다.
+기존 ordinary/retained 회귀의 반복 bool 기대만 같은 규칙으로
+수정했고 SDK의 같은 문제도 동일하게 정정했다. SDK opaque handle ABI·진단6개 및 실제
+수신부 잔여는 [SDK ingress ADR](../../../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md#native-connect-producer-and-open-receiver-co-cut)에 기록했다.
+
+#### Constructor / decode / corpus co-cut
+
+borrowed constructor에도 SAME predicate/NFC/fee body를 호출하는 unit entry를 추가했다.
+아래 transient loan은 외부 물리 슬롯만 빌리며 input/control/callback을 보유하지 않는다.
+새 allocator, normalizer, canonical-ID substitute 또는 issuer가 아니다. 이 surface는 기존
+`quanta-native-identity-v1` feature에 속한다.
+
+```rust
+pub struct NativeIdentityConstructionSlotsV1<'data, T, E> {
+    pub backing: &'data mut String,
+    pub output: &'data mut Option<T>,
+    pub attempted: &'data mut bool,
+    pub normalization: &'data mut NativeNormalizationDataV1<E>,
+    pub copy: &'data mut NativeIdentityCopyDataV1<E>,
+    pub failure: &'data mut Option<NativeIdentityConstructionErrorV1<E>>,
+}
+// BOTH RepoId and RevisionId; P: NativeNormalizationAdmissionV1:
+pub fn try_from_str_into_slots_with_native_admission_v1<P>(
+    value: &str,
+    slots: NativeIdentityConstructionSlotsV1<'_, Self, P::Error>,
+    normalization_admission: &mut P,
+    copy_admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, P::Error>,
+) -> Result<(), NativeIdentityDecodeDataRefusalV1>;
+```
+
+`NativeIdentityDecodeDataV1`의 state에 실제 copy DATA를 추가했고 borrowed runner는 이
+unit constructor에 기존 backing/output/attempt/NFC/copy/failure 필드를 직접 loan한다.
+기존 owned-input branch는 이미 외부 DATA의 String을 검증·이동하며 copy를 추가하지 않는다.
+old owned-error constructor는 local copy/error DATA에서 SAME unit body를 호출하는
+convenience다. highest Source 수신자는 이 old convenience를 호출하면 안 된다.
+
+`NativeCorpusPolicyV1::string_v1`도 `StringDataV1.copy`를 직접 raw unit producer에 넘긴다.
+거절 뒤 full cause를 기존 external `StringDataV1.failure`로 pure move한 다음 유한 Serde
+marker를 만든다. identity copy 거절도 copy DATA에서 기존 external construction-failure
+slot으로 pure move된다. 이 두 unit 경로에는 full owned-error helper 호출이 없다.
+각 funding bank 및 NFC scratch의 기존 owner/drop 순서는 유지한다.
+
+#### Actual old-convenience callsite census
+
+The table was refreshed after the producer closeout source edits. Semantica rows
+are current static observations, not executed receiver acceptance.
+
+아래 Semantica 경로는 `/Users/songmin/Documents/code-new/semantica-codegraph-v2` 기준
+현재 physical source의 read-only 대조다. stale callsite가 없다는 전체 runtime verdict가
+아니며 Semantica 파일은 이 Index 후보에서 편집하지 않았다.
+
+| Actual source | Observed route / remaining receiver work |
+| --- | --- |
+| Index `ids.rs::NativeIdentityDecodeRunnerV1::try_fill_v1` + `ids/native_decode_data_v1.rs` | Borrowed input을 새 external construction loan/copy DATA에 직접 연결. old owned constructor 호출 제거; static source만 확인 |
+| Index `ipc/control/native_decode_v1.rs::NativeCorpusPolicyV1::string_v1` | `StringDataV1.copy` → raw unit producer. old owned raw copy 호출 제거; static source만 확인 |
+| Semantica `packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/assembly_data/dense_sample_source_authority/native_generation_copy_v3.rs` | Repo/Revision 각각 actual `copy_data_v3[0/1]`를 새 unit clone에 전달하는 source 확인. Receiver authored-not-run이며 전체 Source 수용은 별도 |
+| `packages/analysis/quanta-v2/crates/quanta-sdk-runtime-executor/src/client/query_handlers/gqlang_handler/dense_factory_v3/provider_request_v3.rs` | RepoId의 old `try_from_str_into_with_native_admission_v1` 호출이 남음. external copy DATA 및 construction loan/unit entry로 co-cut 필요 |
+| `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_writer_ports/scope_native_identity_data_v3.rs` | RepoId/RevisionId의 old borrowed constructor 두 호출이 남음. 각각 외부 copy DATA와 기존 독립 NFC/funding owner를 유지하며 unit entry로 연결 필요 |
+| `packages/analysis/quanta-v2/crates/quanta-runtime/src/sdk/search_builder/index_owner_env_authority/aggregate_publication_authority/query_source_admission_v3.rs` | Repo/Revision 및 published-generation이 각각 외부 `identity_copy_v3[0/1/2]`를 새 unit clone으로 전달함. full error를 DATA에서 빌려 projection하는 현재 source 확인; Source 수용은 NOT_RUN |
+| `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_errors/digest_types_v3.rs::ManifestDigestV1` | 새 raw unit DATA를 받아 SAME private digest seal을 유지하는 V3 unit adapter가 현재 source에 있음. old owned convenience도 남지만 Source entry는 새 unit adapter를 사용해야 함 |
+| `packages/analysis/quanta-v2/crates/quanta-contract-retrieval/src/indexing_writer_ports/published_generation_ref_v1.rs` | 새 unit clone은 manifest DATA를 parent에서 받아 SAME private ManifestDigest unit adapter에 전달함. old convenience·테스트도 남음; 실제 Source caller의 채택 및 수용은 별도 |
+| `packages/analysis/quanta-v2/crates/quanta-sdk-runtime-executor/src/client/daemon_search_execution/product_query_storage_v3.rs` | actual old ManifestDigest clone 호출 뒤 owned error projection. 외부 copy DATA와 complete original cause retention을 함께 연결해야 함 |
+
+Index의 나머지 old copy/clone/constructor 참조는 owned conveniences, reexports 및 기존
+ordinary 테스트다. 표에서 명시한 Semantica old Source callsites는 남은 의존성이며 convenience
+유지나 outer unit wrapper만으로 닫혔다고 보지 않는다. private ManifestDigest의 ordinary
+`new`/String copy/NFC를 새로 구현해 우회하지 않는다. full enum의 새 variant와 unit refusal의
+MissingResult도 receiving exhaustive match에 연결해야 한다.
+
+- `d751052b` 당시 **VERIFIED (static only)** — scoped canonical formatter, `git diff --check`, actual
+  producer/caller/re-export source 대조. std의 Clone/Eq/PartialEq 지원 및 Copy 부재도 로컬
+  std 문서로 확인했다. compile/test/Source acceptance 결과가 아니다.
+- `d751052b` 당시 **AUTHORED / NOT_RUN** — owner 회귀7개: actual reserve step 직후·admission 복귀 전 외부
+  reserve/phase 보존, late E/잘못된 report/repeated callback, first cause와 pure external
+  transfer/re-entry, partial backing 및 mock funding, sealed bytes, occupied output/backing,
+  empty/pre-birth state. `usize::MAX`로 실제 std capacity overflow를 유발하는 SAME private
+  reserve step을 사용하며 forged str/실제 OOM/대체 allocator는 사용하지 않는다.
+- `d751052b` 당시 **NOT_RUN** — 이 source 후속의 Rust compile/Clippy/unit/daemon, public-API snapshot 및
+  module/hexagonal gate 실행. baseline은 기존 후보 그대로이며 DATA/loan/enum/API 변경의
+  갱신·검증이 남았다. guard 억제나 이전 GREEN 재사용은 없다.
+- Native Core/Original Source/installed/remote CI, main 통합·push는 **NOT_RUN**이다.
+
+#### Local producer closeout 2026-10-09
+
+Current producer follow-up preserves one canonical String/typed-ID copy body,
+one PathBuf reserve callback, one SDK payload/dispatch body and one completion
+predicate. Repeated callback returns the first physical bool without a second
+reserve; the protocol still refuses repetition. Full reserve/admission errors,
+partial backing and actual external funding are preserved. SDK `Shared` is
+opaque; `is_complete_v1` and `complete_shared_v1` share the predicate used by pure
+transfer. Constructor code does not read the shared payload.
+
+Native corpus tests now use canonical module paths below
+`ipc/control/native_decode_v1/native_corpus_decode_tests_v1.rs` and its matching
+child directory. Redundant path aliases were removed; test module names and
+bodies remain byte-identical after removing the old child path attribute.
+No duplicate test body, decoder, policy, issuer, allocator or allowlist was added.
+
+Latest repo-local results include the independent committed-receipt fix now in
+main `029014bee9a7f7e201883c5679e57b83678c2388`. The owned physical producer bundle
+has 42 paths, excluding the other owner's preparation ADR and Oct-9 SDK
+reconciliation hunks later in this ticket. Code/test/tooling/API inputs are 40
+paths with SHA256 `1eea64614f5da58f79730921f6728e5720166c2ffc69897ab76174760058655d`.
+Documentation edits do not change these executed Rust inputs.
+
+| Scope / command | Observed result and limit |
+| --- | --- |
+| `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk --all-features --locked --quiet` | **VERIFIED**: Contract family 454 PASS, SDK 183 PASS; 3 Contract-base doctests PASS, 6 SDK process tests ignored. Includes all 13 new owner regressions. Earlier source before the independent receipt delta had 453/182; do not combine the counts. |
+| Same command without `--all-features` | **VERIFIED**: Contract family 410 PASS, SDK 183 PASS, 6 SDK process tests ignored. Earlier default source had 409/182. |
+| Same package/lane `clippy --all-targets --all-features --locked -- -D warnings` | **VERIFIED**. Fixed three production style diagnostics, checked fixture drop arithmetic, and moved repeated-receipt assertions out of the Result-returning mock. No lint suppression. |
+| `just rust-profile dev-all-targets` | **VERIFIED**: workspace all-targets/all-features check after module-path and receipt changes. Compilation is not workspace test qualification. |
+| `./scripts/cargow --lane fmt-lane fmt --all -- --check` | **VERIFIED**. |
+| `python3 tools/ci/lint/check-public-api.py` | **VERIFIED** after generating the intended DATA/unit exports, completion getters and opaque Shared declaration; the current snapshot also retains main's committed-receipt API. |
+| `python3 tools/ci/lint/check-cargo-modules-snapshot.py`, `check-module-cycles.py`, `lint-hexagonal-boundaries.py`, `check-wire-inventory.py`, `git diff --check` | **VERIFIED**. No cycle baseline expansion or guard suppression. |
+| `python3 -m pytest tools/ci/tests/test_lint_hexagonal_boundaries.py -q -o cache_dir=/tmp/quanta-index-native-closeout-pytest` | **VERIFIED**: 8 PASS. An earlier unittest discovery selected zero tests and is not proof. |
+| `env -u QUANTA_PROOF_RAW_DIR just rust-profile test-daemon` | **VERIFIED** for that earlier build: 300 PASS, 10 SKIP, 311.133s, 2 slow. This ran before the subsequent independent receipt source was committed; it is ordinary daemon regression, not latest native receiver/Original Source proof. |
+| `python3 tools/ci/lint/check-module-discipline.py` | **FAILED**: implementation items in the existing `quanta-index-sdk/src/preparation/mod.rs` facade. That file is unchanged from main and outside this producer bundle. Repository-wide structural GREEN is not claimed. |
+
+The first compile failed on a new PathBuf test's nonexistent `is_empty` method;
+the test now reads `as_os_str().is_empty`. Strict Clippy failures above were
+repaired and rerun. A later combined SDK run failed because the concurrent
+receipt guard rejected a positive observation fixture's zero journal sequence;
+that owner corrected the fixture to sequence 7 in main `029014be`, and the
+current combined tests passed. One queued test attempt timed out before resource
+admission and executed no tests; it was rerun after the daemon completed.
+
+**BLOCKED** — whole breaking-bundle main integration: current Semantica Scope
+repo/revision constructors and provider request still call the old owned-error
+convenience; ProductQueryStorage still uses the old ManifestDigest clone. The
+native SDK ingress still calls `client_v1` rather than connecting its opaque
+completed funded handle through the canonical admitted Core read. These files
+are active receiving-owner work and were not edited by this Index producer.
+Existing direct Runtime and ManifestDigest unit adapters in the census above
+are current source, not executed highest-Source acceptance.
+
+The complete producer tree is preserved as a candidate on top of current main;
+it does not advance the historical qualified `79bea4c0` ref. Actual Core/Original
+Source, installed E2E and remote CI remain **NOT_RUN**. No partial native main
+merge or push is performed while those receiving seams remain open.
+
+#### Coupled closure follow-up 2026-10-09
+
+The earlier local result table belongs to its recorded producer inputs. This
+successor combines native producer `758c9df85c1e6aa89a679ae3f57c29ec365553e7`,
+current main's facade repair `bd73045aee0b8e5ded13359c2cb52f8d06d7e00b`, and the
+complete publication recovery delta from `16792d875b88b89895a2b91774bd598f54065a39`.
+The lexical helpers were reconciled around the SAME borrowed
+`QuantaIndexClientPayloadV1`; there is one publication dispatcher and one CAS
+request validator/dispatcher. No duplicate client, controller or owned proxy
+was introduced. The managed candidate checkout is
+`/Users/songmin/.codex/worktrees/native-coupled-closeout/quanta-index`; the tested
+code is committed as `92e01fc18332c0f7d0eb8bef95d8d75a9777be4b` on
+`codex/index-publication-native-cohort`. Main
+`47f2456e36f535b5cac42fe32cc3d07f23e36d7b` was merged into that candidate at
+`bb98b2de4d2334311415f06ca7aac2e52b168bc9`. The later main documentation commit
+`b61655ed0a1be1e0984e7b816be41183ed8da214` was merged at
+`1179ee409d6231f2d75e8df5f5a22dff7a76889b`. Only documentation changed in these
+main updates; the 56-path tested code digest remained identical, and the
+physical checkout has the SAME bytes on all 56 paths.
+
+- **VERIFIED** — the preparation facade repair is independently committed in
+  main. Existing implementation and tests moved without body changes; public
+  API is unchanged. Module discipline now passes all 41 facades. The focused
+  `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-sdk preparation --all-features --locked --quiet`
+  passed 15 unit tests and 1 process test.
+- **VERIFIED (diagnostics)** — opaque completion, borrowing and transfer use
+  the same sealed predicate: H present, payload absent, funding absent. The
+  host must move its actual bank into H. Missing funding after a positive path
+  reserve is refused; zero-byte paths skip reserve and may fund at header
+  birth. Refusal retains partial H, path, funding and full causes in DATA. All
+  18 `native_connect_v1` tests pass, including DATA-first drop, hostile retained
+  funding and zero-byte header-funded fixtures. These mocks are not Core proof.
+- **VERIFIED (static only)** — the three Semantica Scope/provider/ProductQuery
+  receiving seams use the SAME external DATA/unit producers and retain full
+  causes. Another writer included them and the minimal root lock dependency
+  edge in Semantica `8217a38bf04d6c2fb2a535d43753408ac4621972`; this lane did not
+  stage or commit Semantica. The ProductQuery test checks its retained copy cause.
+- **AUTHORED / scoped verification below** — Semantica ingress now receives typed `AfterPublish`
+  stage, complete original evidence and underlying cause. It exposes the SAME
+  SDK `publish_outcome` and `activate_published` through the existing ingress.
+  The V5 caller uses these two operations and rejects a replay's target mismatch
+  before CAS, preserving original evidence. It uses only the original frozen
+  expected head and performs no fresh head capture. Focused tests cover both
+  error stages, frozen target rejection and full original evidence after plain
+  pre-CAS Protocol or local delivery-validation failure. Delivery projection
+  borrows the receipt instead of cloning it. A further receiver review found a
+  post-CAS row-count check could abort without published evidence. V5 now runs
+  the SAME borrowed persisted-row validator while the original outcome is live;
+  operation/semantic-count mismatch regressions assert Aborted and byte-identical
+  original evidence. These latest two-file changes are statically checked only.
+  Semantica candidate
+  `0a7a67472e30f5e40a018edc06dac16732996e58` (successor of
+  `9c494dc83c597448b606cac10e4de2a9f3a72512`) on
+  `codex/index-publication-native-receiver` preserves these seven owned paths
+  including the Core return repair. Canonical edition-2021 formatting with
+  `config/rust/rustfmt.toml` and diff checks passed. The receiver candidate used
+  a private index and `commit-tree`, so commit hooks did not run; it is authored
+  source, not a Rust/native/product verdict. Kernel's separately captured
+  focused execution is recorded below; Runtime V5/Product/native qualification
+  is not implied by that one test.
+
+
+- **AUTHORED / Runtime body NOT_RUN** — the earlier full-cause statement applies
+  to the Kernel boundary, not to the original V5 row updater. Review found the
+  actual activation caller and `into_parts_v1` converted the original ingress
+  failure to text. The SAME `SearchPlaneDispatchFailureV1` now owns the non-Clone
+  `IngressError`; its Clone/Eq derives were removed. Durable row projection
+  borrows the failure and writes message plus original portable evidence, then
+  returns the live failure. Each claim is attempted and persisted individually;
+  completion CAS is observed before returning failure. A CAS refusal keeps the
+  original failure as the primary Error source with a separate RuntimeError
+  diagnostic, so it cannot claim durable evidence or replace the first cause.
+  Replay now propagates failed attempts instead of returning a successful row
+  count. Bootstrap uses the existing typed governed worker and makes the public
+  RuntimeError text projection only at its final explicit consumer/drop.
+  No new runtime/wire IR, decoder, controller or production SDK dependency was
+  introduced. The SDK edge is dev-only for actual typed transport fixtures.
+  Tests assert fixed receipt/publication bytes, ConnectionReset kind, the same
+  boxed I/O cause pointer, preservation on successful/failed completion CAS,
+  and exactly one drop at final public projection. Timeout/cancellation remains
+  a distinct path: the worker owns the cause until its result/drop, while only
+  actually persisted row state can support restart reconciliation; that path
+  and the complete live V5 IPC route are NOT_RUN.
+  The typed-cause cut was committed as
+  `431de3f8d4cbfdbfbeb4a09dc525d1a50593b346` on
+  `codex/index-publication-native-receiver`, with 13 paths and aggregate digest
+  `c50ba60b49ae4a2b0f9095ce958399af0f7d12449e371d4df758b05332d62a8f`.
+  Its authored source cut is `6eb8df7c30ed02d0eda13d1d8ec9536e7213ed5e`, after
+  full-binding admission and actual-consumer regressions in
+  `d713441339fed8fd846992b303dea16a03017072`. Candidate
+  `c0bd1df14b7169b7ca81f7785c11875fbd672c96` reconciles the independent Core
+  repair now committed in main `e234efb0c1b15cd5001c5f129a9f019315a1acc5`;
+  the candidate tree is byte-identical to the authored source cut. This merge
+  metadata used commit-tree, so its hooks are NOT_RUN. All eight paths changed after
+  the typed-cause cut match the live shared source. This includes the same
+  non-Clone transport pointer/drop fixture through the actual governed worker.
+  Mixed-owner facade/manifest/lock paths include only this lane's hunks in that
+  candidate; shared staged/unstaged work was preserved. Commit-tree hooks are
+  NOT_RUN, and shared-source QBC results do not qualify this authored branch.
+
+
+- **AUTHORED / Kernel verification below; Runtime body NOT_RUN** — a further
+  V5 review found that target-only admission could activate an original replay
+  before rejecting its batch digest. Two valid Delta inputs can share source
+  event, payload and target while bases 5 and 6 produce different batch
+  digests. The existing Kernel complete-binding check is now the one public
+  `validate_frozen_search_corpus_publication_v1`; both Kernel's combined helper
+  and V5 call it before activation. Full event/target/batch identity must match.
+  A refusal retains the original receipt/publication and typed AfterPublish
+  evidence, performs zero activation calls, and never rereads the frozen CAS
+  head. The new fixed Delta regression exercises legitimate general SDK replay
+  before asserting the stricter frozen-caller refusal; this uses a closure
+  counter, not daemon/Core execution. No second validator/decoder was added.
+- **AUTHORED / NOT_RUN** — failed attempts stop replay after the first row's
+  completion persistence; later rows remain unclaimed, including after a
+  retryable failure. A real temporary machine-store regression deletes the
+  first canonical payload and asserts first Aborted/attempt 1, second
+  ReadyToDispatch/attempt 0 with no error. The existing corrupt-payload product
+  contract now flips one byte while preserving length, expects the fixed
+  emission-digest mismatch to propagate, and checks Aborted while already
+  delivered rows remain Delivered. Its old success/DispatchFailed oracle was
+  inconsistent with the verified custody loader. These Runtime/product bodies
+  remain unexecuted behind the lower SSA compile failure.
+
+
+Executed against the coupled Index source, with 56 code/test/tooling/API
+paths differing from main and aggregate SHA256 `de0f081c9c7a52d2404f89e0b9d08c85ac2987ca1f7b74e2cd117da826cc7a3d` (sorted UTF-8 path,
+NUL, lowercase file SHA256, LF):
+
+| Scope / command | Observed result and limit |
+| --- | --- |
+| `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk --all-features --locked --quiet` | **VERIFIED**: Contract family 454 PASS; SDK 196 PASS; 3 Contract-base doctests PASS; 6 SDK process tests ignored. |
+| Same command without `--all-features` | **VERIFIED**: Contract family 410 PASS; SDK 196 PASS; 6 SDK process tests ignored. |
+| `./scripts/cargow --lane test-sdk-binding-owner-lane test -p quanta-index-searchctl -p quanta-index-retrieval-bench --lib --all-features --locked --quiet` | **VERIFIED**: CLI 46 PASS; retrieval-bench 125 PASS. These are library regressions, not a performance comparison. |
+| Same lane `clippy -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-sdk -p quanta-index-searchctl -p quanta-index-retrieval-bench --all-targets --all-features --locked -- -D warnings` | **VERIFIED**. |
+| `just rust-profile dev-all-targets` | **VERIFIED**: workspace all-targets/all-features compile; 8 existing vendor warnings. This is not workspace test qualification. |
+| `env -u QUANTA_PROOF_RAW_DIR just rust-profile test-daemon` | **VERIFIED**: 300 PASS, 10 SKIP, 2 slow, 371.815s. Fresh coupled build. Ordinary process regressions do not qualify native Core/Original Source. |
+| Formatter, module discipline, hexagonal boundaries, cargo module snapshots, module cycles, wire inventory, Contract/SDK public API snapshots, `git diff --check` | **VERIFIED**. Intended publication API snapshot regenerated; no cycle baseline expansion or guard suppression. |
+
+A first SDK attempt waited 300 seconds for resource admission and exited 124
+before any tests started; the subsequent diagnostic run passed. Semantica QBC
+runs first encountered concurrent source-capture drift and then a stale root
+lock dependency. The minimal local dependency edge removed that lock failure.
+The next actual compiler run exited 101 at Core
+`native_temporary_vec_v3/retired_v3.rs:77`: `Ok(())` had the wrong nested Result
+shape. The one-line `Ok(Ok(()))` repair is authored, canonically formatted and
+compiled successfully in the next attempt. That attempt then failed at
+`quanta-contract-types-core/src/values/input_cell_value.rs:155`: the old
+SourceText metadata-retain call required a coordinated external-birth migration.
+Another owner subsequently removed that call. A new all-workspace lock check
+then exposed another omitted local edge,
+`quanta-runtime-test-support-pta -> codegraph-cfg-dfg-kernel`. Only that edge was
+added, excluding the diagnostic regeneration's unrelated registry upgrades.
+The next frozen attempt also required
+`quanta-contract-ports -> codegraph-cfg-dfg-kernel`; another writer already
+applied that edge to the shared root lock. A fresh CoW diagnostic using QBC
+`cargo update --offline --workspace` changed only this local edge, then QBC
+`cargo metadata --locked --offline --format-version 1` passed (798 packages,
+447 workspace members, no stderr). The current shared lock matches this
+validated SHA256 `f971c69fe4ca57a1ec1f669288c7dc4f785d29db91d44286a7602c824bb5ba26`
+at that observation; subsequent foreign lock changes are separate inputs.
+This is lock resolution only. The next frozen compiler attempt required two
+existing Core text-birth functions to be re-exported from the public facade;
+actual external callers prevent reducing their visibility. After this minimal
+repair, compilation passed Core and stopped at five missing Rustix API docs.
+Five comments were added without changing logic or suppressing lints. The next
+kernel exact run passed those boundaries and exited 101 in
+`quanta-contract-retrieval`: missing policy-aware replay serializers, a macro
+path resolving in the caller scope, and denied stale imports (26 diagnostics).
+Those failed attempts ran no receiver test bodies. A minimal repair connected
+four existing replay serializer shapes to their policy-aware trait, retaining
+wire order and optional-field rules, qualified the macro path, and removed
+stale imports. The next run compiled these boundaries, then failed on three
+new frozen-publication test sites using the retired String transport shape.
+Both fixtures now retain actual `IpcError::Io(ConnectionReset)` causes and
+verify kind plus full message, without a string-conversion shim.
+
+**VERIFIED (Kernel focused)** — the canonical command below exited 0 and ran
+1 PASS, 0 FAIL, 0 ignored, 111 filtered. Owner execution result is GREEN and the
+QBC publication-complete marker exists for run
+`20261009T094133.688808Z-fdf3142d7774`, snapshot digest
+`e7a71556c037af6d2adf3bf9fb1c441951622894023b1f6320e40b7ffa6f8bad`.
+This earlier frozen shared-source result is not a qualification of the authored
+receiver branch or of its Runtime/Product/native consumers.
+
+The retained result JSON is outside the checkout:
+`/Users/songmin/Library/Caches/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/semantica-codegraph-v2-765ad5e47fc0/lanes/01a1062b-e4a5-71f1-8554-a097114448ec-snapshot-artifact/verification-results/20261009T094133.688808Z-fdf3142d7774/receipt.json`.
+It binds Semantica HEAD `8217a38bf04d6c2fb2a535d43753408ac4621972` plus captured
+dirty overlay `c126dfb411ad94504a97c7d77c02559d` and sibling overlay
+`32258f46b15d423814b0`. The compiler included the four frozen-publication tests,
+but this selector ran only the one classification test; those four tests and
+any C4 native consumer are **NOT_RUN** by this result. Canonical QBC GC has
+since reclaimed that CAS checkout; the retained receipt must not be used to
+pretend the original source tree is still available for peer-path comparison.
+
+```sh
+./scripts/quanta-build-cli owner run \
+  --lane 01a1062b-e4a5-71f1-8554-a097114448ec \
+  --package quanta-runtime-retrieval-kernel --execution-kind test --target-kind lib \
+  --selector-mode exact \
+  --selector index_sdk_ingress::publish::sdk_error_classification_v1::tests::post_publish_failures_preserve_stage_evidence_and_original_cause \
+  --compile-policy feature-isolation:quanta-runtime-retrieval-kernel.no-default.ed0772b29304 \
+  --max-test-threads 1 --wait-seconds 45
+```
+
+
+**VERIFIED (five Kernel focused witnesses)** — the five exact frozen-publication
+regressions below each ran 1 PASS, 0 FAIL, 0 ignored, 112 filtered with the SAME
+Kernel feature policy shown above. Each owner result is GREEN and has its own
+publication-complete marker. The two earlier runs before shared-validator
+extraction were rerun and superseded here. Captured `publish.rs`, its fixed test
+file and root Cargo.lock hashes match current live bytes for all five results:
+Kernel publish SHA256 `8fd13309370c36fca4aa0c91c6105a4ebcf7487b0725cec07527230162b21c91`,
+test file SHA256 `1be47dc4c634ed1496847957fff4d30cd9b920709d2719942ed381d94860ad0b`.
+Each capture retains its own full snapshot digest; these are five focused
+executions, not one whole-tree or receiver-candidate qualification.
+
+Witness names use prefix `index_sdk_ingress::publish::frozen_publication_tests_v1::`.
+Result paths use
+`/Users/songmin/Library/Caches/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/<root>/lanes/01a1062b-e4a5-71f1-8554-a097114448ec-snapshot-artifact/verification-results/<run>/receipt.json`.
+
+| Exact witness suffix | Run | Root |
+| --- | --- | --- |
+| `activation_failure_preserves_evidence_and_refuses_automatic_retry_v1` | `20261009T144317.028186Z-fe8a64edd9f5` | `semantica-codegraph-v2-e333f92df2b3` |
+| `already_wrapped_activation_failure_keeps_one_original_cause_v1` | `20261009T144510.104330Z-c2274ca5bb1c` | `semantica-codegraph-v2-8da920d9224c` |
+| `retargeted_replay_preserves_original_evidence_without_control_ipc_v1` | `20261009T145049.181597Z-f3e5efc844b1` | `semantica-codegraph-v2-2174f34b46d1` |
+| `same_identity_replay_reaches_activation_and_returns_original_receipt_v1` | `20261009T145253.220381Z-916ffcd2b8b1` | `semantica-codegraph-v2-e8abbf2c9983` |
+| `same_target_replay_with_different_delta_base_is_refused_before_activation_v1` | `20261009T144123.509612Z-cc2ccf8ed821` | `semantica-codegraph-v2-37bc7cb50290` |
+
+These tests exercise actual shared publication admission and preserve the
+frozen expected head, original receipt/evidence and original typed activation
+cause. They do not execute V5 bootstrap, native RPC/Core, installed E2E or
+restart reconciliation. Canonical snapshot GC may reclaim the source checkout;
+retained receipts are not proof that a CAS source directory still exists.
+
+A Runtime V5 exact attempt stopped before compilation because the QGLang
+sibling overlay changed during source capture. A later capture compiled but
+exited 101 before Runtime test bodies: DFG source-assignment birth returned its
+original native allocation error without the existing typed wrapper, and Java
+archive helpers were re-exported one private scope too far. Two narrow repairs
+preserve the same native error via `OriginalFactRowBirthErrorV3::from` and narrow
+the archive import to private; canonical edition-2021 formatter and diff checks
+passed. Another capture encountered QGLang overlay drift. A final frozen run
+passed those repaired boundaries and exited 101 at SSA exporter compilation:
+`controlled_active_reads_v3::abort_active_reads_v3` needed common-ancestor
+visibility, and `final_refresh.rs:44` / `exporter.rs:515` still called removed
+`CanonicalSemanticTemporaryVecV1::into_retained_v1`. Visibility was narrowed to
+`crate::solver::ssa_braun::canonical_exporter` and statically checked. The two
+retirement callers were left for their active Source owner: the replacement
+`retain_into_v3` consumes caller-created `NativeTemporaryVecRetainBirthV3<T>`
+and transfers through a destination slot after successful unit status. Phi
+construction and refresh are repeated occurrences; their current highest Source
+has no external per-occurrence bank retaining backing, funding and full errors.
+Restoring an owned-value compatibility helper or creating DATA inside that
+Source would lose custody. Runtime compilation is **FAILED** at this cut; its
+V5 test bodies are **NOT_RUN**. No foreign process, admission policy or shared
+target binding changed.
+
+
+**FAILED (earlier Runtime compile)** — run
+`20261009T103001.474688Z-17b3e1501c61` requested the delivery/evidence/cause
+selector with policy `quanta-runtime.no-default.32c001bdd540`. That policy
+supports the inline published-evidence tests but omits `search-plane-proof-support`,
+so it cannot execute the requested `tests::proof_projection` body even if
+compilation succeeds. This result is retained only as a failed compilation
+record; it supplies no Runtime behavioral proof.
+The owner receipt reports RED, exit 101, zero passed/failed/ignored/filtered
+bodies, source snapshot digest
+`30ec450f930e21ec451bd81f61c0baf3ed1d9916c4051bd613319b0376a01932`.
+Compilation stopped at the SAME two removed `into_retained_v1` callers,
+`final_refresh.rs:44` and `exporter.rs:515`; Runtime itself was not compiled.
+The lower handoff also reports `source_ready=false` / `native_ready=false`.
+The required external retain-birth banks are still absent; no compatibility
+helper or local Source-owned DATA was restored. The receipt is retained at
+`/Users/songmin/Library/Caches/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/semantica-codegraph-v2-1e4ef57d0339/lanes/01a1062b-e4a5-71f1-8554-a097114448ec-snapshot-artifact/verification-results/20261009T103001.474688Z-17b3e1501c61/receipt.json`.
+No publication-complete marker exists for this failed result.
+
+**FAILED (last completed Runtime compile before SSA repair), NOT_RUN (V5 behavior)** — corrected run
+`20261009T144643.515684Z-459bc882b63f` uses the declared
+`quanta-runtime.no-default.9c3270892708` policy, whose feature is
+`search-plane-sdk-ingress-proof` and includes the test's proof-support gate.
+It still exits 101 at the SAME two SSA `into_retained_v1` callers before
+Runtime compilation. Owner result is RED, all body counts are zero, and no
+publication-complete marker exists. Source snapshot digest is
+`ae001f82a516b3ced1af2527d2b8c082ea2e787ffdcfa86adfeb550f20ea0797`.
+The exact result is retained outside the checkout at
+`/Users/songmin/Library/Caches/semantica-codegraph-v2-target/quanta-build-cli/_state/execution-roots/semantica-codegraph-v2-10b1df944ea5/lanes/01a1062b-e4a5-71f1-8554-a097114448ec-snapshot-artifact/verification-results/20261009T144643.515684Z-459bc882b63f/receipt.json`.
+The command below therefore records an executed compile failure, not a passed
+delivery, bootstrap, store or product test. Repeating it without the Source
+owner's external retain-birth migration cannot close those scopes.
+
+```sh
+./scripts/quanta-build-cli owner run \
+  --lane 01a1062b-e4a5-71f1-8554-a097114448ec \
+  --package quanta-runtime --execution-kind test --target-kind lib \
+  --selector-mode exact \
+  --selector retrieval::port_impls::index_projection_writer::source_bound_projection_assembly::authority_assembly::search_plane_handoff_dispatch::tests::proof_projection::lexical_delivery_requires_matching_composite_activation_ack_v1 \
+  --compile-policy feature-isolation:quanta-runtime.no-default.9c3270892708 \
+  --max-test-threads 1 --wait-seconds 45
+```
+
+Canonical edition-2021 formatter and scoped diff checks are VERIFIED. Scoped
+boundary-guard preflight for Runtime Cargo.toml and port_impls/mod.rs passed
+53 impacted build policies using the repository Python resolver. The default
+system Python 3.9 failed tool startup; the Python >=3.12 resolver removed that
+interpreter failure. The subsequent shared-validator/dispatch preflight also
+passed all 18 impacted policies. The gate closeout cannot provide a stable GREEN: it
+reported source-changed-during-policy-verification and existing foreign
+Runtime cfg-neutral macro/cfg-admission/orchestration policy violations.
+Pre-edit RED was NOT_RUN because this Runtime target was already blocked by
+its lower SSA dependency. The corrected Runtime run above executed no test
+bodies. Kernel focused passes do not qualify these Runtime/native scopes.
+
+
+Oct-10 source delta: the Source owner's eight-file Ordinary SSA repair now
+removes both stale calls and uses the SAME `retain_into_v3` / `values_into_slot_v3`
+with an exterior cumulative journal across three finalizer refresh calls and
+recursive phi work. Static review found no obvious type/control-flow conflict;
+its seven new tests remain authored, unexecuted. This dependency repair is
+outside the receiver candidate, and genuine Original SSA/Facts supply remains
+OPEN. The fresh Runtime owner check encountered source drift during final source
+binding and produced no usable owner verdict. The subsequent exact test snapshot
+was refused because the Index sibling overlay changed after capture, before
+its test execution. These tool/source-capture failures do not revalidate the
+repaired Runtime or replace the earlier failed compiler receipt.
+
+
+**BLOCKED** — whole native/product main merge still requires the actual
+factory/worker/RPC receivers and a SAME Relation query-unit admission loan.
+Current Wire read supplies only `&T` while holding `&mut Relation`; the callback
+cannot dynamically admit decoder allocations through that Relation. Native RPC
+must cover the canonical request/body/frame writer, seeded nested response DTO,
+and the SDK binding's generation copy and full error births, not only socket
+I/O. Genuine Core final-deallocation custody remains unqualified.
+The durable V5 row still holds after-publication failures for explicit
+reconciliation; a complete restart/epoch recovery policy is not claimed by the
+API/caller cut. Core/Original Source, installed E2E, remote CI, whole-bundle main
+merge and push remain **NOT_RUN**. The tested coupled candidate is preserved
+without advancing the historical qualified `79bea4c0` ref.
+
+The original V4 typed integration remains a separate optional Index access
+campaign in Semantica's existing `oct-4-index-semantica-integration` plan.
+QGLang frontend intent and the SAME Semantica admitted source/provider/budget
+owner are reused; no Index handle enters frontend bytes. Publication-to-fact
+closure admission, canonical file resolution with original completion/window,
+retained composite capture, and actual typed join/Index-on-off installed oracle
+remain their own gates. The ordinary publication regressions above do not close
+those gates or the main campaign's Index-independent first two-fact join.
+
+C5's cold-publication reservation is an actual missing supply contract, not
+`active_generation + 1`. The existing Index `ActivationCatalog` repository
+mutation/envelope and `SourcePublicationCatalogPort::reserve_source_event` own
+durability and event idempotency; the latter persists a caller-supplied target
+and does not allocate generations. Track adapters own occupied/unsealed
+inventories. A correct supply must bind the stable producer attempt, one
+reserved generation and exact optional full active CAS head under that existing
+owner, persist a nonreusable high-water, then validate the reservation at ingest.
+Semantica consumes it BEFORE its existing manifest binding/receipt issuance;
+the current local store starts at zero after cold restart and allocates before
+aggregate preparation reads the full active head. The generation-independent
+closeout/attempt identity exists before prepare; the final batch payload
+commitment is built later and must bind the same reservation before publication.
+No allocator, public raw-digest setter, source redefinition or parallel store
+was added by this lane. This remains **BLOCKED** for the coupled C5 product cut.
+
+C4 capacity remains a separate missing supply boundary in the same existing
+SDK ticket. Index's `SOURCE_PUBLICATION_UPLOAD_MAX_BYTES` (512 MiB) bounds a
+SearchCorpus upload, and its `DecodePermit` accounts frame/body and retained
+text. Its CBOR preflight explicitly does not inspect the schema inside byte
+strings. Neither is a verified demand model for Semantica's V5 outer artifact,
+nested semantic-owner decode and concurrent scope clones. No such V5 schema
+model/permit API was found in current Index owners. Preserve Unknown/Unsupported
+rather than minting a grant from encoded length, RSS or an invented multiplier;
+no second decoder/capacity owner was introduced.
+
+### SDK connect native 경계의 추가 대조 — 2026-10-09
+
+아래는 transport-owner/native producer 구현 전의 역사적 source 대조다.
+후속 구현 후보 `c2820b16`과 `a645aa9e`, 현재 exact ABI 및 receiver 잔여 경계는
+[SDK ingress ADR](../../../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md#native-connect-producer-and-open-receiver-co-cut)에 기록했다.
+
+**정적 대조 완료, 새 connect producer/receiver ABI와 Native 실행은 `NOT_RUN`.**
+`ConnectOptions::from_state_root` (`sdk/src/config.rs:56`)는 state-root PathBuf 하나를
+만든다. `resolve_profile`은 deadline/timeout policy를 먼저 검사하고 state-root를 resolve하며,
+root가 있으면 각 socket을 `root.join("search-plane").join(name)`으로 만든다. explicit socket/
+environment precedence, Full/QueryOnly 분기를 보존해야 한다. `resolve_state_root_with`의
+explicit root clone, 두 join의 중간 PathBuf, environment String/error도 custody 대상이다.
+
+`QuantaIndex::connect`는 `resolve` 후 `from_resolved`를 호출한다. `from_resolved`의 actual
+shared births는 query/control/ingest transport의 std Arc 세 개와 `QuantaIndexInner`의 Arc다.
+QueryOnly에서는 query와 inner만 만든다. transport constructor는 PathBuf와 `ClientIoPolicy`를
+보관할 뿐 실제 UDS dial을 하지 않는다. dial/request는 transport `send` → IPC `send_request`
+경로에 있다. connect 성공만으로 socket 연결이나 daemon 수용을 주장할 수 없다.
+
+실제 Semantica caller는 `quanta-runtime-retrieval-kernel/src/index_sdk_ingress/connect.rs`의
+default/relative-timeout(Duration)/absolute-deadline(Instant) 세 함수다. ingress consumer의
+late Source classification/diagnostic은 complete SdkError와 options/path/client partial DATA를
+함께 보유해야 한다. elapsed absolute deadline을 상대 timeout으로 재시작하면 안 된다.
+
+현재 SDK/IPC에는 authentic native shared-header owner를 호출하는 connect port가 없다.
+단순히 ordinary `connect` 결과를 외부 slot에 넣거나 std Arc allocation을 새 callback으로
+감싸는 것은 기존 Core original shared producer에 도달했다는 증거가 아니다. Core owner의
+실제 typed shared handle과 SDK client의 현재 std Arc fields를 연결하는 producer/receiver
+계약을 먼저 확정해야 한다. 새 allocator/parallel connector/ordinary-to-Native adopter는
+추가하지 않았다. 이 불확정 경계는 위 corpus producer 구현 완료와 별개다.
 
 ### SDK 구현 후보 통합 재감사 — 2026-10-08
 
@@ -529,6 +1367,61 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   C5 구현·실제 cold process 검증도 최종 full-recovery 완료 조건에 포함한다.
 - 새 에이전트를 동일 Source/Java/lock/retainer 파일에 또 투입하지 않는다. 기존 writer의
   source handoff를 받아 missing hunk만 반영하고, 이 절을 단일 작업 목록으로 갱신한다.
+
+#### Oct-10 main comparison and branch/worktree disposition
+
+- **VERIFIED — comparison baseline:** Quanta committed main was `b61655ed`.
+  `codex/index-publication-native-cohort` at `ebbd9183` contains that main;
+  its aggregate diff is 58 paths, including 56 non-documentation paths that are byte-identical
+  to the shared main **working tree**. This is source presence, not a committed merge.
+- **BLOCKED — native/publication bundle:** preserve the complete candidate and its
+  Semantica consumer. The actual factory/worker/RPC path still needs one Relation
+  query-unit admission loan, and Core final-drop custody is not qualified. Runtime
+  acceptance and durable/process regressions cannot be inferred from SDK/Kernel
+  checks. Do not import old SDK publication files separately or advance the
+  historical qualified `codex/borrowed-head-cas-validation` ref.
+- **Integrated independent repair:** Semantica main `e234efb0c1b` fixes the nested
+  reservation result in `native_temporary_vec_v3/retired_v3.rs`
+  (`Ok(())` → `Ok(Ok(()))`). The integration owner verified that file against its
+  passing Kernel snapshot and committed through the shared-main coordinator;
+  this does not qualify the SDK/Runtime bundle.
+- **VERIFIED — current cleanup transactions:** removed 38 visible local branch refs:
+  12 main patch-equivalent or superseded lexical refs, 10 ancestors of the retained
+  native cohort, 2 ancestors of the upload chain, and 14 source-audited superseded
+  benchmark/operational/recovery refs. Exact tips remain under
+  `refs/codex/cleanup/oct10-main-equivalent/`,
+  `refs/codex/cleanup/oct10-cohort-contained/`, and
+  `refs/codex/cleanup/oct10-main-semantic-contained/`. The last category is
+  semantic containment, not a claim of identical patch IDs. No remote ref was deleted.
+- **VERIFIED — current worktree cleanup:** removed 4 old Quanta worktrees:
+  `engine-audit-search-plane`, `engine-audit-semantic`, `publication-plan-custody`,
+  and `sdk-canonical-final`. The first 3 were clean with retained history. The last
+  had 5 dirty paths; the exact tree and parent history were saved and each dirty
+  blob verified before removal, at `refs/codex/cleanup/oct10-sdk-canonical-final`
+  (`87cde660da66c65ef818ac9795f65354d1e40ea6`). This was an unmanaged worktree,
+  so its recovery is a Git ref rather than an app archive.
+- The preceding cleanup already archived 3 managed Quanta worktrees, removed 1 clean
+  duplicate checkout, deleted 7 visible local branches with retained ancestry or
+  snapshots, and pruned 37 missing unlocked registrations. These are separate
+  transactions; the cumulative totals are 45 local branch refs and 8 physical Quanta
+  worktrees. The missing **locked** `weekly-audit-merge-recovery` registration,
+  frozen qualification checkouts, and Semantica dirty/evidence worktrees remain.
+- Remaining inventory at this checkpoint: 4 local branches including `main`, and
+  52 worktree registrations. Keep `codex/index-publication-native-cohort` for the
+  unqualified complete SDK/native candidate, `codex/borrowed-head-cas-validation`
+  at the historical qualified `79bea4c0`, and `codex/circleci-integration` for its
+  unfinished independent manual-benchmark intent. The old CI job cannot be
+  imported as-is: required warm/cold approved baselines are absent in both its
+  tree and main, and the current CI authority parser does not admit its new gate.
+  An old branch's missing later-main code is not proof that a three-way merge
+  would delete that code; disposition above uses individual intent/function/test
+  comparison, ancestry and retained exact tips.
+- Verification commands: `git cherry main <branch>`, `git merge-base --is-ancestor`,
+  `git diff --name-only main...<candidate>`, per-path blob comparison,
+  `git worktree list --porcelain`, and exact-old-SHA `git update-ref`.
+  The Index cleanup changed no production source or staged entries. The separate
+  Semantica Core commit preserves all foreign index entries. New native tests and
+  remote publication for this cleanup scope are **NOT_RUN**.
 
 #### Oct-8 checkpoint: 위치와 변경 소유권
 
