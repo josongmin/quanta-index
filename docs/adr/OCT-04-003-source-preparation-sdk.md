@@ -1,11 +1,44 @@
 # OCT-04-003 — Source preparation SDK
 
 Status: **Offline preparation integrated in local main `433a9363`; focused
-verification `VERIFIED`** (2026-10-08). **Breaking publication recovery and
+verification `VERIFIED`** (2026-10-08). **Committed-receipt response validation
+is integrated in local main `029014be`** (2026-10-09). **Breaking publication recovery and
 Semantica V5 remain isolated candidates.** This is not release, installed-host,
 performance, or cross-repository acceptance.
 [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) owns the public
 ingress and publication boundary.
+
+## 2026-10-09 integration checkpoint
+
+This checkpoint supersedes the Oct-8 current-main inventory below. Quanta
+committed main was `4729a1a1`; publication recovery was reapplied as the owned
+25-path commit `3dbc3e46`, then its apply/replay receipt regression was
+centralized in `16792d87` on `codex/sdk-publication-oct9`. The current main
+native-client and recursive decode changes are external owners' working-tree
+changes, not part of those feature commits.
+
+The integration tree retains the canonical `QuantaIndexClientPayloadV1`,
+existing transports and external decode DATA. Explicit and combined activation
+share one receipt-to-request validator and one control dispatcher. It does not
+restore `QuantaIndexInner` or add another client, decoder or activation path.
+The independent committed-receipt fix is committed in main `029014be`. It uses
+`validate_published_receipt` at the
+SDK response binding; dispatcher drafts keep `validate_receipt` until commit.
+A zero journal sequence is invalid for both applied and replayed publications.
+`./scripts/cargow test -p quanta-index-sdk -p quanta-index-contract --locked`
+passed 508 tests on main with the retained native owner changes; six process
+tests were ignored. The observed-ingest fixture now supplies sequence 7 rather
+than claiming that an unstamped draft is a committed receipt. The final
+publication delta against that current working tree is 22 paths; application
+check passed without replacing native owner files.
+
+Semantica main `a63f536b` still lacks the candidate's V5 baseline and publication
+intent. Its 36-path candidate has five conflicting paths and active receiver,
+reader and lock owners; source inspection still finds removed parser getters.
+The historical 101/334 diagnostics are not a current-main compiler result.
+Actual Runtime/restart/migration acceptance remains required before the breaking
+SDK/consumer bundle is merged. Current execution results and exact merge order
+are owned by the [Oct-9 reconciliation](../plans/oct-4-parallel-closure/tickets/INDEX.md#oct-9-sdk-reconciliation).
 
 ## Decision and scope
 
