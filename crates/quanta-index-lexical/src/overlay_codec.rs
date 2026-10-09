@@ -12,9 +12,8 @@ use crate::metadata_normalize::{
     normalize_repo_topic_value,
 };
 use crate::{
-    FileContributorShard, FileOwnershipShard, LEGACY_FULL_BUNDLE_PAYLOAD,
-    LexicalRepoMetadataPayload, OverlaySnapshot, RepoCommitRecencyShard, RepoDescriptionShard,
-    RepoMetaShard, RepoTopicShard,
+    FileContributorShard, FileOwnershipShard, LexicalRepoMetadataPayload, OverlaySnapshot,
+    RepoCommitRecencyShard, RepoDescriptionShard, RepoMetaShard, RepoTopicShard,
 };
 use ciborium::Value as CborValue;
 use quanta_index_contract::{
@@ -193,7 +192,7 @@ pub(crate) fn encode_repo_metadata_payload(
 pub(crate) fn decode_repo_metadata_payload(
     bytes: &[u8],
 ) -> Result<Option<LexicalRepoMetadataPayload>, CoreError> {
-    if bytes.is_empty() || bytes == LEGACY_FULL_BUNDLE_PAYLOAD {
+    if bytes.is_empty() {
         return Ok(None);
     }
     let wire = crate::channel_payloads::decode_cbor_exact::<CborValue>(bytes).map_err(|err| {

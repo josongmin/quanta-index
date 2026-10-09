@@ -271,11 +271,7 @@ struct GenKey {
 
 const GENERATION_MUTATION_LOCK_STRIPES: usize = 256;
 
-/// Local decode/encode for the legacy repo-metadata sidecar.
-///
-/// Producer-facing lexical publish has moved away from a public root contract
-/// type; the adapter still consumes and snapshots the residual CBOR map so
-/// repo-level filters remain wired for older bundle flows.
+/// Adapter-owned repo-metadata overlay carried by a typed `FullBundle` payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct LexicalRepoMetadataPayload {
     fork: bool,
@@ -350,14 +346,6 @@ struct WriterCache {
     idle_releases: u64,
     seal_releases: u64,
 }
-
-/// Legacy `FullBundle` placeholder payload.
-///
-/// Older producers used the literal `b"manifest"` as an opaque marker.
-/// Later producers emit a CBOR map with repo metadata. The two are
-/// distinguished here explicitly so that real decode failures surface as
-/// `InvalidContract` rather than silently routing to "no metadata".
-const LEGACY_FULL_BUNDLE_PAYLOAD: &[u8] = b"manifest";
 
 /// One overlay family's snapshot as a query holds it, decoded from the
 /// bytes the sealed-generation walk proved.

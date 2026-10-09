@@ -600,70 +600,74 @@ fn oversized_published_source_is_refused_before_target_creation() -> TestResult 
 
 #[test]
 fn malformed_bundle_is_refused_before_source_publication_or_generation_preparation() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let mut request = batch(1, None, vec![file_scope("a.rs", "validmarker")?])?;
-    request.bundle_payload = Some(vec![0xff]);
-    request.source_event.payload_sha256 = source_event_payload_sha256(&request)?;
-    request.validate_v1()?;
-    request.validate_surface_mutations_v1()?;
-    for result in [
-        adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
-        adapter.build_batch(&request).map(|_stages| ()),
-    ] {
-        assert!(
-            matches!(
-                result,
-                Err(quanta_index_core::CoreError::InvalidContract(_))
-            ),
-            "invalid metadata must be an admission error: {result:?}"
-        );
+    for invalid_payload in [&[0xff][..], b"manifest".as_slice()] {
+        let dir = tempfile::tempdir()?;
+        let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+        let mut request = batch(1, None, vec![file_scope("a.rs", "validmarker")?])?;
+        request.bundle_payload = Some(invalid_payload.to_vec());
+        request.source_event.payload_sha256 = source_event_payload_sha256(&request)?;
+        request.validate_v1()?;
+        request.validate_surface_mutations_v1()?;
+        for result in [
+            adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
+            adapter.build_batch(&request).map(|_stages| ()),
+        ] {
+            assert!(
+                matches!(
+                    result,
+                    Err(quanta_index_core::CoreError::InvalidContract(_))
+                ),
+                "invalid metadata must be an admission error: {result:?}"
+            );
+        }
+        assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
     }
-    assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
     Ok(())
 }
 
 #[test]
 fn malformed_bundle_after_a_raw_replacement_refuses_before_any_write() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let request = batch(1, None, vec![file_scope("a.rs", "validmarker")?])?;
-    let mut payload = Vec::new();
-    ciborium::into_writer(
-        &(
-            request.mode,
-            request.base_generation,
-            request
-                .replace_scopes
-                .first()
-                .ok_or("replacement scope missing")?,
-        ),
-        &mut payload,
-    )?;
-    let ops = [
-        LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
-            repo_id: request.repo_id.clone(),
-            revision_id: request.revision_id.clone(),
-            generation: request.generation,
-            payload,
-        }),
-        LexicalChannelOp::FullBundle(quanta_index_contract::LexicalFullBundle {
-            repo_id: request.repo_id.clone(),
-            revision_id: request.revision_id.clone(),
-            generation: request.generation,
-            payload: vec![0xff],
-        }),
-    ];
-    assert!(matches!(
-        adapter.build(
-            &request.repo_id,
-            &request.revision_id,
-            request.generation,
-            &ops
-        ),
-        Err(quanta_index_core::CoreError::InvalidContract(_))
-    ));
-    assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
+    for invalid_payload in [&[0xff][..], b"manifest".as_slice()] {
+        let dir = tempfile::tempdir()?;
+        let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+        let request = batch(1, None, vec![file_scope("a.rs", "validmarker")?])?;
+        let mut payload = Vec::new();
+        ciborium::into_writer(
+            &(
+                request.mode,
+                request.base_generation,
+                request
+                    .replace_scopes
+                    .first()
+                    .ok_or("replacement scope missing")?,
+            ),
+            &mut payload,
+        )?;
+        let ops = [
+            LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
+                repo_id: request.repo_id.clone(),
+                revision_id: request.revision_id.clone(),
+                generation: request.generation,
+                payload,
+            }),
+            LexicalChannelOp::FullBundle(quanta_index_contract::LexicalFullBundle {
+                repo_id: request.repo_id.clone(),
+                revision_id: request.revision_id.clone(),
+                generation: request.generation,
+                payload: invalid_payload.to_vec(),
+            }),
+        ];
+        assert!(matches!(
+            adapter.build(
+                &request.repo_id,
+                &request.revision_id,
+                request.generation,
+                &ops
+            ),
+            Err(quanta_index_core::CoreError::InvalidContract(_))
+        ));
+        assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
+    }
     Ok(())
 }
 
