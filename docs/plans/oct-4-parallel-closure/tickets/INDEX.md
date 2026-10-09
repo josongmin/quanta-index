@@ -591,7 +591,10 @@ request validator/dispatcher. No duplicate client, controller or owned proxy
 was introduced. The managed candidate checkout is
 `/Users/songmin/.codex/worktrees/native-coupled-closeout/quanta-index`; the tested
 code is committed as `92e01fc18332c0f7d0eb8bef95d8d75a9777be4b` on
-`codex/index-publication-native-cohort`. Its working tree is clean.
+`codex/index-publication-native-cohort`. Latest main
+`23cfadd2cd8829f7ba79446ef9c0599a659934f6` was merged into that candidate at
+`20427aea30a425affefbb29ea7d146ed19dfc35d`; only documentation changed and the
+56-path tested code digest remained identical. Its working tree is clean.
 
 - **VERIFIED** — the preparation facade repair is independently committed in
   main. Existing implementation and tests moved without body changes; public
@@ -655,9 +658,24 @@ Another owner subsequently removed that call. A new all-workspace lock check
 then exposed another omitted local edge,
 `quanta-runtime-test-support-pta -> codegraph-cfg-dfg-kernel`. Only that edge was
 added, excluding the diagnostic regeneration's unrelated registry upgrades.
-Verification of the current coupled source is pending. Test bodies did not run
-in those failed attempts.
-No foreign process, admission policy or shared target binding changed.
+The next frozen attempt also required
+`quanta-contract-ports -> codegraph-cfg-dfg-kernel`; another writer already
+applied that edge to the shared root lock. A fresh CoW diagnostic using QBC
+`cargo update --offline --workspace` changed only this local edge, then QBC
+`cargo metadata --locked --offline --format-version 1` passed (798 packages,
+447 workspace members, no stderr). The current shared lock matches this
+validated SHA256 `f971c69fe4ca57a1ec1f669288c7dc4f785d29db91d44286a7602c824bb5ba26`
+at that observation; subsequent foreign lock changes are separate inputs.
+This is lock resolution only. The next frozen compiler attempt required two
+existing Core text-birth functions to be re-exported from the public facade;
+actual external callers prevent reducing their visibility. After this minimal
+repair, compilation passed Core and stopped at five missing Rustix API docs.
+Five comments were added without changing logic or suppressing lints. The next
+kernel exact run passed those boundaries and exited 101 in
+`quanta-contract-retrieval`: missing policy-aware replay serializers, a macro
+path resolving in the caller scope, and denied stale imports (26 diagnostics).
+Affected receiver test bodies did not run. No foreign process, admission policy
+or shared target binding changed.
 
 **BLOCKED** — whole native/product main merge still requires the actual
 factory/worker/RPC receivers and a SAME Relation query-unit admission loan.
@@ -671,6 +689,15 @@ reconciliation; a complete restart/epoch recovery policy is not claimed by the
 API/caller cut. Core/Original Source, installed E2E, remote CI, whole-bundle main
 merge and push remain **NOT_RUN**. The tested coupled candidate is preserved
 without advancing the historical qualified `79bea4c0` ref.
+
+The original V4 typed integration remains a separate optional Index access
+campaign in Semantica's existing `oct-4-index-semantica-integration` plan.
+QGLang frontend intent and the SAME Semantica admitted source/provider/budget
+owner are reused; no Index handle enters frontend bytes. Publication-to-fact
+closure admission, canonical file resolution with original completion/window,
+retained composite capture, and actual typed join/Index-on-off installed oracle
+remain their own gates. The ordinary publication regressions above do not close
+those gates or the main campaign's Index-independent first two-fact join.
 
 ### SDK connect native 경계의 추가 대조 — 2026-10-09
 
