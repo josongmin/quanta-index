@@ -27,6 +27,7 @@ from tools.benchmark.evidence import (
 from tools.benchmark.retrieval.evaluator import (
     canonical,
     digest,
+    ranked_file_judgment_exclusion,
     validate_comparison_contract,
 )
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
@@ -342,10 +343,15 @@ def product_result(
     *,
     scoring_gold: dict[str, list[str]] | None = None,
     file_judgments: dict[str, list[dict]] | None = None,
+    judgment_policies: dict[str, str] | None = None,
     _native_replay: bool = False,
 ) -> dict:
     if file_judgments is not None:
-        if set(file_judgments) != set(expected):
+        if (
+            set(file_judgments) != set(expected)
+            or judgment_policies is None
+            or set(judgment_policies) != set(expected)
+        ):
             raise ValueError(f"{product}: independent file judgment inventory differs")
         scoring_gold = {
             task: [row["path"] for row in rows if row["grade"] > 0]
@@ -453,8 +459,16 @@ def product_result(
                 raise ValueError(f"{product}: {task_id} hit flag differs from paths")
             judged_gold = scoring_gold[task_id] if scoring_gold is not None else gold
             hit = bool(set(paths) & set(judged_gold))
-            hits += hit
-            if not judged_gold:
+            reason = (
+                ranked_file_judgment_exclusion(
+                    judgment_policies[task_id], file_judgments[task_id], paths
+                )
+                if file_judgments is not None
+                else None
+            )
+            eligible = reason is None
+            hits += hit and eligible
+            if not judged_gold and eligible:
                 empty_no_gold += not paths
             elapsed.append(row.get("elapsed_ms"))
             completed_ms = None
@@ -480,13 +494,17 @@ def product_result(
             per_query.append(
                 {
                     "task_id": task_id,
-                    "file_hit_at_10": hit if judged_gold else "not_applicable",
+                    "eligible": eligible,
+                    **({"reason": reason} if reason else {}),
+                    "file_hit_at_10": hit if judged_gold and eligible else "not_applicable",
                     "file_recall_at_10": (
                         len(set(paths) & set(judged_gold)) / len(judged_gold)
-                        if judged_gold
+                        if judged_gold and eligible
                         else "not_applicable"
                     ),
-                    "no_gold_empty_at_10": not paths if not judged_gold else "not_applicable",
+                    "no_gold_empty_at_10": not paths
+                    if not judged_gold and eligible
+                    else "not_applicable",
                     "query_latency_ms": row.get("elapsed_ms"),
                     "completed_query_latency_ms": completed_ms,
                     "completed_response_boundary": (
@@ -506,9 +524,9 @@ def product_result(
                     if value in judged_gold
                 )
                 per_query[-1]["file_ndcg_at_10"] = (
-                    observed / ideal if judged_gold else "not_applicable"
+                    observed / ideal if judged_gold and eligible else "not_applicable"
                 )
-            if file_judgments is not None and judged_gold:
+            if file_judgments is not None and judged_gold and eligible:
                 from tools.benchmark.retrieval.evaluator import file_ndcg_at_k
 
                 per_query[-1]["file_ndcg_at_10"] = file_ndcg_at_k(
@@ -534,14 +552,16 @@ def product_result(
         for task_id in unsupported
     )
     supported_no_gold = no_gold - (len(unsupported) - (answerable - supported_answerable))
+    eligible_answerable = sum(row["file_recall_at_10"] != "not_applicable" for row in per_query)
+    eligible_no_gold = sum(row.get("no_gold_empty_at_10") != "not_applicable" for row in per_query)
     result = {
         "hits": hits,
         "tasks": len(expected),
         "rank_unit": "distinct_file",
         "answerable_tasks": answerable,
         "no_gold_tasks": no_gold,
-        "file_hit_rate_at_10": hits / supported_answerable
-        if supported_answerable
+        "file_hit_rate_at_10": hits / eligible_answerable
+        if eligible_answerable
         else "not_applicable",
         "file_recall_at_10": (
             math.fsum(
@@ -549,13 +569,22 @@ def product_result(
                 for row in per_query
                 if row["file_recall_at_10"] != "not_applicable"
             )
-            / supported_answerable
-            if supported_answerable
+            / eligible_answerable
+            if eligible_answerable
             else "not_applicable"
         ),
-        "no_gold_empty_rate_at_10": empty_no_gold / supported_no_gold
-        if supported_no_gold
+        "no_gold_empty_rate_at_10": empty_no_gold / eligible_no_gold
+        if eligible_no_gold
         else "not_applicable",
+        "judgment_coverage": {
+            "requested": len(expected),
+            "eligible_answerable": eligible_answerable,
+            "eligible_no_gold": eligible_no_gold,
+            "excluded_task_ids": sorted(
+                row["task_id"] for row in per_query if not row.get("eligible", True)
+            ),
+            "metric_denominator": "eligible_judged_tasks_only",
+        },
         "per_query": sorted(per_query, key=lambda row: row["task_id"]),
         "latency_ms": latency_summary(elapsed, len(elapsed), TIMING_LAYERS[product])
         if elapsed
@@ -592,8 +621,8 @@ def product_result(
                 for row in per_query
                 if row.get("file_ndcg_at_10", "not_applicable") != "not_applicable"
             )
-            / supported_answerable
-            if supported_answerable
+            / eligible_answerable
+            if eligible_answerable
             else "not_applicable"
         )
     return result
@@ -1098,6 +1127,7 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
         )
     metrics = diagnostic["judgment_metrics"]["file_judgments"]
     scored = {(row["task_id"], row["route"]): row for row in metrics["per_query"]}
+    suite_tasks = {task["task_id"]: task for task in suite["tasks"]}
     result = {}
     for route, label in (
         ("lexical", "quanta_lexical"),
@@ -1116,7 +1146,13 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
             if judgments is None:
                 if gold:
                     raise ValueError("answerable raw record lacks its replayed file judgments")
-                judgments = {"eligible": False}
+                task = suite_tasks[task_id]
+                reason = ranked_file_judgment_exclusion(
+                    task["judgment_policy"],
+                    task["file_judgments"],
+                    [row["path"] for row in observation["candidates"]],
+                )
+                judgments = {"eligible": reason is None}
             scores = judgments.get("scores", {})
             rows.append(
                 {
@@ -1127,6 +1163,9 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
                     "candidates": len(observation["candidates"]),
                     "paths": [row["path"] for row in observation["candidates"]],
                     "eligible": judgments["eligible"],
+                    "no_gold_empty_at_10": not observation["candidates"]
+                    if not gold and judgments["eligible"]
+                    else "not_applicable",
                     "file_hit_at_10": bool(scores["hit_at_10"])
                     if judgments["eligible"] and gold
                     else "not_applicable",
@@ -1187,6 +1226,33 @@ def read_spec(path: Path) -> dict[str, Path]:
     return {role: Path(spec[role]) for role in roles}
 
 
+def comparison_validity(
+    requested: set[str], eligible: set[str], products: dict, policy: str
+) -> dict:
+    """Prevent a partial/native-default diagnostic from issuing a product ranking."""
+    reasons = []
+    if policy == "natural_language_file":
+        reasons.append("unequal_natural_language_query_semantics")
+    elif policy != "code_search_file":
+        reasons.append("unmatched_external_request_policy")
+    if requested != eligible:
+        reasons.append("incomplete_common_judgments_or_capabilities")
+    if len({row["rank_unit"] for row in products.values()}) > 1:
+        reasons.append("non_equivalent_rank_units")
+    return {
+        "status": "BLOCKED" if reasons else "VERIFIED_DIAGNOSTIC",
+        "track": "native_identifier_file_relevance"
+        if policy == "code_search_file"
+        else "native_defaults_diagnostic",
+        "requested_tasks": len(requested),
+        "common_eligible_tasks": len(eligible),
+        "coverage_fraction": len(eligible) / len(requested) if requested else 0.0,
+        "reasons": reasons,
+        "quality_ranking_permitted": False,
+        "qualification": "independent_holdout_and_review_not_admitted",
+    }
+
+
 def evaluate_capture(paths: dict[str, Path]) -> dict:
     """One scorer authority for the owner CLI and common capture/replay."""
     roles = input_roles(paths)
@@ -1244,6 +1310,11 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
                 }
                 if suite["routes"] == FILE_ROUTES
                 else None,
+                judgment_policies={
+                    task["task_id"]: task["judgment_policy"] for task in suite["tasks"]
+                }
+                if suite["routes"] == FILE_ROUTES
+                else None,
             )
             for name in PRODUCTS
         },
@@ -1263,6 +1334,9 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
     for route, row in result["pair"]["routes"].items():
         groups.setdefault(row["rank_unit"], []).append("pair:" + route)
     result["comparison_groups"] = {unit: sorted(names) for unit, names in sorted(groups.items())}
+    if set(groups) == {"distinct_file"}:
+        result["rank_unit_equivalence"] = "equivalent_distinct_file_units"
+        result["exclusions"].remove("native_rank_equivalence")
     result["cross_unit_comparison"] = "not_permitted"
     products = {**result["products"], **result["pair"]["routes"]}
     requested = set(expected)
@@ -1286,6 +1360,7 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
     result["common_denominator_policy"] = (
         "intersection_of_explicit_product_capability_and_judgment_eligibility"
     )
+    result["comparison_validity"] = comparison_validity(requested, eligible, products, file_policy)
     result["common_eligible_products"] = {}
     for name, product in products.items():
         rows = [row for row in product["per_query"] if row["task_id"] in eligible]

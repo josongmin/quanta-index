@@ -1021,6 +1021,21 @@ def validate_judgments(
             )
 
 
+def ranked_file_judgment_exclusion(
+    policy: str, judgments: list[dict], paths: list[str]
+) -> str | None:
+    """Apply the same incomplete-pool rule to native and external file results."""
+    require(
+        policy in (COMPLETE_JUDGMENT_POLICY, SOURCE_ORACLE_JUDGMENT_POLICY, UNJUDGED_POLICY),
+        "unknown file judgment policy",
+    )
+    if policy == COMPLETE_JUDGMENT_POLICY:
+        judged = {row["path"] for row in judgments}
+        if any(path not in judged for path in paths[:NDCG_K]):
+            return "unjudged_ranked_file"
+    return None
+
+
 def validate_leakage_allowlist(
     source: SourceSnapshot, value: Any
 ) -> frozenset[tuple[str, int, int]]:
@@ -2903,9 +2918,11 @@ def judgment_diagnostics(
                 elif tasks[task_id].get("judgment_policy") == COMPLETE_JUDGMENT_POLICY:
                     judgments = tasks[task_id][judgment_kind]
                     if kind == "file_judgments":
-                        judged_files = {item["path"] for item in judgments}
-                        if any(item["path"] not in judged_files for item in ranked[:NDCG_K]):
-                            reason = "unjudged_ranked_file"
+                        reason = ranked_file_judgment_exclusion(
+                            tasks[task_id]["judgment_policy"],
+                            judgments,
+                            [item["path"] for item in ranked[:NDCG_K]],
+                        )
                     else:
                         judged_declarations = {
                             (item["path"], item["start_byte"], item["end_byte"])
