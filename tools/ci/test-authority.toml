@@ -677,6 +677,12 @@ owner = "quanta-index-sdk"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "sdk-preparation-public"
+path = "crates/quanta-index-sdk/tests/preparation_public.rs"
+owner = "quanta-index-sdk"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "sdk-l1-daemon-query-contract"
 path = "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs"
 owner = "quanta-index-sdk"
