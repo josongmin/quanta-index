@@ -1419,10 +1419,10 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   (21 passed, exit 0). Rust execution and remote CI are **NOT_RUN** for this repair.
 - **VERIFIED — Oct-10 cleanup transactions:** removed 39 visible local branch refs:
   12 main patch-equivalent or superseded lexical refs, 10 ancestors of the retained
-  native cohort, 2 ancestors of the upload chain, and 14 source-audited superseded
+  native cohort, 2 ancestors of the upload chain, 14 source-audited superseded
   benchmark/operational/recovery refs, and 1 rejected CI proposal. Exact tips remain under
   `refs/codex/cleanup/oct10-main-equivalent/`,
-  `refs/codex/cleanup/oct10-cohort-contained/`, and
+  `refs/codex/cleanup/oct10-cohort-contained/`,
   `refs/codex/cleanup/oct10-main-semantic-contained/`, and
   `refs/codex/cleanup/oct10-rejected-ci/circleci-integration` (`5a1f0e3d`).
   The 14 source-audited refs are semantic containment, not a claim of identical
@@ -1455,7 +1455,9 @@ Native Source text primitive는 `packages/core/codegraph-native-allocation-core/
   worktrees. The missing **locked** `weekly-audit-merge-recovery` registration,
   frozen qualification checkouts, and Semantica dirty/evidence worktrees remain.
 - Remaining inventory at this checkpoint: 3 local branches including `main`, and
-  48 worktree registrations. Keep `codex/index-publication-native-cohort` for the
+  49 worktree registrations, including a concurrently created `benchmark-fairness`
+  checkout at `c20f2f42` that is outside this cleanup. Keep
+  `codex/index-publication-native-cohort` for the
   unqualified complete SDK/native candidate, `codex/borrowed-head-cas-validation`
   at the historical qualified `79bea4c0`. Preserve dirty `arb-official-scorer`
   and `lexical-publication-proof` source, and the frozen source/dependency peers.
