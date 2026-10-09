@@ -326,7 +326,10 @@ input/policy lifetime 종료 후 DATA 보존을 검사한다. 이 delta의 실�
   default-feature 실행은 Contract 계열402, SDK176; SDK doctest6 ignored.
 - **VERIFIED** — Contract/SDK `clippy --all-targets --all-features --locked -- -D warnings`,
   scoped format, public-API snapshots, Contract/Core module inventory, hexagonal boundary,
-  `git diff --check`. 새 API는 기존 feature 아래 있으므로 default API snapshot은 unchanged다.
+  `git diff --check`. Native 메서드만 기존 feature 아래 있다. unconditional ordinary
+  `validate_expected_active_scope_v1`은 Contract의 두 exported path에 추가돼 default API
+  snapshot이2줄 늘었고, unconditional SDK `SearchCorpusActiveHeadV1` 재수출로 SDK의
+  default API snapshot도1줄 늘었다. 두 baseline을 갱신한 뒤 검사를 통과했다.
 - **FAILED** — 첫 `env -u QUANTA_PROOF_RAW_DIR just rust-profile test-daemon`은
   selected300 중50 PASS/1 FAIL, fail-fast로249 NOT_RUN이었다. 별도로10 SKIP이다. 실패한
   `e2e_lifecycle_history::sdk_source_delete_append_pin_cas_duplicate_reorder_rollback_restart_history`
@@ -344,6 +347,9 @@ input/policy lifetime 종료 후 DATA 보존을 검사한다. 이 delta의 실�
   catalog25/5 binaries,300 PASS/10 SKIP,297.421s(2 slow), exit0. 최초 실패의50 PASS를
   합산하거나 최초 attempt를 GREEN으로 바꾸지 않는다. 이 결과는 기존 ordinary daemon
   activation/query/restart/history의 영향 검증이며 Native Core/Original Source 수용이 아니다.
+- 위 실행 결과는 코드 후보 `c41ba2509d59ff08c81b822533c30b8b58f87b60`에 속한다.
+  이후 문서 정정 후속 후보는 이 INDEX.md만 변경하며 코드·테스트·설정·API baseline 입력은
+  동일하다. 문서 정정 후 Rust/daemon 재실행은 **NOT_RUN**이다.
 - Semantica actual Core/Original Source 수용, installed E2E, remote CI는 **NOT_RUN**이다.
   main/remote 통합은 전체 producer/receiver/Source cohort 수용과 별도다.
 
