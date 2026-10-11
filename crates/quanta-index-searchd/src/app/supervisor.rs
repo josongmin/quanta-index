@@ -378,6 +378,7 @@ struct DrainTally {
 /// recorder in tests). It is stored in the supervisor until every child
 /// joins, or transferred with unfinished children to the custody reaper.
 pub struct SearchdSupervisor<G: Send + 'static> {
+    diagnostic_capture: Option<crate::app::trace_recorder::DiagnosticCaptureLeaseV1>,
     phase: SupervisorPhase,
     status: Option<Arc<SupervisorStatus>>,
     cancel: CancelRoot,
@@ -389,6 +390,33 @@ pub struct SearchdSupervisor<G: Send + 'static> {
     hard_deadline: Duration,
     cooperative_overdue: Vec<&'static str>,
     guards: Option<G>,
+}
+
+fn trace_supervision_phase<T>(
+    capture: Option<&crate::app::trace_recorder::DiagnosticCaptureLeaseV1>,
+    stage: quanta_index_core::DiagnosticStageV1,
+    work: impl FnOnce() -> T,
+) -> T {
+    use quanta_index_core::{DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticTerminalV1};
+    let spans = capture.and_then(|lease| {
+        let context = lease.context();
+        let root = crate::app::trace_recorder::trace_span_or_health(
+            context,
+            context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0)),
+        )?;
+        let child = context.child_context(&root);
+        let span = crate::app::trace_recorder::trace_span_or_health(
+            &child,
+            child.enter(stage, DiagnosticLaneV1(0)),
+        )?;
+        Some((root, span))
+    });
+    let result = work();
+    if let Some((root, span)) = spans {
+        let _finished = span.finish(DiagnosticTerminalV1::Ok);
+        let _finished = root.finish(DiagnosticTerminalV1::Ok);
+    }
+    result
 }
 
 impl<G: Send + 'static> Drop for SearchdSupervisor<G> {
@@ -419,6 +447,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         );
         let (exits_tx, exits) = channel();
         Self {
+            diagnostic_capture: None,
             phase: SupervisorPhase::Starting,
             status: None,
             cancel,
@@ -438,6 +467,15 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     pub(crate) fn with_status(mut self, status: Arc<SupervisorStatus>) -> Self {
         status.set_phase(self.phase);
         self.status = Some(status);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_diagnostic_capture(
+        mut self,
+        capture: Option<crate::app::trace_recorder::DiagnosticCaptureLeaseV1>,
+    ) -> Self {
+        self.diagnostic_capture = capture;
         self
     }
 
@@ -624,7 +662,12 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         self.stop_all();
         // Fold any terminal events that queued during the serving loop.
         let _queued = self.take_pending_exits();
-        self.collect_exits_until(cooperative_at);
+        let diagnostic = self.diagnostic_capture.clone();
+        trace_supervision_phase(
+            diagnostic.as_ref(),
+            quanta_index_core::DiagnosticStageV1::RuntimeJoin,
+            || self.collect_exits_until(cooperative_at),
+        );
         // A latched abort outranks the drain: nothing is waited for.
         if let Some(signum) = self.latched_abort() {
             return self.abort(signum);
@@ -638,7 +681,11 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             })
             .map(|child| child.name)
             .collect();
-        self.collect_exits_until(deadline);
+        trace_supervision_phase(
+            diagnostic.as_ref(),
+            quanta_index_core::DiagnosticStageV1::RuntimeJoin,
+            || self.collect_exits_until(deadline),
+        );
         // The abort answer outranks the receipt: nothing is waited for.
         if let Some(signum) = self.latched_abort() {
             return self.abort(signum);
@@ -662,17 +709,24 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         self.cancel.request_shutdown();
         let cancel = CancelRoot::clone(&self.cancel);
         self.stop_all();
-        let Self {
-            children,
-            pending,
-            exits,
-            ..
-        } = &mut self;
-        for child in children.iter_mut() {
-            if child.join.is_some() {
-                let _awaited = Self::await_child(child, pending, exits, deadline, &cancel);
-            }
-        }
+        let diagnostic = self.diagnostic_capture.clone();
+        trace_supervision_phase(
+            diagnostic.as_ref(),
+            quanta_index_core::DiagnosticStageV1::RuntimeJoin,
+            || {
+                let Self {
+                    children,
+                    pending,
+                    exits,
+                    ..
+                } = &mut self;
+                for child in children.iter_mut() {
+                    if child.join.is_some() {
+                        let _awaited = Self::await_child(child, pending, exits, deadline, &cancel);
+                    }
+                }
+            },
+        );
         if let Some(signum) = self.latched_abort() {
             return self.abort(signum);
         }
@@ -837,10 +891,29 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     }
 
     fn stop_all(&mut self) {
+        let diagnostic = self.diagnostic_capture.as_ref().and_then(|lease| {
+            use quanta_index_core::{DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1};
+            let context = lease.context();
+            let root = crate::app::trace_recorder::trace_span_or_health(
+                context,
+                context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0)),
+            )?;
+            let child = context.child_context(&root);
+            let span = crate::app::trace_recorder::trace_span_or_health(
+                &child,
+                child.enter(DiagnosticStageV1::RuntimeStop, DiagnosticLaneV1(0)),
+            )?;
+            Some((root, span))
+        });
         for child in &mut self.children {
             if let Some(stop) = child.stop.take() {
                 stop();
             }
+        }
+        if let Some((root, span)) = diagnostic {
+            use quanta_index_core::DiagnosticTerminalV1;
+            let _finished = span.finish(DiagnosticTerminalV1::Ok);
+            let _finished = root.finish(DiagnosticTerminalV1::Ok);
         }
     }
 
@@ -863,6 +936,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             guards,
         ))));
         let worker = Arc::clone(&payload);
+        let diagnostic = self.diagnostic_capture.clone();
         let spawned = std::thread::Builder::new()
             .name("searchd-custody-reaper".to_string())
             .spawn(move || {
@@ -871,19 +945,32 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
                     Err(poisoned) => poisoned.into_inner().take(),
                 };
                 if let Some((mut children, guards)) = retained {
-                    for child in &mut children {
-                        if let Some(stop) = child.stop.take() {
-                            // A faulty stop callback must not unwind the
-                            // reaper and release the lease before joins.
-                            let _stopped =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(stop));
-                        }
-                    }
-                    for child in &mut children {
-                        if let Some(join) = child.join.take() {
-                            let _joined = join.join();
-                        }
-                    }
+                    trace_supervision_phase(
+                        diagnostic.as_ref(),
+                        quanta_index_core::DiagnosticStageV1::RuntimeStop,
+                        || {
+                            for child in &mut children {
+                                if let Some(stop) = child.stop.take() {
+                                    // A faulty stop callback must not unwind the
+                                    // reaper and release the lease before joins.
+                                    let _stopped = std::panic::catch_unwind(
+                                        std::panic::AssertUnwindSafe(stop),
+                                    );
+                                }
+                            }
+                        },
+                    );
+                    trace_supervision_phase(
+                        diagnostic.as_ref(),
+                        quanta_index_core::DiagnosticStageV1::RuntimeJoin,
+                        || {
+                            for child in &mut children {
+                                if let Some(join) = child.join.take() {
+                                    let _joined = join.join();
+                                }
+                            }
+                        },
+                    );
                     drop(guards);
                 }
             });
@@ -897,6 +984,20 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     /// Join every finished child through the same terminal classifier.
     /// A still-running child retains its handle for the custody reaper.
     fn join_children_with_known_exits(&mut self) -> DrainTally {
+        let diagnostic = self.diagnostic_capture.as_ref().and_then(|lease| {
+            use quanta_index_core::{DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1};
+            let context = lease.context();
+            let root = crate::app::trace_recorder::trace_span_or_health(
+                context,
+                context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0)),
+            )?;
+            let child = context.child_context(&root);
+            let span = crate::app::trace_recorder::trace_span_or_health(
+                &child,
+                child.enter(DiagnosticStageV1::RuntimeJoin, DiagnosticLaneV1(0)),
+            )?;
+            Some((root, span))
+        });
         let mut tally = DrainTally::default();
         for child in &mut self.children {
             if child.join.as_ref().is_some_and(|join| !join.is_finished()) {
@@ -909,6 +1010,16 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             } else {
                 tally.failed.push((child.name, kind));
             }
+        }
+        if let Some((root, span)) = diagnostic {
+            use quanta_index_core::DiagnosticTerminalV1;
+            let outcome = if tally.unfinished.is_empty() && tally.failed.is_empty() {
+                DiagnosticTerminalV1::Ok
+            } else {
+                DiagnosticTerminalV1::Error { code: 1 }
+            };
+            let _finished = span.finish(outcome);
+            let _finished = root.finish(outcome);
         }
         tally
     }

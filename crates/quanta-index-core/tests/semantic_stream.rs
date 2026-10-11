@@ -453,10 +453,20 @@ struct DrainingPort {
 }
 
 impl SemanticScopeStreamBuildPort for DrainingPort {
+    fn preflight_contract(
+        &self,
+        _pin: &quanta_index_contract::GenerationPin,
+        _contract: &quanta_index_core::SemanticGenerationContractV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
     fn build_stream(
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<
         (
             SemanticStreamTallyV1,

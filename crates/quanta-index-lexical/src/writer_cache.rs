@@ -5,7 +5,9 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
+#[cfg(test)]
 use crate::index_store::open_or_create_index;
+use crate::index_store::open_or_create_index_observed;
 use crate::{
     CachedWriter, GenKey, GenerationWriter, SchemaFields, WRITER_THREADS_MAX, WriterCache,
     WriterRelease,
@@ -159,12 +161,24 @@ impl WriterCache {
     /// Returns the cached handle for `key`, opening and inserting a new one if
     /// absent. The returned handle is the entry's `Arc<Mutex<_>>`; the cache
     /// retains its own clone so subsequent calls hit the same writer.
+    #[cfg(test)]
     pub(crate) fn get_or_open(
         &mut self,
         key: &GenKey,
         fields: &SchemaFields,
         path: &Path,
         now: Instant,
+    ) -> Result<Arc<Mutex<GenerationWriter>>, CoreError> {
+        self.get_or_open_observed(key, fields, path, now, None)
+    }
+
+    pub(crate) fn get_or_open_observed(
+        &mut self,
+        key: &GenKey,
+        fields: &SchemaFields,
+        path: &Path,
+        now: Instant,
+        sync: Option<&crate::causal_profile::SyncTotalsV1>,
     ) -> Result<Arc<Mutex<GenerationWriter>>, CoreError> {
         if let Some(existing) = self.entries.get_mut(key) {
             existing.last_used = now;
@@ -177,7 +191,7 @@ impl WriterCache {
         // The process-level gate (QI-BB-016): a writer is never opened while
         // the process is above its resident-memory ceiling.
         self.admission.admit_writer_open()?;
-        let index = open_or_create_index(fields, path)?;
+        let index = open_or_create_index_observed(fields, path, sync)?;
         let heap_bytes = usize::try_from(self.policy.writer_heap_bytes()).map_err(|err| {
             CoreError::Storage(format!(
                 "lexical: writer heap does not fit this platform: {err}"
@@ -232,4 +246,163 @@ pub(crate) fn writer_threads_for_heap(heap_bytes: usize) -> usize {
         .max(1);
     let by_machine = std::thread::available_parallelism().map_or(1, usize::from);
     by_heap.min(by_machine).min(WRITER_THREADS_MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+    use tantivy::doc;
+
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    fn key(generation: u64) -> Result<GenKey, Box<dyn Error>> {
+        Ok(GenKey {
+            repo_id: RepoId::new("envelope-repo")?,
+            revision_id: RevisionId::new("envelope-rev")?,
+            generation: ManifestGeneration::new(generation),
+        })
+    }
+
+    fn path(root: &Path, generation: u64) -> std::path::PathBuf {
+        root.join(format!("generation-{generation}"))
+    }
+
+    fn add_row(
+        cache: &mut WriterCache,
+        fields: &SchemaFields,
+        root: &Path,
+        generation: u64,
+        now: Instant,
+    ) -> TestResult {
+        let handle = cache.get_or_open(&key(generation)?, fields, &path(root, generation), now)?;
+        {
+            let writer = handle
+                .lock()
+                .map_err(|error| format!("test writer lock poisoned: {error}"))?;
+            let _opstamp = writer.writer.add_document(tantivy::doc!(
+                fields.candidate_id => format!("candidate-{generation}"),
+                fields.chunk_text => "envelope marker",
+            ))?;
+            drop(writer);
+        }
+        Ok(())
+    }
+
+    fn committed_rows(
+        fields: &SchemaFields,
+        root: &Path,
+        generation: u64,
+    ) -> Result<u64, Box<dyn Error>> {
+        let index = open_or_create_index(fields, &path(root, generation))?;
+        let reader = index.reader()?;
+        Ok(reader.searcher().num_docs())
+    }
+
+    #[test]
+    fn envelope_evicts_lru_only_after_committing_its_rows() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let fields = SchemaFields::build();
+        let policy = LexicalWriterPolicy::new(
+            3 * LEXICAL_WRITER_HEAP_BYTES_MIN,
+            LEXICAL_WRITER_HEAP_BYTES_MIN,
+            Duration::from_secs(3600),
+        )?;
+        let mut cache = WriterCache::new(policy);
+        let start = Instant::now();
+        if policy.max_writers() != 3 {
+            return Err("test policy does not hold three writers".into());
+        }
+        for generation in 0..5 {
+            add_row(&mut cache, &fields, &root, generation, start)?;
+            let stats = cache.stats();
+            if stats.open_writers > stats.max_writers
+                || stats.allocated_heap_bytes > policy.envelope_bytes()
+                || stats.max_writers != 3
+            {
+                return Err(format!(
+                    "writer envelope exceeded at generation {generation}: {stats:?}"
+                )
+                .into());
+            }
+        }
+        let stats = cache.stats();
+        if (stats.open_writers, stats.lru_releases, stats.idle_releases) != (3, 2, 0) {
+            return Err(
+                format!("five opens through three slots did not evict two: {stats:?}").into(),
+            );
+        }
+        for generation in 0..2 {
+            if committed_rows(&fields, &root, generation)? != 1 {
+                return Err(
+                    format!("evicted generation {generation} lost its committed row").into(),
+                );
+            }
+        }
+        add_row(&mut cache, &fields, &root, 0, start)?;
+        let stats = cache.stats();
+        if (stats.open_writers, stats.lru_releases) != (3, 3)
+            || committed_rows(&fields, &root, 2)? != 1
+        {
+            return Err(format!("reopen did not evict and commit generation 2: {stats:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn idle_sweep_commits_rows_and_releases_writer_heap() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let fields = SchemaFields::build();
+        let idle = Duration::from_millis(400);
+        let policy = LexicalWriterPolicy::new(
+            4 * LEXICAL_WRITER_HEAP_BYTES_MIN,
+            LEXICAL_WRITER_HEAP_BYTES_MIN,
+            idle,
+        )?;
+        let mut cache = WriterCache::new(policy);
+        let start = Instant::now();
+        add_row(&mut cache, &fields, &root, 1, start)?;
+        add_row(&mut cache, &fields, &root, 2, start)?;
+        if cache.release_idle(start + idle + idle)? != 2 {
+            return Err("idle sweep did not release both writers".into());
+        }
+        let stats = cache.stats();
+        if (
+            stats.open_writers,
+            stats.idle_releases,
+            stats.allocated_heap_bytes,
+        ) != (0, 2, 0)
+        {
+            return Err(format!("idle sweep retained writer heap: {stats:?}").into());
+        }
+        for generation in [1, 2] {
+            if committed_rows(&fields, &root, generation)? != 1 {
+                return Err(format!("idle generation {generation} lost its committed row").into());
+            }
+        }
+        add_row(&mut cache, &fields, &root, 3, start + idle + idle)?;
+        add_row(
+            &mut cache,
+            &fields,
+            &root,
+            4,
+            start + idle + idle + idle + idle,
+        )?;
+        let stats = cache.stats();
+        if (stats.open_writers, stats.idle_releases) != (1, 3)
+            || committed_rows(&fields, &root, 3)? != 1
+        {
+            return Err(
+                format!("open-time idle sweep did not commit generation 3: {stats:?}").into(),
+            );
+        }
+        Ok(())
+    }
 }

@@ -587,6 +587,7 @@ impl SourceCorpusFixture {
             socket,
             &SearchPlaneIngestIpcRequestEnvelope {
                 request_id,
+                diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
                 payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
             },
             quanta_index_ipc::ClientIoPolicy::default(),

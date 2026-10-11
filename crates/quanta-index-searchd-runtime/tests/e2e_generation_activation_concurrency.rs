@@ -19,19 +19,22 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2, SourceFileKey, SourcePublicationEvent,
-    lex::LanguageCode,
+    BatchIngestMode, ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath,
+    RevisionId, SearchCorpusActiveHeadV1, SearchCorpusGenerationReservationRequestV1,
+    SearchCorpusIngestBatch, SearchPlaneErrorCodeV2, SourceFileKey, SourcePublicationEvent,
+    lex::LanguageCode, source_event_payload_sha256,
 };
-use quanta_index_sdk::{ConnectOptions, QuantaIndex, RepoMetaBatch, SdkError, SearchCorpusBatch};
+use quanta_index_sdk::{
+    BatchMode, ConnectOptions, QuantaIndex, RepoMetaBatch, SdkError, SearchCorpusBatch,
+};
 use quanta_index_searchd_harness::{E2eRuntime, fixture_source_scope_v1};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
 const REPO: &str = "repo-generation-activation-concurrency";
 const REVISION: &str = "revision-generation-activation-concurrency";
-const G1: u64 = 101;
-const G2: u64 = 102;
+const G1: u64 = 1;
+const G2: u64 = 2;
 const RESULT_COUNT: usize = 32;
 const NEEDLE: &str = "generation_activation_concurrency_needle";
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
@@ -150,21 +153,24 @@ fn expected_ids(raw_generation: u64) -> Vec<String> {
     ids
 }
 
-fn corpus_batch(raw_generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>> {
+fn corpus_batch(
+    raw_generation: u64,
+) -> Result<(SearchCorpusBatch, SourcePublicationEvent), Box<dyn Error>> {
     let label = label(raw_generation);
+    let source_event = SourcePublicationEvent {
+        stream_id: "fixture:generation-activation-concurrency".to_string(),
+        event_id: format!("fixture:generation-activation-concurrency:{raw_generation}"),
+        expected_base_event_id: (raw_generation == G2)
+            .then(|| format!("fixture:generation-activation-concurrency:{G1}")),
+        payload_sha256: [0; 32],
+    };
     let mut batch = SearchCorpusBatch::replace_generation(
         repo(),
         revision(),
         generation(raw_generation),
         format!("manifest:generation-activation-concurrency:{label}"),
     )
-    .source_event(SourcePublicationEvent {
-        stream_id: "fixture:generation-activation-concurrency".to_string(),
-        event_id: format!("fixture:generation-activation-concurrency:{raw_generation}"),
-        expected_base_event_id: (raw_generation == G2)
-            .then(|| format!("fixture:generation-activation-concurrency:{G1}")),
-        payload_sha256: [0; 32],
-    });
+    .source_event(source_event.clone());
 
     for index in 0..RESULT_COUNT {
         let path = format!("src/{label}/file_{index:02}.rs");
@@ -199,7 +205,41 @@ fn corpus_batch(raw_generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>
             scope_v1.symbols,
         );
     }
-    Ok(batch)
+    Ok((batch, source_event))
+}
+
+fn reservation_request(
+    batch: &SearchCorpusBatch,
+    mut source_event: SourcePublicationEvent,
+) -> Result<SearchCorpusGenerationReservationRequestV1, Box<dyn Error>> {
+    // Project the completed SDK batch through its public accessors. The SDK
+    // stamps this same source payload when it later publishes the batch.
+    let source_body = SearchCorpusIngestBatch {
+        source_event: source_event.clone(),
+        repo_id: batch.repo_id().clone(),
+        revision_id: batch.revision_id().clone(),
+        generation: batch.generation(),
+        base_generation: batch.base_generation(),
+        manifest_digest: batch.manifest_digest().to_string(),
+        batch_digest: batch.batch_digest()?,
+        mode: match batch.mode() {
+            BatchMode::ReplaceGeneration => BatchIngestMode::ReplaceGeneration,
+            BatchMode::Delta => BatchIngestMode::Delta,
+        },
+        bundle_payload: None,
+        clear_surfaces: batch.clear_surfaces().to_vec(),
+        replace_scopes: batch.replace_scopes().to_vec(),
+        tombstone_scopes: batch.tombstone_scopes().to_vec(),
+        semantic_replace_scopes: batch.semantic_replace_scopes().to_vec(),
+        semantic_tombstone_scopes: batch.semantic_tombstone_scopes().to_vec(),
+        seal: batch.seal_requested(),
+    };
+    source_event.payload_sha256 = source_event_payload_sha256(&source_body)?;
+    Ok(SearchCorpusGenerationReservationRequestV1 {
+        repo_id: batch.repo_id().clone(),
+        revision_id: batch.revision_id().clone(),
+        source_event,
+    })
 }
 
 fn authority_batch(raw_generation: u64) -> RepoMetaBatch {
@@ -215,12 +255,25 @@ fn publish_and_activate(
     raw_generation: u64,
     expected_active: Option<SearchCorpusActiveHeadV1>,
 ) -> Result<SearchCorpusActiveHeadV1, Box<dyn Error>> {
+    let (batch, source_event) = corpus_batch(raw_generation)?;
+    let request = reservation_request(&batch, source_event)?;
+    let reservation = client.search_corpus().reserve_generation(&request)?;
+    if reservation.repo_id != request.repo_id
+        || reservation.revision_id != request.revision_id
+        || reservation.source_event != request.source_event
+        || reservation.generation != batch.generation()
+    {
+        return Err(format!(
+            "source reservation differs from the completed generation {raw_generation} batch: {reservation:?}"
+        )
+        .into());
+    }
     let _receipt = client
         .history()
         .publish_repo_meta(&authority_batch(raw_generation))?;
     let (_receipt, activation) = client
         .search_corpus()
-        .publish_and_activate(&corpus_batch(raw_generation)?, expected_active)?;
+        .publish_and_activate(&batch, expected_active)?;
     if activation.active.generation.lexical.manifest_generation != generation(raw_generation)
         || activation.active.generation.semantic.manifest_generation != generation(raw_generation)
     {

@@ -74,6 +74,7 @@ fn seal_with_overlay(
 ) -> Result<ManifestGeneration, Box<dyn Error>> {
     rt.ingest_text("repo", path, &format!("fn f() {{ {} }}", needle(value)))?;
     let generation = rt.current_generation();
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_repo_meta_batch(repo_meta_batch(rt, generation, value))?;
     let sealed = rt.seal()?;
     rt.activate_last_sealed_generation()?;
@@ -136,6 +137,46 @@ fn expect_meta_hit(rt: &mut E2eRuntime, value: &str, what: &str) -> TestResult {
         .into());
     }
     Ok(())
+}
+
+#[test]
+fn first_overlay_requires_durable_source_reservation_before_writing() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text(
+        "repo",
+        "src/reserved.rs",
+        &format!("fn reserved() {{ {} }}", needle("ready")),
+    )?;
+    let generation = rt.current_generation();
+    let directory = lexical_generation_dir(&rt, generation)?;
+    let refused = rt.ingest_once(e2e_harness::stamped_ingest_request(
+        SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(repo_meta_batch(
+            &rt,
+            generation,
+            "unreserved",
+        )),
+    )?)?;
+    if !matches!(&refused, SearchPlaneIngestIpcResponse::Error(error)
+        if error.code.as_wire_str() == "NOT_READY")
+        || directory.exists()
+    {
+        return Err(format!(
+            "unreserved overlay must be refused without creating a generation directory: {refused:?}"
+        )
+        .into());
+    }
+
+    if rt.reserve_pending_source_generation_v1()? != generation {
+        return Err("source reservation selected a different generation".into());
+    }
+    rt.publish_repo_meta_batch(repo_meta_batch(&rt, generation, "ready"))?;
+    if rt.seal()? != generation {
+        return Err("seal changed the reserved generation".into());
+    }
+    rt.activate_last_sealed_generation()?;
+    expect_meta_hit(&mut rt, "ready", "after reserved overlay and seal")?;
+    let mut rt = rt.reopen();
+    expect_meta_hit(&mut rt, "ready", "after reserved overlay restart")
 }
 
 /// An overlay publish into the sealed, active generation is refused typed

@@ -770,12 +770,11 @@ macro_rules! validated_identity {
                     ));
                     return Err(NativeIdentityDecodeDataRefusalV1::OperationRefused);
                 }
-                if try_copy_string_into_slots_with_native_birth_v1(value, slots.backing, slots.copy, copy_admission).is_err() {
-                    return match slots.copy.failure_into_identity_slot_v1(slots.failure) {
-                        Ok(()) => Err(NativeIdentityDecodeDataRefusalV1::OperationRefused),
-                        Err(_) => Err(NativeIdentityDecodeDataRefusalV1::InvalidNativeProducer),
-                    };
-                }
+                try_copy_string_into_slots_with_native_birth_v1(value, slots.backing, slots.copy, copy_admission)
+                    .map_err(|_| match slots.copy.failure_into_identity_slot_v1(slots.failure) {
+                        Ok(()) => NativeIdentityDecodeDataRefusalV1::OperationRefused,
+                        Err(_) => NativeIdentityDecodeDataRefusalV1::InvalidNativeProducer,
+                    })?;
                 if let Err(cause) = normalization_admission.checkpoint_work_v1(0) {
                     *slots.failure = Some(NativeIdentityConstructionErrorV1::Copy(
                         NativeIdentityCopyErrorV1::Admission(cause),

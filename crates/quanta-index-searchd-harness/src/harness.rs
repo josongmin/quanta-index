@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[path = "harness/owned_cleanup.rs"]
+mod owned_cleanup;
 #[path = "harness/source_publication.rs"]
 mod source_publication;
 use source_publication::CorpusPublicationState;
@@ -41,12 +43,12 @@ use quanta_index_contract::{
     QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
     QuarantineTargetV1, QueryResultWindowV2, RawFallbackReasonV1, RepoId, RepoRelativePath,
     RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1,
-    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusPublishOutcome,
-    SearchExplanation, SearchPlaneActivateSearchCorpusGenerationCasRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2,
-    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchCorpusGenerationIdentityV1, SearchCorpusGenerationReservationRequestV1,
+    SearchCorpusIngestBatch, SearchCorpusPublishOutcome, SearchExplanation,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2, SearchPlaneExplainQueryRequest,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
@@ -57,15 +59,19 @@ use quanta_index_contract::{
     StructuralTreeRecord, SymbolId, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::{
+    DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticRootKindV1,
+    DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceErrorV1,
     IngestResourcePolicy, IntegrityScrubPolicyV1, LexicalWriterPolicy, ProcessMemoryProbePort,
     SemanticStreamWindowPolicy,
 };
 use quanta_index_ipc::{
-    ClientIoPolicy, IpcError, ServerAdmissionPolicy, send_request, stamp_batch_digest_v1,
+    ClientIoPolicy, IpcError, ServerAdmissionPolicy, send_request, send_request_negotiated,
+    stamp_batch_digest_v1,
 };
 use quanta_index_search_plane::{
     BoundedQueryObsStore, MetricSample, ObsError, ResponsePayloadBudget,
 };
+use quanta_index_searchd::DiagnosticCaptureLeaseV1;
 use quanta_index_searchd::app::config::ProviderEgressGrantConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::semantic_boot::SemanticBootReport;
@@ -73,7 +79,9 @@ use quanta_index_searchd::app::{
     BootInventoryReportV1, KernelResidentMemoryProbe, MaintenancePolicy, ProcessMemoryCeilings,
     SearchdConfig, SemanticEmbedderProfile, SocketAccessPolicies, SocketRole,
 };
-use quanta_index_searchd_runtime::build_runtime_with_memory_probe;
+use quanta_index_searchd_runtime::{
+    build_runtime_with_memory_probe, build_runtime_with_memory_probe_and_capture_under,
+};
 use tempfile::TempDir;
 
 /// The request binding and validated response from one publication call.
@@ -162,6 +170,7 @@ struct DriverSpec<'a> {
     /// memory (QI-BB-016).
     process_memory_ceilings: ProcessMemoryCeilings,
     memory_probe: &'a Arc<dyn ProcessMemoryProbePort>,
+    diagnostic_capture: Option<&'a DiagnosticCaptureLeaseV1>,
     /// The maintenance timer's cadence (QI-BB-016, QI-BB-015).
     maintenance_policy: MaintenancePolicy,
     /// How the integrity scrub is paced (QI-BB-017).
@@ -280,6 +289,7 @@ pub struct E2eRuntime {
     /// Where the daemon reads its resident memory: the kernel, or a
     /// scripted probe a gate test drives.
     memory_probe: Arc<dyn ProcessMemoryProbePort>,
+    diagnostic_capture: Option<DiagnosticCaptureLeaseV1>,
     /// The maintenance timer's cadence (QI-BB-016): fast in the harness,
     /// so an idle sweep or a disk refresh is observable within a test's
     /// patience without a sleep the length of the production tick.
@@ -626,6 +636,23 @@ impl E2eRuntime {
         })
     }
 
+    /// Keep the capture lease across lazy starts and same-process reopens.
+    /// Configure this before the first request starts the driver.
+    pub fn with_diagnostic_capture(mut self, capture: DiagnosticCaptureLeaseV1) -> AnyResult<Self> {
+        if self.driver.is_some() {
+            anyhow::bail!("e2e-harness: diagnostic capture must precede daemon start");
+        }
+        self.diagnostic_capture = Some(capture);
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn diagnostic_context(&self) -> Option<&DiagnosticContextV1> {
+        self.diagnostic_capture
+            .as_ref()
+            .map(DiagnosticCaptureLeaseV1::context)
+    }
+
     /// Like [`Self::boot`] but runs the daemon's semantic track under
     /// `policy` as its stream window, so a small batch streams through
     /// several windows instead of one.
@@ -728,6 +755,7 @@ impl E2eRuntime {
             lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
             process_memory_ceilings: ProcessMemoryCeilings::DEFAULT,
             memory_probe: Arc::new(KernelResidentMemoryProbe),
+            diagnostic_capture: None,
             maintenance_policy: MaintenancePolicy::new(HARNESS_MAINTENANCE_TICK)?,
             driver: None,
             query_obs_store: None,
@@ -784,16 +812,21 @@ impl E2eRuntime {
         self
     }
 
-    /// Stop the driver and release the state root, returning the driver's
-    /// terminal result (TOPT-03): explicit tests call `stop` and surface
-    /// a driver failure as their error; `Drop` remains the unwind path
+    /// Stop the driver and release the state root, reporting driver or
+    /// owned-root cleanup failure (TOPT-03): explicit tests call `stop` and
+    /// surface teardown failure as their error; `Drop` remains the unwind path
     /// that never masks a scenario failure already in flight.
     pub fn stop(mut self) -> AnyResult<()> {
         if let Err(error) = self.stop_driver() {
             self.explicit_stop_error_reported = true;
             return Err(error);
         }
-        drop(self.tempdir.take());
+        if let Some(tempdir) = self.tempdir.take()
+            && let Err(error) = close_owned_tempdir(tempdir, self.diagnostic_context())
+        {
+            self.explicit_stop_error_reported = true;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -818,27 +851,61 @@ impl E2eRuntime {
     /// state root. The next `start` reopens persisted state; unlike `reopen`,
     /// this reports teardown failure to benchmark callers instead of panicking.
     pub fn try_reopen_in_place(&mut self) -> AnyResult<()> {
-        self.stop_driver()
+        self.try_reopen_in_place_with_context(None)
+    }
+
+    pub(crate) fn try_reopen_in_place_with_context(
+        &mut self,
+        parent: Option<&DiagnosticContextV1>,
+    ) -> AnyResult<()> {
+        self.validate_diagnostic_parent(parent)?;
+        let diagnostic = self.diagnostic_context().cloned();
+        if let Some(parent) = parent {
+            trace_harness_child_context(parent, DiagnosticStageV1::RuntimeStop, |stop_context| {
+                self.stop_driver_with_context(stop_context)
+            })
+        } else {
+            trace_harness_operation(diagnostic.as_ref(), DiagnosticStageV1::RuntimeStop, || {
+                self.stop_driver()
+            })
+        }
     }
 
     fn stop_driver(&mut self) -> AnyResult<()> {
+        self.stop_driver_with_context(None)
+    }
+
+    fn stop_driver_with_context(&mut self, parent: Option<&DiagnosticContextV1>) -> AnyResult<()> {
+        let diagnostic = self.diagnostic_context().cloned();
         let outcome = if let Some(mut driver) = self.driver.take() {
             driver.shutdown.store(true, Ordering::Release);
-            driver.join.take().map_or(Ok(()), |join| match join.join() {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(anyhow::anyhow!(
-                    "e2e-harness: daemon driver returned an error: {error:#}"
-                )),
-                Err(panic) => Err(anyhow::anyhow!(
-                    "e2e-harness: daemon driver panicked: {panic:?}"
-                )),
-            })
+            trace_harness_step(
+                diagnostic.as_ref(),
+                parent,
+                DiagnosticStageV1::RuntimeJoin,
+                || {
+                    driver.join.take().map_or(Ok(()), |join| match join.join() {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(error)) => Err(anyhow::anyhow!(
+                            "e2e-harness: daemon driver returned an error: {error:#}"
+                        )),
+                        Err(panic) => Err(anyhow::anyhow!(
+                            "e2e-harness: daemon driver panicked: {panic:?}"
+                        )),
+                    })
+                },
+            )
         } else {
             Ok(())
         };
         self.query_obs_store = None;
         outcome?;
-        self.remove_socket_directory()
+        trace_harness_step(
+            diagnostic.as_ref(),
+            parent,
+            DiagnosticStageV1::RuntimeStop,
+            || self.remove_socket_directory(),
+        )
     }
 
     /// Remove the shared-mode socket directory, if the daemon created it.
@@ -863,7 +930,28 @@ impl E2eRuntime {
     /// refusal (a defective active generation, for instance) as the error it
     /// is rather than as a failed query.
     pub fn start(&mut self) -> AnyResult<()> {
-        drop(self.ensure_driver()?);
+        self.start_with_context(None)
+    }
+
+    pub(crate) fn start_with_context(
+        &mut self,
+        parent: Option<&DiagnosticContextV1>,
+    ) -> AnyResult<()> {
+        self.validate_diagnostic_parent(parent)?;
+        drop(self.ensure_driver_with_context(parent)?);
+        Ok(())
+    }
+
+    fn validate_diagnostic_parent(&self, parent: Option<&DiagnosticContextV1>) -> AnyResult<()> {
+        if let Some(parent) = parent {
+            let capture = self.diagnostic_context().ok_or_else(|| {
+                anyhow::anyhow!("e2e-harness: diagnostic parent requires a capture")
+            })?;
+            anyhow::ensure!(
+                parent.shares_capture_session(capture),
+                "e2e-harness: diagnostic parent belongs to a different capture"
+            );
+        }
         Ok(())
     }
 
@@ -896,6 +984,7 @@ impl E2eRuntime {
             lexical_writer_policy: self.lexical_writer_policy,
             process_memory_ceilings: self.process_memory_ceilings,
             memory_probe: &self.memory_probe,
+            diagnostic_capture: self.diagnostic_capture.as_ref(),
             maintenance_policy: self.maintenance_policy,
             integrity_scrub_policy: self.integrity_scrub_policy,
             query_response_budget: self.query_response_budget,
@@ -905,7 +994,27 @@ impl E2eRuntime {
     }
 
     fn ensure_driver(&mut self) -> AnyResult<PathBuf> {
+        self.ensure_driver_with_context(None)
+    }
+
+    fn ensure_driver_with_context(
+        &mut self,
+        parent: Option<&DiagnosticContextV1>,
+    ) -> AnyResult<PathBuf> {
         if self.driver.is_none() {
+            let diagnostic = self.diagnostic_context().cloned();
+            let boot = diagnostic
+                .as_ref()
+                .filter(|_| parent.is_none())
+                .map(|context| {
+                    context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+                })
+                .transpose()?;
+            let boot_context = diagnostic
+                .as_ref()
+                .zip(boot.as_ref())
+                .map(|(context, span)| context.child_context(span));
+            let start_parent = parent.or(boot_context.as_ref());
             let (
                 query_socket,
                 control_socket,
@@ -915,7 +1024,20 @@ impl E2eRuntime {
                 query_obs_store,
                 boot_inventory,
                 semantic_boot,
-            ) = start_driver(&self.driver_spec())?;
+            ) = match start_driver(&self.driver_spec(), start_parent) {
+                Ok(started) => {
+                    if let Some(boot) = boot {
+                        let _finished = boot.finish(DiagnosticTerminalV1::Ok);
+                    }
+                    started
+                }
+                Err(error) => {
+                    if let Some(boot) = boot {
+                        let _finished = boot.finish(DiagnosticTerminalV1::Error { code: 1 });
+                    }
+                    return Err(error);
+                }
+            };
             self.query_obs_store = Some(Arc::clone(&query_obs_store));
             self.driver = Some(DriverState {
                 query_socket,
@@ -1043,6 +1165,7 @@ impl E2eRuntime {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => Err(anyhow::anyhow!(
                 "e2e-harness: quarantine discard returned an unexpected control response: {other:?}"
             )),
@@ -1244,6 +1367,7 @@ impl E2eRuntime {
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => Err(anyhow::anyhow!(
                 "e2e-harness: active-head read returned an unexpected control response: {other:?}"
             )),
@@ -1471,6 +1595,48 @@ impl E2eRuntime {
             quanta_index_contract::source_event_payload_sha256(batch)?;
         quanta_index_ipc::stamp_batch_digest_v1(batch)?;
         Ok(())
+    }
+
+    /// Freeze the complete staged source body and durably reserve its generation
+    /// before a fixture publishes lexical overlays into that generation.
+    /// A later seal retries this same body; callers must finish source edits first.
+    pub fn reserve_pending_source_generation_v1(&mut self) -> AnyResult<ManifestGeneration> {
+        if self.source_publication.frozen().is_none() {
+            let batch = self.pending_search_corpus_batch(self.next_batch_sequence())?;
+            self.source_publication.freeze(batch);
+        }
+        let batch = self
+            .source_publication
+            .frozen()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("e2e-harness source event was not frozen"))?;
+        let request = SearchCorpusGenerationReservationRequestV1 {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            source_event: batch.source_event.clone(),
+        };
+        request.validate_v1().map_err(anyhow::Error::msg)?;
+        let response = self.dispatch_control(
+            SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(request.clone()),
+        )?;
+        let SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(reservation) =
+            response
+        else {
+            return Err(anyhow::anyhow!(
+                "e2e-harness source reservation returned an unexpected response: {response:?}"
+            ));
+        };
+        reservation.validate_v1().map_err(anyhow::Error::msg)?;
+        if reservation.repo_id != request.repo_id
+            || reservation.revision_id != request.revision_id
+            || reservation.source_event != request.source_event
+            || reservation.generation != batch.generation
+        {
+            return Err(anyhow::anyhow!(
+                "e2e-harness source reservation differs from the frozen source identity or generation"
+            ));
+        }
+        Ok(reservation.generation)
     }
 
     pub fn publish_repo_metadata_bundle(&mut self, payload: Vec<u8>) -> AnyResult<()> {
@@ -2140,6 +2306,7 @@ impl E2eRuntime {
             stamped_ingest_request(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id: self.request_id_counter.load(Ordering::Relaxed),
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload,
         };
         let decoded = quanta_index_ipc::cbor_payload_len(&envelope)?;
@@ -2159,6 +2326,8 @@ impl E2eRuntime {
                 |part| -> AnyResult<()> {
                     let request = SearchPlaneIngestIpcRequestEnvelope {
                         request_id,
+                        diagnostic_attempt:
+                            quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
                         payload: SearchPlaneIngestIpcRequest::StageSourcePublication(part),
                     };
                     wire_bytes = wire_bytes
@@ -2180,6 +2349,7 @@ impl E2eRuntime {
             })?;
             let commit = SearchPlaneIngestIpcRequestEnvelope {
                 request_id,
+                diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
                 payload: SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(
                     quanta_index_contract::SourcePublicationUploadCommit {
                         identity,
@@ -2309,6 +2479,7 @@ impl E2eRuntime {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
                 text_query: TextQueryRequest {
                     syntax,
@@ -2342,8 +2513,13 @@ impl E2eRuntime {
                 };
             }
         };
-        let response =
-            wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
+        let response = wait_for_query_response_traced(
+            &socket,
+            &envelope,
+            self.client_io,
+            self.diagnostic_context(),
+            query_response_ready,
+        );
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => {
@@ -2610,10 +2786,17 @@ impl E2eRuntime {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload,
         };
         let socket = self.ensure_driver()?;
-        let response = wait_for_query_response(&socket, &envelope, self.client_io, ready);
+        let response = wait_for_query_response_traced(
+            &socket,
+            &envelope,
+            self.client_io,
+            self.diagnostic_context(),
+            ready,
+        );
         let response = match response {
             Ok(response) => response,
             Err(err) => {
@@ -2664,6 +2847,7 @@ impl E2eRuntime {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                 syntax,
                 query_text: query_text.to_string(),
@@ -2697,10 +2881,11 @@ impl E2eRuntime {
         // test does. For an invalid-contract request (no pin), the runtime
         // returns INVALID_REQUEST immediately, which already satisfies the
         // "non-NOT_READY" predicate.
-        let response = wait_for_query_response(
+        let response = wait_for_query_response_traced(
             &socket,
             &envelope,
             self.client_io,
+            self.diagnostic_context(),
             query_response_ready_allow_structural_not_ready,
         );
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
@@ -2719,7 +2904,7 @@ impl E2eRuntime {
                 structural_results: Vec::new(),
                 hybrid_candidates: Vec::new(),
                 engines_touched: Vec::new(),
-                explanation: None,
+                explanation: Some(text.explanation),
                 typed_error: None,
             },
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
@@ -2834,6 +3019,7 @@ impl E2eRuntime {
             });
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: query_text.to_string(),
                 constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
@@ -2861,8 +3047,13 @@ impl E2eRuntime {
                 };
             }
         };
-        let response =
-            wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
+        let response = wait_for_query_response_traced(
+            &socket,
+            &envelope,
+            self.client_io,
+            self.diagnostic_context(),
+            query_response_ready,
+        );
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return self.semantic_transport_error(&err),
@@ -2932,6 +3123,7 @@ impl E2eRuntime {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
                 text_query: TextQueryRequest {
                     syntax,
@@ -2966,8 +3158,13 @@ impl E2eRuntime {
                 };
             }
         };
-        let response =
-            wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
+        let response = wait_for_query_response_traced(
+            &socket,
+            &envelope,
+            self.client_io,
+            self.diagnostic_context(),
+            query_response_ready,
+        );
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return self.semantic_transport_error(&err),
@@ -3046,11 +3243,17 @@ impl E2eRuntime {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload,
         };
         let socket = self.ensure_driver()?;
-        let response =
-            wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
+        let response = wait_for_query_response_traced(
+            &socket,
+            &envelope,
+            self.client_io,
+            self.diagnostic_context(),
+            query_response_ready,
+        );
         let response = match response {
             Ok(response) => response,
             Err(err) => {
@@ -3078,6 +3281,7 @@ impl E2eRuntime {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload,
         };
         let socket = self.ensure_driver()?;
@@ -3202,6 +3406,7 @@ impl E2eRuntime {
         );
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::Explain(SearchPlaneExplainQueryRequest {
                 generation: pin,
                 candidate,
@@ -3222,8 +3427,13 @@ impl E2eRuntime {
                 };
             }
         };
-        let response =
-            wait_for_query_response(&socket, &envelope, self.client_io, query_response_ready);
+        let response = wait_for_query_response_traced(
+            &socket,
+            &envelope,
+            self.client_io,
+            self.diagnostic_context(),
+            query_response_ready,
+        );
         let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return explain_transport_error(&err),
@@ -3343,6 +3553,7 @@ impl E2eRuntime {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload,
         };
         let response: SearchPlaneIngestIpcResponseEnvelope =
@@ -3434,6 +3645,7 @@ impl E2eRuntime {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload,
         };
         let response: SearchPlaneIngestIpcResponseEnvelope =
@@ -3497,6 +3709,7 @@ impl E2eRuntime {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneControlIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload,
         };
         let response: SearchPlaneControlIpcResponseEnvelope =
@@ -3660,22 +3873,49 @@ fn query_attempt_deadline(client_io: ClientIoPolicy, now: Instant) -> Result<Ins
     }
 }
 
-fn wait_for_query_response(
+fn diagnostic_span_or_health(
+    context: &DiagnosticContextV1,
+    result: Result<DiagnosticSpanGuardV1, DiagnosticTraceErrorV1>,
+) -> Option<DiagnosticSpanGuardV1> {
+    match result {
+        Ok(span) => Some(span),
+        Err(error) => {
+            let code = match error {
+                DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                    DiagnosticHealthCodeV1::CounterOverflow
+                }
+                DiagnosticTraceErrorV1::ClockRegressed => DiagnosticHealthCodeV1::ClockRegressed,
+                DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                    DiagnosticHealthCodeV1::ForeignCaptureSpan
+                }
+                DiagnosticTraceErrorV1::MissingParentSpan => {
+                    DiagnosticHealthCodeV1::MissingParentSpan
+                }
+            };
+            context.health(code);
+            None
+        }
+    }
+}
+
+fn wait_for_query_response_traced(
     socket: &Path,
     envelope: &SearchPlaneQueryIpcRequestEnvelope,
     client_io: ClientIoPolicy,
+    diagnostic: Option<&DiagnosticContextV1>,
     ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
 ) -> Result<SearchPlaneQueryIpcResponseEnvelope, IpcError> {
-    wait_for_query_response_with_readiness_window(
+    wait_for_query_response_with_readiness_window_traced(
         socket,
         envelope,
         client_io,
         READINESS_TIMEOUT,
+        diagnostic,
         ready,
     )
 }
 
-/// Readiness bounds retries of transient responses, not an admitted query's I/O.
+#[cfg(test)]
 fn wait_for_query_response_with_readiness_window(
     socket: &Path,
     envelope: &SearchPlaneQueryIpcRequestEnvelope,
@@ -3683,43 +3923,114 @@ fn wait_for_query_response_with_readiness_window(
     readiness_timeout: Duration,
     ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
 ) -> Result<SearchPlaneQueryIpcResponseEnvelope, IpcError> {
-    let started = Instant::now();
-    let query_deadline = query_attempt_deadline(client_io, started)?;
-    let readiness_deadline = started
-        .checked_add(readiness_timeout)
-        .ok_or(IpcError::InvalidClientIoTimeout)?
-        .min(query_deadline);
-    let mut attempts = 0_u64;
-    let mut last = String::from("no attempt completed");
-    loop {
-        if Instant::now() >= readiness_deadline {
-            break;
-        }
-        let attempt_io = ClientIoPolicy::try_with_deadline(query_deadline)?;
-        attempts = attempts.saturating_add(1);
-        match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, envelope, attempt_io) {
-            Ok(response) => {
-                let observed = describe_query_response_payload(&response.payload);
-                if ready(&response) {
-                    // The IPC owner checks this deadline after decoding the response.
-                    return Ok(response);
-                }
-                last = format!("not-ready {observed}");
+    wait_for_query_response_with_readiness_window_traced(
+        socket,
+        envelope,
+        client_io,
+        readiness_timeout,
+        None,
+        ready,
+    )
+}
+
+/// Readiness bounds retries of transient responses, not an admitted query's I/O.
+fn wait_for_query_response_with_readiness_window_traced(
+    socket: &Path,
+    envelope: &SearchPlaneQueryIpcRequestEnvelope,
+    client_io: ClientIoPolicy,
+    readiness_timeout: Duration,
+    diagnostic: Option<&DiagnosticContextV1>,
+    ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
+) -> Result<SearchPlaneQueryIpcResponseEnvelope, IpcError> {
+    let root = diagnostic.and_then(|context| {
+        diagnostic_span_or_health(
+            context,
+            context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1)),
+        )
+    });
+    let result = (|| {
+        let started = Instant::now();
+        let query_deadline = query_attempt_deadline(client_io, started)?;
+        let readiness_deadline = started
+            .checked_add(readiness_timeout)
+            .ok_or(IpcError::InvalidClientIoTimeout)?
+            .min(query_deadline);
+        let mut attempts = 0_u64;
+        let mut last = String::from("no attempt completed");
+        loop {
+            if Instant::now() >= readiness_deadline {
+                break;
             }
-            Err(error) if Instant::now() >= query_deadline => return Err(error),
-            Err(error) => last = format!("transport error: {error}"),
+            let attempt_io = ClientIoPolicy::try_with_deadline(query_deadline)?;
+            attempts = attempts.saturating_add(1);
+            let attempt = root.as_ref().and_then(|root| {
+                diagnostic.and_then(|context| {
+                    let child = context.child_context(root);
+                    diagnostic_span_or_health(
+                        &child,
+                        child.enter(DiagnosticStageV1::ClientAttempt, DiagnosticLaneV1(1)),
+                    )
+                })
+            });
+            let mut attempted = envelope.clone();
+            if let Some(span) = attempt.as_ref() {
+                attempted.diagnostic_attempt =
+                    quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Linked(
+                        span.attempt_token(),
+                    );
+            }
+            // The linked token is legal only after the daemon acknowledges this
+            // capture on the same stream. The IPC owner retries the plain form
+            // on an older peer under this attempt's original absolute deadline.
+            let sent = attempt.as_ref().map_or_else(
+                || {
+                    send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(
+                        socket, envelope, attempt_io,
+                    )
+                },
+                |span| {
+                    send_request_negotiated::<_, _, SearchPlaneQueryIpcResponseEnvelope>(
+                        socket,
+                        envelope,
+                        &attempted,
+                        span.attempt_token().capture_id(),
+                        attempt_io,
+                    )
+                },
+            );
+            if let Some(span) = attempt {
+                let outcome = DiagnosticTerminalV1::from_result(&sent);
+                let _finished = span.finish(outcome);
+            }
+            match sent {
+                Ok(response) => {
+                    let observed = describe_query_response_payload(&response.payload);
+                    if ready(&response) {
+                        // The IPC owner checks this deadline after decoding the response.
+                        return Ok(response);
+                    }
+                    last = format!("not-ready {observed}");
+                }
+                Err(error) if Instant::now() >= query_deadline => return Err(error),
+                Err(error) => last = format!("transport error: {error}"),
+            }
+            let remaining = readiness_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            thread::sleep(READINESS_POLL_INTERVAL.min(remaining));
         }
-        let remaining = readiness_deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        thread::sleep(READINESS_POLL_INTERVAL.min(remaining));
+        Err(IpcError::ReadinessTimeout {
+            timeout: readiness_deadline.saturating_duration_since(started),
+            attempts,
+            last: cap_observation(last),
+        })
+    })();
+    if let Some(root) = root {
+        let outcome = DiagnosticTerminalV1::from_result(&result);
+        let _finished = root.finish(outcome);
     }
-    Err(IpcError::ReadinessTimeout {
-        timeout: readiness_deadline.saturating_duration_since(started),
-        attempts,
-        last: cap_observation(last),
-    })
+    result
 }
 
 fn explain_transport_error(err: &IpcError) -> E2eExplainResult {
@@ -3734,9 +4045,21 @@ fn explain_transport_error(err: &IpcError) -> E2eExplainResult {
     }
 }
 
-fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
+fn start_driver(
+    spec: &DriverSpec<'_>,
+    parent: Option<&DiagnosticContextV1>,
+) -> AnyResult<DriverHandles> {
     let config = build_config(spec)?;
-    let runtime = build_runtime_with_memory_probe(config, Arc::clone(spec.memory_probe))?;
+    let runtime = if let Some(capture) = spec.diagnostic_capture {
+        build_runtime_with_memory_probe_and_capture_under(
+            config,
+            Arc::clone(spec.memory_probe),
+            capture.clone(),
+            parent,
+        )?
+    } else {
+        build_runtime_with_memory_probe(config, Arc::clone(spec.memory_probe))?
+    };
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
     let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
@@ -3749,14 +4072,29 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
         .name("e2e-harness-driver".into())
         .spawn(move || drive(runtime, &shutdown_for_drive))?;
     let mut last_seen = (false, false, false);
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, SOCKET_APPEAR_POLL_INTERVAL, || {
-        last_seen = (
-            query_socket.exists(),
-            control_socket.exists(),
-            ingest_socket.exists(),
-        );
-        last_seen.0 && last_seen.1 && last_seen.2
-    }) {
+    let sockets_appeared = trace_harness_step(
+        spec.diagnostic_capture
+            .map(DiagnosticCaptureLeaseV1::context),
+        parent,
+        DiagnosticStageV1::RuntimeBoot,
+        || {
+            let appeared = wait_until(SOCKET_APPEAR_TIMEOUT, SOCKET_APPEAR_POLL_INTERVAL, || {
+                last_seen = (
+                    query_socket.exists(),
+                    control_socket.exists(),
+                    ingest_socket.exists(),
+                );
+                last_seen.0 && last_seen.1 && last_seen.2
+            });
+            if appeared {
+                Ok(())
+            } else {
+                anyhow::bail!("e2e-harness: socket wait timed out")
+            }
+        },
+    )
+    .is_ok();
+    if !sockets_appeared {
         shutdown.store(true, Ordering::Release);
         let socket_failure = format!(
             "e2e-harness: sockets never appeared query={} (present={}) control={} (present={}) ingest={} (present={})",
@@ -3767,15 +4105,21 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
             ingest_socket.display(),
             last_seen.2
         );
-        return match join.join() {
-            Ok(Ok(())) => Err(anyhow::anyhow!("{socket_failure}")),
-            Ok(Err(error)) => Err(anyhow::anyhow!(
-                "{socket_failure}; daemon driver returned an error: {error:#}"
-            )),
-            Err(panic) => Err(anyhow::anyhow!(
-                "{socket_failure}; daemon driver panicked: {panic:?}"
-            )),
-        };
+        return trace_harness_step(
+            spec.diagnostic_capture
+                .map(DiagnosticCaptureLeaseV1::context),
+            parent,
+            DiagnosticStageV1::RuntimeJoin,
+            || match join.join() {
+                Ok(Ok(())) => Err(anyhow::anyhow!("{socket_failure}")),
+                Ok(Err(error)) => Err(anyhow::anyhow!(
+                    "{socket_failure}; daemon driver returned an error: {error:#}"
+                )),
+                Err(panic) => Err(anyhow::anyhow!(
+                    "{socket_failure}; daemon driver panicked: {panic:?}"
+                )),
+            },
+        );
     }
     Ok((
         query_socket,
@@ -3787,6 +4131,97 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
         boot_inventory,
         semantic_boot,
     ))
+}
+
+/// Explicit teardown includes recursive deletion in the caller's deadline.
+///
+/// Trace admission/clock failures record health but never suppress cleanup or
+/// replace its I/O result. `TempDir::close` consumes ownership even on failure.
+fn close_owned_tempdir(
+    tempdir: TempDir,
+    diagnostic: Option<&DiagnosticContextV1>,
+) -> AnyResult<()> {
+    let root = diagnostic
+        .filter(|context| !context.has_parent())
+        .and_then(|context| {
+            diagnostic_span_or_health(
+                context,
+                context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0)),
+            )
+        });
+    let context = diagnostic.and_then(|context| {
+        root.as_ref()
+            .map(|root| context.child_context(root))
+            .or_else(|| context.has_parent().then(|| context.clone()))
+    });
+    let span = context.as_ref().and_then(|context| {
+        diagnostic_span_or_health(
+            context,
+            context.enter(DiagnosticStageV1::RuntimeStop, DiagnosticLaneV1(0)),
+        )
+    });
+    let result = owned_cleanup::close(tempdir)
+        .map_err(|error| anyhow::anyhow!("e2e-harness: removing owned state root failed: {error}"));
+    let outcome = DiagnosticTerminalV1::from_result(&result);
+    for guard in [span, root].into_iter().flatten() {
+        let _closed = guard.finish(outcome);
+    }
+    result
+}
+
+fn trace_harness_step<T>(
+    diagnostic: Option<&DiagnosticContextV1>,
+    parent: Option<&DiagnosticContextV1>,
+    stage: DiagnosticStageV1,
+    work: impl FnOnce() -> AnyResult<T>,
+) -> AnyResult<T> {
+    if let Some(parent) = parent {
+        trace_harness_child_context(parent, stage, |_| work())
+    } else {
+        trace_harness_operation(diagnostic, stage, work)
+    }
+}
+
+fn trace_harness_child_context<T>(
+    parent: &DiagnosticContextV1,
+    stage: DiagnosticStageV1,
+    work: impl FnOnce(Option<&DiagnosticContextV1>) -> AnyResult<T>,
+) -> AnyResult<T> {
+    let span = parent.enter(stage, DiagnosticLaneV1(0))?;
+    let context = parent.child_context(&span);
+    let result = work(Some(&context));
+    let outcome = DiagnosticTerminalV1::from_result(&result);
+    let finished = span.finish(outcome);
+    let value = result?;
+    finished?;
+    Ok(value)
+}
+
+fn trace_harness_operation<T>(
+    diagnostic: Option<&DiagnosticContextV1>,
+    stage: DiagnosticStageV1,
+    work: impl FnOnce() -> AnyResult<T>,
+) -> AnyResult<T> {
+    let root = diagnostic
+        .map(|context| context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0)))
+        .transpose()?;
+    let span = root
+        .as_ref()
+        .zip(diagnostic)
+        .map(|(root, context)| {
+            context
+                .child_context(root)
+                .enter(stage, DiagnosticLaneV1(0))
+        })
+        .transpose()?;
+    let result = work();
+    let outcome = DiagnosticTerminalV1::from_result(&result);
+    let span_finished = span.map(|span| span.finish(outcome)).transpose();
+    let root_finished = root.map(|root| root.finish(outcome)).transpose();
+    let value = result?;
+    let _span_finished = span_finished?;
+    let _root_finished = root_finished?;
+    Ok(value)
 }
 
 /// Generation retention used by the default harness runtime boot path.
@@ -4121,6 +4556,98 @@ pub fn stamped_ingest_request(
 }
 
 #[cfg(test)]
+mod diagnostic_parent_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use anyhow::Result as AnyResult;
+    use quanta_index_core::{
+        DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1, DiagnosticEventSinkV1,
+    };
+    use quanta_index_searchd::{DiagnosticCaptureLimitsV1, DiagnosticCaptureV1};
+
+    use super::{E2eRuntime, close_owned_tempdir, private_tempdir};
+
+    #[derive(Debug)]
+    struct FixedClock;
+
+    impl DiagnosticClockV1 for FixedClock {
+        fn now_ns(&self) -> u64 {
+            0
+        }
+    }
+
+    #[derive(Debug)]
+    struct DiscardSink;
+
+    impl DiagnosticEventSinkV1 for DiscardSink {
+        fn try_emit(&self, _event: DiagnosticEmitV1) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "capture ownership predicates are fixed test assertions; setup errors propagate"
+    )]
+    fn diagnostic_parent_requires_the_same_capture_session() -> AnyResult<()> {
+        let output = private_tempdir()?;
+        let mut capture = DiagnosticCaptureV1::start(
+            output.path().join("parent-session.jsonl"),
+            DiagnosticCaptureLimitsV1::default(),
+        )?;
+        let lease = capture
+            .lease()
+            .ok_or_else(|| anyhow::anyhow!("capture refused runtime lease"))?;
+        let runtime = E2eRuntime::boot()?.with_diagnostic_capture(lease)?;
+        let local = runtime
+            .diagnostic_context()
+            .ok_or_else(|| anyhow::anyhow!("runtime lost capture context"))?;
+        let same_id_foreign_session = DiagnosticContextV1::new(
+            local.capture_id(),
+            Arc::new(FixedClock),
+            Arc::new(DiscardSink),
+        );
+
+        assert!(runtime.validate_diagnostic_parent(Some(local)).is_ok());
+        assert!(
+            runtime
+                .validate_diagnostic_parent(Some(&same_id_foreign_session))
+                .is_err()
+        );
+
+        runtime.stop()?;
+        let _closed = capture.close(Duration::from_secs(5))?;
+        Ok(())
+    }
+
+    #[test]
+    fn owned_root_cleanup_survives_foreign_trace_parent() -> AnyResult<()> {
+        let root = private_tempdir()?;
+        let path = root.path().to_path_buf();
+        let local = DiagnosticContextV1::new(
+            quanta_index_core::DiagnosticCaptureIdV1([7; 16]),
+            Arc::new(FixedClock),
+            Arc::new(DiscardSink),
+        );
+        let foreign = DiagnosticContextV1::new(
+            local.capture_id(),
+            Arc::new(FixedClock),
+            Arc::new(DiscardSink),
+        );
+        let foreign_root = foreign.enter_root(
+            quanta_index_core::DiagnosticRootKindV1::Operation,
+            quanta_index_core::DiagnosticLaneV1(0),
+        )?;
+        let invalid = local.child_context(&foreign_root);
+        close_owned_tempdir(root, Some(&invalid))?;
+        anyhow::ensure!(!path.exists(), "trace refusal must not skip root cleanup");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod teardown_fault_tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -4235,6 +4762,105 @@ mod teardown_fault_tests {
     }
 
     #[test]
+    fn explicit_stop_reports_owned_root_cleanup_error_without_unwinding() -> AnyResult<()> {
+        use quanta_index_searchd::{
+            DiagnosticCaptureLimitsV1, DiagnosticCaptureStatusV1, DiagnosticCaptureV1,
+        };
+
+        let output = super::private_tempdir()?;
+        let trace_path = output.path().join("cleanup-error.jsonl");
+        let mut capture =
+            DiagnosticCaptureV1::start(trace_path.clone(), DiagnosticCaptureLimitsV1::default())?;
+        let lease = capture
+            .lease()
+            .ok_or_else(|| anyhow::anyhow!("capture refused runtime lease"))?;
+        let runtime = E2eRuntime::boot()?.with_diagnostic_capture(lease)?;
+        let root = runtime.state_root().to_path_buf();
+        // A regular file at the owned path deterministically fails recursive
+        // deletion, without relying on platform permissions or running as root.
+        std::fs::rename(&root, output.path().join("displaced-root"))?;
+        std::fs::write(&root, b"not a directory")?;
+        let outcome = catch_unwind(AssertUnwindSafe(|| runtime.stop()));
+        std::fs::remove_file(&root)?;
+        let error = match outcome {
+            Ok(Err(error)) => error,
+            Ok(Ok(())) => anyhow::bail!("owned root cleanup must fail on a regular file"),
+            Err(_panic) => anyhow::bail!("explicit owned root cleanup must not panic"),
+        };
+        anyhow::ensure!(
+            format!("{error:#}").contains("removing owned state root"),
+            "owned root cleanup error lost its context"
+        );
+        let closed = capture.close(std::time::Duration::from_secs(5))?;
+        anyhow::ensure!(closed.status == DiagnosticCaptureStatusV1::Complete);
+        let rows = std::fs::read_to_string(trace_path)?
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        let stop_spans = rows
+            .iter()
+            .filter_map(|row| row.get("kind"))
+            .filter(|kind| {
+                kind.get("type").and_then(serde_json::Value::as_str) == Some("span_begin")
+                    && kind.get("stage").and_then(serde_json::Value::as_str) == Some("runtime_stop")
+            })
+            .filter_map(|kind| kind.get("span_id").and_then(serde_json::Value::as_u64))
+            .collect::<Vec<_>>();
+        anyhow::ensure!(rows.iter().filter_map(|row| row.get("kind")).any(|kind| {
+            kind.get("type").and_then(serde_json::Value::as_str) == Some("span_end")
+                && kind
+                    .get("span_id")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|id| stop_spans.contains(&id))
+                && kind.get("outcome").and_then(serde_json::Value::as_str) == Some("error")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn owned_root_cleanup_is_a_child_of_the_invocation() -> AnyResult<()> {
+        use quanta_index_core::{DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticTerminalV1};
+        use quanta_index_searchd::{
+            DiagnosticCaptureLimitsV1, DiagnosticCaptureStatusV1, DiagnosticCaptureV1,
+        };
+
+        let output = super::private_tempdir()?;
+        let trace_path = output.path().join("cleanup-parent.jsonl");
+        let mut capture =
+            DiagnosticCaptureV1::start(trace_path.clone(), DiagnosticCaptureLimitsV1::default())?;
+        let lease = capture
+            .lease()
+            .ok_or_else(|| anyhow::anyhow!("capture refused cleanup lease"))?;
+        let invocation = lease
+            .context()
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+        let invocation_id = invocation.span_id().as_nonzero().get();
+        let context = lease.context().child_context(&invocation);
+        let root = super::private_tempdir()?;
+        let path = root.path().to_path_buf();
+        super::close_owned_tempdir(root, Some(&context))?;
+        anyhow::ensure!(!path.exists());
+        invocation.finish(DiagnosticTerminalV1::Ok)?;
+        drop(context);
+        drop(lease);
+        let closed = capture.close(std::time::Duration::from_secs(5))?;
+        anyhow::ensure!(closed.status == DiagnosticCaptureStatusV1::Complete);
+        let rows = std::fs::read_to_string(trace_path)?
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        anyhow::ensure!(rows.iter().filter_map(|row| row.get("kind")).any(|kind| {
+            kind.get("type").and_then(serde_json::Value::as_str) == Some("span_begin")
+                && kind.get("stage").and_then(serde_json::Value::as_str) == Some("runtime_stop")
+                && kind
+                    .get("parent_span_id")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(invocation_id)
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn implicit_drop_still_fails_fast_on_socket_cleanup_error() -> AnyResult<()> {
         let runtime = runtime_with_non_directory_socket_path()?;
         anyhow::ensure!(
@@ -4342,6 +4968,7 @@ mod readiness_deadline_tests {
     fn request() -> quanta_index_contract::SearchPlaneQueryIpcRequestEnvelope {
         quanta_index_contract::SearchPlaneQueryIpcRequestEnvelope {
             request_id: 1,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload: quanta_index_contract::SearchPlaneQueryIpcRequest::Text(
                 quanta_index_contract::TextQueryRequest {
                     syntax: quanta_index_contract::TextQuerySyntax::Native,

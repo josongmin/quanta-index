@@ -15,7 +15,9 @@ use quanta_index_contract::{
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
-use quanta_index_core::{CoreError, RepoMapGenerationActivatePort, RequestBudgetV1};
+use quanta_index_core::{
+    CoreError, RepoMapGenerationActivatePort, RequestBudgetV1, SourcePublicationCatalogPort,
+};
 
 use crate::observability::ObservabilityScrape;
 use crate::quarantine::QuarantineService;
@@ -99,6 +101,7 @@ impl ControlCapabilityV1 {
             | SearchPlaneControlIpcRequest::QuarantineInventory(_)
             | SearchPlaneControlIpcRequest::ProcessReadiness(_) => Self::Observe,
             SearchPlaneControlIpcRequest::ProcessRequestEventsV1(_)
+            | SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(_)
             | SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
@@ -432,6 +435,36 @@ impl SearchPlaneControlDispatcher {
             return SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err));
         }
         match request {
+            SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(request) => {
+                let allocation = quanta_index_core::SourceEventAllocationRequestV1 {
+                    repo_id: request.repo_id,
+                    revision_id: request.revision_id,
+                    event: request.source_event,
+                };
+                match self.activation_catalog.allocate_source_event(&allocation) {
+                    Ok(outcome) => {
+                        let record = match outcome {
+                            quanta_index_core::SourceEventAllocationOutcomeV1::Allocated(
+                                record,
+                            )
+                            | quanta_index_core::SourceEventAllocationOutcomeV1::Existing(record) => {
+                                record
+                            }
+                        };
+                        let allocated = record.allocation;
+                        SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(
+                            quanta_index_contract::SearchCorpusGenerationReservationV1 {
+                                repo_id: allocated.request.repo_id,
+                                revision_id: allocated.request.revision_id,
+                                source_event: allocated.request.event,
+                                generation: allocated.generation,
+                                root_incarnation: allocated.root_incarnation,
+                            },
+                        )
+                    }
+                    Err(error) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(error)),
+                }
+            }
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request) => {
                 match self.activate_search_corpus_generation_cas(&request) {
                     Ok(resp) => SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(resp),
@@ -493,7 +526,10 @@ impl SearchPlaneControlDispatcher {
                 }
             }
             SearchPlaneControlIpcRequest::QuarantineDiscard(request) => {
-                match self.quarantine.discard(&request.target) {
+                match self
+                    .quarantine
+                    .discard_with_context(&request.target, budget.diagnostic_context())
+                {
                     Ok(ack) => SearchPlaneControlIpcResponse::QuarantineDiscardAck(ack),
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
@@ -537,7 +573,7 @@ mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::{
-        ControlAccessV1, ProcessReadinessPort, ProcessRequestEventsPort,
+        ControlAccessV1, ControlCapabilityV1, ProcessReadinessPort, ProcessRequestEventsPort,
         SearchPlaneControlDispatcher,
     };
     use quanta_index_contract::{
@@ -553,9 +589,10 @@ mod tests {
     use quanta_index_core::{
         CoreError, GenerationQuarantineReasonV1, MetricPointV1, MetricSourcePort,
         QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RepoMapGenerationActivatePort, RequestBudgetV1,
+        SourcePublicationCatalogPort as _,
     };
     use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::tempdir;
 
     use quanta_index_core::{
@@ -943,6 +980,8 @@ mod tests {
                     &socket,
                     &quanta_index_contract::SearchPlaneControlIpcRequestEnvelope {
                         request_id: 22,
+                        diagnostic_attempt:
+                            quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
                         payload: SearchPlaneControlIpcRequest::ProcessRequestEventsV1(
                             quanta_index_contract::ProcessRequestEventsRequestV1 {
                                 plane: quanta_index_contract::ProcessRequestEventPlaneV1::Query,
@@ -1033,6 +1072,77 @@ mod tests {
         )
     }
 
+    #[test]
+    fn reservation_requires_admin_and_returns_original_durable_number() -> TestResult {
+        struct EmptyNamespace;
+        impl quanta_index_core::GenerationNamespaceReadPort for EmptyNamespace {
+            fn generation_namespace_is_empty(
+                &self,
+                _repo: &RepoId,
+                _revision: &RevisionId,
+            ) -> Result<bool, CoreError> {
+                Ok(true)
+            }
+        }
+        let dir = tempdir()?;
+        let catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+        catalog.configure_generation_namespace_reads_v1(
+            Arc::new(EmptyNamespace),
+            Arc::new(EmptyNamespace),
+        )?;
+        let dispatcher = control_dispatcher(catalog.clone(), Arc::new(RwLock::new(Ledger::new())));
+        let request = quanta_index_contract::SearchCorpusGenerationReservationRequestV1 {
+            repo_id: RepoId::new("reserved-control")?,
+            revision_id: RevisionId::new("r1")?,
+            source_event: quanta_index_contract::SourcePublicationEvent {
+                stream_id: "producer".into(),
+                event_id: "one".into(),
+                expected_base_event_id: None,
+                payload_sha256: [7; 32],
+            },
+        };
+        let opcode = SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(request.clone());
+        assert_eq!(
+            ControlCapabilityV1::required_for(&opcode),
+            ControlCapabilityV1::Admin
+        );
+        let denied = dispatcher.dispatch_as(
+            ControlAccessV1::Peer {
+                uid: 500,
+                owner_uid: 501,
+            },
+            opcode.clone(),
+            &RequestBudgetV1::unbounded(),
+        );
+        assert_eq!(
+            error_code(denied),
+            quanta_index_contract::SearchPlaneErrorCodeV2::ControlAuthorizationDenied
+        );
+        assert!(
+            catalog
+                .inspect_source_event(&request.repo_id, &request.source_event)?
+                .is_none()
+        );
+        let SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(allocated) =
+            dispatcher.dispatch(opcode.clone(), &RequestBudgetV1::unbounded())
+        else {
+            return Err("reservation did not return a number".into());
+        };
+        assert_eq!(allocated.generation, ManifestGeneration::new(1));
+        assert_eq!(allocated.repo_id, request.repo_id);
+        assert_eq!(allocated.source_event, request.source_event);
+        assert_eq!(
+            dispatcher.dispatch(opcode, &RequestBudgetV1::unbounded()),
+            SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(allocated)
+        );
+        assert!(
+            catalog
+                .active_search_corpus_v1(&request.repo_id, &request.revision_id)?
+                .is_none()
+        );
+        Ok(())
+    }
+
     fn other_control_responses(other: &SearchPlaneControlIpcResponse) -> ! {
         match other {
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
@@ -1046,6 +1156,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::Error(_) => {
                 panic!("expected an error response, got {other:?}")
@@ -1069,6 +1180,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 other_control_responses(other)
             }
@@ -1173,6 +1285,8 @@ mod tests {
             cancellation: RequestBudgetV1::unbounded().cancel_handle(),
             events: Arc::new(quanta_index_ipc::IpcServerCounters::for_plane("control")),
             request_started: std::time::Instant::now(),
+            diagnostic_context: None,
+            diagnostic_backend_error: Arc::new(AtomicBool::new(false)),
         };
         let response = dispatcher.dispatch_authorized(
             &context,
@@ -1206,6 +1320,8 @@ mod tests {
             cancellation: RequestBudgetV1::unbounded().cancel_handle(),
             events: Arc::new(quanta_index_ipc::IpcServerCounters::for_plane("control")),
             request_started: std::time::Instant::now(),
+            diagnostic_context: None,
+            diagnostic_backend_error: Arc::new(AtomicBool::new(false)),
         };
         // The operator reaches the domain layer: the activation is attempted
         // and answered by the domain, not by the authorization gate.
@@ -1254,6 +1370,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::Error(_)) => other_control_responses(other),
         }
@@ -1277,6 +1394,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 other_control_responses(other)
             }
@@ -1345,6 +1463,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SearchPlaneIpcError {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
@@ -1560,6 +1679,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(format!("expected repo-map mutation ack, got {other:?}").into())
@@ -1583,6 +1703,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(format!("expected error response, got {other:?}").into())
             }

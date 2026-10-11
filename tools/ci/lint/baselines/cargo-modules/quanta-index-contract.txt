@@ -36,6 +36,45 @@ crate quanta_index_contract
 │       ├── struct EmbeddingRecord: pub
 │       └── struct EmbeddingRecordVisitor: pub(self)
 │           └── type Value: pub(self)
+├── mod index: pub
+│   ├── struct CatalogView: pub
+│   ├── struct CoverageBinding: pub
+│   ├── enum CoverageStatus: pub
+│   ├── enum GroupActivation: pub
+│   ├── struct ImmutableOperation: pub
+│   ├── struct IndexProfile: pub
+│   ├── struct IngressRef: pub
+│   ├── struct InputBinding: pub
+│   ├── enum InputDomain: pub
+│   ├── struct InstanceSpec: pub
+│   ├── struct MapRoot: pub
+│   ├── struct MemberBinding: pub
+│   ├── struct OperationReply: pub
+│   ├── enum OperationStatus: pub
+│   ├── struct OwnerCoverage: pub
+│   ├── struct OwnerInputBinding: pub
+│   ├── struct OwnerMemberBinding: pub
+│   ├── struct OwnerMutation: pub
+│   ├── struct OwnerMutationSet: pub
+│   ├── enum ProducerCompleteness: pub
+│   ├── struct ProjectionBinding: pub
+│   ├── struct ProjectionCertificate: pub
+│   ├── struct ProjectionOwnerContribution: pub
+│   ├── struct ProjectionTransition: pub
+│   ├── enum Refusal: pub
+│   ├── struct SourceCut: pub
+│   ├── struct SourceEvent: pub
+│   ├── struct SourceInput: pub
+│   ├── struct SourceRecord: pub
+│   ├── struct SourceTransition: pub
+│   ├── enum SubmitOutcome: pub
+│   ├── enum UpdateKind: pub
+│   ├── struct UpdateRequest: pub
+│   ├── enum ViewSelection: pub
+│   ├── struct WorkClaim: pub
+│   ├── struct WorkIntent: pub
+│   ├── enum WorkScope: pub
+│   └── enum WorkStatus: pub
 ├── mod ipc: pub
 │   ├── mod batch_body: pub(self)
 │   │   └── enum IngestOperationKindV1: pub
@@ -148,6 +187,15 @@ crate quanta_index_contract
 │   │           ├── trait ExpectedActivePolicyV1: pub(self)
 │   │           └── struct OrdinaryExpectedActiveV1: pub(self)
 │   │               └── type Error: pub(self)
+│   ├── mod diagnostic_context: pub(self)
+│   │   ├── struct AttemptTokenVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum DiagnosticAttemptFieldV1: pub
+│   │   ├── enum DiagnosticAttemptOutcomeV1: pub
+│   │   ├── struct DiagnosticAttemptTokenV1: pub
+│   │   ├── struct TolerantDiagnosticAttemptV1: pub(crate)
+│   │   └── struct TolerantVisitor: pub(self)
+│   │       └── type Value: pub(self)
 │   ├── mod diagnostic_events: pub(self)
 │   │   ├── enum ProcessRequestEventPlaneV1: pub
 │   │   ├── enum ProcessRequestEventStageV1: pub
@@ -163,6 +211,9 @@ crate quanta_index_contract
 │   │   ├── struct SearchPlaneIpcError: pub
 │   │   └── struct SearchPlaneIpcErrorVisitor: pub(self)
 │   │       └── type Value: pub(self)
+│   ├── mod generation_reservation: pub(self)
+│   │   ├── struct SearchCorpusGenerationReservationRequestV1: pub
+│   │   └── struct SearchCorpusGenerationReservationV1: pub
 │   ├── mod ingest: pub(self)
 │   │   ├── mod corpus_wire: pub(self)
 │   │   │   ├── enum BatchIngestMode: pub
@@ -478,6 +529,17 @@ crate quanta_index_contract
 │       └── struct SymbolSpanVisitor: pub(self)
 │           └── type Value: pub(self)
 ├── mod macros: pub(crate)
+├── mod native_protocol: pub
+│   ├── struct NativeFilePathEntry: pub
+│   ├── enum NativeIndexErrorCode: pub
+│   ├── enum NativeIndexRequest: pub
+│   ├── struct NativeIndexRequestEnvelope: pub
+│   ├── enum NativeIndexResponse: pub
+│   ├── struct NativeIndexResponseEnvelope: pub
+│   ├── struct NativeIndexWireError: pub
+│   ├── struct NativeLiteralHit: pub
+│   ├── struct NativeLiteralPage: pub
+│   └── struct NativePathPage: pub
 ├── mod query: pub
 │   ├── mod aux_epoch: pub(self)
 │   │   ├── struct AuxEpochV1: pub

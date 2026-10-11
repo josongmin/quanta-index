@@ -290,6 +290,7 @@ fn bm25_top_k_equals_an_independent_reference_over_the_same_tokenizer() -> TestR
         &generation,
         AuxEpochV1::new(1),
         HistoryTextBuildV1::Full { docs: docs.clone() },
+        None,
     )?;
     if receipt.docs_written != 13 {
         return Err(format!("every document is written once: {receipt:?}").into());
@@ -467,6 +468,7 @@ fn keyset_continuation_partitions_the_ranking_without_gap_or_overlap() -> TestRe
         &generation,
         AuxEpochV1::new(1),
         HistoryTextBuildV1::Full { docs },
+        None,
     )?;
     let searcher = port.open_epoch(&generation, AuxEpochV1::new(1))?;
     let query = keyword_query(
@@ -536,6 +538,7 @@ fn the_admit_predicate_bounds_the_page_and_counts_exactly() -> TestRes {
         &generation,
         AuxEpochV1::new(1),
         HistoryTextBuildV1::Full { docs },
+        None,
     )?;
     let searcher = port.open_epoch(&generation, AuxEpochV1::new(1))?;
     let query = keyword_query(HistoryTextKindV1::Commit, keyword("needle"));
@@ -604,6 +607,7 @@ fn an_incremental_epoch_shares_unchanged_segments_by_inode() -> TestRes {
         &generation,
         AuxEpochV1::new(1),
         HistoryTextBuildV1::Full { docs },
+        None,
     )?;
     let first_dir = epoch_dir(root.path(), &generation, AuxEpochV1::new(1));
     let first_commits = kind_dir(&first_dir, HistoryTextKindV1::Commit);
@@ -624,6 +628,7 @@ fn an_incremental_epoch_shares_unchanged_segments_by_inode() -> TestRes {
                 commit_doc(0x32, 1_100, "and so does this needle"),
             ],
         },
+        None,
     )?;
     if receipt.docs_written != 2 {
         return Err(format!("an incremental epoch writes its upserts: {receipt:?}").into());
@@ -734,6 +739,7 @@ fn an_index_stamped_with_another_normalizer_is_unsupported_until_rebuilt() -> Te
         HistoryTextBuildV1::Full {
             docs: vec![commit_doc(1, 1, "needle")],
         },
+        None,
     )?;
     if port.epoch_status(&generation, AuxEpochV1::new(1))? != HistoryTextEpochStatusV1::Servable {
         return Err("a freshly published epoch is servable".into());
@@ -768,6 +774,7 @@ fn an_index_stamped_with_another_normalizer_is_unsupported_until_rebuilt() -> Te
             base: AuxEpochV1::new(1),
             upserts: Vec::new(),
         },
+        None,
     ) {
         Err(CoreError::Typed { code, .. })
             if code == HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE => {}
@@ -786,6 +793,7 @@ fn an_index_stamped_with_another_normalizer_is_unsupported_until_rebuilt() -> Te
             base: AuxEpochV1::new(7),
             upserts: Vec::new(),
         },
+        None,
     ) {
         Err(CoreError::InvalidContract(_)) => {}
         other => {
@@ -803,6 +811,7 @@ fn an_index_stamped_with_another_normalizer_is_unsupported_until_rebuilt() -> Te
             base: AuxEpochV1::new(2),
             upserts: Vec::new(),
         },
+        None,
     ) {
         Err(CoreError::Typed { code, .. }) if code == HISTORY_TEXT_INDEX_NOT_READY_CODE => {}
         other => {
@@ -823,6 +832,7 @@ fn an_index_stamped_with_another_normalizer_is_unsupported_until_rebuilt() -> Te
                 commit_doc(2, 2, "needle twice needle"),
             ],
         },
+        None,
     )?;
     let searcher = port.open_epoch(&generation, AuxEpochV1::new(2))?;
     let page = search(
@@ -850,6 +860,7 @@ fn format_one_history_epoch_refuses_open_and_incremental_base() -> TestRes {
         HistoryTextBuildV1::Full {
             docs: vec![commit_doc(1, 1, "needle")],
         },
+        None,
     )?;
     let path = epoch_dir(root.path(), &generation, first).join("history-text-manifest.cbor");
     let bytes = std::fs::read(&path)?;
@@ -883,6 +894,7 @@ fn format_one_history_epoch_refuses_open_and_incremental_base() -> TestRes {
                 base: first,
                 upserts: Vec::new(),
             },
+            None,
         )
         .map(|_receipt| ()),
     )?;
@@ -903,6 +915,7 @@ fn a_directory_that_contradicts_its_manifest_is_refused_corrupt() -> TestRes {
         HistoryTextBuildV1::Full {
             docs: vec![commit_doc(1, 1, "needle")],
         },
+        None,
     )?;
     let dir = epoch_dir(root.path(), &generation, AuxEpochV1::new(1));
     let commit_file = kind_dir(&dir, HistoryTextKindV1::Commit).join("meta.json");
@@ -936,6 +949,7 @@ fn unscorable_expressions_are_refused_typed() -> TestRes {
         HistoryTextBuildV1::Full {
             docs: vec![commit_doc(1, 1, "needle")],
         },
+        None,
     )?;
     let searcher = port.open_epoch(&generation, AuxEpochV1::new(1))?;
     let cases: Vec<(&str, HistoryTextQueryV1)> = vec![
@@ -1072,6 +1086,7 @@ fn a_raw_string_beside_a_scored_clause_is_enumerated_and_scored_by_the_clause() 
                 commit_doc(3, 3, "thread x.y"),
             ],
         },
+        None,
     )?;
     let searcher = port.open_epoch(&generation, AuxEpochV1::new(1))?;
     let keyword_only = search(
@@ -1133,6 +1148,7 @@ fn durable_generations_list_the_pairs_index_directories_and_refuse_a_foreign_ent
             HistoryTextBuildV1::Full {
                 docs: vec![commit_doc(1, 1, "needle")],
             },
+            None,
         )?;
     }
     let listed = port.durable_generations(
@@ -1151,7 +1167,7 @@ fn durable_generations_list_the_pairs_index_directories_and_refuse_a_foreign_ent
     {
         return Err("a pair with no directory lists nothing".into());
     }
-    let _discarded = port.discard_generation(&key("repo", 7))?;
+    let _discarded = port.discard_generation(&key("repo", 7), None)?;
     let listed = port.durable_generations(
         &RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
         &RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
@@ -1194,19 +1210,21 @@ fn discarding_epochs_and_generations_reclaims_bytes_and_is_idempotent() -> TestR
                 upserts: vec![commit_doc(u8::try_from(epoch)?, epoch, "needle again")],
             }
         };
-        let _receipt = port.publish_epoch(&generation, AuxEpochV1::new(epoch), build)?;
+        let _receipt = port.publish_epoch(&generation, AuxEpochV1::new(epoch), build, None)?;
     }
     if port.durable_epochs(&generation)?.len() != 3 {
         return Err("three epochs are durable".into());
     }
-    match port.discard_epoch(&generation, AuxEpochV1::new(1))? {
+    match port.discard_epoch(&generation, AuxEpochV1::new(1), None)? {
         HistoryTextDiscardOutcomeV1::Discarded { bytes } if bytes > 0 => {}
         other @ (HistoryTextDiscardOutcomeV1::Absent
         | HistoryTextDiscardOutcomeV1::Discarded { .. }) => {
             return Err(format!("discarding an epoch reclaims bytes, got {other:?}").into());
         }
     }
-    if port.discard_epoch(&generation, AuxEpochV1::new(1))? != HistoryTextDiscardOutcomeV1::Absent {
+    if port.discard_epoch(&generation, AuxEpochV1::new(1), None)?
+        != HistoryTextDiscardOutcomeV1::Absent
+    {
         return Err("a second discard is absent".into());
     }
     let epochs = port.durable_epochs(&generation)?;
@@ -1225,7 +1243,7 @@ fn discarding_epochs_and_generations_reclaims_bytes_and_is_idempotent() -> TestR
     if page.matched != 2 {
         return Err(format!("epoch 2 answers without its base: {page:?}").into());
     }
-    match port.discard_generation(&generation)? {
+    match port.discard_generation(&generation, None)? {
         HistoryTextDiscardOutcomeV1::Discarded { bytes } if bytes > 0 => {}
         other @ (HistoryTextDiscardOutcomeV1::Absent
         | HistoryTextDiscardOutcomeV1::Discarded { .. }) => {
@@ -1235,7 +1253,7 @@ fn discarding_epochs_and_generations_reclaims_bytes_and_is_idempotent() -> TestR
     if !port.durable_epochs(&generation)?.is_empty() {
         return Err("nothing remains after the generation is discarded".into());
     }
-    if port.discard_generation(&generation)? != HistoryTextDiscardOutcomeV1::Absent {
+    if port.discard_generation(&generation, None)? != HistoryTextDiscardOutcomeV1::Absent {
         return Err("a second generation discard is absent".into());
     }
     Ok(())
@@ -1252,6 +1270,7 @@ fn a_stale_staging_directory_and_an_unpublished_leftover_are_replaced() -> TestR
         HistoryTextBuildV1::Full {
             docs: vec![commit_doc(1, 1, "needle")],
         },
+        None,
     )?;
     // A leftover epoch 2 whose rows never landed, plus a stale staging dir.
     let _receipt = port.publish_epoch(
@@ -1260,6 +1279,7 @@ fn a_stale_staging_directory_and_an_unpublished_leftover_are_replaced() -> TestR
         HistoryTextBuildV1::Full {
             docs: vec![commit_doc(9, 9, "stale")],
         },
+        None,
     )?;
     let staging = crate::history_text_index::layout::staging_dir(
         root.path(),
@@ -1275,6 +1295,7 @@ fn a_stale_staging_directory_and_an_unpublished_leftover_are_replaced() -> TestR
             base: AuxEpochV1::new(1),
             upserts: vec![commit_doc(2, 2, "needle two")],
         },
+        None,
     )?;
     if staging.exists() {
         return Err("the staging directory is consumed by the publish".into());
@@ -1365,6 +1386,7 @@ fn scores_depend_on_the_live_rows_not_on_the_ingest_history() -> TestRes {
         &generation(),
         AuxEpochV1::new(1),
         HistoryTextBuildV1::Full { docs: fresh_docs },
+        None,
     )?;
 
     // Replayed: the fixture, then the rewrite as a second epoch, then a
@@ -1378,6 +1400,7 @@ fn scores_depend_on_the_live_rows_not_on_the_ingest_history() -> TestRes {
         HistoryTextBuildV1::Full {
             docs: oracle_fixture(),
         },
+        None,
     )?;
     let _receipt = replay.publish_epoch(
         &generation(),
@@ -1386,6 +1409,7 @@ fn scores_depend_on_the_live_rows_not_on_the_ingest_history() -> TestRes {
             base: AuxEpochV1::new(1),
             upserts: vec![rewritten],
         },
+        None,
     )?;
     let verbatim: Vec<HistoryTextDocV1> = oracle_fixture()
         .into_iter()
@@ -1406,6 +1430,7 @@ fn scores_depend_on_the_live_rows_not_on_the_ingest_history() -> TestRes {
             base: AuxEpochV1::new(2),
             upserts: verbatim,
         },
+        None,
     )?;
 
     for kind in [HistoryTextKindV1::Commit, HistoryTextKindV1::Diff] {

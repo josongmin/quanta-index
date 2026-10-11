@@ -17,6 +17,10 @@ mod op_fixture;
 #[path = "support/source_fixture.rs"]
 mod source_fixture;
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::error::Error;
 
 use quanta_index_contract::channel::LexicalChannelOp;
@@ -26,9 +30,7 @@ use quanta_index_contract::{
     LqPatternType, LqQuery, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, RepoId,
     RepoRelativePath, RevisionId, UpsertChunk,
 };
-use quanta_index_core::{
-    CoreError, LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SearchCorpusBatchBuildPort,
-};
+use quanta_index_core::{CoreError, LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1};
 use quanta_index_lexical::LexicalAdapter;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -73,7 +75,7 @@ impl SealedFixtureBuildPort for LexicalAdapter {
         generation: ManifestGeneration,
         ops: &[LexicalChannelOp],
     ) -> Result<(), CoreError> {
-        SearchCorpusBatchBuildPort::build_batch(
+        FixtureBatchBuildPort::build_fixture_batch(
             self,
             &op_fixture::batch(repo, revision, generation, ops)?,
         )

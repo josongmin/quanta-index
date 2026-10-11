@@ -30,6 +30,10 @@
 #[path = "support/source_fixture.rs"]
 mod source_fixture;
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::collections::BTreeSet;
 
 use std::error::Error;
@@ -42,7 +46,6 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
-    SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -833,7 +836,7 @@ struct Fixture {
 fn open_corpus(corpus: &[(&str, &str)]) -> Result<Fixture, Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let _stages = adapter.build_batch(&sealed_batch(corpus)?)?;
+    let _stages = adapter.build_fixture_batch(&sealed_batch(corpus)?)?;
     let searcher = adapter.open(
         &repo(),
         &revision(),
@@ -1230,7 +1233,7 @@ const MANIFEST_ROW_LEN: usize = 12;
 /// Position of the normalizer stamp in the current manifest row.
 const MANIFEST_NORMALIZER_INDEX: usize = 2;
 /// The manifest format this build seals.
-const CURRENT_FORMAT: u32 = 15;
+const CURRENT_FORMAT: u32 = 19;
 
 /// Generations sealed under earlier manifest formats are refused typed by
 /// both doors.
@@ -1242,7 +1245,9 @@ const CURRENT_FORMAT: u32 = 15;
 /// the ranked-key commitment. Format 8 predates bounded coverage pages;
 /// format 9 predates full-file authority; format 10 predates folded-only
 /// posting counts; format 11 predates explicit symbol-name source policy;
-/// format 14 predates content-addressed file authority.
+/// format 14 predates content-addressed file authority; format 15 predates
+/// sealed Native document identities; format 16 predates paged lexical storage.
+/// Formats 17 and 18 predate the compact leaf wire and single-surface body epoch.
 /// The validator and the query open both answer
 /// `GENERATION_MANIFEST_FORMAT_UNSUPPORTED` for each, and the intact
 /// current manifest is admitted again once restored.
@@ -1250,17 +1255,22 @@ const CURRENT_FORMAT: u32 = 15;
 fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let _stages = adapter.build_batch(&sealed_batch(CORPUS)?)?;
+    let _stages = adapter.build_fixture_batch(&sealed_batch(CORPUS)?)?;
     let manifest = generation_dir(dir.path(), generation()).join(MANIFEST_FILE);
     let original = std::fs::read(&manifest)?;
     let current = read_manifest_row(&manifest)?;
     if current.len() != MANIFEST_ROW_LEN
         || current.first() != Some(&ciborium::Value::from(CURRENT_FORMAT))
     {
-        return Err(format!("unexpected current manifest row shape: {current:?}").into());
+        return Err(format!(
+            "unexpected current manifest row: length {}, version {:?}; expected length {MANIFEST_ROW_LEN}, version {CURRENT_FORMAT}",
+            current.len(),
+            current.first()
+        )
+        .into());
     }
 
-    for earlier in [4_u32, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] {
+    for earlier in [4_u32, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18] {
         let mut downgraded = current.clone();
         if let Some(version) = downgraded.first_mut() {
             *version = ciborium::Value::from(earlier);
@@ -1306,7 +1316,7 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
 fn a_generation_stamped_with_another_normalizer_is_refused_typed() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let _stages = adapter.build_batch(&sealed_batch(CORPUS)?)?;
+    let _stages = adapter.build_fixture_batch(&sealed_batch(CORPUS)?)?;
     let manifest = generation_dir(dir.path(), generation()).join(MANIFEST_FILE);
     let original = std::fs::read(&manifest)?;
     let mut stamped = read_manifest_row(&manifest)?;
@@ -1339,7 +1349,7 @@ fn a_generation_stamped_with_another_normalizer_is_refused_typed() -> TestResult
 fn a_delta_over_a_previous_format_base_is_refused_typed() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let _stages = adapter.build_batch(&sealed_batch(CORPUS)?)?;
+    let _stages = adapter.build_fixture_batch(&sealed_batch(CORPUS)?)?;
     let manifest = generation_dir(dir.path(), generation()).join(MANIFEST_FILE);
     let current = read_manifest_row(&manifest)?;
     write_manifest_row(&manifest, as_format_one(&current))?;
@@ -1352,7 +1362,7 @@ fn a_delta_over_a_previous_format_base_is_refused_typed() -> TestResult {
     delta.source_event.event_id = "event-2".into();
     delta.source_event.expected_base_event_id = Some("event-1".into());
     delta.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&delta)?;
-    match adapter.build_batch(&delta) {
+    match adapter.build_fixture_batch(&delta) {
         Err(CoreError::Typed { code, .. }) if code.as_wire_str() == FORMAT_UNSUPPORTED => Ok(()),
         other => Err(format!("delta over a format-1 base answered {other:?}").into()),
     }

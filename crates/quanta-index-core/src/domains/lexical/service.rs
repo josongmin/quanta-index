@@ -694,31 +694,37 @@ pub struct LexicalWriterCacheStats {
     pub seal_releases: u64,
 }
 
-/// How much text-authority derivation and writing the adapter has done so
-/// far (QI-BB-006), for operators and tests.
+/// Source-event derivation and bounded Native segment compaction work.
 ///
-/// A rebuild scans every live document; an incremental update derives
-/// only the chunks a batch added and retires only those it replaced or
-/// tombstoned. `docs_derived` is the tokenize-and-post work in documents,
-/// whichever path ran, so a test can assert the cost shape without a
-/// clock. The text authority is sharded by doc-id range: `shards_written`
-/// counts the shard files a write produced and `shards_inherited` the
-/// shards it listed unchanged, so the write-bytes shape is a count too.
+/// `docs_derived` counts fresh batch inputs. Re-reading and retokenizing
+/// inherited bodies is reported separately by `compaction_rederived_*`.
+/// Segment/page output counters describe physical publication work; no counter
+/// here represents device I/O, wall time or a full-corpus latency claim.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TextAuthorityUpdateStats {
-    /// Sidecar rebuilds from a full scan of the live index.
+    /// Full source-batch authority builds.
     pub rebuilds: u64,
-    /// In-place updates from the prior generation's sidecars.
+    /// Copy-on-write authority updates from the prior generation.
     pub incremental_updates: u64,
-    /// Documents tokenized and posted, over both paths.
+    /// Fresh source-event documents tokenized and posted, over both paths.
     pub docs_derived: u64,
-    /// Documents removed from inherited sidecars by incremental updates.
+    /// Inherited document versions retired by incremental updates.
     pub docs_retired: u64,
-    /// Shard files written, over both paths.
+    /// Native segments produced, over both paths.
     pub shards_written: u64,
-    /// Shards listed unchanged — not read, serialized or written — over
-    /// both paths.
+    /// Native segments inherited without body rederivation or serialization.
     pub shards_inherited: u64,
+    /// Authenticated posting pages produced by fresh or compacted segments.
+    pub posting_pages_written: u64,
+    /// Singleton posting pages exceeding the normal 32 KiB page target.
+    pub oversized_posting_pages: u64,
+    /// Logical bytes in those oversized singleton pages.
+    pub oversized_posting_bytes: u64,
+    /// Inherited live documents retokenized by bounded foreground compaction.
+    /// Fresh source-event documents are counted separately in `docs_derived`.
+    pub compaction_rederived_docs: u64,
+    /// UTF-8 body bytes retokenized for those inherited documents.
+    pub compaction_rederived_text_bytes: u64,
 }
 
 /// What the regex match cache did so far, for operators and tests.

@@ -36,7 +36,8 @@ impl<'a> GenerationNamespace<'a> {
         )?;
         match response {
             SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(ack) => Ok(ack),
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::Error(_)
@@ -74,7 +75,8 @@ impl<'a> GenerationNamespace<'a> {
                 ))?;
         match response {
             SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(snapshot) => Ok(snapshot),
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
@@ -110,7 +112,8 @@ impl<'a> GenerationNamespace<'a> {
                 ))?;
         match response {
             SearchPlaneControlIpcResponse::GenerationStatusReport(report) => Ok(report),
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
@@ -149,7 +152,8 @@ impl<'a> GenerationNamespace<'a> {
             SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(observation) => {
                 Ok(observation.into_head())
             }
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)

@@ -9,6 +9,7 @@ use quanta_index_contract::{
     SearchCorpusIngestBatch, SymbolCandidate,
 };
 
+use crate::diagnostic_trace::DiagnosticContextV1;
 use crate::domains::read_view::LexicalArtifactIdentityV1;
 use crate::error::CoreError;
 use crate::request_budget::RequestBudgetV1;
@@ -59,6 +60,7 @@ pub trait SearchCorpusBatchBuildPort: Send + Sync {
         &self,
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError>;
 
     /// A successful build may report its non-persisted stage timings. `None`
@@ -66,6 +68,7 @@ pub trait SearchCorpusBatchBuildPort: Send + Sync {
     fn build_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError>;
 
     /// The same refusal boundary with caller-owned proof custody. Current
@@ -75,9 +78,10 @@ pub trait SearchCorpusBatchBuildPort: Send + Sync {
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
         owner: &mut crate::PublicationValidationOwner,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
         owner.bind_batch(batch)?;
-        self.preflight_batch(batch, phase)
+        self.preflight_batch(batch, phase, diagnostic)
     }
 
     /// Build using the same publication scope, still rechecking the base at
@@ -86,9 +90,10 @@ pub trait SearchCorpusBatchBuildPort: Send + Sync {
         &self,
         batch: &SearchCorpusIngestBatch,
         owner: &mut crate::PublicationValidationOwner,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
         owner.bind_batch(batch)?;
-        self.build_batch(batch)
+        self.build_batch(batch, diagnostic)
     }
 }
 
@@ -142,7 +147,11 @@ pub trait SearchCorpusIngestPort: Send + Sync {
     /// idempotency record and zero bytes changed. `publish_batch` re-runs
     /// the same checks under its own lock; the preflight protects the
     /// record, the locked check protects the mutation.
-    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError>;
+    fn preflight_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<(), CoreError>;
 
     /// `budget` carries admitted-request diagnostics into the semantic
     /// provider windows. The dispatcher checks cancellation before durable
@@ -160,9 +169,10 @@ pub trait SearchCorpusIngestPort: Send + Sync {
         &self,
         batch: &SearchCorpusIngestBatch,
         owner: &mut crate::PublicationValidationOwner,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
         owner.bind_batch(batch)?;
-        self.preflight_batch(batch)
+        self.preflight_batch(batch, diagnostic)
     }
 
     fn publish_batch_with_owner(
@@ -309,6 +319,8 @@ pub struct CodeSearchExecutionStatsV1 {
     pub source_surface_bytes_considered: u64,
     /// Distinct OSA token distance calculations after request-local memoization.
     pub typo_token_comparisons: u64,
+    /// File DTOs constructed for the selected page, after cursor filtering.
+    /// Full matching-file cardinality is `verified_matching_files`.
     pub materialized_files: u64,
     pub preview_attempted_files: u64,
     /// Candidate generation and verification through building unsorted rows.

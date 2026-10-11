@@ -9,19 +9,19 @@
 //!
 //!   - it builds the lexical index **in-process** (no daemon / no IPC), so the
 //!     measured query cost is the index lookup itself, not socket plumbing;
-//!   - it writes the corpus bytes to `--out-dir` and the index to a *separate*
-//!     `--index-dir`, so the companion `tools/benchmark/run_scan_vs_index.py`
+//!   - it writes the corpus bytes to `--out-dir` and the index state to a
+//!     *separate* `--index-dir`, so `tools/benchmark/run_scan_vs_index.py`
 //!     can time `rg` / `grep` over the corpus without also walking index files.
 //!
 //! The point it demonstrates: the index query cost is ~flat in corpus size
 //! while a full scan is linear. Build cost (printed separately) is the index's
 //! one-time price, amortized over many queries.
 //!
-//! Ingest goes through the batch authority surface
-//! ([`SearchCorpusBatchBuildPort`]) with `seal: true`, which is the same path
-//! the runtime uses. The experiment does not construct legacy channel ops: that
-//! path never writes a sealed generation identity, so the produced generation
-//! was not openable for query (QI-BB-010).
+//! The experiment reserves its source event and lexical document IDs in the
+//! durable activation catalog, then builds through the batch authority surface
+//! ([`SearchCorpusBatchBuildPort`]) with a publication owner. It measures only
+//! the lexical track; the semantic adapter supplies the real paired namespace
+//! and retention authority but does not build a semantic generation.
 //!
 //! The one JSON document on stdout (and, with `--artifact-out`, on disk) is a
 //! `BenchArtifactV1` (QI-BB-010): the exact 40-character head of a clean
@@ -33,25 +33,35 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
-    LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+    BatchIngestMode, ChunkId, ChunkRecord, GenerationSnapshot, IngestOperationKindV1,
+    LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery, LqSpan, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchPlaneTrackKind, SourceFileCoverage, SourceFileKey, SourceFileRevision,
     SourcePublicationEvent, SymbolCoverage, source_event_payload_sha256,
     source_file_unit_set_sha256,
 };
-use quanta_index_core::{LexicalIndexOpenPort, RequestBudgetV1, SearchCorpusBatchBuildPort};
+use quanta_index_core::{
+    IdempotencyKeyV1, LexicalIndexOpenPort, PublicationValidationOwner, RequestBudgetV1,
+    SearchCorpusBatchBuildPort, SourceEventBindingV1, SourcePublicationCatalogPort,
+};
 use quanta_index_ipc::stamp_batch_digest_v1;
 use quanta_index_lexical::LexicalAdapter;
+use quanta_index_search_plane::{
+    PairIndexBytesMeasurer, SearchCorpusLifecycleOwner,
+    readiness::SearchCorpusHistoryRetentionPolicyV1,
+};
 use quanta_index_searchd_harness::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, DiskAmplificationV1,
     GitHeadV1, HostV1, LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily,
     config_digest, corpus_digest, directory_bytes, framed_digest,
 };
+use quanta_index_semantic::{SemanticAdapter, semantic_state_root};
 use sha2::{Digest as _, Sha256};
 
 const DIMENSION: &str = "scan-vs-index";
@@ -366,6 +376,75 @@ fn ingest_batch(
     Ok(batch)
 }
 
+/// Build the lexical half under the same durable source and ID authority used
+/// by the search-corpus materializer. The isolated experiment does not activate
+/// a pair or derive a semantic generation.
+fn build_index_with_catalog(
+    configured_state_root: &Path,
+    batch: &SearchCorpusIngestBatch,
+) -> Result<Arc<LexicalAdapter>> {
+    std::fs::create_dir_all(configured_state_root)?;
+    let state_root = std::fs::canonicalize(configured_state_root)?;
+    let lexical = Arc::new(LexicalAdapter::with_state_root(
+        state_root.join("indexes/lexical"),
+    ));
+    let semantic = Arc::new(SemanticAdapter::with_state_root(semantic_state_root(
+        &state_root,
+    ))?);
+    // One pair and one generation are built in a fresh, isolated directory.
+    // Do not introduce a retention ceiling into this corpus-size experiment.
+    let retention = SearchCorpusHistoryRetentionPolicyV1::new(2, u64::MAX, 1, u64::MAX)?;
+    let lifecycle = SearchCorpusLifecycleOwner::open(
+        &state_root,
+        retention,
+        Arc::new(PairIndexBytesMeasurer::new(
+            lexical.clone(),
+            semantic.clone(),
+        )),
+    )?;
+    let catalog = lifecycle.activation_catalog();
+    catalog.configure_generation_namespace_reads_v1(lexical.clone(), semantic)?;
+    let binding = SourceEventBindingV1 {
+        event: batch.source_event.clone(),
+        target: GenerationSnapshot {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: batch.generation,
+            manifest_digest: batch.manifest_digest.clone(),
+        },
+        journal_key: IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::SearchCorpus,
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            batch_digest: batch.batch_digest.clone(),
+        },
+    };
+    let source = catalog.reserve_source_event(&binding)?;
+    let allocation = match source {
+        quanta_index_core::SourceEventReservationV1::Reserved(record)
+        | quanta_index_core::SourceEventReservationV1::Existing(record) => record.allocation,
+    };
+    let file_count = u64::try_from(batch.replace_scopes.len())?;
+    let native_count = batch
+        .replace_scopes
+        .iter()
+        .try_fold(0_u64, |total, scope| {
+            let count = u64::try_from(scope.chunks.len())?;
+            total
+                .checked_add(count)
+                .ok_or_else(|| anyhow!("native document count exceeds u64"))
+        })?;
+    let reservation =
+        catalog.reserve_lexical_document_versions(&binding, file_count, native_count)?;
+    let mut owner = PublicationValidationOwner::default();
+    owner.bind_source_allocation(batch, &allocation)?;
+    owner.bind_lexical_reservation(batch, &reservation)?;
+    let _stages = lexical.build_batch_with_owner(batch, &mut owner, None)?;
+    Ok(lexical)
+}
+
 fn make_query() -> LqQuery {
     LqQuery {
         lq_version: LQ_VERSION_TAG,
@@ -492,16 +571,15 @@ fn run() -> Result<BenchArtifactV1> {
     let corpus = generate_corpus(&args)?;
     write_scan_corpus(&args.out_dir, &corpus)?;
 
-    let adapter = LexicalAdapter::with_state_root(args.index_dir.clone());
     let repo = RepoId::new(EXPERIMENT_REPO)?;
     let revision = RevisionId::new(EXPERIMENT_REVISION)?;
     let generation = ManifestGeneration::new(1);
     let batch = ingest_batch(&corpus, generation)?;
 
     let build_started = Instant::now();
-    let _stages = adapter.build_batch(&batch)?;
+    let adapter = build_index_with_catalog(&args.index_dir, &batch)?;
     let build_ms = elapsed_ms(build_started);
-    let index_bytes = directory_bytes(&args.index_dir)?;
+    let index_bytes = directory_bytes(adapter.state_root())?;
 
     let searcher = adapter.open(
         &repo,
@@ -582,8 +660,7 @@ mod tests {
         );
 
         let root = tempfile::tempdir()?;
-        let adapter = LexicalAdapter::with_state_root(root.path().join("index"));
-        let _stages = adapter.build_batch(&batch)?;
+        let adapter = build_index_with_catalog(&root.path().join("index"), &batch)?;
         let searcher = adapter.open(
             &batch.repo_id,
             &batch.revision_id,

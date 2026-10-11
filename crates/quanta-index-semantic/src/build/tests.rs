@@ -1,6 +1,8 @@
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use arrow_array::Array;
 use futures::TryStreamExt as _;
@@ -17,17 +19,21 @@ use quanta_index_contract::{
     SemanticSourceScopeKeyV1, SemanticTombstoneScope, SourceRoleV1, SymbolId, lex::LanguageCode,
 };
 use quanta_index_core::{
-    CoreError, RequestBudgetV1, ResidentScopeSource, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
-    SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource as _, SemanticStreamTallyV1,
+    CoreError, DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticCounterV1,
+    DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1,
+    DiagnosticRootKindV1, DiagnosticStageV1, DiagnosticTerminalV1, RequestBudgetV1,
+    ResidentScopeSource, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES, SemanticIndexOpenPort,
+    SemanticIngestHeaderV1, SemanticScopeSource as _, SemanticScopeWindowV1, SemanticStreamTallyV1,
     SemanticStreamWindowPolicy, build_resident_semantic_batch_v1,
 };
 
 use super::{
     BACKUP_DIR_NAME, IngestStageReport, POST_DATASET_PRE_CONTRACT_PROMOTION, PRE_DATASET_PROMOTION,
     PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE, STAGING_DIR_NAME,
-    StreamScopeAuthorityV1, build_stream, build_stream_reported, column_as,
-    ensure_generation_contract, failpoint, open_connection, persist_generation_contract,
-    recover_dataset_artifacts, stage_generation_contract,
+    StreamScopeAuthorityV1, build_stream, build_stream_reported,
+    build_stream_reported_with_diagnostic, column_as, ensure_generation_contract, failpoint,
+    open_connection, persist_generation_contract, recover_dataset_artifacts,
+    stage_generation_contract,
 };
 use crate::budget::{DenseLaneBudgetV1, DenseLaneTalliesV1};
 use crate::durable_write::{set_atomic_write_fail_before_rename_action, write_atomic};
@@ -1724,7 +1730,7 @@ fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestRes
             mode: BatchIngestMode::Delta,
             model_contract: model_contract(),
             required_corpora: Vec::new(),
-            corpus_policy_digest: None,
+            corpus_policy_digest: Some("policy:cluster:v1".to_string()),
             clear_surfaces: Vec::new(),
             replace_scopes: Vec::new(),
             tombstone_scopes: vec![SemanticTombstoneScope {
@@ -2282,6 +2288,125 @@ fn build_reported(
     )
 }
 
+#[derive(Debug)]
+struct BuildTraceClock(AtomicU64);
+
+impl DiagnosticClockV1 for BuildTraceClock {
+    fn now_ns(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+#[derive(Debug, Default)]
+struct BuildTraceSink(Mutex<Vec<DiagnosticEmitV1>>);
+
+impl DiagnosticEventSinkV1 for BuildTraceSink {
+    fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+        self.0.lock().expect("trace sink mutex").push(event);
+        true
+    }
+}
+
+struct FailAfterFirstWindow<'a> {
+    source: ResidentScopeSource<'a>,
+    issued: bool,
+}
+
+impl quanta_index_core::SemanticScopeSource for FailAfterFirstWindow<'_> {
+    fn next_window(&mut self) -> Result<Option<SemanticScopeWindowV1>, CoreError> {
+        if self.issued {
+            return Err(CoreError::Storage(
+                "source failed after first window".into(),
+            ));
+        }
+        self.issued = true;
+        self.source.next_window()
+    }
+
+    fn tally(&self) -> SemanticStreamTallyV1 {
+        self.source.tally()
+    }
+}
+
+#[test]
+fn semantic_trace_retains_completed_window_counters_on_later_source_error() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let temp = tempdir()?;
+    let batch = streamed_batch(ManifestGeneration::new(825), streamed_scopes(1, 1)?, false);
+    let policy = SemanticStreamWindowPolicy::new(1, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
+    let header = SemanticIngestHeaderV1::of_batch(&batch);
+    let source = ResidentScopeSource::new(&batch.replace_scopes, policy)?;
+    let mut source = FailAfterFirstWindow {
+        source,
+        issued: false,
+    };
+    let sink = Arc::new(BuildTraceSink::default());
+    let capture = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([42; 16]),
+        Arc::new(BuildTraceClock(AtomicU64::new(1))),
+        sink.clone(),
+    );
+    let operation = capture.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(3))?;
+    let diagnostic = capture.child_context(&operation);
+
+    let result = build_stream_reported_with_diagnostic(
+        &runtime,
+        temp.path(),
+        policy,
+        &header,
+        &mut source,
+        &SealTalliesV1::default(),
+        Some(&diagnostic),
+    );
+    assert!(
+        matches!(result, Err(CoreError::Storage(message)) if message.contains("source failed"))
+    );
+    operation.finish(DiagnosticTerminalV1::Error { code: 1 })?;
+    let events = sink.0.lock().expect("trace sink mutex").clone();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.kind, DiagnosticEventKindV1::Health { .. }))
+    );
+    let counter_total = |key| {
+        events
+            .iter()
+            .filter_map(|event| {
+                if let DiagnosticEventKindV1::Counter {
+                    key: observed,
+                    value,
+                    ..
+                } = event.kind
+                {
+                    return (observed == key).then_some(value);
+                }
+                None
+            })
+            .sum::<u64>()
+    };
+    assert_eq!(counter_total(DiagnosticCounterV1::SemanticWindows), 1);
+    assert_eq!(counter_total(DiagnosticCounterV1::SemanticOwnerScopes), 1);
+    assert_eq!(counter_total(DiagnosticCounterV1::SemanticRowsAppended), 1);
+    assert_eq!(counter_total(DiagnosticCounterV1::SemanticVectorBytes), 12);
+    assert!(events.iter().any(|event| matches!(
+        event.kind,
+        DiagnosticEventKindV1::SpanBegin {
+            stage: DiagnosticStageV1::SemanticAppend,
+            ..
+        }
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.kind,
+        DiagnosticEventKindV1::SpanEnd {
+            outcome: DiagnosticTerminalV1::Error { .. },
+            ..
+        }
+    )));
+    Ok(())
+}
+
 // CASE-COVERS: RBR-10 step 1 — a fresh streamed ingest reports the batch's
 // own owner/window counts (one logical delete per scope, one native delete
 // and append per window), the storage durations nest inside the
@@ -2714,12 +2839,53 @@ fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> T
         .ok_or("replacement must issue a window")?;
     let _fill = policy.admit(&window)?;
     let mut replacement_report = IngestStageReport::default();
+    let sink = Arc::new(BuildTraceSink::default());
+    let capture = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([43; 16]),
+        Arc::new(BuildTraceClock(AtomicU64::new(1))),
+        sink.clone(),
+    );
+    let operation = capture.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(3))?;
+    let diagnostic = capture.child_context(&operation);
+    let mut deleted_rows = 0_u64;
     crate::run_blocking(
         &runtime,
-        super::apply_window(&tables, &window, 3, &mut replacement_report),
+        super::apply_window(
+            &tables,
+            &window,
+            3,
+            &mut replacement_report,
+            &mut super::AppendedVectors::default(),
+            Some(&diagnostic),
+            &mut deleted_rows,
+        ),
     )?;
+    operation.finish(DiagnosticTerminalV1::Ok)?;
     assert_eq!(replacement_report.semantic_delete_commits, 1);
     assert_eq!(replacement_report.membership_delete_commits, 1);
+    assert_eq!(deleted_rows, 4);
+    assert!(
+        !sink
+            .0
+            .lock()
+            .expect("trace sink mutex")
+            .iter()
+            .any(|event| matches!(event.kind, DiagnosticEventKindV1::Health { .. }))
+    );
+    assert!(
+        sink.0
+            .lock()
+            .expect("trace sink mutex")
+            .iter()
+            .any(|event| matches!(
+                event.kind,
+                DiagnosticEventKindV1::Counter {
+                    key: DiagnosticCounterV1::SemanticRowsDeleted,
+                    value: 4,
+                    ..
+                }
+            ))
+    );
     // All eight rows remain exactly once: replacement removed its old rows
     // before append and did not touch any of the cross-product neighbors.
     let read_ids =
@@ -2758,11 +2924,19 @@ fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> T
         })
         .collect();
     let mut tombstone_report = IngestStageReport::default();
+    let mut tombstone_deleted_rows = 0_u64;
     let two = SemanticStreamWindowPolicy::new(2, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
     crate::run_blocking(
         &runtime,
-        super::apply_tombstones(&tables, &tombstones, two, &mut tombstone_report),
+        super::apply_tombstones(
+            &tables,
+            &tombstones,
+            two,
+            &mut tombstone_report,
+            &mut tombstone_deleted_rows,
+        ),
     )?;
+    assert_eq!(tombstone_deleted_rows, 4);
     assert_eq!(tombstone_report.semantic_delete_calls, 4);
     assert_eq!(tombstone_report.membership_delete_calls, 4);
     assert_eq!(tombstone_report.semantic_delete_commits, 2);
@@ -2786,8 +2960,15 @@ fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> T
     let before_empty = tombstone_report.clone();
     crate::run_blocking(
         &runtime,
-        super::apply_tombstones(&tables, &[], two, &mut tombstone_report),
+        super::apply_tombstones(
+            &tables,
+            &[],
+            two,
+            &mut tombstone_report,
+            &mut tombstone_deleted_rows,
+        ),
     )?;
+    assert_eq!(tombstone_deleted_rows, 4);
     assert_eq!(
         tombstone_report, before_empty,
         "empty deletion performs no native operation"

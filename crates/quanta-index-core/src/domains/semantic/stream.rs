@@ -35,6 +35,7 @@ use quanta_index_contract::{
     SemanticTombstoneScope,
 };
 
+use crate::diagnostic_trace::DiagnosticContextV1;
 use crate::error::CoreError;
 
 /// Most owner scopes one window carries.
@@ -507,10 +508,26 @@ pub trait SemanticScopeSource {
 /// dropped before the next is requested. The returned tally is what the
 /// port appended, counted on its side; the report observes only this build.
 pub trait SemanticScopeStreamBuildPort: Send + Sync {
+    /// Read only the existing target contract and, for a delta, the sealed
+    /// base contract and its identity. Refuse an incompatible inheritance or
+    /// target mutation before requesting any scope window. No directory,
+    /// dataset, or journal may be created or changed by this check.
+    ///
+    /// A prior preflight does not authorize a later build. `build_stream`
+    /// must repeat this check under its target/base generation and directory
+    /// lifecycle guards before calling `SemanticScopeSource::next_window`.
+    fn preflight_contract(
+        &self,
+        pin: &GenerationPin,
+        contract: &SemanticGenerationContractV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<(), CoreError>;
+
     fn build_stream(
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<
         (
             SemanticStreamTallyV1,
@@ -784,7 +801,7 @@ pub fn build_resident_semantic_batch_v1(
 ) -> Result<SemanticStreamTallyV1, CoreError> {
     let header = SemanticIngestHeaderV1::of_batch(batch);
     let mut source = ResidentScopeSource::new(&batch.replace_scopes, policy)?;
-    let (appended, _observation) = port.build_stream(&header, &mut source)?;
+    let (appended, _observation) = port.build_stream(&header, &mut source, None)?;
     let issued = source.tally();
     if appended != issued {
         return Err(CoreError::InvalidContract(format!(

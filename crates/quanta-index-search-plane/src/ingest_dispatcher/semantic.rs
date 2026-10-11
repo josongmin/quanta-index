@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{BatchPublishReceipt, GenerationPin};
 use quanta_index_core::{
-    CoreError, MetricPointV1, MetricSourcePort, SemanticIngestHeaderV1, SemanticIngestPort,
-    SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticStreamTallyV1,
+    CoreError, DiagnosticContextV1, MetricPointV1, MetricSourcePort, SemanticGenerationContractV1,
+    SemanticIngestHeaderV1, SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort,
+    SemanticStreamTallyV1,
 };
 
 /// Direct semantic batch materializer.
@@ -117,10 +118,20 @@ impl MetricSourcePort for DirectSemanticMaterializer {
 }
 
 impl SemanticIngestPort for DirectSemanticMaterializer {
+    fn preflight_contract(
+        &self,
+        pin: &GenerationPin,
+        contract: &SemanticGenerationContractV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        self.builder.preflight_contract(pin, contract, diagnostic)
+    }
+
     fn publish_stream(
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<
         (
             BatchPublishReceipt,
@@ -128,7 +139,7 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
         ),
         CoreError,
     > {
-        let (appended, mut report) = self.builder.build_stream(header, scopes)?;
+        let (appended, mut report) = self.builder.build_stream(header, scopes, diagnostic)?;
         report.durations.embedding = scopes.embedding_elapsed_ns();
         let issued = scopes.tally();
         if appended != issued {

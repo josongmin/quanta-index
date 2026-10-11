@@ -17,6 +17,10 @@ mod op_fixture;
 #[path = "support/source_fixture.rs"]
 mod source_fixture;
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::error::Error;
 
 use quanta_index_contract::channel::LexicalChannelOp;
@@ -30,9 +34,7 @@ use quanta_index_contract::{
     ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
     SearchScopeSurface, SymbolId, UpsertChunk, UpsertSymbol,
 };
-use quanta_index_core::{
-    CoreError, LexicalIndexOpenPort, LexicalPageSpec, RequestBudgetV1, SearchCorpusBatchBuildPort,
-};
+use quanta_index_core::{CoreError, LexicalIndexOpenPort, LexicalPageSpec, RequestBudgetV1};
 use quanta_index_lexical::LexicalAdapter;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -85,7 +87,7 @@ impl SealedFixtureBuildPort for LexicalAdapter {
         generation: ManifestGeneration,
         ops: &[LexicalChannelOp],
     ) -> Result<(), CoreError> {
-        SearchCorpusBatchBuildPort::build_batch(
+        FixtureBatchBuildPort::build_fixture_batch(
             self,
             &op_fixture::batch(repo, revision, generation, ops)?,
         )
@@ -1261,9 +1263,9 @@ fn symbol_content_authority_shapes_fail_closed_on_initial_and_replayed_batches()
         ];
         let batch = op_fixture::batch(&repo(), &revision(), generation(), &ops)?;
         if replayed {
-            let _stages = adapter.build_batch(&batch)?;
+            let _stages = adapter.build_fixture_batch(&batch)?;
         }
-        let _stages = adapter.build_batch(&batch)?;
+        let _stages = adapter.build_fixture_batch(&batch)?;
         let searcher = adapter.open(
             &repo(),
             &revision(),
@@ -4150,7 +4152,7 @@ fn independent_chunk_clear_refuses_and_file_tombstone_preserves_symbols_v1() -> 
     delta.source_event.expected_base_event_id = Some("event-1".into());
     delta.clear_surfaces = vec![SearchScopeSurface::Chunk];
     delta.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&delta)?;
-    match adapter.build_batch(&delta) {
+    match adapter.build_fixture_batch(&delta) {
         Err(CoreError::InvalidContract(message))
             if message.contains("forbid independent Chunk/Symbol clear") => {}
         other => return Err(format!("independent clear did not refuse: {other:?}").into()),
@@ -4169,8 +4171,12 @@ fn independent_chunk_clear_refuses_and_file_tombstone_preserves_symbols_v1() -> 
         .push(quanta_index_contract::SearchCorpusTombstoneScope {
             file: source_fixture::file_key(&repo(), "src/smoke.txt"),
         });
+    // The refused clear already reserved event-2's original payload. A
+    // corrected publication is a new immutable source event, not a replay
+    // that changes bytes under the same event ID.
+    delta.source_event.event_id = "event-2-file-tombstone".into();
     delta.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&delta)?;
-    let _stages = adapter.build_batch(&delta)?;
+    let _stages = adapter.build_fixture_batch(&delta)?;
 
     let searcher = adapter.open(
         &repo(),

@@ -100,6 +100,7 @@ TEST_SUPPORT_CRATES = frozenset(
 # admitted only for that composition test.
 DEV_INTEGRATION_DEPS = {
     "quanta-index-search-plane": frozenset({"quanta-index-lexical"}),
+    "quanta-index-kernel": frozenset({"quanta-index-catalog", "quanta-index-storage", "quanta-index-lexical", "quanta-index-repomap", "quanta-index-semantic"}),
 }
 
 ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
@@ -107,6 +108,8 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # The contract re-exports the base DTOs it is split from.
     "quanta-index-contract": frozenset({"quanta-index-contract-base", "quanta-index-lq-norm"}),
     "quanta-index-core": frozenset({"quanta-index-contract"}),
+    "quanta-index-kernel": _ADAPTER_CRATE_DEPS,
+    "quanta-index-storage": _ADAPTER_CRATE_DEPS,
     # The lexical adapter also uses the lq-* index primitives and the shared
     # text normalizer (one Unicode contract for index, sidecars and query).
     "quanta-index-lexical": _ADAPTER_CRATE_DEPS
@@ -183,11 +186,10 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-catalog": frozenset(
         {"quanta-index-contract", "quanta-index-core", "quanta-index-ipc"}
     ),
-    # Non-production benchmark driver. It drives the lexical adapter
-    # directly (in-process, no daemon) and writes the one benchmark artifact
-    # envelope the harness owns (`BenchArtifactV1`, QI-BB-010), so it may
-    # depend on the harness crate for that model; it must not orchestrate
-    # the runtime itself.
+    # Non-production benchmark driver. It composes the real lexical/semantic
+    # namespace probes and catalog owner for durable lexical ID allocation,
+    # then measures lexical lookup in-process. It uses the harness artifact
+    # envelope but does not orchestrate the daemon.
     "quanta-index-scan-experiment": frozenset(
         {
             "quanta-index-contract",
@@ -195,7 +197,9 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             # Direct batch producers must stamp the one IPC-owned digest.
             "quanta-index-ipc",
             "quanta-index-lexical",
+            "quanta-index-search-plane",
             "quanta-index-searchd-harness",
+            "quanta-index-semantic",
         }
     ),
     # The composition root: the one crate that names concrete adapters,
@@ -218,6 +222,8 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     ),
     "quanta-index-searchd-runtime": frozenset(
         {
+            "quanta-index-kernel",
+            "quanta-index-storage",
             "quanta-index-catalog",
             "quanta-index-contract",
             "quanta-index-core",

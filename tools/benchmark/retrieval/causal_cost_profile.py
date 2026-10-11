@@ -1,9 +1,9 @@
-"""Replay opt-in scale lifecycle cost markers against one checked scale artifact.
+"""Replay legacy cost markers as an independent aggregate oracle.
 
-Run a matching `scale_matrix` binary with QUANTA_INDEX_CAUSAL_PROFILE_V1=1,
-capture stderr outside the checkout, then pass its summary and binary here.
-The output is diagnostic. Timers are userspace call envelopes; /proc/self/io
-write_bytes is kernel process accounting, not device-completed physical I/O.
+The companion canonical JSONL parser owns span causality and waterfall export.
+This module keeps strict sync/BM25 and phase-resource checks while the producer
+has no equivalent canonical detail for those aggregates. Timers are userspace
+call envelopes; /proc/self/io is kernel process accounting, not physical I/O.
 """
 
 from __future__ import annotations
@@ -30,6 +30,18 @@ SYNC_LABELS = frozenset(
         "history_layout_directory",
         "file_authority_object",
         "file_authority_directory",
+        "pool_new_directory_full",
+        "pool_new_parent_full",
+        "pool_data_file_posix",
+        "pool_data_shard_posix",
+        "pool_object_file_full",
+        "pool_object_shard_full",
+        "pool_control_file_full",
+        "pool_control_parent_full",
+        "pool_reused_file_posix",
+        "pool_reused_shard_posix",
+        "pool_adoption_full_barrier",
+        "pool_adoption_journal_full",
     }
 )
 KINDS = frozenset(
@@ -104,6 +116,32 @@ def _exact_int(value: object, expected: int, label: str) -> None:
         raise ValueError(f"{label} does not match declared scale input")
 
 
+def _disk_allocation(snapshot: object, label: str) -> int | None:
+    counters = ("allocated_root_bytes", "filesystem_free_bytes", "filesystem_available_bytes")
+    if not isinstance(snapshot, dict) or set(snapshot) != {
+        "status",
+        "unavailable_reason",
+        *counters,
+    }:
+        raise ValueError(f"{label} snapshot is missing or malformed")
+    reason = snapshot["unavailable_reason"]
+    if snapshot["status"] == "observed":
+        if reason is not None or any(
+            type(snapshot[key]) is not int or not 0 <= snapshot[key] <= (1 << 64) - 1
+            for key in counters
+        ):
+            raise ValueError(f"{label} observed counters are invalid")
+        return snapshot["allocated_root_bytes"]
+    if (
+        snapshot["status"] != "unavailable"
+        or not isinstance(reason, str)
+        or not reason.strip()
+        or any(snapshot[key] is not None for key in counters)
+    ):
+        raise ValueError(f"{label} unavailable state is invalid")
+    return None
+
+
 def _declared_inputs(
     manifest_raw: bytes,
     tier: dict,
@@ -113,6 +151,7 @@ def _declared_inputs(
     requested_client_timeout_ms: int | None,
     requested_history_max_bytes: int | None,
     requested_history_max_total_bytes: int | None,
+    requested_disk_observation_mode: str | None,
 ) -> dict:
     if (
         expected_tier not in TIER_SHAPE
@@ -137,6 +176,12 @@ def _declared_inputs(
         raise ValueError("invalid declared total history limit")
     if requested_history_max_total_bytes is not None and requested_history_max_bytes is None:
         raise ValueError("total history override requires an explicit pair bound")
+    if requested_disk_observation_mode is not None and requested_disk_observation_mode not in (
+        "boundary-only",
+        "periodic",
+    ):
+        raise ValueError("invalid declared disk observation mode")
+    disk_observation_mode = requested_disk_observation_mode or "boundary-only"
     effective_total = requested_history_max_total_bytes or HISTORY_MAX_TOTAL_BYTES
     effective_pair = requested_history_max_bytes or DEFAULT_HISTORY_MAX_BYTES
     if effective_pair > effective_total:
@@ -181,6 +226,8 @@ def _declared_inputs(
     _exact_int(tier.get("seed"), expected_seed, "measured seed")
     _exact_int(tier.get("file_count"), repos * files_per_repo, "measured file count")
     _exact_int(tier.get("source_repo_count"), repos, "measured source repo count")
+    if tier.get("disk_observation_mode") != disk_observation_mode:
+        raise ValueError("measured disk observation mode differs from declared command")
     policy = {
         "query_dispatch_budget_ms": 600_000,
         "requested_client_request_timeout_ms": requested_client_timeout_ms,
@@ -210,6 +257,8 @@ def _declared_inputs(
                 raise ValueError(f"{key} does not match declared scale input")
         else:
             _exact_int(tier.get(key), expected, key)
+    policy["requested_disk_observation_mode"] = requested_disk_observation_mode
+    policy["disk_observation_mode"] = disk_observation_mode
     return policy
 
 
@@ -409,10 +458,8 @@ def parse_trace(raw: bytes, expected_phases: set[str]) -> dict:
     return {"phases": phases, "unattributed": unattributed}
 
 
-def replay(
+def validate_product_artifacts(
     summary_raw: bytes,
-    trace_raw: bytes,
-    binary_raw: bytes,
     manifest_raw: bytes,
     *,
     source_revision: str,
@@ -421,7 +468,9 @@ def replay(
     requested_client_timeout_ms: int | None,
     requested_history_max_bytes: int | None,
     requested_history_max_total_bytes: int | None = None,
+    requested_disk_observation_mode: str | None = None,
 ) -> dict:
+    """Validate bound scale artifacts without requiring diagnostic trace markers."""
     summary = load(summary_raw)
     if (
         not isinstance(summary, dict)
@@ -468,6 +517,7 @@ def replay(
         requested_client_timeout_ms=requested_client_timeout_ms,
         requested_history_max_bytes=requested_history_max_bytes,
         requested_history_max_total_bytes=requested_history_max_total_bytes,
+        requested_disk_observation_mode=requested_disk_observation_mode,
     )
     retention = tier.get("retained_index_bytes")
     expected_seals = {"full", "delta", "noop"}
@@ -493,8 +543,88 @@ def replay(
     expected_phases = SMALL_PHASES if expected_tier == "small" else LARGE_PHASES
     if set(resources) != expected_phases:
         raise ValueError("scale artifact has incomplete or unexpected lifecycle phases")
-    trace = parse_trace(trace_raw, set(expected_phases))
+    validated_resources = {}
     for name, observation in resources.items():
+        span_ms = observation.get("observation_span_ms")
+        if not is_finite_json_number(span_ms) or span_ms <= 0:
+            raise ValueError(f"{name} has no positive observed wall span")
+        mode = policy["disk_observation_mode"]
+        disk = observation.get("disk")
+        interval = observation.get("disk_sample_interval_ms", object())
+        if not isinstance(disk, dict) or disk.get("observation_mode") != mode:
+            raise ValueError(f"{name} disk observation mode differs from declared command")
+        if disk.get("sampled_max_is_true_peak") is not False:
+            raise ValueError(f"{name} disk sample cannot prove a true peak")
+        boundary_bytes = [
+            _disk_allocation(disk.get(stage), f"{name} disk boundary {stage}")
+            for stage in ("start", "end")
+        ]
+        if mode == "boundary-only":
+            if (
+                interval is not None
+                or disk.get("sampled_max_allocated_root_bytes", object()) is not None
+                or disk.get("sampled_high_water_status") != "unavailable_periodic_sampling_disabled"
+                or disk.get("sampled") != []
+                or not is_finite_json_number(disk.get("periodic_probe_wall_ms"))
+                or disk.get("periodic_probe_wall_ms") != 0
+            ):
+                raise ValueError(f"{name} boundary disk evidence claims periodic sampling")
+        else:
+            peak = disk.get("sampled_max_allocated_root_bytes", object())
+            if (
+                type(interval) is not int
+                or interval != 500
+                or not isinstance(disk.get("sampled"), list)
+                or not is_finite_json_number(disk.get("periodic_probe_wall_ms"))
+                or disk["periodic_probe_wall_ms"] < 0
+                or (peak is not None and (type(peak) is not int or peak < 0))
+                or disk.get("sampled_high_water_status")
+                != ("observed" if peak is not None else "unavailable_no_interior_allocation_sample")
+            ):
+                raise ValueError(f"{name} periodic disk evidence is inconsistent")
+        previous_offset = 0.0
+        maximum_gap = 0.0
+        interior_high = None
+        for sample in disk["sampled"]:
+            if not isinstance(sample, dict):
+                raise ValueError(f"{name} disk sample is malformed")
+            offset = sample.get("offset_ms")
+            snapshot = sample.get("snapshot")
+            if (
+                not is_finite_json_number(offset)
+                or not previous_offset < offset < span_ms
+                or not isinstance(snapshot, dict)
+            ):
+                raise ValueError(f"{name} disk sample offset is invalid")
+            maximum_gap = max(maximum_gap, offset - previous_offset)
+            previous_offset = offset
+            allocated = _disk_allocation(snapshot, f"{name} disk sample")
+            if allocated is not None:
+                interior_high = (
+                    allocated if interior_high is None else max(interior_high, allocated)
+                )
+        maximum_gap = max(maximum_gap, span_ms - previous_offset)
+        observed_gap = disk.get("observed_max_gap_ms")
+        if not is_finite_json_number(observed_gap) or abs(observed_gap - maximum_gap) > 0.000_001:
+            raise ValueError(f"{name} disk sample gap differs from observed offsets")
+        if mode == "periodic":
+            if interior_high is None:
+                derived_high = None
+            else:
+                derived_high = max(interior_high, *(value or 0 for value in boundary_bytes))
+            if disk["sampled_max_allocated_root_bytes"] != derived_high:
+                raise ValueError(f"{name} disk sampled maximum differs from observed samples")
+        disk_observation = {
+            "mode": mode,
+            "start": disk["start"],
+            "end": disk["end"],
+            "sample_interval_ms": interval,
+            "sampled_max_allocated_root_bytes": disk["sampled_max_allocated_root_bytes"],
+            "sampled_high_water_status": disk["sampled_high_water_status"],
+            "sample_count": len(disk["sampled"]),
+            "periodic_probe_wall_ms": disk["periodic_probe_wall_ms"],
+            "observed_max_gap_ms": observed_gap,
+        }
         io = observation.get("process_write_io")
         reason = observation.get("process_write_io_unavailable_reason")
         if (io is None) == (reason is None):
@@ -509,24 +639,68 @@ def replay(
             or not -(1 << 63) <= io["cancelled_write_bytes"] <= (1 << 63) - 1
         ):
             raise ValueError(f"{name} process write I/O counters are invalid")
-        trace["phases"][name]["process_write_io"] = io
-        trace["phases"][name]["process_write_io_unavailable_reason"] = reason
+        cpu = {}
         for cpu_key in ("cpu_process_user_ms", "cpu_process_system_ms"):
             cpu_value = observation.get(cpu_key)
             if not is_finite_json_number(cpu_value) or cpu_value < 0:
                 raise ValueError(f"{name} {cpu_key} is invalid")
-            trace["phases"][name][cpu_key] = cpu_value
-        span_ms = observation.get("observation_span_ms")
-        if not is_finite_json_number(span_ms) or span_ms <= 0:
-            raise ValueError(f"{name} has no positive observed wall span")
+            cpu[cpu_key] = cpu_value
+        validated_resources[name] = {
+            "observation_span_ms": span_ms,
+            "disk_observation": disk_observation,
+            "process_write_io": io,
+            "process_write_io_unavailable_reason": reason,
+            **cpu,
+        }
+    return {
+        "summary": summary,
+        "provenance": provenance,
+        "tier": tier,
+        "runtime_config": policy,
+        "retained_index_bytes": retention,
+        "phase_resources": validated_resources,
+    }
+
+
+def replay(
+    summary_raw: bytes,
+    trace_raw: bytes,
+    binary_raw: bytes,
+    manifest_raw: bytes,
+    *,
+    source_revision: str,
+    expected_tier: str,
+    expected_seed: int,
+    requested_client_timeout_ms: int | None,
+    requested_history_max_bytes: int | None,
+    requested_history_max_total_bytes: int | None = None,
+    requested_disk_observation_mode: str | None = None,
+) -> dict:
+    product = validate_product_artifacts(
+        summary_raw,
+        manifest_raw,
+        source_revision=source_revision,
+        expected_tier=expected_tier,
+        expected_seed=expected_seed,
+        requested_client_timeout_ms=requested_client_timeout_ms,
+        requested_history_max_bytes=requested_history_max_bytes,
+        requested_history_max_total_bytes=requested_history_max_total_bytes,
+        requested_disk_observation_mode=requested_disk_observation_mode,
+    )
+    tier = product["tier"]
+    provenance = product["provenance"]
+    policy = product["runtime_config"]
+    retention = product["retained_index_bytes"]
+    trace = parse_trace(trace_raw, set(product["phase_resources"]))
+    for name, resource in product["phase_resources"].items():
         phase = trace["phases"][name]
+        phase.update(resource)
         sync_ns = sum(counter["elapsed_ns"] for counter in phase["sync"].values())
         scan_ns = phase["exact_live_token_scan"]["elapsed_ns"]
-        phase["observation_span_ms"] = span_ms
         phase["sync_call_elapsed_ns_sum"] = sync_ns
         phase["exact_scan_elapsed_ns_sum"] = scan_ns
-        phase["sync_call_wall_ratio"] = sync_ns / (span_ms * 1_000_000)
-        phase["exact_scan_wall_ratio"] = scan_ns / (span_ms * 1_000_000)
+        phase["sync_call_wall_ratio"] = sync_ns / (resource["observation_span_ms"] * 1_000_000)
+        phase["exact_scan_wall_ratio"] = scan_ns / (resource["observation_span_ms"] * 1_000_000)
     return {
         "schema_version": 1,
         "status": "diagnostic_unqualified",
@@ -565,6 +739,7 @@ def main() -> int:
     parser.add_argument("--client-timeout-ms", type=int)
     parser.add_argument("--history-max-bytes", type=int)
     parser.add_argument("--history-max-total-bytes", type=int)
+    parser.add_argument("--disk-observation", choices=("boundary-only", "periodic"))
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -583,6 +758,7 @@ def main() -> int:
             requested_client_timeout_ms=args.client_timeout_ms,
             requested_history_max_bytes=args.history_max_bytes,
             requested_history_max_total_bytes=args.history_max_total_bytes,
+            requested_disk_observation_mode=args.disk_observation,
         )
         with args.out.open("xb") as stream:
             stream.write(canonical(result) + b"\n")

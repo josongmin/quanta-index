@@ -151,6 +151,7 @@ fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
         ],
     )?;
 
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_repo_meta_batch(RepoMetaIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),

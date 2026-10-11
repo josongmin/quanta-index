@@ -29,19 +29,20 @@ use quanta_index_core::domains::structural::{
 };
 use quanta_index_core::{
     AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, AuxiliaryAuthorityCatalogPort, CoreError,
-    DoorFindingQuarantinePort, FileContributorIngestPort, FileOwnershipIngestPort,
-    GenerationIdentityValidatePort, HistoryTextIndexPort, IdempotencyCatalogPort,
-    IncompleteGenerationDiscardPort, IntegrityScrubPort, L2UnitEmbeddingProvider,
-    LexicalIndexOpenPort, MetricSourcePort, MutationCoordinatorPort, ProcessMemoryProbePort,
-    ProviderBudgetLedger, QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapOpenReportV1, RepoMapQuarantinePort, RepoMapSnapshotAcquirePort, RepoMetaIngestPort,
-    RepoTopicIngestPort, RequestBudgetV1, SealedGenerationIdentityProbePort,
-    SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort, SemanticContentRootsPort, SemanticEgressPolicyV1,
-    SemanticIndexOpenPort, SemanticIngestPort, SemanticScopeStreamBuildPort, StructuralError,
-    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
-    TrackDiskUsagePort, WriterIdleSweepPort,
+    DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1, DoorFindingQuarantinePort,
+    FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
+    HistoryTextIndexPort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
+    IntegrityScrubPort, L2UnitEmbeddingProvider, LexicalIndexOpenPort, MetricSourcePort,
+    MutationCoordinatorPort, ProcessMemoryProbePort, ProviderBudgetLedger,
+    QuarantinedGenerationDiscardPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapOpenReportV1,
+    RepoMapQuarantinePort, RepoMapSnapshotAcquirePort, RepoMetaIngestPort, RepoTopicIngestPort,
+    RequestBudgetV1, SealedGenerationIdentityProbePort, SealedGenerationReclaimPort,
+    SealedGenerationScanPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    SemanticContentRootsPort, SemanticEgressPolicyV1, SemanticIndexOpenPort, SemanticIngestPort,
+    SemanticScopeStreamBuildPort, StructuralError, StructuralMatchBinding,
+    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider, TrackDiskUsagePort,
+    WriterIdleSweepPort,
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache,
@@ -98,10 +99,44 @@ use crate::app::server::{
 };
 use crate::app::socket_access::SocketRole;
 use crate::app::supervisor::SupervisorStatus;
+use crate::app::trace_recorder::DiagnosticCaptureLeaseV1;
 
 const BENCH_DISABLE_QUERY_OBS_ENV: &str = "QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS";
 
+fn trace_boot_phase<T, E>(
+    capture: Option<&DiagnosticCaptureLeaseV1>,
+    stage: DiagnosticStageV1,
+    work: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    trace_boot_phase_with_context(capture, stage, |_| work())
+}
+
+fn trace_boot_phase_with_context<T, E>(
+    capture: Option<&DiagnosticCaptureLeaseV1>,
+    stage: DiagnosticStageV1,
+    work: impl FnOnce(Option<&quanta_index_core::DiagnosticContextV1>) -> Result<T, E>,
+) -> Result<T, E> {
+    let span = capture.and_then(|lease| {
+        let context = lease.context();
+        crate::app::trace_recorder::trace_span_or_health(
+            context,
+            context.enter(stage, DiagnosticLaneV1(0)),
+        )
+    });
+    let child = capture
+        .zip(span.as_ref())
+        .map(|(lease, span)| lease.context().child_context(span));
+    let result = work(child.as_ref());
+    if let Some(span) = span {
+        let outcome = DiagnosticTerminalV1::from_result(&result);
+        let _finished = span.finish(outcome);
+    }
+    result
+}
+
 pub struct SearchdRuntimeParts {
+    /// An explicit process capture lease, created before any state-root open.
+    pub diagnostic_capture: Option<DiagnosticCaptureLeaseV1>,
     pub state_root_lease: StateRootLease,
     pub search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
     pub lexical_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync>,
@@ -1226,6 +1261,7 @@ fn count_line_breaks(text: &[u8]) -> u32 {
 
 /// Composed runtime: direct-ingest adapters, ledger, and UDS servers.
 pub struct SearchdRuntime {
+    pub(crate) diagnostic_capture: Option<DiagnosticCaptureLeaseV1>,
     pub config: SearchdConfig,
     pub query_server: SearchPlaneQueryServer<
         dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,
@@ -1304,6 +1340,8 @@ pub struct RuntimeServers {
 /// construction until every child exits, so a second daemon cannot
 /// acquire the same state root while the first is still serving.
 pub struct RuntimeGuards {
+    /// Kept through child drain and custody so a capture cannot close early.
+    pub diagnostic_capture: Option<DiagnosticCaptureLeaseV1>,
     /// The search-corpus lifecycle owner (readiness/GC authority).
     pub search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
     /// The state-root lease; released last, after everything else.
@@ -1342,6 +1380,7 @@ impl SearchdRuntime {
         transport: Option<Box<dyn quanta_index_embed::EmbeddingTransport>>,
     ) -> Result<Self> {
         let SearchdRuntimeParts {
+            diagnostic_capture,
             state_root_lease,
             search_corpus_build_port,
             lexical_generation_scanner,
@@ -1429,20 +1468,37 @@ impl SearchdRuntime {
         // identities it retains are the serving boundary, and the inventory
         // below is measured against them — a sealed directory the history
         // does not retain is an orphan, not a seed.
-        {
-            let mut guard = ledger.write().map_err(|err| {
-                anyhow::anyhow!("ledger poisoned during search-corpus history bootstrap: {err}")
-            })?;
-            aux_authority_store
-                .restore_into(&mut guard)
-                .map_err(anyhow::Error::from)?;
-        }
+        trace_boot_phase(
+            diagnostic_capture.as_ref(),
+            DiagnosticStageV1::BootRestore,
+            || {
+                let mut guard = ledger.write().map_err(|err| {
+                    anyhow::anyhow!("ledger poisoned during search-corpus history bootstrap: {err}")
+                })?;
+                aux_authority_store
+                    .restore_into(&mut guard)
+                    .map_err(anyhow::Error::from)?;
+                Ok::<(), anyhow::Error>(())
+            },
+        )?;
         // Reclaims a crash cut short are finished before any inventory
         // (QI-BB-003): each is out of the generation namespace already.
-        let lexical_interrupted =
-            boot_inventory::finish_interrupted_reclaims(lexical_sealed_reclaim.as_ref())?;
-        let semantic_interrupted =
-            boot_inventory::finish_interrupted_reclaims(semantic_sealed_reclaim.as_ref())?;
+        let (lexical_interrupted, semantic_interrupted) = trace_boot_phase_with_context(
+            diagnostic_capture.as_ref(),
+            DiagnosticStageV1::BootReclaim,
+            |diagnostic| {
+                Ok::<_, anyhow::Error>((
+                    boot_inventory::finish_interrupted_reclaims(
+                        lexical_sealed_reclaim.as_ref(),
+                        diagnostic,
+                    )?,
+                    boot_inventory::finish_interrupted_reclaims(
+                        semantic_sealed_reclaim.as_ref(),
+                        diagnostic,
+                    )?,
+                ))
+            },
+        )?;
         boot_notices.extend(
             [
                 lexical_interrupted.boot_notice(SearchPlaneTrackKind::Lexical),
@@ -1453,20 +1509,31 @@ impl SearchdRuntime {
         );
         // Boot inventory (QI-BB-026): identities only, per track; nothing is
         // opened or hashed until the active pairs are proven below.
-        let lexical_inventory = boot_inventory::seed_track_readiness(
-            &ledger,
-            SearchPlaneTrackKind::Lexical,
-            lexical_generation_scanner.as_ref(),
+        let (lexical_inventory, semantic_inventory, seed_micros) = trace_boot_phase(
+            diagnostic_capture.as_ref(),
+            DiagnosticStageV1::BootInventory,
+            || {
+                let lexical_inventory = boot_inventory::seed_track_readiness(
+                    &ledger,
+                    SearchPlaneTrackKind::Lexical,
+                    lexical_generation_scanner.as_ref(),
+                )?;
+                let seed_start = std::time::Instant::now();
+                let semantic_inventory = semantic_boot::seed_persisted_semantic_readiness(
+                    &ledger,
+                    semantic_generation_scanner.as_ref(),
+                )
+                .map_err(anyhow::Error::from)?;
+                Ok::<_, anyhow::Error>((
+                    lexical_inventory,
+                    semantic_inventory,
+                    seed_start.elapsed().as_micros(),
+                ))
+            },
         )?;
-        let seed_start = std::time::Instant::now();
-        let semantic_inventory = semantic_boot::seed_persisted_semantic_readiness(
-            &ledger,
-            semantic_generation_scanner.as_ref(),
-        )
-        .map_err(anyhow::Error::from)?;
         let boot_report = semantic_boot::SemanticBootReport {
             seed: semantic_boot::SemanticSeedReport::from_track_report(&semantic_inventory),
-            seed_micros: seed_start.elapsed().as_micros(),
+            seed_micros,
         };
         // The only deep validation boot performs: each active pair, once. A
         // defective active generation fails here, typed, before any bind,
@@ -1481,24 +1548,31 @@ impl SearchdRuntime {
             semantic_door_findings,
             snapshots: snapshots.clone(),
         };
-        let boot_active_before = activation_catalog
-            .active_inventory_v1()
-            .map_err(anyhow::Error::from)?
-            .0;
-        let active_pairs_validated = search_corpus_lifecycle
-            .validate_rehydrated_active_generations_v1(&promotion)
-            .map_err(anyhow::Error::from)?;
-        let boot_proven_active = activation_catalog
-            .active_inventory_v1()
-            .map_err(anyhow::Error::from)?
-            .0;
-        if boot_proven_active != boot_active_before
-            || boot_proven_active.len() != active_pairs_validated
-        {
-            return Err(anyhow::anyhow!(
-                "boot active identity changed during physical pair proof"
-            ));
-        }
+        let (active_pairs_validated, boot_proven_active) = trace_boot_phase(
+            diagnostic_capture.as_ref(),
+            DiagnosticStageV1::BootActiveProof,
+            || {
+                let boot_active_before = activation_catalog
+                    .active_inventory_v1()
+                    .map_err(anyhow::Error::from)?
+                    .0;
+                let active_pairs_validated = search_corpus_lifecycle
+                    .validate_rehydrated_active_generations_v1(&promotion)
+                    .map_err(anyhow::Error::from)?;
+                let boot_proven_active = activation_catalog
+                    .active_inventory_v1()
+                    .map_err(anyhow::Error::from)?
+                    .0;
+                if boot_proven_active != boot_active_before
+                    || boot_proven_active.len() != active_pairs_validated
+                {
+                    return Err(anyhow::anyhow!(
+                        "boot active identity changed during physical pair proof"
+                    ));
+                }
+                Ok((active_pairs_validated, boot_proven_active))
+            },
+        )?;
         // Legacy auxiliary snapshots are refused by the format gate above.
         // Boot only restores rows already present in the current catalog.
         let auxiliary_rows_restored = {
@@ -1661,7 +1735,7 @@ impl SearchdRuntime {
         // The maintenance timer (QI-BB-016, QI-BB-015): the idle writer
         // sweep, the per-track disk gauges and the scrub run on it, and its
         // tallies plus the process gauge join the scrape.
-        let maintenance = MaintenanceTimer::start(
+        let maintenance = MaintenanceTimer::start_with_diagnostic(
             MaintenanceParts {
                 writer_sweep: writer_idle_sweep,
                 lexical_disk_usage,
@@ -1680,6 +1754,7 @@ impl SearchdRuntime {
                 integrity_scrub,
             },
             config.maintenance_policy().tick(),
+            diagnostic_capture.clone(),
         )
         .map_err(anyhow::Error::from)?;
         let maintenance_source: Arc<dyn MetricSourcePort> = Arc::new(MaintenanceMetricSource::new(
@@ -1808,7 +1883,7 @@ impl SearchdRuntime {
                 .map(|role| socket_access.for_role(*role)),
         );
         let ingress = Arc::new(quanta_index_ipc::IngressBudget::for_process());
-        let query_server = SearchPlaneQueryServer::bind(
+        let mut query_server = SearchPlaneQueryServer::bind(
             quanta_index_ipc::IpcPlane::Query,
             "quanta-index-query-uds",
             config.query_socket_path(),
@@ -1820,12 +1895,15 @@ impl SearchdRuntime {
         )
         .map_err(anyhow::Error::from)?
         .with_ingress_budget(Arc::clone(&ingress));
+        if let Some(capture) = diagnostic_capture.as_ref() {
+            query_server = query_server.with_diagnostic_context(capture.context().clone());
+        }
         let control_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>,
         > = Arc::new(SearchPlaneControlIpcAdapter::new(control_dispatcher));
         // Control and ingest mutate; their dispatches serialize by policy
         // while their connections still read independently (QI-BB-002).
-        let control_server = SearchPlaneControlServer::bind(
+        let mut control_server = SearchPlaneControlServer::bind(
             quanta_index_ipc::IpcPlane::Control,
             "quanta-index-control-uds",
             config.control_socket_path(),
@@ -1837,10 +1915,13 @@ impl SearchdRuntime {
         )
         .map_err(anyhow::Error::from)?
         .with_ingress_budget(Arc::clone(&ingress));
+        if let Some(capture) = diagnostic_capture.as_ref() {
+            control_server = control_server.with_diagnostic_context(capture.context().clone());
+        }
         let ingest_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>,
         > = Arc::new(SearchPlaneIngestIpcAdapter::new(ingest_dispatcher));
-        let ingest_server = SearchPlaneIngestServer::bind(
+        let mut ingest_server = SearchPlaneIngestServer::bind(
             quanta_index_ipc::IpcPlane::Ingest,
             "quanta-index-ingest-uds",
             config.ingest_socket_path(),
@@ -1852,6 +1933,9 @@ impl SearchdRuntime {
         )
         .map_err(anyhow::Error::from)?
         .with_ingress_budget(ingress);
+        if let Some(capture) = diagnostic_capture.as_ref() {
+            ingest_server = ingest_server.with_diagnostic_context(capture.context().clone());
+        }
         socket_probes
             .set([
                 query_server.bound_socket_path_probe(),
@@ -1863,6 +1947,7 @@ impl SearchdRuntime {
             })?;
 
         Ok(Self {
+            diagnostic_capture,
             config,
             query_server,
             control_server,
@@ -1893,6 +1978,7 @@ impl SearchdRuntime {
         self,
     ) -> (RuntimeServers, MaintenanceTimer, RuntimeGuards, Vec<String>) {
         let Self {
+            diagnostic_capture,
             query_server,
             control_server,
             ingest_server,
@@ -1910,6 +1996,7 @@ impl SearchdRuntime {
             },
             maintenance,
             RuntimeGuards {
+                diagnostic_capture,
                 search_corpus_lifecycle,
                 state_root_lease,
             },

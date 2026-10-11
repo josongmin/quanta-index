@@ -9,10 +9,13 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use quanta_index_contract::{
-    GenerationSnapshot, IngestOperationKindV1, RepoId, RevisionId, SourcePublicationEvent,
+    ACTIVATION_ROOT_INCARNATION_BYTES_V1, GenerationSnapshot, IngestOperationKindV1,
+    ManifestGeneration, RepoId, RevisionId, SourcePublicationEvent,
 };
 use quanta_index_core::{
-    CoreError, IdempotencyKeyV1, SourceEventBindingV1, SourceEventPhaseV1, SourceEventRecordV1,
+    CoreError, IdempotencyKeyV1, LexicalDocumentNamespaceV1, LexicalDocumentVersionRangeV1,
+    LexicalDocumentVersionReservationV1, SourceEventAllocationRequestV1, SourceEventAllocationV1,
+    SourceEventBindingV1, SourceEventPhaseV1, SourceEventRecordV1, SourceEventStateV1,
 };
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -25,7 +28,8 @@ pub(super) const MAX_ENVELOPE_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const MAX_ROOTS: usize = 256;
 pub(super) const MAX_STREAMS: usize = 256;
 pub(super) const MAX_EVENTS: usize = 8192;
-const FORMAT: u32 = 2;
+pub(super) const MAX_COUNTERS: usize = 8192;
+const REPOSITORY_ENVELOPE_FORMAT_VERSION: u32 = 4;
 const MAX_MANIFEST_TOKEN_BYTES: usize = 4096;
 
 pub(super) fn bound_manifest_token(token: &str) -> Result<(), CoreError> {
@@ -50,6 +54,9 @@ pub(super) struct StreamHead {
 pub(super) struct EventHistory {
     pub streams: BTreeMap<String, StreamHead>,
     pub records: BTreeMap<(String, String), SourceEventRecordV1>,
+    pub high_water: BTreeMap<RevisionId, ManifestGeneration>,
+    pub lexical_high_water: BTreeMap<([u8; ACTIVATION_ROOT_INCARNATION_BYTES_V1], u8), u64>,
+    pub lexical_reservations: BTreeMap<(String, String), LexicalDocumentVersionReservationV1>,
 }
 
 pub(super) fn corrupt(message: impl Into<String>) -> CoreError {
@@ -110,22 +117,45 @@ impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for Rows<T, N> {
 type StreamRow = (String, Option<String>, Option<String>);
 // The journal's kind/repo/revision/generation are fixed by the lexical target;
 // only its batch digest is separately encoded. Decoding rebuilds the exact key.
-type EventRow = (SourcePublicationEvent, GenerationSnapshot, String, u8);
+type BoundRow = (GenerationSnapshot, String, u8);
+type LexicalRangesRow = ((u64, u64), (u64, u64));
+type EventRow = (
+    SourcePublicationEvent,
+    RevisionId,
+    ManifestGeneration,
+    [u8; ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+    Option<BoundRow>,
+    Option<LexicalRangesRow>,
+);
 type EnvelopeRow = (
     u32,
     RepoId,
     Rows<PersistedSearchCorpusGenerationRootV1, MAX_ROOTS>,
     Rows<StreamRow, MAX_STREAMS>,
     Rows<EventRow, MAX_EVENTS>,
+    Rows<(RevisionId, ManifestGeneration), MAX_COUNTERS>,
+    Rows<([u8; ACTIVATION_ROOT_INCARNATION_BYTES_V1], u8, u64), MAX_COUNTERS>,
 );
 
 pub(super) fn decode(path: &Path, bytes: &[u8]) -> Result<(RepoId, CatalogState), CoreError> {
     if bytes.len() > MAX_ENVELOPE_BYTES {
         return Err(capacity("persisted byte limit"));
     }
-    let (format, repo, roots, streams, events): EnvelopeRow =
+    let format = serde_json::from_slice::<serde_json::Value>(bytes)
+        .map_err(|error| corrupt(error.to_string()))?
+        .as_array()
+        .and_then(|rows| rows.first())
+        .and_then(serde_json::Value::as_u64);
+    if format != Some(u64::from(REPOSITORY_ENVELOPE_FORMAT_VERSION)) {
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
+            message: "activation repository envelope format changed; offline rebuild required"
+                .into(),
+        });
+    }
+    let (format, repo, roots, streams, events, counters, lexical_counters): EnvelopeRow =
         serde_json::from_slice(bytes).map_err(|error| corrupt(error.to_string()))?;
-    if format != FORMAT
+    if format != REPOSITORY_ENVELOPE_FORMAT_VERSION
         || path.file_name().and_then(|name| name.to_str()) != Some(file_name(&repo).as_str())
     {
         return Err(corrupt(
@@ -186,43 +216,114 @@ pub(super) fn decode(path: &Path, bytes: &[u8]) -> Result<(RepoId, CatalogState)
             .insert(stream, StreamHead { active, pending });
     }
     let mut previous_event: Option<(String, String)> = None;
-    for (event, target, batch_digest, phase) in events.0 {
+    for (event, revision, generation, root_incarnation, bound, lexical_ranges) in events.0 {
         let key = (event.stream_id.clone(), event.event_id.clone());
         if previous_event
             .as_ref()
             .is_some_and(|previous| previous >= &key)
-            || target.repo_id != repo
         {
             return Err(corrupt(
                 "event rows must be sorted, unique and belong to the envelope repository",
             ));
         }
         previous_event = Some(key.clone());
-        let journal_key = IdempotencyKeyV1 {
-            kind: IngestOperationKindV1::SearchCorpus,
-            repo_id: target.repo_id.clone(),
-            revision_id: target.revision_id.clone(),
-            generation: target.manifest_generation,
-            batch_digest,
+        let state = match bound {
+            None => SourceEventStateV1::Allocated,
+            Some((target, batch_digest, phase)) => {
+                bound_manifest_token(&target.manifest_digest)?;
+                let journal_key = IdempotencyKeyV1 {
+                    kind: IngestOperationKindV1::SearchCorpus,
+                    repo_id: target.repo_id.clone(),
+                    revision_id: target.revision_id.clone(),
+                    generation: target.manifest_generation,
+                    batch_digest,
+                };
+                let phase = match phase {
+                    0 => SourceEventPhaseV1::Pending,
+                    1 => SourceEventPhaseV1::Staged,
+                    2 => SourceEventPhaseV1::Active,
+                    _ => return Err(corrupt("unknown source event phase")),
+                };
+                SourceEventStateV1::Bound {
+                    binding: Box::new(SourceEventBindingV1 {
+                        event: event.clone(),
+                        target,
+                        journal_key,
+                    }),
+                    phase,
+                }
+            }
         };
-        let binding = SourceEventBindingV1 {
-            event,
-            target,
-            journal_key,
+        let record = SourceEventRecordV1 {
+            allocation: SourceEventAllocationV1 {
+                request: SourceEventAllocationRequestV1 {
+                    repo_id: repo.clone(),
+                    revision_id: revision,
+                    event,
+                },
+                generation,
+                root_incarnation,
+            },
+            state,
         };
-        bound_manifest_token(&binding.target.manifest_digest)?;
-        binding
+        record
             .validate()
             .map_err(|error| corrupt(error.to_string()))?;
-        let phase = match phase {
-            0 => SourceEventPhaseV1::Pending,
-            1 => SourceEventPhaseV1::Staged,
-            2 => SourceEventPhaseV1::Active,
-            _ => return Err(corrupt("unknown source event phase")),
-        };
-        let _prior = history
-            .records
-            .insert(key, SourceEventRecordV1 { binding, phase });
+        if let Some(((file_first, file_count), (text_first, text_count))) = lexical_ranges {
+            let reservation = LexicalDocumentVersionReservationV1 {
+                allocation: record.allocation.clone(),
+                file: LexicalDocumentVersionRangeV1 {
+                    first: file_first,
+                    count: file_count,
+                    scope_sha256: LexicalDocumentVersionRangeV1::scope_digest(
+                        &root_incarnation,
+                        &repo,
+                        LexicalDocumentNamespaceV1::File,
+                    ),
+                },
+                native_text: LexicalDocumentVersionRangeV1 {
+                    first: text_first,
+                    count: text_count,
+                    scope_sha256: LexicalDocumentVersionRangeV1::scope_digest(
+                        &root_incarnation,
+                        &repo,
+                        LexicalDocumentNamespaceV1::NativeText,
+                    ),
+                },
+            };
+            let _prior = history
+                .lexical_reservations
+                .insert(key.clone(), reservation);
+        }
+        let _prior = history.records.insert(key, record);
+    }
+    let mut previous_counter: Option<RevisionId> = None;
+    for (revision, generation) in counters.0 {
+        if generation.get() == 0
+            || previous_counter
+                .as_ref()
+                .is_some_and(|prior| prior >= &revision)
+        {
+            return Err(corrupt(
+                "generation counters must be sorted, unique and nonzero",
+            ));
+        }
+        previous_counter = Some(revision.clone());
+        let _prior = history.high_water.insert(revision, generation);
+    }
+    let mut previous_lexical_counter = None;
+    for (incarnation, namespace, water) in lexical_counters.0 {
+        let key = (incarnation, namespace);
+        if !matches!(namespace, 1 | 2)
+            || incarnation == [0; ACTIVATION_ROOT_INCARNATION_BYTES_V1]
+            || previous_lexical_counter.is_some_and(|previous| previous >= key)
+        {
+            return Err(corrupt(
+                "lexical counters must have canonical, unique scopes",
+            ));
+        }
+        previous_lexical_counter = Some(key);
+        let _prior = history.lexical_high_water.insert(key, water);
     }
     validate_history(&history)?;
     let _prior = state.histories.insert(repo.clone(), history);
@@ -230,9 +331,17 @@ pub(super) fn decode(path: &Path, bytes: &[u8]) -> Result<(RepoId, CatalogState)
 }
 
 pub(super) fn validate_history(history: &EventHistory) -> Result<(), CoreError> {
-    if history.streams.len() > MAX_STREAMS || history.records.len() > MAX_EVENTS {
-        return Err(capacity("stream or retained event limit"));
+    if history.streams.len() > MAX_STREAMS
+        || history.records.len() > MAX_EVENTS
+        || history.high_water.len() > MAX_COUNTERS
+        || history.lexical_high_water.len() > MAX_COUNTERS
+        || history.lexical_reservations.len() > MAX_EVENTS
+    {
+        return Err(capacity(
+            "stream, retained event or generation counter limit",
+        ));
     }
+    validate_lexical_ranges(history)?;
     for (stream, head) in &history.streams {
         for (id, active) in [(head.active.as_ref(), true), (head.pending.as_ref(), false)] {
             if let Some(id) = id {
@@ -240,7 +349,14 @@ pub(super) fn validate_history(history: &EventHistory) -> Result<(), CoreError> 
                     .records
                     .get(&(stream.clone(), id.clone()))
                     .ok_or_else(|| corrupt("stream head references missing event"))?;
-                if (record.phase == SourceEventPhaseV1::Active) != active {
+                if (matches!(
+                    record.state,
+                    SourceEventStateV1::Bound {
+                        phase: SourceEventPhaseV1::Active,
+                        ..
+                    }
+                )) != active
+                {
                     return Err(corrupt("stream head phase mismatch"));
                 }
             }
@@ -260,10 +376,21 @@ pub(super) fn validate_history(history: &EventHistory) -> Result<(), CoreError> 
                 .records
                 .get(&key)
                 .ok_or_else(|| corrupt("missing accepted ancestor"))?;
-            if record.phase != SourceEventPhaseV1::Active {
+            if !matches!(
+                record.state,
+                SourceEventStateV1::Bound {
+                    phase: SourceEventPhaseV1::Active,
+                    ..
+                }
+            ) {
                 return Err(corrupt("unaccepted ancestor in active lineage"));
             }
-            cursor = record.binding.event.expected_base_event_id.as_ref();
+            cursor = record
+                .allocation
+                .request
+                .event
+                .expected_base_event_id
+                .as_ref();
         }
     }
     let mut targets = std::collections::BTreeSet::new();
@@ -271,18 +398,26 @@ pub(super) fn validate_history(history: &EventHistory) -> Result<(), CoreError> 
         // Recovery and persistence must enforce the same generation ownership
         // as live reservation. A different manifest does not make one physical
         // generation a second target, even across producer streams.
-        let target = &record.binding.target;
+        record
+            .validate()
+            .map_err(|error| corrupt(error.to_string()))?;
+        let target = &record.allocation;
         if !targets.insert((
-            &target.repo_id,
-            &target.revision_id,
-            target.manifest_generation,
+            &target.request.repo_id,
+            &target.request.revision_id,
+            target.generation,
         )) {
             return Err(corrupt(
                 "target generation belongs to multiple source events",
             ));
         }
-        if record.phase == SourceEventPhaseV1::Active
-            && !accepted.contains(&(stream.clone(), event_id.clone()))
+        if matches!(
+            record.state,
+            SourceEventStateV1::Bound {
+                phase: SourceEventPhaseV1::Active,
+                ..
+            }
+        ) && !accepted.contains(&(stream.clone(), event_id.clone()))
         {
             return Err(corrupt("orphan accepted event outside active lineage"));
         }
@@ -290,25 +425,102 @@ pub(super) fn validate_history(history: &EventHistory) -> Result<(), CoreError> 
             .streams
             .get(stream)
             .ok_or_else(|| corrupt("event has no stream"))?;
-        if record.binding.event.stream_id != *stream || record.binding.event.event_id != *event_id {
+        if record.allocation.request.event.stream_id != *stream
+            || record.allocation.request.event.event_id != *event_id
+        {
             return Err(corrupt("event map key mismatch"));
         }
-        if record.phase != SourceEventPhaseV1::Active
-            && (head.pending.as_ref() != Some(event_id)
-                || record.binding.event.expected_base_event_id != head.active)
+        if !matches!(
+            record.state,
+            SourceEventStateV1::Bound {
+                phase: SourceEventPhaseV1::Active,
+                ..
+            }
+        ) && (head.pending.as_ref() != Some(event_id)
+            || record.allocation.request.event.expected_base_event_id != head.active)
         {
             return Err(corrupt(
                 "unresolved event does not own the pending slot or active base",
             ));
         }
-        if let Some(base) = &record.binding.event.expected_base_event_id {
+        if let Some(base) = &record.allocation.request.event.expected_base_event_id {
             let base_record = history
                 .records
                 .get(&(stream.clone(), base.clone()))
                 .ok_or_else(|| corrupt("event base was not retained"))?;
-            if base_record.phase != SourceEventPhaseV1::Active {
+            if !matches!(
+                base_record.state,
+                SourceEventStateV1::Bound {
+                    phase: SourceEventPhaseV1::Active,
+                    ..
+                }
+            ) {
                 return Err(corrupt("event base is not active history"));
             }
+        }
+        if history
+            .high_water
+            .get(&target.request.revision_id)
+            .is_none_or(|water| *water < target.generation)
+        {
+            return Err(corrupt(
+                "source event exceeds its retained generation high-water",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_lexical_ranges(history: &EventHistory) -> Result<(), CoreError> {
+    let mut intervals: BTreeMap<(_, u8), Vec<(u64, u64)>> = BTreeMap::new();
+    for (key, reservation) in &history.lexical_reservations {
+        reservation
+            .validate()
+            .map_err(|error| corrupt(error.to_string()))?;
+        let record = history
+            .records
+            .get(key)
+            .ok_or_else(|| corrupt("lexical reservation has no retained source event"))?;
+        if record.allocation != reservation.allocation || record.binding_v1().is_none() {
+            return Err(corrupt(
+                "lexical reservation differs from its original event allocation",
+            ));
+        }
+        for (namespace, range) in [(1, &reservation.file), (2, &reservation.native_text)] {
+            let scope = (reservation.allocation.root_incarnation, namespace);
+            let water = history
+                .lexical_high_water
+                .get(&scope)
+                .ok_or_else(|| corrupt("lexical reservation lost its durable counter"))?;
+            let ranges = intervals.entry(scope).or_default();
+            if range.count != 0 {
+                let last = range
+                    .first
+                    .checked_add(range.count.saturating_sub(1))
+                    .ok_or_else(|| corrupt("lexical reservation overflow"))?;
+                if last > *water {
+                    return Err(corrupt("lexical reservation exceeds its durable counter"));
+                }
+                ranges.push((range.first, last));
+            }
+        }
+    }
+    if intervals.len() != history.lexical_high_water.len() {
+        return Err(corrupt("orphan lexical document counter"));
+    }
+    for (scope, ranges) in &mut intervals {
+        ranges.sort_unstable();
+        let mut last = 0;
+        for &(first, end) in ranges.iter() {
+            if first <= last {
+                return Err(corrupt("overlapping lexical document reservations"));
+            }
+            last = end;
+        }
+        if history.lexical_high_water.get(scope) != Some(&last) {
+            return Err(corrupt(
+                "lexical counter differs from retained reservation high-water",
+            ));
         }
     }
     Ok(())
@@ -347,26 +559,59 @@ pub(super) fn encode(repo: &RepoId, state: &CatalogState) -> Result<Vec<u8>, Cor
         .collect();
     let events: Vec<_> = history
         .into_iter()
-        .flat_map(|history| history.records.values())
-        .map(|record| {
+        .flat_map(|history| {
+            history
+                .records
+                .iter()
+                .map(move |(key, record)| (history, key, record))
+        })
+        .map(|(history, key, record)| {
+            let bound = match &record.state {
+                SourceEventStateV1::Allocated => None,
+                SourceEventStateV1::Bound { binding, phase } => Some((
+                    binding.target.clone(),
+                    binding.journal_key.batch_digest.clone(),
+                    match phase {
+                        SourceEventPhaseV1::Pending => 0,
+                        SourceEventPhaseV1::Staged => 1,
+                        SourceEventPhaseV1::Active => 2,
+                    },
+                )),
+            };
             (
-                record.binding.event.clone(),
-                record.binding.target.clone(),
-                record.binding.journal_key.batch_digest.clone(),
-                match record.phase {
-                    SourceEventPhaseV1::Pending => 0,
-                    SourceEventPhaseV1::Staged => 1,
-                    SourceEventPhaseV1::Active => 2,
-                },
+                record.allocation.request.event.clone(),
+                record.allocation.request.revision_id.clone(),
+                record.allocation.generation,
+                record.allocation.root_incarnation,
+                bound,
+                history.lexical_reservations.get(key).map(|reservation| {
+                    (
+                        (reservation.file.first, reservation.file.count),
+                        (reservation.native_text.first, reservation.native_text.count),
+                    )
+                }),
             )
         })
         .collect();
+    let counters: Vec<_> = history
+        .into_iter()
+        .flat_map(|history| history.high_water.iter())
+        .map(|(revision, generation)| (revision.clone(), *generation))
+        .collect();
     let row: EnvelopeRow = (
-        FORMAT,
+        REPOSITORY_ENVELOPE_FORMAT_VERSION,
         repo.clone(),
         Rows(roots),
         Rows(streams),
         Rows(events),
+        Rows(counters),
+        Rows(
+            history
+                .into_iter()
+                .flat_map(|history| history.lexical_high_water.iter())
+                .map(|(&(incarnation, namespace), &water)| (incarnation, namespace, water))
+                .collect(),
+        ),
     );
     let mut counter = ByteCounter(0);
     serde_json::to_writer(&mut counter, &row).map_err(|error| capacity(&error.to_string()))?;

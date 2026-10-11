@@ -9,8 +9,8 @@ that drifts from the code is worse than none, so this gate fails when:
   1. an IPC enum listed under `[[ipc]]` does not exist at the named file,
      has a variant the inventory does not list, or the inventory lists a
      variant the enum does not have (both directions, exact);
-  2. an IPC enum matching `SearchPlane*Ipc{Request,Response}` exists in the
-     known IPC files but no `[[ipc]]` row names it;
+  2. a known search-plane or native control enum exists in the contract files
+     but no `[[ipc]]` row names it;
   3. a format-version constant in a workspace `src/` tree is not named by
      exactly one `[[artifact]]`, or is named with a value other than the
      one the code declares (a bump without an inventory update fails);
@@ -18,9 +18,8 @@ that drifts from the code is worse than none, so this gate fails when:
   5. a tools-owned JSON artifact has no owner/producer/consumer/schema mapping,
      or its registered version disagrees with the schema's version constant.
 
-The Rust is read with regexes over the known files rather than parsed:
-the enums are flat newtype-variant lists and the constants are one-line
-integer declarations, and exactness on that shape beats cleverness.
+Legacy flat search-plane enums and one-line format constants use the existing
+strict regexes. Native control record/newtype variants use the Rust AST.
 """
 
 from __future__ import annotations
@@ -44,9 +43,12 @@ INVENTORY_PATH = ROOT / "tools" / "ci" / "inventory" / "wire-surface.toml"
 IPC_FILES: tuple[str, ...] = (
     "crates/quanta-index-contract/src/ipc/split.rs",
     "crates/quanta-index-contract/src/ipc/ingest/envelope.rs",
+    "crates/quanta-index-contract/src/native_protocol.rs",
 )
+NATIVE_IPC_FILE = "crates/quanta-index-contract/src/native_protocol.rs"
 
 IPC_ENUM_NAME_RE = re.compile(r"^SearchPlane(?:Query|Control|Ingest)Ipc(?:Request|Response)$")
+NATIVE_ENUM_NAMES = frozenset({"NativeIndexRequest", "NativeIndexResponse"})
 ENUM_DECL_RE = re.compile(r"^\s*pub\s+enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)\s*\{\s*$")
 VARIANT_RE = re.compile(r"^\s*(?P<name>[A-Z][A-Za-z0-9_]*)\s*\(")
 
@@ -91,6 +93,10 @@ REPRODUCTION_CLASSES: frozenset[str] = frozenset(
 )
 
 TOOL_MIGRATION_FIXTURES = {
+    "deployment_selection_unsupported_version_refused": (
+        "tools/ci/tests/test_deployment_launcher.py",
+        "test_unsupported_selection_version_is_refused",
+    ),
     "proof_manifest_v0_refused": (
         "tools/ci/tests/test_check_proof_authority.py",
         "test_manifest_v0_is_refused",
@@ -323,6 +329,52 @@ def parse_ipc_enums(text: str) -> dict[str, list[str]]:
     return enums
 
 
+def parse_native_enums(text: str) -> dict[str, list[str]]:
+    """Read the two native control enums, including record and newtype variants."""
+    try:
+        from tree_sitter_language_pack import get_parser
+    except ImportError as error:
+        raise ValueError("native wire discovery requires tree-sitter-language-pack") from error
+
+    source = text.encode("utf-8")
+    tree = get_parser("rust").parse(source)
+    if tree.root_node.has_error:
+        raise ValueError("native control Rust syntax could not be parsed")
+    enums: dict[str, list[str]] = {}
+    for item in tree.root_node.children:
+        if item.type != "enum_item":
+            continue
+        name_node = item.child_by_field_name("name")
+        if name_node is None:
+            continue
+        name = source[name_node.start_byte : name_node.end_byte].decode("utf-8")
+        if name not in NATIVE_ENUM_NAMES:
+            continue
+        if name in enums:
+            raise ValueError(f"{name}: declared twice")
+        if not any(child.type == "visibility_modifier" for child in item.children):
+            raise ValueError(f"{name}: control enum must be public")
+        body = item.child_by_field_name("body")
+        if body is None:
+            raise ValueError(f"{name}: enum body is absent")
+        variants: list[str] = []
+        for child in body.children:
+            if child.type != "enum_variant":
+                continue
+            variant_node = child.child_by_field_name("name")
+            shape = {part.type for part in child.children}
+            if variant_node is None or not shape.intersection(
+                {"field_declaration_list", "ordered_field_declaration_list"}
+            ):
+                raise ValueError(f"{name}: unrecognized native variant shape")
+            variant = source[variant_node.start_byte : variant_node.end_byte].decode("utf-8")
+            if variant in variants:
+                raise ValueError(f"{name}: variant `{variant}` declared twice")
+            variants.append(variant)
+        enums[name] = variants
+    return enums
+
+
 def parse_format_constants(rel: str, text: str) -> list[CodeConstant]:
     """Every on-disk format-version constant declared in one source file.
 
@@ -373,7 +425,12 @@ def check_ipc(inventory: dict, root: Path = ROOT) -> list[Finding]:
             findings.append(Finding(rel, "IPC file listed in the checker does not exist"))
             continue
         try:
-            parsed = parse_ipc_enums(path.read_text(encoding="utf-8"))
+            source = path.read_text(encoding="utf-8")
+            parsed = (
+                parse_native_enums(source)
+                if rel == NATIVE_IPC_FILE
+                else parse_ipc_enums(source)
+            )
         except ValueError as err:
             findings.append(Finding(rel, str(err)))
             continue
@@ -387,8 +444,12 @@ def check_ipc(inventory: dict, root: Path = ROOT) -> list[Finding]:
     for row in inventory.get("ipc", []):
         name = row.get("enum")
         where = f"wire-surface.toml [[ipc]] enum={name!r}"
-        if not isinstance(name, str) or not IPC_ENUM_NAME_RE.match(name):
-            findings.append(Finding(where, "enum is not a SearchPlane*Ipc{Request,Response} name"))
+        if not isinstance(name, str) or not (
+            IPC_ENUM_NAME_RE.match(name) or name in NATIVE_ENUM_NAMES
+        ):
+            findings.append(
+                Finding(where, "enum is not a known search-plane or native control name")
+            )
             continue
         if name in listed:
             findings.append(Finding(where, "listed twice"))
@@ -420,7 +481,17 @@ def check_ipc(inventory: dict, root: Path = ROOT) -> list[Finding]:
             )
         if row.get("direction") not in {"request", "response"}:
             findings.append(Finding(where, "`direction` must be `request` or `response`"))
-        if row.get("plane") not in {"query", "control", "ingest"}:
+        if name in NATIVE_ENUM_NAMES:
+            expected_direction = "request" if name == "NativeIndexRequest" else "response"
+            if row.get("plane") != "control" or row.get("direction") != expected_direction:
+                findings.append(
+                    Finding(
+                        where,
+                        "native control row must use plane='control' and "
+                        f"direction={expected_direction!r}",
+                    )
+                )
+        elif row.get("plane") not in {"query", "control", "ingest"}:
             findings.append(Finding(where, "`plane` must be `query`, `control` or `ingest`"))
 
     for name, (code_file, _variants) in sorted(code_enums.items()):

@@ -653,7 +653,8 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
                 SearchPlaneControlIpcResponse::QuarantineInventory(quarantine_fixture())
             }
             SearchPlaneControlIpcRequest::QuarantineDiscard(request) => quarantine_discard(request),
-            other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
+            other @ (SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(_)
+            | SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
             | SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_)

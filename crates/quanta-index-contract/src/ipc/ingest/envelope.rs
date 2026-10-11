@@ -16,7 +16,7 @@ use super::{
     SourcePublicationUploadAck, SourcePublicationUploadCommit, SourcePublicationUploadIdentity,
     SourcePublicationUploadPart, StructuralIngestBatch,
 };
-use crate::{RepoMapPublishBundleRequestV2, RepoMapTerminalReceiptV2};
+use crate::{DiagnosticAttemptFieldV1, RepoMapPublishBundleRequestV2, RepoMapTerminalReceiptV2};
 
 // Batch-dependent binding helpers live beside the request DTO so transient
 // response observations do not depend back on the ingest request module.
@@ -513,18 +513,27 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcResponse {
 pub struct SearchPlaneIngestIpcRequestEnvelope {
     pub request_id: u64,
     pub payload: SearchPlaneIngestIpcRequest,
+    pub diagnostic_attempt: DiagnosticAttemptFieldV1,
 }
 
-const SEARCH_PLANE_INGEST_REQUEST_ENVELOPE_FIELDS: &[&str] = &["request_id", "payload"];
+const SEARCH_PLANE_INGEST_REQUEST_ENVELOPE_FIELDS: &[&str] =
+    &["request_id", "payload", "diagnostic_attempt"];
 
 impl Serialize for SearchPlaneIngestIpcRequestEnvelope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SearchPlaneIngestIpcRequestEnvelope", 2)?;
+        let token = self.diagnostic_attempt.token();
+        let mut state = serializer.serialize_struct(
+            "SearchPlaneIngestIpcRequestEnvelope",
+            if token.is_some() { 3 } else { 2 },
+        )?;
         state.serialize_field("request_id", &self.request_id)?;
         state.serialize_field("payload", &self.payload)?;
+        if let Some(token) = token {
+            state.serialize_field("diagnostic_attempt", &token)?;
+        }
         state.end()
     }
 }
@@ -544,6 +553,8 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestEnvelopeVisitor {
     {
         let mut request_id: Option<u64> = None;
         let mut payload: Option<SearchPlaneIngestIpcRequest> = None;
+        let mut diagnostic_attempt = DiagnosticAttemptFieldV1::Absent;
+        let mut attempt_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "request_id" => {
@@ -558,6 +569,16 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestEnvelopeVisitor {
                     }
                     payload = Some(map.next_value()?);
                 }
+                "diagnostic_attempt" => {
+                    let decoded: super::super::diagnostic_context::TolerantDiagnosticAttemptV1 =
+                        map.next_value()?;
+                    if attempt_seen {
+                        diagnostic_attempt = DiagnosticAttemptFieldV1::Duplicate;
+                    } else {
+                        diagnostic_attempt = decoded.0;
+                        attempt_seen = true;
+                    }
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -569,6 +590,7 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestEnvelopeVisitor {
         Ok(SearchPlaneIngestIpcRequestEnvelope {
             request_id: request_id.ok_or_else(|| de::Error::missing_field("request_id"))?,
             payload: payload.ok_or_else(|| de::Error::missing_field("payload"))?,
+            diagnostic_attempt,
         })
     }
 }

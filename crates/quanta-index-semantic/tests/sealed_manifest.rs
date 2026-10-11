@@ -720,7 +720,12 @@ fn a_semantic_scrub_does_not_stop_an_unrelated_generation_build() -> TestResult 
         let adapter_ref = &adapter;
         let scrub = scope.spawn(move || {
             adapter_ref
-                .scrub_with_quarantine_fence(&identity(damaged), None, UNBOUNDED, &|| {
+                .scrub_with_quarantine_fence(&identity(damaged), None, UNBOUNDED, &|affected| {
+                    if affected != &identity(damaged) {
+                        return Err(CoreError::InvalidContract(
+                            "semantic scrub fenced an unrelated generation".into(),
+                        ));
+                    }
                     entered_tx
                         .send(())
                         .map_err(|error| CoreError::Storage(error.to_string()))?;
@@ -968,7 +973,12 @@ fn malformed_sealed_manifest_is_quarantined_after_reproof() -> TestResult {
                 &identity(generation),
                 None,
                 UNBOUNDED,
-                &|| {
+                &|affected| {
+                    if affected != &identity(generation) {
+                        return Err(CoreError::InvalidContract(
+                            "semantic scrub fenced an unrelated generation".into(),
+                        ));
+                    }
                     if dir.join("semantic-quarantine.cbor").exists() {
                         return Err(CoreError::Storage(
                             "quarantine receipt preceded the registry fence".into(),
@@ -1061,8 +1071,16 @@ fn inventory_refuses_invalid_seals_and_scrub_fences_without_misclassifying_missi
     for generation in [missing, oversized] {
         let dir = generation_dir(&root, generation);
         let fenced = std::cell::Cell::new(false);
-        let result =
-            adapter.scrub_with_quarantine_fence(&identity(generation), None, UNBOUNDED, &|| {
+        let result = adapter.scrub_with_quarantine_fence(
+            &identity(generation),
+            None,
+            UNBOUNDED,
+            &|affected| {
+                if affected != &identity(generation) {
+                    return Err(CoreError::InvalidContract(
+                        "semantic scrub fenced an unrelated generation".into(),
+                    ));
+                }
                 if dir.join("semantic-quarantine.cbor").exists() {
                     return Err(CoreError::Storage(
                         "quarantine receipt preceded the registry fence".into(),
@@ -1070,7 +1088,8 @@ fn inventory_refuses_invalid_seals_and_scrub_fences_without_misclassifying_missi
                 }
                 fenced.set(true);
                 Ok(())
-            });
+            },
+        );
         if !fenced.get() {
             return Err(format!("invalid seal was not fenced: {result:?}").into());
         }
@@ -1137,7 +1156,12 @@ fn unsupported_sealed_manifest_is_fenced_without_a_sticky_corruption_receipt() -
 
     let fenced = std::cell::Cell::new(false);
     let result =
-        adapter.scrub_with_quarantine_fence(&identity(generation), None, UNBOUNDED, &|| {
+        adapter.scrub_with_quarantine_fence(&identity(generation), None, UNBOUNDED, &|affected| {
+            if affected != &identity(generation) {
+                return Err(CoreError::InvalidContract(
+                    "semantic scrub fenced an unrelated generation".into(),
+                ));
+            }
             fenced.set(true);
             Ok(())
         });
@@ -1211,7 +1235,7 @@ fn a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined() -> T
     let IntegrityScrubOutcomeV1::Paused { cursor } = first.outcome else {
         return Err(format!("a one-byte first step pauses: {first:?}").into());
     };
-    let reclaimed = adapter.reclaim_sealed_generation(&identity(generation))?;
+    let reclaimed = adapter.reclaim_sealed_generation(&identity(generation), None)?;
     if !matches!(
         reclaimed,
         SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
@@ -1256,7 +1280,7 @@ fn reclaim_and_quarantine_discard_of_other_generations_preserve_a_paused_scrub()
         return Err(format!("the first scrub step must pause: {first:?}").into());
     };
     if !matches!(
-        adapter.reclaim_sealed_generation(&identity(reclaimed))?,
+        adapter.reclaim_sealed_generation(&identity(reclaimed), None)?,
         SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
     ) {
         return Err("the other generation was not reclaimed".into());
@@ -1338,7 +1362,7 @@ fn an_interrupted_reclaim_is_out_of_the_namespace_and_finished_once() -> TestRes
     let (first, second) = (ManifestGeneration::new(1), ManifestGeneration::new(2));
     seal(&adapter, first)?;
     seal(&adapter, second)?;
-    let reclaimed = adapter.reclaim_sealed_generation(&identity(first))?;
+    let reclaimed = adapter.reclaim_sealed_generation(&identity(first), None)?;
     if !matches!(
         reclaimed,
         SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
@@ -1362,11 +1386,11 @@ fn an_interrupted_reclaim_is_out_of_the_namespace_and_finished_once() -> TestRes
     if !adapter.scrub_candidates()?.is_empty() {
         return Err("an interrupted reclaim is no scrub candidate".into());
     }
-    let retried = adapter.reclaim_sealed_generation(&identity(second))?;
+    let retried = adapter.reclaim_sealed_generation(&identity(second), None)?;
     if retried != SealedGenerationReclaimOutcomeV1::Absent {
         return Err(format!("a retried reclaim finds the generation gone: {retried:?}").into());
     }
-    let finished = adapter.finish_interrupted_reclaims()?;
+    let finished = adapter.finish_interrupted_reclaims(None)?;
     let expected = FinishedReclaims {
         entries: 1,
         bytes: left_bytes,
@@ -1374,7 +1398,7 @@ fn an_interrupted_reclaim_is_out_of_the_namespace_and_finished_once() -> TestRes
     if finished != expected || entry.exists() {
         return Err(format!("finishing removes the entry, {expected:?}: {finished:?}").into());
     }
-    if adapter.finish_interrupted_reclaims()? != FinishedReclaims::default() {
+    if adapter.finish_interrupted_reclaims(None)? != FinishedReclaims::default() {
         return Err("a second finish has nothing to do".into());
     }
     Ok(())

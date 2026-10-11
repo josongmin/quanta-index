@@ -18,6 +18,8 @@ quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 rusqlite = { workspace = true }
 sha2 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 
 [dev-dependencies]
 rusqlite = { workspace = true }

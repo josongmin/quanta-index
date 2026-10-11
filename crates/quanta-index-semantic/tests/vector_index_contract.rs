@@ -1017,6 +1017,8 @@ fn downgrade_to_v8(generation_dir: &Path) -> TestResult {
     let ciborium::value::Value::Map(entries) = &mut value else {
         return Err("scope manifest is not a map".into());
     };
+    entries
+        .retain(|(key, _)| !matches!(key.as_text(), Some("policy_digest" | "view_policy_digest")));
     let mut version_seen = false;
     let mut lineage_seen = false;
     for (key, field) in entries.iter_mut() {
@@ -1311,7 +1313,12 @@ fn downgrade_to_v7(generation_dir: &Path) -> TestResult {
         return Err("scope manifest is not a map".into());
     };
     let mut version_seen = false;
-    entries.retain(|(key, _)| key.as_text() != Some("vector_index"));
+    entries.retain(|(key, _)| {
+        !matches!(
+            key.as_text(),
+            Some("vector_index" | "policy_digest" | "view_policy_digest")
+        )
+    });
     for (key, field) in entries.iter_mut() {
         if key.as_text() == Some("format_version") {
             *field = ciborium::value::Value::Integer(7.into());

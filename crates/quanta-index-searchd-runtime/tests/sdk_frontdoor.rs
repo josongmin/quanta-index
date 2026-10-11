@@ -18,20 +18,21 @@ use quanta_index_contract::lex::{
     SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
-    HistoryOrderV1, HistoryQueryRequest, HybridSeedQueryRequest, ManifestGeneration, RepoId,
-    RepoMapActivateGenerationRequestV2, RepoMapChunkExactness, RepoMapChunkNode,
-    RepoMapContainsEdge, RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary, RepoMapFileNode,
-    RepoMapFocusSubjectDto, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+    BatchIngestMode, ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin,
+    GenerationSelector, HistoryOrderV1, HistoryQueryRequest, HybridSeedQueryRequest,
+    ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2, RepoMapChunkExactness,
+    RepoMapChunkNode, RepoMapContainsEdge, RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary,
+    RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
     RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge,
     RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
     RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord,
     RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest,
     RuntimeSnapshotRecord, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
-    SearchPlaneErrorCodeV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
-    SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind,
-    SemanticQueryRequest, SourceFileKey, SourcePublicationEvent, StructuralQueryRequest, SymbolId,
-    SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
+    SearchCorpusGenerationReservationRequestV1, SearchCorpusIngestBatch, SearchPlaneErrorCodeV2,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
+    SourceFileKey, SourcePublicationEvent, StructuralQueryRequest, SymbolId, SymbolQueryRequest,
+    TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_sdk::{
@@ -135,7 +136,7 @@ fn revision() -> RevisionId {
 }
 
 fn generation() -> ManifestGeneration {
-    ManifestGeneration::new(31)
+    ManifestGeneration::new(1)
 }
 
 fn pin() -> GenerationPin {
@@ -143,7 +144,7 @@ fn pin() -> GenerationPin {
 }
 
 fn generation_two() -> ManifestGeneration {
-    ManifestGeneration::new(32)
+    ManifestGeneration::new(2)
 }
 
 fn pin_two() -> GenerationPin {
@@ -168,6 +169,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     let response: SearchPlaneIngestIpcResponseEnvelope = send_request(
         socket,
         &SearchPlaneIngestIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: next_request_id(),
             payload,
         },
@@ -1177,6 +1179,56 @@ fn current_sdk_search_corpus_or_none(
     revision_id: RevisionId,
 ) -> Result<Option<SearchCorpusActiveHeadV1>, SdkError> {
     client.generations().active_head(repo_id, revision_id)
+}
+
+/// Reserve the final SDK source event before writing generation-scoped overlays.
+///
+/// The canonical digest comparison binds this test-only wire reconstruction to
+/// the SDK batch that will later be published unchanged.
+fn reserve_sdk_frontdoor_generation(client: &QuantaIndex, batch: &SearchCorpusBatch) -> TestResult {
+    let mut wire = SearchCorpusIngestBatch {
+        source_event: lexical_event("fixture:sdk-lexical-v1", None),
+        repo_id: batch.repo_id().clone(),
+        revision_id: batch.revision_id().clone(),
+        generation: batch.generation(),
+        base_generation: batch.base_generation(),
+        manifest_digest: batch.manifest_digest().to_string(),
+        batch_digest: String::new(),
+        mode: match batch.mode() {
+            quanta_index_sdk::BatchMode::ReplaceGeneration => BatchIngestMode::ReplaceGeneration,
+            quanta_index_sdk::BatchMode::Delta => BatchIngestMode::Delta,
+        },
+        bundle_payload: None,
+        clear_surfaces: batch.clear_surfaces().to_vec(),
+        replace_scopes: batch.replace_scopes().to_vec(),
+        tombstone_scopes: batch.tombstone_scopes().to_vec(),
+        semantic_replace_scopes: batch.semantic_replace_scopes().to_vec(),
+        semantic_tombstone_scopes: batch.semantic_tombstone_scopes().to_vec(),
+        seal: batch.seal_requested(),
+    };
+    wire.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&wire)?;
+    quanta_index_ipc::stamp_batch_digest_v1(&mut wire)?;
+    if wire.batch_digest != batch.batch_digest()? {
+        return Err("SDK frontdoor reservation payload differs from final publish batch".into());
+    }
+
+    let request = SearchCorpusGenerationReservationRequestV1 {
+        repo_id: wire.repo_id.clone(),
+        revision_id: wire.revision_id.clone(),
+        source_event: wire.source_event.clone(),
+    };
+    let reservation = client.search_corpus().reserve_generation(&request)?;
+    if reservation.repo_id != request.repo_id
+        || reservation.revision_id != request.revision_id
+        || reservation.source_event != request.source_event
+        || reservation.generation != batch.generation()
+    {
+        return Err(format!(
+            "SDK frontdoor reserved an unexpected source identity: {reservation:?}"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Publishes once and promotes one complete corpus identity.

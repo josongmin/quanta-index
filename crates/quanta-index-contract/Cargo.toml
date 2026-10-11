@@ -22,6 +22,7 @@ quanta-index-contract-base = { version = "0.1.0", path = "../quanta-index-contra
 quanta-index-lq-norm = { version = "0.1.0", path = "../quanta-index-lq-norm" }
 serde = { workspace = true }
 sha2 = { workspace = true }
+serde_json.workspace = true
 
 [dev-dependencies]
 serde_json = { workspace = true }

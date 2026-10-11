@@ -362,6 +362,16 @@ fn verify_sidecars(
     Ok(())
 }
 
+/// Prove the two contract sidecars used by delta compatibility belong to the
+/// sealed base, without walking or hashing its dataset files.
+pub(crate) fn verify_sealed_sidecars(
+    generation_dir: &Path,
+    manifest_digest: &str,
+) -> Result<(), CoreError> {
+    let manifest = read_bound_sealed_manifest(generation_dir, manifest_digest)?;
+    verify_sidecars(generation_dir, &manifest)
+}
+
 /// The cheap door proof: what is on disk has the shape the seal committed
 /// to, and the sidecars a door decodes are the sealed ones.
 ///

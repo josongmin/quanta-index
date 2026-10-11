@@ -7,6 +7,10 @@
     reason = "assertions report regression failures"
 )]
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use sha2::{Digest as _, Sha256};
 use std::error::Error;
 
@@ -24,8 +28,9 @@ use quanta_index_contract::{
     source_file_unit_set_sha256,
 };
 use quanta_index_core::{
-    CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher,
-    RequestBudgetV1, SearchCorpusBatchBuildPort, SearchCorpusPreflightPhaseV1,
+    CoreError, IntegrityScrubBudgetV1, IntegrityScrubOutcomeV1, IntegrityScrubPort,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
+    SearchCorpusBatchBuildPort, SearchCorpusPreflightPhaseV1,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -176,9 +181,9 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let original = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
-    let _stages = adapter.build_batch(&original)?;
+    let _stages = adapter.build_fixture_batch(&original)?;
     let newer = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
-    let _stages = adapter.build_batch(&newer)?;
+    let _stages = adapter.build_fixture_batch(&newer)?;
 
     // The producer knows event-2, but points materialization back at event-1.
     // Applying only b.rs to that snapshot would silently resurrect old a.rs.
@@ -192,14 +197,16 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
             &request,
             SearchCorpusPreflightPhaseV1::BeforeIntent,
             &mut owner,
+            None,
         ),
         adapter.preflight_batch_with_owner(
             &request,
             SearchCorpusPreflightPhaseV1::UnderOperationLock,
             &mut owner,
+            None,
         ),
         adapter
-            .build_batch_with_owner(&request, &mut owner)
+            .build_fixture_batch_with_owner(&request, &mut owner)
             .map(|_stages| ()),
     ] {
         assert!(
@@ -221,16 +228,23 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
     assert!(!target.exists());
 
     request.base_generation = Some(newer.generation);
-    for mutate in [
+    for (index, mutate) in [
         |batch: &mut SearchCorpusIngestBatch| {
             batch.source_event.expected_base_event_id = None;
         },
         |batch: &mut SearchCorpusIngestBatch| {
             batch.source_event.stream_id = "other-stream".into();
         },
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let mut invalid = request.clone();
         mutate(&mut invalid);
+        // A source event ID is an immutable publication key. Give each
+        // distinct invalid event its own key so the fixture reservation does
+        // not reject a changed replay before the delta-base oracle runs.
+        invalid.source_event.event_id = format!("invalid-parent-{index}");
         invalid.validate_v1()?;
         let mut owner = quanta_index_core::PublicationValidationOwner::default();
         for result in [
@@ -238,14 +252,16 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
                 &invalid,
                 SearchCorpusPreflightPhaseV1::BeforeIntent,
                 &mut owner,
+                None,
             ),
             adapter.preflight_batch_with_owner(
                 &invalid,
                 SearchCorpusPreflightPhaseV1::UnderOperationLock,
                 &mut owner,
+                None,
             ),
             adapter
-                .build_batch_with_owner(&invalid, &mut owner)
+                .build_fixture_batch_with_owner(&invalid, &mut owner)
                 .map(|_stages| ()),
         ] {
             assert!(matches!(
@@ -263,8 +279,9 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
         &request,
         SearchCorpusPreflightPhaseV1::BeforeIntent,
         &mut owner,
+        None,
     )?;
-    let _stages = adapter.build_batch_with_owner(&request, &mut owner)?;
+    let _stages = adapter.build_fixture_batch_with_owner(&request, &mut owner)?;
     assert_units(&adapter, &request, "oldmarker", &[], &[])?;
     assert_units(
         &adapter,
@@ -327,7 +344,7 @@ fn assert_refused_without_mutation(
     assert_eq!(batch.validate_surface_mutations_v1(), Err(expected));
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let result = adapter.build_batch(&batch);
+    let result = adapter.build_fixture_batch(&batch);
     let entries = std::fs::read_dir(dir.path())?.collect::<Result<Vec<_>, _>>()?;
     assert!(
         result.is_err() && entries.is_empty(),
@@ -500,7 +517,7 @@ fn raw_channel_aliases_are_refused_before_generation_preparation() -> TestResult
 }
 
 #[test]
-fn oversized_raw_source_is_refused_before_index_commit() -> TestResult {
+fn raw_source_mutation_requires_publication_before_index_commit() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let request = batch(1, None, vec![file_scope("a.rs", "needle")?])?;
@@ -531,7 +548,7 @@ fn oversized_raw_source_is_refused_before_index_commit() -> TestResult {
         &[raw_op(&oversized)?],
     );
     assert!(
-        matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message.contains("8 MiB")),
+        matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message == "lexical mutations require a source-corpus publication and durable document IDs"),
         "{result:?}"
     );
     let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
@@ -539,16 +556,11 @@ fn oversized_raw_source_is_refused_before_index_commit() -> TestResult {
         &request.revision_id,
     )
     .generation_dir(dir.path(), request.generation);
-    let index = tantivy::Index::open_in_dir(&target)?;
-    let reader = index.reader()?;
-    assert_eq!(
-        reader
-            .searcher()
-            .search(&tantivy::query::AllQuery, &tantivy::collector::Count)?,
-        0,
-        "an invalid source must not leave committed candidates"
+    assert!(
+        !target.exists(),
+        "unowned raw mutation prepared a generation"
     );
-    adapter.build(
+    let admitted_size_but_unowned = adapter.build(
         &request.repo_id,
         &request.revision_id,
         request.generation,
@@ -558,7 +570,12 @@ fn oversized_raw_source_is_refused_before_index_commit() -> TestResult {
                 .first()
                 .ok_or("missing replacement scope")?,
         )?],
-    )?;
+    );
+    assert!(
+        matches!(admitted_size_but_unowned, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message == "lexical mutations require a source-corpus publication and durable document IDs"),
+        "{admitted_size_but_unowned:?}"
+    );
+    assert!(!target.exists(), "unowned raw retry prepared a generation");
     Ok(())
 }
 
@@ -571,11 +588,11 @@ fn oversized_published_source_is_refused_before_target_creation() -> TestResult 
     scope.coverage.source.source_sha256 = Sha256::digest(&scope.source_bytes).into();
     let request = batch(1, None, vec![scope])?;
     for result in [
-        adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
-        adapter.build_batch(&request).map(|_stages| ()),
+        adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent, None),
+        adapter.build_fixture_batch(&request).map(|_stages| ()),
     ] {
         assert!(
-            matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message.contains("8 MiB")),
+            matches!(result, Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded, ref message }) if message == "file authority: changed file exceeds 8 MiB admission"),
             "{result:?}"
         );
     }
@@ -588,9 +605,14 @@ fn oversized_published_source_is_refused_before_target_creation() -> TestResult 
     let mut allowed = file_scope("a.rs", "needle")?;
     allowed.source_bytes.resize(8 * 1024 * 1024, b'x');
     allowed.coverage.source.source_sha256 = Sha256::digest(&allowed.source_bytes).into();
-    let admitted = batch(1, None, vec![allowed])?;
-    adapter.preflight_batch(&admitted, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
-    let _stages = adapter.build_batch(&admitted)?;
+    let mut admitted = batch(1, None, vec![allowed])?;
+    // The refused oversize attempt reserved event-1's original payload.
+    // A different source publication at the same generation needs its own
+    // event identity; reusing event-1 with different bytes is a replay error.
+    admitted.source_event.event_id = "event-1-admitted-boundary".into();
+    admitted.source_event.payload_sha256 = source_event_payload_sha256(&admitted)?;
+    adapter.preflight_batch(&admitted, SearchCorpusPreflightPhaseV1::BeforeIntent, None)?;
+    let _stages = adapter.build_fixture_batch(&admitted)?;
     assert_eq!(
         code_search_source_owners(&adapter, &admitted, "needle")?,
         ["l2-mutation-repo"]
@@ -619,21 +641,29 @@ fn malformed_bundle_is_refused_before_generation_preparation() -> TestResult {
         request.source_event.payload_sha256 = source_event_payload_sha256(&request)?;
         request.validate_v1()?;
         request.validate_surface_mutations_v1()?;
+        let target = quanta_index_core::GenerationStorageKeyV1::for_repo_revision(
+            &request.repo_id,
+            &request.revision_id,
+        )
+        .generation_dir(dir.path(), request.generation);
         for phase in [
             SearchCorpusPreflightPhaseV1::BeforeIntent,
             SearchCorpusPreflightPhaseV1::UnderOperationLock,
         ] {
             assert_metadata_payload_refusal(
-                &adapter.preflight_batch(&request, phase),
+                &adapter.preflight_batch(&request, phase, None),
                 &format!("preflight {phase:?}"),
             );
-            assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
+            assert!(!target.exists(), "invalid metadata prepared a generation");
         }
         assert_metadata_payload_refusal(
-            &adapter.build_batch(&request).map(|_stages| ()),
+            &adapter.build_fixture_batch(&request).map(|_stages| ()),
             "typed build",
         );
-        assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
+        assert!(
+            !target.exists(),
+            "invalid metadata build prepared a generation"
+        );
     }
     Ok(())
 }
@@ -743,19 +773,21 @@ fn combined_replacement_retires_old_symbols_and_preserves_pinned_view() -> TestR
                 .ok_or("preparation child overflow")?
                 <= stages.preparation_ns
         );
-        assert!(
-            stages
-                .file_authority_source_write_ns
-                .ok_or("missing source write timing")?
-                <= stages.file_authority_ns
-        );
+        // Paged authority derivation combines build and durable publication.
+        // The outer stages are measured, but no separate child clock exists.
+        assert!(stages.text_authority_ns > 0);
+        assert!(stages.file_authority_ns > 0);
+        assert_eq!(stages.text_authority_collect_ns, None);
+        assert_eq!(stages.text_authority_shard_build_ns, None);
+        assert_eq!(stages.text_authority_publish_ns, None);
+        assert_eq!(stages.file_authority_source_write_ns, None);
         Ok(())
     }
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
     let base_stages = adapter
-        .build_batch(&base)?
+        .build_fixture_batch(&base)?
         .ok_or("missing base stage timing")?;
     assert_authority_stage_children(&base_stages)?;
     let pinned = adapter.open(
@@ -766,7 +798,7 @@ fn combined_replacement_retires_old_symbols_and_preserves_pinned_view() -> TestR
     )?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
     let delta_stages = adapter
-        .build_batch(&delta)?
+        .build_fixture_batch(&delta)?
         .ok_or("missing delta stage timing")?;
     assert_authority_stage_children(&delta_stages)?;
     assert_units(&adapter, &delta, "oldmarker", &[], &[])?;
@@ -802,7 +834,7 @@ fn tombstone_removes_its_file_and_inherits_other_file_units() -> TestResult {
             file_scope("b.rs", "keptmarker")?,
         ],
     )?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let mut delta = batch(2, Some(1), Vec::new())?;
     delta.tombstone_scopes.push(SearchCorpusTombstoneScope {
         file: SourceFileKey {
@@ -811,7 +843,7 @@ fn tombstone_removes_its_file_and_inherits_other_file_units() -> TestResult {
         },
     });
     delta.source_event.payload_sha256 = source_event_payload_sha256(&delta)?;
-    let _stages = adapter.build_batch(&delta)?;
+    let _stages = adapter.build_fixture_batch(&delta)?;
     assert_units(&adapter, &delta, "retiredmarker", &[], &[])?;
     assert_units(
         &adapter,
@@ -897,13 +929,13 @@ fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
     let kept_b = scored_file_scope("b.rs", "keptbmarker")?;
     let kept_c = scored_file_scope("c.rs", "keptcmarker")?;
     let base = batch(1, None, vec![retired, kept_b.clone(), kept_c.clone()])?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let changed = batch(
         2,
         Some(1),
         vec![scored_file_scope("a.rs", "replacedmarker")?],
     )?;
-    let _stages = adapter.build_batch(&changed)?;
+    let _stages = adapter.build_fixture_batch(&changed)?;
     let mut deleted = batch(3, Some(2), Vec::new())?;
     deleted.tombstone_scopes.push(SearchCorpusTombstoneScope {
         file: SourceFileKey {
@@ -919,7 +951,7 @@ fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
     .generation_dir(dir.path(), deleted.generation);
     let mut invalid = deleted.clone();
     invalid.source_event.payload_sha256 = [0; 32];
-    assert!(adapter.build_batch(&invalid).is_err());
+    assert!(adapter.build_fixture_batch(&invalid).is_err());
     assert!(
         !target.exists(),
         "invalid delete intent must not create target generation"
@@ -935,12 +967,12 @@ fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
         ],
         &[],
     )?;
-    let _stages = adapter.build_batch(&deleted)?;
+    let _stages = adapter.build_fixture_batch(&deleted)?;
 
     let fresh_dir = tempfile::tempdir()?;
     let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
     let rebuilt = batch(3, None, vec![kept_b, kept_c])?;
-    let _stages = fresh.build_batch(&rebuilt)?;
+    let _stages = fresh.build_fixture_batch(&rebuilt)?;
     let budget = RequestBudgetV1::unbounded();
     let live_view = adapter.open(
         &deleted.repo_id,
@@ -1147,7 +1179,7 @@ fn live_bm25_delete_and_replace_matches_fresh_full_bits_and_pages() -> TestResul
             kept_e.clone(),
         ],
     )?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let mut delta = batch(2, Some(1), vec![new_d.clone()])?;
     delta.tombstone_scopes.push(SearchCorpusTombstoneScope {
         file: SourceFileKey {
@@ -1156,12 +1188,12 @@ fn live_bm25_delete_and_replace_matches_fresh_full_bits_and_pages() -> TestResul
         },
     });
     delta.source_event.payload_sha256 = source_event_payload_sha256(&delta)?;
-    let _stages = adapter.build_batch(&delta)?;
+    let _stages = adapter.build_fixture_batch(&delta)?;
 
     let fresh_dir = tempfile::tempdir()?;
     let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
     let rebuilt = batch(2, None, vec![kept_b, kept_c, new_d, kept_e])?;
-    let _stages = fresh.build_batch(&rebuilt)?;
+    let _stages = fresh.build_fixture_batch(&rebuilt)?;
     let budget = RequestBudgetV1::unbounded();
     let live = adapter.open(
         &delta.repo_id,
@@ -1371,7 +1403,7 @@ fn live_bm25_consecutive_deletes_and_noop_match_fresh_full() -> TestResult {
         None,
         vec![retired, old_b, kept_c.clone(), old_d, kept_e.clone()],
     )?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
 
     let mut second = batch(2, Some(1), vec![new_d.clone()])?;
     second.tombstone_scopes.push(SearchCorpusTombstoneScope {
@@ -1381,17 +1413,17 @@ fn live_bm25_consecutive_deletes_and_noop_match_fresh_full() -> TestResult {
         },
     });
     second.source_event.payload_sha256 = source_event_payload_sha256(&second)?;
-    let _stages = adapter.build_batch(&second)?;
+    let _stages = adapter.build_fixture_batch(&second)?;
 
     let third = batch(3, Some(2), vec![new_b.clone()])?;
-    let _stages = adapter.build_batch(&third)?;
+    let _stages = adapter.build_fixture_batch(&third)?;
     let fourth = batch(4, Some(3), Vec::new())?;
-    let _stages = adapter.build_batch(&fourth)?;
+    let _stages = adapter.build_fixture_batch(&fourth)?;
 
     let fresh_dir = tempfile::tempdir()?;
     let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
     let rebuilt = batch(3, None, vec![new_b, kept_c, new_d, kept_e])?;
-    let _stages = fresh.build_batch(&rebuilt)?;
+    let _stages = fresh.build_fixture_batch(&rebuilt)?;
     let budget = RequestBudgetV1::unbounded();
     let g3 = adapter.open(
         &third.repo_id,
@@ -1730,7 +1762,7 @@ fn writer_admission_failure_leaves_only_discardable_unsealed_delta() -> TestResu
             kept_c.clone(),
         ],
     )?;
-    let _stages = base_adapter.build_batch(&base)?;
+    let _stages = base_adapter.build_fixture_batch(&base)?;
     drop(base_adapter);
 
     let mut deleted = batch(2, Some(1), Vec::new())?;
@@ -1751,7 +1783,7 @@ fn writer_admission_failure_leaves_only_discardable_unsealed_delta() -> TestResu
     });
     let gate: Arc<dyn WriterAdmissionPort> = admission.clone();
     let failing = LexicalAdapter::with_state_root(root.clone()).with_writer_admission(gate)?;
-    let failed = failing.build_batch(&deleted);
+    let failed = failing.build_fixture_batch(&deleted);
     assert!(
         matches!(&failed, Err(CoreError::Storage(message))
             if message.contains("delta writer admission refused")),
@@ -1803,11 +1835,11 @@ fn writer_admission_failure_leaves_only_discardable_unsealed_delta() -> TestResu
     );
     assert!(!target.exists());
 
-    let _stages = restarted.build_batch(&deleted)?;
+    let _stages = restarted.build_fixture_batch(&deleted)?;
     let fresh_dir = tempfile::tempdir()?;
     let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
     let rebuilt = batch(2, None, vec![kept_b, kept_c])?;
-    let _stages = fresh.build_batch(&rebuilt)?;
+    let _stages = fresh.build_fixture_batch(&rebuilt)?;
     let budget = RequestBudgetV1::unbounded();
     let recovered_view = restarted.open(
         &deleted.repo_id,
@@ -1855,9 +1887,9 @@ fn same_path_sources_replace_and_tombstone_independently() -> TestResult {
     let mut other = file_scope("a.rs", "othermarker")?;
     other.coverage.source.file.source_repo_id = RepoId::new("other-source")?;
     let base = batch(1, None, vec![first, other])?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
-    let _stages = adapter.build_batch(&delta)?;
+    let _stages = adapter.build_fixture_batch(&delta)?;
     assert_eq!(
         code_search_source_owners(&adapter, &delta, "firstmarker")?,
         Vec::<String>::new()
@@ -1886,7 +1918,7 @@ fn same_path_sources_replace_and_tombstone_independently() -> TestResult {
         },
     });
     removed.source_event.payload_sha256 = source_event_payload_sha256(&removed)?;
-    let _stages = adapter.build_batch(&removed)?;
+    let _stages = adapter.build_fixture_batch(&removed)?;
     assert_eq!(
         code_search_source_owners(&adapter, &removed, "freshmarker")?,
         Vec::<String>::new()
@@ -1915,9 +1947,9 @@ fn admitted_empty_failed_file_gates_broad_symbol_query_and_survives_delta() -> T
     failed.coverage.symbols = SymbolCoverage::ParseFailed;
     failed.coverage.unit_set_sha256 = source_file_unit_set_sha256(&[], &[])?;
     let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?, failed])?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
-    let _stages = adapter.build_batch(&delta)?;
+    let _stages = adapter.build_fixture_batch(&delta)?;
     let view = adapter.open(
         &delta.repo_id,
         &delta.revision_id,
@@ -1961,7 +1993,7 @@ fn empty_full_generation_and_empty_delta_retain_admission() -> TestResult {
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let empty = batch(1, None, Vec::new())?;
     let full_stages = adapter
-        .build_batch(&empty)?
+        .build_fixture_batch(&empty)?
         .ok_or("missing full-build timing")?;
     assert!(full_stages.prep_file_authority_preflight_ns.is_some());
     assert!(full_stages.prep_coverage_write_ns.is_some());
@@ -1974,7 +2006,9 @@ fn empty_full_generation_and_empty_delta_retain_admission() -> TestResult {
     assert!(full_stages.text_authority_shard_build_ns.is_none());
     assert!(full_stages.text_authority_publish_ns.is_none());
     let delta = batch(2, Some(1), Vec::new())?;
-    let delta_stages = adapter.build_batch(&delta)?.ok_or("missing delta timing")?;
+    let delta_stages = adapter
+        .build_fixture_batch(&delta)?
+        .ok_or("missing delta timing")?;
     assert!(delta_stages.prep_file_authority_preflight_ns.is_some());
     assert!(delta_stages.prep_coverage_write_ns.is_some());
     assert!(delta_stages.file_authority_source_write_ns.is_none());
@@ -2010,14 +2044,14 @@ fn nonempty_noop_delta_reopens_with_the_same_source_and_units_as_fresh_full() ->
         file_scope("b.rs", "secondmarker")?,
     ];
     let base = batch(1, None, scopes.clone())?;
-    let _base_stages = adapter.build_batch(&base)?;
+    let _base_stages = adapter.build_fixture_batch(&base)?;
     let unchanged = batch(2, Some(1), Vec::new())?;
-    let _delta_stages = adapter.build_batch(&unchanged)?;
+    let _delta_stages = adapter.build_fixture_batch(&unchanged)?;
 
     let fresh_dir = tempfile::tempdir()?;
     let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
     let rebuilt = batch(2, None, scopes)?;
-    let _fresh_stages = fresh.build_batch(&rebuilt)?;
+    let _fresh_stages = fresh.build_fixture_batch(&rebuilt)?;
 
     let reopened = adapter.open(
         &unchanged.repo_id,
@@ -2055,7 +2089,7 @@ fn inherited_candidate_collision_refuses_before_target_creation() -> TestResult 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("kept.rs", "keptmarker")?])?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let mut replacement = file_scope("different.rs", "newmarker")?;
     replacement
         .chunks
@@ -2071,7 +2105,8 @@ fn inherited_candidate_collision_refuses_before_target_creation() -> TestResult 
             .preflight_batch_with_owner(
                 &delta,
                 SearchCorpusPreflightPhaseV1::BeforeIntent,
-                &mut owner
+                &mut owner,
+                None,
             )
             .is_err()
     );
@@ -2080,11 +2115,16 @@ fn inherited_candidate_collision_refuses_before_target_creation() -> TestResult 
             .preflight_batch_with_owner(
                 &delta,
                 SearchCorpusPreflightPhaseV1::UnderOperationLock,
-                &mut owner
+                &mut owner,
+                None,
             )
             .is_err()
     );
-    assert!(adapter.build_batch_with_owner(&delta, &mut owner).is_err());
+    assert!(
+        adapter
+            .build_fixture_batch_with_owner(&delta, &mut owner)
+            .is_err()
+    );
     let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
         &delta.repo_id,
         &delta.revision_id,
@@ -2112,14 +2152,18 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("base.rs", "basemarker")?])?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let request = batch(2, None, vec![file_scope("a.rs", "rebuiltmarker")?])?;
-    let _stages = adapter.build_batch(&request)?;
+    let _stages = adapter.build_fixture_batch(&request)?;
     let mut other_event = request.clone();
     other_event.source_event.event_id = "different-event".into();
     assert!(
         adapter
-            .preflight_batch(&other_event, SearchCorpusPreflightPhaseV1::BeforeIntent)
+            .preflight_batch(
+                &other_event,
+                SearchCorpusPreflightPhaseV1::BeforeIntent,
+                None
+            )
             .is_err()
     );
 
@@ -2140,9 +2184,9 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     *corrupt.last_mut().ok_or("empty coverage fixture")? ^= 1;
     std::fs::write(&coverage_path, &corrupt)?;
     assert!(adapter.validate_generation_identity(&identity).is_err());
-    adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
+    adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent, None)?;
     assert_eq!(std::fs::read(&coverage_path)?, corrupt);
-    assert!(adapter.build_batch(&request).is_err());
+    assert!(adapter.build_fixture_batch(&request).is_err());
     assert!(
         adapter
             .open(
@@ -2157,7 +2201,11 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     let mut wrong_identity = request.clone();
     wrong_identity.manifest_digest = "different-manifest".into();
     assert!(matches!(
-        adapter.preflight_batch(&wrong_identity, SearchCorpusPreflightPhaseV1::BeforeIntent),
+        adapter.preflight_batch(
+            &wrong_identity,
+            SearchCorpusPreflightPhaseV1::BeforeIntent,
+            None
+        ),
         Err(quanta_index_core::CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
             ..
@@ -2169,7 +2217,7 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     delta.source_event.payload_sha256 = source_event_payload_sha256(&delta)?;
     delta.validate_v1()?;
     assert!(matches!(
-        adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent),
+        adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent, None),
         Err(quanta_index_core::CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
             ..
@@ -2180,10 +2228,10 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     // adapter boundary only explicit identity-checked reclamation permits
     // the full payload to rebuild; preflight itself did not change storage.
     assert!(matches!(
-        adapter.reclaim_sealed_generation(&identity)?,
+        adapter.reclaim_sealed_generation(&identity, None)?,
         quanta_index_core::SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
     ));
-    let _stages = adapter.build_batch(&request)?;
+    let _stages = adapter.build_fixture_batch(&request)?;
     adapter.validate_generation_identity(&identity)?;
     assert_units(
         &adapter,
@@ -2199,7 +2247,7 @@ fn actual_generation_open_refuses_missing_or_tampered_coverage() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("a.rs", "marker")?])?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let generation =
         quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
             &base.repo_id,
@@ -2246,7 +2294,7 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
     let base_dir =
         quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
@@ -2284,25 +2332,28 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
         &delta,
         SearchCorpusPreflightPhaseV1::BeforeIntent,
         &mut owner,
+        None,
     )?;
     if after_second_preflight {
         adapter.preflight_batch_with_owner(
             &delta,
             SearchCorpusPreflightPhaseV1::UnderOperationLock,
             &mut owner,
+            None,
         )?;
     }
     let mut changed = original.clone();
     *changed.last_mut().ok_or("empty base coverage page")? ^= 1;
     std::fs::write(&page, changed)?;
     let refused = if after_second_preflight {
-        adapter.build_batch_with_owner(&delta, &mut owner)
+        adapter.build_fixture_batch_with_owner(&delta, &mut owner)
     } else {
         adapter
             .preflight_batch_with_owner(
                 &delta,
                 SearchCorpusPreflightPhaseV1::UnderOperationLock,
                 &mut owner,
+                None,
             )
             .map(|()| None)
     };
@@ -2330,8 +2381,9 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
         &delta,
         SearchCorpusPreflightPhaseV1::BeforeIntent,
         &mut owner,
+        None,
     )?;
-    let _stages = adapter.build_batch_with_owner(&delta, &mut owner)?;
+    let _stages = adapter.build_fixture_batch_with_owner(&delta, &mut owner)?;
     assert_units(
         &adapter,
         &delta,
@@ -2351,20 +2403,46 @@ fn build_rechecks_base_page_after_lock_phase_and_retry_succeeds() -> TestResult 
     changed_base_page_between_phases_is_refused(true)
 }
 
+fn pooled_body_of_kind(
+    state_root: &std::path::Path,
+    kind: u8,
+) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let objects = state_root.join("lexical-object-pool/objects");
+    let mut matching = Vec::new();
+    for shard in std::fs::read_dir(objects)? {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            continue;
+        }
+        for object in std::fs::read_dir(shard.path())? {
+            let object = object?;
+            if !object.file_type()?.is_file() {
+                continue;
+            }
+            let bytes = std::fs::read(object.path())?;
+            if bytes.get(..8) == Some(b"QLSTOR01".as_slice()) && bytes.get(10) == Some(&kind) {
+                matching.push(object.path());
+            }
+        }
+    }
+    matching.sort();
+    matching
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("missing pooled object kind {kind}").into())
+}
+
 fn owned_artifact_change_refuses_before_target(after_lock: bool) -> TestResult {
     for (family, fault) in [
         ("file", "tamper"),
         ("file", "missing"),
         ("file", "symlink"),
-        ("file", "orphan"),
         ("text", "tamper"),
         ("text", "missing"),
         ("text", "symlink"),
-        ("text", "orphan"),
         ("file-root", "tamper"),
         ("file-root", "missing"),
         ("file-root", "symlink"),
-        ("file-root", "orphan"),
         ("text-manifest", "tamper"),
         ("text-manifest", "missing"),
         ("text-manifest", "symlink"),
@@ -2382,7 +2460,7 @@ fn owned_artifact_change_refuses_before_target(after_lock: bool) -> TestResult {
                 file_scope("keep.rs", "keepmarker")?,
             ],
         )?;
-        let _stages = adapter.build_batch(&base)?;
+        let _stages = adapter.build_fixture_batch(&base)?;
         let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
         let family_key = quanta_index_core::GenerationStorageKeyV1::for_repo_revision(
             &base.repo_id,
@@ -2390,30 +2468,14 @@ fn owned_artifact_change_refuses_before_target(after_lock: bool) -> TestResult {
         );
         let base_dir = family_key.generation_dir(dir.path(), base.generation);
         let target = family_key.generation_dir(dir.path(), delta.generation);
-        let artifact_dir = match family {
-            "file" => base_dir.join("file-authority/objects"),
-            "file-root" => base_dir.join("file-authority"),
-            "sealed-manifest" => base_dir.clone(),
-            "text" | "text-manifest" => base_dir.join("text-authority"),
+        let artifact = match family {
+            "file" => pooled_body_of_kind(dir.path(), 1)?,
+            "text" => pooled_body_of_kind(dir.path(), 3)?,
+            "file-root" => base_dir.join("file-authority/root.cbor"),
+            "text-manifest" => base_dir.join("text-authority/manifest.cbor"),
+            "sealed-manifest" => base_dir.join("search-corpus-generation-manifest.cbor"),
             _ => return Err("unknown artifact family".into()),
         };
-        let artifact = std::fs::read_dir(&artifact_dir)?
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .find(|entry| {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                match family {
-                    "file" => name.ends_with(".bin"),
-                    "file-root" => name == "root.cbor",
-                    "sealed-manifest" => name == "search-corpus-generation-manifest.cbor",
-                    "text" => name.starts_with("shard-"),
-                    "text-manifest" => name == "manifest.cbor",
-                    _ => false,
-                }
-            })
-            .ok_or("missing committed fixture artifact")?
-            .path();
         let original = std::fs::read(&artifact)?;
         let modified = std::fs::metadata(&artifact)?.modified()?;
         let mut owner = quanta_index_core::PublicationValidationOwner::default();
@@ -2421,15 +2483,16 @@ fn owned_artifact_change_refuses_before_target(after_lock: bool) -> TestResult {
             &delta,
             SearchCorpusPreflightPhaseV1::BeforeIntent,
             &mut owner,
+            None,
         )?;
         if after_lock {
             adapter.preflight_batch_with_owner(
                 &delta,
                 SearchCorpusPreflightPhaseV1::UnderOperationLock,
                 &mut owner,
+                None,
             )?;
         }
-        let extra = artifact_dir.join("unexpected.bin");
         match fault {
             "tamper" => {
                 let mut changed = original.clone();
@@ -2446,18 +2509,75 @@ fn owned_artifact_change_refuses_before_target(after_lock: bool) -> TestResult {
                 std::fs::remove_file(&artifact)?;
                 std::os::unix::fs::symlink(external, &artifact)?;
             }
-            "orphan" => std::fs::write(&extra, b"uncommitted")?,
             _ => return Err("unknown artifact fault".into()),
+        }
+        if matches!(family, "file" | "text") {
+            // Pool bodies are not generation-local sidecars. The serving
+            // metadata door stays cheap; a deep scrub authenticates each
+            // referenced leaf and quarantines the generation on failure.
+            let identity = quanta_index_contract::GenerationSnapshot {
+                repo_id: base.repo_id.clone(),
+                revision_id: base.revision_id.clone(),
+                track: quanta_index_contract::SearchPlaneTrackKind::Lexical,
+                manifest_generation: base.generation,
+                manifest_digest: base.manifest_digest.clone(),
+            };
+            let mut cursor = None;
+            let mut corrupted = false;
+            for _ in 0..512 {
+                let report = adapter.scrub(
+                    &identity,
+                    cursor,
+                    IntegrityScrubBudgetV1 {
+                        max_bytes: u64::MAX,
+                    },
+                )?;
+                match report.outcome {
+                    IntegrityScrubOutcomeV1::Paused { cursor: next } => cursor = Some(next),
+                    IntegrityScrubOutcomeV1::Corrupt { .. } => {
+                        corrupted = true;
+                        break;
+                    }
+                    IntegrityScrubOutcomeV1::Completed => {
+                        return Err(format!("scrub accepted {family}/{fault}").into());
+                    }
+                }
+            }
+            assert!(
+                corrupted,
+                "scrub did not find {family}/{fault} within 512 steps"
+            );
+            assert!(
+                !target.exists(),
+                "metadata validation unexpectedly mutated target"
+            );
+            assert!(
+                matches!(
+                    adapter.preflight_batch_with_owner(
+                        &delta,
+                        SearchCorpusPreflightPhaseV1::UnderOperationLock,
+                        &mut owner,
+                        None
+                    ),
+                    Err(CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantined,
+                        ..
+                    })
+                ),
+                "quarantined base admitted after {family}/{fault}"
+            );
+            continue;
         }
         let refusal = if after_lock {
             adapter
-                .build_batch_with_owner(&delta, &mut owner)
+                .build_fixture_batch_with_owner(&delta, &mut owner)
                 .map(|_stages| ())
         } else {
             adapter.preflight_batch_with_owner(
                 &delta,
                 SearchCorpusPreflightPhaseV1::UnderOperationLock,
                 &mut owner,
+                None,
             )
         };
         let expected_code = if family == "sealed-manifest" && fault == "missing" {
@@ -2484,22 +2604,19 @@ fn owned_artifact_change_refuses_before_target(after_lock: bool) -> TestResult {
                 .is_err(),
             "independent cold open accepted {family}/{fault}"
         );
-        if fault == "orphan" {
-            std::fs::remove_file(extra)?;
-        } else {
-            match artifact.symlink_metadata() {
-                Ok(_) => std::fs::remove_file(&artifact)?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-            std::fs::write(&artifact, original)?;
+        match artifact.symlink_metadata() {
+            Ok(_) => std::fs::remove_file(&artifact)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
+        std::fs::write(&artifact, original)?;
         adapter.preflight_batch_with_owner(
             &delta,
             SearchCorpusPreflightPhaseV1::BeforeIntent,
             &mut owner,
+            None,
         )?;
-        let _stages = adapter.build_batch_with_owner(&delta, &mut owner)?;
+        let _stages = adapter.build_fixture_batch_with_owner(&delta, &mut owner)?;
         assert_units(&adapter, &delta, "oldmarker", &[], &[])?;
         assert_units(
             &adapter,
@@ -2520,12 +2637,12 @@ fn owned_artifact_change_refuses_before_target(after_lock: bool) -> TestResult {
 }
 
 #[test]
-fn owned_file_and_text_proofs_recheck_current_bytes_after_outer_preflight() -> TestResult {
+fn owned_metadata_rechecks_structure_and_scrub_checks_leaf_after_outer_preflight() -> TestResult {
     owned_artifact_change_refuses_before_target(false)
 }
 
 #[test]
-fn owned_file_and_text_proofs_recheck_current_bytes_after_lock_and_retry() -> TestResult {
+fn owned_metadata_rechecks_structure_and_scrub_checks_leaf_after_lock_and_retry() -> TestResult {
     owned_artifact_change_refuses_before_target(true)
 }
 
@@ -2543,16 +2660,16 @@ fn owned_delta_noop_and_delete_match_fresh_full_query_and_reopen() -> TestResult
             file_scope("keep.rs", "keepmarker")?,
         ],
     )?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
     let mut owner = quanta_index_core::PublicationValidationOwner::default();
     for phase in [
         SearchCorpusPreflightPhaseV1::BeforeIntent,
         SearchCorpusPreflightPhaseV1::UnderOperationLock,
     ] {
-        adapter.preflight_batch_with_owner(&delta, phase, &mut owner)?;
+        adapter.preflight_batch_with_owner(&delta, phase, &mut owner, None)?;
     }
-    let _stages = adapter.build_batch_with_owner(&delta, &mut owner)?;
+    let _stages = adapter.build_fixture_batch_with_owner(&delta, &mut owner)?;
     let full = batch(
         1,
         None,
@@ -2561,7 +2678,7 @@ fn owned_delta_noop_and_delete_match_fresh_full_query_and_reopen() -> TestResult
             file_scope("keep.rs", "keepmarker")?,
         ],
     )?;
-    let _stages = fresh.build_batch(&full)?;
+    let _stages = fresh.build_fixture_batch(&full)?;
     let noop = batch(3, Some(2), Vec::new())?;
     let mut noop_owner = quanta_index_core::PublicationValidationOwner::default();
     assert!(
@@ -2569,7 +2686,8 @@ fn owned_delta_noop_and_delete_match_fresh_full_query_and_reopen() -> TestResult
             .preflight_batch_with_owner(
                 &noop,
                 SearchCorpusPreflightPhaseV1::BeforeIntent,
-                &mut owner
+                &mut owner,
+                None,
             )
             .is_err(),
         "another publication borrowed the delta owner"
@@ -2578,9 +2696,9 @@ fn owned_delta_noop_and_delete_match_fresh_full_query_and_reopen() -> TestResult
         SearchCorpusPreflightPhaseV1::BeforeIntent,
         SearchCorpusPreflightPhaseV1::UnderOperationLock,
     ] {
-        adapter.preflight_batch_with_owner(&noop, phase, &mut noop_owner)?;
+        adapter.preflight_batch_with_owner(&noop, phase, &mut noop_owner, None)?;
     }
-    let _stages = adapter.build_batch_with_owner(&noop, &mut noop_owner)?;
+    let _stages = adapter.build_fixture_batch_with_owner(&noop, &mut noop_owner)?;
     let reopened = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     for marker in ["newmarker", "keepmarker"] {
         let chunk = format!("chunk-{marker}");
@@ -2604,11 +2722,11 @@ fn owned_delta_noop_and_delete_match_fresh_full_query_and_reopen() -> TestResult
         SearchCorpusPreflightPhaseV1::BeforeIntent,
         SearchCorpusPreflightPhaseV1::UnderOperationLock,
     ] {
-        adapter.preflight_batch_with_owner(&deleted, phase, &mut delete_owner)?;
+        adapter.preflight_batch_with_owner(&deleted, phase, &mut delete_owner, None)?;
     }
-    let _stages = adapter.build_batch_with_owner(&deleted, &mut delete_owner)?;
+    let _stages = adapter.build_fixture_batch_with_owner(&deleted, &mut delete_owner)?;
     let fresh_deleted = batch(2, None, vec![file_scope("keep.rs", "keepmarker")?])?;
-    let _stages = fresh.build_batch(&fresh_deleted)?;
+    let _stages = fresh.build_fixture_batch(&fresh_deleted)?;
     let cold_deleted = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     for (opened, generation) in [
         (&adapter, &deleted),
@@ -2632,15 +2750,20 @@ fn owned_delta_noop_and_delete_match_fresh_full_query_and_reopen() -> TestResult
 fn repeated_delta_admission_reuses_decode_but_rehashes_all_coverage_pages() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let _stages = adapter.build_batch(&batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?)?;
+    let _stages =
+        adapter.build_fixture_batch(&batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
     let before = adapter.coverage_read_stats()?;
     let before_phases = adapter.coverage_read_by_phase_stats()?;
-    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
+    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent, None)?;
     let first = adapter.coverage_read_stats()?;
     assert_eq!(first.decodes, before.decodes + 1);
     assert_eq!(first.rows, before.rows + 1);
-    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::UnderOperationLock)?;
+    adapter.preflight_batch(
+        &delta,
+        SearchCorpusPreflightPhaseV1::UnderOperationLock,
+        None,
+    )?;
     let second = adapter.coverage_read_stats()?;
     assert_eq!(second.decodes, first.decodes);
     assert_eq!(second.rows, first.rows);
@@ -2649,7 +2772,7 @@ fn repeated_delta_admission_reuses_decode_but_rehashes_all_coverage_pages() -> T
         first.page_bytes - before.page_bytes
     );
     assert_eq!(second.pages - first.pages, first.pages - before.pages);
-    let _stages = adapter.build_batch(&delta)?;
+    let _stages = adapter.build_fixture_batch(&delta)?;
     let built = adapter.coverage_read_stats()?;
     assert_eq!(built.decodes, first.decodes);
     assert_eq!(built.rows, first.rows);
@@ -2705,7 +2828,7 @@ fn raw_delta_cannot_inherit_coverage_without_a_source_publication() -> TestResul
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let replacement = file_scope("a.rs", "freshmarker")?;
     let mut payload = Vec::new();
     ciborium::into_writer(
@@ -2721,7 +2844,8 @@ fn raw_delta_cannot_inherit_coverage_without_a_source_publication() -> TestResul
     })];
     let result = adapter.build(&base.repo_id, &base.revision_id, target, &operations);
     assert!(
-        matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message.contains("coverage-bound"))
+        matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message == "lexical mutations require a source-corpus publication and durable document IDs"),
+        "{result:?}"
     );
     let target_path =
         quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
@@ -2752,9 +2876,9 @@ fn reclaiming_base_preserves_delta_coverage_and_refuses_old_open() -> TestResult
             file_scope("b.rs", "keptmarker")?,
         ],
     )?;
-    let _stages = adapter.build_batch(&base)?;
+    let _stages = adapter.build_fixture_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
-    let _stages = adapter.build_batch(&delta)?;
+    let _stages = adapter.build_fixture_batch(&delta)?;
     let retired = quanta_index_contract::GenerationSnapshot {
         repo_id: base.repo_id.clone(),
         revision_id: base.revision_id.clone(),
@@ -2763,7 +2887,7 @@ fn reclaiming_base_preserves_delta_coverage_and_refuses_old_open() -> TestResult
         manifest_digest: base.manifest_digest.clone(),
     };
     assert!(matches!(
-        adapter.reclaim_sealed_generation(&retired)?,
+        adapter.reclaim_sealed_generation(&retired, None)?,
         quanta_index_core::SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
     ));
     assert!(

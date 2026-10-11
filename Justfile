@@ -302,6 +302,14 @@ rust-test-integration lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-storage --lane {{lane}}
     python3 tools/ci/run-local-test-scope.py integration-semantic --lane {{lane}}
 
+# Native contract checkpoint. Keep shared Cargo admission serial; this focused
+# rail does not replace daemon, workspace, or performance qualification.
+rust-test-native-index:
+    {{cargo}} nextest run --locked --lib --test native_lifecycle --test native_projection --test native_semantic_projection --test native_source_batch --test native_index_uds \
+        -p quanta-index-contract-base -p quanta-index-core -p quanta-index-storage -p quanta-index-kernel -p quanta-index-lexical -p quanta-index-repomap -p quanta-index-catalog -p quanta-index-semantic -p quanta-index-sdk -p quanta-index-ipc -p quanta-index-searchd-runtime \
+        --test-threads 2 --no-tests fail --no-fail-fast \
+        -E 'package(=quanta-index-kernel) | package(=quanta-index-storage) | (package(=quanta-index-contract-base) & test(/^native_serde::tests/)) | (package(=quanta-index-core) & test(/^index::/)) | (package(=quanta-index-sdk) & test(/^native_uds::tests/)) | (package(=quanta-index-ipc) & test(/owned_connection_threads/)) | (package(=quanta-index-searchd-runtime) & (test(/^native_worker::tests/) | binary(=native_index_uds))) | ((package(=quanta-index-lexical) | package(=quanta-index-repomap) | package(=quanta-index-catalog) | package(=quanta-index-semantic)) & test(/^native::/))'
+
 # W0 decision-gate probes (G0-L / G0-S / G0-R). Vendor- and transport-capability
 # evidence for the structural remediation gates; `--nocapture` so the
 # G0*-EVIDENCE lines land in the run log the ADRs cite. The G0-C probe crate
@@ -771,6 +779,7 @@ rust-fuzz-smoke seconds="60":
     env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -dict=dictionaries/composite_search_corpus_control.dict -max_total_time={{seconds}}'
     env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run search_corpus_ingest_decode -- -dict=dictionaries/search_corpus_ingest.dict -max_total_time={{seconds}}'
     env QUANTA_INDEX_BUILD_LANE=fuzz-lq-norm-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time={{seconds}}'
+    env QUANTA_INDEX_BUILD_LANE=fuzz-lq-norm-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz run regex_necessary_gram -- -max_total_time={{seconds}}'
 
 # Produces a fresh full-workspace LCOV artifact, then fails closed if a Rust
 # source line added since `base` is absent or uncovered. cargo-llvm-cov is a

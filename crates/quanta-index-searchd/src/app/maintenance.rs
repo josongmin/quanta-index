@@ -311,6 +311,33 @@ pub struct BackendProbeParts {
     pub semantic: Arc<dyn SealedGenerationIdentityProbePort>,
 }
 
+fn trace_maintenance(
+    diagnostic: Option<&crate::app::trace_recorder::DiagnosticCaptureLeaseV1>,
+    work: impl FnOnce(),
+) {
+    use quanta_index_core::{
+        DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    };
+    let spans = diagnostic.and_then(|lease| {
+        let context = lease.context();
+        let root = crate::app::trace_recorder::trace_span_or_health(
+            context,
+            context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1)),
+        )?;
+        let child = context.child_context(&root);
+        let span = crate::app::trace_recorder::trace_span_or_health(
+            &child,
+            child.enter(DiagnosticStageV1::RuntimeMaintenance, DiagnosticLaneV1(1)),
+        )?;
+        Some((root, span))
+    });
+    work();
+    if let Some((root, span)) = spans {
+        let _finished = span.finish(DiagnosticTerminalV1::Ok);
+        let _finished = root.finish(DiagnosticTerminalV1::Ok);
+    }
+}
+
 fn observe_backend(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
     let observation = parts.backend_probe.as_ref().map(|probe| {
         let (identity, _) = probe.catalog.active_inventory_v1()?;
@@ -439,15 +466,25 @@ impl MaintenanceTimer {
     /// The first measurement runs on the caller's thread so the disk
     /// gauges are correct at the first scrape, not after the first tick.
     pub fn start(parts: MaintenanceParts, cadence: Duration) -> Result<Self, CoreError> {
+        Self::start_with_diagnostic(parts, cadence, None)
+    }
+
+    pub fn start_with_diagnostic(
+        parts: MaintenanceParts,
+        cadence: Duration,
+        diagnostic: Option<crate::app::trace_recorder::DiagnosticCaptureLeaseV1>,
+    ) -> Result<Self, CoreError> {
         let tallies = Arc::new(MaintenanceTallies::default());
-        reconcile_inventory(&parts, &tallies);
-        observe_backend(&parts, &tallies);
-        refresh_disk_usage(
-            &parts.lexical_disk_usage,
-            &parts.semantic_disk_usage,
-            &tallies,
-            &RequestBudgetV1::for_duration(DISK_METER_SCAN_BUDGET),
-        );
+        trace_maintenance(diagnostic.as_ref(), || {
+            reconcile_inventory(&parts, &tallies);
+            observe_backend(&parts, &tallies);
+            refresh_disk_usage(
+                &parts.lexical_disk_usage,
+                &parts.semantic_disk_usage,
+                &tallies,
+                &RequestBudgetV1::for_duration(DISK_METER_SCAN_BUDGET),
+            );
+        });
         if let Ok(mut last) = tallies.last_completed_tick.lock() {
             *last = Some(Instant::now());
         }
@@ -457,6 +494,7 @@ impl MaintenanceTimer {
         let (meter_tx, meter_rx) = mpsc::sync_channel::<()>(1);
         let meter_stop = Arc::new(DiskMeterStop::new(Arc::clone(&tallies)));
         let meter = {
+            let meter_diagnostic = diagnostic.clone();
             let lexical = Arc::clone(&parts.lexical_disk_usage);
             let semantic = Arc::clone(&parts.semantic_disk_usage);
             let tallies = Arc::clone(&tallies);
@@ -470,7 +508,9 @@ impl MaintenanceTimer {
                             Ok(true) => {}
                             Ok(false) | Err(_) => break,
                         }
-                        refresh_disk_usage(&lexical, &semantic, &tallies, &budget);
+                        trace_maintenance(meter_diagnostic.as_ref(), || {
+                            refresh_disk_usage(&lexical, &semantic, &tallies, &budget);
+                        });
                         if meter_stop.finish().is_err() {
                             break;
                         }
@@ -502,7 +542,9 @@ impl MaintenanceTimer {
                         match stop_rx.recv_timeout(cadence) {
                             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
                             Err(RecvTimeoutError::Timeout) => {
-                                tick(&parts, &timer_tallies);
+                                trace_maintenance(diagnostic.as_ref(), || {
+                                    tick(&parts, &timer_tallies);
+                                });
                                 let Some(sender) = meter_guard.sender.as_ref() else {
                                     timer_tallies
                                         .disk_meter_fatal
@@ -913,6 +955,7 @@ mod tests {
                         false
                     },
                     budget,
+                    None,
                 )
             }
         }
@@ -1130,6 +1173,7 @@ mod tests {
                     false
                 },
                 budget,
+                None,
             )
         }
     }

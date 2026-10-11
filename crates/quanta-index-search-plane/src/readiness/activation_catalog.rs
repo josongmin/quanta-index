@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
 use quanta_index_contract::{
     ACTIVATION_ROOT_INCARNATION_BYTES_V1, GenerationPin, GenerationSnapshot, ManifestGeneration,
@@ -15,7 +15,7 @@ use quanta_index_contract::{
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneTrackKind, SourcePublicationEvent,
 };
-use quanta_index_core::CoreError;
+use quanta_index_core::{CoreError, GenerationNamespaceReadPort, SourceEventStateV1};
 
 mod repository_envelope;
 mod source_events;
@@ -96,6 +96,17 @@ impl CatalogState {
     }
 }
 
+struct GenerationNamespaceReadersV1 {
+    lexical: Arc<dyn GenerationNamespaceReadPort>,
+    semantic: Arc<dyn GenerationNamespaceReadPort>,
+}
+
+impl std::fmt::Debug for GenerationNamespaceReadersV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GenerationNamespaceReadersV1")
+    }
+}
+
 const ROOT_INCARNATION_FILE_V1: &str = ".activation-root-incarnation-v1";
 const ROOT_INCARNATION_BYTES_V1: usize = ACTIVATION_ROOT_INCARNATION_BYTES_V1;
 
@@ -158,6 +169,7 @@ pub struct ActivationCatalog {
     // canonical root, so this process must not serve its old in-memory head.
     durability_uncertain_v1: AtomicBool,
     parent_sync: Arc<dyn ParentDirectorySyncPort>,
+    generation_namespace_reads: OnceLock<GenerationNamespaceReadersV1>,
 }
 
 impl ActivationCatalog {
@@ -376,7 +388,38 @@ impl ActivationCatalog {
             lifecycle_coordinator,
             durability_uncertain_v1: AtomicBool::new(false),
             parent_sync,
+            generation_namespace_reads: OnceLock::new(),
         })
+    }
+
+    /// Install the two adapter-owned physical namespace probes before the
+    /// first allocation or explicit source writer is admitted.
+    pub fn configure_generation_namespace_reads_v1(
+        &self,
+        lexical: Arc<dyn GenerationNamespaceReadPort>,
+        semantic: Arc<dyn GenerationNamespaceReadPort>,
+    ) -> Result<(), CoreError> {
+        self.generation_namespace_reads
+            .set(GenerationNamespaceReadersV1 { lexical, semantic })
+            .map_err(|_duplicate_ports| {
+                CoreError::InvalidContract("generation namespace probes already configured".into())
+            })
+    }
+
+    fn first_generation_namespace_is_empty_v1(
+        &self,
+        repo: &RepoId,
+        revision: &RevisionId,
+    ) -> Result<bool, CoreError> {
+        let readers = self.generation_namespace_reads.get().ok_or_else(|| {
+            CoreError::NotReady("source generation allocation requires configured lexical and semantic namespace probes".into())
+        })?;
+        Ok(readers
+            .lexical
+            .generation_namespace_is_empty(repo, revision)?
+            && readers
+                .semantic
+                .generation_namespace_is_empty(repo, revision)?)
     }
 
     pub(crate) fn lifecycle_coordinator(&self) -> Arc<SearchCorpusPairMutationCoordinator> {
@@ -762,7 +805,7 @@ impl ActiveSearchCorpusPinReadPort for ActivationCatalog {
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
-    ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+    ) -> Result<Vec<crate::search_corpus_lifecycle::UnresolvedSourceTargetV1>, CoreError> {
         self.ensure_durability_certain_v1()?;
         let entries = self.entries.read().map_err(|error| {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
@@ -773,10 +816,26 @@ impl ActiveSearchCorpusPinReadPort for ActivationCatalog {
             .into_iter()
             .flat_map(|history| history.records.values())
             .filter(|record| {
-                record.phase != quanta_index_core::SourceEventPhaseV1::Active
-                    && record.binding.target.revision_id == *revision_id
+                !matches!(
+                    record.state,
+                    SourceEventStateV1::Bound {
+                        phase: quanta_index_core::SourceEventPhaseV1::Active,
+                        ..
+                    }
+                ) && record.allocation.request.revision_id == *revision_id
             })
-            .map(|record| record.binding.target.clone())
+            .map(|record| match &record.state {
+                SourceEventStateV1::Allocated => {
+                    crate::search_corpus_lifecycle::UnresolvedSourceTargetV1::Allocated(
+                        record.allocation.generation,
+                    )
+                }
+                SourceEventStateV1::Bound { binding, .. } => {
+                    crate::search_corpus_lifecycle::UnresolvedSourceTargetV1::Bound(
+                        binding.target.clone(),
+                    )
+                }
+            })
             .collect())
     }
 

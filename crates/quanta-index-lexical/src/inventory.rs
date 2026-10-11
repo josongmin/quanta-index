@@ -73,6 +73,9 @@ pub fn inventory_sealed_generations(
         if family_name == RECLAIM_AREA_DIR_NAME {
             continue;
         }
+        if family_name == "lexical-object-pool" {
+            continue;
+        }
         if !family_name
             .to_str()
             .is_some_and(GenerationStorageKeyV1::is_canonical_name)

@@ -16,6 +16,7 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope,
 };
+use quanta_index_core::DiagnosticContextV1;
 use quanta_index_ipc::{
     BoundSocketPathProbe, IngressBudget, IpcDispatcher, IpcError, IpcPlane, IpcServerCounters,
     RequestEnvelope, ResponseEnvelope, ServerAdmissionPolicy, ShutdownHandle as IpcShutdownHandle,
@@ -102,6 +103,13 @@ where
     #[must_use]
     pub fn with_ingress_budget(mut self, ingress: Arc<IngressBudget>) -> Self {
         self.server = self.server.with_ingress_budget(ingress);
+        self
+    }
+
+    /// Attach the explicit capture context to this socket's request ingress.
+    #[must_use]
+    pub fn with_diagnostic_context(mut self, context: DiagnosticContextV1) -> Self {
+        self.server = self.server.with_diagnostic_context(context);
         self
     }
 

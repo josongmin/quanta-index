@@ -39,6 +39,7 @@ impl TantivySearcher {
         candidate_ids: &BTreeSet<String>,
         budget: &RequestBudgetV1,
     ) -> Result<BTreeSet<String>, CoreError> {
+        let native = self.native_query_scope();
         if candidate_ids.is_empty() {
             return Ok(BTreeSet::new());
         }
@@ -56,7 +57,7 @@ impl TantivySearcher {
             constraints,
             candidate_ids,
         )?;
-        let Some(mut prepared) = self.prepare_executable_query(&plan, budget)? else {
+        let Some(mut prepared) = self.prepare_executable_query(&plan, budget, &native)? else {
             // The predicate plan proved the filters admit nothing in this
             // generation (a repo or path scope with no members).
             return Ok(BTreeSet::new());
@@ -92,6 +93,7 @@ impl TantivySearcher {
                     constraints,
                     budget,
                     &mut regex_cache,
+                    &native,
                 )? {
                     let _first = admitted.insert(candidate_id.clone());
                 }
@@ -101,8 +103,12 @@ impl TantivySearcher {
         // Restrict the compiled filters to exactly the dense candidates:
         // one bounded collect, never a ranked re-search of the corpus.
         prepared.predicate_plan.allowed_candidate_ids = Some(candidate_ids.clone());
-        let Some(base) =
-            self.compile_query_from_prepared(&prepared.query, &prepared.predicate_plan, budget)?
+        let Some(base) = self.compile_query_from_prepared(
+            &prepared.query,
+            &prepared.predicate_plan,
+            budget,
+            &native,
+        )?
         else {
             return Ok(BTreeSet::new());
         };

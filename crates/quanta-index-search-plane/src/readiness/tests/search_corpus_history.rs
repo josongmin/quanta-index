@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, mpsc};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -15,8 +15,10 @@ use quanta_index_contract::{
     SourcePublicationEvent,
 };
 use quanta_index_core::{
-    CoreError, IdempotencyKeyV1, SealedGenerationBytesV1, SourceEventBindingV1,
-    SourcePublicationCatalogPort as _,
+    CoreError, DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticCounterV1,
+    DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1,
+    DiagnosticRootKindV1, DiagnosticStageV1, DiagnosticTerminalV1, IdempotencyKeyV1,
+    SealedGenerationBytesV1, SourceEventBindingV1, SourcePublicationCatalogPort as _,
 };
 use tempfile::tempdir;
 
@@ -40,12 +42,145 @@ use crate::search_corpus_retention::{
 #[derive(Debug)]
 struct AbsentIndexBytes;
 
+#[derive(Debug)]
+struct FixedDiagnosticClock;
+
+impl DiagnosticClockV1 for FixedDiagnosticClock {
+    fn now_ns(&self) -> u64 {
+        1
+    }
+}
+
+#[derive(Debug, Default)]
+struct RecordingDiagnosticSink(Mutex<Vec<DiagnosticEmitV1>>);
+
+impl DiagnosticEventSinkV1 for RecordingDiagnosticSink {
+    fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+        self.0.lock().expect("diagnostic sink lock").push(event);
+        true
+    }
+}
+
+#[derive(Debug)]
+struct PhysicalIndexBytes(Arc<AtomicU64>);
+
+#[derive(Debug)]
+struct SingleCandidateIndexBytes {
+    generation: ManifestGeneration,
+    measurements: Arc<AtomicUsize>,
+}
+
+#[derive(Debug)]
+struct CountingRestoreIndexBytes {
+    measured_sets: Arc<Mutex<Vec<BTreeSet<ManifestGeneration>>>>,
+}
+
+impl SearchCorpusIndexBytesPort for CountingRestoreIndexBytes {
+    fn measure_index_bytes(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+        _diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        self.measured_sets
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("restore measurement lock: {error}")))?
+            .push(generations.clone());
+        let count = u64::try_from(generations.len())
+            .map_err(|error| CoreError::InvalidContract(format!("generation count: {error}")))?;
+        let bytes = TEST_INDEX_BYTES_PER_GENERATION
+            .checked_mul(count)
+            .ok_or_else(|| CoreError::InvalidContract("restore bytes overflow".into()))?;
+        Ok(SealedGenerationBytesV1 {
+            bytes,
+            absent: BTreeSet::new(),
+        })
+    }
+
+    fn measure_state_root_index_bytes(
+        &self,
+        _diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<Option<u64>, CoreError> {
+        Ok(Some(3 * TEST_INDEX_BYTES_PER_GENERATION))
+    }
+}
+
+impl SearchCorpusIndexBytesPort for SingleCandidateIndexBytes {
+    fn measure_index_bytes(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        if *generations != BTreeSet::from([self.generation]) {
+            return Err(CoreError::InvalidContract(
+                "single-candidate fixture measured an unexpected retained set".into(),
+            ));
+        }
+        let _previous = self.measurements.fetch_add(1, Ordering::SeqCst);
+        Ok(SealedGenerationBytesV1 {
+            bytes: 10,
+            absent: BTreeSet::new(),
+        })
+    }
+
+    fn measure_state_root_index_bytes(
+        &self,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<Option<u64>, CoreError> {
+        Ok(Some(10))
+    }
+}
+
+impl SearchCorpusIndexBytesPort for PhysicalIndexBytes {
+    fn measure_index_bytes(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        _generations: &BTreeSet<ManifestGeneration>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        Ok(SealedGenerationBytesV1 {
+            bytes: 10,
+            absent: BTreeSet::new(),
+        })
+    }
+
+    fn measure_state_root_index_bytes(
+        &self,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<Option<u64>, CoreError> {
+        Ok(Some(self.0.load(Ordering::SeqCst)))
+    }
+}
+
+struct EmptyGenerationFixture;
+impl quanta_index_core::GenerationNamespaceReadPort for EmptyGenerationFixture {
+    fn generation_namespace_is_empty(
+        &self,
+        _repo: &RepoId,
+        _revision: &RevisionId,
+    ) -> Result<bool, CoreError> {
+        Ok(true)
+    }
+}
+
+fn configure_empty_generation_fixture(catalog: &crate::ActivationCatalog) -> Result<(), CoreError> {
+    catalog.configure_generation_namespace_reads_v1(
+        Arc::new(EmptyGenerationFixture),
+        Arc::new(EmptyGenerationFixture),
+    )
+}
+
 impl SearchCorpusIndexBytesPort for AbsentIndexBytes {
     fn measure_index_bytes(
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         Ok(SealedGenerationBytesV1 {
             bytes: 0,
@@ -63,6 +198,7 @@ impl SearchCorpusIndexBytesPort for PresenceIndexBytes {
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         Ok(SealedGenerationBytesV1 {
             bytes: 0,
@@ -84,6 +220,7 @@ impl SearchCorpusIndexBytesPort for MissingGenerationIndexBytes {
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         let missing = self.0.load(Ordering::SeqCst);
         Ok(SealedGenerationBytesV1 {
@@ -95,6 +232,228 @@ impl SearchCorpusIndexBytesPort for MissingGenerationIndexBytes {
                 .collect(),
         })
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RestoreMeasurementFault {
+    Sidecar,
+    Identity,
+    UnsupportedFormat,
+    Storage,
+}
+
+#[derive(Debug)]
+struct FaultedRestoreIndexBytes {
+    fault: RestoreMeasurementFault,
+    physical: Option<u64>,
+}
+
+impl SearchCorpusIndexBytesPort for FaultedRestoreIndexBytes {
+    fn measure_index_bytes(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        _generations: &BTreeSet<ManifestGeneration>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        let code = match self.fault {
+            RestoreMeasurementFault::Sidecar => {
+                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
+            }
+            RestoreMeasurementFault::Identity => {
+                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
+            }
+            RestoreMeasurementFault::UnsupportedFormat => {
+                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+            }
+            RestoreMeasurementFault::Storage => {
+                return Err(CoreError::Storage("injected physical read failure".into()));
+            }
+        };
+        Err(CoreError::Typed {
+            code,
+            message: "injected historical content mismatch".into(),
+        })
+    }
+
+    fn measure_state_root_index_bytes(
+        &self,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<Option<u64>, CoreError> {
+        Ok(self.physical)
+    }
+}
+
+fn history_for_faulted_restore(
+    fault: RestoreMeasurementFault,
+    physical: Option<u64>,
+    pair_max: u64,
+    total_max: u64,
+) -> Result<
+    (
+        tempfile::TempDir,
+        AuxiliaryAuthorityStore,
+        RepoId,
+        RevisionId,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let directory = tempdir()?;
+    let repo = RepoId::new("faulted-restore-repo")?;
+    let revision = RevisionId::new("faulted-restore-revision")?;
+    let writer = AuxiliaryAuthorityStore::open(directory.path(), search_corpus_retention(2)?)?;
+    for number in 1..=2 {
+        let _receipt = writer.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(number),
+            &format!("digest-{number}"),
+        )?;
+    }
+    drop(writer);
+    let reader = AuxiliaryAuthorityStore::open_with_lifecycle_v1(
+        directory.path(),
+        SearchCorpusHistoryRetentionPolicyV1::new(2, pair_max, 64, total_max)?,
+        SearchCorpusPairMutationCoordinator::shared(),
+        Arc::new(crate::readiness::auxiliary_store::NoActiveSearchCorpusPinsV1),
+        Arc::new(FaultedRestoreIndexBytes { fault, physical }),
+    )?;
+    Ok((directory, reader, repo, revision))
+}
+
+#[test]
+fn integrity_fault_restore_preserves_history_under_proven_physical_upper_bound() -> TestResult {
+    for fault in [
+        RestoreMeasurementFault::Sidecar,
+        RestoreMeasurementFault::Identity,
+    ] {
+        let (_directory, store, repo, revision) =
+            history_for_faulted_restore(fault, Some(300), 400, 800)?;
+        let mut ledger = Ledger::new();
+        store.restore_search_corpus_history_into(&mut ledger)?;
+        for number in 1..=2 {
+            let generation = ManifestGeneration::new(number);
+            assert!(
+                store
+                    .search_corpus_authority_path(&repo, &revision, generation)
+                    .is_file(),
+                "content fault reaped historical generation {number}"
+            );
+            ledger.validate_historically_sealed_track_identity(
+                &GenerationSnapshot {
+                    repo_id: repo.clone(),
+                    revision_id: revision.clone(),
+                    track: SearchPlaneTrackKind::Lexical,
+                    manifest_generation: generation,
+                    manifest_digest: format!("digest-{number}"),
+                },
+                "integrity-fault restore",
+            )?;
+        }
+        assert!(matches!(
+            store.record_sealed_search_corpus(
+                &repo,
+                &revision,
+                ManifestGeneration::new(3),
+                "digest-3"
+            ),
+            Err(CoreError::Typed { .. })
+        ));
+        assert!(
+            !store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(3))
+                .exists()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn integrity_fault_restore_refuses_unproved_or_over_limit_physical_bound() -> TestResult {
+    for (physical, pair_max, total_max, expected_code) in [
+        (
+            Some(401),
+            400,
+            800,
+            quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+        ),
+        (
+            Some(501),
+            600,
+            500,
+            quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+        ),
+        (
+            None,
+            400,
+            800,
+            quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+        ),
+    ] {
+        let (_directory, store, repo, revision) = history_for_faulted_restore(
+            RestoreMeasurementFault::Sidecar,
+            physical,
+            pair_max,
+            total_max,
+        )?;
+        let result = store.restore_search_corpus_history_into(&mut Ledger::new());
+        assert!(
+            matches!(&result, Err(CoreError::Typed { code, .. }) if *code == expected_code),
+            "invalid physical upper bound was accepted: {result:?}"
+        );
+        for number in 1..=2 {
+            assert!(
+                store
+                    .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(number))
+                    .is_file()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn restore_never_converts_storage_failure_to_content_fallback() -> TestResult {
+    let (_directory, store, repo, revision) =
+        history_for_faulted_restore(RestoreMeasurementFault::Storage, Some(300), 400, 800)?;
+    let result = store.restore_search_corpus_history_into(&mut Ledger::new());
+    assert!(matches!(&result, Err(CoreError::Storage(_))), "{result:?}");
+    for number in 1..=2 {
+        assert!(
+            store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(number))
+                .is_file()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn restore_does_not_convert_unsupported_persisted_format_to_content_fallback() -> TestResult {
+    let (_directory, store, repo, revision) = history_for_faulted_restore(
+        RestoreMeasurementFault::UnsupportedFormat,
+        Some(300),
+        400,
+        800,
+    )?;
+    let result = store.restore_search_corpus_history_into(&mut Ledger::new());
+    assert!(matches!(
+        &result,
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+            ..
+        })
+    ));
+    for number in 1..=2 {
+        assert!(
+            store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(number))
+                .is_file(),
+            "unsupported format erased historical generation {number}"
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -211,6 +570,129 @@ fn absent_physical_candidate_cannot_acquire_a_durable_record() -> TestResult {
             .search_corpus_authority_path(&repo, &revision, generation)
             .exists()
     );
+    Ok(())
+}
+
+#[test]
+fn first_candidate_is_measured_once_before_durable_admission() -> TestResult {
+    let dir = tempdir()?;
+    let generation = ManifestGeneration::new(7);
+    let measurements = Arc::new(AtomicUsize::new(0));
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(SingleCandidateIndexBytes {
+            generation,
+            measurements: Arc::clone(&measurements),
+        }),
+    )?;
+    let store = owner.authority_store();
+    let repo = RepoId::new("single-candidate")?;
+    let revision = RevisionId::new("revision")?;
+    let _receipt = store.record_sealed_search_corpus(&repo, &revision, generation, "digest-7")?;
+    assert_eq!(measurements.load(Ordering::SeqCst), 1);
+    assert!(
+        store
+            .search_corpus_authority_path(&repo, &revision, generation)
+            .is_file()
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_reuses_complete_single_candidate_measurement() -> TestResult {
+    let dir = tempdir()?;
+    let generation = ManifestGeneration::new(7);
+    let writer = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
+    let repo = RepoId::new("restore-single-candidate")?;
+    let revision = RevisionId::new("revision")?;
+    let _receipt = writer.record_sealed_search_corpus(&repo, &revision, generation, "digest-7")?;
+    drop(writer);
+
+    let measurements = Arc::new(AtomicUsize::new(0));
+    let reader = AuxiliaryAuthorityStore::open_with_lifecycle_v1(
+        dir.path(),
+        search_corpus_retention(2)?,
+        SearchCorpusPairMutationCoordinator::shared(),
+        Arc::new(crate::readiness::auxiliary_store::NoActiveSearchCorpusPinsV1),
+        Arc::new(SingleCandidateIndexBytes {
+            generation,
+            measurements: Arc::clone(&measurements),
+        }),
+    )?;
+    let mut restored = Ledger::new();
+    reader.restore_search_corpus_history_into(&mut restored)?;
+    assert_eq!(measurements.load(Ordering::SeqCst), 1);
+    restored.validate_historically_sealed_track_identity(
+        &GenerationSnapshot {
+            repo_id: repo,
+            revision_id: revision,
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: generation,
+            manifest_digest: "digest-7".to_string(),
+        },
+        "restore fast path",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn restore_over_pair_count_limit_still_plans_and_reaps() -> TestResult {
+    let dir = tempdir()?;
+    let repo = RepoId::new("restore-over-pair-count")?;
+    let revision = RevisionId::new("revision")?;
+    let writer = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(3)?)?;
+    for number in 1..=3 {
+        let _receipt = writer.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(number),
+            &format!("digest-{number}"),
+        )?;
+    }
+    drop(writer);
+
+    let measured_sets = Arc::new(Mutex::new(Vec::new()));
+    let reader = AuxiliaryAuthorityStore::open_with_lifecycle_v1(
+        dir.path(),
+        search_corpus_retention(2)?,
+        SearchCorpusPairMutationCoordinator::shared(),
+        Arc::new(crate::readiness::auxiliary_store::NoActiveSearchCorpusPinsV1),
+        Arc::new(CountingRestoreIndexBytes {
+            measured_sets: Arc::clone(&measured_sets),
+        }),
+    )?;
+    let mut restored = Ledger::new();
+    reader.restore_search_corpus_history_into(&mut restored)?;
+    assert_eq!(
+        *measured_sets.lock().map_err(|error| error.to_string())?,
+        vec![
+            BTreeSet::from([
+                ManifestGeneration::new(1),
+                ManifestGeneration::new(2),
+                ManifestGeneration::new(3),
+            ]),
+            BTreeSet::from([ManifestGeneration::new(2), ManifestGeneration::new(3)]),
+        ],
+        "over-limit restore must measure all before planning the retained subset"
+    );
+    assert!(
+        !reader
+            .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(1))
+            .exists()
+    );
+    for number in 2..=3 {
+        restored.validate_historically_sealed_track_identity(
+            &GenerationSnapshot {
+                repo_id: repo.clone(),
+                revision_id: revision.clone(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(number),
+                manifest_digest: format!("digest-{number}"),
+            },
+            "over-limit restore",
+        )?;
+    }
     Ok(())
 }
 
@@ -334,6 +816,7 @@ fn unresolved_source_target_blocks_later_seal_even_if_retained() -> TestResult {
     let store = owner.authority_store();
     let catalog = owner.activation_catalog();
     let repo = RepoId::new("source-pending")?;
+    configure_empty_generation_fixture(&catalog)?;
     let revision = RevisionId::new("revision")?;
     let pending = pending_source_binding(&repo, &revision, 1);
     let _reserved = catalog.reserve_source_event(&pending)?;
@@ -370,6 +853,7 @@ fn unresolved_source_without_authority_blocks_other_stream_retention() -> TestRe
     let store = owner.authority_store();
     let catalog = owner.activation_catalog();
     let repo = RepoId::new("source-unrecorded")?;
+    configure_empty_generation_fixture(&catalog)?;
     let revision = RevisionId::new("revision")?;
     let pending = pending_source_binding(&repo, &revision, 1);
     let _reserved = catalog.reserve_source_event(&pending)?;
@@ -395,12 +879,13 @@ fn newer_unrecorded_source_does_not_block_older_original_recovery() -> TestResul
     let store = owner.authority_store();
     let catalog = owner.activation_catalog();
     let repo = RepoId::new("source-older-recovery")?;
+    configure_empty_generation_fixture(&catalog)?;
     let revision = RevisionId::new("revision")?;
     let newer = pending_source_binding(&repo, &revision, 2);
-    let _newer = catalog.reserve_source_event(&newer)?;
     let mut older = pending_source_binding(&repo, &revision, 1);
     older.event.stream_id = "earlier-stream".into();
     let _older = catalog.reserve_source_event(&older)?;
+    let _newer = catalog.reserve_source_event(&newer)?;
     let _receipt = store.record_sealed_search_corpus(
         &repo,
         &revision,
@@ -515,6 +1000,156 @@ fn sealed_search_corpus_history_reaps_max_plus_one_and_preserves_predecessor() -
             "test",
         )?;
     }
+    Ok(())
+}
+
+#[test]
+fn retention_trace_counts_measurements_and_completed_reaps() -> TestResult {
+    let dir = tempdir()?;
+    let store = AuxiliaryAuthorityStore::open(dir.path(), search_corpus_retention(2)?)?;
+    let repo = RepoId::new("trace-retention")?;
+    let revision = RevisionId::new("revision")?;
+    let sink = Arc::new(RecordingDiagnosticSink::default());
+    let context = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([2; 16]),
+        Arc::new(FixedDiagnosticClock),
+        sink.clone(),
+    );
+    let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))?;
+    let child = context.child_context(&root);
+    for generation in 1..=3 {
+        let _receipt = store.record_sealed_search_corpus_observed(
+            &repo,
+            &revision,
+            ManifestGeneration::new(generation),
+            &format!("digest-{generation}"),
+            Some(&child),
+        )?;
+    }
+    root.finish(DiagnosticTerminalV1::Ok)?;
+
+    let events = sink.0.lock().expect("diagnostic sink lock").clone();
+    let count_stage = |wanted| {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(event.kind, DiagnosticEventKindV1::SpanBegin { stage, .. } if stage == wanted)
+            })
+            .count()
+    };
+    for stage in [
+        DiagnosticStageV1::RetentionPlan,
+        DiagnosticStageV1::RetentionMeasure,
+        DiagnosticStageV1::RetentionWrite,
+        DiagnosticStageV1::RetentionReap,
+    ] {
+        assert_eq!(count_stage(stage), 3, "missing owner stage: {stage:?}");
+    }
+    let counters: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            if let DiagnosticEventKindV1::Counter { key, value, .. } = event.kind {
+                return Some((key, value));
+            }
+            None
+        })
+        .collect();
+    assert!(
+        counters
+            .iter()
+            .any(|(key, value)| { *key == DiagnosticCounterV1::MeasureCalls && *value > 0 })
+    );
+    assert_eq!(
+        counters
+            .iter()
+            .filter_map(|(key, value)| {
+                (*key == DiagnosticCounterV1::RemovedRoots).then_some(*value)
+            })
+            .collect::<Vec<_>>(),
+        vec![0, 0, 1]
+    );
+    assert_eq!(
+        counters
+            .iter()
+            .filter_map(|(key, value)| {
+                (*key == DiagnosticCounterV1::RetainedPairs).then_some(*value)
+            })
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1]
+    );
+    Ok(())
+}
+
+#[test]
+fn retention_trace_keeps_failed_measurement_before_durable_write() -> TestResult {
+    let dir = tempdir()?;
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(AbsentIndexBytes),
+    )?;
+    let store = owner.authority_store();
+    let repo = RepoId::new("trace-absent")?;
+    let revision = RevisionId::new("revision")?;
+    let sink = Arc::new(RecordingDiagnosticSink::default());
+    let context = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([3; 16]),
+        Arc::new(FixedDiagnosticClock),
+        sink.clone(),
+    );
+    let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))?;
+    let child = context.child_context(&root);
+    let refused = store.record_sealed_search_corpus_observed(
+        &repo,
+        &revision,
+        ManifestGeneration::new(1),
+        "digest-1",
+        Some(&child),
+    );
+    assert!(matches!(
+        refused,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+            ..
+        })
+    ));
+    root.finish(DiagnosticTerminalV1::Error { code: 1 })?;
+
+    let events = sink.0.lock().expect("diagnostic sink lock").clone();
+    let plan = events.iter().find_map(|event| {
+        if let DiagnosticEventKindV1::SpanBegin {
+            span_id,
+            stage: DiagnosticStageV1::RetentionPlan,
+            ..
+        } = event.kind
+        {
+            return Some(span_id);
+        }
+        None
+    });
+    let plan = plan.expect("retention plan began");
+    assert!(events.iter().any(|event| matches!(
+        event.kind,
+        DiagnosticEventKindV1::Counter {
+            span_id,
+            key: DiagnosticCounterV1::MeasureCalls,
+            value: 1,
+        } if span_id == plan
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.kind,
+        DiagnosticEventKindV1::SpanEnd {
+            span_id,
+            outcome: DiagnosticTerminalV1::Error { code: 1 },
+        } if span_id == plan
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event.kind,
+        DiagnosticEventKindV1::SpanBegin {
+            stage: DiagnosticStageV1::RetentionWrite,
+            ..
+        }
+    )));
     Ok(())
 }
 
@@ -727,6 +1362,42 @@ fn state_root_total_byte_cap_rejects_growth_before_write() -> TestResult {
         !store
             .search_corpus_pair_dir(&second_repo, &second_revision)
             .exists()
+    );
+    Ok(())
+}
+
+#[test]
+fn physical_root_budget_counts_pending_garbage_until_collection() -> TestResult {
+    let dir = tempdir()?;
+    let physical_bytes = Arc::new(AtomicU64::new(101));
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        SearchCorpusHistoryRetentionPolicyV1::new(2, 100, 8, 100)?,
+        Arc::new(PhysicalIndexBytes(Arc::clone(&physical_bytes))),
+    )?;
+    let store = owner.authority_store();
+    let repo = RepoId::new("physical-root-budget")?;
+    let revision = RevisionId::new("revision")?;
+    let generation = ManifestGeneration::new(1);
+    let rejected = store.record_sealed_search_corpus(&repo, &revision, generation, "digest");
+    assert!(matches!(
+        rejected,
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+            ..
+        })
+    ));
+    assert!(!store.search_corpus_pair_dir(&repo, &revision).exists());
+
+    // A retirement plan cannot free physical budget. Only the storage owner's
+    // post-collection observation permits the exact same publication to retry.
+    physical_bytes.store(100, Ordering::SeqCst);
+    let _receipt = store.record_sealed_search_corpus(&repo, &revision, generation, "digest")?;
+    assert!(
+        store
+            .search_corpus_authority_path(&repo, &revision, generation)
+            .is_file()
     );
     Ok(())
 }

@@ -1158,6 +1158,7 @@ fn search_plane_ipc_request_v2_sourcegraph_roundtrips_structural_variant() -> Te
 fn search_plane_query_ipc_request_envelope_semantic_roundtrips_query_text() -> TestRes {
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 41,
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneQueryIpcRequest::Semantic(semantic_request_with_query_text(
             "0.5 0.25 -0.75",
         )),
@@ -1184,6 +1185,7 @@ fn search_plane_query_ipc_request_envelope_semantic_roundtrips_query_text() -> T
 fn search_plane_query_ipc_request_envelope_hybrid_roundtrips_semantic_text() -> TestRes {
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 42,
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneQueryIpcRequest::Hybrid(hybrid_request_with_query_text(
             "vec-handle-query",
         )),

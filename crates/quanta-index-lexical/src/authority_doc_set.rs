@@ -4,7 +4,7 @@
 //! from the text authority, and the gates that resolve to text documents —
 //! file owner, file contributor, scoped content — answer from the stored
 //! documents. Each answer is a set of text-authority doc ids held as a
-//! compressed bitmap of 32-bit ids: two bytes a member where the ids are
+//! compressed treemap of 64-bit logical ids: two bytes a member where ids are
 //! sparse, one bit a member where they are dense, shared by `Arc` from the
 //! regex match cache to every query that restricts by it.
 //!
@@ -24,7 +24,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use roaring::RoaringBitmap;
+use roaring::{RoaringBitmap, RoaringTreemap};
 use tantivy::fastfield::Column;
 use tantivy::query::{ConstScorer, EnableScoring, Explanation, Query, Scorer, Weight};
 use tantivy::schema::{Field, IndexRecordOption};
@@ -58,13 +58,13 @@ pub(crate) fn restriction_walk(members: u64, max_doc: DocId) -> RestrictionWalk 
 #[derive(Clone)]
 pub(crate) struct AuthorityDocSetQuery {
     field: Field,
-    members: Arc<RoaringBitmap>,
+    members: Arc<RoaringTreemap>,
 }
 
 impl AuthorityDocSetQuery {
     /// Restrict to `members` through `field`, the schema's text-authority
     /// doc-id field.
-    pub(crate) const fn new(field: Field, members: Arc<RoaringBitmap>) -> Self {
+    pub(crate) const fn new(field: Field, members: Arc<RoaringTreemap>) -> Self {
         Self { field, members }
     }
 }
@@ -99,7 +99,7 @@ impl Query for AuthorityDocSetQuery {
 struct AuthorityDocSetWeight {
     field: Field,
     field_name: String,
-    members: Arc<RoaringBitmap>,
+    members: Arc<RoaringTreemap>,
 }
 
 impl AuthorityDocSetWeight {
@@ -146,13 +146,13 @@ impl Weight for AuthorityDocSetWeight {
 pub(crate) fn member_docs_by_lookup(
     reader: &SegmentReader,
     field: Field,
-    members: &RoaringBitmap,
+    members: &RoaringTreemap,
 ) -> tantivy::Result<RoaringBitmap> {
     let inverted = reader.inverted_index(field)?;
     let mut docs = RoaringBitmap::new();
     let mut term = Term::from_field_u64(field, 0);
     for member in members {
-        term.set_u64(u64::from(member));
+        term.set_u64(member);
         let Some(mut postings) = inverted.read_postings(&term, IndexRecordOption::Basic)? else {
             continue;
         };
@@ -212,13 +212,13 @@ impl DocSet for MemberDocs {
 /// budget between members exactly as it does over a posting list.
 pub(crate) struct ColumnScan {
     column: Column<u64>,
-    members: Arc<RoaringBitmap>,
+    members: Arc<RoaringTreemap>,
     max_doc: DocId,
     doc: DocId,
 }
 
 impl ColumnScan {
-    pub(crate) fn new(column: Column<u64>, members: Arc<RoaringBitmap>, max_doc: DocId) -> Self {
+    pub(crate) fn new(column: Column<u64>, members: Arc<RoaringTreemap>, max_doc: DocId) -> Self {
         let mut scan = Self {
             column,
             members,
@@ -232,7 +232,7 @@ impl ColumnScan {
     fn is_member(&self, doc: DocId) -> bool {
         self.column
             .values_for_doc(doc)
-            .any(|id| u32::try_from(id).is_ok_and(|id| self.members.contains(id)))
+            .any(|id| self.members.contains(id))
     }
 
     fn first_member_from(&self, start: DocId) -> DocId {
@@ -272,7 +272,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    use roaring::RoaringBitmap;
+    use roaring::RoaringTreemap;
     use tantivy::collector::TopDocs;
     use tantivy::query::Query;
     use tantivy::schema::{TantivyDocument, Value};
@@ -325,7 +325,7 @@ mod tests {
     fn stored_members(
         searcher: &Searcher,
         fields: &SchemaFields,
-        members: &RoaringBitmap,
+        members: &RoaringTreemap,
     ) -> Vec<BTreeSet<DocId>> {
         searcher
             .segment_readers()
@@ -338,9 +338,7 @@ mod tests {
                         stored
                             .get_first(fields.text_authority_doc_id)
                             .and_then(|value| value.as_u64())
-                            .is_some_and(|id| {
-                                u32::try_from(id).is_ok_and(|id| members.contains(id))
-                            })
+                            .is_some_and(|id| members.contains(id))
                     })
                     .collect()
             })
@@ -357,9 +355,9 @@ mod tests {
         out
     }
 
-    fn member_sets() -> Vec<RoaringBitmap> {
+    fn member_sets() -> Vec<RoaringTreemap> {
         vec![
-            RoaringBitmap::new(),
+            RoaringTreemap::new(),
             std::iter::once(7).collect(),
             std::iter::once(2).collect(),
             [1, 3, 40, 41, 64, 999].into_iter().collect(),
@@ -452,7 +450,7 @@ mod tests {
         let searcher = searcher(&index);
         // Members in both commits' halves, never two adjacent ids, so every
         // segment holds several and the document after one is not one.
-        let members: RoaringBitmap = [5, 9, 30, 40, 45, 60].into_iter().collect();
+        let members: RoaringTreemap = [5, 9, 30, 40, 45, 60].into_iter().collect();
         let oracle = stored_members(&searcher, &fields, &members);
         let weight =
             AuthorityDocSetQuery::new(fields.text_authority_doc_id, Arc::new(members.clone()))
@@ -503,7 +501,7 @@ mod tests {
         let fields = SchemaFields::build();
         let index = Index::create_in_ram(fields.schema.clone());
         let searcher = searcher(&index);
-        let refused = AuthorityDocSetQuery::new(fields.doc_kind, Arc::new(RoaringBitmap::new()))
+        let refused = AuthorityDocSetQuery::new(fields.doc_kind, Arc::new(RoaringTreemap::new()))
             .weight(tantivy::query::EnableScoring::disabled_from_searcher(
                 &searcher,
             ));

@@ -3,9 +3,10 @@
 //! keeps (QI-BB-003).
 //!
 //! Byte limits are enforced over the **actual index bytes** the retained
-//! generations occupy on disk — the lexical and semantic generation
-//! directories, measured by unique inode so a delta's hard-linked base
-//! segments count once — never over the size of an authority record. The
+//! generations occupy on disk — private directories and reachable shared
+//! objects, deduplicated within the requested pair. Root admission measures
+//! the entire physical tracks instead of summing overlapping pair closures;
+//! garbage continues to count until it is physically collected. The
 //! measurement is a port ([`SearchCorpusIndexBytesPort`]) because the
 //! authority store owns no index layout; the composition root wires the
 //! adapters' measurement in.
@@ -15,11 +16,12 @@ use std::fmt;
 use std::sync::Arc;
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
-use quanta_index_core::{CoreError, SealedGenerationBytesV1, SealedGenerationReclaimPort};
+use quanta_index_core::{
+    CoreError, DiagnosticContextV1, SealedGenerationBytesV1, SealedGenerationReclaimPort,
+};
 
 /// Measures the bytes a set of sealed generations of one pair occupies on
-/// disk across both tracks: what `du` would report for those directories
-/// together, hard links counted once.
+/// disk across both tracks, including the unique shared-object closure.
 ///
 /// Called at admission and at restore with the sets retention is deciding
 /// between; a generation whose directories are absent contributes nothing.
@@ -29,7 +31,19 @@ pub trait SearchCorpusIndexBytesPort: fmt::Debug + Send + Sync {
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError>;
+
+    /// The physical root-wide disk fence. `None` declares an in-memory
+    /// implementation whose owner uses the projected pair sum. Physical
+    /// backends return the complete track total, so cross-pair sharing counts
+    /// once and pending collection still counts.
+    fn measure_state_root_index_bytes(
+        &self,
+        _diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<Option<u64>, CoreError> {
+        Ok(None)
+    }
 }
 
 /// The measurement over the two tracks' reclaim ports, which are the
@@ -56,18 +70,38 @@ impl fmt::Debug for PairIndexBytesMeasurer {
 }
 
 impl SearchCorpusIndexBytesPort for PairIndexBytesMeasurer {
+    fn measure_state_root_index_bytes(
+        &self,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<Option<u64>, CoreError> {
+        let lexical = self.lexical.measure_track_physical_bytes(diagnostic)?;
+        let semantic = self.semantic.measure_track_physical_bytes(diagnostic)?;
+        lexical.checked_add(semantic).map(Some).ok_or_else(|| {
+            CoreError::Storage(
+                "search-corpus history retention: physical track total overflow".into(),
+            )
+        })
+    }
+
     fn measure_index_bytes(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
-        let lexical = self
-            .lexical
-            .measure_sealed_generations(repo_id, revision_id, generations)?;
-        let semantic =
-            self.semantic
-                .measure_sealed_generations(repo_id, revision_id, generations)?;
+        let lexical = self.lexical.measure_sealed_generations(
+            repo_id,
+            revision_id,
+            generations,
+            diagnostic,
+        )?;
+        let semantic = self.semantic.measure_sealed_generations(
+            repo_id,
+            revision_id,
+            generations,
+            diagnostic,
+        )?;
         let bytes = lexical.bytes.checked_add(semantic.bytes).ok_or_else(|| {
             CoreError::Storage(
                 "search-corpus history retention: index byte total overflow".to_string(),
@@ -85,7 +119,9 @@ impl SearchCorpusIndexBytesPort for PairIndexBytesMeasurer {
 /// At least two generations are required so admitting a new generation cannot
 /// erase its immediate predecessor rollback target. `max_bytes` bounds the
 /// index bytes one pair's retained generations occupy together;
-/// `max_total_bytes` bounds the same across every pair in the state root.
+/// `max_total_bytes` bounds the entire physical index tracks, including shared
+/// objects, unfinished publications and garbage awaiting collection. Planning
+/// a retirement does not release this physical budget before deletion.
 /// Both are measured on disk through [`SearchCorpusIndexBytesPort`].
 ///
 /// The pair-local limits are allowed to reap generations only inside the pair
@@ -190,6 +226,22 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
         Ok(SearchCorpusHistoryRetentionPlanV1 {
             retained_generations: generations,
             retained_bytes: measured_bytes,
+        })
+    }
+
+    /// Reuse bootstrap's exact measurement when every observed generation is
+    /// present and the complete set fits both pair limits. The caller must
+    /// validate active and unresolved pins before using the returned plan.
+    pub(crate) fn retain_all_preverified_for_restore(
+        self,
+        generations: &BTreeSet<ManifestGeneration>,
+        measured_bytes: u64,
+    ) -> Option<SearchCorpusHistoryRetentionPlanV1> {
+        (generations.len() <= self.max_generations && measured_bytes <= self.max_bytes).then(|| {
+            SearchCorpusHistoryRetentionPlanV1 {
+                retained_generations: generations.clone(),
+                retained_bytes: measured_bytes,
+            }
         })
     }
 
@@ -332,6 +384,28 @@ mod tests {
         assert!(SearchCorpusHistoryRetentionPolicyV1::new(2, 0, 8, 8192).is_err());
         assert!(SearchCorpusHistoryRetentionPolicyV1::new(2, 1024, 0, 8192).is_err());
         assert!(SearchCorpusHistoryRetentionPolicyV1::new(2, 1024, 8, 0).is_err());
+    }
+
+    #[test]
+    fn restore_reuses_only_a_complete_set_within_both_pair_limits() -> TestResult {
+        let policy = SearchCorpusHistoryRetentionPolicyV1::new(2, 20, 8, 200)?;
+        let generations = BTreeSet::from([g(1), g(2)]);
+        let exact = policy
+            .retain_all_preverified_for_restore(&generations, 20)
+            .ok_or("exact count and byte boundary must fit")?;
+        assert!(exact.retains(g(1)) && exact.retains(g(2)));
+        assert_eq!(exact.retained_bytes(), 20);
+        assert!(
+            policy
+                .retain_all_preverified_for_restore(&generations, 21)
+                .is_none()
+        );
+        assert!(
+            policy
+                .retain_all_preverified_for_restore(&BTreeSet::from([g(1), g(2), g(3)]), 20)
+                .is_none()
+        );
+        Ok(())
     }
 
     #[test]

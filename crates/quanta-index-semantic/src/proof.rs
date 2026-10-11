@@ -269,7 +269,7 @@ fn build(
         &batch.replace_scopes,
         adapter.window_policy(),
     )?;
-    let (tally, stages) = adapter.build_stream(&header, &mut source)?;
+    let (tally, stages) = adapter.build_stream(&header, &mut source, None)?;
     Ok(serde_json::json!({
         "generation": batch.generation,
         "batch_digest": batch.batch_digest,

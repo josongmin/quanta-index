@@ -80,6 +80,14 @@ workflow = ".circleci/config.yml"
 job = "heavy-correctness"
 step = "Fuzz all registered decoders"
 
+[rails.correctness-fuzz-regex-necessary-gram]
+tier = "correctness"
+command = "cargo +nightly-2026-08-01 fuzz run regex_necessary_gram -- -max_total_time=60"
+target_kind = "fuzz"
+workflow = ".circleci/config.yml"
+job = "heavy-correctness"
+step = "Fuzz all registered decoders"
+
 # Local scopes reuse the authoritative target IDs below. The runner expands a
 # scope into one cargo-nextest process, so adding a second hand-maintained path
 # or invoking Cargo once per test binary is unnecessary. CI authority remains
@@ -1785,6 +1793,14 @@ target = "lq_parse_pipeline"
 owner = "quanta-index-lq-norm"
 rail = "correctness-fuzz-lq-parse"
 
+[[fuzz_targets]]
+id = "lq-regex-necessary-gram-fuzz"
+path = "crates/quanta-index-lq-norm/fuzz/fuzz_targets/regex_necessary_gram.rs"
+manifest = "crates/quanta-index-lq-norm/fuzz/Cargo.toml"
+target = "regex_necessary_gram"
+owner = "quanta-index-lq-regex"
+rail = "correctness-fuzz-regex-necessary-gram"
+
 # This is the declared P0/P1 universe. A proof row may not be added without a
 # matching universe row, and every universe row must have an executable proof
 # mapping below. It is deliberately explicit: risk acceptance must be reviewed
@@ -1991,3 +2007,38 @@ id = "benchmark-identifier-robustness-fresh-join-python-owner"
 path = "tools/ci/tests/test_identifier_robustness_fresh_join.py"
 owner = "tools/benchmark/retrieval/identifier_robustness_fresh_join.py"
 rail = "pr-benchmark-control-python"
+
+[[integration_targets]]
+id = "kernel-native-lifecycle"
+path = "crates/quanta-index-kernel/tests/native_lifecycle.rs"
+owner = "quanta-index-kernel"
+target = "native_lifecycle"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-projection"
+path = "crates/quanta-index-kernel/tests/native_projection.rs"
+owner = "quanta-index-kernel"
+target = "native_projection"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-semantic-projection"
+path = "crates/quanta-index-kernel/tests/native_semantic_projection.rs"
+owner = "quanta-index-kernel"
+target = "native_semantic_projection"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-native-index-uds"
+path = "crates/quanta-index-searchd-runtime/tests/native_index_uds.rs"
+owner = "quanta-index-searchd-runtime"
+target = "native_index_uds"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-source-batch"
+path = "crates/quanta-index-kernel/tests/native_source_batch.rs"
+owner = "quanta-index-kernel"
+target = "native_source_batch"
+rail = "pr-workspace-nextest"

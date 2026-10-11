@@ -132,22 +132,6 @@ pub(crate) fn map_phrase_plan_error(err: PhrasePlannerError) -> CoreError {
     }
 }
 
-/// Fold one regex literal alternative for the `case:no` trigram prefilter.
-///
-/// An alternative is a byte prefix of some match. The extractor may have
-/// cut it inside a multi-byte character, so only the longest well-formed
-/// UTF-8 prefix is kept — a shorter prefix of a match is still a prefix —
-/// and it is folded with the same per-char fold that built the folded copy.
-/// An alternative with no well-formed prefix folds to nothing, which the
-/// prefilter refuses as unusable rather than filtering anything away.
-pub(crate) fn fold_literal_prefix(literal: &[u8]) -> Vec<u8> {
-    let complete = literal
-        .utf8_chunks()
-        .next()
-        .map_or("", |chunk| chunk.valid());
-    normalize::fold(complete).into_bytes()
-}
-
 pub(crate) fn map_positions_error(context: &str, err: &PositionsError) -> CoreError {
     match err.code {
         PositionsErrorCode::PlanLimitExceeded => CoreError::Typed {

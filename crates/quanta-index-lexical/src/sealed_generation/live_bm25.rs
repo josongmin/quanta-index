@@ -15,7 +15,10 @@ use std::collections::{BTreeMap, btree_map::Entry};
 use std::path::Path;
 use std::time::Instant;
 
-use quanta_index_core::CoreError;
+use quanta_index_core::{
+    CoreError, DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticSpanGuardV1,
+    DiagnosticStageV1, DiagnosticTerminalV1,
+};
 use tantivy::query::Bm25StatisticsProvider;
 use tantivy::schema::{Field, TantivyDocument, Value as _};
 use tantivy::{DocAddress, Index, Searcher, SegmentComponent, SegmentReader, Term};
@@ -57,6 +60,9 @@ pub(crate) struct LiveBm25Statistics {
 /// Stored census lengths are logical payload bytes, not filesystem read bytes.
 struct BuildObservation {
     started: Option<Instant>,
+    legacy_enabled: bool,
+    diagnostic: Option<DiagnosticContextV1>,
+    span: Option<DiagnosticSpanGuardV1>,
     reused_segments: u64,
     changed_segments: u64,
     new_segments: u64,
@@ -67,13 +73,27 @@ struct BuildObservation {
     changed_ns: u64,
     new_ns: u64,
     death_ns: u64,
+    active_segment: Option<(BuildSegmentKind, Instant)>,
     invalid: bool,
 }
 
+#[derive(Clone, Copy)]
+enum BuildSegmentKind {
+    Changed,
+    New,
+}
+
 impl BuildObservation {
-    fn new() -> Self {
+    fn new(diagnostic: Option<&DiagnosticContextV1>) -> Self {
+        let span = diagnostic.and_then(|context| {
+            crate::causal_profile::enter_span(context, DiagnosticStageV1::Bm25LiveBuild)
+        });
+        let legacy_enabled = crate::causal_profile::enabled();
         Self {
-            started: crate::causal_profile::enabled().then(Instant::now),
+            started: (legacy_enabled || span.is_some()).then(Instant::now),
+            legacy_enabled,
+            diagnostic: diagnostic.cloned(),
+            span,
             reused_segments: 0,
             changed_segments: 0,
             new_segments: 0,
@@ -84,6 +104,7 @@ impl BuildObservation {
             changed_ns: 0,
             new_ns: 0,
             death_ns: 0,
+            active_segment: None,
             invalid: false,
         }
     }
@@ -118,37 +139,135 @@ impl BuildObservation {
         }
     }
 
+    fn begin_segment(&mut self, kind: BuildSegmentKind) {
+        self.active_segment = self.started.map(|_| (kind, Instant::now()));
+    }
+
+    fn finish_segment(&mut self) {
+        if let Some((kind, started)) = self.active_segment.take() {
+            let total = match kind {
+                BuildSegmentKind::Changed => &mut self.changed_ns,
+                BuildSegmentKind::New => &mut self.new_ns,
+            };
+            Self::add_elapsed(total, Some(started), &mut self.invalid);
+        }
+    }
+
     #[expect(
         clippy::print_stderr,
         reason = "bounded opt-in causal marker is replayed against the scale artifact"
     )]
-    fn emit(&self, result: &LiveBm25Statistics) {
+    fn emit(mut self, result: &Result<LiveBm25Statistics, CoreError>) {
+        self.finish_segment();
         let Some(started) = self.started else {
             return;
         };
+        let succeeded = result.is_ok();
         if self.invalid {
-            eprintln!("QI_CAUSAL_V1 kind=bm25_live_build ok=0 reason=counter_overflow");
+            if let Some(context) = self.diagnostic.as_ref() {
+                context.health(DiagnosticHealthCodeV1::CounterOverflow);
+            }
+            if self.legacy_enabled {
+                eprintln!("QI_CAUSAL_V1 kind=bm25_live_build ok=0 reason=counter_overflow");
+            }
+            if let Some(span) = self.span.take() {
+                let _finished = span.finish(if succeeded {
+                    DiagnosticTerminalV1::Ok
+                } else {
+                    DiagnosticTerminalV1::Error { code: 1 }
+                });
+            }
             return;
         }
-        let Ok(retained_estimate_bytes) = result.heap_bytes_estimate() else {
-            eprintln!("QI_CAUSAL_V1 kind=bm25_live_build ok=0 reason=retained_estimate_failed");
+        // A failed build has no retained statistics. The work counters still
+        // describe completed documents and segments before the product error.
+        let retained_estimate_bytes = match result {
+            Ok(statistics) => statistics.heap_bytes_estimate(),
+            Err(_build_error) => Ok(0),
+        };
+        let Ok(retained_estimate_bytes) = retained_estimate_bytes else {
+            if let Some(context) = self.diagnostic.as_ref() {
+                context.health(DiagnosticHealthCodeV1::CounterOverflow);
+            }
+            if self.legacy_enabled {
+                eprintln!("QI_CAUSAL_V1 kind=bm25_live_build ok=0 reason=retained_estimate_failed");
+            }
+            if let Some(span) = self.span.take() {
+                let _finished = span.finish(DiagnosticTerminalV1::Ok);
+            }
             return;
         };
-        let correction_keys = result.segments.iter().try_fold(0_u64, |count, segment| {
-            let keys = u64::try_from(segment.dead_df.len())
-                .map_err(|error| resource(&format!("correction key count width: {error}")))?;
-            count
-                .checked_add(keys)
-                .ok_or_else(|| resource("correction key count overflow"))
-        });
+        let correction_keys = match result {
+            Ok(statistics) => statistics
+                .segments
+                .iter()
+                .try_fold(0_u64, |count, segment| {
+                    let keys = u64::try_from(segment.dead_df.len()).map_err(|error| {
+                        resource(&format!("correction key count width: {error}"))
+                    })?;
+                    count
+                        .checked_add(keys)
+                        .ok_or_else(|| resource("correction key count overflow"))
+                }),
+            Err(_build_error) => Ok(0),
+        };
+        let segment_fanout = match result {
+            Ok(statistics) => u64::try_from(statistics.segments.len())
+                .map_err(|error| resource(&format!("segment fanout width: {error}"))),
+            Err(_build_error) => self
+                .reused_segments
+                .checked_add(self.changed_segments)
+                .and_then(|count| count.checked_add(self.new_segments))
+                .ok_or_else(|| resource("partial segment fanout overflow")),
+        };
         let (Ok(elapsed_ns), Ok(correction_keys), Ok(segment_fanout)) = (
             u64::try_from(started.elapsed().as_nanos()),
             correction_keys,
-            u64::try_from(result.segments.len()),
+            segment_fanout,
         ) else {
-            eprintln!("QI_CAUSAL_V1 kind=bm25_live_build ok=0 reason=counter_overflow");
+            if let Some(context) = self.diagnostic.as_ref() {
+                context.health(DiagnosticHealthCodeV1::CounterOverflow);
+            }
+            if self.legacy_enabled {
+                eprintln!("QI_CAUSAL_V1 kind=bm25_live_build ok=0 reason=counter_overflow");
+            }
+            if let Some(span) = self.span.take() {
+                let _finished = span.finish(if succeeded {
+                    DiagnosticTerminalV1::Ok
+                } else {
+                    DiagnosticTerminalV1::Error { code: 1 }
+                });
+            }
             return;
         };
+        if let (Some(context), Some(span)) = (self.diagnostic.as_ref(), self.span.take()) {
+            context.bm25_live_build_aggregate(
+                &span,
+                1,
+                elapsed_ns,
+                self.reused_segments,
+                self.changed_segments,
+                self.new_segments,
+                self.mask_docs,
+                self.new_census_docs,
+                self.newly_dead_docs,
+                self.logical_census_bytes,
+                self.changed_ns,
+                self.new_ns,
+                self.death_ns,
+                correction_keys,
+                segment_fanout,
+                retained_estimate_bytes,
+            );
+            let _finished = span.finish(if succeeded {
+                DiagnosticTerminalV1::Ok
+            } else {
+                DiagnosticTerminalV1::Error { code: 1 }
+            });
+        }
+        if !self.legacy_enabled || !succeeded {
+            return;
+        }
         eprintln!(
             "QI_CAUSAL_V1 kind=bm25_live_build ok=1 elapsed_ns={elapsed_ns} reused_segments={} changed_segments={} new_segments={} mask_docs={} new_census_docs={} newly_dead_docs={} logical_census_bytes={} changed_ns={} new_ns={} death_ns={} correction_keys={correction_keys} segment_fanout={segment_fanout} retained_valid=1 retained_estimate_bytes={retained_estimate_bytes}",
             self.reused_segments,
@@ -370,6 +489,7 @@ fn immutable_components_match(
 impl LiveBm25Statistics {
     /// Build against the finalized commit. A sealed base's sidecar is read
     /// under its manifest and segment identity before any row is reused.
+    #[cfg(test)]
     pub(crate) fn build(
         index: &Index,
         fields: &SchemaFields,
@@ -378,261 +498,291 @@ impl LiveBm25Statistics {
         base: Option<&BaseSnapshot>,
         index_segments: &[SealedArtifactCommitmentV1],
     ) -> Result<Self, CoreError> {
-        let mut observation = BuildObservation::new();
-        let reader = index.reader().map_err(|error| {
-            CoreError::Storage(format!("lexical: open BM25 seal reader: {error}"))
-        })?;
-        let searcher = reader.searcher();
-        let schema = index.schema();
-        let indexed: Vec<_> = schema
-            .fields()
-            .filter(|(_, entry)| entry.field_type().is_indexed())
-            .map(|(field, _)| field.field_id())
-            .collect();
-        let current_meta: BTreeMap<_, _> = index
-            .searchable_segment_metas()
-            .map_err(|error| CoreError::Storage(format!("lexical: list BM25 segments: {error}")))?
-            .into_iter()
-            .map(|meta| (meta.id().to_string(), meta))
-            .collect();
-        let current_files: BTreeMap<_, _> = index_segments
-            .iter()
-            .map(|row| (row.name.as_str(), row))
-            .collect();
-        let base_reader = base
-            .as_ref()
-            .map(|base| base.index.reader())
-            .transpose()
-            .map_err(|error| {
-                CoreError::Storage(format!("lexical: open BM25 base reader: {error}"))
+        Self::build_observed(
+            index,
+            fields,
+            meta_digest,
+            generation_dir,
+            base,
+            index_segments,
+            None,
+        )
+    }
+
+    pub(crate) fn build_observed(
+        index: &Index,
+        fields: &SchemaFields,
+        meta_digest: [u8; 32],
+        generation_dir: &Path,
+        base: Option<&BaseSnapshot>,
+        index_segments: &[SealedArtifactCommitmentV1],
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<Self, CoreError> {
+        let mut observation = BuildObservation::new(diagnostic);
+        let result = (|| -> Result<Self, CoreError> {
+            let reader = index.reader().map_err(|error| {
+                CoreError::Storage(format!("lexical: open BM25 seal reader: {error}"))
             })?;
-        let base_searcher = base_reader.as_ref().map(tantivy::IndexReader::searcher);
-        let base_meta: BTreeMap<_, _> = base
-            .as_ref()
-            .map(|base| {
-                base.index.searchable_segment_metas().map(|metas| {
-                    metas
-                        .into_iter()
-                        .map(|meta| (meta.id().to_string(), meta))
+            let searcher = reader.searcher();
+            let schema = index.schema();
+            let indexed: Vec<_> = schema
+                .fields()
+                .filter(|(_, entry)| entry.field_type().is_indexed())
+                .map(|(field, _)| field.field_id())
+                .collect();
+            let current_meta: BTreeMap<_, _> = index
+                .searchable_segment_metas()
+                .map_err(|error| {
+                    CoreError::Storage(format!("lexical: list BM25 segments: {error}"))
+                })?
+                .into_iter()
+                .map(|meta| (meta.id().to_string(), meta))
+                .collect();
+            let current_files: BTreeMap<_, _> = index_segments
+                .iter()
+                .map(|row| (row.name.as_str(), row))
+                .collect();
+            let base_reader = base
+                .as_ref()
+                .map(|base| base.index.reader())
+                .transpose()
+                .map_err(|error| {
+                    CoreError::Storage(format!("lexical: open BM25 base reader: {error}"))
+                })?;
+            let base_searcher = base_reader.as_ref().map(tantivy::IndexReader::searcher);
+            let base_meta: BTreeMap<_, _> = base
+                .as_ref()
+                .map(|base| {
+                    base.index.searchable_segment_metas().map(|metas| {
+                        metas
+                            .into_iter()
+                            .map(|meta| (meta.id().to_string(), meta))
+                            .collect()
+                    })
+                })
+                .transpose()
+                .map_err(|error| {
+                    CoreError::Storage(format!("lexical: list BM25 base segments: {error}"))
+                })?
+                .unwrap_or_default();
+            let base_files: BTreeMap<_, _> = base
+                .as_ref()
+                .map(|base| {
+                    base.index_segments
+                        .iter()
+                        .map(|row| (row.name.as_str(), row))
                         .collect()
                 })
-            })
-            .transpose()
-            .map_err(|error| {
-                CoreError::Storage(format!("lexical: list BM25 base segments: {error}"))
-            })?
-            .unwrap_or_default();
-        let base_files: BTreeMap<_, _> = base
-            .as_ref()
-            .map(|base| {
-                base.index_segments
-                    .iter()
-                    .map(|row| (row.name.as_str(), row))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let base_rows: BTreeMap<_, _> = base
-            .as_ref()
-            .map(|base| {
-                base.statistics
-                    .segments
-                    .iter()
-                    .map(|row| (row.identity.0.as_str(), row))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let base_ordinals: BTreeMap<_, _> = base_searcher
-            .as_ref()
-            .map(|searcher| {
-                searcher
-                    .segment_readers()
-                    .iter()
-                    .enumerate()
-                    .map(|(ordinal, segment)| {
-                        (
-                            tantivy::SegmentReader::segment_id(segment).to_string(),
-                            ordinal,
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut segments = Vec::new();
-        segments
-            .try_reserve_exact(searcher.segment_readers().len())
-            .map_err(|error| resource(&format!("segment allocation: {error}")))?;
-        let mut admitted = 0_usize;
-        for (ordinal, segment) in searcher.segment_readers().iter().enumerate() {
-            let identity = segment_identity(segment);
-            if let (
-                Some(base),
-                Some(base_searcher),
-                Some(&old_ordinal),
-                Some(old_row),
-                Some(target_meta),
-                Some(old_meta),
-            ) = (
-                base.as_ref(),
-                base_searcher.as_ref(),
-                base_ordinals.get(&identity.0),
-                base_rows.get(identity.0.as_str()),
-                current_meta.get(&identity.0),
-                base_meta.get(&identity.0),
-            ) {
-                let old_segment = base_searcher
-                    .segment_readers()
-                    .get(old_ordinal)
-                    .ok_or_else(|| corrupt(generation_dir, "carried segment ordinal is missing"))?;
-                if identity.1 != old_row.identity.1 || identity.1 != old_segment.max_doc() {
-                    return Err(corrupt(generation_dir, "carried segment max_doc changed"));
-                }
-                if !immutable_components_match(target_meta, old_meta, &current_files, &base_files) {
-                    return Err(corrupt(
-                        generation_dir,
-                        "carried segment immutable components changed",
-                    ));
-                }
-                let mut statistics = (**old_row).clone();
-                let mut segment_charged = charged_rows(&statistics)?;
-                let target_delete = target_meta.relative_path(SegmentComponent::Delete);
-                let base_delete = old_meta.relative_path(SegmentComponent::Delete);
-                let target_delete = target_delete
-                    .to_str()
-                    .and_then(|name| current_files.get(name));
-                let base_delete = base_delete.to_str().and_then(|name| base_files.get(name));
-                let same_delete = match (target_delete, base_delete) {
-                    (None, None) => true,
-                    (Some(target), Some(base)) => {
-                        target.bytes == base.bytes && target.sha256 == base.sha256
+                .unwrap_or_default();
+            let base_rows: BTreeMap<_, _> = base
+                .as_ref()
+                .map(|base| {
+                    base.statistics
+                        .segments
+                        .iter()
+                        .map(|row| (row.identity.0.as_str(), row))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let base_ordinals: BTreeMap<_, _> = base_searcher
+                .as_ref()
+                .map(|searcher| {
+                    searcher
+                        .segment_readers()
+                        .iter()
+                        .enumerate()
+                        .map(|(ordinal, segment)| {
+                            (
+                                tantivy::SegmentReader::segment_id(segment).to_string(),
+                                ordinal,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut segments = Vec::new();
+            segments
+                .try_reserve_exact(searcher.segment_readers().len())
+                .map_err(|error| resource(&format!("segment allocation: {error}")))?;
+            let mut admitted = 0_usize;
+            for (ordinal, segment) in searcher.segment_readers().iter().enumerate() {
+                let identity = segment_identity(segment);
+                if let (
+                    Some(base),
+                    Some(base_searcher),
+                    Some(&old_ordinal),
+                    Some(old_row),
+                    Some(target_meta),
+                    Some(old_meta),
+                ) = (
+                    base.as_ref(),
+                    base_searcher.as_ref(),
+                    base_ordinals.get(&identity.0),
+                    base_rows.get(identity.0.as_str()),
+                    current_meta.get(&identity.0),
+                    base_meta.get(&identity.0),
+                ) {
+                    let old_segment = base_searcher
+                        .segment_readers()
+                        .get(old_ordinal)
+                        .ok_or_else(|| {
+                            corrupt(generation_dir, "carried segment ordinal is missing")
+                        })?;
+                    if identity.1 != old_row.identity.1 || identity.1 != old_segment.max_doc() {
+                        return Err(corrupt(generation_dir, "carried segment max_doc changed"));
                     }
-                    _ => false,
-                };
-                if identity == old_row.identity {
-                    if !same_delete {
+                    if !immutable_components_match(
+                        target_meta,
+                        old_meta,
+                        &current_files,
+                        &base_files,
+                    ) {
                         return Err(corrupt(
                             generation_dir,
-                            "unchanged deletion identity has different bitmap bytes",
+                            "carried segment immutable components changed",
                         ));
                     }
-                    push_segment(&mut segments, &mut admitted, statistics)?;
-                    if observation.started.is_some() {
-                        BuildObservation::add_counter(
-                            &mut observation.reused_segments,
-                            Some(1),
-                            &mut observation.invalid,
-                        );
-                    }
-                    continue;
-                }
-                if same_delete {
-                    return Err(corrupt(
-                        generation_dir,
-                        "changed deletion identity retained bitmap bytes",
-                    ));
-                }
-                let changed_started = observation.started.map(|_| Instant::now());
-                let mut new_deaths = 0_u64;
-                for doc_id in 0..segment.max_doc() {
-                    let was_dead = old_segment.is_deleted(doc_id);
-                    let is_dead = segment.is_deleted(doc_id);
-                    if was_dead && !is_dead {
-                        return Err(corrupt(
-                            generation_dir,
-                            "carried segment resurrected a document",
-                        ));
-                    }
-                    if !was_dead && is_dead {
-                        let death_started = observation.started.map(|_| Instant::now());
-                        let (census, logical_bytes) =
-                            census_at(base_searcher, &base.index, fields, old_ordinal, doc_id)?;
-                        subtract_census(&mut statistics, &mut segment_charged, &census)?;
-                        add_count(&mut new_deaths, 1)?;
+                    let mut statistics = (**old_row).clone();
+                    let mut segment_charged = charged_rows(&statistics)?;
+                    let target_delete = target_meta.relative_path(SegmentComponent::Delete);
+                    let base_delete = old_meta.relative_path(SegmentComponent::Delete);
+                    let target_delete = target_delete
+                        .to_str()
+                        .and_then(|name| current_files.get(name));
+                    let base_delete = base_delete.to_str().and_then(|name| base_files.get(name));
+                    let same_delete = match (target_delete, base_delete) {
+                        (None, None) => true,
+                        (Some(target), Some(base)) => {
+                            target.bytes == base.bytes && target.sha256 == base.sha256
+                        }
+                        _ => false,
+                    };
+                    if identity == old_row.identity {
+                        if !same_delete {
+                            return Err(corrupt(
+                                generation_dir,
+                                "unchanged deletion identity has different bitmap bytes",
+                            ));
+                        }
+                        push_segment(&mut segments, &mut admitted, statistics)?;
                         if observation.started.is_some() {
                             BuildObservation::add_counter(
-                                &mut observation.newly_dead_docs,
+                                &mut observation.reused_segments,
                                 Some(1),
                                 &mut observation.invalid,
                             );
-                            observation.add_bytes(logical_bytes);
-                            BuildObservation::add_elapsed(
-                                &mut observation.death_ns,
-                                death_started,
+                        }
+                        continue;
+                    }
+                    if same_delete {
+                        return Err(corrupt(
+                            generation_dir,
+                            "changed deletion identity retained bitmap bytes",
+                        ));
+                    }
+                    observation.begin_segment(BuildSegmentKind::Changed);
+                    let mut new_deaths = 0_u64;
+                    for doc_id in 0..segment.max_doc() {
+                        let was_dead = old_segment.is_deleted(doc_id);
+                        let is_dead = segment.is_deleted(doc_id);
+                        if was_dead && !is_dead {
+                            return Err(corrupt(
+                                generation_dir,
+                                "carried segment resurrected a document",
+                            ));
+                        }
+                        if !was_dead && is_dead {
+                            let death_started = observation.started.map(|_| Instant::now());
+                            let (census, logical_bytes) =
+                                census_at(base_searcher, &base.index, fields, old_ordinal, doc_id)?;
+                            subtract_census(&mut statistics, &mut segment_charged, &census)?;
+                            add_count(&mut new_deaths, 1)?;
+                            if observation.started.is_some() {
+                                BuildObservation::add_counter(
+                                    &mut observation.newly_dead_docs,
+                                    Some(1),
+                                    &mut observation.invalid,
+                                );
+                                observation.add_bytes(logical_bytes);
+                                BuildObservation::add_elapsed(
+                                    &mut observation.death_ns,
+                                    death_started,
+                                    &mut observation.invalid,
+                                );
+                            }
+                        }
+                        if observation.started.is_some() {
+                            BuildObservation::add_counter(
+                                &mut observation.mask_docs,
+                                Some(1),
                                 &mut observation.invalid,
                             );
                         }
                     }
+                    let expected_old_live = u64::from(segment.num_docs())
+                        .checked_add(new_deaths)
+                        .ok_or_else(|| {
+                        corrupt(generation_dir, "carried deletion count overflows")
+                    })?;
+                    if u64::from(old_segment.num_docs()) != expected_old_live {
+                        return Err(corrupt(
+                            generation_dir,
+                            "carried segment deletion count differs",
+                        ));
+                    }
+                    statistics.identity = identity;
+                    push_segment(&mut segments, &mut admitted, statistics)?;
+                    if observation.started.is_some() {
+                        BuildObservation::add_counter(
+                            &mut observation.changed_segments,
+                            Some(1),
+                            &mut observation.invalid,
+                        );
+                    }
+                    observation.finish_segment();
+                    continue;
                 }
-                let expected_old_live = u64::from(segment.num_docs())
-                    .checked_add(new_deaths)
-                    .ok_or_else(|| corrupt(generation_dir, "carried deletion count overflows"))?;
-                if u64::from(old_segment.num_docs()) != expected_old_live {
-                    return Err(corrupt(
-                        generation_dir,
-                        "carried segment deletion count differs",
-                    ));
+                observation.begin_segment(BuildSegmentKind::New);
+                let mut statistics = SegmentStatistics {
+                    identity,
+                    field_tokens: indexed.iter().map(|field| (*field, 0)).collect(),
+                    dead_df: BTreeMap::new(),
+                };
+                let mut segment_charged = charged_rows(&statistics)?;
+                for doc_id in 0..segment.max_doc() {
+                    let (census, logical_bytes) =
+                        census_at(&searcher, index, fields, ordinal, doc_id)?;
+                    apply_census(
+                        &mut statistics,
+                        &mut segment_charged,
+                        &census,
+                        !segment.is_deleted(doc_id),
+                    )?;
+                    if observation.started.is_some() {
+                        BuildObservation::add_counter(
+                            &mut observation.new_census_docs,
+                            Some(1),
+                            &mut observation.invalid,
+                        );
+                        observation.add_bytes(logical_bytes);
+                    }
                 }
-                statistics.identity = identity;
                 push_segment(&mut segments, &mut admitted, statistics)?;
                 if observation.started.is_some() {
                     BuildObservation::add_counter(
-                        &mut observation.changed_segments,
+                        &mut observation.new_segments,
                         Some(1),
                         &mut observation.invalid,
                     );
-                    BuildObservation::add_counter(
-                        &mut observation.mask_docs,
-                        Some(u64::from(segment.max_doc())),
-                        &mut observation.invalid,
-                    );
-                    BuildObservation::add_elapsed(
-                        &mut observation.changed_ns,
-                        changed_started,
-                        &mut observation.invalid,
-                    );
                 }
-                continue;
+                observation.finish_segment();
             }
-            let new_started = observation.started.map(|_| Instant::now());
-            let mut statistics = SegmentStatistics {
-                identity,
-                field_tokens: indexed.iter().map(|field| (*field, 0)).collect(),
-                dead_df: BTreeMap::new(),
-            };
-            let mut segment_charged = charged_rows(&statistics)?;
-            for doc_id in 0..segment.max_doc() {
-                let (census, logical_bytes) = census_at(&searcher, index, fields, ordinal, doc_id)?;
-                apply_census(
-                    &mut statistics,
-                    &mut segment_charged,
-                    &census,
-                    !segment.is_deleted(doc_id),
-                )?;
-                if observation.started.is_some() {
-                    BuildObservation::add_counter(
-                        &mut observation.new_census_docs,
-                        Some(1),
-                        &mut observation.invalid,
-                    );
-                    observation.add_bytes(logical_bytes);
-                }
-            }
-            push_segment(&mut segments, &mut admitted, statistics)?;
-            if observation.started.is_some() {
-                BuildObservation::add_counter(
-                    &mut observation.new_segments,
-                    Some(1),
-                    &mut observation.invalid,
-                );
-                BuildObservation::add_elapsed(
-                    &mut observation.new_ns,
-                    new_started,
-                    &mut observation.invalid,
-                );
-            }
-        }
-        let result = Self::from_segments(meta_digest, searcher.num_docs(), segments, &indexed, 0)?;
+            let result =
+                Self::from_segments(meta_digest, searcher.num_docs(), segments, &indexed, 0)?;
+            Ok(result)
+        })();
         observation.emit(&result);
-        Ok(result)
+        result
     }
 
     fn from_segments(

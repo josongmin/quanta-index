@@ -249,7 +249,7 @@ fn relevance_ranks_by_score_and_recency_by_time_on_one_fixture() -> TestResult {
     let plane = plane()?;
     let _receipt = plane
         .materializer
-        .publish_batch(&batch("fixture", fixture()))?;
+        .publish_batch(&batch("fixture", fixture()), None)?;
     let reference = reference_ranking(&fixture(), &["needle"]);
     if reference.len() != 5 {
         return Err(format!("five commits mention needle: {reference:?}").into());
@@ -341,7 +341,7 @@ fn a_cursor_of_the_other_order_is_refused_typed() -> TestResult {
     let plane = plane()?;
     let _receipt = plane
         .materializer
-        .publish_batch(&batch("fixture", fixture()))?;
+        .publish_batch(&batch("fixture", fixture()), None)?;
     let relevance = page(
         &plane.dispatcher,
         "type:commit needle",
@@ -412,7 +412,7 @@ fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> Test
     let plane = plane()?;
     let _receipt = plane
         .materializer
-        .publish_batch(&batch("fixture", fixture()))?;
+        .publish_batch(&batch("fixture", fixture()), None)?;
     let reference: Vec<CommitSha> = reference_ranking(&fixture(), &["needle"])
         .into_iter()
         .map(|(sha, _score)| sha)
@@ -464,10 +464,13 @@ fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> Test
     // An ingest between pages does not move a walk in flight: the
     // continuation is served at its epoch, whose index is unchanged.
     let first_cursor = first_cursor.ok_or("the walk had more than one page")?;
-    let _receipt = plane.materializer.publish_batch(&batch(
-        "late",
-        vec![commit(9, 900, "carol", "needle needle needle needle")],
-    ))?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch(
+            "late",
+            vec![commit(9, 900, "carol", "needle needle needle needle")],
+        ),
+        None,
+    )?;
     let continued = page(
         &plane.dispatcher,
         "type:commit needle",
@@ -501,10 +504,13 @@ fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> Test
     // discarded (no reader holds it) and the cursor is refused expired.
     for step in 0..AUX_EPOCH_RETAIN {
         let byte = u8::try_from(step.saturating_add(20))?;
-        let _receipt = plane.materializer.publish_batch(&batch(
-            &format!("more-{step}"),
-            vec![commit(byte, 1_000, "dave", "unrelated")],
-        ))?;
+        let _receipt = plane.materializer.publish_batch(
+            &batch(
+                &format!("more-{step}"),
+                vec![commit(byte, 1_000, "dave", "unrelated")],
+            ),
+            None,
+        )?;
     }
     let code = error_code(
         &plane.dispatcher,
@@ -596,14 +602,17 @@ fn a_discard_that_fails_after_the_delta_is_durable_is_counted_and_retried() -> T
     };
     let _receipt = plane
         .materializer
-        .publish_batch(&batch("fixture", fixture()))?;
+        .publish_batch(&batch("fixture", fixture()), None)?;
     plane.index.fail_next_discard();
     for step in 0..=AUX_EPOCH_RETAIN {
         let byte = u8::try_from(step.saturating_add(20))?;
-        let _receipt = plane.materializer.publish_batch(&batch(
-            &format!("more-{step}"),
-            vec![commit(byte, 1_000, "dave", "unrelated")],
-        ))?;
+        let _receipt = plane.materializer.publish_batch(
+            &batch(
+                &format!("more-{step}"),
+                vec![commit(byte, 1_000, "dave", "unrelated")],
+            ),
+            None,
+        )?;
     }
     let (retained, durable) = retained_and_durable(&plane)?;
     if failures(&plane)? != 1
@@ -617,10 +626,10 @@ fn a_discard_that_fails_after_the_delta_is_durable_is_counted_and_retried() -> T
         .into());
     }
 
-    let _receipt = plane.materializer.publish_batch(&batch(
-        "after",
-        vec![commit(99, 2_000, "erin", "unrelated")],
-    ))?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch("after", vec![commit(99, 2_000, "erin", "unrelated")]),
+        None,
+    )?;
     let (retained, durable) = retained_and_durable(&plane)?;
     if failures(&plane)? != 1 || retained != durable {
         return Err(format!(
@@ -670,7 +679,7 @@ fn an_unscorable_expression_is_refused_under_relevance_and_filters_under_recency
     let plane = plane()?;
     let _receipt = plane
         .materializer
-        .publish_batch(&batch("fixture", fixture()))?;
+        .publish_batch(&batch("fixture", fixture()), None)?;
     let code = error_code(
         &plane.dispatcher,
         "type:commit 'needle'",
@@ -705,15 +714,18 @@ fn an_unscorable_expression_is_refused_under_relevance_and_filters_under_recency
 #[test]
 fn recency_and_relevance_count_the_same_rows_for_the_same_text_query() -> TestResult {
     let plane = plane()?;
-    let _receipt = plane.materializer.publish_batch(&batch(
-        "predicate-parity",
-        vec![
-            commit(1, 100, "alice", "fix bug"),
-            commit(2, 200, "alice", "prefix"),
-            commit(3, 300, "alice", "Fix typo"),
-            commit(4, 400, "alice", "fix the 'x.y' literal"),
-        ],
-    ))?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch(
+            "predicate-parity",
+            vec![
+                commit(1, 100, "alice", "fix bug"),
+                commit(2, 200, "alice", "prefix"),
+                commit(3, 300, "alice", "Fix typo"),
+                commit(4, 400, "alice", "fix the 'x.y' literal"),
+            ],
+        ),
+        None,
+    )?;
     for (query_text, expected) in [
         ("type:commit fix", BTreeSet::from([sha(1), sha(3), sha(4)])),
         ("type:commit fix case:yes", BTreeSet::from([sha(1), sha(4)])),
@@ -745,7 +757,7 @@ fn filters_apply_to_relevance_rows_and_the_count_is_exact() -> TestResult {
     let plane = plane()?;
     let _receipt = plane
         .materializer
-        .publish_batch(&batch("fixture", fixture()))?;
+        .publish_batch(&batch("fixture", fixture()), None)?;
     let bob = page(
         &plane.dispatcher,
         "type:commit author:bob needle",
@@ -792,14 +804,17 @@ fn an_epoch_index_is_rebuilt_in_full_when_the_base_has_none() -> TestResult {
             std::time::Instant::now(),
         )?;
     }
-    let _receipt = plane.materializer.publish_batch(&batch(
-        "first-indexed",
-        vec![commit(2, 200, "bob", "needle now")],
-    ))?;
-    let _receipt = plane.materializer.publish_batch(&batch(
-        "second-indexed",
-        vec![commit(3, 300, "carol", "needle again")],
-    ))?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch("first-indexed", vec![commit(2, 200, "bob", "needle now")]),
+        None,
+    )?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch(
+            "second-indexed",
+            vec![commit(3, 300, "carol", "needle again")],
+        ),
+        None,
+    )?;
     let builds = plane.index.builds()?;
     if builds
         != vec![
@@ -841,11 +856,14 @@ fn a_failed_index_publish_leaves_the_ledger_and_catalog_untouched() -> TestResul
         ledger: Arc::clone(&ledger),
     })
     .with_history_text(history_text);
-    let _receipt = materializer.publish_batch(&batch("fixture", fixture()))?;
+    let _receipt = materializer.publish_batch(&batch("fixture", fixture()), None)?;
     let applies_before = catalog.applies();
     let rows_before = catalog.row_count();
     index.fail_next_publish();
-    match materializer.publish_batch(&batch("refused", vec![commit(9, 900, "carol", "needle")])) {
+    match materializer.publish_batch(
+        &batch("refused", vec![commit(9, 900, "carol", "needle")]),
+        None,
+    ) {
         Err(CoreError::Storage(message)) if message.contains("injected publish failure") => {}
         other => return Err(format!("the publish failure propagates, got {other:?}").into()),
     }
@@ -875,8 +893,10 @@ fn a_failed_index_publish_leaves_the_ledger_and_catalog_untouched() -> TestResul
         return Err("no epoch index beyond the published one exists".into());
     }
     // The next attempt lands and claims epoch 2 with its index.
-    let _receipt =
-        materializer.publish_batch(&batch("retry", vec![commit(9, 900, "carol", "needle")]))?;
+    let _receipt = materializer.publish_batch(
+        &batch("retry", vec![commit(9, 900, "carol", "needle")]),
+        None,
+    )?;
     if index.epochs_of(&generation)? != vec![AuxEpochV1::new(1), AuxEpochV1::new(2)] {
         return Err("the retry publishes epoch 2".into());
     }

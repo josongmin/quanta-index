@@ -14,6 +14,7 @@ mod manifest;
 mod overlay;
 mod path_io;
 pub(crate) mod publication_proof;
+mod receipts;
 mod scrub;
 mod seal;
 mod verify;
@@ -29,13 +30,14 @@ pub(crate) use path_io::{
     entry_names_at, is_unsafe_artifact_path, open_generation_dir_nofollow, open_regular_below,
     open_regular_nofollow, optional_entry_at, optional_entry_metadata, read_opened_bounded,
 };
-pub(crate) use scrub::{
+pub(crate) use receipts::{
     LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME, last_completed_scrub,
-    quarantine_seal_failure_at, quarantined_by_scrub, quarantined_by_scrub_at,
-    refuse_if_quarantined_at, scrub_step, seal_failure_quarantine_reason,
+    quarantine_content_corrupt_at, quarantine_seal_failure_at, quarantined_by_scrub,
+    quarantined_by_scrub_at, refuse_if_quarantined_at, seal_failure_quarantine_reason,
 };
+pub(crate) use scrub::{ScrubStepResult, SharedScrubProgress, scrub_step};
 pub(crate) use seal::seal_generation;
 pub(crate) use verify::{
-    DiscardingVisitor, SealedGenerationVisitor, walk_sealed_generation, walk_sealed_generation_at,
-    walk_sealed_generation_reusing_proofs,
+    DiscardingVisitor, SealedGenerationVisitor, read_committed, walk_sealed_generation,
+    walk_sealed_generation_at, walk_sealed_generation_reusing_proofs,
 };

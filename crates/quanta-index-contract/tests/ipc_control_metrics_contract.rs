@@ -142,6 +142,7 @@ fn snapshot_round_trips_and_rides_the_control_envelope() -> TestRes {
     let request = SearchPlaneControlIpcRequestEnvelope {
         request_id: 77,
         payload: SearchPlaneControlIpcRequest::MetricsSnapshot(MetricsSnapshotRequest),
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
     };
     let decoded: SearchPlaneControlIpcRequestEnvelope = decode(&encode(&request)?)?;
     if decoded != request {

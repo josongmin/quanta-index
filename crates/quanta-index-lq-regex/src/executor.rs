@@ -30,7 +30,7 @@
 use core::time::Duration;
 use std::time::Instant;
 
-use quanta_index_lq_trigram::{DocId, DocResolver};
+use quanta_index_lq_trigram::{DocId, DocResolver, NecessaryGramExpr};
 use regex_automata::{MatchKind, meta};
 use regex_syntax::hir::Hir;
 
@@ -77,6 +77,13 @@ impl RegexCompilationPlan {
     /// Extract prefilter literals from validated HIR without allocating an engine.
     pub fn prefilter_literal_alternation(&self) -> Result<Vec<Vec<u8>>, RegexError> {
         extract_prefilter_literal_alternation(&self.hir)
+    }
+
+    /// Sound necessary condition over raw byte trigrams. `AllDocs` is an
+    /// explicit verify-only result, not an empty candidate list.
+    #[must_use]
+    pub fn necessary_gram_expr(&self) -> NecessaryGramExpr {
+        crate::necessary_gram::from_hir(&self.hir)
     }
 }
 
@@ -252,6 +259,12 @@ impl RegexExecutor {
     /// [`extract_prefilter_literal_alternation`].
     pub fn prefilter_literal_alternation(&self) -> Result<Vec<Vec<u8>>, RegexError> {
         extract_prefilter_literal_alternation(&self.hir)
+    }
+
+    /// Derive the same necessary condition from this executor's validated HIR.
+    #[must_use]
+    pub fn necessary_gram_expr(&self) -> NecessaryGramExpr {
+        crate::necessary_gram::from_hir(&self.hir)
     }
 
     /// Verify a single document's bytes against the compiled regex.

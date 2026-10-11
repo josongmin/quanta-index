@@ -132,6 +132,7 @@ where
 
 fn lex_query(needle: &str, pin: GenerationPin) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 1,
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
@@ -150,6 +151,7 @@ fn explain_request(
     candidate: LexicalCandidate,
 ) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 2,
         payload: SearchPlaneQueryIpcRequest::Explain(SearchPlaneExplainQueryRequest {
             generation: pin,

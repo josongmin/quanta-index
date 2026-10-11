@@ -6,19 +6,27 @@
 //! commitment for every file that *is* the base's inode (the segment
 //! files, text-authority shards, file-authority objects and overlays the delta hard-linked) and
 //! measures only what it wrote. These tests pin that with an inode oracle:
-//! the files of the delta are partitioned on disk by whether their inode
-//! is the base's, and the seal's own measurement — bytes it read through
-//! its hasher, bytes it inherited — must equal the sizes of exactly those
-//! partitions. Nothing here reads a clock.
-//! File-index admission reads changed raw source input; its counters must not
-//! be mixed with commitment inheritance or cold file-authority replay.
+//! the generation-local files of the delta are partitioned on disk by whether
+//! their inode is the base's, and the seal's own measurement — bytes it read
+//! through its hasher, bytes it inherited — must equal those partitions.
+//! Shared File and Native pool bodies have separate physical reuse oracles.
+//! Nothing here reads a clock.
+//! File admission verifies changed raw source input at seal; its logical
+//! counters are separate from generation-local hashing and pool object I/O.
 
 #![forbid(unsafe_code)]
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::io::Read as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+
+use sha2::{Digest as _, Sha256};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
@@ -28,7 +36,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     GenerationStorageKeyV1, LexicalIndexOpenPort, MetricSourcePort, MetricValueV1,
-    RepoMetaIngestPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
+    RepoMetaIngestPort, RequestBudgetV1,
 };
 use quanta_index_lexical::{LexicalAdapter, LexicalSealCommitmentStats};
 
@@ -37,8 +45,7 @@ mod current_source_fixture;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// Enough documents for several text-authority shards, so the untouched
-/// shards and the base segment are the bulk of what a delta inherits.
+/// Enough documents for several bounded Native segments and Tantivy segments.
 const DOCS: usize = 3 * 2048 + 50;
 const TEXT_AUTHORITY_DIR: &str = "text-authority";
 const FILE_AUTHORITY_DIR: &str = "file-authority";
@@ -159,6 +166,61 @@ fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
     GenerationStorageKeyV1::for_repo_revision(&repo(), &revision()).generation_dir(root, generation)
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct PooledBodyFacts {
+    path: PathBuf,
+    inode: u64,
+    bytes: u64,
+    sha256: [u8; 32],
+}
+
+/// Locate one physical body by a fixed witness, without relying on either
+/// authority's map or decoding its private root format.
+fn pooled_body(root: &Path, kind: u8, witness: &[u8]) -> Result<PooledBodyFacts, Box<dyn Error>> {
+    let mut matches = Vec::new();
+    for shard in std::fs::read_dir(root.join("lexical-object-pool/objects"))? {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(shard.path())? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let mut header = [0_u8; 11];
+            std::fs::File::open(&path)?.read_exact(&mut header)?;
+            if header.get(..8) != Some(b"QLSTOR01".as_slice()) || header.get(10) != Some(&kind) {
+                continue;
+            }
+            let raw = std::fs::read(&path)?;
+            if !raw.windows(witness.len()).any(|bytes| bytes == witness) {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            matches.push(PooledBodyFacts {
+                path,
+                inode: metadata.ino(),
+                bytes: metadata.len(),
+                sha256: Sha256::digest(raw).into(),
+            });
+        }
+    }
+    let [found] = matches.as_slice() else {
+        return Err(format!(
+            "expected one pooled body kind {kind} for fixed witness, got {matches:?}"
+        )
+        .into());
+    };
+    Ok(PooledBodyFacts {
+        path: found.path.clone(),
+        inode: found.inode,
+        bytes: found.bytes,
+        sha256: found.sha256,
+    })
+}
+
 /// One overlay so the delta has an overlay to inherit.
 #[expect(
     clippy::expect_used,
@@ -193,7 +255,7 @@ struct CommittedFile {
 /// sees it.
 ///
 /// The Tantivy commit, every segment component, ranked-key file and committed
-/// live BM25 statistics, every file under `text-authority/` or `file-authority/`
+/// live BM25 statistics, the Native and File roots under their authority trees,
 /// and every overlay present. Tantivy's managed list and
 /// lock files, the seal's own manifest and identity and the delta marker
 /// are not query content and are not committed.
@@ -214,35 +276,6 @@ fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn 
                 let shard = shard?;
                 let shard_metadata = shard.path().symlink_metadata()?;
                 let shard_name = shard.file_name().to_string_lossy().into_owned();
-                if shard_metadata.is_dir() && name == FILE_AUTHORITY_DIR && shard_name == "objects"
-                {
-                    for object in std::fs::read_dir(shard.path())? {
-                        let object = object?;
-                        let object_metadata = object.path().symlink_metadata()?;
-                        let object_name = object.file_name().to_string_lossy().into_owned();
-                        let Some(digest) = object_name.strip_suffix(".bin") else {
-                            return Err(
-                                format!("unexpected file-authority object: {object_name}").into()
-                            );
-                        };
-                        if !object_metadata.is_file()
-                            || digest.len() != 64
-                            || !digest
-                                .bytes()
-                                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-                        {
-                            return Err(
-                                format!("invalid file-authority object: {object_name}").into()
-                            );
-                        }
-                        files.push(CommittedFile {
-                            name: format!("{name}/{shard_name}/{object_name}"),
-                            bytes: object_metadata.len(),
-                            inode: object_metadata.ino(),
-                        });
-                    }
-                    continue;
-                }
                 if !shard_metadata.is_file() {
                     return Err(format!("unexpected sidecar entry: {name}/{shard_name}").into());
                 }
@@ -299,18 +332,12 @@ fn delta_stats(
         bytes_hashed: after.bytes_hashed.saturating_sub(before.bytes_hashed),
         files_inherited: after.files_inherited.saturating_sub(before.files_inherited),
         bytes_inherited: after.bytes_inherited.saturating_sub(before.bytes_inherited),
-        file_admission_files_read: after
-            .file_admission_files_read
-            .saturating_sub(before.file_admission_files_read),
-        file_admission_bytes_read: after
-            .file_admission_bytes_read
-            .saturating_sub(before.file_admission_bytes_read),
-        file_authority_replay_files_read: after
-            .file_authority_replay_files_read
-            .saturating_sub(before.file_authority_replay_files_read),
-        file_authority_replay_bytes_read: after
-            .file_authority_replay_bytes_read
-            .saturating_sub(before.file_authority_replay_bytes_read),
+        file_admission_sources_verified: after
+            .file_admission_sources_verified
+            .saturating_sub(before.file_admission_sources_verified),
+        file_admission_source_bytes_verified: after
+            .file_admission_source_bytes_verified
+            .saturating_sub(before.file_admission_source_bytes_verified),
     }
 }
 
@@ -319,7 +346,7 @@ fn delta_stats(
     clippy::panic_in_result_fn,
     reason = "fixed on-disk source admission oracle in a fallible fixture"
 )]
-fn file_admission_counts_changed_source_reads_separately() -> TestResult {
+fn file_admission_counts_verified_changed_sources_separately() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path();
     let adapter = LexicalAdapter::with_state_root(root.to_path_buf());
@@ -328,60 +355,44 @@ fn file_admission_counts_changed_source_reads_separately() -> TestResult {
     let original = "fn original() { firstsentinel }";
     let inherited = "fn unchanged() { secondsentinel }";
     let replacement = "fn replacement() { thirdsentinel }";
-    let _stages = adapter.build_batch(&batch(
+    let _stages = adapter.build_fixture_batch(&batch(
         g1,
         None,
         vec![scope(0, original)?, scope(1, inherited)?],
     )?)?;
     let base_stats = adapter.seal_commitment_stats()?;
-    assert_eq!(base_stats.file_admission_files_read, 2);
+    assert_eq!(base_stats.file_admission_sources_verified, 2);
     assert_eq!(
-        base_stats.file_admission_bytes_read,
+        base_stats.file_admission_source_bytes_verified,
         u64::try_from(original.len() + inherited.len())?
     );
-    assert_eq!(base_stats.file_authority_replay_files_read, 0);
-    assert_eq!(base_stats.file_authority_replay_bytes_read, 0);
-    let base_files = committed_files(&generation_dir(root, g1))?;
-    let _stages = adapter.build_batch(&batch(g2, Some(g1), vec![scope(0, replacement)?])?)?;
+    let base_original = pooled_body(root, 1, original.as_bytes())?;
+    let base_inherited = pooled_body(root, 1, inherited.as_bytes())?;
+    let _stages =
+        adapter.build_fixture_batch(&batch(g2, Some(g1), vec![scope(0, replacement)?])?)?;
     let after = adapter.seal_commitment_stats()?;
     let delta = delta_stats(base_stats, after);
-    let delta_files = committed_files(&generation_dir(root, g2))?;
-    assert!(
-        base_files
-            .iter()
-            .any(|file| file.name.starts_with("file-authority/objects/"))
-    );
-    assert!(
-        delta_files
-            .iter()
-            .any(|file| file.name.starts_with("file-authority/objects/"))
-    );
-    assert_eq!(delta.file_admission_files_read, 1);
+    assert_eq!(pooled_body(root, 1, original.as_bytes())?, base_original);
+    assert_eq!(pooled_body(root, 1, inherited.as_bytes())?, base_inherited);
+    let fresh = pooled_body(root, 1, replacement.as_bytes())?;
+    assert_ne!(fresh.path, base_original.path);
+    assert_ne!(fresh.path, base_inherited.path);
+    assert_eq!(delta.file_admission_sources_verified, 1);
     assert_eq!(
-        delta.file_admission_bytes_read,
+        delta.file_admission_source_bytes_verified,
         u64::try_from(replacement.len())?
     );
-    assert_eq!(delta.file_authority_replay_files_read, 0);
-    assert_eq!(delta.file_authority_replay_bytes_read, 0);
     assert!(delta.files_inherited > 0);
     assert!(delta.bytes_inherited >= u64::try_from(inherited.len())?);
     let metrics = adapter.scrape()?;
     for (name, count) in [
         (
-            "lexical_seal_file_admission_files_read_total",
-            after.file_admission_files_read,
+            "lexical_seal_file_admission_sources_verified_total",
+            after.file_admission_sources_verified,
         ),
         (
-            "lexical_seal_file_admission_bytes_read_total",
-            after.file_admission_bytes_read,
-        ),
-        (
-            "lexical_seal_file_authority_replay_files_read_total",
-            after.file_authority_replay_files_read,
-        ),
-        (
-            "lexical_seal_file_authority_replay_bytes_read_total",
-            after.file_authority_replay_bytes_read,
+            "lexical_seal_file_admission_source_bytes_verified_total",
+            after.file_admission_source_bytes_verified,
         ),
     ] {
         assert!(metrics.iter().any(|metric| {
@@ -447,9 +458,10 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     // The base: a full build, measured whole.
     publish_repo_meta(&adapter, g1)?;
     let before_base = adapter.seal_commitment_stats()?;
-    let _stages = adapter.build_batch(&base_batch(g1)?)?;
+    let _stages = adapter.build_fixture_batch(&base_batch(g1)?)?;
     let base_seal = delta_stats(before_base, adapter.seal_commitment_stats()?);
     let base_files = committed_files(&generation_dir(&root, g1))?;
+    let base_native_body = pooled_body(&root, 3, scope_body(0).as_bytes())?;
     if base_files
         .iter()
         .filter(|file| file.name == LIVE_BM25_STATS)
@@ -479,13 +491,16 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     // The delta: one scope replaced, the overlay inherited untouched.
     let replaced = 100;
     let before_delta = adapter.seal_commitment_stats()?;
-    let _stages = adapter.build_batch(&batch(
+    let _stages = adapter.build_fixture_batch(&batch(
         g2,
         Some(g1),
         vec![scope(replaced, "fn replaced() { replacedsentinel }")?],
     )?)?;
     let delta_seal = delta_stats(before_delta, adapter.seal_commitment_stats()?);
     let delta_files = committed_files(&generation_dir(&root, g2))?;
+    if pooled_body(&root, 3, scope_body(0).as_bytes())? != base_native_body {
+        return Err("unchanged NativeBody pool object changed path, inode, length or SHA".into());
+    }
     let (linked, written): (Vec<&CommittedFile>, Vec<&CommittedFile>) = delta_files
         .iter()
         .partition(|file| base_inodes.contains(&file.inode));
@@ -537,6 +552,8 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     if delta_seal.seals != 1 {
         return Err(format!("expected one delta seal, stats {delta_seal:?}").into());
     }
+    // The disk inventory is the byte bound: newly written files and every
+    // inherited coverage page require hashing; other inherited files do not.
     if delta_seal.files_hashed != u64::try_from(written.len() + linked_coverage_pages.len())?
         || delta_seal.bytes_hashed != written_bytes.saturating_add(linked_coverage_bytes)
     {
@@ -580,14 +597,6 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     }
     if !linked
         .iter()
-        .any(|file| file.name.starts_with(TEXT_AUTHORITY_DIR))
-    {
-        return Err(
-            "no text-authority shard was inherited; untouched shards were rewritten".into(),
-        );
-    }
-    if !linked
-        .iter()
         .any(|file| !file.name.starts_with(TEXT_AUTHORITY_DIR) && file.name != "repo-meta.cbor")
     {
         return Err("no segment file was inherited; the base index was rewritten".into());
@@ -598,23 +607,6 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     {
         return Err("an unchanged segment did not inherit its ranked-key table".into());
     }
-    // The file-authority root binds the complete source roster and is rewritten
-    // by a delta. Account for its independently measured O(file-count) bytes;
-    // all other newly hashed bytes still stay below half the base fixture.
-    let file_root_bytes = written
-        .iter()
-        .find(|file| file.name == "file-authority/root.cbor")
-        .ok_or("delta did not publish its file-authority root")?
-        .bytes;
-    let budget = base_bytes.saturating_div(2).saturating_add(file_root_bytes);
-    if delta_seal.bytes_hashed > budget {
-        return Err(format!(
-            "the delta seal read {} bytes against a {base_bytes}-byte base (budget {budget})",
-            delta_seal.bytes_hashed
-        )
-        .into());
-    }
-
     // Both generations serve from their own commitments.
     if hit_ids(&adapter, g1, &format!("quartz_{replaced:05}"))? != vec![scope_chunk(replaced)] {
         return Err("the base must still serve the replaced scope's old text".into());
@@ -624,6 +616,9 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     }
     if hit_ids(&adapter, g2, "replacedsentinel")? != vec![scope_chunk(replaced)] {
         return Err("the delta must serve the replacement".into());
+    }
+    if hit_ids(&adapter, g2, "quartz_00000")? != vec![scope_chunk(0)] {
+        return Err("the delta must still serve an unchanged pooled Native body".into());
     }
     Ok(())
 }

@@ -69,6 +69,7 @@
 pub mod builder;
 pub mod errors;
 pub mod index;
+pub mod necessary_gram;
 pub mod query;
 pub mod regex_prefilter;
 pub mod source;
@@ -77,6 +78,9 @@ pub mod types;
 pub use builder::TrigramIndexBuilder;
 pub use errors::{LimitDimension, TrigramError, TrigramErrorCode};
 pub use index::{TrigramIndex, TrigramIntersectionError};
+pub use necessary_gram::{
+    NecessaryGramCandidates, NecessaryGramExpr, evaluate_necessary_gram_expr,
+};
 pub use query::{DocResolver, query_raw_substring};
 pub use regex_prefilter::regex_prefilter_any_of;
 pub use source::{ShardedTrigramIndex, TrigramPostingSource};

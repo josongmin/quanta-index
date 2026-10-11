@@ -24,6 +24,118 @@ use std::time::{Duration, Instant};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
+#[test]
+#[ignore = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"]
+fn reserved_generation_survives_restart_and_requires_explicit_activation() -> TestResult {
+    use quanta_index_contract::{
+        BatchIngestMode, SearchCorpusGenerationReservationRequestV1, SearchCorpusIngestBatch,
+    };
+    let binary = std::env::var_os("QUANTA_INDEX_L2_TEST_BINARY")
+        .ok_or("QUANTA_INDEX_L2_TEST_BINARY is required")?;
+    let root = tempfile::Builder::new()
+        .prefix("qi-reserve-l2-")
+        .tempdir_in("/tmp")?;
+    let state = root.path().join("state");
+    // Source intent excludes the not-yet-allocated physical target.
+    let draft = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "l2-process-stream".into(),
+            event_id: "reserved-first".into(),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
+        repo_id: repo()?,
+        revision_id: revision()?,
+        generation: ManifestGeneration::new(0),
+        base_generation: None,
+        manifest_digest: "unallocated".into(),
+        batch_digest: String::new(),
+        mode: BatchIngestMode::ReplaceGeneration,
+        bundle_payload: None,
+        clear_surfaces: Vec::new(),
+        replace_scopes: Vec::new(),
+        tombstone_scopes: Vec::new(),
+        semantic_replace_scopes: Vec::new(),
+        semantic_tombstone_scopes: Vec::new(),
+        seal: true,
+    };
+    let mut event = draft.source_event.clone();
+    event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&draft)?;
+    let request = SearchCorpusGenerationReservationRequestV1 {
+        repo_id: repo()?,
+        revision_id: revision()?,
+        source_event: event,
+    };
+    let daemon = Daemon::start(Path::new(&binary), &state, "reserve-first")?;
+    let allocation = daemon.client.search_corpus().reserve_generation(&request)?;
+    assert_eq!(allocation.generation, ManifestGeneration::new(1));
+    assert_eq!(
+        daemon.client.search_corpus().reserve_generation(&request)?,
+        allocation
+    );
+    assert!(
+        daemon
+            .client
+            .generations()
+            .active_head(repo()?, revision()?)?
+            .is_none()
+    );
+    daemon.stop()?;
+
+    let daemon = Daemon::start(Path::new(&binary), &state, "reserve-restart")?;
+    assert_eq!(
+        daemon.client.search_corpus().reserve_generation(&request)?,
+        allocation
+    );
+    let batch = corpus(
+        allocation.generation.get(),
+        None,
+        revision()?,
+        "reserved-first",
+        None,
+        &[],
+    )?;
+    let published = daemon.client.search_corpus().publish_outcome(&batch)?;
+    assert_eq!(
+        published.publication.target.manifest_generation,
+        allocation.generation
+    );
+    assert!(
+        daemon
+            .client
+            .generations()
+            .active_head(repo()?, revision()?)?
+            .is_none()
+    );
+    let evidence = quanta_index_sdk::PublishedBatchEvidence {
+        publication: published.publication,
+        receipt: published.receipt,
+    };
+    let activated = daemon
+        .client
+        .search_corpus()
+        .activate_published(&evidence, None)?;
+    assert_eq!(
+        activated.active.generation.lexical.manifest_generation,
+        allocation.generation
+    );
+    daemon.stop()?;
+
+    let daemon = Daemon::start(Path::new(&binary), &state, "reserve-active-restart")?;
+    assert_eq!(
+        daemon.client.search_corpus().reserve_generation(&request)?,
+        allocation
+    );
+    assert_eq!(
+        daemon
+            .client
+            .generations()
+            .active_head(repo()?, revision()?)?,
+        Some(activated.active)
+    );
+    daemon.stop()
+}
+
 struct Daemon {
     child: Child,
     client: QuantaIndex,
@@ -277,7 +389,7 @@ fn assert_incomplete_symbols(client: &QuantaIndex, generation: u64) -> TestResul
     reason = "the process proof records its retained artifact root"
 )]
 fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResult {
-    let assert_stages = |outcome: &SearchCorpusPublishOutcome, full: bool, text_write: bool| {
+    let assert_stages = |outcome: &SearchCorpusPublishOutcome| {
         let observation = outcome.observation.as_ref().expect("executed observation");
         assert_eq!(observation.status, IngestObservationStatus::Executed);
         assert!(observation.activation_ns.is_none());
@@ -286,19 +398,15 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
             .lexical_stages
             .as_ref()
             .expect("lexical stage clocks");
-        assert_eq!(stages.text_authority_collect_ns.is_some(), full);
-        assert_eq!(stages.text_authority_shard_build_ns.is_some(), text_write);
-        assert_eq!(stages.text_authority_publish_ns.is_some(), text_write);
-        let children = [
-            stages.text_authority_collect_ns,
-            stages.text_authority_shard_build_ns,
-            stages.text_authority_publish_ns,
-        ]
-        .into_iter()
-        .flatten()
-        .sum::<u64>();
-        assert!(children <= stages.text_authority_ns);
+        // Paged publication measures its segment and pooled-object writes in
+        // the enclosing stage; the former shard subclocks are absent.
+        assert_eq!(stages.text_authority_collect_ns, None);
+        assert_eq!(stages.text_authority_shard_build_ns, None);
+        assert_eq!(stages.text_authority_publish_ns, None);
+        assert!(stages.text_authority_ns > 0);
         assert!(stages.text_authority_ns <= lexical_build_ns);
+        assert!(stages.file_authority_ns > 0);
+        assert!(stages.file_authority_ns <= lexical_build_ns);
     };
     let requested_binary = std::env::var_os("QUANTA_INDEX_L2_TEST_BINARY")
         .ok_or("QUANTA_INDEX_L2_TEST_BINARY is required")?;
@@ -320,7 +428,7 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
         .client
         .producer()
         .publish_search_corpus_observed(&original)?;
-    assert_stages(&first, true, true);
+    assert_stages(&first);
     assert_eq!(first.receipt.accepted_replace_scopes, 2);
     let other_revision = RevisionId::new("retargeted")?;
     let retargeted = corpus(
@@ -380,7 +488,7 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
         .client
         .search_corpus()
         .publish_and_activate_observed(&second, Some(activated.active))?;
-    assert_stages(&second_outcome, false, true);
+    assert_stages(&second_outcome);
     assert_eq!(second_outcome.receipt.accepted_replace_scopes, 1);
     assert!(query(&daemon.client, 2, "oldneedle")?.is_empty());
     assert_eq!(query(&daemon.client, 2, "newneedle")?, ["a-new"]);
@@ -417,7 +525,7 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
         .client
         .search_corpus()
         .publish_and_activate_observed(&correct_base, Some(second_active.active))?;
-    assert_stages(&third_outcome, false, false);
+    assert_stages(&third_outcome);
     assert_eq!(third_outcome.receipt.accepted_replace_scopes, 0);
     assert_eq!(third_outcome.receipt.accepted_tombstone_scopes, 0);
     assert_eq!(query(&daemon.client, 3, "newneedle")?, ["a-new"]);
@@ -438,7 +546,7 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
         .client
         .search_corpus()
         .publish_and_activate_observed(&deleted, Some(third_active.active))?;
-    assert_stages(&deleted_outcome, false, true);
+    assert_stages(&deleted_outcome);
     assert_eq!(deleted_outcome.receipt.accepted_replace_scopes, 0);
     assert_eq!(deleted_outcome.receipt.accepted_tombstone_scopes, 1);
     assert!(query(&daemon.client, 4, "newneedle")?.is_empty());
@@ -770,13 +878,41 @@ fn delta_recovers_across_named_crash_cuts_with_rolled_back_active_head() -> Test
 
 fn only_pair_directory(root: &Path) -> TestResult<std::path::PathBuf> {
     let mut directories = Vec::new();
+    let root_kind = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("pair root has no UTF-8 name")?;
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir()
-            && !matches!(entry.file_name().to_str(), Some(".staging" | ".reclaim"))
-        {
-            directories.push(entry.path());
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or("pair root contains a non-UTF-8 entry")?;
+        if matches!(name, ".staging" | ".reclaim") {
+            continue;
         }
+        if root_kind == "lexical" && name == "lexical-object-pool" {
+            if !entry.file_type()?.is_dir() {
+                return Err("lexical object pool is not a directory".into());
+            }
+            continue;
+        }
+        let canonical = match root_kind {
+            "search-corpus" => {
+                name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }
+            "lexical" | "semantic" => name.strip_prefix("generation-v1-").is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            }),
+            _ => return Err(format!("unknown pair root: {}", root.display()).into()),
+        };
+        if !canonical || !entry.file_type()?.is_dir() {
+            return Err(format!("foreign pair entry: {}", entry.path().display()).into());
+        }
+        directories.push(entry.path());
     }
     assert_eq!(directories.len(), 1, "fixture must have exactly one pair");
     directories

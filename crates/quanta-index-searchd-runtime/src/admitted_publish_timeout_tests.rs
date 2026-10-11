@@ -20,8 +20,9 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcResponseEnvelope,
 };
 use quanta_index_core::{
-    CoreError, IdempotencyCatalogPort as _, IdempotencyKeyV1, OperationInspectV1,
-    PublicationValidationOwner, SearchCorpusBatchBuildPort, SearchCorpusPreflightPhaseV1,
+    CoreError, DiagnosticContextV1, IdempotencyCatalogPort as _, IdempotencyKeyV1,
+    OperationInspectV1, PublicationValidationOwner, SearchCorpusBatchBuildPort,
+    SearchCorpusPreflightPhaseV1,
 };
 use quanta_index_ipc::{
     ClientIoPolicy, IpcError, IpcIoOperation, send_request, stamp_batch_digest_v1,
@@ -87,8 +88,9 @@ impl SearchCorpusBatchBuildPort for ProcessPausedLexicalBuild {
         &self,
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
-        self.inner.preflight_batch(batch, phase)
+        self.inner.preflight_batch(batch, phase, diagnostic)
     }
 
     fn preflight_batch_with_owner(
@@ -96,21 +98,29 @@ impl SearchCorpusBatchBuildPort for ProcessPausedLexicalBuild {
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
         owner: &mut PublicationValidationOwner,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
-        self.inner.preflight_batch_with_owner(batch, phase, owner)
+        self.inner
+            .preflight_batch_with_owner(batch, phase, owner, diagnostic)
     }
 
     fn build_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
-        self.build_batch_with_owner(batch, &mut PublicationValidationOwner::default())
+        self.build_batch_with_owner(
+            batch,
+            &mut PublicationValidationOwner::default(),
+            diagnostic,
+        )
     }
 
     fn build_batch_with_owner(
         &self,
         batch: &SearchCorpusIngestBatch,
         owner: &mut PublicationValidationOwner,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
         owner.bind_batch(batch)?;
         let mut gate = UnixStream::connect(&self.gate)
@@ -129,7 +139,7 @@ impl SearchCorpusBatchBuildPort for ProcessPausedLexicalBuild {
                 "OS child build gate released with wrong token".into(),
             ));
         }
-        self.inner.build_batch_with_owner(batch, owner)
+        self.inner.build_batch_with_owner(batch, owner, diagnostic)
     }
 }
 
@@ -165,8 +175,9 @@ impl SearchCorpusBatchBuildPort for PausedLexicalBuild {
         &self,
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
-        self.inner.preflight_batch(batch, phase)
+        self.inner.preflight_batch(batch, phase, diagnostic)
     }
 
     fn preflight_batch_with_owner(
@@ -174,21 +185,29 @@ impl SearchCorpusBatchBuildPort for PausedLexicalBuild {
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
         owner: &mut PublicationValidationOwner,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
-        self.inner.preflight_batch_with_owner(batch, phase, owner)
+        self.inner
+            .preflight_batch_with_owner(batch, phase, owner, diagnostic)
     }
 
     fn build_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
-        self.build_batch_with_owner(batch, &mut PublicationValidationOwner::default())
+        self.build_batch_with_owner(
+            batch,
+            &mut PublicationValidationOwner::default(),
+            diagnostic,
+        )
     }
 
     fn build_batch_with_owner(
         &self,
         batch: &SearchCorpusIngestBatch,
         owner: &mut PublicationValidationOwner,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
         owner.bind_batch(batch)?;
         let _previous = self.builds.fetch_add(1, Ordering::SeqCst);
@@ -200,7 +219,7 @@ impl SearchCorpusBatchBuildPort for PausedLexicalBuild {
             .map_err(|error| CoreError::Storage(format!("admitted build gate poisoned: {error}")))?
             .recv_timeout(WAIT)
             .map_err(|error| CoreError::Storage(format!("admitted build gate expired: {error}")))?;
-        self.inner.build_batch_with_owner(batch, owner)
+        self.inner.build_batch_with_owner(batch, owner, diagnostic)
     }
 }
 
@@ -214,8 +233,9 @@ impl SearchCorpusBatchBuildPort for CountingLexicalBuild {
         &self,
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
-        self.inner.preflight_batch(batch, phase)
+        self.inner.preflight_batch(batch, phase, diagnostic)
     }
 
     fn preflight_batch_with_owner(
@@ -223,25 +243,33 @@ impl SearchCorpusBatchBuildPort for CountingLexicalBuild {
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
         owner: &mut PublicationValidationOwner,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
-        self.inner.preflight_batch_with_owner(batch, phase, owner)
+        self.inner
+            .preflight_batch_with_owner(batch, phase, owner, diagnostic)
     }
 
     fn build_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
-        self.build_batch_with_owner(batch, &mut PublicationValidationOwner::default())
+        self.build_batch_with_owner(
+            batch,
+            &mut PublicationValidationOwner::default(),
+            diagnostic,
+        )
     }
 
     fn build_batch_with_owner(
         &self,
         batch: &SearchCorpusIngestBatch,
         owner: &mut PublicationValidationOwner,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
         owner.bind_batch(batch)?;
         let _previous = self.builds.fetch_add(1, Ordering::SeqCst);
-        self.inner.build_batch_with_owner(batch, owner)
+        self.inner.build_batch_with_owner(batch, owner, diagnostic)
     }
 }
 
@@ -298,6 +326,7 @@ fn ingest(
     policy: ClientIoPolicy,
 ) -> Result<SearchPlaneIngestIpcResponse, IpcError> {
     let request = SearchPlaneIngestIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id,
         payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
     };

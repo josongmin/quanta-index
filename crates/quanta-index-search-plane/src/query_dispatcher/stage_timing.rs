@@ -1,9 +1,65 @@
 //! Server-side monotonic timings attached to the query response that owns them.
 //! These observations never drive ranking, admission, or deadline decisions.
 
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::{QueryStageKindV1, QueryStageTimingV1};
+use quanta_index_core::{
+    DiagnosticContextV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1, RequestBudgetV1,
+};
+
+/// Rebind only diagnostics. A cloned budget shares its cancellation, deadline,
+/// and usage ledgers with the request. The disabled path borrows the original.
+pub(super) fn budget_under_diagnostic<'a>(
+    budget: &'a RequestBudgetV1,
+    child: Option<&DiagnosticContextV1>,
+) -> Cow<'a, RequestBudgetV1> {
+    child.map_or_else(
+        || Cow::Borrowed(budget),
+        |child| Cow::Owned(budget.clone().with_diagnostic_context(child.clone())),
+    )
+}
+
+/// Pass the exact span child to work delegated by a stage. No thread-local
+/// context or timestamp inference is used for ancestry.
+pub(super) fn observe_query_result_scoped<T, E>(
+    diagnostic: Option<&DiagnosticContextV1>,
+    stage: DiagnosticStageV1,
+    action: impl FnOnce(Option<&DiagnosticContextV1>) -> Result<T, E>,
+) -> Result<T, E> {
+    let span = diagnostic.and_then(|context| {
+        context.enter(stage, DiagnosticLaneV1(1)).map_or_else(
+            |trace_error| {
+                context.health(match trace_error {
+                    quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                        quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                        quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                        quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                        quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
+                    }
+                });
+                None
+            },
+            Some,
+        )
+    });
+    let child = diagnostic
+        .zip(span.as_ref())
+        .map(|(context, span)| context.child_context(span));
+    let result = action(child.as_ref());
+    if let Some(span) = span {
+        let outcome = DiagnosticTerminalV1::from_result(&result);
+        let _trace_completion = span.finish(outcome);
+    }
+    result
+}
 
 /// Startup-bound stage observation policy. Operational metrics and request
 /// deadlines remain active under both policies; neither policy affects ranking.
@@ -103,8 +159,12 @@ pub(super) fn measured(
 
 #[cfg(test)]
 mod tests {
-    use super::{QueryStageObservationPolicy, StageTimings};
+    use super::{
+        QueryStageObservationPolicy, StageTimings, budget_under_diagnostic,
+        observe_query_result_scoped,
+    };
     use quanta_index_contract::QueryStageKindV1;
+    use quanta_index_core::{DiagnosticStageV1, RequestBudgetV1};
 
     #[test]
     fn lexical_observation_cbor_shape_fits_fixed_page_reserve() {
@@ -139,10 +199,45 @@ mod tests {
         stages.record_elapsed(QueryStageKindV1::HybridPrepare, policy.start(), 1, None);
         assert!(stages.finish().is_none());
         assert_eq!(policy.as_str(), "disabled");
+        let budget = RequestBudgetV1::unbounded();
+        let borrowed = budget_under_diagnostic(&budget, None);
+        assert!(matches!(borrowed, std::borrow::Cow::Borrowed(_)));
+        assert!(std::ptr::eq(borrowed.as_ref(), std::ptr::from_ref(&budget)));
+        let result: Result<(), ()> =
+            observe_query_result_scoped(None, DiagnosticStageV1::QueryPlan, |child| {
+                assert!(child.is_none());
+                Ok(())
+            });
+        assert!(result.is_ok());
     }
 
     #[test]
     fn enabled_stage_observation_retains_real_measurements() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        use quanta_index_core::{
+            DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1,
+            DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1,
+            DiagnosticTerminalV1,
+        };
+
+        #[derive(Debug)]
+        struct Clock(AtomicU64);
+        impl DiagnosticClockV1 for Clock {
+            fn now_ns(&self) -> u64 {
+                self.0.fetch_add(1, Ordering::Relaxed)
+            }
+        }
+        #[derive(Debug, Default)]
+        struct Sink(Mutex<Vec<DiagnosticEmitV1>>);
+        impl DiagnosticEventSinkV1 for Sink {
+            fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+                self.0.lock().expect("trace sink mutex").push(event);
+                true
+            }
+        }
+
         let policy = QueryStageObservationPolicy::default();
         let started = policy.start();
         assert!(started.is_some());
@@ -154,5 +249,67 @@ mod tests {
         assert_eq!(stages.len(), 1);
         assert_eq!(stages.first().map(|stage| stage.calls), Some(1));
         assert_eq!(policy.as_str(), "enabled");
+
+        let sink = Arc::new(Sink::default());
+        let context = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([51; 16]),
+            Arc::new(Clock(AtomicU64::new(1))),
+            sink.clone(),
+        );
+        let request = context
+            .enter_root(DiagnosticRootKindV1::Request, DiagnosticLaneV1(1))
+            .expect("request root");
+        let request_context = context.child_context(&request);
+        let budget = RequestBudgetV1::unbounded().with_diagnostic_context(request_context);
+        let result: Result<(), ()> = observe_query_result_scoped(
+            budget.diagnostic_context(),
+            DiagnosticStageV1::QueryPlan,
+            |plan_child| {
+                let plan_budget = budget_under_diagnostic(&budget, plan_child);
+                observe_query_result_scoped(
+                    plan_budget.diagnostic_context(),
+                    DiagnosticStageV1::QueryCandidate,
+                    |candidate_child| {
+                        let candidate_budget =
+                            budget_under_diagnostic(plan_budget.as_ref(), candidate_child);
+                        let verify = candidate_budget
+                            .diagnostic_context()
+                            .expect("candidate child context")
+                            .enter(DiagnosticStageV1::QueryVerify, DiagnosticLaneV1(2))
+                            .expect("verify child");
+                        verify.finish(DiagnosticTerminalV1::Ok).expect("verify end");
+                        Ok(())
+                    },
+                )
+            },
+        );
+        assert!(result.is_ok());
+        request
+            .finish(DiagnosticTerminalV1::Ok)
+            .expect("request end");
+
+        let events = sink.0.lock().expect("trace sink mutex");
+        let begin = |stage| {
+            events.iter().find_map(|event| {
+                if let DiagnosticEventKindV1::SpanBegin {
+                    span_id,
+                    parent_span_id,
+                    stage: observed,
+                    ..
+                } = event.kind
+                {
+                    return (observed == stage).then_some((span_id, parent_span_id));
+                }
+                None
+            })
+        };
+        let (request_id, _) = begin(DiagnosticStageV1::Request).expect("request span");
+        let (plan_id, plan_parent) = begin(DiagnosticStageV1::QueryPlan).expect("plan span");
+        let (candidate_id, candidate_parent) =
+            begin(DiagnosticStageV1::QueryCandidate).expect("candidate span");
+        let (_, verify_parent) = begin(DiagnosticStageV1::QueryVerify).expect("verify span");
+        assert_eq!(plan_parent, Some(request_id));
+        assert_eq!(candidate_parent, Some(plan_id));
+        assert_eq!(verify_parent, Some(candidate_id));
     }
 }

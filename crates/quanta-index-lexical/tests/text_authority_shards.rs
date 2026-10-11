@@ -1,27 +1,15 @@
-//! QI-BB-006, second half — the text authority is sharded by doc-id range
-//! so a delta's write bytes are proportional to what it changes.
-//!
-//! A generation's text authority lives under `text-authority/`: a bounded
-//! manifest plus one immutable file per shard of `SHARD_DOCS` documents.
-//! A delta rewrites only the shards holding a retired or added document
-//! and inherits every other shard file from its base by hard link. These
-//! tests pin that from the outside, with independent oracles:
-//!
-//! - the **bytes oracle** measures inodes and sizes on disk: after a
-//!   one-scope delta on a base of four shards' worth of documents, the
-//!   files whose inode is not the base's are at most two shards and the
-//!   manifest, and every other shard file *is* the base's inode;
-//! - the **correctness oracle** is an independent full rebuild of the same
-//!   final corpus, compared probe by probe on documents that sit exactly on
-//!   shard boundaries;
-//! - the **refusal oracle** is fault injection on the real files and the
-//!   real manifest: a disagreement is a typed refusal, and the generation
-//!   never seals or opens.
+//! Native text authority: bounded paged segments, immutable shared objects,
+//! independent delta/rebuild query gold, and typed selected-read refusal.
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
+use std::collections::BTreeMap;
 use std::error::Error;
+use std::fmt::Write as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
@@ -34,31 +22,20 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, GenerationStorageKeyV1, LexicalIndexOpenPort,
-    RequestBudgetV1, SearchCorpusBatchBuildPort,
+    RequestBudgetV1,
 };
 use quanta_index_lexical::LexicalAdapter;
+use sha2::{Digest as _, Sha256};
 
 #[path = "support/current_source_fixture.rs"]
 mod current_source_fixture;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// Documents per shard, as the adapter lays them out. The bytes oracle
-/// pins it independently: a base of `COST_DOCS` documents must land in
-/// exactly `ceil(COST_DOCS / SHARD_DOCS)` shard files.
+/// Segment-local ID cap; byte target can split earlier.
 const SHARD_DOCS: u64 = 2048;
-/// The correctness fixture: three shards, the last holding two documents,
-/// so every boundary position below exists.
 const DOCS: usize = 2 * 2048 + 2;
-/// The cost fixture: four shards, the last one partial, so the untouched
-/// shards are the bulk of the base and the byte budget is not a coin toss
-/// between two of three shards.
 const COST_DOCS: usize = 3 * 2048 + 50;
-/// Sorted scope positions whose doc ids sit on shard boundaries.
-///
-/// The last document of shard 0, the first of shard 1 and the first of
-/// shard 2. Doc ids are handed out in op order, and the fixture orders its
-/// scopes by path, so scope `i` is doc id `i + 1`.
 const EDGE_LOW: usize = 2046;
 const EDGE_MID: usize = 2047;
 const EDGE_HIGH: usize = 4095;
@@ -244,223 +221,223 @@ fn leaf_hit_ids(
     Ok(ids)
 }
 
-/// One text-authority file: its path, size and inode.
-struct AuthorityFile {
-    path: PathBuf,
-    bytes: u64,
-    inode: u64,
+/// The root is a compact control row. Decode only the fields needed by
+/// this independent disk oracle; all source and posting values stay in the
+/// authenticated shared pool.
+type ObjectRefWire = (ciborium::Value, u64, [u8; 32]);
+type PageRefWire = (ObjectRefWire, Vec<u8>, Vec<u8>, u64, u8);
+type MapRootWire = (Option<PageRefWire>, u64);
+type NativeRootWire = (
+    u16,
+    (u16, u16),
+    [u8; 32],
+    MapRootWire,
+    MapRootWire,
+    MapRootWire,
+    MapRootWire,
+    MapRootWire,
+    MapRootWire,
+    MapRootWire,
+    u64,
+    u64,
+);
+
+fn native_root_wire(directory: &Path) -> Result<NativeRootWire, Box<dyn Error>> {
+    let bytes = std::fs::read(
+        directory
+            .join(TEXT_AUTHORITY_DIR)
+            .join(TEXT_AUTHORITY_MANIFEST),
+    )?;
+    Ok(ciborium::from_reader(bytes.as_slice())?)
 }
 
-impl AuthorityFile {
-    fn is_manifest(&self) -> bool {
-        self.path.file_name().and_then(|name| name.to_str()) == Some(TEXT_AUTHORITY_MANIFEST)
+fn current_page_path(state_root: &Path, directory: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let root = native_root_wire(directory)?;
+    let page = root.4.0.ok_or("Native current map has no root page")?;
+    let mut digest = String::with_capacity(64);
+    for byte in page.0.2 {
+        write!(&mut digest, "{byte:02x}")?;
     }
+    Ok(state_root
+        .join("lexical-object-pool/objects")
+        .join(digest.get(..2).ok_or("short object digest")?)
+        .join(digest))
 }
 
-fn text_authority_files(generation_dir: &Path) -> Result<Vec<AuthorityFile>, Box<dyn Error>> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(generation_dir.join(TEXT_AUTHORITY_DIR))? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
-        if !metadata.is_file() {
-            return Err(format!("unexpected non-file entry {}", entry.path().display()).into());
+/// Canonical physical objects: the test independently checks that a delta
+/// neither rewrites nor unlinks a base object's inode, bytes, or SHA.
+type PoolObjectFacts = (u64, u64, [u8; 32]);
+
+fn pool_objects(root: &Path) -> Result<BTreeMap<String, PoolObjectFacts>, Box<dyn Error>> {
+    let objects = root.join("lexical-object-pool/objects");
+    let mut result = BTreeMap::new();
+    for shard in std::fs::read_dir(&objects)? {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            return Err("pool shard is not a real directory".into());
         }
-        files.push(AuthorityFile {
-            path: entry.path(),
-            bytes: metadata.len(),
-            inode: metadata.ino(),
-        });
+        for object in std::fs::read_dir(shard.path())? {
+            let object = object?;
+            if !object.file_type()?.is_file() {
+                return Err("pool object is not a real file".into());
+            }
+            let path = object.path();
+            let name = path.strip_prefix(&objects)?.to_string_lossy().into_owned();
+            let meta = object.metadata()?;
+            let facts = (
+                meta.ino(),
+                meta.len(),
+                Sha256::digest(std::fs::read(path)?).into(),
+            );
+            if result.insert(name, facts).is_some() {
+                return Err("duplicate physical pool object".into());
+            }
+        }
     }
-    files.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(files)
+    Ok(result)
 }
 
-fn shard_files(files: &[AuthorityFile]) -> Vec<&AuthorityFile> {
-    files.iter().filter(|file| !file.is_manifest()).collect()
-}
-
-/// Machine-readable cost evidence; visible with `-- --nocapture`.
 #[expect(
     clippy::print_stdout,
-    reason = "QI-BB-006 is a cost claim, so the measured byte counts belong in the run log the finding cites"
+    reason = "bounded segment and physical pool evidence belongs in the test run log"
 )]
 fn emit_evidence(fields: &[(&str, String)]) {
     let rendered: Vec<String> = fields
         .iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect();
-    println!("QI-BB-006-SHARD-EVIDENCE {}", rendered.join(" "));
+    println!("QI-BB-006-NATIVE-EVIDENCE {}", rendered.join(" "));
 }
 
-/// The bytes oracle: a one-scope delta writes at most two shards and the
-/// manifest, and every other shard file is the base's inode.
+/// A one-source delta pays at most one due segment and keeps the other three
+/// segment roots. The object pool, rather than generation-local hard links,
+/// owns immutable bodies and postings.
 #[test]
-fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
+fn one_scope_delta_preserves_unaffected_paged_segments() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let root = temp.path().to_path_buf();
-    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let root = temp.path();
+    let adapter = LexicalAdapter::with_state_root(root.to_path_buf());
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
-
     let base_stages = adapter
-        .build_batch(&base_batch(g1, COST_DOCS)?)?
-        .ok_or("missing base timing")?;
-    let base_text_children = [
-        base_stages
-            .text_authority_collect_ns
-            .ok_or("missing full collection timing")?,
-        base_stages
-            .text_authority_shard_build_ns
-            .ok_or("missing full shard timing")?,
-        base_stages
-            .text_authority_publish_ns
-            .ok_or("missing full publish timing")?,
-    ];
-    if base_text_children.iter().sum::<u64>() > base_stages.text_authority_ns {
-        return Err("base text-authority child durations exceed the parent duration".into());
+        .build_fixture_batch(&base_batch(g1, COST_DOCS)?)?
+        .ok_or("base timing")?;
+    if base_stages.text_authority_ns == 0 {
+        return Err("base Native build timing absent".into());
     }
-    let base_files = text_authority_files(&generation_dir(&root, g1))?;
-    let base_shards = shard_files(&base_files);
-    let expected_shards = u64::try_from(COST_DOCS)?.div_ceil(SHARD_DOCS);
-    if u64::try_from(base_shards.len())? != expected_shards {
+    let base_root = native_root_wire(&generation_dir(root, g1))?;
+    let expected_segments = u64::try_from(COST_DOCS)?.div_ceil(SHARD_DOCS);
+    if base_root.6.1 != expected_segments {
         return Err(format!(
-            "base holds {} shard files for {COST_DOCS} documents; expected {expected_shards} at {SHARD_DOCS} per shard",
-            base_shards.len()
+            "base has {} Native segments, expected {expected_segments}",
+            base_root.6.1
         )
         .into());
     }
-    let base_inodes: BTreeSet<u64> = base_files.iter().map(|file| file.inode).collect();
-    let base_bytes: u64 = base_files
-        .iter()
-        .fold(0_u64, |total, file| total.saturating_add(file.bytes));
-    let before = adapter.text_authority_update_stats()?;
+    let before_stats = adapter.text_authority_update_stats()?;
+    let before_pool = pool_objects(root)?;
+    let base_bytes = before_pool
+        .values()
+        .try_fold(0_u64, |sum, (_, len, _)| sum.checked_add(*len))
+        .ok_or("base pool bytes overflow")?;
 
-    // Replace one scope in shard 0; its replacement takes the next doc id,
-    // which lands in the last shard.
     let replaced = 100;
     let delta_stages = adapter
-        .build_batch(&batch(
+        .build_fixture_batch(&batch(
             g2,
             Some(g1),
             vec![scope(replaced, "fn replaced() { replacedsentinel }")?],
             &[],
             true,
         )?)?
-        .ok_or("missing delta timing")?;
-    if delta_stages.text_authority_collect_ns.is_some() {
-        return Err("delta text-authority collection must remain unmeasured".into());
+        .ok_or("delta timing")?;
+    if delta_stages.text_authority_ns == 0 {
+        return Err("delta Native build timing absent".into());
     }
-    let delta_text_children = [
-        delta_stages
-            .text_authority_shard_build_ns
-            .ok_or("missing delta shard timing")?,
-        delta_stages
-            .text_authority_publish_ns
-            .ok_or("missing delta publish timing")?,
-    ];
-    if delta_text_children.iter().sum::<u64>() > delta_stages.text_authority_ns {
-        return Err("delta text-authority child durations exceed the parent duration".into());
+    let after_stats = adapter.text_authority_update_stats()?;
+    let delta_root = native_root_wire(&generation_dir(root, g2))?;
+    if delta_root.6.1 != expected_segments {
+        return Err(format!(
+            "delta has {} Native segments, expected {expected_segments}",
+            delta_root.6.1
+        )
+        .into());
     }
-    let after = adapter.text_authority_update_stats()?;
-    let delta_files = text_authority_files(&generation_dir(&root, g2))?;
-    let delta_shards = shard_files(&delta_files);
-    let (linked, written): (Vec<&AuthorityFile>, Vec<&AuthorityFile>) = delta_shards
+    let written = after_stats
+        .shards_written
+        .checked_sub(before_stats.shards_written)
+        .ok_or("written segment counter regressed")?;
+    let inherited = after_stats
+        .shards_inherited
+        .checked_sub(before_stats.shards_inherited)
+        .ok_or("inherited segment counter regressed")?;
+    let compacted = after_stats
+        .compaction_rederived_docs
+        .checked_sub(before_stats.compaction_rederived_docs)
+        .ok_or("compaction counter regressed")?;
+    let compacted_bytes = after_stats
+        .compaction_rederived_text_bytes
+        .checked_sub(before_stats.compaction_rederived_text_bytes)
+        .ok_or("compaction bytes regressed")?;
+    let derived = after_stats
+        .docs_derived
+        .checked_sub(before_stats.docs_derived)
+        .ok_or("derived counter regressed")?;
+    let retired = after_stats
+        .docs_retired
+        .checked_sub(before_stats.docs_retired)
+        .ok_or("retired counter regressed")?;
+    let pages = after_stats
+        .posting_pages_written
+        .checked_sub(before_stats.posting_pages_written)
+        .ok_or("posting page counter regressed")?;
+    if (written, inherited, compacted, derived, retired)
+        != (1, expected_segments - 1, SHARD_DOCS - 1, 1, 1)
+        || compacted_bytes == 0
+        || compacted_bytes > 2 * 1024 * 1024
+        || pages == 0
+    {
+        return Err(format!("one-source delta rewrote unexpected Native work: before={before_stats:?} after={after_stats:?}").into());
+    }
+    let after_pool = pool_objects(root)?;
+    for (name, facts) in &before_pool {
+        if after_pool.get(name) != Some(facts) {
+            return Err(format!("delta mutated inherited pool object {name}").into());
+        }
+    }
+    let fresh_bytes = after_pool
         .iter()
-        .copied()
-        .partition(|file| base_inodes.contains(&file.inode));
-    let manifest_is_new = delta_files
-        .iter()
-        .any(|file| file.is_manifest() && !base_inodes.contains(&file.inode));
-    let delta_new_bytes: u64 = delta_files
-        .iter()
-        .filter(|file| !base_inodes.contains(&file.inode))
-        .fold(0_u64, |total, file| total.saturating_add(file.bytes));
-    let written_names: Vec<String> = written
-        .iter()
-        .map(|file| {
-            file.path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .map(Option::unwrap_or_default)
-        .collect();
+        .filter(|(name, _)| !before_pool.contains_key(*name))
+        .try_fold(0_u64, |sum, (_, (_, len, _))| sum.checked_add(*len))
+        .ok_or("fresh pool bytes overflow")?;
+    if base_bytes == 0 || fresh_bytes == 0 || fresh_bytes > base_bytes.div_euclid(2) {
+        return Err(format!(
+            "delta fresh pool bytes {fresh_bytes} exceed half of {base_bytes} base bytes"
+        )
+        .into());
+    }
     emit_evidence(&[
         ("docs", COST_DOCS.to_string()),
-        ("base_bytes", base_bytes.to_string()),
-        ("delta_new_bytes", delta_new_bytes.to_string()),
-        ("shards", base_shards.len().to_string()),
-        ("touched", written.len().to_string()),
-        ("linked", linked.len().to_string()),
-        ("written_shards", written_names.join(",")),
+        ("base_segments", expected_segments.to_string()),
+        ("written_segments", written.to_string()),
+        ("inherited_segments", inherited.to_string()),
+        ("compacted_docs", compacted.to_string()),
+        ("posting_pages", pages.to_string()),
+        ("base_pool_bytes", base_bytes.to_string()),
+        ("fresh_pool_bytes", fresh_bytes.to_string()),
     ]);
-
-    if !manifest_is_new {
-        return Err("the delta must publish its own manifest, not share the base's".into());
-    }
-    if written.len() > 2 {
-        return Err(format!(
-            "a one-scope delta rewrote {} shards ({written_names:?}); at most two may change",
-            written.len()
-        )
-        .into());
-    }
-    if linked.is_empty() {
-        return Err(
-            "no shard of the delta is the base's inode; untouched shards were rewritten".into(),
-        );
-    }
-    if delta_shards.len() != written.len().saturating_add(linked.len()) {
-        return Err("every shard of the delta is either written or linked".into());
-    }
-    let budget = base_bytes.saturating_div(2);
-    if delta_new_bytes > budget {
-        return Err(format!(
-            "the delta wrote {delta_new_bytes} new text-authority bytes against a {base_bytes}-byte base (budget {budget})"
-        )
-        .into());
-    }
-    // The metric twin of the bytes oracle.
-    let shards_written = after.shards_written.saturating_sub(before.shards_written);
-    let shards_inherited = after
-        .shards_inherited
-        .saturating_sub(before.shards_inherited);
-    if shards_written != u64::try_from(written.len())?
-        || shards_inherited != u64::try_from(linked.len())?
-    {
-        return Err(format!(
-            "stats say {shards_written} written / {shards_inherited} inherited, disk says {} / {}",
-            written.len(),
-            linked.len()
-        )
-        .into());
-    }
-    if before.shards_written != expected_shards || before.shards_inherited != 0 {
-        return Err(format!("the base rebuild writes every shard once: {before:?}").into());
-    }
-
-    // Both generations serve: the base its old text, the delta the new.
     if leaf_hit_ids(&adapter, g1, LqLeaf::Regex(format!("quartz_{replaced:05}")))?
         != vec![scope_chunk(replaced)]
+        || !leaf_hit_ids(&adapter, g2, LqLeaf::Regex(format!("quartz_{replaced:05}")))?.is_empty()
+        || leaf_hit_ids(&adapter, g2, LqLeaf::Regex("replacedsentinel".into()))?
+            != vec![scope_chunk(replaced)]
+        || leaf_hit_ids(
+            &adapter,
+            g2,
+            LqLeaf::Phrase(format!("{EDGE_MID_MARKER} phraseanchor")),
+        )? != vec![scope_chunk(EDGE_MID)]
     {
-        return Err("the base must still serve the replaced scope's old text".into());
-    }
-    if leaf_hit_ids(&adapter, g2, LqLeaf::Regex(format!("quartz_{replaced:05}")))?
-        != Vec::<String>::new()
-    {
-        return Err("the delta must not serve the replaced scope's old text".into());
-    }
-    if leaf_hit_ids(&adapter, g2, LqLeaf::Regex("replacedsentinel".to_string()))?
-        != vec![scope_chunk(replaced)]
-    {
-        return Err("the delta must serve the replacement".into());
-    }
-    if leaf_hit_ids(
-        &adapter,
-        g2,
-        LqLeaf::Phrase(format!("{EDGE_MID_MARKER} phraseanchor")),
-    )? != vec![scope_chunk(EDGE_MID)]
-    {
-        return Err("the delta must serve an inherited shard's phrase".into());
+        return Err("base/replacement/inherited Native query golden differs".into());
     }
     Ok(())
 }
@@ -477,7 +454,7 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
     let g9 = ManifestGeneration::new(9);
-    let _stages = adapter.build_batch(&base_batch(g1, DOCS)?)?;
+    let _stages = adapter.build_fixture_batch(&base_batch(g1, DOCS)?)?;
 
     // Delta: rewrite the low edge in place (same marker, new tail), move the
     // mid edge to a fresh doc id with a new marker, tombstone the high edge,
@@ -486,7 +463,7 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
     let mid_body = "fn moved() { edgemovedmarker phraseanchor edgemovedmarker_tail }".to_string();
     let new_index = DOCS + 7;
     let new_body = "fn added() { addedmarker phraseanchor addedmarker_tail }";
-    let _stages = adapter.build_batch(&batch(
+    let _stages = adapter.build_fixture_batch(&batch(
         g2,
         Some(g1),
         vec![
@@ -512,7 +489,7 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
         scopes.push(scope(index, &body)?);
     }
     scopes.push(scope(new_index, new_body)?);
-    let _stages = adapter.build_batch(&batch(g9, None, scopes, &[], true)?)?;
+    let _stages = adapter.build_fixture_batch(&batch(g9, None, scopes, &[], true)?)?;
 
     let mut probes: Vec<(String, LqLeaf)> = Vec::new();
     for marker in [
@@ -626,207 +603,103 @@ fn open_code(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Option
     }
 }
 
-/// The manifest's wire row, as the refusal oracle rewrites it.
-type ManifestRow = (
-    u32,
-    u64,
-    (u16, u16),
-    u64,
-    Vec<(u64, u64, u64, u64, u64, [u8; 32])>,
-);
-
-fn read_manifest_row(generation_dir: &Path) -> Result<ManifestRow, Box<dyn Error>> {
-    let bytes = std::fs::read(
-        generation_dir
-            .join(TEXT_AUTHORITY_DIR)
-            .join(TEXT_AUTHORITY_MANIFEST),
-    )?;
-    Ok(ciborium::from_reader(bytes.as_slice())?)
-}
-
-fn write_manifest_row(generation_dir: &Path, row: &ManifestRow) -> TestResult {
-    let mut bytes = Vec::new();
-    ciborium::into_writer(row, &mut bytes)?;
-    std::fs::write(
-        generation_dir
-            .join(TEXT_AUTHORITY_DIR)
-            .join(TEXT_AUTHORITY_MANIFEST),
-        bytes,
-    )?;
-    Ok(())
-}
-
-/// The refusal oracle: a sealed text authority cannot change on disk.
-///
-/// A duplicate shard, a listed shard without its file, a manifest that
-/// disowns the index's documents, a shard whose digest is not the listed one,
-/// and format or normalizer changes all break the sealed commitment. The
-/// unsealed multi-publish path is no longer admitted by the source-event
-/// contract; inner manifest-shape refusals are covered in unit tests.
+/// A sealed root is immutable. Its own bytes, presence, and regular-file
+/// type are checked by both cold admission doors.
 #[test]
-fn a_sealed_text_authority_that_changes_is_refused_at_both_doors() -> TestResult {
-    type Fault = fn(&Path, &mut ManifestRow) -> TestResult;
-    let cases: Vec<(&str, &str, Fault)> = vec![
-        (
-            "duplicate shard",
-            "GENERATION_SIDECAR_CORRUPT",
-            |_dir, row| {
-                let first = row.4.first().copied().ok_or("a shard")?;
-                row.4.push(first);
-                Ok(())
-            },
-        ),
-        (
-            "listed shard without its file",
-            "GENERATION_SIDECAR_CORRUPT",
-            |dir, row| {
-                let shard = row.4.first().ok_or("a shard")?;
-                std::fs::remove_file(
-                    dir.join(TEXT_AUTHORITY_DIR)
-                        .join(shard_file_name(shard.0, &shard.5)),
-                )?;
-                Ok(())
-            },
-        ),
-        (
-            "manifest that lists no shard for the index's documents",
-            "GENERATION_SIDECAR_CORRUPT",
-            |dir, row| {
-                // The file stays; the manifest disowns it. The publish
-                // semantics drop an unowned file, so what refuses the seal
-                // is the authority covering fewer documents than the index.
-                let shard = row.4.pop().ok_or("a shard")?;
-                let path = dir
-                    .join(TEXT_AUTHORITY_DIR)
-                    .join(shard_file_name(shard.0, &shard.5));
-                if !path.is_file() {
-                    return Err("the disowned shard's file must remain".into());
-                }
-                Ok(())
-            },
-        ),
-        (
-            "shard content other than the listed digest",
-            "GENERATION_SIDECAR_CORRUPT",
-            |dir, row| {
-                let shard = row.4.first().ok_or("a shard")?;
-                let path = dir
-                    .join(TEXT_AUTHORITY_DIR)
-                    .join(shard_file_name(shard.0, &shard.5));
-                let mut bytes = std::fs::read(&path)?;
-                let last = bytes.len().checked_sub(1).ok_or("empty shard")?;
-                let byte = bytes.get_mut(last).ok_or("index")?;
-                *byte ^= 0xff;
-                std::fs::write(&path, bytes)?;
-                Ok(())
-            },
-        ),
-        (
-            "another text-authority format",
-            "GENERATION_SIDECAR_CORRUPT",
-            |_dir, row| {
-                row.0 = row.0.wrapping_add(1);
-                Ok(())
-            },
-        ),
-        (
-            "another shard size",
-            "GENERATION_SIDECAR_CORRUPT",
-            |_dir, row| {
-                row.1 = row.1.wrapping_mul(2);
-                Ok(())
-            },
-        ),
-        (
-            "another normalizer",
-            "GENERATION_SIDECAR_CORRUPT",
-            |_dir, row| {
-                row.2 = (row.2.0.wrapping_add(7), row.2.1);
-                Ok(())
-            },
-        ),
-    ];
-    for (label, expected_code, fault) in cases {
+fn changed_native_root_is_refused_at_both_doors() -> TestResult {
+    for fault in ["flip", "missing", "symlink"] {
         let temp = tempfile::tempdir()?;
-        let root = temp.path().to_path_buf();
-        let adapter = LexicalAdapter::with_state_root(root.clone());
+        let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
         let g1 = ManifestGeneration::new(1);
-        let _stages = adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
-        let dir = generation_dir(&root, g1);
-        let mut row = read_manifest_row(&dir)?;
-        fault(&dir, &mut row)?;
-        write_manifest_row(&dir, &row)?;
-
-        let validate = typed_code(adapter.validate_generation_identity(&identity(g1)))
-            .map_err(|err| -> Box<dyn Error> { format!("{label}: validate: {err}").into() })?;
-        if validate != expected_code {
-            return Err(format!(
-                "{label}: validate refused with {validate}, expected {expected_code}"
-            )
-            .into());
+        let _stages = adapter.build_fixture_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
+        let directory = generation_dir(temp.path(), g1);
+        let path = directory
+            .join(TEXT_AUTHORITY_DIR)
+            .join(TEXT_AUTHORITY_MANIFEST);
+        match fault {
+            "flip" => {
+                let mut bytes = std::fs::read(&path)?;
+                let last = bytes.last_mut().ok_or("empty Native root")?;
+                *last ^= 1;
+                std::fs::write(&path, bytes)?;
+            }
+            "missing" => std::fs::remove_file(&path)?,
+            "symlink" => {
+                std::fs::remove_file(&path)?;
+                std::os::unix::fs::symlink(directory.join(SEALED_MANIFEST), &path)?;
+            }
+            _ => return Err("unknown fault".into()),
         }
-        if open_code(&adapter, g1).as_deref() != Some(expected_code) {
-            return Err(format!("{label}: open did not refuse with {expected_code}").into());
+        let validate = typed_code(adapter.validate_generation_identity(&identity(g1)))?;
+        if validate != "GENERATION_SIDECAR_CORRUPT"
+            || open_code(&adapter, g1).as_deref() != Some("GENERATION_SIDECAR_CORRUPT")
+        {
+            return Err(format!("{fault}: root refused incorrectly: {validate}").into());
         }
     }
     Ok(())
 }
 
-/// `shard-<index>-<first eight digest bytes as hex>.cbor`, as the adapter
-/// names shard files.
-fn shard_file_name(index: u64, sha256: &[u8; 32]) -> String {
-    let prefix = sha256
-        .iter()
-        .take(8)
-        .fold(0_u64, |word, byte| word.wrapping_shl(8) | u64::from(*byte));
-    format!("shard-{index:08}-{prefix:016x}.cbor")
+/// The root stays sealed and valid; a selected current-map read authenticates
+/// its physical page at query time. Hash mismatch, absence, and symlink must
+/// all refuse without returning an incomplete answer.
+#[test]
+fn selected_native_pool_page_faults_are_typed() -> TestResult {
+    for fault in ["flip", "missing", "symlink"] {
+        let temp = tempfile::tempdir()?;
+        let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
+        let g1 = ManifestGeneration::new(1);
+        let _stages = adapter.build_fixture_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
+        let budget = RequestBudgetV1::unbounded();
+        let searcher = adapter.open(&repo(), &revision(), g1, &budget)?;
+        let directory = generation_dir(temp.path(), g1);
+        let page = current_page_path(temp.path(), &directory)?;
+        match fault {
+            "flip" => {
+                let mut bytes = std::fs::read(&page)?;
+                let last = bytes.last_mut().ok_or("empty current page")?;
+                *last ^= 1;
+                std::fs::write(&page, bytes)?;
+            }
+            "missing" => std::fs::remove_file(&page)?,
+            "symlink" => {
+                std::fs::remove_file(&page)?;
+                std::os::unix::fs::symlink(directory.join(SEALED_MANIFEST), &page)?;
+            }
+            _ => return Err("unknown fault".into()),
+        }
+        let code = typed_code(searcher.search(
+            &leaf_query(LqLeaf::Regex("quartz_00000".into())),
+            64,
+            &budget,
+        ))?;
+        if code != "GENERATION_SIDECAR_CORRUPT" {
+            return Err(format!("{fault}: selected Native page refusal was {code}").into());
+        }
+    }
+    Ok(())
 }
 
-/// The incremental writer proves the shards it loads: a shard whose bytes
-/// no longer match the manifest is refused typed by the next delta that
-/// touches it, instead of being carried into a new generation.
 #[test]
-fn a_delta_refuses_to_build_on_a_shard_whose_digest_changed() -> TestResult {
+fn a_delta_refuses_a_corrupt_selected_base_page() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let root = temp.path().to_path_buf();
-    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
     let g1 = ManifestGeneration::new(1);
-    let _stages = adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
-    let dir = generation_dir(&root, g1);
-    let row = read_manifest_row(&dir)?;
-    let shard = row.4.first().ok_or("a shard")?;
-    let path = dir
-        .join(TEXT_AUTHORITY_DIR)
-        .join(shard_file_name(shard.0, &shard.5));
-    let mut bytes = std::fs::read(&path)?;
-    let middle = bytes.len().div_euclid(2);
-    let byte = bytes.get_mut(middle).ok_or("index")?;
-    *byte ^= 0x01;
-    std::fs::write(&path, bytes)?;
-
     let g2 = ManifestGeneration::new(2);
-    let delta = adapter.build_batch(&small_batch(g2, Some(g1), &[1], true)?);
-    let code = typed_code(delta)?;
-    if code != "GENERATION_SIDECAR_CORRUPT" {
-        return Err(
-            format!("the delta refused with {code}, expected GENERATION_SIDECAR_CORRUPT").into(),
-        );
-    }
-    if generation_dir(&root, g2).exists() {
-        return Err("a refused delta created a generation directory".into());
-    }
-    let opened = adapter.open(
-        &repo(),
-        &revision(),
-        g2,
-        &quanta_index_core::RequestBudgetV1::unbounded(),
-    );
-    if !matches!(opened, Err(CoreError::NotFound(_))) {
-        return Err(format!(
-            "a refused delta left unexpected open result: {:?}",
-            opened.map(|_| ())
-        )
-        .into());
+    let _stages = adapter.build_fixture_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
+    let page = current_page_path(temp.path(), &generation_dir(temp.path(), g1))?;
+    let mut bytes = std::fs::read(&page)?;
+    let middle = bytes.len().div_euclid(2);
+    let byte = bytes.get_mut(middle).ok_or("empty current page")?;
+    *byte ^= 1;
+    std::fs::write(&page, bytes)?;
+    let code = typed_code(adapter.build_fixture_batch(&small_batch(g2, Some(g1), &[1], true)?))?;
+    if code != "GENERATION_SIDECAR_CORRUPT"
+        || adapter
+            .open(&repo(), &revision(), g2, &RequestBudgetV1::unbounded())
+            .is_ok()
+    {
+        return Err(format!("corrupt base page delta admission differed: {code}").into());
     }
     Ok(())
 }
@@ -842,7 +715,7 @@ fn an_unsealed_source_batch_cannot_leave_index_authority_skew() -> TestResult {
     let g1 = ManifestGeneration::new(1);
     let dir = generation_dir(&root, g1);
 
-    let refused = adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], false)?);
+    let refused = adapter.build_fixture_batch(&small_batch(g1, None, &[0, 1, 2], false)?);
     if !matches!(refused, Err(CoreError::InvalidContract(_))) {
         return Err(format!("unsealed source batch was not rejected: {refused:?}").into());
     }
@@ -850,7 +723,7 @@ fn an_unsealed_source_batch_cannot_leave_index_authority_skew() -> TestResult {
         return Err("rejected source batch created a generation directory".into());
     }
 
-    let _stages = adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
+    let _stages = adapter.build_fixture_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
     let observed = leaf_hit_ids(&adapter, g1, LqLeaf::Regex("quartz_00000".to_string()))?;
     if observed != vec![scope_chunk(0)] {
         return Err(format!("sealed source batch returned {observed:?}").into());
@@ -870,7 +743,7 @@ fn a_whole_corpus_layout_generation_is_refused_by_text_authority_format() -> Tes
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let g1 = ManifestGeneration::new(1);
-    let _stages = adapter.build_batch(&small_batch(g1, None, &[0, 1], true)?)?;
+    let _stages = adapter.build_fixture_batch(&small_batch(g1, None, &[0, 1], true)?)?;
     let dir = generation_dir(&root, g1);
     let manifest = dir.join(SEALED_MANIFEST);
     let mut value: ciborium::Value = ciborium::from_reader(std::fs::read(&manifest)?.as_slice())?;
@@ -895,7 +768,7 @@ fn a_whole_corpus_layout_generation_is_refused_by_text_authority_format() -> Tes
     // A delta on such a base is refused the same way: nothing is inherited
     // from a layout this build cannot read.
     let g2 = ManifestGeneration::new(2);
-    let delta = typed_code(adapter.build_batch(&small_batch(g2, Some(g1), &[1], true)?))?;
+    let delta = typed_code(adapter.build_fixture_batch(&small_batch(g2, Some(g1), &[1], true)?))?;
     if delta != "GENERATION_TEXT_AUTHORITY_FORMAT_UNSUPPORTED" {
         return Err(format!("the delta refused with {delta}").into());
     }

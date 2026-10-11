@@ -201,6 +201,7 @@ impl Harness {
 fn current_generation(repo: &str) -> SearchPlaneControlIpcRequestEnvelope {
     SearchPlaneControlIpcRequestEnvelope {
         request_id: 7,
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneControlIpcRequest::CurrentGeneration(CurrentGenerationRequest {
             repo_id: RepoId::new(repo).expect("test fixture ID satisfies canonical policy"),
             revision_id: RevisionId::new("rev")
@@ -261,6 +262,7 @@ fn expect_snapshot(response: SearchPlaneControlIpcResponse, repo: &str) -> TestR
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
         | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
         | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+        | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
         | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
             Err(format!("expected a snapshot for {repo}, got {other:?}").into())
         }
@@ -283,6 +285,7 @@ fn expect_error(
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
         | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
         | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+        | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
         | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
             Err(format!("expected a typed error, got {other:?}").into())
         }

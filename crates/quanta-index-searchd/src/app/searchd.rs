@@ -118,6 +118,7 @@ pub fn supervise_runtime(
     let status = Arc::clone(&runtime.process_status);
     let (servers, maintenance, guards, _boot_notices) =
         runtime.into_servers_maintenance_guards_and_boot_notices();
+    let diagnostic_capture = guards.diagnostic_capture.clone();
     let RuntimeServers {
         query: query_server,
         control: control_server,
@@ -129,7 +130,8 @@ pub fn supervise_runtime(
         guards,
         CancelRoot::clone(root),
     )
-    .with_status(Arc::clone(&status));
+    .with_status(Arc::clone(&status))
+    .with_diagnostic_capture(diagnostic_capture);
 
     // Adopt the already-running timer first. Enroll the provider drain
     // before any accept loop can admit requests and start attempts. Every

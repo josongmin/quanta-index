@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::diagnostic_trace::DiagnosticContextV1;
 use crate::error::CoreError;
 use crate::{LexicalCollectionBudget, LexicalMemoryReservation};
 
@@ -203,6 +204,7 @@ pub struct RequestBudgetV1 {
     shared: Arc<CancelSharedV1>,
     correlation: Option<RequestCorrelationV1>,
     diagnostics: Option<Arc<dyn RequestStageDiagnosticPortV1>>,
+    diagnostic_context: Option<DiagnosticContextV1>,
     lexical_preview: Arc<std::sync::Mutex<Option<LexicalPreviewRetention>>>,
     semantic_work: Option<Arc<std::sync::Mutex<SemanticWorkLedgerV1>>>,
 }
@@ -225,6 +227,7 @@ impl RequestBudgetV1 {
             }),
             correlation: None,
             diagnostics: None,
+            diagnostic_context: None,
             lexical_preview: Arc::new(std::sync::Mutex::new(None)),
             semantic_work: None,
         }
@@ -291,6 +294,20 @@ impl RequestBudgetV1 {
     pub fn with_correlation(mut self, correlation: RequestCorrelationV1) -> Self {
         self.correlation = Some(correlation);
         self
+    }
+
+    /// Attach the explicit request trace context. This is diagnostic-only and
+    /// carries no deadline, cancellation, or usage authority.
+    #[must_use]
+    pub fn with_diagnostic_context(mut self, context: DiagnosticContextV1) -> Self {
+        self.diagnostic_context = Some(context);
+        self
+    }
+
+    /// Borrow the request trace context when one was explicitly injected.
+    #[must_use]
+    pub fn diagnostic_context(&self) -> Option<&DiagnosticContextV1> {
+        self.diagnostic_context.as_ref()
     }
 
     /// One optional preview ledger across all selection/refill passes of this

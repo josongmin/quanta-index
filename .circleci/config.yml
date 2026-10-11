@@ -594,6 +594,7 @@ jobs:
             cd ../../quanta-index-lq-norm/fuzz
             cargo +nightly-2026-08-01 fuzz build
             cargo +nightly-2026-08-01 fuzz run lq_parse_pipeline -- -max_total_time=60
+            cargo +nightly-2026-08-01 fuzz run regex_necessary_gram -- -max_total_time=60
       - run:
           name: Reject fuzz lockfile changes
           command: |

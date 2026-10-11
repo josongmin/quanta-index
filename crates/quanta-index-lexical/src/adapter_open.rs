@@ -9,15 +9,11 @@ use crate::generation_dir::{is_writer_lock_entry, sync_generation_directory};
 use crate::index_store::read_lexical_sealed_identity;
 use crate::overlay_codec::OverlayFamily;
 use crate::sealed_generation::{SealedGenerationVisitor, walk_sealed_generation};
-use crate::text_authority::{
-    ShardBody, ShardedTextAuthority, TEXT_AUTHORITY_DIR_NAME, TextAuthorityWriteReceipt,
-    TextAuthorityWriteResult,
-};
+use crate::text_authority::{NativeAuthority, TEXT_AUTHORITY_DIR_NAME, TextAuthorityWriteReceipt};
 use crate::text_authority_plan::plan_text_authority_delta;
-use crate::text_docs::collect_text_authority_docs;
 use crate::{
     GenKey, GenerationWriter, LexicalAdapter, LoadedGeneration, OverlaySnapshot, TantivySearcher,
-    TextAuthorityPlan, TextAuthorityWrite, text_authority,
+    TextAuthorityWrite, text_authority,
 };
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
@@ -33,7 +29,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tantivy::Index;
 
 #[derive(Clone, Copy, Debug, Default)]
 #[expect(
@@ -50,206 +45,211 @@ pub(crate) struct LexicalMutationTimings {
     pub(crate) file_authority_source_write_ns: Option<u64>,
 }
 
-struct TextAuthorityMutation {
-    rebuilt: bool,
-    receipt: TextAuthorityWriteReceipt,
-    collect_ns: Option<u64>,
-    shard_build_ns: u64,
-    publish_ns: u64,
-}
-
-impl TextAuthorityMutation {
-    fn from_result(
-        rebuilt: bool,
-        collect_ns: Option<u64>,
-        result: TextAuthorityWriteResult,
-    ) -> Self {
-        Self {
-            rebuilt,
-            receipt: result.receipt,
-            collect_ns,
-            shard_build_ns: result.shard_build_ns,
-            publish_ns: result.publish_ns,
-        }
-    }
-}
-
 impl LexicalAdapter {
-    /// The writer guard spans op-apply, commit, and the text-authority
-    /// write so partial commits cannot interleave with sibling builds for
-    /// the same generation; the text-authority write reads `guarded.index`
-    /// after commit.
+    /// Serialize the index commit and both authority roots under one writer.
     pub(crate) fn commit_ops_under_lock(
         &self,
         handle: &Arc<Mutex<GenerationWriter>>,
         key: &GenKey,
         ops: &[LexicalChannelOp],
         file_plan: Option<&mut crate::file_authority::FileAuthorityPlanCache>,
+        publication: &mut crate::lexical_publication::PublicationContext,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<LexicalMutationTimings, CoreError> {
+        // Preparation overlaps coverage/base cloning. Join outside the writer
+        // mutex and keep the permit until both packets are consumed or dropped.
+        let mut prepared = publication
+            .compaction_worker
+            .take()
+            .map(crate::lexical_compaction::CompactionWorker::finish)
+            .transpose()?
+            .unwrap_or_default();
         let mut guarded = handle
             .lock()
-            .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
+            .map_err(|error| CoreError::Storage(format!("lexical writer poisoned: {error}")))?;
         let writer_started = Instant::now();
         let generation_dir = self.index_path(key);
-        let file_plan = match file_plan {
+        let mut mutation = match file_plan {
             Some(cache) => cache.take(&generation_dir, ops)?,
             None => crate::file_authority::plan_ops(&generation_dir, ops)?,
-        }
-        .materialize(ops)?;
-        // Planned before any op runs: the retired documents are only
-        // nameable while the pre-mutation index still holds them, and the
-        // doc ids the ops store come from the plan's watermark.
-        let mut plan =
-            plan_text_authority_delta(&guarded.index, &self.fields, ops, &generation_dir)?;
+        };
+        mutation.operations_sha256 = publication.operations_sha256;
+        let mut plan = if let Some(plan) = publication.native_plan.take() {
+            plan
+        } else {
+            plan_text_authority_delta(
+                &publication.store,
+                publication.native_base.as_ref(),
+                ops,
+                &publication.reservation.native_text,
+            )?
+        };
         let mut needs_commit = false;
-        let mut census_observation = crate::doc_census::CensusBuildObservation::new();
-        for op in ops {
-            if self.apply_op(
-                &guarded.writer,
-                key,
-                op,
-                &mut plan.allocator,
-                &mut census_observation,
-            )? {
-                needs_commit = true;
+        let mut census = crate::doc_census::CensusBuildObservation::new(diagnostic);
+        let applied = (|| {
+            for op in ops {
+                needs_commit |= self.apply_op(
+                    &guarded.writer,
+                    key,
+                    op,
+                    &mut plan.allocator,
+                    &mut census,
+                    publication.store.sync_totals(),
+                )?;
             }
+            plan.allocator.validate_fully_consumed()
+        })();
+        census.emit(applied.is_ok());
+        applied?;
+        if needs_commit {
+            let _opstamp = guarded
+                .writer
+                .commit()
+                .map_err(|error| CoreError::Storage(format!("lexical: commit: {error}")))?;
         }
-        census_observation.emit();
-        if !needs_commit {
-            return Ok(LexicalMutationTimings {
-                writer_mutation_ns: crate::stage_timing::elapsed_stage_ns(writer_started)?,
-                ..LexicalMutationTimings::default()
-            });
-        }
-        let _opstamp = guarded
-            .writer
-            .commit()
-            .map_err(|err| CoreError::Storage(format!("lexical: commit: {err}")))?;
         let writer_mutation_ns = crate::stage_timing::elapsed_stage_ns(writer_started)?;
-        // The text-authority write happens under the writer lock (it reads
-        // the committed index); the accounting is folded in after the lock
-        // is released so the stats lock is never nested inside the writer's.
-        let text_authority_started = Instant::now();
-        let written = self.write_text_authority(&generation_dir, key, &guarded.index, plan)?;
-        let text_authority_ns = crate::stage_timing::elapsed_stage_ns(text_authority_started)?;
-        let file_authority_started = Instant::now();
-        let file_authority_source_write_ns =
-            crate::file_authority::apply_plan(&generation_dir, file_plan)?;
-        let file_authority_ns = crate::stage_timing::elapsed_stage_ns(file_authority_started)?;
+        let text_started = Instant::now();
+        let lease = publication.lease.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("lexical publication lost its adoption lease".into())
+        })?;
+        let (native, receipt) = match plan.write {
+            TextAuthorityWrite::None => {
+                let prior = plan.prior.unwrap_or_else(|| {
+                    text_authority::NativeRoot::empty(
+                        publication.reservation.native_text.scope_sha256,
+                    )
+                });
+                // A real no-op source event may pay existing physical debt;
+                // it consumes no fresh logical IDs or maintenance generation.
+                let written = if prior.compaction_due.entries != 0 {
+                    text_authority::publish_delta_prepared(
+                        &publication.store,
+                        lease,
+                        Some(&prior),
+                        &[],
+                        &[],
+                        &plan.allocator.added,
+                        false,
+                        key.generation,
+                        publication.reservation.native_text.scope_sha256,
+                        prepared.native.take(),
+                    )?
+                } else {
+                    (prior, TextAuthorityWriteReceipt::default())
+                };
+                publication.native_mutation = Some(crate::lexical_publication::NativeMutation {
+                    sources: Vec::new(),
+                    retired: Vec::new(),
+                    added: plan.allocator.added,
+                    clear_all: false,
+                });
+                written
+            }
+            TextAuthorityWrite::Delta {
+                retired,
+                source_edits,
+                clear_all,
+            } => {
+                self.invalidate_regex_match_cache_generation(key)?;
+                let written = crate::causal_profile::observe_result(
+                    diagnostic,
+                    quanta_index_core::DiagnosticStageV1::NativePublish,
+                    |_diagnostic| {
+                        crate::causal_profile::timed_work("native_authority_publish", || {
+                            text_authority::publish_delta_prepared(
+                                &publication.store,
+                                lease,
+                                plan.prior.as_ref(),
+                                &source_edits,
+                                &retired,
+                                &plan.allocator.added,
+                                clear_all,
+                                key.generation,
+                                publication.reservation.native_text.scope_sha256,
+                                prepared.native.take(),
+                            )
+                        })
+                    },
+                )?;
+                publication.native_mutation = Some(crate::lexical_publication::NativeMutation {
+                    sources: source_edits,
+                    retired,
+                    added: plan.allocator.added,
+                    clear_all,
+                });
+                written
+            }
+        };
+        let native_bytes = crate::channel_payloads::encode_cbor(&native, "Native authority root")?;
+        crate::lexical_publication::write_root_observed(
+            &generation_dir,
+            crate::lexical_publication::NATIVE_ROOT_NAME,
+            &native_bytes,
+            publication.store.sync_totals(),
+        )?;
+        publication.native_root = Some(native);
+        let text_authority_ns = crate::stage_timing::elapsed_stage_ns(text_started)?;
+        let file_started = Instant::now();
+        let file = crate::causal_profile::observe_result(
+            diagnostic,
+            quanta_index_core::DiagnosticStageV1::FilePublish,
+            |_diagnostic| {
+                crate::causal_profile::timed_work("file_authority_publish", || {
+                    crate::file_authority::paged::build_for_seal_prepared(
+                        &publication.store,
+                        lease,
+                        publication.file_base.as_ref(),
+                        &publication.reservation.file,
+                        &mutation,
+                        prepared.file.take(),
+                    )
+                })
+            },
+        )?;
+        crate::lexical_publication::write_root_observed(
+            &generation_dir,
+            crate::lexical_publication::FILE_ROOT_NAME,
+            &file.root_bytes,
+            publication.store.sync_totals(),
+        )?;
+        publication.file_root = Some(file.root);
+        publication.file_mutation = Some(mutation);
+        let file_authority_ns = crate::stage_timing::elapsed_stage_ns(file_started)?;
         drop(guarded);
-        if let Some(written) = &written {
-            self.record_text_authority_write(written.rebuilt, written.receipt)?;
-        }
+        self.record_text_authority_write(publication.native_base.is_none(), receipt)?;
         Ok(LexicalMutationTimings {
             writer_mutation_ns,
             text_authority_ns,
-            text_authority_collect_ns: written.as_ref().and_then(|value| value.collect_ns),
-            text_authority_shard_build_ns: written.as_ref().map(|value| value.shard_build_ns),
-            text_authority_publish_ns: written.as_ref().map(|value| value.publish_ns),
+            text_authority_collect_ns: None,
+            // Paged publication builds segments and writes their pooled
+            // objects in one call; only the enclosing stage is measured.
+            text_authority_shard_build_ns: None,
+            text_authority_publish_ns: None,
             file_authority_ns,
-            file_authority_source_write_ns: Some(file_authority_source_write_ns),
+            // The File stage includes map and root publication, not just
+            // source-body writes.
+            file_authority_source_write_ns: None,
         })
-    }
-
-    /// Publish the text authority the plan decided on, after the commit.
-    ///
-    /// Returns whether it was a rebuild and what it did, or `None` when the
-    /// batch touched no text.
-    fn write_text_authority(
-        &self,
-        generation_dir: &Path,
-        key: &GenKey,
-        index: &Index,
-        plan: TextAuthorityPlan,
-    ) -> Result<Option<TextAuthorityMutation>, CoreError> {
-        let max_doc_id = plan.allocator.max_doc_id();
-        match plan.write {
-            TextAuthorityWrite::None => Ok(None),
-            TextAuthorityWrite::Rebuild => {
-                self.invalidate_regex_match_cache_generation(key)?;
-                let collect_started = Instant::now();
-                let docs = collect_text_authority_docs(index, &self.fields)?;
-                let collect_ns = crate::stage_timing::elapsed_stage_ns(collect_started)?;
-                let result = text_authority::rebuild(
-                    generation_dir,
-                    key.generation,
-                    docs,
-                    plan.prior.as_ref(),
-                    max_doc_id,
-                )?;
-                Ok(Some(TextAuthorityMutation::from_result(
-                    true,
-                    Some(collect_ns),
-                    result,
-                )))
-            }
-            TextAuthorityWrite::Incremental {
-                retired,
-                touched_shards,
-            } => {
-                self.invalidate_regex_match_cache_generation(key)?;
-                let Some(prior) = plan.prior.as_ref() else {
-                    return Err(CoreError::InvalidContract(
-                        "lexical: incremental text authority update planned without a prior manifest"
-                            .to_string(),
-                    ));
-                };
-                let result = text_authority::update(
-                    generation_dir,
-                    key.generation,
-                    prior,
-                    &retired,
-                    &plan.allocator.added,
-                    &touched_shards,
-                    max_doc_id,
-                )?;
-                Ok(Some(TextAuthorityMutation::from_result(
-                    false, None, result,
-                )))
-            }
-        }
     }
 }
 
 impl SealedGenerationVisitor for LoadedGeneration {
-    fn text_authority_shard(
+    fn native_authority(
         &mut self,
-        shard: text_authority::ProvedTextShard,
-        body: ShardBody,
+        store: crate::lexical_store::ObjectStore,
+        root: text_authority::NativeRoot,
     ) -> Result<(), CoreError> {
-        self.shards.push(shard);
-        for (id, identity) in text_authority::document_identities(&body) {
-            if self.documents.insert(id, identity).is_some() {
-                return Err(CoreError::InvalidContract(
-                    "lexical: duplicate proved text document".into(),
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn text_authority_complete(
-        &mut self,
-        root: &std::fs::File,
-        directory: &Path,
-    ) -> Result<(), CoreError> {
-        self.text_authority = Some(ShardedTextAuthority::from_proved_files(
-            root,
-            directory,
-            std::mem::take(&mut self.shards),
-            std::mem::take(&mut self.documents),
-        )?);
+        self.text_authority = Some(text_authority::NativeAuthority::open(store, root)?);
         Ok(())
     }
 
     fn file_authority(
         &mut self,
-        authority: crate::file_authority::VerifiedAuthority,
-        object_dir: std::path::PathBuf,
-        budget: Option<&RequestBudgetV1>,
+        root_bytes: &[u8],
+        store: crate::lexical_store::ObjectStore,
     ) -> Result<(), CoreError> {
-        self.file_authority = Some(crate::file_authority::from_v15_verified(
-            authority, object_dir, budget,
+        self.file_authority = Some(crate::file_authority::paged::PagedFileAuthority::open(
+            root_bytes, store,
         )?);
         Ok(())
     }
@@ -441,7 +441,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
                 ),
             });
         }
-        self.open_sealed(&path, &identity, Some(budget))
+        self.open_sealed(&path, &identity, Some(budget), budget.diagnostic_context())
     }
 
     fn open_proven(
@@ -450,7 +450,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
         let (generation_dir, observed) =
             self.sealed_generation_dir_for(candidate, "proven open")?;
-        let searcher = self.open_sealed(&generation_dir, &observed, None)?;
+        let searcher = self.open_sealed(&generation_dir, &observed, None, None)?;
         sync_generation_directory(&generation_dir)?;
         Ok(searcher)
     }
@@ -460,17 +460,24 @@ impl LexicalAdapter {
     /// Open the sealed generation at `path` whose identity is `identity`:
     /// the walk every door shares, keeping what it decodes.
     ///
-    /// Every file a query decodes is read once, proved and decoded here;
-    /// the index is opened from the proved commit and its segment files are
-    /// proved present at their committed length.
+    /// Control metadata is authenticated here. Immutable source, posting and
+    /// text leaves are pinned at their committed length and authenticated on use.
+    /// Their semantic relationships were independently checked before sealing.
     pub(crate) fn open_sealed(
         &self,
         path: &Path,
         identity: &GenerationSnapshot,
         budget: Option<&RequestBudgetV1>,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
         let mut loaded = LoadedGeneration::default();
-        let verified = walk_sealed_generation(path, identity, &mut loaded, budget)?;
+        let verified = walk_sealed_generation(
+            path,
+            identity,
+            &mut loaded,
+            budget,
+            &crate::lexical_store::ObjectStore::open_existing(&self.state_root)?,
+        )?;
         self.record_coverage_read(
             crate::sealed_generation::coverage::CoverageReadPhase::Open,
             verified.coverage_read_stats,
@@ -490,21 +497,19 @@ impl LexicalAdapter {
             verified.source_publication.as_ref(),
         )?;
         let live_bm25_bytes = live_bm25.heap_bytes_estimate()?;
+        let file_authority_bytes = loaded.file_authority.as_ref().map_or(
+            Ok(0),
+            crate::file_authority::paged::PagedFileAuthority::heap_bytes_estimate,
+        )?;
         let resident_bytes_estimate = resident_bytes_estimate(
             &self.state_root,
             path,
             text_authority.as_ref(),
             &ranked_keys,
+            diagnostic,
         )?
         .checked_add(coverage_bytes)
-        .and_then(|bytes| {
-            bytes.checked_add(
-                loaded
-                    .file_authority
-                    .as_ref()
-                    .map_or(0, crate::file_authority::FileAuthority::heap_bytes_estimate),
-            )
-        })
+        .and_then(|bytes| bytes.checked_add(file_authority_bytes))
         .and_then(|bytes| bytes.checked_add(overlay_bytes))
         .and_then(|bytes| bytes.checked_add(live_bm25_bytes))
         .ok_or_else(|| CoreError::Storage("lexical resident byte estimate overflow".into()))?;
@@ -556,8 +561,9 @@ impl LexicalAdapter {
 pub(crate) fn resident_bytes_estimate(
     track_root: &Path,
     generation_dir: &Path,
-    text_authority: Option<&ShardedTextAuthority>,
+    text_authority: Option<&NativeAuthority>,
     ranked_keys: &crate::ranked_keys::RankedKeyTables,
+    diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
 ) -> Result<u64, CoreError> {
     let skip = |name: &str| {
         is_writer_lock_entry(name)
@@ -569,14 +575,14 @@ pub(crate) fn resident_bytes_estimate(
             || name == crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME
             || crate::sealed_generation::coverage::is_coverage_page(name)
     };
-    let mapped =
-        unique_inode_tree_bytes_below_track(track_root, generation_dir, &skip).map_err(|err| {
+    let mapped = unique_inode_tree_bytes_below_track(track_root, generation_dir, &skip, diagnostic)
+        .map_err(|err| {
             CoreError::Storage(format!(
                 "lexical: measure resident bytes of {}: {err}",
                 generation_dir.display()
             ))
         })?;
-    let decoded = text_authority.map_or(0, ShardedTextAuthority::heap_bytes_estimate);
+    let decoded = text_authority.map_or(0, NativeAuthority::heap_bytes_estimate);
     let ranked_key_heap = ranked_keys.heap_bytes_estimate()?;
     mapped
         .checked_add(decoded)
@@ -611,8 +617,13 @@ mod tests {
         std::fs::write(file_authority_dir.join("manifest.cbor"), vec![0_u8; 4096])?;
         std::fs::write(file_authority_dir.join("source.bin"), vec![0_u8; 4096])?;
         let ranked_keys = crate::ranked_keys::RankedKeyTables::bind(Vec::new(), &[])?;
-        let estimate =
-            resident_bytes_estimate(directory.track_path(), directory.path(), None, &ranked_keys)?;
+        let estimate = resident_bytes_estimate(
+            directory.track_path(),
+            directory.path(),
+            None,
+            &ranked_keys,
+            None,
+        )?;
         if estimate != 5 {
             return Err(format!("decoded sidecar files were charged: {estimate} bytes").into());
         }

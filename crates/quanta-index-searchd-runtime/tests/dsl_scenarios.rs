@@ -203,6 +203,7 @@ fn lexical_request(
     query_text: &str,
 ) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id,
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax,
@@ -354,7 +355,12 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
             chunk_record("gamma", "sphinx gamma")?,
             chunk_record("delta", "beta needle forbidden")?,
         ],
-        Some(b"manifest".to_vec()),
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &[],
+        )?),
     )?;
     seal_lexical(&ingest_socket, &mut corpus)?;
 
@@ -414,7 +420,12 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
             chunk_record_with_metadata("beta", "src/main.rs", "rust", 1, 2, "needle beta")?,
             chunk_record_with_metadata("gamma", "docs/readme.md", "rust", 1, 2, "other text")?,
         ],
-        Some(b"manifest".to_vec()),
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &[],
+        )?),
     )?;
     seal_lexical(&ingest_socket, &mut corpus)?;
 
@@ -618,6 +629,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
     seal_lexical(&ingest_socket, &mut corpus)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 3,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "scope".to_string(),
@@ -725,6 +737,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     seal_lexical(&ingest_socket, &mut corpus)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 4,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
             text_query: TextQueryRequest {
@@ -836,6 +849,7 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
     seal_lexical(&ingest_socket, &mut corpus)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 5,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
             text_query: TextQueryRequest {

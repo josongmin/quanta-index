@@ -184,6 +184,22 @@ pub fn detect_state_root_format_v1(root: &Path) -> Result<StateRootFormatV1, Cor
 /// The daemon's boot path calls this; there is deliberately no migration
 /// branch here.
 pub fn refuse_legacy_state_root_v1(root: &Path) -> Result<(), CoreError> {
+    // Native incremental state has a distinct cutover boundary. The default
+    // daemon must not silently reinterpret its catalog as an old index root.
+    for marker in [".native-index-v1", ".native-index-v2"] {
+        match fs::symlink_metadata(root.join(marker)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => {
+                return Err(typed(
+                    SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
+                    format!(
+                        "state root {} belongs to the native incremental service",
+                        root.display()
+                    ),
+                ));
+            }
+        }
+    }
     let format = detect_state_root_format_v1(root)?;
     if format != StateRootFormatV1::LegacyV1 {
         return Ok(());

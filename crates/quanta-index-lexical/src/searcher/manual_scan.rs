@@ -551,6 +551,7 @@ impl TantivySearcher {
         content: &str,
         budget: &RequestBudgetV1,
         regex_cache: &mut ManualScanCache,
+        native: &super::authorities::NativeQueryScope,
     ) -> Result<bool, CoreError> {
         if let Some(ContentPathScope { pattern, scope }) = constraint.path_scope.as_ref()
             && !self.manual_file_filter_matches(pattern, *scope, repo_relative_path, regex_cache)?
@@ -571,6 +572,7 @@ impl TantivySearcher {
             false,
             budget,
             regex_cache,
+            native,
         )
     }
 
@@ -589,6 +591,7 @@ impl TantivySearcher {
         content: &str,
         budget: &RequestBudgetV1,
         regex_cache: &mut ManualScanCache,
+        native: &super::authorities::NativeQueryScope,
     ) -> Result<bool, CoreError> {
         let Some((canonical_name, canonical_args)) =
             self.canonicalize_predicate_call(name, args)?
@@ -602,14 +605,14 @@ impl TantivySearcher {
                 regex_cache.repo_gate_ids(&canonical_name, &canonical_args, options, || {
                     let constraint =
                         self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
-                    self.collect_repo_ids_for_repo_has_file(&constraint, options, budget)
+                    self.collect_repo_ids_for_repo_has_file(&constraint, options, budget, native)
                 })?,
                 source_repo_id,
             )),
             Some(PredicateKind::RepoContentGate) => Ok(self.manual_repo_gate_matches(
                 regex_cache.repo_gate_ids(&canonical_name, &canonical_args, options, || {
                     let leaf = self.repo_content_constraint(&canonical_name, &canonical_args)?;
-                    self.collect_repo_ids_for_repo_has_content(&leaf, options, budget)
+                    self.collect_repo_ids_for_repo_has_content(&leaf, options, budget, native)
                 })?,
                 source_repo_id,
             )),
@@ -667,6 +670,7 @@ impl TantivySearcher {
                     content,
                     budget,
                     regex_cache,
+                    native,
                 )
             }
             None => Err(unimplemented_predicate(format!(
@@ -690,6 +694,7 @@ impl TantivySearcher {
         include_path_terms: bool,
         budget: &RequestBudgetV1,
         regex_cache: &mut ManualScanCache,
+        native: &super::authorities::NativeQueryScope,
     ) -> Result<bool, CoreError> {
         let case = Self::case_mode(options);
         match leaf {
@@ -732,6 +737,7 @@ impl TantivySearcher {
                 content,
                 budget,
                 regex_cache,
+                native,
             ),
         }
     }
@@ -744,6 +750,7 @@ impl TantivySearcher {
         include_path_terms: bool,
         budget: &RequestBudgetV1,
         regex_cache: &mut ManualScanCache,
+        native: &super::authorities::NativeQueryScope,
     ) -> Result<bool, CoreError> {
         match expr {
             LqExpr::Leaf(LqLeaf::Predicate { name, args })
@@ -778,6 +785,7 @@ impl TantivySearcher {
                 include_path_terms,
                 budget,
                 regex_cache,
+                native,
             ),
             LqExpr::All(children) => {
                 for child in children {
@@ -788,6 +796,7 @@ impl TantivySearcher {
                         false,
                         budget,
                         regex_cache,
+                        native,
                     )? {
                         return Ok(false);
                     }
@@ -796,15 +805,29 @@ impl TantivySearcher {
             }
             LqExpr::Any(children) => {
                 for child in children {
-                    if self.manual_expr_matches(view, child, options, false, budget, regex_cache)? {
+                    if self.manual_expr_matches(
+                        view,
+                        child,
+                        options,
+                        false,
+                        budget,
+                        regex_cache,
+                        native,
+                    )? {
                         return Ok(true);
                     }
                 }
                 Ok(false)
             }
-            LqExpr::Not(inner) => {
-                Ok(!self.manual_expr_matches(view, inner, options, false, budget, regex_cache)?)
-            }
+            LqExpr::Not(inner) => Ok(!self.manual_expr_matches(
+                view,
+                inner,
+                options,
+                false,
+                budget,
+                regex_cache,
+                native,
+            )?),
         }
     }
 
@@ -822,6 +845,7 @@ impl TantivySearcher {
         content: &str,
         budget: &RequestBudgetV1,
         regex_cache: &mut ManualScanCache,
+        native: &super::authorities::NativeQueryScope,
     ) -> Result<bool, CoreError> {
         match filter {
             LqFilter::Repo { pattern, revs } => {
@@ -849,6 +873,7 @@ impl TantivySearcher {
                 false,
                 budget,
                 regex_cache,
+                native,
             ),
             LqFilter::Lang { id } => {
                 if normalize_language(id.as_str()).is_none() {
@@ -933,6 +958,7 @@ impl TantivySearcher {
         constraints: &QueryConstraintSetV1,
         page: &ManualPage<'_>,
         budget: &RequestBudgetV1,
+        native: &super::authorities::NativeQueryScope,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         self.ensure_manual_language_query_supported(query)?;
         let searcher = self.reader.searcher();
@@ -974,6 +1000,7 @@ impl TantivySearcher {
                 constraints,
                 budget,
                 &mut regex_cache,
+                native,
             )? {
                 continue;
             }
@@ -994,7 +1021,8 @@ impl TantivySearcher {
         // is exact for free.
         let exact_total = Some(count_from_len(out.len())?);
         out.truncate(page.limit);
-        let mut preview = self.selected_preview_context(query, &prepared.predicate_plan, budget)?;
+        let mut preview =
+            self.selected_preview_context(query, &prepared.predicate_plan, budget, native)?;
         Ok(LexicalSearchPageV1 {
             code_search_stats: None,
             candidates: self.render_manual_candidates(
@@ -1055,6 +1083,7 @@ impl TantivySearcher {
         constraints: &QueryConstraintSetV1,
         budget: &RequestBudgetV1,
         regex_cache: &mut ManualScanCache,
+        native: &super::authorities::NativeQueryScope,
     ) -> Result<bool, CoreError> {
         regex_cache.begin_document();
         if stored_doc_kind(doc, self.fields.doc_kind)? != prepared.doc_kind.as_str() {
@@ -1091,6 +1120,7 @@ impl TantivySearcher {
             include_path_terms,
             budget,
             regex_cache,
+            native,
         )? {
             return Ok(false);
         }
@@ -1104,6 +1134,7 @@ impl TantivySearcher {
                 content,
                 budget,
                 regex_cache,
+                native,
             )? {
                 return Ok(false);
             }
@@ -1194,6 +1225,7 @@ impl TantivySearcher {
         prepared: &PreparedExecutableQuery,
         constraints: &QueryConstraintSetV1,
         budget: &RequestBudgetV1,
+        native: &super::authorities::NativeQueryScope,
     ) -> Result<Vec<ManualRankedCandidate<SymbolCandidate>>, CoreError> {
         self.ensure_manual_language_query_supported(query)?;
         let searcher = self.reader.searcher();
@@ -1229,6 +1261,7 @@ impl TantivySearcher {
                 constraints,
                 budget,
                 &mut regex_cache,
+                native,
             )? {
                 continue;
             }

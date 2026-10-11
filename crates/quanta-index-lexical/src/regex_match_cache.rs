@@ -16,20 +16,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use quanta_index_core::{RegexMatchCachePolicy, RegexMatchCacheStats};
-use roaring::RoaringBitmap;
+use roaring::RoaringTreemap;
 
 use crate::GenKey;
 
-/// Admission per live container, including vector spare capacity.
-///
-/// The pinned roaring 0.11.4 allocator probe
-/// found 513 sparse containers retain 45,064 bytes; a 32-byte charge per
-/// container counted only 24,656. This is a conservative logical charge, not
-/// a process-RSS measurement. Run stores have a separate refusal below.
+/// Admission per live 16-bit container, including vector spare capacity.
 const ROARING_CONTAINER_OVERHEAD: u64 = 128;
-
-/// Heap bytes of one dense container: 2^16 bits.
-const ROARING_BITSET_CONTAINER_BYTES: u64 = 8_192;
+/// Admission per high-32 treemap entry and its B-tree node slack.
+const ROARING_TREEMAP_ENTRY_OVERHEAD: u64 = 128;
 
 /// Bytes a set costs before its first container: the bitmap's container
 /// vector header, rounded up.
@@ -42,25 +36,29 @@ const ROARING_SET_OVERHEAD: u64 = 32;
 /// 128-byte charge was smaller than the two indexes' inline items alone.
 const REGEX_MATCH_CACHE_ENTRY_OVERHEAD: u64 = 1_024;
 
-/// Conservative charge for sets produced by individual authority-ID insertion.
+/// Conservative upper charge for the u64 set without relying on inaccessible
+/// treemap internals.
 ///
-/// A Run layout is not admitted because its public statistics omit retained
-/// interval-vector spare capacity.
-///
-/// Sparse containers are counted by their allocated capacity as the bitmap
-/// reports it — four bytes a slot for two-byte values, so twice their
-/// heap; dense containers by their fixed size (the bitmap's own statistic
-/// counts them in bits); every live container receives a vector-growth
-/// charge, and the set receives its own charge.
-pub(crate) fn match_set_bytes(members: &RoaringBitmap) -> u64 {
-    let stats = members.statistics();
-    ROARING_SET_OVERHEAD
-        .saturating_add(stats.n_bytes_array_containers)
-        .saturating_add(stats.n_bytes_run_containers)
-        .saturating_add(
-            u64::from(stats.n_bitset_containers).saturating_mul(ROARING_BITSET_CONTAINER_BYTES),
-        )
-        .saturating_add(u64::from(stats.n_containers).saturating_mul(ROARING_CONTAINER_OVERHEAD))
+/// Sixteen bytes per member covers a dense 8 KiB container
+/// once it has 512 members; sparse and run containers get the same charge.
+/// Every nonempty 16-bit container and high-32 treemap entry is charged once.
+pub(crate) fn match_set_bytes(members: &RoaringTreemap) -> u64 {
+    let mut charge = ROARING_SET_OVERHEAD.saturating_add(members.len().saturating_mul(16));
+    let mut previous_container = None;
+    let mut previous_treemap = None;
+    for id in members {
+        let container = id >> 16;
+        let treemap = id >> 32;
+        if previous_container != Some(container) {
+            charge = charge.saturating_add(ROARING_CONTAINER_OVERHEAD);
+            previous_container = Some(container);
+        }
+        if previous_treemap != Some(treemap) {
+            charge = charge.saturating_add(ROARING_TREEMAP_ENTRY_OVERHEAD);
+            previous_treemap = Some(treemap);
+        }
+    }
+    charge
 }
 
 fn string_bytes(value: &str) -> u64 {
@@ -89,11 +87,10 @@ impl RegexMatchCacheKey {
 pub(crate) enum RegexMatchCacheRefusal {
     Cardinality { matches: u64 },
     Bytes { bytes: u64 },
-    UnaccountedRunLayout,
 }
 
 struct CachedMatchSet {
-    members: Arc<RoaringBitmap>,
+    members: Arc<RoaringTreemap>,
     /// What this entry adds to the resident bytes, fixed at insert so an
     /// eviction gives back exactly what the insert took.
     bytes: u64,
@@ -132,7 +129,7 @@ impl RegexMatchCache {
 
     /// The resident set for `key`, moved to most recently used; the same
     /// allocation every other holder of it sees.
-    pub(crate) fn get(&mut self, key: &RegexMatchCacheKey) -> Option<Arc<RoaringBitmap>> {
+    pub(crate) fn get(&mut self, key: &RegexMatchCacheKey) -> Option<Arc<RoaringTreemap>> {
         let stamp = self.take_stamp();
         let Some(entry) = self.entries.get_mut(key) else {
             self.stats.misses = self.stats.misses.saturating_add(1);
@@ -148,7 +145,7 @@ impl RegexMatchCache {
     }
 
     /// Record the logical charge for a computed set, cached or not.
-    pub(crate) fn record_built(&mut self, members: &RoaringBitmap) {
+    pub(crate) fn record_built(&mut self, members: &RoaringTreemap) {
         self.stats.sets_built = self.stats.sets_built.saturating_add(1);
         self.stats.members_built = self.stats.members_built.saturating_add(members.len());
         self.stats.bytes_built = self
@@ -171,7 +168,7 @@ impl RegexMatchCache {
     pub(crate) fn insert(
         &mut self,
         key: RegexMatchCacheKey,
-        members: Arc<RoaringBitmap>,
+        members: Arc<RoaringTreemap>,
     ) -> Result<(), RegexMatchCacheRefusal> {
         let cardinality = members.len();
         if cardinality
@@ -181,13 +178,6 @@ impl RegexMatchCache {
             return Err(RegexMatchCacheRefusal::Cardinality {
                 matches: cardinality,
             });
-        }
-        if members.statistics().n_run_containers != 0 {
-            // `statistics()` reports the Run store's serialized length, not
-            // its retained Vec capacity. Refuse a layout whose residency this
-            // accounting cannot bound; exact query results are still served.
-            self.stats.refused_bytes = self.stats.refused_bytes.saturating_add(1);
-            return Err(RegexMatchCacheRefusal::UnaccountedRunLayout);
         }
         let bytes = match_set_bytes(&members)
             .saturating_add(key.heap_bytes())
@@ -254,7 +244,7 @@ mod tests {
 
     use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
     use quanta_index_core::RegexMatchCachePolicy;
-    use roaring::RoaringBitmap;
+    use roaring::RoaringTreemap;
 
     use super::{
         REGEX_MATCH_CACHE_ENTRY_OVERHEAD, RegexMatchCache, RegexMatchCacheKey,
@@ -279,13 +269,13 @@ mod tests {
         }
     }
 
-    fn members(ids: &[u32]) -> Arc<RoaringBitmap> {
+    fn members(ids: &[u64]) -> Arc<RoaringTreemap> {
         Arc::new(ids.iter().copied().collect())
     }
 
     /// What one entry costs: its set, its key strings held twice, and the
     /// entry overhead.
-    fn entry_bytes(entry_key: &RegexMatchCacheKey, set: &RoaringBitmap) -> u64 {
+    fn entry_bytes(entry_key: &RegexMatchCacheKey, set: &RoaringTreemap) -> u64 {
         let strings = entry_key.normalized_source.len()
             + entry_key.generation.repo_id.as_str().len()
             + entry_key.generation.revision_id.as_str().len();
@@ -306,31 +296,30 @@ mod tests {
         );
     }
 
-    fn range(start: u32, len: u32) -> RoaringBitmap {
-        let mut set = RoaringBitmap::new();
+    fn range(start: u64, len: u64) -> RoaringTreemap {
+        let mut set = RoaringTreemap::new();
         let _inserted: u64 = set.insert_range(start..start + len);
         set
     }
 
     /// `members` ids two apart from `start`: half-full chunks, so the set is
     /// held in dense containers rather than one run each.
-    fn every_other(start: u32, members: u32) -> RoaringBitmap {
-        RoaringBitmap::from_sorted_iter((0..members).map(|index| start + 2 * index))
+    fn every_other(start: u64, members: u64) -> RoaringTreemap {
+        RoaringTreemap::from_sorted_iter((0..members).map(|index| start + 2 * index))
             .expect("ascending")
     }
 
     /// The charge covers at least the serialized payload. This is not a
     /// retained-heap oracle: the container vector has spare capacity.
     ///
-    /// The oracle is the bitmap's serialized form, which carries every
-    /// container's values (two bytes each), dense words or runs; and a
-    /// dense container is never counted as more than its 8 KiB and header.
+    /// The oracle is the treemap's serialized form, including the high-word
+    /// map and every underlying bitmap container.
     #[test]
     fn a_match_set_charge_covers_its_serialized_payload() {
         for set in [
-            RoaringBitmap::new(),
-            (0..3).collect::<RoaringBitmap>(),
-            (0..70_000).step_by(17).collect::<RoaringBitmap>(),
+            RoaringTreemap::new(),
+            (0..3).collect::<RoaringTreemap>(),
+            (0..70_000).step_by(17).collect::<RoaringTreemap>(),
             range(0, 1_000_000),
             every_other(0, 1_000_000),
         ] {
@@ -342,33 +331,35 @@ mod tests {
                 set.serialized_size()
             );
         }
-        let dense = every_other(0, 1 << 15);
-        assert_eq!(dense.statistics().n_bitset_containers, 1);
-        assert_eq!(match_set_bytes(&dense), 32 + 8_192 + 128);
+        let above_u32: RoaringTreemap = [u64::from(u32::MAX) + 1, u64::MAX].into_iter().collect();
+        assert!(
+            match_set_bytes(&above_u32)
+                >= u64::try_from(above_u32.serialized_size()).expect("fits")
+        );
     }
 
     #[test]
     fn sparse_growth_does_not_hide_retained_container_capacity() {
-        let mut set = RoaringBitmap::new();
-        for index in 0..513u32 {
+        let mut set = RoaringTreemap::new();
+        for index in 0..513u64 {
             let _inserted = set.insert(index << 16);
         }
-        assert_eq!(set.statistics().n_containers, 513);
         // Independently measured with a System-allocation probe for pinned
         // roaring 0.11.4: 45,064 live heap bytes after the 513th insertion.
         assert!(match_set_bytes(&set) >= 45_064);
     }
 
     #[test]
-    fn run_layout_with_unreported_spare_capacity_is_not_cached() {
+    fn run_layout_is_charged_by_cardinality_and_container_count() {
         let set = Arc::new(range(0, 10_000));
-        assert!(set.statistics().n_run_containers > 0);
         let mut cache = RegexMatchCache::new(RegexMatchCachePolicy::DEFAULT);
-        assert_eq!(
-            cache.insert(key(&generation(1), "range"), set),
-            Err(RegexMatchCacheRefusal::UnaccountedRunLayout)
-        );
-        assert_eq!(cache.stats().entries, 0);
+        let expected = match_set_bytes(&set);
+        assert!(expected >= u64::try_from(set.serialized_size()).expect("fits"));
+        let result = cache.insert(key(&generation(1), "range"), set);
+        assert!(matches!(
+            result,
+            Ok(()) | Err(RegexMatchCacheRefusal::Bytes { .. })
+        ));
     }
 
     #[test]
@@ -459,16 +450,25 @@ mod tests {
     /// more than the cap, and what is resident is exactly what the resident
     /// entries cost.
     ///
-    /// The matches are every other document, so each set lives in dense
-    /// containers (about a quarter mebibyte) and 128 of them are several
-    /// times the cap: eviction, not a compact encoding, is what holds it.
+    /// The matches are every other document, so the compressed bitmap is
+    /// dense, but the conservative logical charge is about 16 MiB per set.
+    /// A 4 MiB policy must refuse that set; a 32 MiB policy can hold one
+    /// before later keys force eviction.
     #[test]
     fn a_million_member_sets_stay_under_the_declared_byte_cap() {
         let generation_key = generation(1);
-        let cap: u64 = 4 * 1024 * 1024;
+        let cap: u64 = 32 * 1024 * 1024;
         let policy = RegexMatchCachePolicy::new(128, cap, 2_000_000).expect("policy");
         let mut cache = RegexMatchCache::new(policy);
         let matches = Arc::new(every_other(0, 1_000_000));
+        let mut undersized = RegexMatchCache::new(
+            RegexMatchCachePolicy::new(128, 4 * 1024 * 1024, 2_000_000).expect("policy"),
+        );
+        assert!(matches!(
+            undersized.insert(key(&generation_key, "too-large"), Arc::clone(&matches)),
+            Err(RegexMatchCacheRefusal::Bytes { bytes }) if bytes > 4 * 1024 * 1024
+        ));
+        assert_eq!(undersized.stats().resident_bytes, 0);
         assert!(match_set_bytes(&matches) * 128 > 4 * cap);
         for round in 0..2 {
             for index in 0..128 {

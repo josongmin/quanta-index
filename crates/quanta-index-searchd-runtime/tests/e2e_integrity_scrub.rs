@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -62,6 +63,230 @@ fn semantic_generation_dir(
         .join("indexes/semantic")
         .join(GenerationStorageKeyV1::for_repo_revision(&rt.repo(), &rt.revision()).as_str())
         .join(format!("g{}", generation.get())))
+}
+
+fn lexical_generation_dir(
+    rt: &E2eRuntime,
+    generation: ManifestGeneration,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let canonical = std::fs::canonicalize(rt.state_root())?;
+    Ok(canonical
+        .join("indexes/lexical")
+        .join(GenerationStorageKeyV1::for_repo_revision(&rt.repo(), &rt.revision()).as_str())
+        .join(format!("g{}", generation.get())))
+}
+
+/// Pool objects of the `FileBody` kind, identified by the durable object
+/// envelope. A one-file publication below must add exactly one such body.
+fn pooled_file_bodies(rt: &E2eRuntime) -> Result<BTreeSet<PathBuf>, Box<dyn Error>> {
+    let objects =
+        std::fs::canonicalize(rt.state_root())?.join("indexes/lexical/lexical-object-pool/objects");
+    let mut bodies = BTreeSet::new();
+    for shard in std::fs::read_dir(objects)? {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            continue;
+        }
+        for object in std::fs::read_dir(shard.path())? {
+            let object = object?;
+            if !object.file_type()?.is_file() {
+                continue;
+            }
+            let bytes = std::fs::read(object.path())?;
+            if bytes.get(..8) == Some(b"QLSTOR01".as_slice()) && bytes.get(10) == Some(&1) {
+                let _new = bodies.insert(object.path());
+            }
+        }
+    }
+    Ok(bodies)
+}
+
+fn pinned_file_query(
+    rt: &mut E2eRuntime,
+    generation: ManifestGeneration,
+    needle: &str,
+) -> e2e_harness::E2eQueryResult {
+    let pin = GenerationPin::new(rt.repo(), rt.revision(), generation);
+    rt.query_text_with_pin(TextQuerySyntax::CodeSearch, needle, 5, Some(pin))
+}
+
+fn assert_pinned_file_path(
+    rt: &mut E2eRuntime,
+    generation: ManifestGeneration,
+    needle: &str,
+    path: &str,
+) -> TestResult {
+    let result = pinned_file_query(rt, generation, needle);
+    if let Some(error) = result.typed_error {
+        return Err(format!("g{} file query refused: {error:?}", generation.get()).into());
+    }
+    if result.candidates.len() != 1
+        || result
+            .candidates
+            .first()
+            .map(|candidate| candidate.repo_relative_path.as_str())
+            != Some(path)
+    {
+        return Err(format!(
+            "g{} file query returned wrong candidates: {:?}",
+            generation.get(),
+            result.candidates
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// One corrupt pooled `FileBody` must fence every retained generation that
+/// references it. An older generation sealed before that object existed
+/// remains queryable through its own pin.
+#[test]
+fn shared_lexical_body_corruption_quarantines_all_referencing_generations() -> TestResult {
+    const SAFE_PATH: &str = "src/safe.rs";
+    const SHARED_PATH: &str = "src/shared.rs";
+    const SAFE_NEEDLE: &str = "safe_generation_needle_71";
+    const SHARED_NEEDLE: &str = "shared_generation_needle_83";
+
+    let mut rt = E2eRuntime::boot_with_integrity_scrub_policy(scrub_policy()?)?;
+    rt.ingest_text("repo", SAFE_PATH, "fn safe_generation_needle_71() {}")?;
+    let unaffected = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let before_shared = pooled_file_bodies(&rt)?;
+
+    rt.ingest_text("repo", SHARED_PATH, "fn shared_generation_needle_83() {}")?;
+    let first_referencing = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let after_shared = pooled_file_bodies(&rt)?;
+    let added: Vec<PathBuf> = after_shared.difference(&before_shared).cloned().collect();
+    let [shared_body] = added.as_slice() else {
+        return Err(format!("one target FileBody was published, found {added:?}").into());
+    };
+
+    rt.ingest_text(
+        "repo",
+        "src/other.rs",
+        "fn unrelated_generation_needle_97() {}",
+    )?;
+    let second_referencing = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    assert_pinned_file_path(&mut rt, unaffected, SAFE_NEEDLE, SAFE_PATH)?;
+    assert_pinned_file_path(&mut rt, first_referencing, SHARED_NEEDLE, SHARED_PATH)?;
+    assert_pinned_file_path(&mut rt, second_referencing, SHARED_NEEDLE, SHARED_PATH)?;
+    if !pooled_file_bodies(&rt)?.contains(shared_body) {
+        return Err("the shared FileBody was lost before corruption".into());
+    }
+
+    // The daemon stays live while its shared physical object changes. Its
+    // scheduled deep scrub discovers the mismatch and fans quarantine out
+    // by object reachability before another selected read uses that body.
+    flip_middle_byte(shared_body)?;
+    let _found = wait_for_scrape(&mut rt, "the shared lexical body defect", |snapshot| {
+        counter(snapshot, "scrub_corruptions_total") >= 1
+    })?;
+    let listed: BTreeSet<String> = rt
+        .quarantine_inventory()?
+        .lexical
+        .iter()
+        .filter(|entry| entry.reason == GenerationQuarantineReasonV1::ContentCorrupt.as_code_str())
+        .map(|entry| entry.path.clone())
+        .collect();
+    let expected = BTreeSet::from([
+        lexical_generation_dir(&rt, first_referencing)?
+            .display()
+            .to_string(),
+        lexical_generation_dir(&rt, second_referencing)?
+            .display()
+            .to_string(),
+    ]);
+    if listed != expected {
+        return Err(format!(
+            "shared corruption quarantine fan-out: expected {expected:?}, found {listed:?}"
+        )
+        .into());
+    }
+    for generation in [first_referencing, second_referencing] {
+        let result = pinned_file_query(&mut rt, generation, SHARED_NEEDLE);
+        match result.typed_error {
+            Some(error) if error.code.as_str() == "GENERATION_QUARANTINED" => {}
+            other => {
+                return Err(format!(
+                    "g{} was not fenced after shared corruption: {other:?}",
+                    generation.get()
+                )
+                .into());
+            }
+        }
+    }
+    assert_pinned_file_path(&mut rt, unaffected, SAFE_NEEDLE, SAFE_PATH)?;
+    Ok(())
+}
+
+/// Compact metadata can admit a body-only defect at restart. A selected read
+/// must reject the bad body, and maintenance must quarantine its generation.
+#[test]
+fn corrupted_pooled_file_body_boots_then_refuses_selected_read_and_quarantines() -> TestResult {
+    const PATH: &str = "src/boot-corrupt.rs";
+    const NEEDLE: &str = "boot_corrupt_needle_47";
+
+    let mut rt = E2eRuntime::boot_with_integrity_scrub_policy(scrub_policy()?)?;
+    rt.ingest_text("repo", PATH, "fn boot_corrupt_needle_47() {}")?;
+    let generation = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    assert_pinned_file_path(&mut rt, generation, NEEDLE, PATH)?;
+    let bodies = pooled_file_bodies(&rt)?;
+    if bodies.len() != 1 {
+        return Err(format!("expected one active FileBody, found {bodies:?}").into());
+    }
+    let body = bodies.iter().next().ok_or("active FileBody absent")?;
+
+    let mut rt = rt.reopen();
+    flip_middle_byte(body)?;
+    rt.start()
+        .map_err(|error| format!("body-only corruption refused compact-root boot: {error:#}"))?;
+    let selected = pinned_file_query(&mut rt, generation, NEEDLE);
+    if !matches!(
+        selected
+            .typed_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("GENERATION_SIDECAR_CORRUPT" | "GENERATION_QUARANTINED")
+    ) {
+        return Err(format!(
+            "corrupted FileBody selected read was not refused typed: {:?}",
+            selected.typed_error
+        )
+        .into());
+    }
+    let _found = wait_for_scrape(&mut rt, "the restarted FileBody defect", |snapshot| {
+        counter(snapshot, "scrub_corruptions_total") >= 1
+    })?;
+    let listed: BTreeSet<String> = rt
+        .quarantine_inventory()?
+        .lexical
+        .iter()
+        .filter(|entry| entry.reason == GenerationQuarantineReasonV1::ContentCorrupt.as_code_str())
+        .map(|entry| entry.path.clone())
+        .collect();
+    let expected = BTreeSet::from([lexical_generation_dir(&rt, generation)?
+        .display()
+        .to_string()]);
+    if listed != expected {
+        return Err(
+            format!("restarted body quarantine: expected {expected:?}, found {listed:?}").into(),
+        );
+    }
+    let fenced = pinned_file_query(&mut rt, generation, NEEDLE);
+    if !matches!(
+        fenced.typed_error.as_ref().map(|error| error.code.as_str()),
+        Some("GENERATION_QUARANTINED")
+    ) {
+        return Err(format!(
+            "restarted body was not fenced after scrub: {:?}",
+            fenced.typed_error
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Every regular file under the generation's `dataset/data/`: the rows.

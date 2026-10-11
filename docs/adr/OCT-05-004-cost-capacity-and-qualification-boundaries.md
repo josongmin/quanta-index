@@ -535,7 +535,9 @@ its original response deadline. The former 15-second readiness window must not
 truncate a declared 600-second scale query. Bounded socket fixtures independently
 check late valid responses, terminal read timeout and non-refreshed deadlines.
 
-Owners: [text reader](../../crates/quanta-index-lexical/src/text_authority/reader.rs),
+The former `text_authority/reader.rs` owner was replaced by the
+[paged Native reader](../../crates/quanta-index-lexical/src/text_authority/paged_reader.rs).
+Related owners:
 [candidate integrity](../../crates/quanta-index-lexical/src/searcher/candidates.rs),
 [snapshot accounting](../../crates/quanta-index-lexical/src/adapter_open.rs) and
 [harness deadline](../../crates/quanta-index-searchd-harness/src/harness.rs).
@@ -684,7 +686,7 @@ for the ordinary SDK/inline/default request contract.
 Owners: [staged transport](../../crates/quanta-index-ipc/src/source_upload.rs),
 [SDK publication](../../crates/quanta-index-sdk/src/lexical.rs),
 [request budget](../../crates/quanta-index-core/src/request_budget.rs),
-[F15 codec/producer](../../crates/quanta-index-lexical/src/file_authority/codec.rs),
+[paged File codec/producer](../../crates/quanta-index-lexical/src/file_authority/paged.rs),
 [scale profile](../../crates/quanta-index-searchd-harness/src/scale.rs) and
 [feature policy](../../deny.toml). Preserve independent EOF/overflow/oversize,
 Unicode/native refusal and original lifecycle/crash oracles.

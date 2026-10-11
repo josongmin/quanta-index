@@ -202,7 +202,10 @@ pub(super) fn tree_bytes(path: &Path) -> Result<u64, CoreError> {
 }
 
 /// Make the directory entry `path` durable in its parent.
-pub(super) fn fsync_parent(path: &Path) -> Result<(), CoreError> {
+pub(super) fn fsync_parent_observed(
+    path: &Path,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<(), CoreError> {
     let parent = path.parent().ok_or_else(|| {
         CoreError::Storage(format!(
             "history text index: {} has no parent directory",
@@ -215,14 +218,17 @@ pub(super) fn fsync_parent(path: &Path) -> Result<(), CoreError> {
             parent.display()
         ))
     })?;
-    crate::causal_profile::timed_sync("history_layout_directory", || dir.sync_all()).map_err(
-        |err| {
-            CoreError::Storage(format!(
-                "history text index: fsync directory {}: {err}",
-                parent.display()
-            ))
-        },
+    crate::causal_profile::observed_sync_legacy(
+        sync,
+        quanta_index_core::DiagnosticSyncLabelV1::HistoryLayoutDirectory,
+        || dir.sync_all(),
     )
+    .map_err(|err| {
+        CoreError::Storage(format!(
+            "history text index: fsync directory {}: {err}",
+            parent.display()
+        ))
+    })
 }
 
 #[cfg(test)]

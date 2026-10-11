@@ -6,7 +6,11 @@ from copy import deepcopy
 
 import pytest
 
-from tools.benchmark.retrieval.causal_cost_profile import parse_trace, replay
+from tools.benchmark.retrieval.causal_cost_profile import (
+    parse_trace,
+    replay,
+    validate_product_artifacts,
+)
 from tools.benchmark.retrieval.conditional_proof import canonical
 
 SOURCE = "a" * 40
@@ -70,6 +74,16 @@ SINGLE_TRACE = _trace_phase("full_seal")
 TRACE = b"".join(_trace_phase(name) for name in PHASES)
 
 
+def _observed_disk_snapshot(allocated: int) -> dict:
+    return {
+        "status": "observed",
+        "allocated_root_bytes": allocated,
+        "filesystem_free_bytes": 1000,
+        "filesystem_available_bytes": 900,
+        "unavailable_reason": None,
+    }
+
+
 def _summary() -> dict:
     phase = {
         "cpu_process_user_ms": 1.0,
@@ -82,6 +96,18 @@ def _summary() -> dict:
             "wchar": 100,
         },
         "process_write_io_unavailable_reason": None,
+        "disk_sample_interval_ms": None,
+        "disk": {
+            "observation_mode": "boundary-only",
+            "start": _observed_disk_snapshot(100),
+            "end": _observed_disk_snapshot(120),
+            "sampled_max_allocated_root_bytes": None,
+            "sampled_high_water_status": "unavailable_periodic_sampling_disabled",
+            "sampled": [],
+            "periodic_probe_wall_ms": 0.0,
+            "observed_max_gap_ms": 10.0,
+            "sampled_max_is_true_peak": False,
+        },
     }
     return {
         "schema_version": 2,
@@ -99,6 +125,7 @@ def _summary() -> dict:
                     "seed": 5,
                     "file_count": 4096,
                     "source_repo_count": 16,
+                    "disk_observation_mode": "boundary-only",
                     "client_request_timeout_ms": 600_000,
                     "query_dispatch_budget_ms": 600_000,
                     "requested_client_request_timeout_ms": None,
@@ -170,6 +197,7 @@ def _replay(
     requested_client_timeout_ms: int | None = None,
     requested_history_max_bytes: int | None = None,
     requested_history_max_total_bytes: int | None = None,
+    requested_disk_observation_mode: str | None = None,
     source_revision: str = SOURCE,
 ) -> dict:
     return replay(
@@ -183,6 +211,7 @@ def _replay(
         requested_client_timeout_ms=requested_client_timeout_ms,
         requested_history_max_bytes=requested_history_max_bytes,
         requested_history_max_total_bytes=requested_history_max_total_bytes,
+        requested_disk_observation_mode=requested_disk_observation_mode,
     )
 
 
@@ -192,6 +221,7 @@ def test_profile_binds_full_lifecycle_and_cost_domains() -> None:
     assert set(result["phases"]) == set(PHASES)
     assert result["file_count"] == 4096
     assert result["runtime_config"]["client_request_timeout_ms"] == 600_000
+    assert result["runtime_config"]["disk_observation_mode"] == "boundary-only"
     phase = result["phases"]["full_seal"]
     assert phase["sync"]["atomic_file"]["elapsed_ns"] == 400
     assert phase["exact_live_token_scan"]["live_tokens"] == 7
@@ -201,6 +231,143 @@ def test_profile_binds_full_lifecycle_and_cost_domains() -> None:
     assert result["phases"]["delta_ingest_seal"]["bm25_live_build"][0]["newly_dead_docs"] == 1
     assert phase["process_write_io"]["write_bytes"] == 4096
     assert phase["sync_call_wall_ratio"] == 0.00004
+    assert phase["disk_observation"]["sampled_max_allocated_root_bytes"] is None
+    assert (
+        phase["disk_observation"]["sampled_high_water_status"]
+        == "unavailable_periodic_sampling_disabled"
+    )
+
+
+def test_product_artifacts_validate_without_diagnostic_markers() -> None:
+    product = validate_product_artifacts(
+        canonical(_summary()),
+        canonical(_manifest()),
+        source_revision=SOURCE,
+        expected_tier="large",
+        expected_seed=5,
+        requested_client_timeout_ms=None,
+        requested_history_max_bytes=None,
+    )
+    assert product["tier"]["file_count"] == 4096
+    assert set(product["phase_resources"]) == set(PHASES)
+    assert product["phase_resources"]["full_seal"]["process_write_io"]["write_bytes"] == 4096
+    with pytest.raises(ValueError, match="scale artifact is failed, partial"):
+        validate_product_artifacts(
+            canonical({**_summary(), "detail": {"passed": False}}),
+            canonical(_manifest()),
+            source_revision=SOURCE,
+            expected_tier="large",
+            expected_seed=5,
+            requested_client_timeout_ms=None,
+            requested_history_max_bytes=None,
+        )
+
+
+def test_profile_binds_periodic_disk_mode_and_observed_sample() -> None:
+    summary = _summary()
+    tier = summary["detail"]["measured_tiers"][0]
+    tier["disk_observation_mode"] = "periodic"
+    for phase in tier["phase_resources"].values():
+        phase["disk_sample_interval_ms"] = 500
+        phase["disk"] = {
+            "observation_mode": "periodic",
+            "sampled_max_allocated_root_bytes": 150,
+            "sampled_high_water_status": "observed",
+            "sampled": [{"offset_ms": 2.0, "snapshot": _observed_disk_snapshot(150)}],
+            "periodic_probe_wall_ms": 1.0,
+            "observed_max_gap_ms": 8.0,
+            "sampled_max_is_true_peak": False,
+            "start": _observed_disk_snapshot(100),
+            "end": _observed_disk_snapshot(120),
+        }
+    profile = _replay(summary, requested_disk_observation_mode="periodic")
+    assert profile["runtime_config"]["requested_disk_observation_mode"] == "periodic"
+    assert profile["phases"]["full_seal"]["disk_observation"]["sample_count"] == 1
+    with pytest.raises(ValueError, match="disk observation mode"):
+        _replay(summary)
+
+
+@pytest.mark.parametrize("forged_gap", [0.0, 9.0, 11.0])
+def test_profile_refuses_forged_boundary_disk_gap(forged_gap: float) -> None:
+    summary = _summary()
+    summary["detail"]["measured_tiers"][0]["phase_resources"]["full_seal"]["disk"][
+        "observed_max_gap_ms"
+    ] = forged_gap
+    with pytest.raises(ValueError, match="disk sample gap"):
+        _replay(summary)
+
+
+@pytest.mark.parametrize("stage", ["start", "end"])
+def test_profile_requires_both_disk_boundary_snapshots(stage: str) -> None:
+    summary = _summary()
+    summary["detail"]["measured_tiers"][0]["phase_resources"]["full_seal"]["disk"].pop(stage)
+    with pytest.raises(ValueError, match="disk boundary"):
+        _replay(summary)
+
+
+@pytest.mark.parametrize("stage", ["start", "end"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda snapshot: snapshot.pop("status"),
+        lambda snapshot: snapshot.update(allocated_root_bytes=None),
+        lambda snapshot: snapshot.update(allocated_root_bytes=False),
+        lambda snapshot: snapshot.update(filesystem_free_bytes=-1),
+        lambda snapshot: snapshot.update(filesystem_available_bytes=1 << 64),
+        lambda snapshot: snapshot.update(unavailable_reason="probe_unavailable: raced rename"),
+        lambda snapshot: snapshot.update(status="unavailable", unavailable_reason=""),
+        lambda snapshot: snapshot.update(
+            status="unavailable", unavailable_reason="probe_unavailable: raced rename"
+        ),
+    ],
+)
+def test_profile_refuses_forged_disk_boundary_census(stage: str, mutation) -> None:
+    summary = _summary()
+    mutation(summary["detail"]["measured_tiers"][0]["phase_resources"]["full_seal"]["disk"][stage])
+    with pytest.raises(ValueError, match="disk boundary"):
+        _replay(summary)
+
+
+def test_profile_preserves_explicitly_unavailable_disk_boundary() -> None:
+    summary = _summary()
+    unavailable = {
+        "status": "unavailable",
+        "allocated_root_bytes": None,
+        "filesystem_free_bytes": None,
+        "filesystem_available_bytes": None,
+        "unavailable_reason": "probe_unavailable: raced rename",
+    }
+    summary["detail"]["measured_tiers"][0]["phase_resources"]["full_seal"]["disk"]["start"] = (
+        unavailable
+    )
+    disk = _replay(summary)["phases"]["full_seal"]["disk_observation"]
+    assert disk["start"] == unavailable
+    assert disk["end"] == _observed_disk_snapshot(120)
+    assert disk["sampled_max_allocated_root_bytes"] is None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda row: row.pop("disk_observation_mode"),
+        lambda row: row["phase_resources"]["full_seal"]["disk"].update(observation_mode="periodic"),
+        lambda row: row["phase_resources"]["full_seal"].update(disk_sample_interval_ms=500),
+        lambda row: row["phase_resources"]["full_seal"]["disk"].update(
+            sampled_max_allocated_root_bytes=150
+        ),
+        lambda row: row["phase_resources"]["full_seal"]["disk"].update(
+            sampled_high_water_status="observed"
+        ),
+        lambda row: row["phase_resources"]["full_seal"]["disk"].update(
+            periodic_probe_wall_ms=False
+        ),
+    ],
+)
+def test_profile_refuses_unbound_or_forged_boundary_disk_evidence(mutation) -> None:
+    summary = _summary()
+    mutation(summary["detail"]["measured_tiers"][0])
+    with pytest.raises(ValueError):
+        _replay(summary)
 
 
 def test_profile_counts_file_authority_sync_barriers_exactly() -> None:
@@ -223,6 +390,30 @@ def test_profile_counts_file_authority_sync_barriers_exactly() -> None:
         "elapsed_ns": 30,
     }
     assert phase["sync_call_elapsed_ns_sum"] == 441
+
+
+def test_profile_distinguishes_pool_posix_full_and_control_sync() -> None:
+    trace = TRACE.replace(
+        b"QI_CAUSAL_V1 kind=phase_end name=full_seal ok=1\n",
+        b"QI_CAUSAL_V1 kind=sync label=pool_data_file_posix ok=1 elapsed_ns=11\n"
+        b"QI_CAUSAL_V1 kind=sync label=pool_data_shard_posix ok=1 elapsed_ns=13\n"
+        b"QI_CAUSAL_V1 kind=sync label=pool_adoption_full_barrier ok=1 elapsed_ns=17\n"
+        b"QI_CAUSAL_V1 kind=sync label=pool_control_file_full ok=1 elapsed_ns=19\n"
+        b"QI_CAUSAL_V1 kind=phase_end name=full_seal ok=1\n",
+    )
+    phase = _replay(trace=trace)["phases"]["full_seal"]
+    for label, elapsed in (
+        ("pool_data_file_posix", 11),
+        ("pool_data_shard_posix", 13),
+        ("pool_adoption_full_barrier", 17),
+        ("pool_control_file_full", 19),
+    ):
+        assert phase["sync"][label] == {
+            "calls": 1,
+            "failed_calls": 0,
+            "elapsed_ns": elapsed,
+        }
+    assert phase["sync_call_elapsed_ns_sum"] == 460
 
 
 @pytest.mark.parametrize("label", ["file_authority_object", "file_authority_directory"])

@@ -1106,6 +1106,7 @@ fn batch_publish_receipt_round_trip() -> TestRes {
 fn search_plane_ingest_request_envelope_round_trip_search_corpus() -> TestRes {
     let envelope = SearchPlaneIngestIpcRequestEnvelope {
         request_id: 1,
+        diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
             fixture_search_corpus_batch(),
         ),
@@ -1120,6 +1121,7 @@ fn search_plane_ingest_request_envelope_round_trip_search_corpus() -> TestRes {
 fn search_plane_ingest_request_envelope_round_trip_history() -> TestRes {
     let envelope = SearchPlaneIngestIpcRequestEnvelope {
         request_id: 3,
+        diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneIngestIpcRequest::PublishHistoryBatch(fixture_history_batch()),
     };
     let bytes = encode(&envelope)?;
@@ -1132,6 +1134,7 @@ fn search_plane_ingest_request_envelope_round_trip_history() -> TestRes {
 fn search_plane_ingest_request_envelope_round_trip_repo_commit_recency() -> TestRes {
     let envelope = SearchPlaneIngestIpcRequestEnvelope {
         request_id: 4,
+        diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(
             fixture_repo_commit_recency_batch(),
         ),
@@ -1146,6 +1149,7 @@ fn search_plane_ingest_request_envelope_round_trip_repo_commit_recency() -> Test
 fn search_plane_ingest_request_envelope_round_trip_repo_meta() -> TestRes {
     let envelope = SearchPlaneIngestIpcRequestEnvelope {
         request_id: 5,
+        diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(fixture_repo_meta_batch()),
     };
     let bytes = encode(&envelope)?;
@@ -1158,6 +1162,7 @@ fn search_plane_ingest_request_envelope_round_trip_repo_meta() -> TestRes {
 fn search_plane_ingest_request_envelope_round_trip_repo_topic() -> TestRes {
     let envelope = SearchPlaneIngestIpcRequestEnvelope {
         request_id: 6,
+        diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(fixture_repo_topic_batch()),
     };
     let bytes = encode(&envelope)?;
@@ -1170,6 +1175,7 @@ fn search_plane_ingest_request_envelope_round_trip_repo_topic() -> TestRes {
 fn search_plane_ingest_request_envelope_round_trip_repo_description() -> TestRes {
     let envelope = SearchPlaneIngestIpcRequestEnvelope {
         request_id: 12,
+        diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(
             fixture_repo_description_batch(),
         ),
@@ -1184,6 +1190,7 @@ fn search_plane_ingest_request_envelope_round_trip_repo_description() -> TestRes
 fn search_plane_ingest_request_envelope_round_trip_file_contributor() -> TestRes {
     let envelope = SearchPlaneIngestIpcRequestEnvelope {
         request_id: 11,
+        diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneIngestIpcRequest::PublishFileContributorBatch(
             fixture_file_contributor_batch(),
         ),
@@ -1198,6 +1205,7 @@ fn search_plane_ingest_request_envelope_round_trip_file_contributor() -> TestRes
 fn search_plane_ingest_request_envelope_round_trip_dirty() -> TestRes {
     let envelope = SearchPlaneIngestIpcRequestEnvelope {
         request_id: 6,
+        diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneIngestIpcRequest::PublishDirtyBatch(fixture_dirty_batch()),
     };
     let bytes = encode(&envelope)?;
@@ -1210,6 +1218,7 @@ fn search_plane_ingest_request_envelope_round_trip_dirty() -> TestRes {
 fn search_plane_ingest_request_envelope_round_trip_structural() -> TestRes {
     let envelope = SearchPlaneIngestIpcRequestEnvelope {
         request_id: 7,
+        diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneIngestIpcRequest::PublishStructuralBatch(fixture_structural_batch()),
     };
     let bytes = encode(&envelope)?;

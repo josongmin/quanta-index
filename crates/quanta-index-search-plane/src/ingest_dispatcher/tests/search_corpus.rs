@@ -3,18 +3,20 @@
     reason = "Result-returning ingest tests use assertions as test-failure reporting"
 )]
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
-    BatchIngestMode, GenerationSnapshot, IngestOperationKindV1, ManifestGeneration, OwnerDocKind,
-    RepoId, RevisionId, SearchPlaneTrackKind, SearchScopeSurface, SemanticCorpusKindV1,
-    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
+    BatchIngestMode, GenerationPin, GenerationSnapshot, IngestOperationKindV1, ManifestGeneration,
+    OwnerDocKind, RepoId, RevisionId, SearchPlaneTrackKind, SearchScopeSurface,
+    SemanticCorpusKindV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, IdempotencyCatalogPort as _, IdempotencyKeyV1,
-    IngestResourcePolicy, RequestBudgetV1, SearchCorpusIngestPort, SemanticIngestPort,
-    SemanticStreamWindowPolicy, SourcePublicationCatalogPort as _,
+    IngestResourcePolicy, RequestBudgetV1, SearchCorpusIngestPort, SemanticGenerationContractV1,
+    SemanticIngestHeaderV1, SemanticIngestPort, SemanticScopeSource, SemanticStreamWindowPolicy,
+    SourceEventAllocationOutcomeV1, SourceEventAllocationRequestV1, SourceEventStateV1,
+    SourcePublicationCatalogPort as _,
 };
 
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
@@ -27,7 +29,7 @@ use crate::ingest_dispatcher::search_corpus::{
 };
 use crate::ingest_dispatcher::semantic::DirectSemanticMaterializer;
 use crate::ingest_dispatcher::tests::support::{
-    CorruptTrackGeneration, FailingRetentionAuthority, FakeSearchCorpusBuilder,
+    CorruptTrackGeneration, CountingEmbedder, FailingRetentionAuthority, FakeSearchCorpusBuilder,
     FakeSemanticBuilder, MemoryIdempotencyCatalog, MismatchedGeneration, MismatchedSemanticIngest,
     PinnedLexicalHandle, RecordingIncompleteGenerationDiscard, RecordingSearchCorpusAuthority,
     ScriptedSealedReclaim, TestRes, ZeroMutationProbe, always_valid_generation,
@@ -113,6 +115,7 @@ impl quanta_index_core::SearchCorpusBatchBuildPort for PublicationPhasePorts {
         &self,
         _batch: &quanta_index_contract::SearchCorpusIngestBatch,
         _phase: quanta_index_core::SearchCorpusPreflightPhaseV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
         Err(CoreError::InvalidContract(
             "builder preflight lost publication custody".into(),
@@ -122,6 +125,7 @@ impl quanta_index_core::SearchCorpusBatchBuildPort for PublicationPhasePorts {
     fn build_batch(
         &self,
         _batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
         Err(CoreError::InvalidContract(
             "builder lost publication custody".into(),
@@ -133,6 +137,7 @@ impl quanta_index_core::SearchCorpusBatchBuildPort for PublicationPhasePorts {
         batch: &quanta_index_contract::SearchCorpusIngestBatch,
         phase: quanta_index_core::SearchCorpusPreflightPhaseV1,
         owner: &mut quanta_index_core::PublicationValidationOwner,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
         use quanta_index_core::SearchCorpusPreflightPhaseV1;
         owner.bind_batch(batch)?;
@@ -151,13 +156,19 @@ impl quanta_index_core::SearchCorpusBatchBuildPort for PublicationPhasePorts {
             )));
         }
         witness.0.push(next);
-        quanta_index_core::SearchCorpusBatchBuildPort::preflight_batch(&self.builder, batch, phase)
+        quanta_index_core::SearchCorpusBatchBuildPort::preflight_batch(
+            &self.builder,
+            batch,
+            phase,
+            diagnostic,
+        )
     }
 
     fn build_batch_with_owner(
         &self,
         batch: &quanta_index_contract::SearchCorpusIngestBatch,
         owner: &mut quanta_index_core::PublicationValidationOwner,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
         owner.bind_batch(batch)?;
         let witness =
@@ -169,8 +180,11 @@ impl quanta_index_core::SearchCorpusBatchBuildPort for PublicationPhasePorts {
             )));
         }
         witness.0.push("built");
-        let stages =
-            quanta_index_core::SearchCorpusBatchBuildPort::build_batch(&self.builder, batch)?;
+        let stages = quanta_index_core::SearchCorpusBatchBuildPort::build_batch(
+            &self.builder,
+            batch,
+            diagnostic,
+        )?;
         self.built.store(true, Ordering::SeqCst);
         Ok(stages)
     }
@@ -229,9 +243,9 @@ fn publication_owner_crosses_paired_checks_builder_and_postbuild() -> TestRes {
         &base.revision_id,
         [base.generation],
     );
-    materializer.finalize_generation_v1(&base, Some(&retain))?;
+    materializer.finalize_generation_v1(&base, Some(&retain), None)?;
     let mut owner = quanta_index_core::PublicationValidationOwner::default();
-    materializer.preflight_batch_with_owner(&delta, &mut owner)?;
+    materializer.preflight_batch_with_owner(&delta, &mut owner, None)?;
     let outcome =
         materializer.publish_batch_with_owner(&delta, &RequestBudgetV1::unbounded(), &mut owner)?;
     assert!(outcome.receipt.applied);
@@ -297,7 +311,7 @@ fn delta_finalization_inherits_untouched_chunk_authority_and_retries_after_base_
     );
     probe
         .materializer
-        .finalize_generation_v1(&base, Some(&retain_base))?;
+        .finalize_generation_v1(&base, Some(&retain_base), None)?;
     let mut delta = base.clone();
     delta.generation = ManifestGeneration::new(base.generation.get() + 1);
     delta.base_generation = Some(base.generation);
@@ -336,7 +350,7 @@ fn delta_finalization_inherits_untouched_chunk_authority_and_retries_after_base_
     assert!(
         probe
             .materializer
-            .finalize_generation_v1(&delta, Some(&retain_delta))
+            .finalize_generation_v1(&delta, Some(&retain_delta), None)
             .is_err()
     );
     {
@@ -358,7 +372,7 @@ fn delta_finalization_inherits_untouched_chunk_authority_and_retries_after_base_
     for attempt in 0..2 {
         probe
             .materializer
-            .finalize_generation_v1(&delta, Some(&retain_delta))?;
+            .finalize_generation_v1(&delta, Some(&retain_delta), None)?;
         let guard = probe.ledger.read().map_err(|e| e.to_string())?;
         let state = guard
             .structural_state(&delta.repo_id, &delta.revision_id, delta.generation)
@@ -500,7 +514,7 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
             "manifest:base",
         );
     for result in [
-        probe.materializer.preflight_batch(&unsealed_base),
+        probe.materializer.preflight_batch(&unsealed_base, None),
         probe
             .materializer
             .publish_batch(&unsealed_base, &RequestBudgetV1::unbounded())
@@ -577,7 +591,7 @@ fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
     );
     // The preflight is the admission point (it tallies); the publish
     // repeats the measurement under its lock and refuses the same way.
-    match tight.materializer.preflight_batch(&batch) {
+    match tight.materializer.preflight_batch(&batch, None) {
         Err(CoreError::Typed { code, .. })
             if code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE => {}
         other => return Err(format!("oversized batch preflight answered {other:?}").into()),
@@ -605,7 +619,7 @@ fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
         always_valid_generation(),
         IngestResourcePolicy::new(carried_records, text_bytes.max(source_bytes), vector_bytes)?,
     );
-    fits.materializer.preflight_batch(&batch)?;
+    fits.materializer.preflight_batch(&batch, None)?;
     let _receipt = fits
         .materializer
         .publish_batch(&batch, &RequestBudgetV1::unbounded())?;
@@ -731,7 +745,7 @@ fn a_post_move_gc_failure_keeps_cleanup_deferred_without_stranding_its_fence() -
         &batch.revision_id,
         [batch.generation],
     );
-    let receipt = materializer.reclaim_retired_generations_v1(&batch, &retention)?;
+    let receipt = materializer.reclaim_retired_generations_v1(&batch, &retention, None)?;
     if !receipt.deferred.contains(&DeferredGcStep::Reclaim(
         SearchPlaneTrackKind::Lexical,
         ManifestGeneration::new(1),
@@ -786,7 +800,7 @@ fn a_reclaim_pass_step_failing_after_the_seal_is_durable_is_counted_and_redone()
     );
     // (failures, lexical on disk, semantic on disk, generations with records)
     let pass = |step: &str, expected: (u64, &[u64], &[u64], &[u64])| -> TestRes {
-        materializer.finalize_generation_v1(&batch, Some(&retention))?;
+        materializer.finalize_generation_v1(&batch, Some(&retention), None)?;
         let failures = materializer.gc_stats()?.failures;
         let lexical = lexical_reclaim.remaining();
         let semantic = semantic_reclaim.remaining();
@@ -846,7 +860,7 @@ fn a_refusal_met_by_the_reclaim_pass_fails_it_closed() -> TestRes {
     );
 
     lexical_reclaim.refuse_next_listing();
-    let refused = materializer.finalize_generation_v1(&batch, Some(&retention));
+    let refused = materializer.finalize_generation_v1(&batch, Some(&retention), None);
     if !matches!(&refused, Err(CoreError::Typed { code, .. })
         if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch)
     {
@@ -900,7 +914,7 @@ fn every_pass_first_finishes_what_interrupted_reclaims_left() -> TestRes {
     semantic_reclaim.leave_interrupted(1);
     // The scripted reclaim reports 10 bytes per finished entry.
     let pass = |step: &str, expected: Tally| -> TestRes {
-        materializer.finalize_generation_v1(&batch, Some(&retention))?;
+        materializer.finalize_generation_v1(&batch, Some(&retention), None)?;
         let gc = materializer.gc_stats()?;
         let observed: Tally = (
             gc.failures,
@@ -1027,7 +1041,7 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
         })?
         .handle;
 
-    let first = materializer.reclaim_retired_generations_v1(&batch, &receipt)?;
+    let first = materializer.reclaim_retired_generations_v1(&batch, &receipt, None)?;
     if lexical_reclaim.reclaimed() != [1, 3] || semantic_reclaim.reclaimed() != [2, 3] {
         return Err(format!(
             "first pass drifted: lexical={:?} semantic={:?}",
@@ -1083,7 +1097,7 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
     // Release the pin: the next pass reclaims the orphan it left behind
     // and has nothing left to forget for it.
     drop(pin);
-    let second = materializer.reclaim_retired_generations_v1(&batch, &receipt)?;
+    let second = materializer.reclaim_retired_generations_v1(&batch, &receipt, None)?;
     if !second.deferred_pinned.is_empty() || lexical_reclaim.remaining() != [4, 5] {
         return Err(format!(
             "second pass drifted: deferred={:?} remaining={:?}",
@@ -1151,7 +1165,7 @@ fn a_retained_half_pair_loses_its_records() -> TestRes {
         [ManifestGeneration::new(4), ManifestGeneration::new(5)],
     );
     seed_records(&catalog, &batch.repo_id, &batch.revision_id, &[4, 5])?;
-    let pass = materializer.reclaim_retired_generations_v1(&batch, &receipt)?;
+    let pass = materializer.reclaim_retired_generations_v1(&batch, &receipt, None)?;
     if !lexical_reclaim.reclaimed().is_empty() || !semantic_reclaim.reclaimed().is_empty() {
         return Err("retained generations are never reclaimed".into());
     }
@@ -1272,6 +1286,7 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
                 [base.generation],
             ),
         ),
+        None,
     )?;
     match materializer.publish_batch(&delta, &RequestBudgetV1::unbounded()) {
         Err(CoreError::Typed { code, message })
@@ -1345,6 +1360,7 @@ fn failed_reclaim_releases_a_fence_only_after_the_old_namespace_is_absent() -> T
         &snapshots,
         moved.as_ref(),
         semantic_reclaim.as_ref(),
+        None,
     ) {
         Err(CoreError::Storage(message)) if message.contains("after moving") => {}
         other => return Err(format!("post-move reclaim failure answered {other:?}").into()),
@@ -1364,6 +1380,7 @@ fn failed_reclaim_releases_a_fence_only_after_the_old_namespace_is_absent() -> T
         &snapshots,
         unmoved.as_ref(),
         semantic_reclaim.as_ref(),
+        None,
     ) {
         Err(CoreError::Typed {
             code:
@@ -1410,6 +1427,7 @@ fn repairing_a_generation_settles_a_failed_scrubs_old_fence() -> TestRes {
         &snapshots,
         lexical_reclaim.as_ref(),
         semantic_reclaim.as_ref(),
+        None,
     )?;
     if lexical_reclaim
         .remaining()
@@ -1446,7 +1464,10 @@ fn a_delta_over_a_corrupt_base_is_refused_with_the_repair() -> TestRes {
             "manifest:base",
         );
     for (label, outcome) in [
-        ("preflight", probe.materializer.preflight_batch(&delta)),
+        (
+            "preflight",
+            probe.materializer.preflight_batch(&delta, None),
+        ),
         (
             "publish",
             probe
@@ -1463,6 +1484,189 @@ fn a_delta_over_a_corrupt_base_is_refused_with_the_repair() -> TestRes {
         }
     }
     probe.assert_nothing_touched("corrupt delta base")
+}
+
+struct RefusingSemanticPreflight {
+    expected_pin: GenerationPin,
+    refuse_on_call: usize,
+    calls: AtomicUsize,
+    publish_calls: AtomicUsize,
+}
+
+impl SemanticIngestPort for RefusingSemanticPreflight {
+    fn preflight_contract(
+        &self,
+        pin: &GenerationPin,
+        contract: &SemanticGenerationContractV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        if pin != &self.expected_pin
+            || contract.model_contract.model_id.as_ref() != "counting-embedder"
+            || contract.model_contract.model_version.as_deref() != Some("r1")
+            || contract.model_contract.policy_digest.as_ref()
+                != "counting-embedder:semantic-source.v1"
+            || contract.model_contract.view_policy_digest.as_deref() != Some("semantic-source.v1")
+            || contract.corpus_policy_digest.as_deref() != Some("semantic-source.v1")
+        {
+            return Err(CoreError::InvalidContract(
+                "paired preflight projected the wrong semantic contract".into(),
+            ));
+        }
+        let call = self
+            .calls
+            .fetch_add(1, Ordering::SeqCst)
+            .checked_add(1)
+            .ok_or_else(|| CoreError::InvalidContract("fixture call count overflow".into()))?;
+        if call == self.refuse_on_call {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::lex::LexicalErrorCode::SemModelMismatch.into(),
+                message: "fixture semantic compatibility refusal".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn publish_stream(
+        &self,
+        _header: &SemanticIngestHeaderV1,
+        _scopes: &mut dyn SemanticScopeSource,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<
+        (
+            quanta_index_contract::BatchPublishReceipt,
+            quanta_index_contract::IngestStageReport,
+        ),
+        CoreError,
+    > {
+        let _previous = self.publish_calls.fetch_add(1, Ordering::SeqCst);
+        Err(CoreError::InvalidContract(
+            "semantic publish ran after preflight refusal".into(),
+        ))
+    }
+}
+
+#[test]
+fn paired_semantic_refusal_precedes_provider_mutation_and_final_binding() -> TestRes {
+    for refuse_on_call in [1, 2] {
+        let mut batch = fixture_search_corpus_batch()?;
+        let source_catalog = super::support::test_source_catalog();
+        let allocation_request = SourceEventAllocationRequestV1 {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            event: batch.source_event.clone(),
+        };
+        let allocation = match source_catalog.allocate_source_event(&allocation_request)? {
+            SourceEventAllocationOutcomeV1::Allocated(record) => record,
+            other @ SourceEventAllocationOutcomeV1::Existing(_) => {
+                return Err(format!("fresh event was not allocated: {other:?}").into());
+            }
+        };
+        batch.generation = allocation.allocation.generation;
+        restamp_search_corpus_fixture(&mut batch)?;
+        batch.validate_v1()?;
+        assert_eq!(batch.source_event, allocation_request.event);
+        let expected_pin = GenerationPin::new(
+            batch.repo_id.clone(),
+            batch.revision_id.clone(),
+            batch.generation,
+        );
+        let semantic_ingest = Arc::new(RefusingSemanticPreflight {
+            expected_pin,
+            refuse_on_call,
+            calls: AtomicUsize::new(0),
+            publish_calls: AtomicUsize::new(0),
+        });
+        let embedder = Arc::new(CountingEmbedder {
+            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+            calls: Mutex::new(0),
+        });
+        let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let authority = Arc::new(RecordingSearchCorpusAuthority::default());
+        let idempotency = memory_catalog();
+        let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+            SearchCorpusMaterializerParts {
+                builder: lexical_builder.clone(),
+                ledger: ledger.clone(),
+                semantic_ingest: semantic_ingest.clone(),
+                semantic_embedder: embedder.clone(),
+                authority: authority.clone(),
+                lexical_generation_validator: build_then_valid_generation(),
+                semantic_generation_validator: build_then_valid_generation(),
+                semantic_content_roots:
+                    crate::content_roots_test_support::generation_keyed_content_roots(),
+                lexical_incomplete_discard: test_incomplete_generation_discard(),
+                semantic_incomplete_discard: test_incomplete_generation_discard(),
+                lexical_reclaim: no_storage_sealed_reclaim(),
+                semantic_reclaim: no_storage_sealed_reclaim(),
+                snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+                source_publication: source_catalog.clone(),
+                idempotency: idempotency.clone(),
+                resource_policy: IngestResourcePolicy::DEFAULT,
+                semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+                source_egress_policy: None,
+                auxiliary_catalog: memory_aux_catalog(),
+                auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
+            },
+        );
+        let refusal = if refuse_on_call == 1 {
+            materializer.preflight_batch(&batch, None)
+        } else {
+            materializer.preflight_batch(&batch, None)?;
+            materializer
+                .publish_batch(&batch, &RequestBudgetV1::unbounded())
+                .map(|_| ())
+        };
+        assert!(matches!(
+            refusal,
+            Err(CoreError::Typed { code, .. })
+                if code == quanta_index_contract::lex::LexicalErrorCode::SemModelMismatch.into()
+        ));
+        assert_eq!(semantic_ingest.calls.load(Ordering::SeqCst), refuse_on_call);
+        assert_eq!(semantic_ingest.publish_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            *embedder.calls.lock().map_err(|error| error.to_string())?,
+            0
+        );
+        assert!(
+            lexical_builder
+                .batches
+                .lock()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+        );
+        assert!(
+            authority
+                .identities
+                .lock()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+        );
+        assert_eq!(idempotency.records(), 0);
+        for track in [
+            SearchPlaneTrackKind::Lexical,
+            SearchPlaneTrackKind::Semantic,
+        ] {
+            assert!(
+                ledger
+                    .read()
+                    .map_err(|error| error.to_string())?
+                    .track_state(&batch.repo_id, &batch.revision_id, track)
+                    .is_none()
+            );
+        }
+        let retained = source_catalog
+            .inspect_source_event(&batch.repo_id, &batch.source_event)?
+            .ok_or("pre-allocated source event disappeared")?;
+        assert_eq!(retained, allocation);
+        assert!(matches!(&retained.state, SourceEventStateV1::Allocated));
+        assert!(retained.binding_v1().is_none());
+        assert!(matches!(
+            source_catalog.allocate_source_event(&allocation_request)?,
+            SourceEventAllocationOutcomeV1::Existing(record) if record == allocation
+        ));
+    }
+    Ok(())
 }
 
 #[test]

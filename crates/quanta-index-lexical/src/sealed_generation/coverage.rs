@@ -20,8 +20,8 @@ pub(crate) const SOURCE_FILE_COVERAGE_FILE_NAME: &str = "source-file-coverage.cb
 mod pages;
 pub(crate) use pages::{
     CoveragePlan, CoverageWriteBase, MAX_COVERAGE_ROOT_BYTES_U64, is_coverage_page,
-    read_admitted_bytes, read_committed_coverage_root_at, root_page_commitments,
-    root_page_commitments_at,
+    read_admitted_bytes, read_committed_coverage_root_at, read_committed_publication_at,
+    root_page_commitments, root_page_commitments_at,
 };
 
 pub(crate) type CoverageSnapshot = FileCoverageSnapshot;
@@ -247,19 +247,31 @@ pub(crate) fn read_staged_coverage(
 
 /// Atomic rename preserves immutable old-reader and hard-link ownership.
 /// Called only after the request and inherited snapshot have been validated.
+#[cfg(test)]
 pub(crate) fn write_staged_coverage(
     generation_dir: &Path,
     identity: &GenerationSnapshot,
     publication: &SourcePublicationEvent,
     plan: &CoveragePlan,
 ) -> Result<SealedArtifactCommitmentV1, CoreError> {
-    pages::write_coverage_pages(
+    write_staged_coverage_observed(generation_dir, identity, publication, plan, None)
+}
+
+pub(crate) fn write_staged_coverage_observed(
+    generation_dir: &Path,
+    identity: &GenerationSnapshot,
+    publication: &SourcePublicationEvent,
+    plan: &CoveragePlan,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<SealedArtifactCommitmentV1, CoreError> {
+    pages::write_coverage_pages_observed(
         generation_dir,
         identity,
         publication,
         &plan.coverage,
         plan.base.as_ref(),
         &plan.touched,
+        sync,
     )
 }
 

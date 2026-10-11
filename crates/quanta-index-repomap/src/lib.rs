@@ -7,6 +7,7 @@ pub mod delta;
 pub mod layout_v3;
 pub mod materializer;
 pub mod model;
+pub mod native;
 mod object_store;
 mod pinned;
 pub mod query;

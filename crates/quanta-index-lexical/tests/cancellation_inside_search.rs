@@ -10,6 +10,10 @@
 #[path = "support/source_fixture.rs"]
 mod source_fixture;
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::error::Error;
 use std::time::{Duration, Instant};
 
@@ -22,7 +26,7 @@ use quanta_index_contract::{
 use quanta_index_core::{
     CoreError, LexicalExecutionBudgetV1, LexicalIndexOpenPort, LexicalPageSpec,
     LexicalWriterPolicy, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE,
-    RegexMatchCachePolicy, RequestBudgetV1, SearchCorpusBatchBuildPort,
+    RegexMatchCachePolicy, RequestBudgetV1,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -135,7 +139,7 @@ fn seeded() -> Result<(tempfile::TempDir, LexicalAdapter), Box<dyn Error>> {
         RegexMatchCachePolicy::DEFAULT,
         LexicalWriterPolicy::DEFAULT,
     );
-    let _stages = adapter.build_batch(&sealed_batch()?)?;
+    let _stages = adapter.build_fixture_batch(&sealed_batch()?)?;
     Ok((dir, adapter))
 }
 

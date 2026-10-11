@@ -24,8 +24,8 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
 use quanta_index_core::{
-    CoreError, FinishedReclaims, IntegrityScrubPort, MetricPointV1, MetricSourcePort,
-    QuarantinedGenerationV1, RepoMapOpenReportV1, SealedGenerationReclaimPort,
+    CoreError, DiagnosticContextV1, FinishedReclaims, IntegrityScrubPort, MetricPointV1,
+    MetricSourcePort, QuarantinedGenerationV1, RepoMapOpenReportV1, SealedGenerationReclaimPort,
     SealedGenerationScanPort, count_from_usize,
 };
 use quanta_index_ipc::SocketAccessPolicy;
@@ -110,8 +110,9 @@ impl InterruptedReclaimsAtBoot {
 /// storage's failure is reported and left for the next reclaim pass.
 pub(super) fn finish_interrupted_reclaims(
     reclaim: &dyn SealedGenerationReclaimPort,
+    diagnostic: Option<&DiagnosticContextV1>,
 ) -> Result<InterruptedReclaimsAtBoot> {
-    match reclaim.finish_interrupted_reclaims() {
+    match reclaim.finish_interrupted_reclaims(diagnostic) {
         Ok(finished) => Ok(InterruptedReclaimsAtBoot::Finished(finished)),
         Err(error) => error
             .into_storage_failure()
@@ -536,10 +537,10 @@ mod tests {
         GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
     };
     use quanta_index_core::{
-        CoreError, FinishedReclaims, GenerationQuarantineReasonV1, InventoriedSealedGenerationV1,
-        MetricValueV1, QuarantinedGenerationV1, SealedGenerationBytesV1,
-        SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
-        SealedGenerationScanPort,
+        CoreError, DiagnosticContextV1, FinishedReclaims, GenerationQuarantineReasonV1,
+        InventoriedSealedGenerationV1, MetricValueV1, QuarantinedGenerationV1,
+        SealedGenerationBytesV1, SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1,
+        SealedGenerationReclaimPort, SealedGenerationScanPort,
     };
     use quanta_index_search_plane::Ledger;
 
@@ -768,6 +769,7 @@ mod tests {
             &self,
             _retired: &GenerationSnapshot,
             _on_absent: &dyn Fn() -> Result<(), CoreError>,
+            _diagnostic: Option<&DiagnosticContextV1>,
         ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
             Err(CoreError::NotImplemented(
                 "boot reclaims nothing".to_string(),
@@ -778,6 +780,7 @@ mod tests {
             &self,
             _repo_id: &RepoId,
             _revision_id: &RevisionId,
+            _diagnostic: Option<&DiagnosticContextV1>,
         ) -> Result<Vec<GenerationSnapshot>, CoreError> {
             Err(CoreError::NotImplemented("boot lists no pair".to_string()))
         }
@@ -787,13 +790,17 @@ mod tests {
             _repo_id: &RepoId,
             _revision_id: &RevisionId,
             _generations: &BTreeSet<ManifestGeneration>,
+            _diagnostic: Option<&DiagnosticContextV1>,
         ) -> Result<SealedGenerationBytesV1, CoreError> {
             Err(CoreError::NotImplemented(
                 "boot measures no pair".to_string(),
             ))
         }
 
-        fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError> {
+        fn finish_interrupted_reclaims(
+            &self,
+            _diagnostic: Option<&DiagnosticContextV1>,
+        ) -> Result<FinishedReclaims, CoreError> {
             self.0.clone()
         }
     }
@@ -827,8 +834,8 @@ mod tests {
             entries: 2,
             bytes: 40,
         };
-        let outcome =
-            finish_interrupted_reclaims(&ScriptedFinish(Ok(finished))).expect("finishing succeeds");
+        let outcome = finish_interrupted_reclaims(&ScriptedFinish(Ok(finished)), None)
+            .expect("finishing succeeds");
         assert_eq!(outcome, InterruptedReclaimsAtBoot::Finished(finished));
         let notice = outcome
             .boot_notice(SearchPlaneTrackKind::Lexical)
@@ -843,13 +850,17 @@ mod tests {
             ),
             (MetricValueV1::Gauge(2.0), MetricValueV1::Gauge(0.0))
         );
-        let nothing = finish_interrupted_reclaims(&ScriptedFinish(Ok(FinishedReclaims::default())))
-            .expect("an empty area finishes");
+        let nothing =
+            finish_interrupted_reclaims(&ScriptedFinish(Ok(FinishedReclaims::default())), None)
+                .expect("an empty area finishes");
         assert_eq!(nothing.boot_notice(SearchPlaneTrackKind::Lexical), None);
 
-        let unfinished = finish_interrupted_reclaims(&ScriptedFinish(Err(CoreError::Storage(
-            "reclaim: remove /state/.reclaim/x.g2: permission denied".to_string(),
-        ))))
+        let unfinished = finish_interrupted_reclaims(
+            &ScriptedFinish(Err(CoreError::Storage(
+                "reclaim: remove /state/.reclaim/x.g2: permission denied".to_string(),
+            ))),
+            None,
+        )
         .expect("the storage failing does not refuse boot");
         assert_eq!(
             unfinished,
@@ -872,10 +883,14 @@ mod tests {
             (MetricValueV1::Gauge(0.0), MetricValueV1::Gauge(1.0))
         );
 
-        let refused = finish_interrupted_reclaims(&ScriptedFinish(Err(CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch,
-            message: "not a reclaim entry".to_string(),
-        })))
+        let refused = finish_interrupted_reclaims(
+            &ScriptedFinish(Err(CoreError::Typed {
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch,
+                message: "not a reclaim entry".to_string(),
+            })),
+            None,
+        )
         .expect_err("a refusal fails boot");
         assert!(
             matches!(

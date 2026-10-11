@@ -263,6 +263,7 @@ fn boot_with_multi_repo_and_commit_recency() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
     let now_ms = now_epoch_ms()?;
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_repo_commit_recency_batch(RepoCommitRecencyIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
@@ -293,6 +294,7 @@ fn boot_with_multi_repo_and_commit_recency() -> AnyResult<E2eRuntime> {
 fn boot_with_multi_repo_and_repo_meta() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_repo_meta_batch(RepoMetaIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
@@ -331,6 +333,7 @@ fn boot_with_multi_repo_and_repo_meta() -> AnyResult<E2eRuntime> {
 fn boot_with_multi_repo_and_repo_topic() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_repo_topic_batch(RepoTopicIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
@@ -366,6 +369,7 @@ fn boot_with_multi_repo_and_repo_topic() -> AnyResult<E2eRuntime> {
 fn boot_with_multi_repo_and_repo_description() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_repo_description_batch(RepoDescriptionIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
@@ -396,6 +400,7 @@ fn boot_with_multi_repo_and_repo_description() -> AnyResult<E2eRuntime> {
 fn boot_with_multi_repo_and_file_ownership() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_file_ownership_batch(FileOwnershipIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
@@ -440,6 +445,7 @@ fn boot_with_multi_repo_and_file_ownership() -> AnyResult<E2eRuntime> {
 fn boot_with_multi_repo_and_file_contributor() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_file_contributor_batch(FileContributorIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
@@ -1252,6 +1258,7 @@ fn repo_has_description_conflicting_batch_fails_closed() -> AnyResult<()> {
     // last-wins one of the two.
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     let publish = rt.publish_repo_description_batch(RepoDescriptionIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
@@ -1270,9 +1277,13 @@ fn repo_has_description_conflicting_batch_fails_closed() -> AnyResult<()> {
             },
         ],
     });
+    let Err(error) = publish else {
+        anyhow::bail!("conflicting repo description batch unexpectedly succeeded");
+    };
+    let refusal = format!("{error:#}");
     ensure!(
-        publish.is_err(),
-        "conflicting repo description batch must fail closed at publish, but it succeeded",
+        refusal.contains("code=INVALID_REQUEST") && refusal.contains("conflicting entries"),
+        "conflicting repo description batch failed for the wrong reason: {refusal}"
     );
     Ok(())
 }

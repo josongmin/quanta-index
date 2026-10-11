@@ -173,6 +173,7 @@ impl PreparationProfile {
         self.budgets
     }
 
+    /// Infallible by construction: copies the digest computed during profile validation.
     #[must_use]
     pub fn sha256(&self) -> [u8; 32] {
         self.sha256
@@ -635,6 +636,7 @@ impl PreparedSource {
     pub fn source(&self) -> &SourceFileRevision {
         &self.context.source
     }
+    /// Infallible by construction: copies the validated profile digest.
     #[must_use]
     pub fn profile_sha256(&self) -> [u8; 32] {
         self.context.profile.sha256()
@@ -701,10 +703,12 @@ impl PriorSourceEntry {
     pub fn coverage(&self) -> &SourceFileCoverage {
         &self.coverage
     }
+    /// Infallible by construction: copies the persisted producer policy digest.
     #[must_use]
     pub fn profile_sha256(&self) -> [u8; 32] {
         self.coverage.producer_policy_sha256
     }
+    /// Infallible by construction: copies the persisted coverage digest.
     #[must_use]
     pub fn unit_set_sha256(&self) -> [u8; 32] {
         self.coverage.unit_set_sha256

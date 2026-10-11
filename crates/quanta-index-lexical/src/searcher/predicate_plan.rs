@@ -9,6 +9,7 @@ use crate::documents::collapse_exprs;
 use crate::predicate_registry::{
     ContentPredicateConstraint, PREDICATE_OWNER, PredicateKind, kind_of, unimplemented_predicate,
 };
+use crate::searcher::authorities::NativeQueryScope;
 use crate::{PreparedPredicatePlan, RepoScopeConstraint, TantivySearcher};
 use quanta_index_contract::{LqExpr, LqLeaf, LqPredicateArg, LqQuery};
 use quanta_index_core::{CoreError, RequestBudgetV1};
@@ -21,6 +22,7 @@ impl TantivySearcher {
         args: &[LqPredicateArg],
         budget: &RequestBudgetV1,
         manual: bool,
+        native: &NativeQueryScope,
     ) -> Result<LqExpr, CoreError> {
         if let Some(predicate) = quanta_index_core::LexicalPredicateV1::from_canonical_name(name)
             && predicate.exact_symbol_name_argument(args)?.is_some()
@@ -100,7 +102,7 @@ impl TantivySearcher {
                 let constraint =
                     self.content_predicate_constraint(&canonical_name, &canonical_args)?;
                 if !manual {
-                    drop(self.content_predicate_match_set(&constraint, budget)?);
+                    drop(self.content_predicate_match_set(&constraint, budget, native)?);
                 }
                 Ok(LqExpr::Leaf(LqLeaf::Predicate {
                     name: canonical_name,
@@ -118,28 +120,33 @@ impl TantivySearcher {
         expr: &LqExpr,
         budget: &RequestBudgetV1,
         manual: bool,
+        native: &NativeQueryScope,
     ) -> Result<LqExpr, CoreError> {
         match expr {
             LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
-                self.lower_predicate_for_boolean_scope(name, args, budget, manual)
+                self.lower_predicate_for_boolean_scope(name, args, budget, manual, native)
             }
             LqExpr::Empty | LqExpr::Leaf(_) => Ok(expr.clone()),
             LqExpr::All(parts) => {
                 let mut out: Vec<LqExpr> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    out.push(self.lower_predicates_for_boolean_scope(part, budget, manual)?);
+                    out.push(
+                        self.lower_predicates_for_boolean_scope(part, budget, manual, native)?,
+                    );
                 }
                 Ok(collapse_exprs(out, true))
             }
             LqExpr::Any(parts) => {
                 let mut out: Vec<LqExpr> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    out.push(self.lower_predicates_for_boolean_scope(part, budget, manual)?);
+                    out.push(
+                        self.lower_predicates_for_boolean_scope(part, budget, manual, native)?,
+                    );
                 }
                 Ok(collapse_exprs(out, false))
             }
             LqExpr::Not(inner) => Ok(LqExpr::Not(Box::new(
-                self.lower_predicates_for_boolean_scope(inner, budget, manual)?,
+                self.lower_predicates_for_boolean_scope(inner, budget, manual, native)?,
             ))),
         }
     }
@@ -149,6 +156,7 @@ impl TantivySearcher {
         expr: &LqExpr,
         budget: &RequestBudgetV1,
         manual: bool,
+        native: &NativeQueryScope,
     ) -> Result<
         (
             LqExpr,
@@ -268,7 +276,7 @@ impl TantivySearcher {
                 let mut file_predicates: Vec<ContentPredicateConstraint> = Vec::new();
                 for part in parts {
                     let (lowered, repo_parts, file_parts) =
-                        self.extract_predicate_plan(part, budget, manual)?;
+                        self.extract_predicate_plan(part, budget, manual, native)?;
                     if !matches!(lowered, LqExpr::Empty) {
                         exprs.push(lowered);
                     }
@@ -282,7 +290,7 @@ impl TantivySearcher {
                 ))
             }
             LqExpr::Any(_) | LqExpr::Not(_) => Ok((
-                self.lower_predicates_for_boolean_scope(expr, budget, manual)?,
+                self.lower_predicates_for_boolean_scope(expr, budget, manual, native)?,
                 Vec::new(),
                 Vec::new(),
             )),
@@ -293,6 +301,7 @@ impl TantivySearcher {
         &self,
         query: &LqQuery,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<PreparedPredicatePlan, CoreError> {
         let manual = Self::uses_unindexed_scan(&query.options);
         if let LqExpr::Leaf(LqLeaf::Predicate { name, args }) = &query.expr {
@@ -352,16 +361,19 @@ impl TantivySearcher {
             }
         }
         let (expr, repo_constraints, file_predicates) =
-            self.extract_predicate_plan(&query.expr, budget, manual)?;
+            self.extract_predicate_plan(&query.expr, budget, manual, native)?;
         let mut allowed_repo_ids: Option<BTreeSet<String>> = None;
         for constraint in &repo_constraints {
             let repo_ids = match constraint {
                 RepoScopeConstraint::File(file) => {
-                    self.collect_repo_ids_for_repo_has_file(file, &query.options, budget)?
+                    self.collect_repo_ids_for_repo_has_file(file, &query.options, budget, native)?
                 }
-                RepoScopeConstraint::Content(leaf) => {
-                    self.collect_repo_ids_for_repo_has_content(leaf, &query.options, budget)?
-                }
+                RepoScopeConstraint::Content(leaf) => self.collect_repo_ids_for_repo_has_content(
+                    leaf,
+                    &query.options,
+                    budget,
+                    native,
+                )?,
                 RepoScopeConstraint::CommitAfter(timeref) => {
                     self.collect_repo_ids_for_repo_has_commit_after(timeref)?
                 }
@@ -396,7 +408,7 @@ impl TantivySearcher {
         }
         let mut allowed_files: Option<BTreeSet<quanta_index_contract::SourceFileKey>> = None;
         for predicate in &file_predicates {
-            let files = self.allowed_files_for_content_predicate(predicate, budget)?;
+            let files = self.allowed_files_for_content_predicate(predicate, budget, native)?;
             if files.is_empty() {
                 return Ok(PreparedPredicatePlan {
                     expr: LqExpr::Empty,

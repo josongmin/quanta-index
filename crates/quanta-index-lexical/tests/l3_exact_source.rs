@@ -11,6 +11,10 @@
     reason = "fixed source fixtures assert exact ranks, scores, spans, and expired deadlines"
 )]
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
@@ -24,7 +28,6 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
-    SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use sha2::{Digest as _, Sha256};
@@ -33,6 +36,88 @@ use std::error::Error;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type ScopeExpectation<'a> = (&'a str, Option<&'a str>, &'a [&'a str], &'a [&'a str]);
+
+#[test]
+fn path_queries_use_metadata_while_content_reauthenticates_selected_source() -> TestResult {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+
+    let body = "lazy_source_integrity_sentinel_7f913b";
+    let (directory, searcher) = fixture_with_scopes(vec![code_scope("lazy-target.rs", body, 1)?])?;
+    let objects = directory.path().join("lexical-object-pool/objects");
+    let mut changed = 0_usize;
+    for shard in std::fs::read_dir(objects)? {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(shard.path())? {
+            let path = entry?.path();
+            let bytes = std::fs::read(&path)?;
+            if bytes.get(..8) != Some(b"QLSTOR01".as_slice()) || bytes.get(10) != Some(&1) {
+                continue;
+            }
+            if let Some(offset) = bytes
+                .windows(body.len())
+                .position(|part| part == body.as_bytes())
+            {
+                let mut file = std::fs::OpenOptions::new().write(true).open(&path)?;
+                let _position = file.seek(SeekFrom::Start(u64::try_from(offset)?))?;
+                file.write_all(b"X")?;
+                changed = changed
+                    .checked_add(1)
+                    .ok_or("fixture mutation count overflow")?;
+            }
+        }
+    }
+    assert_eq!(
+        changed, 1,
+        "mutate only the selected FileBody object in place"
+    );
+    drop(searcher);
+    let cold = LexicalAdapter::with_state_root(directory.path().to_path_buf());
+    let searcher = cold.open(
+        &RepoId::new("containing-snapshot")?,
+        &RevisionId::new("snapshot-rev")?,
+        ManifestGeneration::new(1),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    for (name, value) in [
+        ("code_search.path", "lazy-target"),
+        ("code_search.path_regex", "lazy.*target"),
+    ] {
+        let mut request = code_query(&[], true);
+        request.expr = LqExpr::Leaf(LqLeaf::Predicate {
+            name: name.into(),
+            args: vec![LqPredicateArg::RawString(value.into())],
+        });
+        let page = searcher.search_constrained(
+            &request,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(1),
+            &RequestBudgetV1::unbounded(),
+        )?;
+        assert_eq!(page.exact_total, Some(1));
+        assert_eq!(page.candidates.len(), 1);
+        assert_eq!(
+            page.candidates[0].repo_relative_path.as_str(),
+            "lazy-target.rs"
+        );
+    }
+    let content = searcher.search_constrained(
+        &code_query(&[body], true),
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(1),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(matches!(
+        content,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+            ..
+        })
+    ));
+    Ok(())
+}
 
 fn scope(
     owner: &str,
@@ -183,7 +268,7 @@ fn fixture_with_scopes(
         seal: true,
     };
     batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
-    let _stages = adapter.build_batch(&batch)?;
+    let _stages = adapter.build_fixture_batch(&batch)?;
     let searcher = adapter.open(
         &repo,
         &revision,
@@ -1019,7 +1104,7 @@ fn code_search_work_counts_separate_gram_collision_verification_rank_and_paging(
     assert_eq!(stats.verified_matching_files, 2);
     assert_eq!(stats.cursor_eligible_files, 2);
     assert_eq!(stats.fetched_files, 1);
-    assert_eq!(stats.materialized_files, 2);
+    assert_eq!(stats.materialized_files, stats.fetched_files);
     assert_eq!(stats.preview_attempted_files, 1);
     assert_eq!(stats.typo_token_comparisons, 0);
     assert_eq!(stats.typo_shortlist_admission_ns, 0);
@@ -1049,7 +1134,7 @@ fn code_search_work_counts_separate_gram_collision_verification_rank_and_paging(
     assert_eq!(continued.verified_matching_files, 2);
     assert_eq!(continued.cursor_eligible_files, 1);
     assert_eq!(continued.fetched_files, 1);
-    assert_eq!(continued.materialized_files, 2);
+    assert_eq!(continued.materialized_files, continued.fetched_files);
     assert_eq!(continued.preview_attempted_files, 1);
     Ok(())
 }
@@ -1623,6 +1708,69 @@ fn code_search_regex_uses_full_file_authority_and_bounded_source_focus() -> Test
             ..
         })
     ));
+    Ok(())
+}
+
+#[test]
+fn code_search_streamed_literal_and_regex_preserve_exact_page_tail() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("a.rs", "needle branch", 6)?,
+        code_scope("b.rs", "needle branch needle branch", 13)?,
+        code_scope("c.rs", "needle only", 6)?,
+        code_scope("d.rs", "branch only", 6)?,
+    ])?;
+    let mut query = code_query(&["needle"], false);
+    query.expr = LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::RawString("needle".into())),
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "code_search.content_regex".into(),
+            args: vec![LqPredicateArg::RawString("branch".into())],
+        }),
+    ]);
+    let run = |page: LexicalPageSpec| {
+        searcher.search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &page,
+            &RequestBudgetV1::unbounded(),
+        )
+    };
+    let whole = run(LexicalPageSpec::first(10))?;
+    assert_eq!(whole.exact_total, Some(2));
+    assert_eq!(
+        whole
+            .candidates
+            .iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["a.rs", "b.rs"]),
+    );
+    let first = run(LexicalPageSpec::first(1))?;
+    let first_stats = first.code_search_stats.expect("streamed first page stats");
+    assert_eq!(first.exact_total, Some(2));
+    assert_eq!(first_stats.literal_verified_files, 3);
+    assert_eq!(first_stats.verified_matching_files, 2);
+    assert_eq!(first_stats.materialized_files, 1);
+    let cursor = quanta_index_contract::LexicalCursor::at(
+        first.candidates[0].manifest_generation,
+        first.candidates[0].order_key(),
+    );
+    let second = run(LexicalPageSpec {
+        fetch: 1,
+        after: Some(cursor),
+    })?;
+    assert_eq!(second.exact_total, Some(1));
+    assert_eq!(second.candidates.len(), 1);
+    assert_eq!(
+        [
+            first.candidates[0].repo_relative_path.as_str(),
+            second.candidates[0].repo_relative_path.as_str(),
+        ],
+        [
+            whole.candidates[0].repo_relative_path.as_str(),
+            whole.candidates[1].repo_relative_path.as_str(),
+        ],
+    );
     Ok(())
 }
 

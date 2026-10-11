@@ -1,0 +1,27 @@
+[package]
+name = "quanta-index-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Native incremental application kernel with a single publication authority"
+
+[lints]
+workspace = true
+
+[dependencies]
+quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+rusqlite.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
+quanta-index-repomap = { version = "0.1.0", path = "../quanta-index-repomap" }
+quanta-index-catalog = { version = "0.1.0", path = "../quanta-index-catalog" }
+quanta-index-storage = { version = "0.1.0", path = "../quanta-index-storage" }
+quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
+quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
+futures.workspace = true

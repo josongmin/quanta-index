@@ -23,8 +23,8 @@ use quanta_index_searchd_harness::artifact::{
     corpus_digest, model_revision_of,
 };
 use quanta_index_searchd_harness::scale::{
-    ScaleRuntimeConfig, ScaleStageError, ScaleTier, ScopedOracle, generate_corpus,
-    generate_scoped_corpus, params_for, preflight_scoped_corpus, repo_query_token,
+    DiskObservationMode, ScaleRuntimeConfig, ScaleStageError, ScaleTier, ScopedOracle,
+    generate_corpus, generate_scoped_corpus, params_for, preflight_scoped_corpus, repo_query_token,
     scoped_corpus_digest,
 };
 use quanta_index_searchd_harness::{
@@ -76,6 +76,7 @@ pub(crate) struct Config {
 impl Config {
     fn history_config(&self) -> ScaleRuntimeConfig {
         ScaleRuntimeConfig {
+            disk_observation: DiskObservationMode::BoundaryOnly,
             client_timeout: None,
             history_max_bytes: self.history_max_bytes,
             history_max_total_bytes: self.history_max_total_bytes,
@@ -434,6 +435,7 @@ fn dispatch(
     }
     let envelope = SearchPlaneQueryIpcRequestEnvelope {
         request_id: task.id,
+        diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
         payload: request(pin),
     };
     let outcome = match ClientIoPolicy::try_with_deadline(deadline).and_then(|policy| {

@@ -457,13 +457,26 @@ pub(crate) async fn verified_base_vector_index_seal_v1(
 /// `LanceDB` maps the dataset's files on demand, so their on-disk size is the
 /// honest upper bound on what one open handle can make resident.
 pub(crate) fn dataset_tree_bytes(track_root: &Path, root: &Path) -> Result<u64, CoreError> {
-    quanta_index_core::unique_inode_tree_bytes_below_track(track_root, root, &|_name| false)
-        .map_err(|error| {
-            CoreError::Storage(format!(
-                "semantic: measure dataset dir {}: {error}",
-                root.display()
-            ))
-        })
+    dataset_tree_bytes_observed(track_root, root, None)
+}
+
+pub(crate) fn dataset_tree_bytes_observed(
+    track_root: &Path,
+    root: &Path,
+    diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+) -> Result<u64, CoreError> {
+    quanta_index_core::unique_inode_tree_bytes_below_track(
+        track_root,
+        root,
+        &|_name| false,
+        diagnostic,
+    )
+    .map_err(|error| {
+        CoreError::Storage(format!(
+            "semantic: measure dataset dir {}: {error}",
+            root.display()
+        ))
+    })
 }
 
 /// Downcast a named column to a concrete Arrow array type.

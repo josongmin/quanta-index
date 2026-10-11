@@ -5,8 +5,8 @@ use super::{
     PeerCredentials, PeerWatch, PeerWatchOutcome, RequestEnvelope, RequestEventStageV1,
     ResponseEnvelope, SocketPathIdentity, UdsServer, WatchEvent, WatchObserver,
     connect_before_deadline, connect_requires_completion_wait, create_connect_socket,
-    decode_response, encode_request, handle_connection, send_request, send_request_observed,
-    wait_for_connect,
+    decode_response, encode_request, handle_connection, send_request, send_request_negotiated,
+    send_request_observed, wait_for_connect,
 };
 use crate::socket_access::{PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE};
 use rustix::fs::{OFlags, fcntl_getfl};
@@ -21,6 +21,10 @@ use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use quanta_index_core::{
+    DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1,
+    DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticHealthCodeV1,
+};
 use quanta_index_core::{RequestBudgetV1, RequestProviderStageV1};
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -30,6 +34,252 @@ use crate::admission::{DispatchSlots, IngressBudget, ServerAdmissionPolicy, Slot
 use crate::error::MAX_FRAME_BODY_BYTES;
 
 type TestRes = Result<(), String>;
+
+#[test]
+fn accept_error_waits_for_owned_connection_threads() {
+    let (worker_started_tx, worker_started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let finished = Arc::new(AtomicBool::new(false));
+    let worker_finished = Arc::clone(&finished);
+    let worker = thread::spawn(move || {
+        worker_started_tx.send(()).expect("worker start signal");
+        release_rx.recv().expect("worker release signal");
+        worker_finished.store(true, Ordering::Release);
+    });
+    worker_started_rx.recv().expect("worker started");
+
+    let (joining_tx, joining_rx) = mpsc::channel();
+    let (returned_tx, returned_rx) = mpsc::channel();
+    let joiner = thread::spawn(move || {
+        joining_tx.send(()).expect("join start signal");
+        let mut owned = super::OwnedConnectionThreads::new(Arc::new(AtomicBool::new(false)));
+        owned.push(worker);
+        let result = super::finish_connection_threads(
+            owned,
+            Err(IpcError::Io(std::io::Error::other("accept failed"))),
+        );
+        returned_tx
+            .send((result.is_err(), finished.load(Ordering::Acquire)))
+            .expect("join result signal");
+    });
+    joining_rx.recv().expect("join started");
+    let before_release = returned_rx.recv_timeout(Duration::from_millis(25));
+    release_tx.send(()).expect("release worker");
+    let after_release = returned_rx.recv_timeout(Duration::from_secs(2));
+    joiner.join().expect("joiner completed");
+    assert!(matches!(
+        before_release,
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(matches!(after_release, Ok((true, true))));
+}
+
+#[test]
+fn panic_unwind_waits_for_owned_connection_threads() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (unwinding_tx, unwinding_rx) = mpsc::channel();
+    let (returned_tx, returned_rx) = mpsc::channel();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let observed_shutdown = Arc::clone(&shutdown);
+    let worker_finished = Arc::new(AtomicBool::new(false));
+    let observed_worker_finished = Arc::clone(&worker_finished);
+    let joiner = thread::spawn(move || {
+        let result = std::panic::catch_unwind(|| {
+            let mut owned = super::OwnedConnectionThreads::new(shutdown);
+            owned.push(thread::spawn(move || {
+                release_rx.recv().expect("worker release");
+                worker_finished.store(true, Ordering::Release);
+            }));
+            unwinding_tx.send(()).expect("unwind signal");
+            panic!("scripted accept-loop panic");
+        });
+        returned_tx.send(result.is_err()).expect("unwind result");
+    });
+    unwinding_rx.recv().expect("unwind started");
+    let before_release = returned_rx.recv_timeout(Duration::from_millis(25));
+    release_tx.send(()).expect("release worker");
+    let after_release = returned_rx.recv_timeout(Duration::from_secs(2));
+    joiner.join().expect("unwind observer finished");
+    assert!(matches!(
+        before_release,
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(matches!(after_release, Ok(true)));
+    assert!(observed_shutdown.load(Ordering::Acquire));
+    assert!(observed_worker_finished.load(Ordering::Acquire));
+}
+
+#[derive(Debug)]
+struct TraceTestClock;
+
+impl DiagnosticClockV1 for TraceTestClock {
+    fn now_ns(&self) -> u64 {
+        42
+    }
+}
+
+#[derive(Debug, Default)]
+struct TraceTestSink(std::sync::Mutex<Vec<DiagnosticEmitV1>>);
+
+impl DiagnosticEventSinkV1 for TraceTestSink {
+    fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+        self.0.lock().expect("test trace sink").push(event);
+        true
+    }
+}
+
+#[derive(Debug)]
+struct DroppingTraceSink;
+
+impl DiagnosticEventSinkV1 for DroppingTraceSink {
+    fn try_emit(&self, _event: DiagnosticEmitV1) -> bool {
+        false
+    }
+}
+
+#[test]
+fn diagnostic_sink_rejection_does_not_reject_a_validated_request() {
+    let capture = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([1; 16]),
+        Arc::new(TraceTestClock),
+        Arc::new(DroppingTraceSink),
+    );
+    let counters = test_counters();
+    let mut scope = super::RequestEventScope::new(
+        &counters,
+        std::num::NonZeroU64::new(1).expect("request ID"),
+        IpcPlane::Query,
+        1,
+        Some(&capture),
+        quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
+    );
+    assert!(scope.diagnostic_context().is_some());
+    scope.finish(RequestEventStageV1::ResponseWritten);
+}
+
+#[test]
+fn request_id_reuse_gets_distinct_roots_and_malformed_attempts_are_unlinked() {
+    let sink = Arc::new(TraceTestSink::default());
+    let capture = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([7; 16]),
+        Arc::new(TraceTestClock),
+        sink.clone(),
+    );
+    let request_id = std::num::NonZeroU64::new(9).expect("nonzero request ID");
+    let counters = test_counters();
+    let token = quanta_index_contract::DiagnosticAttemptTokenV1::new(
+        [8; 16],
+        std::num::NonZeroU64::new(3).expect("nonzero span ID"),
+    );
+    let mut linked = super::RequestEventScope::new(
+        &counters,
+        request_id,
+        IpcPlane::Query,
+        1,
+        Some(&capture),
+        quanta_index_contract::DiagnosticAttemptFieldV1::Linked(token),
+    );
+    linked.finish(RequestEventStageV1::ResponseWritten);
+    let mut invalid = super::RequestEventScope::new(
+        &counters,
+        request_id,
+        IpcPlane::Query,
+        2,
+        Some(&capture),
+        quanta_index_contract::DiagnosticAttemptFieldV1::Invalid,
+    );
+    invalid.finish(RequestEventStageV1::ResponseWritten);
+    let mut duplicate = super::RequestEventScope::new(
+        &counters,
+        request_id,
+        IpcPlane::Query,
+        3,
+        Some(&capture),
+        quanta_index_contract::DiagnosticAttemptFieldV1::Duplicate,
+    );
+    duplicate.finish(RequestEventStageV1::ResponseWritten);
+    let events = sink.0.lock().expect("test trace sink").clone();
+    let roots: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            if let DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                root_kind: Some(_),
+                ..
+            } = event.kind
+            {
+                Some(span_id)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(roots.len(), 3);
+    assert_ne!(
+        *roots.first().expect("request root"),
+        *roots.get(1).expect("request root")
+    );
+    assert_ne!(
+        *roots.get(1).expect("request root"),
+        *roots.get(2).expect("request root")
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                DiagnosticEventKindV1::RequestIdentity { request_id: 9, .. }
+            ))
+            .count(),
+        3
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, DiagnosticEventKindV1::Link { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                DiagnosticEventKindV1::Counter {
+                    key: quanta_index_core::DiagnosticCounterV1::InvalidAttemptTokens,
+                    value: 1,
+                    ..
+                }
+            ))
+            .count(),
+        2
+    );
+    for code in [
+        DiagnosticHealthCodeV1::InvalidAttemptToken,
+        DiagnosticHealthCodeV1::DuplicateAttemptToken,
+    ] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, DiagnosticEventKindV1::Health { code: observed } if observed == code))
+                .count(),
+            1,
+            "missing health {code:?}"
+        );
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                DiagnosticEventKindV1::Health {
+                    code: DiagnosticHealthCodeV1::UnlinkedAttempt
+                }
+            ))
+            .count(),
+        2
+    );
+}
 
 fn test_counters() -> Arc<IpcServerCounters> {
     Arc::new(IpcServerCounters::for_plane("test"))
@@ -41,6 +291,262 @@ fn test_slots() -> DispatchSlots {
 
 fn test_policy() -> ServerAdmissionPolicy {
     ServerAdmissionPolicy::DEFAULT
+}
+
+#[test]
+fn diagnostic_preface_selects_linked_request_only_for_active_matching_capture() {
+    (|| -> TestRes {
+        for (active_capture, expected_payload) in [
+            (Some([7; 16]), 13_u64),
+            (None, 4_u64),
+            (Some([8; 16]), 4_u64),
+        ] {
+            let dir = private_tempdir()?;
+            let socket = dir.path().join("diagnostic-preface.sock");
+            let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
+            let counters = test_counters();
+            let server_counters = Arc::clone(&counters);
+            let trace_sink = Arc::new(TraceTestSink::default());
+            let server_sink = Arc::clone(&trace_sink);
+            let server = thread::spawn(move || -> TestRes {
+                let capture = active_capture.map(|id| {
+                    DiagnosticContextV1::new(
+                        DiagnosticCaptureIdV1(id),
+                        Arc::new(TraceTestClock),
+                        server_sink,
+                    )
+                });
+                let (stream, _) = listener.accept().map_err(|error| error.to_string())?;
+                let policy = test_policy();
+                let reason = super::handle_connection_traced::<
+                    TestRequestEnvelope,
+                    u64,
+                    TestResponseEnvelope,
+                    u64,
+                    TestDispatcher,
+                >(
+                    stream,
+                    &TestDispatcher,
+                    &DispatchSlots::for_policy(policy),
+                    policy,
+                    IpcPlane::Query,
+                    PeerCredentials {
+                        uid: 1000,
+                        gid: 1000,
+                        pid: None,
+                    },
+                    1000,
+                    1,
+                    &AtomicBool::new(false),
+                    &server_counters,
+                    capture.as_ref(),
+                );
+                if !matches!(reason, ConnectionCloseReason::PeerClosed) {
+                    return Err(format!("unexpected close reason: {reason:?}"));
+                }
+                Ok(())
+            });
+            let response: TestResponseEnvelope = send_request_negotiated(
+                &socket,
+                &test_request(23, 4),
+                &test_request(23, 13),
+                [7; 16],
+                ClientIoPolicy::default(),
+            )
+            .map_err(|error| error.to_string())?;
+            server
+                .join()
+                .map_err(|_panic| "server panicked".to_string())??;
+            assert_eq!(response.payload, expected_payload + 1);
+            assert_eq!(counters.snapshot().requests_dispatched, 1);
+            let events = counters
+                .recent_request_events_v1()
+                .map_err(|error| error.to_string())?;
+            assert!(events.iter().all(|event| event.request_id.get() == 23));
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.stage == RequestEventStageV1::Validated)
+                    .count(),
+                1
+            );
+            let identities = trace_sink
+                .0
+                .lock()
+                .expect("test sink")
+                .iter()
+                .filter(|event| matches!(event.kind, DiagnosticEventKindV1::RequestIdentity { .. }))
+                .count();
+            assert_eq!(identities, usize::from(active_capture.is_some()));
+        }
+        Ok(())
+    })()
+    .expect("diagnostic transport contract");
+}
+
+#[test]
+fn old_peer_preface_rejection_reconnects_plain_request_under_one_deadline() {
+    (|| -> TestRes {
+        let dir = private_tempdir()?;
+        let socket = dir.path().join("old-peer.sock");
+        let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
+        let server = thread::spawn(move || -> TestRes {
+            let (mut probe, _) = listener.accept().map_err(|error| error.to_string())?;
+            let mut magic = [0_u8; 8];
+            probe
+                .read_exact(&mut magic)
+                .map_err(|error| error.to_string())?;
+            assert_eq!(magic, crate::codec::DIAGNOSTIC_PREFACE_MAGIC);
+            drop(probe);
+            let (mut request_stream, _) = listener.accept().map_err(|error| error.to_string())?;
+            let request: TestRequestEnvelope =
+                super::decode_request(&mut request_stream).map_err(|error| error.to_string())?;
+            assert_eq!(request, test_request(31, 5));
+            request_stream
+                .write_all(
+                    &super::encode_response(&TestResponseEnvelope {
+                        request_id: 31,
+                        payload: 6,
+                    })
+                    .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let policy =
+            ClientIoPolicy::try_with_deadline(deadline).map_err(|error| error.to_string())?;
+        let response: TestResponseEnvelope = send_request_negotiated(
+            &socket,
+            &test_request(31, 5),
+            &test_request(31, 99),
+            [7; 16],
+            policy,
+        )
+        .map_err(|error| error.to_string())?;
+        server
+            .join()
+            .map_err(|_panic| "server panicked".to_string())??;
+        assert_eq!(response.payload, 6);
+        Ok(())
+    })()
+    .expect("diagnostic transport contract");
+}
+
+#[test]
+fn stalled_old_peer_preface_preserves_plain_request_deadline() {
+    (|| -> TestRes {
+        struct LinkedRequestEnvelope {
+            request_id: u64,
+            payload: u64,
+            diagnostic_attempt: u64,
+        }
+
+        impl Serialize for LinkedRequestEnvelope {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                use serde::ser::SerializeStruct as _;
+                let mut fields = serializer.serialize_struct("LinkedRequestEnvelope", 3)?;
+                fields.serialize_field("request_id", &self.request_id)?;
+                fields.serialize_field("payload", &self.payload)?;
+                fields.serialize_field("diagnostic_attempt", &self.diagnostic_attempt)?;
+                fields.end()
+            }
+        }
+
+        let dir = private_tempdir()?;
+        let socket = dir.path().join("stalled-old-peer.sock");
+        let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let policy =
+            ClientIoPolicy::try_with_deadline(deadline).map_err(|error| error.to_string())?;
+        let server = thread::spawn(move || -> TestRes {
+            let accept_before_deadline = || -> Result<UnixStream, String> {
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => return Ok(stream),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= deadline {
+                                return Err("connection did not arrive before deadline".into());
+                            }
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    }
+                }
+            };
+            let mut probe = accept_before_deadline()?;
+            probe
+                .set_nonblocking(false)
+                .map_err(|error| error.to_string())?;
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or("preface connection arrived after deadline")?;
+            probe
+                .set_read_timeout(Some(remaining))
+                .map_err(|error| error.to_string())?;
+            let mut preface = [0_u8; 24];
+            probe
+                .read_exact(&mut preface)
+                .map_err(|error| error.to_string())?;
+            assert_eq!(preface, crate::codec::diagnostic_preface([7; 16]));
+
+            // Keep the preface socket open without an ack or EOF. The client must
+            // establish a second connection while its original deadline remains.
+            let mut request_stream = accept_before_deadline()?;
+            request_stream
+                .set_nonblocking(false)
+                .map_err(|error| error.to_string())?;
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or("fallback connection arrived after deadline")?;
+            request_stream
+                .set_read_timeout(Some(remaining))
+                .map_err(|error| error.to_string())?;
+            let request: TestRequestEnvelope =
+                super::decode_request(&mut request_stream).map_err(|error| error.to_string())?;
+            assert_eq!(request, test_request(31, 5));
+            if Instant::now() >= deadline {
+                return Err("plain request was sent after its original deadline".into());
+            }
+            // TestRequestEnvelope rejects unknown fields, including the linked
+            // envelope's diagnostic_attempt. Successful decoding proves absence.
+            request_stream
+                .write_all(
+                    &super::encode_response(&TestResponseEnvelope {
+                        request_id: 31,
+                        payload: 6,
+                    })
+                    .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            drop(probe);
+            Ok(())
+        });
+        let response: TestResponseEnvelope = send_request_negotiated(
+            &socket,
+            &test_request(31, 5),
+            &LinkedRequestEnvelope {
+                request_id: 31,
+                payload: 99,
+                diagnostic_attempt: 7,
+            },
+            [7; 16],
+            policy,
+        )
+        .map_err(|error| error.to_string())?;
+        server
+            .join()
+            .map_err(|_panic| "server panicked".to_string())??;
+        assert_eq!(response.payload, 6);
+        Ok(())
+    })()
+    .expect("diagnostic transport contract");
 }
 
 #[test]
@@ -889,8 +1395,12 @@ impl<'de> Deserialize<'de> for TestRequestEnvelope {
 }
 
 impl RequestEnvelope<u64> for TestRequestEnvelope {
-    fn into_parts(self) -> (u64, u64) {
-        (self.request_id, self.payload)
+    fn into_parts(self) -> (u64, u64, quanta_index_contract::DiagnosticAttemptFieldV1) {
+        (
+            self.request_id,
+            self.payload,
+            quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
+        )
     }
 
     fn repo_scope(_request: &u64) -> Option<String> {
@@ -1268,12 +1778,15 @@ fn encode_test_frame(request_id: u64, payload: u64) -> Result<Vec<u8>, String> {
 #[test]
 fn envelope_validation_admits_nonzero_and_refuses_zero() {
     let result = (|| -> TestRes {
-        let (admitted, payload) = test_request(41, 8)
+        let (admitted, payload, attempt) = test_request(41, 8)
             .validated()
             .map_err(|err| format!("nonzero id must validate: {err}"))?;
-        if admitted.get() != 41 || payload != 8 {
+        if admitted.get() != 41
+            || payload != 8
+            || attempt != quanta_index_contract::DiagnosticAttemptFieldV1::Absent
+        {
             return Err(format!(
-                "validated parts must echo the envelope, got {admitted:?}/{payload}"
+                "validated parts must echo the envelope, got {admitted:?}/{payload}/{attempt:?}"
             ));
         }
         match test_request(0, 8).validated() {

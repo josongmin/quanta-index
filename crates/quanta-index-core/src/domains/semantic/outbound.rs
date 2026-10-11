@@ -2,11 +2,15 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
-    EmbeddingNormalization, GenerationSnapshot, LexicalCandidate, ManifestGeneration, OwnerDocKind,
-    QueryConstraintSetV1, RepoId, RevisionId, SemanticContentRootsV1, SemanticCorpusKindV1,
+    EmbeddingNormalization, GenerationPin, GenerationSnapshot, LexicalCandidate,
+    ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId, RevisionId,
+    SemanticContentRootsV1, SemanticCorpusKindV1,
 };
 
-use crate::domains::semantic::stream::{SemanticIngestHeaderV1, SemanticScopeSource};
+use crate::diagnostic_trace::DiagnosticContextV1;
+use crate::domains::semantic::stream::{
+    SemanticGenerationContractV1, SemanticIngestHeaderV1, SemanticScopeSource,
+};
 use crate::error::CoreError;
 use crate::request_budget::RequestBudgetV1;
 
@@ -19,10 +23,27 @@ use crate::request_budget::RequestBudgetV1;
 /// receipt acknowledges what the build appended, independently from the
 /// transient report returned alongside it.
 pub trait SemanticIngestPort: Send + Sync {
+    /// Read-only admission of the target's existing contract and a delta's
+    /// sealed base before a source window, provider call, or final source-event
+    /// binding. A refusal must not create or change generation storage.
+    ///
+    /// This observation is not a durable authorization: a caller must repeat
+    /// it under its operation lock, and the build port must repeat it under
+    /// its target/base generation guards before requesting the first window.
+    /// Completed-publication replay and finalize-only recovery are resolved
+    /// before invoking this admission when their base may have been retired.
+    fn preflight_contract(
+        &self,
+        pin: &GenerationPin,
+        contract: &SemanticGenerationContractV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<(), CoreError>;
+
     fn publish_stream(
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<
         (
             BatchPublishReceipt,

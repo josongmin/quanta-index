@@ -677,12 +677,17 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
     /// A later complete scrub may prove that an earlier receipt-write error
     /// did not leave a corrupt generation. Settle only that scrub's fence;
     /// another lifecycle owner's fence must remain in force.
-    fn finish_scrub_fence_after_clean_proof(&self, key: &SnapshotKey) -> Result<bool, CoreError> {
+    fn finish_integrity_fences_after_clean_proof(
+        &self,
+        key: &SnapshotKey,
+    ) -> Result<bool, CoreError> {
         let mut state = self.lock()?;
         let Some(owners) = state.retiring.get_mut(key) else {
             return Ok(false);
         };
-        let settled = owners.remove(&SnapshotRetirementOwner::IntegrityScrub);
+        let scrub = owners.remove(&SnapshotRetirementOwner::IntegrityScrub);
+        let door = owners.remove(&SnapshotRetirementOwner::DoorFinding);
+        let settled = scrub || door;
         if owners.is_empty() {
             let _empty = state.retiring.remove(key);
         }
@@ -888,17 +893,19 @@ impl SnapshotRegistries {
         }
     }
 
-    /// Release only an outstanding integrity-scrub fence after a complete
-    /// clean scrub. A generation without that fence needs no settlement.
-    pub fn finish_scrub_fence_after_clean_proof(
+    /// Release integrity-scrub and door-finding proof fences after a complete
+    /// clean scrub. Physical deletion owners remain fenced until settlement.
+    pub fn finish_integrity_fences_after_clean_proof(
         &self,
         track: SearchPlaneTrackKind,
         key: &SnapshotKey,
     ) -> Result<bool, CoreError> {
         match track {
-            SearchPlaneTrackKind::Lexical => self.lexical.finish_scrub_fence_after_clean_proof(key),
+            SearchPlaneTrackKind::Lexical => {
+                self.lexical.finish_integrity_fences_after_clean_proof(key)
+            }
             SearchPlaneTrackKind::Semantic => {
-                self.semantic.finish_scrub_fence_after_clean_proof(key)
+                self.semantic.finish_integrity_fences_after_clean_proof(key)
             }
             SearchPlaneTrackKind::Structural => Err(CoreError::InvalidContract(
                 "structural generation has no integrity-scrub retirement".into(),
@@ -1599,22 +1606,25 @@ mod tests {
     }
 
     #[test]
-    fn clean_scrub_settlement_releases_only_the_scrub_owner() -> TestResult {
+    fn clean_scrub_settlement_releases_only_integrity_proof_owners() -> TestResult {
         let snapshots = super::SnapshotRegistries::new(policy(4, 1_000));
         let candidate = key(13);
         let _scrub = snapshots
             .semantic
             .retire(&candidate, SnapshotRetirementOwner::IntegrityScrub)?;
+        let _door = snapshots
+            .semantic
+            .retire(&candidate, SnapshotRetirementOwner::DoorFinding)?;
         let _repair = snapshots
             .semantic
             .retire(&candidate, SnapshotRetirementOwner::SearchCorpusRepair)?;
-        if !snapshots.finish_scrub_fence_after_clean_proof(
+        if !snapshots.finish_integrity_fences_after_clean_proof(
             quanta_index_contract::SearchPlaneTrackKind::Semantic,
             &candidate,
         )? {
             return Err("clean proof did not settle the scrub fence".into());
         }
-        if snapshots.finish_scrub_fence_after_clean_proof(
+        if snapshots.finish_integrity_fences_after_clean_proof(
             quanta_index_contract::SearchPlaneTrackKind::Semantic,
             &candidate,
         )? {

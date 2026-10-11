@@ -1,4 +1,4 @@
-//! Test-only cuts around the real F15 filesystem operations.
+//! Test-only cuts around physical pool, attempt journal, and root I/O.
 //!
 //! Controls are thread-local and compiled out of production. Error tests
 //! inject an I/O refusal; crash tests pause at the acknowledged cut and let
@@ -12,26 +12,32 @@
 use std::cell::RefCell;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Cut {
+    PoolObjectWrite,
+    PoolObjectFileSync,
+    PoolObjectRename,
+    PoolObjectDirectorySync,
+    PoolFullBarrier,
+    AttemptJournalWrite,
+    AttemptJournalFileSync,
+    AttemptJournalRename,
+    AttemptJournalDirectorySync,
+    AttemptJournalAppendWrite,
+    AttemptJournalAppendFileSync,
     InheritedObjectLink,
     DeltaCloneIntentCleanup,
     DeltaCloneDirectorySync,
-    ObjectWrite,
-    ObjectFileSync,
-    ObjectLink,
-    ObjectTemporaryCleanup,
-    ObjectDirectorySync,
     RootWrite,
     RootFileSync,
     RootRename,
     RootDirectorySync,
     RootTemporaryCleanup,
     RootTemporaryDirectorySync,
-    ObsoleteObjectCleanup,
-    StagingCleanup,
-    AuthorityDirectorySync,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +56,13 @@ struct Case {
 enum Mode {
     Error,
     Pause(PathBuf),
+    Wait(Arc<WaitPoint>),
+}
+
+#[derive(Default)]
+struct WaitPoint {
+    reached: AtomicBool,
+    released: AtomicBool,
 }
 
 struct Control {
@@ -82,7 +95,7 @@ pub(crate) fn reach(cut: Cut, side: Side) -> io::Result<()> {
         control.fired = true;
         match &control.mode {
             Mode::Error => Err(io::Error::other(format!(
-                "injected F15 publication I/O refusal at {cut:?}/{side:?}"
+                "injected publication I/O refusal at {cut:?}/{side:?}"
             ))),
             Mode::Pause(marker) => {
                 let pending = marker.with_extension("pending");
@@ -92,17 +105,27 @@ pub(crate) fn reach(cut: Cut, side: Side) -> io::Result<()> {
                     std::thread::park();
                 }
             }
+            Mode::Wait(point) => {
+                point.reached.store(true, Ordering::SeqCst);
+                while !point.released.load(Ordering::SeqCst) {
+                    std::thread::park_timeout(Duration::from_millis(10));
+                }
+                Ok(())
+            }
         }
     })
 }
 
 pub(crate) fn root_cut(cut: Cut, side: Side, path: &Path) -> io::Result<()> {
-    if path.file_name().is_some_and(|name| name == "root.cbor")
-        && path
-            .parent()
+    if matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("root.cbor" | "manifest.cbor")
+    ) && matches!(
+        path.parent()
             .and_then(Path::file_name)
-            .is_some_and(|name| name == "file-authority")
-    {
+            .and_then(|name| name.to_str()),
+        Some("file-authority" | "text-authority")
+    ) {
         reach(cut, side)?;
     }
     Ok(())
@@ -144,7 +167,7 @@ pub(crate) fn authority_cut_core(
 ) -> Result<(), quanta_index_core::CoreError> {
     if directory
         .file_name()
-        .is_some_and(|name| name == "file-authority")
+        .is_some_and(|name| name == "file-authority" || name == "text-authority")
     {
         reach_core(cut, side)?;
     }
@@ -192,6 +215,26 @@ impl Drop for Guard {
             drop(slot.replace(self.previous.take()));
         });
     }
+}
+
+pub(crate) fn with_error_at<T>(
+    cut: Cut,
+    side: Side,
+    occurrence: usize,
+    operation: impl FnOnce() -> T,
+) -> (T, bool) {
+    let guard = Guard::install(
+        Case {
+            cut,
+            side,
+            occurrence,
+        },
+        Mode::Error,
+    );
+    let outcome = operation();
+    let fired = guard.fired();
+    drop(guard);
+    (outcome, fired)
 }
 
 mod tests;

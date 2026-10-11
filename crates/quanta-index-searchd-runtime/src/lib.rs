@@ -11,7 +11,9 @@ use std::time::Duration;
 use anyhow::Result;
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::{
-    AuxiliaryAuthorityCatalogPort, DoorFindingQuarantinePort, FileContributorIngestPort,
+    AuxiliaryAuthorityCatalogPort, DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
+    DiagnosticRootKindV1, DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    DiagnosticTraceErrorV1, DoorFindingQuarantinePort, FileContributorIngestPort,
     FileOwnershipIngestPort, GenerationIdentityValidatePort, HistoryTextIndexPort,
     IdempotencyCatalogPort, IncompleteGenerationDiscardPort, IntegrityScrubPort,
     LexicalIndexOpenPort, MetricSourcePort, MutationCoordinatorPort, ProcessMemoryProbePort,
@@ -34,11 +36,14 @@ use quanta_index_searchd::app::KernelResidentMemoryProbe;
 use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootAccessV1, StateRootLease};
 use quanta_index_searchd::app::state_format::refuse_legacy_state_root_v1;
 use quanta_index_searchd::{
-    DEFAULT_COOPERATIVE_DRAIN_DEADLINE, HARD_DRAIN_DEADLINE, SearchdCommand, SearchdConfig,
-    SearchdRuntime, supervise_runtime,
+    DEFAULT_COOPERATIVE_DRAIN_DEADLINE, DiagnosticCaptureLeaseV1, DiagnosticCaptureLimitsV1,
+    DiagnosticCaptureV1, HARD_DRAIN_DEADLINE, SearchdCommand, SearchdConfig, SearchdRuntime,
+    supervise_runtime,
 };
 use quanta_index_semantic::SemanticAdapter;
 
+pub mod native;
+mod native_worker;
 /// The process signal root.
 ///
 /// SIGINT/SIGTERM are latched into [`quanta_index_searchd::CancelRoot`].
@@ -53,9 +58,119 @@ pub mod state_migration;
 /// How long a catalog write waits on a held lock before answering typed.
 const CATALOG_BUSY_BUDGET: Duration = Duration::from_secs(2);
 
+fn runtime_diagnostic_span(
+    context: &DiagnosticContextV1,
+    result: std::result::Result<DiagnosticSpanGuardV1, DiagnosticTraceErrorV1>,
+) -> Option<DiagnosticSpanGuardV1> {
+    result.map_or_else(
+        |error| {
+            context.health(match error {
+                DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                    DiagnosticHealthCodeV1::CounterOverflow
+                }
+                DiagnosticTraceErrorV1::ClockRegressed => DiagnosticHealthCodeV1::ClockRegressed,
+                DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                    DiagnosticHealthCodeV1::ForeignCaptureSpan
+                }
+                DiagnosticTraceErrorV1::MissingParentSpan => {
+                    DiagnosticHealthCodeV1::MissingParentSpan
+                }
+            });
+            None
+        },
+        Some,
+    )
+}
+
 /// Build the runtime over the kernel's own resident-memory accounting.
 pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     build_runtime_with_memory_probe(config, Arc::new(KernelResidentMemoryProbe))
+}
+
+/// Build over a capture created before state-root lease and adapter opens.
+pub fn build_runtime_with_capture(
+    config: SearchdConfig,
+    capture: DiagnosticCaptureLeaseV1,
+) -> Result<SearchdRuntime> {
+    build_runtime_with_memory_probe_and_capture(
+        config,
+        Arc::new(KernelResidentMemoryProbe),
+        capture,
+    )
+}
+
+/// Harness seam: preserve the configured memory probe while tracing boot.
+pub fn build_runtime_with_memory_probe_and_capture(
+    config: SearchdConfig,
+    memory_probe: Arc<dyn ProcessMemoryProbePort>,
+    capture: DiagnosticCaptureLeaseV1,
+) -> Result<SearchdRuntime> {
+    build_runtime_with_memory_probe_and_capture_under(config, memory_probe, capture, None)
+}
+
+/// Build under an explicit capture parent, or a standalone operation root.
+/// A foreign parent is refused before state-root lease and adapter opens.
+pub fn build_runtime_with_memory_probe_and_capture_under(
+    config: SearchdConfig,
+    memory_probe: Arc<dyn ProcessMemoryProbePort>,
+    capture: DiagnosticCaptureLeaseV1,
+    parent: Option<&DiagnosticContextV1>,
+) -> Result<SearchdRuntime> {
+    if parent.is_some_and(|parent| !capture.context().shares_capture_session(parent)) {
+        return Err(anyhow::anyhow!(
+            "runtime boot diagnostic parent belongs to a different capture session"
+        ));
+    }
+    let boot = parent
+        .is_none()
+        .then(|| {
+            runtime_diagnostic_span(
+                capture.context(),
+                capture
+                    .context()
+                    .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0)),
+            )
+        })
+        .flatten();
+    let boot_span = parent.map_or_else(
+        || {
+            boot.as_ref().and_then(|root| {
+                let context = capture.context().child_context(root);
+                runtime_diagnostic_span(
+                    &context,
+                    context.enter(DiagnosticStageV1::RuntimeBoot, DiagnosticLaneV1(0)),
+                )
+            })
+        },
+        |parent| {
+            runtime_diagnostic_span(
+                parent,
+                parent.enter(DiagnosticStageV1::RuntimeBoot, DiagnosticLaneV1(0)),
+            )
+        },
+    );
+    let build_capture = boot_span.as_ref().and_then(|span| capture.child_of(span));
+    let result = build_runtime_with_parts(
+        config,
+        memory_probe,
+        |builder| builder,
+        move |parts| {
+            parts.diagnostic_capture = build_capture;
+        },
+    );
+    let outcome = DiagnosticTerminalV1::from_result(&result);
+    // Clock regression marks the capture unhealthy in the core trace owner.
+    // Keep the runtime build's result authoritative after it may have opened
+    // live adapters and server threads.
+    if let Some(span) = boot_span {
+        let _span_finish = span.finish(outcome);
+    }
+    if let Some(root) = boot {
+        let _root_finish = root.finish(outcome);
+    }
+    // Retain the producer lease until boot work and both terminal events finish.
+    drop(capture);
+    result
 }
 
 /// Build the runtime with an explicit resident-memory probe (QI-BB-016):
@@ -168,6 +283,9 @@ fn build_runtime_with_assembly(
         search_corpus_history_retention,
         index_bytes,
     )?);
+    search_corpus_lifecycle
+        .activation_catalog()
+        .configure_generation_namespace_reads_v1(lex_adapter.clone(), sem_adapter.clone())?;
     // The durable idempotency catalog (QI-BB-032). Its busy budget only
     // matters against a foreign writer, which the state-root lease excludes;
     // it is bounded so a held lock is still a typed answer, never a hang.
@@ -255,6 +373,7 @@ fn build_runtime_with_assembly(
     let repo_map_quarantine: Arc<dyn RepoMapQuarantinePort + Send + Sync> = repo_map_store;
 
     let mut parts = SearchdRuntimeParts {
+        diagnostic_capture: None,
         state_root_lease,
         search_corpus_build_port,
         lexical_generation_scanner,
@@ -368,17 +487,56 @@ pub fn run_supervised(command: SearchdCommand) -> Result<quanta_index_searchd::S
     // itself once an abort is latched or the process exits.
     let _signal_watch = signal::install(quanta_index_searchd::CancelRoot::clone(&root))
         .map_err(anyhow::Error::from)?;
+    let trace_path = command.diagnostic_trace_path().cloned();
     let config = command.into_config()?;
-    let runtime = build_runtime(config)?;
+    let mut capture = trace_path
+        .map(|path| DiagnosticCaptureV1::start(path, DiagnosticCaptureLimitsV1::default()))
+        .transpose()?;
+    let runtime_result = match capture.as_ref() {
+        Some(capture) => capture.lease().map_or_else(
+            || {
+                Err(anyhow::anyhow!(
+                    "new diagnostic capture refused producer lease"
+                ))
+            },
+            |lease| build_runtime_with_capture(config, lease),
+        ),
+        None => build_runtime(config),
+    };
+    let runtime = match runtime_result {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            if let Some(capture) = capture.as_mut()
+                && let Err(close_error) = capture.close(HARD_DRAIN_DEADLINE)
+            {
+                boot_log(&format!(
+                    "diagnostic capture close after boot failure: {close_error}"
+                ));
+            }
+            return Err(error);
+        }
+    };
     for notice in &runtime.boot_notices {
         boot_log(notice);
     }
-    Ok(supervise_runtime(
+    let outcome = supervise_runtime(
         runtime,
         DEFAULT_COOPERATIVE_DRAIN_DEADLINE,
         HARD_DRAIN_DEADLINE,
         &root,
-    ))
+    );
+    if let Some(capture) = capture.as_mut() {
+        match capture.close(HARD_DRAIN_DEADLINE) {
+            Ok(_closed) => {}
+            Err(error) if outcome.is_stopped_clean() => {
+                return Err(anyhow::anyhow!(
+                    "diagnostic capture close failed: {error:?}"
+                ));
+            }
+            Err(error) => boot_log(&format!("diagnostic capture remains incomplete: {error:?}")),
+        }
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -387,3 +545,103 @@ mod admitted_publish_timeout_tests;
 mod process_slow_disk_tests;
 #[cfg(test)]
 mod public_cache_tests;
+
+#[cfg(test)]
+mod diagnostic_runtime_parent_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use quanta_index_core::{
+        DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1, DiagnosticEventSinkV1,
+    };
+    use quanta_index_searchd::{
+        DiagnosticCaptureLimitsV1, DiagnosticCaptureStatusV1, DiagnosticCaptureV1, SearchdConfig,
+    };
+
+    use super::{KernelResidentMemoryProbe, build_runtime_with_memory_probe_and_capture_under};
+
+    #[derive(Debug)]
+    struct FixedClock;
+
+    impl DiagnosticClockV1 for FixedClock {
+        fn now_ns(&self) -> u64 {
+            0
+        }
+    }
+
+    #[derive(Debug)]
+    struct DiscardSink;
+
+    impl DiagnosticEventSinkV1 for DiscardSink {
+        fn try_emit(&self, _event: DiagnosticEmitV1) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn missing_trace_parent_marks_capture_invalid_without_blocking_runtime_build() {
+        let dir = tempfile::tempdir().expect("test directory");
+        let mut capture = DiagnosticCaptureV1::start(
+            dir.path().join("missing-parent.jsonl"),
+            DiagnosticCaptureLimitsV1::default(),
+        )
+        .expect("capture");
+        let lease = capture.lease().expect("producer lease");
+        let parentless = lease.context().clone();
+        let state_root = dir.path().join("state");
+        let runtime = build_runtime_with_memory_probe_and_capture_under(
+            SearchdConfig::from_test_state_root(state_root.clone())
+                .try_with_search_corpus_history_retention_limits(8, 16 << 20, 128, 256 << 20)
+                .expect("test history policy"),
+            Arc::new(KernelResidentMemoryProbe),
+            lease,
+            Some(&parentless),
+        )
+        .expect("diagnostic failure must not block product boot");
+        assert!(state_root.is_dir());
+        drop(runtime);
+        drop(parentless);
+        let closed = capture
+            .close(Duration::from_secs(2))
+            .expect("capture close");
+        assert_eq!(closed.status, DiagnosticCaptureStatusV1::Invalid);
+    }
+
+    #[test]
+    fn same_public_capture_id_from_foreign_session_is_rejected_before_state_root_access() {
+        let dir = tempfile::tempdir().expect("test directory");
+        let mut capture = DiagnosticCaptureV1::start(
+            dir.path().join("runtime-parent.jsonl"),
+            DiagnosticCaptureLimitsV1::default(),
+        )
+        .expect("capture");
+        let lease = capture.lease().expect("producer lease");
+        let foreign_parent = DiagnosticContextV1::new(
+            lease.context().capture_id(),
+            Arc::new(FixedClock),
+            Arc::new(DiscardSink),
+        );
+        assert_eq!(lease.context().capture_id(), foreign_parent.capture_id());
+        assert!(!lease.context().shares_capture_session(&foreign_parent));
+
+        let state_root = dir.path().join("unopened-state-root");
+        let result = build_runtime_with_memory_probe_and_capture_under(
+            SearchdConfig::from_test_state_root(state_root.clone()),
+            Arc::new(KernelResidentMemoryProbe),
+            lease,
+            Some(&foreign_parent),
+        );
+        let error = match result {
+            Ok(_runtime) => panic!("foreign diagnostic parent was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("different capture session"));
+        assert!(
+            !state_root.exists(),
+            "state root was touched before rejection"
+        );
+        let _closed = capture
+            .close(Duration::from_secs(2))
+            .expect("capture close");
+    }
+}

@@ -894,6 +894,7 @@ impl SearchCorpusAuthorityWritePort for RecordingSearchCorpusAuthority {
         revision_id: &RevisionId,
         generation: ManifestGeneration,
         manifest_digest: &str,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
         let retained_generations = {
             let mut identities = self.identities.lock().map_err(|err| {
@@ -949,6 +950,7 @@ impl SearchCorpusAuthorityWritePort for FailingRetentionAuthority {
         _revision_id: &RevisionId,
         _generation: ManifestGeneration,
         _manifest_digest: &str,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
         Err(CoreError::Storage(
             "injected post-delete retention durability failure".to_string(),
@@ -1050,6 +1052,7 @@ impl SealedGenerationReclaimPort for NoStorageSealedReclaim {
         &self,
         _retired: &GenerationSnapshot,
         on_absent: &dyn Fn() -> Result<(), CoreError>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
         on_absent()?;
         Ok(SealedGenerationReclaimOutcomeV1::Absent)
@@ -1059,6 +1062,7 @@ impl SealedGenerationReclaimPort for NoStorageSealedReclaim {
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Vec<GenerationSnapshot>, CoreError> {
         Ok(Vec::new())
     }
@@ -1068,6 +1072,7 @@ impl SealedGenerationReclaimPort for NoStorageSealedReclaim {
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         Ok(SealedGenerationBytesV1 {
             bytes: 0,
@@ -1075,7 +1080,10 @@ impl SealedGenerationReclaimPort for NoStorageSealedReclaim {
         })
     }
 
-    fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError> {
+    fn finish_interrupted_reclaims(
+        &self,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<FinishedReclaims, CoreError> {
         Ok(FinishedReclaims::default())
     }
 }
@@ -1197,6 +1205,7 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
         &self,
         retired: &GenerationSnapshot,
         on_absent: &dyn Fn() -> Result<(), CoreError>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
         let mut fail_next = self
             .fail_next
@@ -1256,6 +1265,7 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Vec<GenerationSnapshot>, CoreError> {
         if self.refuse_next_listing.swap(false, Ordering::SeqCst) {
             return Err(CoreError::Typed {
@@ -1295,6 +1305,7 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         let on_disk = self
             .on_disk
@@ -1310,7 +1321,10 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
         Ok(SealedGenerationBytesV1 { bytes, absent })
     }
 
-    fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError> {
+    fn finish_interrupted_reclaims(
+        &self,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<FinishedReclaims, CoreError> {
         if self.fail_next_finish.swap(false, Ordering::SeqCst) {
             return Err(CoreError::Storage(
                 "scripted reclaim: injected failure finishing interrupted reclaims".to_string(),
@@ -1572,10 +1586,20 @@ impl IncompleteGenerationDiscardPort for RecordingIncompleteGenerationDiscard {
 pub(super) struct MismatchedSemanticIngest;
 
 impl SemanticIngestPort for MismatchedSemanticIngest {
+    fn preflight_contract(
+        &self,
+        _pin: &quanta_index_contract::GenerationPin,
+        _contract: &quanta_index_core::SemanticGenerationContractV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
     fn publish_stream(
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<
         (
             BatchPublishReceipt,
@@ -1626,10 +1650,21 @@ impl FakeSemanticBuilder {
 }
 
 impl SemanticScopeStreamBuildPort for FakeSemanticBuilder {
+    fn preflight_contract(
+        &self,
+        _pin: &quanta_index_contract::GenerationPin,
+        _contract: &quanta_index_core::SemanticGenerationContractV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        // This in-memory fixture has no persisted generation contract.
+        Ok(())
+    }
+
     fn build_stream(
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<
         (
             SemanticStreamTallyV1,
@@ -1680,6 +1715,7 @@ impl quanta_index_core::SearchCorpusBatchBuildPort for FakeSearchCorpusBuilder {
         &self,
         batch: &SearchCorpusIngestBatch,
         _phase: quanta_index_core::SearchCorpusPreflightPhaseV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
         batch
             .validate_v1()
@@ -1691,6 +1727,7 @@ impl quanta_index_core::SearchCorpusBatchBuildPort for FakeSearchCorpusBuilder {
     fn build_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
         self.batches
             .lock()
@@ -2159,10 +2196,27 @@ impl Default for TestSourceCatalog {
         let directory = tempfile::tempdir().expect("source catalog fixture directory");
         let catalog =
             crate::ActivationCatalog::open(directory.path()).expect("source catalog fixture open");
+        catalog
+            .configure_generation_namespace_reads_v1(
+                Arc::new(EmptyFixtureNamespace),
+                Arc::new(EmptyFixtureNamespace),
+            )
+            .expect("empty fixture namespaces");
         Self {
             catalog,
             _directory: directory,
         }
+    }
+}
+struct EmptyFixtureNamespace;
+impl quanta_index_core::GenerationNamespaceReadPort for EmptyFixtureNamespace {
+    fn generation_namespace_is_empty(
+        &self,
+        _repo: &RepoId,
+        _revision: &RevisionId,
+    ) -> Result<bool, CoreError> {
+        // The fixture catalog is created independently of any physical adapter.
+        Ok(true)
     }
 }
 impl TestSourceCatalog {
@@ -2188,6 +2242,29 @@ impl TestSourceCatalog {
     }
 }
 impl quanta_index_core::SourcePublicationCatalogPort for TestSourceCatalog {
+    fn reserve_lexical_document_versions(
+        &self,
+        binding: &quanta_index_core::SourceEventBindingV1,
+        file_count: u64,
+        native_text_count: u64,
+    ) -> Result<quanta_index_core::LexicalDocumentVersionReservationV1, CoreError> {
+        self.catalog
+            .reserve_lexical_document_versions(binding, file_count, native_text_count)
+    }
+
+    fn require_reserved_generation(
+        &self,
+        pin: &quanta_index_contract::GenerationPin,
+    ) -> Result<(), CoreError> {
+        self.catalog.require_reserved_generation(pin)
+    }
+
+    fn allocate_source_event(
+        &self,
+        request: &quanta_index_core::SourceEventAllocationRequestV1,
+    ) -> Result<quanta_index_core::SourceEventAllocationOutcomeV1, CoreError> {
+        self.catalog.allocate_source_event(request)
+    }
     fn inspect_source_event(
         &self,
         repo: &RepoId,

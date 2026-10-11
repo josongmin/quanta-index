@@ -16,7 +16,7 @@
 //! because their public pruning callback does not guarantee early termination.
 //! This sacrifices Boolean `TermUnion` block skipping; performance is unqualified.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use quanta_index_core::{
@@ -48,6 +48,7 @@ pub(crate) struct CollectionBudget {
     policy: LexicalExecutionBudgetV1,
     pub(crate) resources: LexicalCollectionBudget,
     admitted: Arc<AtomicUsize>,
+    candidate_attempts: Option<Arc<AtomicU64>>,
     exceeded: Arc<AtomicBool>,
     aborted: Arc<AtomicBool>,
     // Share request interruption with the native walk without owning its probe
@@ -64,10 +65,18 @@ impl CollectionBudget {
             policy,
             resources,
             admitted: Arc::new(AtomicUsize::new(0)),
+            candidate_attempts: None,
             exceeded: Arc::new(AtomicBool::new(false)),
             aborted: Arc::new(AtomicBool::new(false)),
             request_probe: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Request-local observation of collector callbacks, including the first
+    /// refused candidate. Product admission still uses `admitted` unchanged.
+    pub(crate) fn with_candidate_attempt_meter(mut self, meter: Arc<AtomicU64>) -> Self {
+        self.candidate_attempts = Some(meter);
+        self
     }
 
     fn bind_request(&self, budget: &RequestBudgetV1) -> Result<BudgetProbe, CoreError> {
@@ -83,6 +92,11 @@ impl CollectionBudget {
     }
 
     pub(crate) fn admit(&self) -> bool {
+        if let Some(attempts) = &self.candidate_attempts {
+            let _previous = attempts.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                Some(count.saturating_add(1))
+            });
+        }
         if self.stopped() {
             return false;
         }
@@ -637,7 +651,7 @@ mod tests {
         reason = "Result-returning tests use assertions as test-failure reporting; the Result carries fixture errors"
     )]
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
     use quanta_index_core::{
@@ -675,14 +689,18 @@ mod tests {
             ),
         ] {
             let resources = LexicalCollectionBudget::new(1, 1)?;
+            let attempts = Arc::new(AtomicU64::new(0));
             let collection =
-                super::CollectionBudget::new(LexicalExecutionBudgetV1::new(1)?, resources.clone());
+                super::CollectionBudget::new(LexicalExecutionBudgetV1::new(1)?, resources.clone())
+                    .with_candidate_attempt_meter(Arc::clone(&attempts));
             let binding = Arc::downgrade(&collection.request_probe);
             let mut probe = collection.bind_request(&request)?;
             probe.collection = Some(collection.clone());
             assert!(collection.reserve_bytes(2).is_err());
             assert!(collection.charge_work(2).is_err());
             assert!(!collection.admit());
+            assert_eq!(attempts.load(Ordering::Relaxed), 1);
+            assert_eq!(collection.admitted.load(Ordering::Relaxed), 0);
             assert!(
                 matches!(probe.interruption_error("test:bound-collection"), Some(CoreError::Typed { code: actual, .. }) if actual == code)
             );

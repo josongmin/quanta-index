@@ -41,6 +41,7 @@ pub mod errors;
 pub mod estimator;
 pub mod executor;
 pub mod literal_extract;
+mod necessary_gram;
 
 pub use dialect::dialect_filter;
 pub use dialect_ast_walk::ast_walk_filter;

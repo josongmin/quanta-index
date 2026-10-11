@@ -32,8 +32,63 @@ const MULTIFRAME_FIRST_METADATA_BYTES: usize = 8 + 8 + 32;
 const MULTIFRAME_FIRST_MIN_BODY_BYTES: usize = 41;
 const MULTIFRAME_NEXT_METADATA_BYTES: usize = 8 + 4;
 
+/// Transport-only diagnostic capability exchange. It precedes a request on
+/// the same stream and is never a CBOR request frame.
+pub(crate) const DIAGNOSTIC_PREFACE_MAGIC: [u8; 8] = *b"QIPCDG01";
+pub(crate) const DIAGNOSTIC_PREFACE_BYTES: usize = 24;
+pub(crate) const DIAGNOSTIC_ACK_BYTES: usize = 9;
+
+pub(crate) fn diagnostic_preface(capture_id: [u8; 16]) -> [u8; DIAGNOSTIC_PREFACE_BYTES] {
+    let mut bytes = [0; DIAGNOSTIC_PREFACE_BYTES];
+    bytes[..8].copy_from_slice(&DIAGNOSTIC_PREFACE_MAGIC);
+    bytes[8..].copy_from_slice(&capture_id);
+    bytes
+}
+
+pub(crate) fn diagnostic_ack(accepted: bool) -> [u8; DIAGNOSTIC_ACK_BYTES] {
+    let mut bytes = [0; DIAGNOSTIC_ACK_BYTES];
+    bytes[..8].copy_from_slice(&DIAGNOSTIC_PREFACE_MAGIC);
+    bytes[8] = u8::from(accepted);
+    bytes
+}
+
+pub(crate) fn diagnostic_ack_accepted(bytes: &[u8; DIAGNOSTIC_ACK_BYTES]) -> Option<bool> {
+    if bytes[..8] != DIAGNOSTIC_PREFACE_MAGIC || bytes[8] > 1 {
+        return None;
+    }
+    Some(bytes[8] == 1)
+}
+
 /// Width of the length-prefix header in bytes.
 const FRAME_HEADER_BYTES: usize = 4;
+
+/// The decoded-body decision for a request before any wire framing choice.
+/// Both compressed and multiframe requests have the same 128 MiB logical cap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestSizeDecisionV1 {
+    Fits { decoded_bytes: u64 },
+    ExceedsDecodedCap { decoded_bytes: u64, cap_bytes: u64 },
+}
+
+/// Count a request without allocating its CBOR body.
+///
+/// Callers may omit an optional diagnostic token only when this typed limit decision changes from
+/// `ExceedsDecodedCap` with the token to `Fits` without it.
+pub fn request_size_decision_v1<T: serde::Serialize>(
+    envelope: &T,
+) -> Result<RequestSizeDecisionV1, IpcError> {
+    let decoded_bytes = cbor_payload_len(envelope)?;
+    let cap_bytes = u64::try_from(MAX_MULTIFRAME_REQUEST_BODY_BYTES)
+        .map_err(|_overflow| IpcError::Encode("request cap does not fit u64".into()))?;
+    Ok(if decoded_bytes > cap_bytes {
+        RequestSizeDecisionV1::ExceedsDecodedCap {
+            decoded_bytes,
+            cap_bytes,
+        }
+    } else {
+        RequestSizeDecisionV1::Fits { decoded_bytes }
+    })
+}
 
 pub fn encode_request<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcError> {
     let logical_len = usize::try_from(cbor_payload_len(envelope)?)
@@ -500,11 +555,33 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        COMPRESSED_REQUEST_HEADER_BYTES, COMPRESSED_REQUEST_MAGIC, IpcError,
+        COMPRESSED_REQUEST_HEADER_BYTES, COMPRESSED_REQUEST_MAGIC, DIAGNOSTIC_ACK_BYTES,
+        DIAGNOSTIC_PREFACE_BYTES, DIAGNOSTIC_PREFACE_MAGIC, IpcError,
         MAX_DECOMPRESSED_FRAME_BODY_BYTES, MAX_FRAME_BODY_BYTES, MAX_MULTIFRAME_REQUEST_BODY_BYTES,
         MULTIFRAME_REQUEST_MAGIC, decode_cbor_payload, decode_request, decode_request_guarded,
-        decode_response, encode_cbor_payload, encode_request,
+        decode_response, diagnostic_ack, diagnostic_ack_accepted, diagnostic_preface,
+        encode_cbor_payload, encode_request,
     };
+
+    #[test]
+    fn diagnostic_capability_frames_have_fixed_versioned_bytes() {
+        let capture = [0x5a; 16];
+        let preface = diagnostic_preface(capture);
+        assert_eq!(preface.len(), DIAGNOSTIC_PREFACE_BYTES);
+        assert_eq!(&preface[..8], &DIAGNOSTIC_PREFACE_MAGIC);
+        assert_eq!(&preface[8..], &capture);
+        let accepted = diagnostic_ack(true);
+        let rejected = diagnostic_ack(false);
+        assert_eq!(accepted.len(), DIAGNOSTIC_ACK_BYTES);
+        assert_eq!(diagnostic_ack_accepted(&accepted), Some(true));
+        assert_eq!(diagnostic_ack_accepted(&rejected), Some(false));
+        let mut unknown = accepted;
+        unknown[7] = b'2';
+        assert_eq!(diagnostic_ack_accepted(&unknown), None);
+        unknown = accepted;
+        unknown[8] = 2;
+        assert_eq!(diagnostic_ack_accepted(&unknown), None);
+    }
 
     #[test]
     fn cbor_payload_round_trip_preserves_tuple_value() {

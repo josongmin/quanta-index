@@ -29,6 +29,7 @@ quanta-index-lq-structural = { version = "0.1.0", path = "../quanta-index-lq-str
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", default-features = false }
 quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
 sha2.workspace = true
+serde_json.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

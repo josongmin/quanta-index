@@ -176,6 +176,7 @@ impl SealedGenerationBuildPlanV1 {
         snapshots: &SnapshotRegistries,
         lexical_reclaim: &dyn SealedGenerationReclaimPort,
         semantic_reclaim: &dyn SealedGenerationReclaimPort,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
         self.validate_repair_mode_v1(mode)?;
         for (track, code) in self.corrupt_tracks() {
@@ -226,7 +227,7 @@ impl SealedGenerationBuildPlanV1 {
                 settled.set(true);
                 Ok(())
             };
-            match port.reclaim_sealed_generation_with_settlement(track, &on_absent) {
+            match port.reclaim_sealed_generation_with_settlement(track, &on_absent, diagnostic) {
                 Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) if settled.get() => {}
                 Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) => {
                     return Err(CoreError::Storage(

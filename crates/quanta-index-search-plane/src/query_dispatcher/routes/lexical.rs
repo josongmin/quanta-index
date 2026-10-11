@@ -11,9 +11,9 @@ use quanta_index_contract::{
     validate_lexical_page_v1,
 };
 use quanta_index_core::{
-    CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CoreError, LexicalEndpoint,
-    LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1, RequestBudgetV1,
-    validate_query_top_k,
+    CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CoreError, DiagnosticStageV1,
+    LexicalEndpoint, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1,
+    RequestBudgetV1, validate_query_top_k,
 };
 
 use crate::lower_lexical_text_query;
@@ -31,7 +31,9 @@ use crate::query_dispatcher::response_budget::fit_ranked_page;
 use crate::query_dispatcher::selection::{
     resolve_cursor_selection, resolve_optional_selection_with_head,
 };
-use crate::query_dispatcher::stage_timing::{QueryStageObservationPolicy, StageTimings};
+use crate::query_dispatcher::stage_timing::{
+    QueryStageObservationPolicy, StageTimings, budget_under_diagnostic, observe_query_result_scoped,
+};
 use crate::query_dispatcher::window::{
     lexical_fetch_limit_v1, lexical_page_window_v1, pageable_window_v2,
 };
@@ -120,7 +122,7 @@ fn code_search_execution_trace(
         || stats.cursor_eligible_files > stats.verified_matching_files
         || stats.fetched_files > stats.cursor_eligible_files
         || stats.verified_matching_files > stats.final_candidate_visits
-        || stats.materialized_files != stats.verified_matching_files
+        || stats.materialized_files != stats.fetched_files
         || stats.preview_attempted_files != stats.fetched_files
         || stats.literal_verified_files > stats.literal_source_verification_attempts
         || (!stats.literal_prefilter_executed
@@ -244,227 +246,293 @@ impl SearchPlaneDispatcher {
         request: &TextQueryRequest,
         budget: &RequestBudgetV1,
     ) -> Result<(TextQueryResponse, LaneExecutionSummaryV1), CoreError> {
-        let execution = LaneExecutionRecorderV1::new();
-        budget.checkpoint("lexical:entry")?;
-        let prepare_started = self.query_stage_observation.start();
-        let _accepted_top_k = validate_query_top_k(request.top_k)?;
-        let opened = request
-            .cursor
-            .as_ref()
-            .map(|token| self.cursors()?.open::<LexicalCursor>(token))
-            .transpose()?;
-        if let Some(opened) = &opened {
-            require_token_pin(
-                request.generation.as_ref(),
-                request.generation_selector.as_ref(),
-                &opened.binding().pin,
-            )?;
-        }
-        let cursor_active_head = opened
-            .as_ref()
-            .map(|opened| {
-                resolve_cursor_selection(
-                    self.activation_catalog.as_ref(),
-                    request.generation.clone(),
-                    request.generation_selector.as_ref(),
-                    &opened.binding().pin,
-                    SearchPlaneTrackKind::Lexical,
-                    "lexical",
+        observe_query_result_scoped(
+            budget.diagnostic_context(),
+            DiagnosticStageV1::QueryPlan,
+            |plan_child| {
+                let scoped_budget = budget_under_diagnostic(budget, plan_child);
+                let budget = scoped_budget.as_ref();
+                let execution = LaneExecutionRecorderV1::new();
+                budget.checkpoint("lexical:entry")?;
+                let prepare_started = self.query_stage_observation.start();
+                let _accepted_top_k = validate_query_top_k(request.top_k)?;
+                let opened = request
+                    .cursor
+                    .as_ref()
+                    .map(|token| self.cursors()?.open::<LexicalCursor>(token))
+                    .transpose()?;
+                if let Some(opened) = &opened {
+                    require_token_pin(
+                        request.generation.as_ref(),
+                        request.generation_selector.as_ref(),
+                        &opened.binding().pin,
+                    )?;
+                }
+                let cursor_active_head = opened
+                    .as_ref()
+                    .map(|opened| {
+                        resolve_cursor_selection(
+                            self.activation_catalog.as_ref(),
+                            request.generation.clone(),
+                            request.generation_selector.as_ref(),
+                            &opened.binding().pin,
+                            SearchPlaneTrackKind::Lexical,
+                            "lexical",
+                        )
+                        .map(|selection| selection.active_head)
+                    })
+                    .transpose()?
+                    .flatten();
+                // The cursor positions the page; the plan is the query's alone.
+                let pageless = TextQueryRequest {
+                    generation: opened
+                        .as_ref()
+                        .map(|cursor| cursor.binding().pin.clone())
+                        .or_else(|| request.generation.clone()),
+                    generation_selector: opened
+                        .as_ref()
+                        .map_or_else(|| request.generation_selector.clone(), |_| None),
+                    cursor: None,
+                    ..request.clone()
+                };
+                let planned =
+                    self.plan_lexical_text_query(&pageless, QueryRouteV1::Lexical, budget)?;
+                let cursor_context = CursorRequestContextV2 {
+                    route: CursorRouteV2::Lexical,
+                    pin: &planned.pin,
+                    query: &planned.query,
+                    constraints: &planned.constraints,
+                    order: if planned.query.options.pattern_type == LqPatternType::CodeSearch {
+                        code_search_rank_order(&planned.query)
+                    } else {
+                        LEXICAL_CURSOR_ORDER_V2
+                    },
+                    cap: request.top_k,
+                };
+                if let Some(opened) = &opened {
+                    self.cursors()?
+                        .require_context(opened, &cursor_context, Vec::new())?;
+                }
+                let mut stage_timings = StageTimings::new(self.query_stage_observation, 4);
+                stage_timings.record_elapsed(
+                    QueryStageKindV1::LexicalPrepare,
+                    prepare_started,
+                    1,
+                    None,
+                );
+                let wants_file_owner_projection =
+                    query_selects_file_owner_projection(&planned.query);
+                let rank_unit = text_rank_unit(&planned.query);
+                require_cursor_on_nonempty_plan(opened.is_some(), planned.force_empty)?;
+                if planned.force_empty {
+                    let project_started = self.query_stage_observation.start();
+                    let window = QueryResultWindowV2::logical_empty("lexical");
+                    stage_timings.record_elapsed(
+                        QueryStageKindV1::LexicalProject,
+                        project_started,
+                        1,
+                        Some(0),
+                    );
+                    let summary = execution.summary();
+                    return Ok((
+                        TextQueryResponse {
+                            selected_active_head: cursor_active_head
+                                .or_else(|| planned.active_head.clone()),
+                            generation: planned.pin.clone(),
+                            rank_unit,
+                            results: Vec::new(),
+                            window,
+                            explanation: lexical_explanation(
+                                budget,
+                                &summary,
+                                stage_timings.finish(),
+                            ),
+                            file_owner_rows: wants_file_owner_projection.then(Vec::new),
+                            next_cursor: None,
+                        },
+                        summary,
+                    ));
+                }
+                #[cfg(feature = "test-runtime-barriers")]
+                if matches!(
+                    &request.generation_selector,
+                    Some(GenerationSelector::Active { .. })
+                ) {
+                    crate::test_runtime_barriers::lexical_active_selected_before_view(
+                        &planned.pin,
+                    )?;
+                }
+                let view_started = self.query_stage_observation.start();
+                let view = observe_query_result_scoped(
+                    budget.diagnostic_context(),
+                    DiagnosticStageV1::QueryReadView,
+                    |view_child| {
+                        let scoped_budget = budget_under_diagnostic(budget, view_child);
+                        self.acquire_read_view(
+                            &ReadViewRequestV1::new("lexical", &planned.pin, planned.domains),
+                            scoped_budget.as_ref(),
+                        )
+                    },
+                )?;
+                stage_timings.record_elapsed(
+                    QueryStageKindV1::LexicalReadView,
+                    view_started,
+                    1,
+                    None,
+                );
+                let searcher = view.lexical()?;
+                let fetch_top_k = lexical_fetch_limit_v1(&planned.query, request.top_k)?;
+                budget.checkpoint("lexical:search")?;
+                execution.record_lexical_invocation();
+                let search_started = self.query_stage_observation.start();
+                let mut page = observe_query_result_scoped(
+                    budget.diagnostic_context(),
+                    DiagnosticStageV1::QueryCandidate,
+                    |candidate_child| {
+                        let scoped_budget = budget_under_diagnostic(budget, candidate_child);
+                        searcher.search_constrained(
+                            &planned.query,
+                            &planned.constraints,
+                            &LexicalPageSpec {
+                                fetch: fetch_top_k,
+                                after: continuation(
+                                    opened.as_ref().map(|cursor| &cursor.boundary),
+                                    &planned.pin,
+                                )?,
+                            },
+                            scoped_budget.as_ref(),
+                        )
+                    },
+                )?;
+                stage_timings.record_elapsed(
+                    QueryStageKindV1::LexicalSearch,
+                    search_started,
+                    1,
+                    Some(page.candidates.len()),
+                );
+                budget.checkpoint("lexical:project")?;
+                let project_started = self.query_stage_observation.start();
+                observe_query_result_scoped(
+                    budget.diagnostic_context(),
+                    DiagnosticStageV1::QueryProject,
+                    |project_child| {
+                        let scoped_budget = budget_under_diagnostic(budget, project_child);
+                        let budget = scoped_budget.as_ref();
+                        if page.code_search_stats.is_some()
+                            && planned.query.options.pattern_type != LqPatternType::CodeSearch
+                        {
+                            return Err(CoreError::InvalidContract(
+                                "lexical: code-search counts on a different engine".into(),
+                            ));
+                        }
+                        let code_search_trace = page
+                            .code_search_stats
+                            .map(|stats| {
+                                code_search_execution_trace(
+                                    stats,
+                                    page.candidates.len(),
+                                    page.exact_total,
+                                    self.query_stage_observation
+                                        == QueryStageObservationPolicy::Enabled,
+                                )
+                            })
+                            .transpose()?;
+                        let window = lexical_page_window_v1(&mut page, request.top_k, fetch_top_k)?;
+                        let results = page.candidates;
+                        let next_boundary = next_cursor(
+                            &window,
+                            &planned.pin,
+                            results
+                                .iter()
+                                .map(quanta_index_contract::LexicalCandidate::order_key),
+                        )?;
+                        let file_owner_rows = if wants_file_owner_projection {
+                            Some(searcher.project_file_owners(&results)?)
+                        } else {
+                            None
+                        };
+                        let public_window = pageable_window_v2(window, "lexical")?;
+                        let next_cursor = next_boundary
+                            .as_ref()
+                            .map(|boundary| {
+                                self.cursors()?.mint(boundary, &cursor_context, Vec::new())
+                            })
+                            .transpose()?;
+                        stage_timings.record_elapsed(
+                            QueryStageKindV1::LexicalProject,
+                            project_started,
+                            1,
+                            Some(results.len()),
+                        );
+                        let mut explanation = lexical_explanation(
+                            budget,
+                            &execution.summary(),
+                            stage_timings.finish(),
+                        );
+                        if let Some(trace) = code_search_trace {
+                            explanation.planner_trace.extend(trace);
+                            // Reserve before fitting. Updating to a shorter returned prefix
+                            // cannot enlarge the serialized explanation after fitting.
+                            explanation.planner_trace.push(PlannerTraceEntry {
+                                stage: PlannerStage::Merge,
+                                detail: format!(
+                                    "code_search.execution.returned_files={}",
+                                    results.len()
+                                ),
+                            });
+                        }
+                        if !results.is_empty() {
+                            // Reserve the maximal explanation shape before response-budget
+                            // fitting. A truncated page can only remove this contribution.
+                            explanation.engines_touched.push(EngineTouched::Lexical);
+                        }
+                        let mut response = fit_ranked_page(
+                            TextQueryResponse {
+                                selected_active_head: cursor_active_head.or(planned.active_head),
+                                generation: planned.pin.clone(),
+                                rank_unit,
+                                results,
+                                window: public_window,
+                                explanation,
+                                file_owner_rows,
+                                next_cursor,
+                            },
+                            self.response_budget,
+                            |boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()),
+                        )?;
+                        if !response.results.is_empty() {
+                            execution.record_lexical_contribution();
+                        }
+                        let summary = execution.summary();
+                        response.explanation.engines_touched = summary.touched_engines();
+                        if let Some(entry) =
+                            response.explanation.planner_trace.iter_mut().find(|entry| {
+                                entry
+                                    .detail
+                                    .starts_with("code_search.execution.returned_files=")
+                            })
+                        {
+                            entry.detail = format!(
+                                "code_search.execution.returned_files={}",
+                                response.results.len()
+                            );
+                        }
+                        if let Some(stages) = response.explanation.stage_timings.as_mut() {
+                            let final_stage = stages.last_mut().ok_or_else(|| {
+                                CoreError::InvalidContract(
+                                    "lexical project stage missing".to_string(),
+                                )
+                            })?;
+                            final_stage.returned_candidates = Some(
+                                u64::try_from(response.results.len())
+                                    .map_or(u64::MAX, |count| count),
+                            );
+                        }
+                        Ok((response, summary))
+                    },
                 )
-                .map(|selection| selection.active_head)
-            })
-            .transpose()?
-            .flatten();
-        // The cursor positions the page; the plan is the query's alone.
-        let pageless = TextQueryRequest {
-            generation: opened
-                .as_ref()
-                .map(|cursor| cursor.binding().pin.clone())
-                .or_else(|| request.generation.clone()),
-            generation_selector: opened
-                .as_ref()
-                .map_or_else(|| request.generation_selector.clone(), |_| None),
-            cursor: None,
-            ..request.clone()
-        };
-        let planned = self.plan_lexical_text_query(&pageless, QueryRouteV1::Lexical, budget)?;
-        let cursor_context = CursorRequestContextV2 {
-            route: CursorRouteV2::Lexical,
-            pin: &planned.pin,
-            query: &planned.query,
-            constraints: &planned.constraints,
-            order: if planned.query.options.pattern_type == LqPatternType::CodeSearch {
-                code_search_rank_order(&planned.query)
-            } else {
-                LEXICAL_CURSOR_ORDER_V2
             },
-            cap: request.top_k,
-        };
-        if let Some(opened) = &opened {
-            self.cursors()?
-                .require_context(opened, &cursor_context, Vec::new())?;
-        }
-        let mut stage_timings = StageTimings::new(self.query_stage_observation, 4);
-        stage_timings.record_elapsed(QueryStageKindV1::LexicalPrepare, prepare_started, 1, None);
-        let wants_file_owner_projection = query_selects_file_owner_projection(&planned.query);
-        let rank_unit = text_rank_unit(&planned.query);
-        require_cursor_on_nonempty_plan(opened.is_some(), planned.force_empty)?;
-        if planned.force_empty {
-            let project_started = self.query_stage_observation.start();
-            let window = QueryResultWindowV2::logical_empty("lexical");
-            stage_timings.record_elapsed(
-                QueryStageKindV1::LexicalProject,
-                project_started,
-                1,
-                Some(0),
-            );
-            let summary = execution.summary();
-            return Ok((
-                TextQueryResponse {
-                    selected_active_head: cursor_active_head
-                        .or_else(|| planned.active_head.clone()),
-                    generation: planned.pin.clone(),
-                    rank_unit,
-                    results: Vec::new(),
-                    window,
-                    explanation: lexical_explanation(budget, &summary, stage_timings.finish()),
-                    file_owner_rows: wants_file_owner_projection.then(Vec::new),
-                    next_cursor: None,
-                },
-                summary,
-            ));
-        }
-        #[cfg(feature = "test-runtime-barriers")]
-        if matches!(
-            &request.generation_selector,
-            Some(GenerationSelector::Active { .. })
-        ) {
-            crate::test_runtime_barriers::lexical_active_selected_before_view(&planned.pin)?;
-        }
-        let view_started = self.query_stage_observation.start();
-        let view = self.acquire_read_view(
-            &ReadViewRequestV1::new("lexical", &planned.pin, planned.domains),
-            budget,
-        )?;
-        stage_timings.record_elapsed(QueryStageKindV1::LexicalReadView, view_started, 1, None);
-        let searcher = view.lexical()?;
-        let fetch_top_k = lexical_fetch_limit_v1(&planned.query, request.top_k)?;
-        budget.checkpoint("lexical:search")?;
-        execution.record_lexical_invocation();
-        let search_started = self.query_stage_observation.start();
-        let mut page = searcher.search_constrained(
-            &planned.query,
-            &planned.constraints,
-            &LexicalPageSpec {
-                fetch: fetch_top_k,
-                after: continuation(opened.as_ref().map(|cursor| &cursor.boundary), &planned.pin)?,
-            },
-            budget,
-        )?;
-        stage_timings.record_elapsed(
-            QueryStageKindV1::LexicalSearch,
-            search_started,
-            1,
-            Some(page.candidates.len()),
-        );
-        budget.checkpoint("lexical:project")?;
-        let project_started = self.query_stage_observation.start();
-        if page.code_search_stats.is_some()
-            && planned.query.options.pattern_type != LqPatternType::CodeSearch
-        {
-            return Err(CoreError::InvalidContract(
-                "lexical: code-search counts on a different engine".into(),
-            ));
-        }
-        let code_search_trace = page
-            .code_search_stats
-            .map(|stats| {
-                code_search_execution_trace(
-                    stats,
-                    page.candidates.len(),
-                    page.exact_total,
-                    self.query_stage_observation == QueryStageObservationPolicy::Enabled,
-                )
-            })
-            .transpose()?;
-        let window = lexical_page_window_v1(&mut page, request.top_k, fetch_top_k)?;
-        let results = page.candidates;
-        let next_boundary = next_cursor(
-            &window,
-            &planned.pin,
-            results
-                .iter()
-                .map(quanta_index_contract::LexicalCandidate::order_key),
-        )?;
-        let file_owner_rows = if wants_file_owner_projection {
-            Some(searcher.project_file_owners(&results)?)
-        } else {
-            None
-        };
-        let public_window = pageable_window_v2(window, "lexical")?;
-        let next_cursor = next_boundary
-            .as_ref()
-            .map(|boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()))
-            .transpose()?;
-        stage_timings.record_elapsed(
-            QueryStageKindV1::LexicalProject,
-            project_started,
-            1,
-            Some(results.len()),
-        );
-        let mut explanation =
-            lexical_explanation(budget, &execution.summary(), stage_timings.finish());
-        if let Some(trace) = code_search_trace {
-            explanation.planner_trace.extend(trace);
-            // Reserve before fitting. Updating to a shorter returned prefix
-            // cannot enlarge the serialized explanation after fitting.
-            explanation.planner_trace.push(PlannerTraceEntry {
-                stage: PlannerStage::Merge,
-                detail: format!("code_search.execution.returned_files={}", results.len()),
-            });
-        }
-        if !results.is_empty() {
-            // Reserve the maximal explanation shape before response-budget
-            // fitting. A truncated page can only remove this contribution.
-            explanation.engines_touched.push(EngineTouched::Lexical);
-        }
-        let mut response = fit_ranked_page(
-            TextQueryResponse {
-                selected_active_head: cursor_active_head.or(planned.active_head),
-                generation: planned.pin.clone(),
-                rank_unit,
-                results,
-                window: public_window,
-                explanation,
-                file_owner_rows,
-                next_cursor,
-            },
-            self.response_budget,
-            |boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()),
-        )?;
-        if !response.results.is_empty() {
-            execution.record_lexical_contribution();
-        }
-        let summary = execution.summary();
-        response.explanation.engines_touched = summary.touched_engines();
-        if let Some(entry) = response.explanation.planner_trace.iter_mut().find(|entry| {
-            entry
-                .detail
-                .starts_with("code_search.execution.returned_files=")
-        }) {
-            entry.detail = format!(
-                "code_search.execution.returned_files={}",
-                response.results.len()
-            );
-        }
-        if let Some(stages) = response.explanation.stage_timings.as_mut() {
-            let final_stage = stages.last_mut().ok_or_else(|| {
-                CoreError::InvalidContract("lexical project stage missing".to_string())
-            })?;
-            final_stage.returned_candidates =
-                Some(u64::try_from(response.results.len()).map_or(u64::MAX, |count| count));
-        }
-        Ok((response, summary))
+        )
     }
 
     pub(in crate::query_dispatcher) fn symbol_with_execution(
@@ -472,139 +540,177 @@ impl SearchPlaneDispatcher {
         request: SymbolQueryRequest,
         budget: &RequestBudgetV1,
     ) -> Result<(SymbolQueryResponse, LaneExecutionSummaryV1), CoreError> {
-        let execution = LaneExecutionRecorderV1::new();
-        budget.checkpoint("symbol:entry")?;
-        let _accepted_top_k = validate_query_top_k(request.top_k)?;
-        // The page token is authenticated below. Query lowering accepts only
-        // the query inputs, as on the Text route, not its continuation token.
-        let pageless = TextQueryRequest {
-            cursor: None,
-            ..TextQueryRequest::from(request.clone())
-        };
-        reject_code_search_on_nonlexical_route(pageless.syntax, "symbol")?;
-        let lowered = lower_lexical_text_query(&pageless)?;
-        let validated =
-            LexicalPolicy::plan_query(&lowered, &request.constraints, LexicalEndpoint::Symbol)?;
-        self.lex_opener
-            .preflight_query_primitives(&validated, budget)?;
-        let opened = request
-            .cursor
-            .as_ref()
-            .map(|token| self.cursors()?.open::<LexicalCursor>(token))
-            .transpose()?;
-        let selected = if let Some(opened) = &opened {
-            require_token_pin(
-                request.generation.as_ref(),
-                request.generation_selector.as_ref(),
-                &opened.binding().pin,
-            )?;
-            resolve_cursor_selection(
-                self.activation_catalog.as_ref(),
-                request.generation.clone(),
-                request.generation_selector.as_ref(),
-                &opened.binding().pin,
-                SearchPlaneTrackKind::Lexical,
-                "symbol",
-            )?
-        } else {
-            resolve_optional_selection_with_head(
-                self.activation_catalog.as_ref(),
-                request.generation.clone(),
-                request.generation_selector.as_ref(),
-                SearchPlaneTrackKind::Lexical,
-                "symbol",
-            )?
-            .ok_or_else(|| {
-                CoreError::InvalidContract("symbol: generation selector required".to_string())
-            })?
-        };
-        let pin = selected.pin;
-        let active_head = selected.active_head;
-        let after = continuation(opened.as_ref().map(|cursor| &cursor.boundary), &pin)?;
-        let lexical_request = TextQueryRequest {
-            generation: Some(pin.clone()),
-            generation_selector: None,
-            cursor: None,
-            ..TextQueryRequest::from(request)
-        };
-        let prepared_language = prepare_language_query_v1(lowered, &lexical_request.constraints)?;
-        let cursor_context = CursorRequestContextV2 {
-            route: CursorRouteV2::Symbol,
-            pin: &pin,
-            query: &prepared_language.query,
-            constraints: &prepared_language.constraints,
-            order: LEXICAL_CURSOR_ORDER_V2,
-            cap: lexical_request.top_k,
-        };
-        if let Some(opened) = &opened {
-            self.cursors()?
-                .require_context(opened, &cursor_context, Vec::new())?;
-        }
-        require_cursor_on_nonempty_plan(opened.is_some(), prepared_language.force_empty)?;
-        if prepared_language.force_empty {
-            return Ok((
-                SymbolQueryResponse {
-                    selected_active_head: active_head,
-                    generation: pin.clone(),
-                    results: Vec::new(),
-                    window: QueryResultWindowV2::logical_empty("symbol"),
-                    next_cursor: None,
-                },
-                execution.summary(),
-            ));
-        }
-        let view = self.acquire_read_view(
-            &ReadViewRequestV1::declare(
-                "symbol",
-                QueryRouteV1::Symbol,
-                Some(&prepared_language.query),
-                &pin,
-            ),
-            budget,
-        )?;
-        let searcher = view.lexical()?;
-        // The producer carries count facts separately from capped rows.
-        let fetch_top_k = lexical_fetch_limit_v1(&prepared_language.query, lexical_request.top_k)?;
-        budget.checkpoint("symbol:search")?;
-        execution.record_lexical_invocation();
-        let mut page = searcher.search_symbols_constrained(
-            &prepared_language.query,
-            &prepared_language.constraints,
-            &LexicalPageSpec {
-                fetch: fetch_top_k,
-                after,
+        observe_query_result_scoped(
+            budget.diagnostic_context(),
+            DiagnosticStageV1::QueryPlan,
+            |plan_child| {
+                let scoped_budget = budget_under_diagnostic(budget, plan_child);
+                let budget = scoped_budget.as_ref();
+                let execution = LaneExecutionRecorderV1::new();
+                budget.checkpoint("symbol:entry")?;
+                let _accepted_top_k = validate_query_top_k(request.top_k)?;
+                // The page token is authenticated below. Query lowering accepts only
+                // the query inputs, as on the Text route, not its continuation token.
+                let pageless = TextQueryRequest {
+                    cursor: None,
+                    ..TextQueryRequest::from(request.clone())
+                };
+                reject_code_search_on_nonlexical_route(pageless.syntax, "symbol")?;
+                let lowered = lower_lexical_text_query(&pageless)?;
+                let validated = LexicalPolicy::plan_query(
+                    &lowered,
+                    &request.constraints,
+                    LexicalEndpoint::Symbol,
+                )?;
+                self.lex_opener
+                    .preflight_query_primitives(&validated, budget)?;
+                let opened = request
+                    .cursor
+                    .as_ref()
+                    .map(|token| self.cursors()?.open::<LexicalCursor>(token))
+                    .transpose()?;
+                let selected = if let Some(opened) = &opened {
+                    require_token_pin(
+                        request.generation.as_ref(),
+                        request.generation_selector.as_ref(),
+                        &opened.binding().pin,
+                    )?;
+                    resolve_cursor_selection(
+                        self.activation_catalog.as_ref(),
+                        request.generation.clone(),
+                        request.generation_selector.as_ref(),
+                        &opened.binding().pin,
+                        SearchPlaneTrackKind::Lexical,
+                        "symbol",
+                    )?
+                } else {
+                    resolve_optional_selection_with_head(
+                        self.activation_catalog.as_ref(),
+                        request.generation.clone(),
+                        request.generation_selector.as_ref(),
+                        SearchPlaneTrackKind::Lexical,
+                        "symbol",
+                    )?
+                    .ok_or_else(|| {
+                        CoreError::InvalidContract(
+                            "symbol: generation selector required".to_string(),
+                        )
+                    })?
+                };
+                let pin = selected.pin;
+                let active_head = selected.active_head;
+                let after = continuation(opened.as_ref().map(|cursor| &cursor.boundary), &pin)?;
+                let lexical_request = TextQueryRequest {
+                    generation: Some(pin.clone()),
+                    generation_selector: None,
+                    cursor: None,
+                    ..TextQueryRequest::from(request)
+                };
+                let prepared_language =
+                    prepare_language_query_v1(lowered, &lexical_request.constraints)?;
+                let cursor_context = CursorRequestContextV2 {
+                    route: CursorRouteV2::Symbol,
+                    pin: &pin,
+                    query: &prepared_language.query,
+                    constraints: &prepared_language.constraints,
+                    order: LEXICAL_CURSOR_ORDER_V2,
+                    cap: lexical_request.top_k,
+                };
+                if let Some(opened) = &opened {
+                    self.cursors()?
+                        .require_context(opened, &cursor_context, Vec::new())?;
+                }
+                require_cursor_on_nonempty_plan(opened.is_some(), prepared_language.force_empty)?;
+                if prepared_language.force_empty {
+                    return Ok((
+                        SymbolQueryResponse {
+                            selected_active_head: active_head,
+                            generation: pin.clone(),
+                            results: Vec::new(),
+                            window: QueryResultWindowV2::logical_empty("symbol"),
+                            next_cursor: None,
+                        },
+                        execution.summary(),
+                    ));
+                }
+                let view = observe_query_result_scoped(
+                    budget.diagnostic_context(),
+                    DiagnosticStageV1::QueryReadView,
+                    |view_child| {
+                        let scoped_budget = budget_under_diagnostic(budget, view_child);
+                        self.acquire_read_view(
+                            &ReadViewRequestV1::declare(
+                                "symbol",
+                                QueryRouteV1::Symbol,
+                                Some(&prepared_language.query),
+                                &pin,
+                            ),
+                            scoped_budget.as_ref(),
+                        )
+                    },
+                )?;
+                let searcher = view.lexical()?;
+                // The producer carries count facts separately from capped rows.
+                let fetch_top_k =
+                    lexical_fetch_limit_v1(&prepared_language.query, lexical_request.top_k)?;
+                budget.checkpoint("symbol:search")?;
+                execution.record_lexical_invocation();
+                let mut page = observe_query_result_scoped(
+                    budget.diagnostic_context(),
+                    DiagnosticStageV1::QueryCandidate,
+                    |candidate_child| {
+                        let scoped_budget = budget_under_diagnostic(budget, candidate_child);
+                        searcher.search_symbols_constrained(
+                            &prepared_language.query,
+                            &prepared_language.constraints,
+                            &LexicalPageSpec {
+                                fetch: fetch_top_k,
+                                after,
+                            },
+                            scoped_budget.as_ref(),
+                        )
+                    },
+                )?;
+                observe_query_result_scoped(
+                    budget.diagnostic_context(),
+                    DiagnosticStageV1::QueryProject,
+                    |_project_child| {
+                        let window =
+                            lexical_page_window_v1(&mut page, lexical_request.top_k, fetch_top_k)?;
+                        let results = page.candidates;
+                        let next_boundary = next_cursor(
+                            &window,
+                            &pin,
+                            results
+                                .iter()
+                                .map(quanta_index_contract::SymbolCandidate::order_key),
+                        )?;
+                        let public_window = pageable_window_v2(window, "symbol")?;
+                        let next_cursor = next_boundary
+                            .as_ref()
+                            .map(|boundary| {
+                                self.cursors()?.mint(boundary, &cursor_context, Vec::new())
+                            })
+                            .transpose()?;
+                        let response = fit_ranked_page(
+                            SymbolQueryResponse {
+                                selected_active_head: active_head,
+                                generation: pin.clone(),
+                                results,
+                                window: public_window,
+                                next_cursor,
+                            },
+                            self.response_budget,
+                            |boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()),
+                        )?;
+                        if !response.results.is_empty() {
+                            execution.record_lexical_contribution();
+                        }
+                        Ok((response, execution.summary()))
+                    },
+                )
             },
-            budget,
-        )?;
-        let window = lexical_page_window_v1(&mut page, lexical_request.top_k, fetch_top_k)?;
-        let results = page.candidates;
-        let next_boundary = next_cursor(
-            &window,
-            &pin,
-            results
-                .iter()
-                .map(quanta_index_contract::SymbolCandidate::order_key),
-        )?;
-        let public_window = pageable_window_v2(window, "symbol")?;
-        let next_cursor = next_boundary
-            .as_ref()
-            .map(|boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()))
-            .transpose()?;
-        let response = fit_ranked_page(
-            SymbolQueryResponse {
-                selected_active_head: active_head,
-                generation: pin.clone(),
-                results,
-                window: public_window,
-                next_cursor,
-            },
-            self.response_budget,
-            |boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()),
-        )?;
-        if !response.results.is_empty() {
-            execution.record_lexical_contribution();
-        }
-        Ok((response, execution.summary()))
+        )
     }
 }
 
@@ -681,7 +787,7 @@ mod typed_cursor_tests {
             verified_matching_files: 2,
             cursor_eligible_files: 1,
             fetched_files: 1,
-            materialized_files: 2,
+            materialized_files: 1,
             preview_attempted_files: 1,
             ..CodeSearchExecutionStatsV1::default()
         };
@@ -718,6 +824,13 @@ mod typed_cursor_tests {
             ..stats
         };
         assert!(code_search_execution_trace(invalid_preview, 1, Some(1), true).is_err());
+        for invalid_materialized in [0, 2] {
+            let invalid = CodeSearchExecutionStatsV1 {
+                materialized_files: invalid_materialized,
+                ..stats
+            };
+            assert!(code_search_execution_trace(invalid, 1, Some(1), true).is_err());
+        }
         let typo = CodeSearchExecutionStatsV1 {
             mode: CodeSearchExecutionModeV1::TypoExplicit,
             literal_prefilter_executed: false,

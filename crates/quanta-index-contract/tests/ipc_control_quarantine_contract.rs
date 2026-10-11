@@ -183,6 +183,7 @@ fn every_dto_round_trips_and_rides_the_control_envelope() -> TestRes {
     let request = SearchPlaneControlIpcRequestEnvelope {
         request_id: 91,
         payload: SearchPlaneControlIpcRequest::QuarantineInventory(QuarantineInventoryRequest),
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
     };
     let decoded: SearchPlaneControlIpcRequestEnvelope = decode(&encode(&request)?)?;
     if decoded != request {
@@ -197,6 +198,7 @@ fn every_dto_round_trips_and_rides_the_control_envelope() -> TestRes {
         payload: SearchPlaneControlIpcRequest::QuarantineDiscard(QuarantineDiscardRequest {
             target: QuarantineTargetV1::Generation(semantic_entry()),
         }),
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
     };
     let decoded: SearchPlaneControlIpcRequestEnvelope = decode(&encode(&request)?)?;
     if decoded != request {

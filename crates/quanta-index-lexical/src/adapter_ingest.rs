@@ -4,7 +4,7 @@ use crate::adapter::{declared_delta_base_generation, legacy_ops_for_batch};
 use crate::adapter_open::LexicalMutationTimings;
 use crate::channel_payloads::{decode_replace_scope_payload, decode_tombstone_scope_payload};
 use crate::generation_dir::{ensure_unsealed, is_writer_lock_entry, read_lexical_delta_base};
-use crate::index_store::{persist_lexical_sealed_identity, sealed_identity_entry_present};
+use crate::index_store::sealed_identity_entry_present;
 use crate::overlay_codec::OverlayFamily;
 use crate::overlay_codec::{
     decode_repo_metadata_payload, encode_file_contributor_batch, encode_file_ownership_batch,
@@ -13,7 +13,7 @@ use crate::overlay_codec::{
 };
 use crate::sealed_generation::coverage::{
     CoveragePlan, CoverageReadPhase, CoverageWriteBase, SOURCE_FILE_COVERAGE_FILE_NAME,
-    plan_file_coverage, read_staged_coverage, write_staged_coverage,
+    plan_file_coverage, read_staged_coverage, write_staged_coverage_observed,
 };
 use crate::sealed_generation::seal_generation;
 use crate::stage_timing::elapsed_stage_ns;
@@ -54,7 +54,12 @@ impl TrackDiskUsagePort for LexicalAdapter {
         if !self.state_root.exists() {
             return Ok(0);
         }
-        unique_inode_tree_bytes_in_track(&self.state_root, &is_writer_lock_entry, budget)
+        unique_inode_tree_bytes_in_track(
+            &self.state_root,
+            &is_writer_lock_entry,
+            budget,
+            budget.diagnostic_context(),
+        )
     }
 }
 
@@ -75,22 +80,12 @@ impl MetricSourcePort for LexicalAdapter {
             MetricPointV1::counter("lexical_seal_files_inherited_total", seals.files_inherited),
             MetricPointV1::counter("lexical_seal_bytes_inherited_total", seals.bytes_inherited),
             MetricPointV1::counter(
-                "lexical_seal_file_admission_files_read_total",
-                seals.file_admission_files_read,
+                "lexical_seal_file_admission_sources_verified_total",
+                seals.file_admission_sources_verified,
             ),
             MetricPointV1::counter(
-                "lexical_seal_file_admission_bytes_read_total",
-                seals.file_admission_bytes_read,
-            ),
-            // Replay counts logical object reads after a durable unsealed root;
-            // these are not physical device I/O or producer base-bucket reads.
-            MetricPointV1::counter(
-                "lexical_seal_file_authority_replay_files_read_total",
-                seals.file_authority_replay_files_read,
-            ),
-            MetricPointV1::counter(
-                "lexical_seal_file_authority_replay_bytes_read_total",
-                seals.file_authority_replay_bytes_read,
+                "lexical_seal_file_admission_source_bytes_verified_total",
+                seals.file_admission_source_bytes_verified,
             ),
             MetricPointV1::counter("lexical_coverage_decodes_total", coverage.decodes),
             MetricPointV1::counter(
@@ -186,6 +181,26 @@ impl MetricSourcePort for LexicalAdapter {
                 "lexical_text_authority_shards_inherited_total",
                 text_authority.shards_inherited,
             ),
+            MetricPointV1::counter(
+                "lexical_text_authority_posting_pages_written_total",
+                text_authority.posting_pages_written,
+            ),
+            MetricPointV1::counter(
+                "lexical_text_authority_oversized_posting_pages_total",
+                text_authority.oversized_posting_pages,
+            ),
+            MetricPointV1::counter(
+                "lexical_text_authority_oversized_posting_bytes_total",
+                text_authority.oversized_posting_bytes,
+            ),
+            MetricPointV1::counter(
+                "lexical_text_authority_compaction_rederived_docs_total",
+                text_authority.compaction_rederived_docs,
+            ),
+            MetricPointV1::counter(
+                "lexical_text_authority_compaction_rederived_text_bytes_total",
+                text_authority.compaction_rederived_text_bytes,
+            ),
             MetricPointV1::gauge_count(
                 "lexical_writers_open",
                 count_from_usize(writers.open_writers),
@@ -235,11 +250,13 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         &self,
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
         self.preflight_batch_with_owner(
             batch,
             phase,
             &mut quanta_index_core::PublicationValidationOwner::default(),
+            diagnostic,
         )
     }
 
@@ -248,44 +265,49 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         batch: &SearchCorpusIngestBatch,
         phase: SearchCorpusPreflightPhaseV1,
         owner: &mut quanta_index_core::PublicationValidationOwner,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
-        owner.bind_batch(batch)?;
-        let read_phase = match phase {
-            SearchCorpusPreflightPhaseV1::BeforeIntent => CoverageReadPhase::BeforeIntent,
-            SearchCorpusPreflightPhaseV1::UnderOperationLock => {
-                CoverageReadPhase::UnderOperationLock
-            }
-        };
-        batch
-            .validate_v1()
-            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
-        batch
-            .validate_surface_mutations_v1()
-            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
-        if let Some(payload) = &batch.bundle_payload {
-            let _metadata = decode_repo_metadata_payload(payload)?;
-        }
-        let identity = GenerationSnapshot {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            track: SearchPlaneTrackKind::Lexical,
-            manifest_generation: batch.generation,
-            manifest_digest: batch.manifest_digest.clone(),
-        };
-        let directory = self.index_path(&GenKey {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-        });
-        if sealed_identity_entry_present(&directory)? {
-            // A full replacement can reach the existing identity-fenced repair
-            // planner for damaged content. Proving that content here would
-            // refuse before the materializer can reclaim and rebuild it. This
-            // is mutation admission only: the sealed identity must still match,
-            // and neither build nor open accepts an unproved generation.
-            let (_directory, _observed) =
-                self.sealed_generation_dir_for(&identity, "batch preflight")?;
-            let proved = match crate::sealed_generation::walk_sealed_generation_reusing_proofs(
+        crate::causal_profile::observe_result(
+            diagnostic,
+            quanta_index_core::DiagnosticStageV1::BuildPreflight,
+            |diagnostic| {
+                owner.bind_batch(batch)?;
+                let read_phase = match phase {
+                    SearchCorpusPreflightPhaseV1::BeforeIntent => CoverageReadPhase::BeforeIntent,
+                    SearchCorpusPreflightPhaseV1::UnderOperationLock => {
+                        CoverageReadPhase::UnderOperationLock
+                    }
+                };
+                batch
+                    .validate_v1()
+                    .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+                batch
+                    .validate_surface_mutations_v1()
+                    .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+                if let Some(payload) = &batch.bundle_payload {
+                    let _metadata = decode_repo_metadata_payload(payload)?;
+                }
+                let identity = GenerationSnapshot {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    track: SearchPlaneTrackKind::Lexical,
+                    manifest_generation: batch.generation,
+                    manifest_digest: batch.manifest_digest.clone(),
+                };
+                let directory = self.index_path(&GenKey {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: batch.generation,
+                });
+                if sealed_identity_entry_present(&directory)? {
+                    // A full replacement can reach the existing identity-fenced repair
+                    // planner for damaged content. Proving that content here would
+                    // refuse before the materializer can reclaim and rebuild it. This
+                    // is mutation admission only: the sealed identity must still match,
+                    // and neither build nor open accepts an unproved generation.
+                    let (_directory, _observed) =
+                        self.sealed_generation_dir_for(&identity, "batch preflight")?;
+                    let proved = match crate::sealed_generation::walk_sealed_generation_reusing_proofs(
                 &directory,
                 &identity,
                 None,
@@ -294,6 +316,8 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                         SearchPlaneTrackKind::Lexical,
                     )?,
                 None,
+                diagnostic,
+                &crate::lexical_store::ObjectStore::open_existing(&self.state_root)?,
             ) {
                 Ok(proved) => proved,
                 Err(CoreError::Typed {
@@ -302,26 +326,32 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                 }) if batch.mode == BatchIngestMode::ReplaceGeneration => return Ok(()),
                 Err(error) => return Err(error),
             };
-            self.record_coverage_read(read_phase, proved.coverage_read_stats)?;
-            if proved.source_publication.as_ref() != Some(&batch.source_event) {
-                return Err(CoreError::InvalidContract(
-                    "lexical: sealed target belongs to another source event".into(),
-                ));
-            }
-            return Ok(());
-        }
-        let _planned = self.plan_batch_coverage(batch, &identity, &directory, read_phase, owner)?;
-        self.preflight_file_authority_batch(batch, owner)?;
-        Ok(())
+                    self.record_coverage_read(read_phase, proved.coverage_read_stats)?;
+                    if proved.source_publication.as_ref() != Some(&batch.source_event) {
+                        return Err(CoreError::InvalidContract(
+                            "lexical: sealed target belongs to another source event".into(),
+                        ));
+                    }
+                    return Ok(());
+                }
+                let _planned = self.plan_batch_coverage(
+                    batch, &identity, &directory, read_phase, owner, diagnostic,
+                )?;
+                self.preflight_file_authority_batch(batch, owner)?;
+                Ok(())
+            },
+        )
     }
 
     fn build_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Option<LexicalBuildStageDurationsV1>, CoreError> {
         self.build_batch_with_owner(
             batch,
             &mut quanta_index_core::PublicationValidationOwner::default(),
+            diagnostic,
         )
     }
 
@@ -329,47 +359,58 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         &self,
         batch: &SearchCorpusIngestBatch,
         owner: &mut quanta_index_core::PublicationValidationOwner,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Option<LexicalBuildStageDurationsV1>, CoreError> {
-        owner.bind_batch(batch)?;
-        let preparation_started = Instant::now();
-        // Storage-free admission precedes even the sealed replay shortcut.
-        // The same owner validates the public materializer and raw channel.
-        batch.validate_surface_mutations_v1().map_err(|error| {
-            CoreError::InvalidContract(format!("lexical: file mutation admission: {error}"))
-        })?;
-        batch.validate_v1().map_err(|error| {
-            CoreError::InvalidContract(format!("lexical: batch admission: {error}"))
-        })?;
-        if let Some(payload) = &batch.bundle_payload {
-            let _metadata = decode_repo_metadata_payload(payload)?;
-        }
-        let key = GenKey {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-        };
-        let _mutation = self.generation_build_guards(&key, batch.base_generation)?;
-        let _lifecycle = self.directory_lifecycle_read_guard()?;
-        let candidate = GenerationSnapshot {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            track: SearchPlaneTrackKind::Lexical,
-            manifest_generation: batch.generation,
-            manifest_digest: batch.manifest_digest.clone(),
-        };
-        let generation_dir = self.index_path(&key);
-        if sealed_identity_entry_present(&generation_dir)? {
-            if !batch.seal {
-                return Err(CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
-                    message: format!(
-                        "lexical: generation {} is already sealed; refusing non-seal mutation",
-                        batch.generation.get()
-                    ),
-                });
-            }
-            self.validate_generation_identity_with_owner(&candidate, owner)?;
-            let verified = crate::sealed_generation::walk_sealed_generation_reusing_proofs(
+        crate::causal_profile::observe_result_with_sync(
+            diagnostic,
+            quanta_index_core::DiagnosticStageV1::LexicalBuild,
+            |diagnostic, sync_totals| {
+                owner.bind_batch(batch)?;
+                let preparation_started = Instant::now();
+                // Storage-free admission precedes even the sealed replay shortcut.
+                // The same owner validates the public materializer and raw channel.
+                batch.validate_surface_mutations_v1().map_err(|error| {
+                    CoreError::InvalidContract(format!("lexical: file mutation admission: {error}"))
+                })?;
+                batch.validate_v1().map_err(|error| {
+                    CoreError::InvalidContract(format!("lexical: batch admission: {error}"))
+                })?;
+                if owner.lexical_reservation().is_none() {
+                    return Err(CoreError::InvalidContract(
+                        "lexical build requires catalog-owned document ID reservations".into(),
+                    ));
+                }
+                if let Some(payload) = &batch.bundle_payload {
+                    let _metadata = decode_repo_metadata_payload(payload)?;
+                }
+                let key = GenKey {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: batch.generation,
+                };
+                let _mutation = self.generation_build_guards(&key, batch.base_generation)?;
+                let _lifecycle = self.directory_lifecycle_read_guard()?;
+                let candidate = GenerationSnapshot {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    track: SearchPlaneTrackKind::Lexical,
+                    manifest_generation: batch.generation,
+                    manifest_digest: batch.manifest_digest.clone(),
+                };
+                let generation_dir = self.index_path(&key);
+                if sealed_identity_entry_present(&generation_dir)? {
+                    if !batch.seal {
+                        return Err(CoreError::Typed {
+                            code:
+                                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
+                            message: format!(
+                                "lexical: generation {} is already sealed; refusing non-seal mutation",
+                                batch.generation.get()
+                            ),
+                        });
+                    }
+                    self.validate_generation_identity_with_owner(&candidate, owner)?;
+                    let verified = crate::sealed_generation::walk_sealed_generation_reusing_proofs(
                 &generation_dir,
                 &candidate,
                 None,
@@ -378,35 +419,98 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                         SearchPlaneTrackKind::Lexical,
                     )?,
                 None,
+                diagnostic,
+                &crate::lexical_store::ObjectStore::open_existing(&self.state_root)?,
             )?;
-            self.record_coverage_read(CoverageReadPhase::Build, verified.coverage_read_stats)?;
-            if verified.source_publication.as_ref() != Some(&batch.source_event) {
-                return Err(CoreError::InvalidContract(
-                    "lexical: sealed generation belongs to a different source event".into(),
-                ));
-            }
-            return Ok(None);
-        }
-        let ops = legacy_ops_for_batch(batch, batch.seal)?;
-        let preflight_started = Instant::now();
-        self.preflight_file_authority_batch(batch, owner)?;
-        let prep_file_authority_preflight_ns = elapsed_stage_ns(preflight_started)?;
-        let coverage = self.plan_batch_coverage(
-            batch,
-            &candidate,
-            &generation_dir,
-            CoverageReadPhase::Build,
-            owner,
-        )?;
-        // The prepared coverage marks this target as bound before any index
-        // mutation. It is query-invisible until the index and artifact seal.
-        let coverage_write_started = Instant::now();
-        let coverage_root =
-            write_staged_coverage(&generation_dir, &candidate, &batch.source_event, &coverage)?;
-        let prep_coverage_write_ns = elapsed_stage_ns(coverage_write_started)?;
-        self.prepare_generation_from_base(&key, batch.base_generation)?;
-        let preparation_ns = elapsed_stage_ns(preparation_started)?;
-        let mutation = self.build_ops(
+                    self.record_coverage_read(
+                        CoverageReadPhase::Build,
+                        verified.coverage_read_stats,
+                    )?;
+                    if verified.source_publication.as_ref() != Some(&batch.source_event) {
+                        return Err(CoreError::InvalidContract(
+                            "lexical: sealed generation belongs to a different source event".into(),
+                        ));
+                    }
+                    self.settle_published_adoptions(&candidate)?;
+                    return Ok(None);
+                }
+                let ops = legacy_ops_for_batch(batch, batch.seal)?;
+                let preflight_started = Instant::now();
+                self.preflight_file_authority_batch(batch, owner)?;
+                let prep_file_authority_preflight_ns = elapsed_stage_ns(preflight_started)?;
+                let coverage = self.plan_batch_coverage(
+                    batch,
+                    &candidate,
+                    &generation_dir,
+                    CoverageReadPhase::Build,
+                    owner,
+                    diagnostic,
+                )?;
+                let reservation = owner.lexical_reservation().ok_or_else(|| {
+                    CoreError::InvalidContract(
+                        "lexical build requires catalog-owned document ID reservations".into(),
+                    )
+                })?;
+                let base_directory = batch.base_generation.map(|generation| {
+                    self.index_path(&GenKey {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation,
+                    })
+                });
+                let mut publication = crate::lexical_publication::PublicationContext::begin(
+                    &self.state_root,
+                    batch,
+                    reservation,
+                    base_directory.as_deref(),
+                    sync_totals.clone(),
+                    diagnostic,
+                )?;
+                let native_plan = crate::text_authority_plan::plan_text_authority_delta(
+                    &publication.store,
+                    publication.native_base.as_ref(),
+                    &ops,
+                    &publication.reservation.native_text,
+                )?;
+                let (clear_all, retired, prepare_file) = match &native_plan.write {
+                    crate::TextAuthorityWrite::None => (false, &[][..], true),
+                    crate::TextAuthorityWrite::Delta {
+                        clear_all, retired, ..
+                    } => (*clear_all, retired.as_slice(), false),
+                };
+                if !clear_all {
+                    publication.compaction_worker =
+                        crate::lexical_compaction::CompactionWorker::start(
+                            &publication.store,
+                            publication.file_base.as_ref().filter(|_base| prepare_file),
+                            publication.native_base.as_ref(),
+                            retired,
+                            diagnostic,
+                        )?;
+                }
+                publication.native_plan = Some(native_plan);
+                // The prepared coverage marks this target as bound before any index
+                // mutation. It is query-invisible until the index and artifact seal.
+                let coverage_write_started = Instant::now();
+                let coverage_root = write_staged_coverage_observed(
+                    &generation_dir,
+                    &candidate,
+                    &batch.source_event,
+                    &coverage,
+                    sync_totals.as_deref(),
+                )?;
+                let prep_coverage_write_ns = elapsed_stage_ns(coverage_write_started)?;
+                self.prepare_generation_from_base_observed(
+                    &key,
+                    batch.base_generation,
+                    sync_totals.as_deref(),
+                )?;
+                let preparation_ns = elapsed_stage_ns(preparation_started)?;
+                let mutation = crate::causal_profile::observe_result(
+                    diagnostic,
+                    quanta_index_core::DiagnosticStageV1::BuildPrepare,
+                    |diagnostic| {
+                        self.build_ops(
             &batch.repo_id,
             &batch.revision_id,
             batch.generation,
@@ -419,56 +523,91 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     )?
                     .file_plan,
             ),
-        )?;
-        let mut stages = LexicalBuildStageDurationsV1 {
-            preparation_ns,
-            prep_file_authority_preflight_ns: Some(prep_file_authority_preflight_ns),
-            prep_coverage_write_ns: Some(prep_coverage_write_ns),
-            writer_mutation_ns: mutation.writer_mutation_ns,
-            text_authority_ns: mutation.text_authority_ns,
-            text_authority_collect_ns: mutation.text_authority_collect_ns,
-            text_authority_shard_build_ns: mutation.text_authority_shard_build_ns,
-            text_authority_publish_ns: mutation.text_authority_publish_ns,
-            file_authority_ns: mutation.file_authority_ns,
-            file_authority_source_write_ns: mutation.file_authority_source_write_ns,
-            ..LexicalBuildStageDurationsV1::default()
-        };
-        if batch.seal {
-            let seal_started = Instant::now();
-            // Finalize and retire the writer before measuring: a cached
-            // writer would commit again on eviction and rewrite `meta.json`
-            // behind the manifest. Then manifest first, identity last: the
-            // identity's presence is the promotion point and implies a
-            // durable manifest.
-            let writer_timings = self.finalize_index_for_seal(&key)?;
-            let base_dir = read_lexical_delta_base(&generation_dir)?.map(|base| {
-                self.index_path(&GenKey {
-                    repo_id: key.repo_id.clone(),
-                    revision_id: key.revision_id.clone(),
-                    generation: base,
-                })
-            });
-            let commitment_started = Instant::now();
-            let (measured, file_admission_ns) = seal_generation(
-                &generation_dir,
-                &self.fields,
-                &candidate,
-                base_dir.as_deref(),
-                &coverage_root,
-            )?;
-            let commitment_ns = elapsed_stage_ns(commitment_started)?;
-            self.record_seal_measurement(measured)?;
-            persist_lexical_sealed_identity(&generation_dir, &candidate)?;
-            stages.seal_ns = Some(elapsed_stage_ns(seal_started)?);
-            stages.seal_writer_commit_ns = Some(writer_timings.commit_ns);
-            stages.seal_merge_wait_ns = Some(writer_timings.merge_wait_ns);
-            stages.seal_commitment_ns = Some(commitment_ns);
-            stages.seal_file_admission_ns = Some(file_admission_ns);
-        }
-        // Every batch is a chance to give an abandoned generation's heap back
-        // to the envelope (QI-BB-016).
-        let _released = self.release_idle_writers()?;
-        Ok(Some(stages))
+                            Some(&mut publication),
+                            diagnostic,
+                        )
+                    },
+                )?;
+                let mut stages = LexicalBuildStageDurationsV1 {
+                    preparation_ns,
+                    prep_file_authority_preflight_ns: Some(prep_file_authority_preflight_ns),
+                    prep_coverage_write_ns: Some(prep_coverage_write_ns),
+                    writer_mutation_ns: mutation.writer_mutation_ns,
+                    text_authority_ns: mutation.text_authority_ns,
+                    text_authority_collect_ns: mutation.text_authority_collect_ns,
+                    text_authority_shard_build_ns: mutation.text_authority_shard_build_ns,
+                    text_authority_publish_ns: mutation.text_authority_publish_ns,
+                    file_authority_ns: mutation.file_authority_ns,
+                    file_authority_source_write_ns: mutation.file_authority_source_write_ns,
+                    ..LexicalBuildStageDurationsV1::default()
+                };
+                if batch.seal {
+                    let (writer_timings, commitment_ns, file_admission_ns, seal_ns) =
+                        crate::causal_profile::observe_result(
+                            diagnostic,
+                            quanta_index_core::DiagnosticStageV1::Finalize,
+                            |finalize_diagnostic| {
+                                let seal_started = Instant::now();
+                                // Retire the writer before measuring. The sealed identity is
+                                // the promotion point after the manifest and its inputs.
+                                let writer_timings = self.finalize_index_for_seal_observed(
+                                    &key,
+                                    sync_totals.as_deref(),
+                                )?;
+                                let base_dir =
+                                    read_lexical_delta_base(&generation_dir)?.map(|base| {
+                                        self.index_path(&GenKey {
+                                            repo_id: key.repo_id.clone(),
+                                            revision_id: key.revision_id.clone(),
+                                            generation: base,
+                                        })
+                                    });
+                                let commitment_started = Instant::now();
+                                let (measured, file_admission_ns) =
+                                    crate::causal_profile::observe_result(
+                                        finalize_diagnostic,
+                                        quanta_index_core::DiagnosticStageV1::LexicalSeal,
+                                        |seal_diagnostic| {
+                                            seal_generation(
+                                                &generation_dir,
+                                                &self.fields,
+                                                &candidate,
+                                                base_dir.as_deref(),
+                                                &coverage_root,
+                                                &publication,
+                                                sync_totals.as_deref(),
+                                                seal_diagnostic,
+                                            )
+                                        },
+                                    )?;
+                                let commitment_ns = elapsed_stage_ns(commitment_started)?;
+                                self.record_seal_measurement(measured)?;
+                                crate::index_store::persist_lexical_sealed_identity_observed(
+                                    &generation_dir,
+                                    &candidate,
+                                    sync_totals.as_deref(),
+                                )?;
+                                publication.finish()?;
+                                Ok::<_, CoreError>((
+                                    writer_timings,
+                                    commitment_ns,
+                                    file_admission_ns,
+                                    elapsed_stage_ns(seal_started)?,
+                                ))
+                            },
+                        )?;
+                    stages.seal_ns = Some(seal_ns);
+                    stages.seal_writer_commit_ns = Some(writer_timings.commit_ns);
+                    stages.seal_merge_wait_ns = Some(writer_timings.merge_wait_ns);
+                    stages.seal_commitment_ns = Some(commitment_ns);
+                    stages.seal_file_admission_ns = Some(file_admission_ns);
+                }
+                // Every batch is a chance to give an abandoned generation's heap back
+                // to the envelope (QI-BB-016).
+                let _released = self.release_idle_writers()?;
+                Ok(Some(stages))
+            },
+        )
     }
 }
 
@@ -614,7 +753,7 @@ impl LexicalIndexBuildPort for LexicalAdapter {
         let base = declared_delta_base_generation(ops)?;
         let _mutation = self.generation_build_guards(&key, base)?;
         let _lifecycle = self.directory_lifecycle_read_guard()?;
-        self.build_ops(repo, revision, generation, ops, false, None)
+        self.build_ops(repo, revision, generation, ops, false, None, None, None)
             .map(|_timings| ())
     }
 }
@@ -630,6 +769,7 @@ impl LexicalAdapter {
         generation_dir: &std::path::Path,
         read_phase: CoverageReadPhase,
         owner: &mut quanta_index_core::PublicationValidationOwner,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<CoveragePlan, CoreError> {
         crate::causal_profile::timed_work("lexical_plan_batch_coverage", || {
             // Derive the complete next admitted universe from a proved base before
@@ -674,7 +814,8 @@ impl LexicalAdapter {
                             Some(&mut decoded),
                             owner.proof_state::<crate::sealed_generation::publication_proof::PublicationProofs>(SearchPlaneTrackKind::Lexical)?,
                             None,
-                        )?;
+                            diagnostic,
+                         &crate::lexical_store::ObjectStore::open_existing(&self.state_root)?)?;
                     *self.coverage_decode_cache.lock().map_err(|error| {
                         CoreError::Storage(format!(
                             "lexical: coverage decode cache poisoned: {error}"
@@ -813,6 +954,10 @@ impl LexicalAdapter {
             .prepare(&source_dir, &ops)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The publication owner receives explicit source identity and independent plan, lease, and diagnostic custody."
+    )]
     fn build_ops(
         &self,
         repo: &RepoId,
@@ -821,6 +966,8 @@ impl LexicalAdapter {
         ops: &[LexicalChannelOp],
         source_batch: bool,
         file_plan: Option<&mut crate::file_authority::FileAuthorityPlanCache>,
+        publication: Option<&mut crate::lexical_publication::PublicationContext>,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<LexicalMutationTimings, CoreError> {
         if ops.is_empty() && !source_batch {
             return Ok(LexicalMutationTimings::default());
@@ -843,6 +990,12 @@ impl LexicalAdapter {
             generation,
         };
         let mutates_index = source_batch || ops.iter().any(op_mutates_index);
+        if mutates_index && publication.is_none() {
+            return Err(CoreError::InvalidContract(
+                "lexical mutations require a source-corpus publication and durable document IDs"
+                    .into(),
+            ));
+        }
         if ops.iter().any(op_writes_generation) {
             ensure_unsealed(&self.index_path(&key), generation, "an index or overlay op")?;
         }
@@ -870,12 +1023,26 @@ impl LexicalAdapter {
             // a writer: a writer left in the cache would commit on eviction
             // and rewrite `meta.json` under a sealed manifest.
             for op in ops {
-                let _committed = self.apply_snapshot_op(&key, op)?;
+                let _committed = self.apply_snapshot_op(&key, op, None)?;
             }
             return Ok(LexicalMutationTimings::default());
         }
-        let handle = self.writer_handle(&key)?;
-        self.commit_ops_under_lock(&handle, &key, ops, file_plan)
+        let handle = self.writer_handle_observed(
+            &key,
+            publication
+                .as_ref()
+                .and_then(|context| context.store.sync_totals()),
+        )?;
+        self.commit_ops_under_lock(
+            &handle,
+            &key,
+            ops,
+            file_plan,
+            publication.ok_or_else(|| {
+                CoreError::InvalidContract("lexical publication context missing".into())
+            })?,
+            diagnostic,
+        )
     }
 }
 

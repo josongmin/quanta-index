@@ -9,6 +9,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::CoreError;
+use crate::diagnostic_trace::{DiagnosticContextV1, DiagnosticInodeCensusV1};
 
 /// Wire code for a pin the durable authority does not retain.
 ///
@@ -18,6 +19,21 @@ use crate::CoreError;
 /// (`NOT_READY`); neither is ever answered from another generation.
 pub const UNKNOWN_GENERATION_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
     quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration;
+
+/// Read-only admission for the first durable allocation counter of a pair.
+///
+/// Unlike sealed inventory, this includes incomplete and untracked generation
+/// entries in the adapter-owned namespace. Only a proved empty namespace may
+/// return `true`; unreadable or ambiguous state must refuse or return `false`.
+/// Callers coordinate this probe with production writer admission. The probe
+/// does not create directories, reclaim objects, or authorize a publication.
+pub trait GenerationNamespaceReadPort: Send + Sync {
+    fn generation_namespace_is_empty(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<bool, CoreError>;
+}
 
 /// The typed refusal for a pin the durable authority does not retain.
 #[must_use]
@@ -409,17 +425,19 @@ pub trait QuarantinedGenerationDiscardPort: Send + Sync {
 pub enum SealedGenerationReclaimOutcomeV1 {
     /// No durable state for the identity; nothing to do.
     Absent,
-    /// The generation's bytes are gone; `bytes` is what was measured on disk
-    /// before deletion.
+    /// The generation directory is gone; `bytes` is its measured private
+    /// directory size before deletion. Shared objects are reclaimed separately
+    /// and must not be reported as physically freed by this operation.
     Reclaimed { bytes: u64 },
 }
 
-/// What measuring a set of generation directories found (QI-BB-003).
+/// What measuring a set of sealed generations found (QI-BB-003).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SealedGenerationBytesV1 {
-    /// Bytes the listed directories occupy together: every regular file
-    /// counted once by inode, so a segment two generations hard-link is
-    /// not counted twice. This is what `du` reports for the same set.
+    /// Private directory bytes plus the reachable shared-object closure,
+    /// counted once within this requested set. Shared objects may also belong
+    /// to another pair, so summing pair measurements is not a physical root
+    /// measurement; use `measure_track_physical_bytes` for that admission.
     pub bytes: u64,
     /// Generations in the request that have no directory on disk; they
     /// occupy nothing and are reported so the caller can see a retained
@@ -454,8 +472,9 @@ pub trait SealedGenerationReclaimPort: Send + Sync {
     fn reclaim_sealed_generation(
         &self,
         retired: &GenerationSnapshot,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
-        self.reclaim_sealed_generation_with_settlement(retired, &|| Ok(()))
+        self.reclaim_sealed_generation_with_settlement(retired, &|| Ok(()), diagnostic)
     }
 
     /// Call `on_absent` under the adapter's directory lifecycle lock once
@@ -465,6 +484,7 @@ pub trait SealedGenerationReclaimPort: Send + Sync {
         &self,
         retired: &GenerationSnapshot,
         on_absent: &dyn Fn() -> Result<(), CoreError>,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError>;
 
     /// Every sealed generation present on disk for the pair, with its durable
@@ -474,24 +494,40 @@ pub trait SealedGenerationReclaimPort: Send + Sync {
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Vec<GenerationSnapshot>, CoreError>;
 
-    /// The bytes `generations` of the pair occupy on disk together, by
-    /// unique inode (see [`SealedGenerationBytesV1`]). This is the measure
-    /// retention caps and reports: the actual index bytes, never the size
-    /// of an authority record. Measured from metadata only; nothing is
-    /// opened or hashed.
+    /// The private bytes and unique reachable shared-object closure for the
+    /// requested generations (see [`SealedGenerationBytesV1`]). This measures
+    /// pair retention, never the size of its authority records.
     fn measure_sealed_generations(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError>;
+
+    /// Actual bytes currently present in the entire adapter-owned track,
+    /// including shared, unsealed, quarantined and not-yet-collected objects.
+    /// A retirement cannot subtract bytes before physical deletion. Backends
+    /// must implement this explicitly before root-wide disk admission is used.
+    fn measure_track_physical_bytes(
+        &self,
+        _diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<u64, CoreError> {
+        Err(CoreError::InvalidContract(
+            "track physical byte measurement is unavailable".into(),
+        ))
+    }
 
     /// Remove what interrupted reclaims left in this track's reclaim area:
     /// generations already out of the generation namespace whose removal a
     /// crash or a failed removal cut short. Idempotent.
-    fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError>;
+    fn finish_interrupted_reclaims(
+        &self,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<FinishedReclaims, CoreError>;
 }
 
 /// What finishing the interrupted reclaims of a track did
@@ -518,46 +554,62 @@ pub struct FinishedReclaims {
 pub fn unique_inode_tree_bytes(
     roots: &[PathBuf],
     skip: &dyn Fn(&str) -> bool,
+    diagnostic: Option<&DiagnosticContextV1>,
 ) -> std::io::Result<u64> {
-    let mut seen: BTreeSet<(u64, u64)> = BTreeSet::new();
-    let mut total = 0_u64;
-    let mut pending: Vec<(PathBuf, bool)> = roots.iter().map(|root| (root.clone(), true)).collect();
-    while let Some((directory, is_root)) = pending.pop() {
-        let entries = match std::fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if !is_root && error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        for entry in entries {
-            let Some(entry) = vanished_is_none(entry)? else {
-                continue;
+    let mut census = DiagnosticInodeCensusV1::new(diagnostic);
+    let measured = (|| {
+        let mut seen: BTreeSet<(u64, u64)> = BTreeSet::new();
+        let mut total = 0_u64;
+        let mut pending: Vec<(PathBuf, bool)> =
+            roots.iter().map(|root| (root.clone(), true)).collect();
+        while let Some((directory, is_root)) = pending.pop() {
+            let entries = match std::fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) if !is_root && error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
             };
-            let file_name = entry.file_name();
-            if file_name.to_str().is_some_and(skip) {
-                continue;
-            }
-            let Some(file_type) = vanished_is_none(entry.file_type())? else {
-                continue;
-            };
-            if file_type.is_symlink() {
-                continue;
-            }
-            if file_type.is_dir() {
-                pending.push((entry.path(), false));
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-            let Some(metadata) = vanished_is_none(entry.metadata())? else {
-                continue;
-            };
-            if seen.insert((metadata.dev(), metadata.ino())) {
-                total = total.saturating_add(metadata.len());
+            for entry in entries {
+                let Some(entry) = vanished_is_none(entry)? else {
+                    continue;
+                };
+                let file_name = entry.file_name();
+                if file_name.to_str().is_some_and(skip) {
+                    continue;
+                }
+                let Some(file_type) = vanished_is_none(entry.file_type())? else {
+                    continue;
+                };
+                if file_type.is_symlink() {
+                    continue;
+                }
+                if let Some(census) = census.as_mut() {
+                    census.visit_inode();
+                }
+                if file_type.is_dir() {
+                    pending.push((entry.path(), false));
+                    continue;
+                }
+                if !file_type.is_file() {
+                    continue;
+                }
+                let Some(metadata) = vanished_is_none(entry.metadata())? else {
+                    continue;
+                };
+                let unique = seen.insert((metadata.dev(), metadata.ino()));
+                if let Some(census) = census.as_mut() {
+                    census.visit_file(unique.then_some(metadata.len()));
+                }
+                if unique {
+                    total = total.saturating_add(metadata.len());
+                }
             }
         }
+        Ok(total)
+    })();
+    if let Some(census) = census.take() {
+        census.finish(measured.is_ok());
     }
-    Ok(total)
+    measured
 }
 
 /// `None` when the entry vanished (`NotFound`) while the tree was walked.
@@ -1240,11 +1292,12 @@ mod unique_inode_bytes_tests {
         std::os::unix::fs::symlink(&delta, delta.join("cycle")).expect("link directory cycle");
 
         let skip = |name: &str| name.starts_with(".lock");
-        let both = unique_inode_tree_bytes(&[base.clone(), delta.clone()], &skip).expect("io");
+        let both =
+            unique_inode_tree_bytes(&[base.clone(), delta.clone()], &skip, None).expect("io");
         assert_eq!(both, 1000 + 10 + 5);
-        let delta_alone = unique_inode_tree_bytes(&[delta], &skip).expect("io");
+        let delta_alone = unique_inode_tree_bytes(&[delta], &skip, None).expect("io");
         assert_eq!(delta_alone, 1000 + 5);
-        let base_alone = unique_inode_tree_bytes(&[base], &skip).expect("io");
+        let base_alone = unique_inode_tree_bytes(&[base], &skip, None).expect("io");
         assert_eq!(base_alone, 1000 + 10);
     }
 
@@ -1252,7 +1305,7 @@ mod unique_inode_bytes_tests {
     fn a_missing_root_is_an_error_not_zero() {
         let temp = tempfile::tempdir().expect("tempdir");
         let missing = temp.path().join("absent");
-        assert!(unique_inode_tree_bytes(&[missing], &|_name| false).is_err());
+        assert!(unique_inode_tree_bytes(&[missing], &|_name| false, None).is_err());
     }
 }
 

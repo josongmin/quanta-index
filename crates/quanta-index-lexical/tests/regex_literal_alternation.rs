@@ -22,6 +22,10 @@
 #[path = "support/source_fixture.rs"]
 mod source_fixture;
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::error::Error;
 
 use quanta_index_contract::lex::LanguageCode;
@@ -29,9 +33,7 @@ use quanta_index_contract::{
     ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery, LqSpan,
     ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusReplaceScope,
 };
-use quanta_index_core::{
-    LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SearchCorpusBatchBuildPort,
-};
+use quanta_index_core::{LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1};
 use quanta_index_lexical::LexicalAdapter;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -92,7 +94,7 @@ fn build(adapter: &LexicalAdapter, rows: &[(&str, &str, &str)]) -> TestResult {
     for (path, chunk_id, body) in rows {
         replace_scopes.push(scope(path, chunk_id, body)?);
     }
-    let _stages = adapter.build_batch(&source_fixture::sealed_batch(
+    let _stages = adapter.build_fixture_batch(&source_fixture::sealed_batch(
         &repo(),
         &revision(),
         generation,
@@ -234,5 +236,49 @@ fn alternation_regex_returns_documents_matching_any_branch() -> TestResult {
         &[],
         "regex absent token",
     )?;
+    Ok(())
+}
+
+#[test]
+fn internal_conjunction_short_branch_and_unicode_keep_exact_truth_across_cache_reuse() -> TestResult
+{
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    build(
+        &adapter,
+        &[
+            ("src/both.rs", "c-both", "foo then bar"),
+            ("src/prefix.rs", "c-prefix", "foo alone"),
+            ("src/short.rs", "c-short", "x"),
+            ("src/unicode.rs", "c-unicode", "freſh then bar"),
+        ],
+    )?;
+    let searcher = open(&adapter)?;
+    for _ in 0..2 {
+        assert_ids(
+            searcher.as_ref(),
+            LqLeaf::Regex("foo.*bar".into()),
+            &["c-both"],
+            "mandatory internal literal",
+        )?;
+        assert_ids(
+            searcher.as_ref(),
+            LqLeaf::Regex("x|foo.*bar".into()),
+            &["c-both", "c-short"],
+            "short OR branch",
+        )?;
+        assert_ids(
+            searcher.as_ref(),
+            LqLeaf::Regex("fresh.*bar".into()),
+            &["c-unicode"],
+            "unicode case alternative",
+        )?;
+        assert_ids(
+            searcher.as_ref(),
+            LqLeaf::Regex("(?:foo)?x".into()),
+            &["c-short"],
+            "optional prefix",
+        )?;
+    }
     Ok(())
 }

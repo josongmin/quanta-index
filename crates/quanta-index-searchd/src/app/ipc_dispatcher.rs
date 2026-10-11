@@ -94,6 +94,9 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
 {
     fn event_route(request: &SearchPlaneControlIpcRequest) -> &'static str {
         match request {
+            SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(_) => {
+                "control.reserve_search_corpus_generation_v1"
+            }
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_) => {
                 "control.activate_corpus"
             }
@@ -121,6 +124,7 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
         match response {
             SearchPlaneControlIpcResponse::Error(error) => Some(error.code),
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
@@ -332,6 +336,8 @@ mod tests {
             cancellation: budget.cancel_handle(),
             events,
             request_started: Instant::now(),
+            diagnostic_context: None,
+            diagnostic_backend_error: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let adapter = SearchPlaneIpcDispatcher::<u64, u64, Echo>::new(Arc::new(Echo));
         assert_eq!(IpcDispatcher::dispatch(&adapter, &context, 4, &budget), 5);

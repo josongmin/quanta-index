@@ -18,15 +18,25 @@
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RevisionId,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, TextQuerySyntax,
+    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoMetaEntry, RepoMetaIngestBatch,
+    RevisionId, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneTrackKind,
+    TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_core::GenerationStorageKeyV1;
+use quanta_index_core::{
+    CoreError, GenerationStorageKeyV1, LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+};
+use quanta_index_lexical::LexicalAdapter;
+use quanta_index_search_plane::{
+    OpenedSnapshot, SnapshotKey, SnapshotRegistries, SnapshotRegistryPolicy, SnapshotRetireOutcome,
+    SnapshotRetirementOwner, lower_lexical_text_query,
+};
 use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::{E2eQueryResult, E2eRuntime};
@@ -88,6 +98,126 @@ fn ids(result: &E2eQueryResult) -> Result<Vec<String>, Box<dyn Error>> {
         return Err(format!("query was refused: {error}").into());
     }
     Ok(result.candidate_ids.clone())
+}
+
+fn held_code_search_paths(
+    searcher: &dyn LexicalSearcher,
+    query_text: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let request = TextQueryRequest {
+        syntax: TextQuerySyntax::CodeSearch,
+        query_text: query_text.to_string(),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: None,
+        top_k: TOP_K,
+        cursor: None,
+    };
+    let query = lower_lexical_text_query(&request)?;
+    let mut paths = searcher
+        .search(&query, TOP_K, &RequestBudgetV1::unbounded())?
+        .into_iter()
+        .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
+}
+
+/// A live `CodeSearch` handle keeps its shared source and posting objects present
+/// through registry-governed GC.
+///
+/// The physical reclaim runs only after its last query pin is released;
+/// direct reclaim while pinned is outside the reclaim port's caller contract.
+#[test]
+fn held_code_search_reader_defers_generation_reclaim() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text("repo", "src/needle.rs", "fn needle() { let needle = 1; }")?;
+    rt.ingest_text("repo", "src/other.rs", "fn other() { let needle = 2; }")?;
+    let _generation = rt.seal()?;
+    // Keep the catalog unactivated: this test owns the registry and physical
+    // retirement boundary without invalidating a daemon's active authority.
+    let rt = rt.reopen();
+    let sealed = rt
+        .last_sealed_search_corpus_identity()
+        .ok_or("seeded runtime has no sealed search-corpus identity")?
+        .lexical;
+    let generation_dir = lexical_generation_dir(&rt)?;
+    let adapter = LexicalAdapter::with_state_root(
+        std::fs::canonicalize(rt.state_root())?.join("indexes/lexical"),
+    );
+    let snapshots = SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT);
+    let key = SnapshotKey::new(
+        &sealed.repo_id,
+        &sealed.revision_id,
+        sealed.manifest_generation,
+    );
+    let budget = RequestBudgetV1::unbounded();
+    let acquired = snapshots.lexical.acquire(&key, &budget, || {
+        let handle: Arc<dyn LexicalSearcher> = Arc::from(adapter.open(
+            &sealed.repo_id,
+            &sealed.revision_id,
+            sealed.manifest_generation,
+            &budget,
+        )?);
+        Ok(OpenedSnapshot {
+            resident_bytes: handle.resident_bytes_estimate(),
+            handle,
+        })
+    })?;
+    let expected = vec!["src/needle.rs".to_string(), "src/other.rs".to_string()];
+    for query in ["content:needle", "content:regex:/needle/"] {
+        let paths = held_code_search_paths(acquired.handle.as_ref(), query)?;
+        if paths != expected {
+            return Err(format!("{query}: held F16 searcher served {paths:?}").into());
+        }
+    }
+
+    let owner = SnapshotRetirementOwner::SearchCorpusRetention;
+    let first = snapshots.lexical.retire(&key, owner)?;
+    if first != (SnapshotRetireOutcome::StillReferenced { holders: 1 }) {
+        return Err(
+            format!("GC must defer while the CodeSearch handle is pinned: {first:?}").into(),
+        );
+    }
+    if !generation_dir.is_dir() {
+        return Err("deferred GC removed the held generation".into());
+    }
+    for query in ["content:needle", "content:regex:/needle/"] {
+        let paths = held_code_search_paths(acquired.handle.as_ref(), query)?;
+        if paths != expected {
+            return Err(
+                format!("{query}: held F16 searcher changed after retirement: {paths:?}").into(),
+            );
+        }
+    }
+
+    drop(acquired);
+    let second = snapshots.lexical.retire(&key, owner)?;
+    if matches!(second, SnapshotRetireOutcome::StillReferenced { .. }) {
+        return Err(format!("GC still sees a released CodeSearch handle: {second:?}").into());
+    }
+    let reclaimed = adapter.reclaim_sealed_generation_with_settlement(
+        &sealed,
+        &|| snapshots.finish_retirement(SearchPlaneTrackKind::Lexical, &key, owner),
+        None,
+    )?;
+    if !matches!(
+        reclaimed,
+        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ) || generation_dir.exists()
+    {
+        return Err(format!("retired F16 generation was not reclaimed: {reclaimed:?}").into());
+    }
+    let reopened = adapter.open(
+        &sealed.repo_id,
+        &sealed.revision_id,
+        sealed.manifest_generation,
+        &budget,
+    );
+    if !matches!(reopened, Err(CoreError::NotFound(_))) {
+        return Err("fresh open saw a physically reclaimed generation".into());
+    }
+    Ok(())
 }
 
 /// Remove what a semantic cold open must read before it can serve.

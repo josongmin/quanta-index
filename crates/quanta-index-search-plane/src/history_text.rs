@@ -33,8 +33,8 @@ use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{
-    AuxiliaryGenerationKeyV1, CoreError, HistoryTextDiscardOutcomeV1, HistoryTextIndexPort,
-    HistoryTextSearcher, MetricPointV1, MetricSourcePort, RequestBudgetV1,
+    AuxiliaryGenerationKeyV1, CoreError, DiagnosticContextV1, HistoryTextDiscardOutcomeV1,
+    HistoryTextIndexPort, HistoryTextSearcher, MetricPointV1, MetricSourcePort, RequestBudgetV1,
 };
 
 use crate::post_durable::defer_storage_failure;
@@ -81,8 +81,9 @@ impl HistoryTextIndexParts {
         &self,
         generation: &AuxiliaryGenerationKeyV1,
         retained: &[AuxEpochV1],
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
-        self.settle_gc(self.reconcile_generation(generation, retained))
+        self.settle_gc(self.reconcile_generation(generation, retained, diagnostic))
     }
 
     /// Discard the indexes of every generation of the pair older than
@@ -109,13 +110,14 @@ impl HistoryTextIndexParts {
             if generation >= below || known.contains(&generation) {
                 continue;
             }
-            self.settle_gc(
-                self.retire_and_discard_generation(&AuxiliaryGenerationKeyV1 {
+            self.settle_gc(self.retire_and_discard_generation(
+                &AuxiliaryGenerationKeyV1 {
                     repo_id: repo_id.clone(),
                     revision_id: revision_id.clone(),
                     generation,
-                }),
-            )?;
+                },
+                None,
+            ))?;
         }
         Ok(())
     }
@@ -159,11 +161,12 @@ impl HistoryTextIndexParts {
         &self,
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<HistoryTextDiscardOutcomeV1>, CoreError> {
         match self.handles.retire(generation, epoch)? {
-            SnapshotRetireOutcome::NotResident | SnapshotRetireOutcome::Released => {
-                Ok(Some(self.port.discard_epoch(generation, epoch)?))
-            }
+            SnapshotRetireOutcome::NotResident | SnapshotRetireOutcome::Released => Ok(Some(
+                self.port.discard_epoch(generation, epoch, diagnostic)?,
+            )),
             SnapshotRetireOutcome::StillReferenced { .. } => Ok(None),
         }
     }
@@ -174,6 +177,7 @@ impl HistoryTextIndexParts {
     pub fn retire_and_discard_generation(
         &self,
         generation: &AuxiliaryGenerationKeyV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<HistoryTextDiscardOutcomeV1>, CoreError> {
         let outcomes = self.handles.retire_generation(generation)?;
         if outcomes.iter().any(|(_epoch, outcome)| {
@@ -181,7 +185,7 @@ impl HistoryTextIndexParts {
         }) {
             return Ok(None);
         }
-        Ok(Some(self.port.discard_generation(generation)?))
+        Ok(Some(self.port.discard_generation(generation, diagnostic)?))
     }
 
     /// Discard every durable epoch of `generation` that `retained` does
@@ -191,13 +195,17 @@ impl HistoryTextIndexParts {
         &self,
         generation: &AuxiliaryGenerationKeyV1,
         retained: &[AuxEpochV1],
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Vec<AuxEpochV1>, CoreError> {
         let mut deferred = Vec::new();
         for epoch in self.port.durable_epochs(generation)? {
             if retained.contains(&epoch) {
                 continue;
             }
-            if self.retire_and_discard_epoch(generation, epoch)?.is_none() {
+            if self
+                .retire_and_discard_epoch(generation, epoch, diagnostic)?
+                .is_none()
+            {
                 deferred.push(epoch);
             }
         }
@@ -455,6 +463,7 @@ mod tests {
                 &generation(),
                 AuxEpochV1::new(*epoch),
                 HistoryTextBuildV1::Full { docs: Vec::new() },
+                None,
             )?;
         }
         Ok(index)
@@ -571,7 +580,10 @@ mod tests {
         let parts = HistoryTextIndexParts::new(index.clone());
         let unbounded = RequestBudgetV1::unbounded();
         let claim = parts.claim(&generation(), EPOCH)?;
-        assert_eq!(parts.retire_and_discard_epoch(&generation(), EPOCH)?, None);
+        assert_eq!(
+            parts.retire_and_discard_epoch(&generation(), EPOCH, None)?,
+            None
+        );
         assert_eq!(
             index.epochs_of(&generation())?,
             vec![EPOCH],
@@ -579,17 +591,17 @@ mod tests {
         );
         let handle = parts.land(claim, &unbounded)?;
         assert_eq!(
-            parts.retire_and_discard_epoch(&generation(), EPOCH)?,
+            parts.retire_and_discard_epoch(&generation(), EPOCH, None)?,
             None,
             "the reader still holds the landed handle"
         );
         assert_eq!(
-            parts.retire_and_discard_epoch(&generation(), EPOCH)?,
+            parts.retire_and_discard_epoch(&generation(), EPOCH, None)?,
             None,
             "a retry must not discard after the resident slot was removed"
         );
         drop(handle);
-        match parts.retire_and_discard_epoch(&generation(), EPOCH)? {
+        match parts.retire_and_discard_epoch(&generation(), EPOCH, None)? {
             Some(HistoryTextDiscardOutcomeV1::Discarded { .. }) => {}
             other => return Err(format!("released, the epoch is discarded: {other:?}").into()),
         }
@@ -605,7 +617,7 @@ mod tests {
         let handle = parts.land(claim, &RequestBudgetV1::unbounded())?;
         for _retry in 0..2 {
             if parts
-                .retire_and_discard_generation(&generation())?
+                .retire_and_discard_generation(&generation(), None)?
                 .is_some()
             {
                 return Err("generation discard ignored a live retired epoch".into());
@@ -616,7 +628,7 @@ mod tests {
         }
         drop(handle);
         if !matches!(
-            parts.retire_and_discard_generation(&generation())?,
+            parts.retire_and_discard_generation(&generation(), None)?,
             Some(HistoryTextDiscardOutcomeV1::Discarded { .. })
         ) {
             return Err("generation discard did not resume after the handle dropped".into());

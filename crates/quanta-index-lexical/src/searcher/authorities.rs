@@ -1,11 +1,11 @@
-//! The generation's decoded authorities, refused typed when absent.
+//! The generation's authorities, refused typed when absent.
 
 #![expect(
     clippy::redundant_pub_crate,
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
-use crate::text_authority::ShardedTextAuthority;
+use crate::text_authority::NativeAuthority;
 use crate::text_docs::{authority_member, stored_text_authority_doc_id};
 use crate::{
     FileContributorShard, FileOwnershipShard, RepoCommitRecencyShard, RepoDescriptionShard,
@@ -40,18 +40,36 @@ impl TextAuthorityFeature {
     }
 }
 
-impl TantivySearcher {
-    pub(crate) fn text_authority(
+/// Explicit Native read scope for one lexical API request. Clones share one
+/// physical read meter; the resident generation never accumulates query work.
+pub(crate) struct NativeQueryScope(Option<NativeAuthority>);
+
+impl NativeQueryScope {
+    pub(crate) fn authority(
         &self,
         feature: TextAuthorityFeature,
-    ) -> Result<&ShardedTextAuthority, CoreError> {
-        self.text_authority.as_ref().ok_or_else(|| CoreError::Typed {
+    ) -> Result<&NativeAuthority, CoreError> {
+        self.0.as_ref().ok_or_else(|| CoreError::Typed {
             code: feature.code(),
             message: format!(
-                "lexical: {} execution requires a materialized text authority sidecar for this generation",
+                "lexical: {} execution requires a sealed Native text authority for this generation",
                 feature.label()
             ),
         })
+    }
+
+    pub(crate) fn optional_authority(&self) -> Option<NativeAuthority> {
+        self.0.clone()
+    }
+}
+
+impl TantivySearcher {
+    pub(crate) fn native_query_scope(&self) -> NativeQueryScope {
+        NativeQueryScope(
+            self.text_authority
+                .as_ref()
+                .map(NativeAuthority::scoped_query),
+        )
     }
 
     pub(crate) fn repo_commit_recency_authority(
@@ -92,7 +110,7 @@ impl TantivySearcher {
         doc: &TantivyDocument,
         candidate_id: &str,
         surface: &str,
-    ) -> Result<u32, CoreError> {
+    ) -> Result<u64, CoreError> {
         authority_member(
             stored_text_authority_doc_id(doc, &self.fields, candidate_id)?,
             surface,

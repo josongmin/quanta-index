@@ -21,10 +21,16 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Result as AnyResult;
+use quanta_index_core::{
+    DiagnosticContextV1, DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1,
+    DiagnosticTerminalV1,
+};
+use quanta_index_searchd::{DiagnosticCaptureLimitsV1, DiagnosticCaptureV1};
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::scale::{
-    ScaleRuntimeConfig, ScaleTier, TierMeasurement, measure_tier_with_runtime_config,
-    source_binding_for_failure, write_artifacts, write_refusal_artifact_with_context,
+    DiskObservationMode, ScaleRuntimeConfig, ScaleTier, TierMeasurement,
+    measure_tier_with_runtime_config_and_capture, source_binding_for_failure, write_artifacts,
+    write_refusal_artifact_with_context,
 };
 
 /// Deterministic default seed so the rail is reproducible run-to-run unless an
@@ -33,13 +39,17 @@ const DEFAULT_SEED: u64 = 0x5161_5343_414c_4531;
 
 const USAGE: &str = "Usage: scale_matrix [--tier small|medium|large|xlarge | --all-tiers]
     [--seed U64] [--client-timeout-ms 1..=600000]
+    [--disk-observation boundary-only|periodic]
     [--history-max-bytes POSITIVE_U64] [--history-max-total-bytes POSITIVE_U64]
     [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
+    [--trace-mode off|record] [--trace-out ABSOLUTE_EXTERNAL_NEW_PATH]
     Default tier: small (16 files). medium=256, large=4096, xlarge=32768.
     scale-supported-v1: timeout=600s, history pair=1GiB/total=2GiB, ingest text=128MiB.
     Publications above 64MiB use 1MiB staged parts; sealed body cap=512MiB, process memory ceiling=4GiB.
     Explicit timeout/history overrides remain diagnostic inputs.
     A total-history override requires an explicit pair-history override.
+    Disk observation defaults to boundary-only: start/end disk census outside timed work.
+    periodic adds background disk resource sampling during timed work and may affect latency.
     --help, -h  Print this usage without running the rail.";
 
 struct CliArgs {
@@ -48,8 +58,15 @@ struct CliArgs {
     tiers: Vec<ScaleTier>,
     fresh_output: bool,
     client_timeout_ms: Option<u64>,
+    disk_observation: DiskObservationMode,
     history_max_bytes: Option<u64>,
     history_max_total_bytes: Option<u64>,
+    trace_out: Option<PathBuf>,
+}
+
+struct RunOutcome<T> {
+    benchmark_result: AnyResult<T>,
+    trace_status: Option<String>,
 }
 
 fn parse_client_timeout_ms(raw: &str) -> AnyResult<u64> {
@@ -68,15 +85,30 @@ fn parse_history_max_bytes(raw: &str) -> AnyResult<u64> {
     Ok(parsed)
 }
 
+fn parse_disk_observation(raw: &str) -> AnyResult<DiskObservationMode> {
+    match raw {
+        "boundary-only" => Ok(DiskObservationMode::BoundaryOnly),
+        "periodic" => Ok(DiskObservationMode::Periodic),
+        _ => anyhow::bail!("--disk-observation must be boundary-only or periodic"),
+    }
+}
+
 fn parse_args() -> AnyResult<CliArgs> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(args: impl IntoIterator<Item = String>) -> AnyResult<CliArgs> {
     let mut out_dir = PathBuf::from("artifacts/search-quality/scale/latest");
     let mut seed = DEFAULT_SEED;
     let mut tiers = vec![ScaleTier::Small];
     let mut out_dir_explicit = false;
     let mut client_timeout_ms = None;
+    let mut disk_observation = DiskObservationMode::default();
     let mut history_max_bytes = None;
     let mut history_max_total_bytes = None;
-    let mut args = std::env::args().skip(1);
+    let mut trace_mode = "off";
+    let mut trace_out = None;
+    let mut args = args.into_iter();
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--out-dir" => {
@@ -100,6 +132,12 @@ fn parse_args() -> AnyResult<CliArgs> {
                     .ok_or_else(|| anyhow::anyhow!("--client-timeout-ms requires a value"))?;
                 client_timeout_ms = Some(parse_client_timeout_ms(&raw)?);
             }
+            "--disk-observation" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--disk-observation requires a value"))?;
+                disk_observation = parse_disk_observation(&raw)?;
+            }
             "--history-max-bytes" => {
                 let raw = args
                     .next()
@@ -111,6 +149,22 @@ fn parse_args() -> AnyResult<CliArgs> {
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--history-max-total-bytes requires a value"))?;
                 history_max_total_bytes = Some(parse_history_max_bytes(&raw)?);
+            }
+            "--trace-mode" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--trace-mode requires off or record"))?;
+                trace_mode = match raw.as_str() {
+                    "off" => "off",
+                    "record" => "record",
+                    _ => anyhow::bail!("--trace-mode must be off or record"),
+                };
+            }
+            "--trace-out" => {
+                trace_out =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--trace-out requires a path")
+                    })?));
             }
             "--tier" => {
                 let raw = args
@@ -154,8 +208,32 @@ fn parse_args() -> AnyResult<CliArgs> {
             anyhow::bail!("--out-dir must be outside the checkout");
         }
     }
+    if (trace_mode == "record") != trace_out.is_some() {
+        anyhow::bail!("record mode requires --trace-out; off mode forbids it");
+    }
+    if let Some(path) = &trace_out {
+        if !path.is_absolute() || path.exists() {
+            anyhow::bail!("--trace-out must be an absolute new output path");
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("--trace-out has no parent"))?;
+        let existing_parent = if parent == out_dir {
+            out_dir
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("--out-dir has no parent"))?
+        } else {
+            parent
+        };
+        let parent = std::fs::canonicalize(existing_parent)?;
+        let checkout = std::fs::canonicalize(".")?;
+        if parent.starts_with(checkout) {
+            anyhow::bail!("--trace-out must be outside the checkout");
+        }
+    }
     let _history = ScaleRuntimeConfig {
         client_timeout: client_timeout_ms.map(Duration::from_millis),
+        disk_observation,
         history_max_bytes,
         history_max_total_bytes,
     }
@@ -166,57 +244,169 @@ fn parse_args() -> AnyResult<CliArgs> {
         tiers,
         fresh_output: out_dir_explicit,
         client_timeout_ms,
+        disk_observation,
         history_max_bytes,
         history_max_total_bytes,
+        trace_out,
     })
 }
 
-fn run(cli: &CliArgs) -> AnyResult<Vec<TierMeasurement>> {
-    // Provenance first: a run that cannot be attributed is not started.
-    let git_head = GitHeadV1::resolve(Path::new("."))?;
-    let host = HostV1::observe()?;
-    if cli.fresh_output {
-        if let Some(parent) = cli.out_dir.parent() {
-            std::fs::create_dir_all(parent)?;
+fn run(cli: &CliArgs) -> RunOutcome<Vec<TierMeasurement>> {
+    let outcome = (|| -> AnyResult<RunOutcome<Vec<TierMeasurement>>> {
+        // Establish provenance and the output root before creating the recorder.
+        let git_head = GitHeadV1::resolve(Path::new("."))?;
+        let host = HostV1::observe()?;
+        if cli.fresh_output {
+            if let Some(parent) = cli.out_dir.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::create_dir(&cli.out_dir)?;
         }
-        std::fs::create_dir(&cli.out_dir)?;
+        let mut capture = cli
+            .trace_out
+            .as_ref()
+            .map(|path| {
+                DiagnosticCaptureV1::start(path.clone(), DiagnosticCaptureLimitsV1::default())
+            })
+            .transpose()?;
+        let benchmark_result = run_with_capture(cli, capture.as_ref(), &git_head, &host);
+        Ok(close_capture_preserving_benchmark(
+            capture.as_mut(),
+            benchmark_result,
+        ))
+    })();
+    match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => RunOutcome {
+            benchmark_result: Err(error),
+            trace_status: None,
+        },
     }
-    let mut measurements = Vec::with_capacity(cli.tiers.len());
-    let runtime_config = ScaleRuntimeConfig {
-        client_timeout: cli.client_timeout_ms.map(Duration::from_millis),
-        history_max_bytes: cli.history_max_bytes,
-        history_max_total_bytes: cli.history_max_total_bytes,
+}
+
+fn close_capture_preserving_benchmark<T>(
+    capture: Option<&mut DiagnosticCaptureV1>,
+    benchmark_result: AnyResult<T>,
+) -> RunOutcome<T> {
+    let close = capture.map(|capture| capture.close(Duration::from_secs(5)));
+    let trace_status = match close {
+        None => None,
+        Some(Ok(closed)) => Some(format!(
+            "status={:?} events_written={} events_dropped={} events_unwritten={}",
+            closed.status, closed.events_written, closed.events_dropped, closed.events_unwritten
+        )),
+        Some(Err(error)) => Some(format!("status=close_error reason={error}")),
     };
-    let execution = runtime_config.execution_json()?;
-    for tier in &cli.tiers {
-        match measure_tier_with_runtime_config(*tier, cli.seed, runtime_config) {
-            Ok(measurement) => measurements.push(measurement),
-            Err(error) => {
-                let binding = source_binding_for_failure(*tier, cli.seed)?;
-                write_refusal_artifact_with_context(
-                    &binding,
-                    &cli.out_dir,
-                    &git_head,
-                    &host,
-                    &error,
-                    "scale",
-                    Some(&execution),
-                )?;
-                return Err(error);
+    RunOutcome {
+        benchmark_result,
+        trace_status,
+    }
+}
+
+fn run_with_capture(
+    cli: &CliArgs,
+    capture: Option<&DiagnosticCaptureV1>,
+    git_head: &GitHeadV1,
+    host: &HostV1,
+) -> AnyResult<Vec<TierMeasurement>> {
+    // This lease remains live through the measurement and either artifact
+    // path. Each runtime gets a separate child lease under one invocation root.
+    let invocation_lease = capture.and_then(DiagnosticCaptureV1::lease);
+    let invocation = invocation_lease
+        .as_ref()
+        .map(|lease| {
+            lease
+                .context()
+                .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))
+        })
+        .transpose()?;
+    let artifact_context = invocation_lease
+        .as_ref()
+        .zip(invocation.as_ref())
+        .map(|(lease, root)| lease.context().child_context(root));
+    let result = (|| -> AnyResult<Vec<TierMeasurement>> {
+        let mut measurements = Vec::with_capacity(cli.tiers.len());
+        let runtime_config = ScaleRuntimeConfig {
+            client_timeout: cli.client_timeout_ms.map(Duration::from_millis),
+            disk_observation: cli.disk_observation,
+            history_max_bytes: cli.history_max_bytes,
+            history_max_total_bytes: cli.history_max_total_bytes,
+        };
+        let execution = runtime_config.execution_json()?;
+        for tier in &cli.tiers {
+            let runtime_lease = invocation
+                .as_ref()
+                .and_then(|root| invocation_lease.as_ref()?.child_of(root));
+            match measure_tier_with_runtime_config_and_capture(
+                *tier,
+                cli.seed,
+                runtime_config,
+                runtime_lease,
+            ) {
+                Ok(measurement) => measurements.push(measurement),
+                Err(error) => {
+                    let binding = match source_binding_for_failure(*tier, cli.seed) {
+                        Ok(binding) => binding,
+                        Err(failure) => {
+                            return Err(error.context(format!(
+                                "refusal source binding also failed: {failure:#}"
+                            )));
+                        }
+                    };
+                    if let Err(failure) = trace_artifact_write(artifact_context.as_ref(), || {
+                        write_refusal_artifact_with_context(
+                            &binding,
+                            &cli.out_dir,
+                            git_head,
+                            host,
+                            &error,
+                            "scale",
+                            Some(&execution),
+                        )
+                    }) {
+                        return Err(error
+                            .context(format!("refusal artifact write also failed: {failure:#}")));
+                    }
+                    return Err(error);
+                }
             }
         }
-    }
-    // An all-tier run does not write earlier tier artifacts if a later tier
-    // refuses source or wire admission.
-    for measurement in &measurements {
-        let out_dir = if cli.tiers.len() == 1 {
-            cli.out_dir.clone()
-        } else {
-            cli.out_dir.join(measurement.tier.as_str())
-        };
-        write_artifacts(measurement, &out_dir, git_head.clone(), host.clone())?;
-    }
+        // An all-tier run does not write earlier tier artifacts if a later tier
+        // refuses source or wire admission.
+        for measurement in &measurements {
+            let out_dir = if cli.tiers.len() == 1 {
+                cli.out_dir.clone()
+            } else {
+                cli.out_dir.join(measurement.tier.as_str())
+            };
+            trace_artifact_write(artifact_context.as_ref(), || {
+                write_artifacts(measurement, &out_dir, (*git_head).clone(), (*host).clone())
+            })?;
+        }
+        Ok(measurements)
+    })();
+    let outcome = DiagnosticTerminalV1::from_result(&result);
+    let finished = invocation
+        .map(|invocation| invocation.finish(outcome))
+        .transpose();
+    let measurements = result?;
+    let _span_finished = finished?;
     Ok(measurements)
+}
+
+fn trace_artifact_write<T>(
+    diagnostic: Option<&DiagnosticContextV1>,
+    work: impl FnOnce() -> AnyResult<T>,
+) -> AnyResult<T> {
+    let span = diagnostic
+        .map(|context| context.enter(DiagnosticStageV1::ArtifactWrite, DiagnosticLaneV1(1)))
+        .transpose()?;
+    let result = work();
+    let outcome = DiagnosticTerminalV1::from_result(&result);
+    let finished = span.map(|span| span.finish(outcome)).transpose();
+    let artifact = result?;
+    let _span_finished = finished?;
+    Ok(artifact)
 }
 
 fn format_cold_open_ms(value: Option<f64>) -> String {
@@ -241,9 +431,18 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let measurements = match run(&cli) {
-        Ok(measurements) => measurements,
+    let outcome = run(&cli);
+    let measurements = match outcome.benchmark_result {
+        Ok(measurements) => {
+            if let Some(status) = outcome.trace_status {
+                println!("trace_capture: {status}");
+            }
+            measurements
+        }
         Err(err) => {
+            if let Some(status) = outcome.trace_status {
+                eprintln!("trace_capture: {status}");
+            }
             eprintln!("scale_matrix: {err:#}");
             return ExitCode::FAILURE;
         }
@@ -296,7 +495,37 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_cold_open_ms, parse_client_timeout_ms, parse_history_max_bytes};
+    use super::{
+        DiagnosticCaptureLimitsV1, DiagnosticCaptureV1, DiskObservationMode, format_cold_open_ms,
+        parse_args_from, parse_client_timeout_ms, parse_history_max_bytes,
+    };
+
+    #[test]
+    fn disk_observation_parser_defaults_and_refuses_invalid_inputs() {
+        let default = parse_args_from(Vec::<String>::new()).map(|args| args.disk_observation);
+        assert!(matches!(default, Ok(DiskObservationMode::BoundaryOnly)));
+
+        let periodic = parse_args_from(["--disk-observation", "periodic"].map(str::to_owned))
+            .map(|args| args.disk_observation);
+        assert!(matches!(periodic, Ok(DiskObservationMode::Periodic)));
+
+        let explicit_boundary =
+            parse_args_from(["--disk-observation", "boundary-only"].map(str::to_owned))
+                .map(|args| args.disk_observation);
+        assert!(matches!(
+            explicit_boundary,
+            Ok(DiskObservationMode::BoundaryOnly)
+        ));
+
+        assert!(matches!(
+            parse_args_from(["--disk-observation"].map(str::to_owned)),
+            Err(error) if error.to_string() == "--disk-observation requires a value"
+        ));
+        assert!(matches!(
+            parse_args_from(["--disk-observation", "sampled"].map(str::to_owned)),
+            Err(error) if error.to_string() == "--disk-observation must be boundary-only or periodic"
+        ));
+    }
 
     #[test]
     fn absent_query_cold_open_is_not_printed_as_zero() {
@@ -328,5 +557,103 @@ mod tests {
         for invalid in ["0", "nan", "-1"] {
             assert!(parse_history_max_bytes(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn trace_mode_requires_one_new_external_output() {
+        let root = tempfile::tempdir().expect("external output parent");
+        let output = root.path().join("new-output");
+        let trace = output.join("causal-timeline.jsonl");
+        let root_flag = output.to_string_lossy().into_owned();
+        let trace_flag = trace.to_string_lossy().into_owned();
+        assert!(
+            parse_args_from([
+                "--out-dir".to_owned(),
+                root_flag.clone(),
+                "--trace-mode".to_owned(),
+                "record".to_owned(),
+                "--trace-out".to_owned(),
+                trace_flag.clone(),
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse_args_from([
+                "--out-dir".to_owned(),
+                root_flag.clone(),
+                "--trace-mode".to_owned(),
+                "off".to_owned(),
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse_args_from([
+                "--out-dir".to_owned(),
+                root_flag.clone(),
+                "--trace-mode".to_owned(),
+                "record".to_owned(),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_args_from([
+                "--out-dir".to_owned(),
+                root_flag,
+                "--trace-out".to_owned(),
+                trace_flag,
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn trace_close_status_is_retained_when_workload_fails() {
+        let root = tempfile::tempdir().expect("external trace output");
+        let path = root.path().join("causal-timeline.jsonl");
+        let mut capture = DiagnosticCaptureV1::start(path, DiagnosticCaptureLimitsV1::default())
+            .expect("start capture");
+
+        let outcome = super::close_capture_preserving_benchmark(
+            Some(&mut capture),
+            Err::<(), _>(anyhow::anyhow!("workload failure")),
+        );
+
+        assert!(
+            matches!(outcome.benchmark_result, Err(error) if error.to_string() == "workload failure")
+        );
+        assert!(
+            outcome
+                .trace_status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("status=Complete "))
+        );
+    }
+
+    #[test]
+    fn trace_close_error_does_not_revoke_successful_workload() {
+        let root = tempfile::tempdir().expect("external trace output");
+        let path = root.path().join("causal-timeline.jsonl");
+        let mut capture = DiagnosticCaptureV1::start(path, DiagnosticCaptureLimitsV1::default())
+            .expect("start capture");
+        let lease = capture.lease().expect("active capture lease");
+
+        let outcome = super::close_capture_preserving_benchmark(
+            Some(&mut capture),
+            Ok::<_, anyhow::Error>(()),
+        );
+
+        assert!(outcome.benchmark_result.is_ok());
+        assert!(
+            outcome
+                .trace_status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("status=close_error reason="))
+        );
+        drop(lease);
+        drop(
+            capture
+                .close(std::time::Duration::from_secs(5))
+                .expect("capture closes after lease release"),
+        );
     }
 }

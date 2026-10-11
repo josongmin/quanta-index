@@ -4,10 +4,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::MutexGuard;
 use std::{fmt, fs};
 
-use quanta_index_contract::{GenerationSnapshot, ManifestGeneration, RepoId, RevisionId};
-use quanta_index_core::CoreError;
+use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneErrorCodeV2};
+use quanta_index_core::{
+    CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticLaneV1, DiagnosticStageV1,
+    DiagnosticTerminalV1,
+};
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -28,7 +32,143 @@ use crate::search_corpus_retention::{
     SearchCorpusHistoryRetentionItemV1, SearchCorpusHistoryRetentionPlanV1,
 };
 
+fn observe_retention_result<T>(
+    diagnostic: Option<&DiagnosticContextV1>,
+    stage: DiagnosticStageV1,
+    action: impl FnOnce(Option<&DiagnosticContextV1>) -> Result<T, CoreError>,
+) -> Result<T, CoreError> {
+    let span = diagnostic.and_then(|context| {
+        context.enter(stage, DiagnosticLaneV1(1)).map_or_else(
+            |trace_error| {
+                context.health(match trace_error {
+                    quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                        quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                        quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                        quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                        quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
+                    }
+                });
+                None
+            },
+            Some,
+        )
+    });
+    let child = diagnostic
+        .zip(span.as_ref())
+        .map(|(context, span)| context.child_context(span));
+    let result = action(child.as_ref());
+    if let Some(span) = span {
+        let outcome = DiagnosticTerminalV1::from_result(&result);
+        let _trace_completion = span.finish(outcome);
+    }
+    result
+}
+
+struct ObservedRootLock<'a> {
+    guard: Option<MutexGuard<'a, ()>>,
+    hold: Option<quanta_index_core::DiagnosticSpanGuardV1>,
+}
+
+impl Drop for ObservedRootLock<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        if let Some(hold) = self.hold.take() {
+            let _trace_completion = hold.finish(DiagnosticTerminalV1::Ok);
+        }
+    }
+}
+
+fn is_restore_content_integrity_refusal(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
+                | SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
+            ..
+        }
+    )
+}
+
 impl AuxiliaryAuthorityStore {
+    fn lock_search_corpus_root_observed(
+        &self,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<ObservedRootLock<'_>, CoreError> {
+        let wait = diagnostic.and_then(|context| {
+            context
+                .enter(
+                    DiagnosticStageV1::RetentionRootLockWait,
+                    DiagnosticLaneV1(1),
+                )
+                .map_or_else(
+                    |trace_error| {
+                        context.health(match trace_error {
+                            quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                                quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                                quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                                quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                                quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
+                            }
+                        });
+                        None
+                    },
+                    Some,
+                )
+        });
+        let guard = self.search_corpus_root_lock.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "search-corpus authority: state-root retention lock poisoned: {err}"
+            ))
+        });
+        if let Some(wait) = wait {
+            let _trace_completion = wait.finish(DiagnosticTerminalV1::from_result(&guard));
+        }
+        let guard = guard?;
+        let hold = diagnostic.and_then(|context| {
+            context
+                .enter(
+                    DiagnosticStageV1::RetentionRootLockHold,
+                    DiagnosticLaneV1(1),
+                )
+                .map_or_else(
+                    |trace_error| {
+                        context.health(match trace_error {
+                            quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                                quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                                quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                                quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                                quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
+                            }
+                        });
+                        None
+                    },
+                    Some,
+                )
+        });
+        Ok(ObservedRootLock {
+            guard: Some(guard),
+            hold,
+        })
+    }
+
     /// Keep durable record admission excluded through a quarantine decision
     /// and its physical removal. A path with unreadable identity can still be
     /// matched to records by hashing each retained record's known pair.
@@ -70,10 +210,6 @@ impl AuxiliaryAuthorityStore {
     /// scan occurs. Cross-pair deletion is intentionally forbidden because
     /// this owner has no product-active pin authority for choosing a safe
     /// victim.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the pair guard must remain held through active-pin validation, durable record admission, and retention GC"
-    )]
     pub fn record_sealed_search_corpus(
         &self,
         repo_id: &RepoId,
@@ -81,19 +217,42 @@ impl AuxiliaryAuthorityStore {
         generation: ManifestGeneration,
         manifest_digest: &str,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
-        let pair_guard = self.lifecycle_coordinator.lock_pair(repo_id, revision_id)?;
+        self.record_sealed_search_corpus_observed(
+            repo_id,
+            revision_id,
+            generation,
+            manifest_digest,
+            None,
+        )
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the pair and root guards must remain held through active-pin validation, durable record admission, and retention GC"
+    )]
+    pub(crate) fn record_sealed_search_corpus_observed(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
+        let pair_guard =
+            self.lifecycle_coordinator
+                .lock_pair_observed(repo_id, revision_id, diagnostic)?;
         let active = self.active_pins.active_search_corpus_under_guard_v1(
             &pair_guard,
             repo_id,
             revision_id,
         )?;
-        let _root_guard = self.search_corpus_root_lock.lock().map_err(|err| {
-            CoreError::Storage(format!(
-                "search-corpus authority: state-root retention lock poisoned: {err}"
-            ))
-        })?;
+        let _root_guard = self.lock_search_corpus_root_observed(diagnostic)?;
         let pair_dir = self.search_corpus_pair_dir(repo_id, revision_id);
-        let mut root_snapshot = self.load_search_corpus_root_snapshot_v1()?;
+        let mut root_snapshot = observe_retention_result(
+            diagnostic,
+            DiagnosticStageV1::RetentionRootSnapshot,
+            |_diagnostic| self.load_search_corpus_root_snapshot_v1(),
+        )?;
         let _pair_directory_was_present = root_snapshot.pair_directories.remove(&pair_dir);
         let pair_records = root_snapshot.pairs.remove(&pair_dir).unwrap_or_default();
         for authority in &pair_records {
@@ -121,6 +280,7 @@ impl AuxiliaryAuthorityStore {
                     active.as_ref(),
                     &root_snapshot,
                     pair_records,
+                    diagnostic,
                 );
             }
             return Err(CoreError::Typed {
@@ -145,6 +305,7 @@ impl AuxiliaryAuthorityStore {
             active.as_ref(),
             &root_snapshot,
             pair_records,
+            diagnostic,
         )
     }
 
@@ -162,28 +323,41 @@ impl AuxiliaryAuthorityStore {
         active: Option<&SearchCorpusGenerationV1>,
         root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
         pair_records: Vec<SearchCorpusAuthorityFileV1>,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
-        ensure_durable_directory_v1(
-            pair_dir,
-            "search-corpus authority",
-            self.parent_sync.as_ref(),
+        observe_retention_result(
+            diagnostic,
+            DiagnosticStageV1::RetentionWrite,
+            |_diagnostic| {
+                ensure_durable_directory_v1(
+                    pair_dir,
+                    "search-corpus authority",
+                    self.parent_sync.as_ref(),
+                )?;
+                sync_existing_file_parent_v1(
+                    path,
+                    "search-corpus authority",
+                    self.parent_sync.as_ref(),
+                )?;
+                self.sync_search_corpus_staging_after_exact_retry_v1()
+            },
         )?;
-        sync_existing_file_parent_v1(path, "search-corpus authority", self.parent_sync.as_ref())?;
-        self.sync_search_corpus_staging_after_exact_retry_v1()?;
         let plan = self.plan_search_corpus_pair_records_v1(
             repo_id,
             revision_id,
             &pair_records,
             Some(generation),
             active,
+            diagnostic,
         )?;
-        self.validate_search_corpus_state_root_projection_v1(root_without_pair, &plan)?;
+        self.validate_search_corpus_state_root_projection_v1(root_without_pair, &plan, diagnostic)?;
         let enforced = self.enforce_search_corpus_history_retention_snapshot_v1(
             repo_id,
             revision_id,
             pair_dir,
             pair_records,
             &plan,
+            diagnostic,
         )?;
         if enforced
             .retained
@@ -219,27 +393,10 @@ impl AuxiliaryAuthorityStore {
         active: Option<&SearchCorpusGenerationV1>,
         root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
         mut pair_records: Vec<SearchCorpusAuthorityFileV1>,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
-        // A directory removed after physical seal but before durable admission
-        // cannot become a zero-byte authority record. The caller holds the
-        // pair guard; quarantine refuses canonical paths with unknown pairs.
-        let candidate = BTreeSet::from([generation]);
-        if self
-            .index_bytes
-            .measure_index_bytes(repo_id, revision_id, &candidate)?
-            .absent
-            .contains(&generation)
-        {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
-                message: format!(
-                    "search-corpus authority: sealed generation {} of repo={} revision={} is absent from at least one index track",
-                    generation.get(),
-                    repo_id.as_str(),
-                    revision_id.as_str(),
-                ),
-            });
-        }
+        // The retention plan requires this candidate and checks its physical
+        // presence before writing the durable authority record.
         let record =
             SearchCorpusAuthorityRecordV1::new(repo_id, revision_id, generation, manifest_digest);
         let bytes = encode_cbor_payload(&record).map_err(|err| {
@@ -265,32 +422,39 @@ impl AuxiliaryAuthorityStore {
             &pair_records,
             Some(generation),
             active,
+            diagnostic,
         )?;
-        self.validate_search_corpus_state_root_projection_v1(root_without_pair, &plan)?;
-        ensure_durable_directory_v1(
-            pair_dir,
-            "search-corpus authority",
-            self.parent_sync.as_ref(),
-        )?;
-        match atomic_replace_file_from_staging_v1(
-            path,
-            &bytes,
-            &self.search_corpus_staging_dir,
-            "search-corpus authority",
-            self.parent_sync.as_ref(),
-        )? {
-            AtomicFileWriteOutcomeV1::Durable => {
-                let enforced = self.enforce_search_corpus_history_retention_snapshot_v1(
-                    repo_id,
-                    revision_id,
+        self.validate_search_corpus_state_root_projection_v1(root_without_pair, &plan, diagnostic)?;
+        observe_retention_result(
+            diagnostic,
+            DiagnosticStageV1::RetentionWrite,
+            |_diagnostic| {
+                ensure_durable_directory_v1(
                     pair_dir,
-                    pair_records,
-                    &plan,
+                    "search-corpus authority",
+                    self.parent_sync.as_ref(),
                 )?;
-                Ok(enforced.receipt)
-            }
-            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => Err(error),
-        }
+                match atomic_replace_file_from_staging_v1(
+                    path,
+                    &bytes,
+                    &self.search_corpus_staging_dir,
+                    "search-corpus authority",
+                    self.parent_sync.as_ref(),
+                )? {
+                    AtomicFileWriteOutcomeV1::Durable => Ok(()),
+                    AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => Err(error),
+                }
+            },
+        )?;
+        let enforced = self.enforce_search_corpus_history_retention_snapshot_v1(
+            repo_id,
+            revision_id,
+            pair_dir,
+            pair_records,
+            &plan,
+            diagnostic,
+        )?;
+        Ok(enforced.receipt)
     }
 
     fn sync_search_corpus_staging_after_exact_retry_v1(&self) -> Result<(), CoreError> {
@@ -469,7 +633,7 @@ impl AuxiliaryAuthorityStore {
         records: &[SearchCorpusAuthorityFileV1],
         required_generation: Option<ManifestGeneration>,
         active: Option<&SearchCorpusGenerationV1>,
-    ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+    ) -> Result<Vec<crate::search_corpus_lifecycle::UnresolvedSourceTargetV1>, CoreError> {
         if let Some(active) = active {
             let exact = records.iter().any(|record| {
                 record.record.generation == active.manifest_generation()
@@ -491,34 +655,38 @@ impl AuxiliaryAuthorityStore {
         if let Some(candidate) = required_generation
             && let Some(older) = unresolved
                 .iter()
-                .find(|target| target.manifest_generation < candidate)
+                .find(|target| target.generation() < candidate)
         {
             // A later physical seal becomes the current track identity even
             // if retention preserves the older authority. The older event
             // could then never activate, so admit no later seal until it does.
             return Err(CoreError::NotReady(format!(
                 "search-corpus history retention: unresolved source generation {} must activate before generation {} can seal",
-                older.manifest_generation.get(),
+                older.generation().get(),
                 candidate.get(),
             )));
         }
         for target in &unresolved {
             let recorded = records
                 .iter()
-                .find(|record| record.record.generation == target.manifest_generation);
-            match recorded {
-                Some(record) if record.record.manifest_digest == target.manifest_digest => {}
-                Some(_) => {
+                .find(|record| record.record.generation == target.generation());
+            match (target, recorded) {
+                (
+                    crate::search_corpus_lifecycle::UnresolvedSourceTargetV1::Bound(bound),
+                    Some(record),
+                ) if record.record.manifest_digest == bound.manifest_digest => {}
+                (crate::search_corpus_lifecycle::UnresolvedSourceTargetV1::Bound(_), Some(_)) => {
                     return Err(CoreError::Storage(format!(
                         "search-corpus history retention: unresolved source target identity differs from durable history for repo={} revision={} generation={}",
                         repo_id.as_str(),
                         revision_id.as_str(),
-                        target.manifest_generation.get(),
+                        target.generation().get(),
                     )));
                 }
                 // A newer unrecorded target is not swept by an older
                 // candidate's physical GC. Boot also performs no mutation.
-                None => {}
+                (crate::search_corpus_lifecycle::UnresolvedSourceTargetV1::Allocated(_), _)
+                | (crate::search_corpus_lifecycle::UnresolvedSourceTargetV1::Bound(_), None) => {}
             }
         }
         Ok(unresolved)
@@ -533,49 +701,92 @@ impl AuxiliaryAuthorityStore {
         records: &[SearchCorpusAuthorityFileV1],
         required_generation: Option<ManifestGeneration>,
         active: Option<&SearchCorpusGenerationV1>,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionPlanV1, CoreError> {
-        let unresolved = self.validate_search_corpus_pair_record_pins_v1(
-            repo_id,
-            revision_id,
-            records,
-            required_generation,
-            active,
-        )?;
-        let mut measure = |generations: &BTreeSet<ManifestGeneration>| {
-            let measured =
-                self.index_bytes
-                    .measure_index_bytes(repo_id, revision_id, generations)?;
-            if let Some(first_absent) = measured.absent.iter().next() {
-                return Err(CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
-                    message: format!(
-                        "search-corpus history retention: repo={} revision={} has {} physically absent retained generation(s), first={}; repair the durable history before admitting another generation",
-                        repo_id.as_str(),
-                        revision_id.as_str(),
-                        measured.absent.len(),
-                        first_absent.get(),
-                    ),
-                });
-            }
-            Ok(measured.bytes)
-        };
-        self.search_corpus_history_retention.plan(
-            records
-                .iter()
-                .map(|record| SearchCorpusHistoryRetentionItemV1 {
-                    generation: record.record.generation,
-                    candidate: required_generation == Some(record.record.generation),
-                    active: active.is_some_and(|active| {
-                        active.manifest_generation() == record.record.generation
-                            && active.manifest_digest() == record.record.manifest_digest.as_str()
-                    }),
-                    unresolved_source: unresolved
-                        .iter()
-                        .any(|target| target.manifest_generation == record.record.generation),
-                })
-                .collect(),
-            &mut measure,
-        )
+        let span = diagnostic.and_then(|context| {
+            context
+                .enter(DiagnosticStageV1::RetentionPlan, DiagnosticLaneV1(1))
+                .map_or_else(
+                    |trace_error| {
+                        context.health(match trace_error {
+                            quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                                quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                                quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                                quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                                quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
+                            }
+                        });
+                        None
+                    },
+                    Some,
+                )
+        });
+        let child = diagnostic
+            .zip(span.as_ref())
+            .map(|(context, span)| context.child_context(span));
+        let mut measure_calls = 0_u64;
+        let result = (|| {
+            let unresolved = self.validate_search_corpus_pair_record_pins_v1(
+                repo_id,
+                revision_id,
+                records,
+                required_generation,
+                active,
+            )?;
+            let mut measure = |generations: &BTreeSet<ManifestGeneration>| {
+                if child.is_some() {
+                    measure_calls = measure_calls.saturating_add(1);
+                }
+                let measured = self.index_bytes.measure_index_bytes(
+                    repo_id,
+                    revision_id,
+                    generations,
+                    child.as_ref(),
+                )?;
+                if let Some(first_absent) = measured.absent.iter().next() {
+                    return Err(CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+                        message: format!(
+                            "search-corpus history retention: repo={} revision={} has {} physically absent retained generation(s), first={}; repair the durable history before admitting another generation",
+                            repo_id.as_str(),
+                            revision_id.as_str(),
+                            measured.absent.len(),
+                            first_absent.get(),
+                        ),
+                    });
+                }
+                Ok(measured.bytes)
+            };
+            self.search_corpus_history_retention.plan(
+                records
+                    .iter()
+                    .map(|record| SearchCorpusHistoryRetentionItemV1 {
+                        generation: record.record.generation,
+                        candidate: required_generation == Some(record.record.generation),
+                        active: active.is_some_and(|active| {
+                            active.manifest_generation() == record.record.generation
+                                && active.manifest_digest()
+                                    == record.record.manifest_digest.as_str()
+                        }),
+                        unresolved_source: unresolved
+                            .iter()
+                            .any(|target| target.generation() == record.record.generation),
+                    })
+                    .collect(),
+                &mut measure,
+            )
+        })();
+        if let (Some(context), Some(span)) = (diagnostic, span) {
+            context.counter(&span, DiagnosticCounterV1::MeasureCalls, measure_calls);
+            let _trace_completion = span.finish(DiagnosticTerminalV1::from_result(&result));
+        }
+        result
     }
 
     /// The index bytes every other pair in the root occupies: its records
@@ -583,6 +794,8 @@ impl AuxiliaryAuthorityStore {
     fn other_pairs_index_bytes_v1(
         &self,
         root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+        measure_calls: &mut u64,
     ) -> Result<u64, CoreError> {
         let mut total = 0_u64;
         for records in root_without_pair.pairs.values() {
@@ -593,12 +806,16 @@ impl AuxiliaryAuthorityStore {
                 .iter()
                 .map(|record| record.record.generation)
                 .collect();
+            if diagnostic.is_some() {
+                *measure_calls = measure_calls.saturating_add(1);
+            }
             let bytes = self
                 .index_bytes
                 .measure_index_bytes(
                     &first.record.repo_id,
                     &first.record.revision_id,
                     &generations,
+                    diagnostic,
                 )?
                 .bytes;
             total = total.checked_add(bytes).ok_or_else(|| {
@@ -617,29 +834,83 @@ impl AuxiliaryAuthorityStore {
         &self,
         root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
         plan: &SearchCorpusHistoryRetentionPlanV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
-        let projected_pairs = root_without_pair
-            .pair_directories
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| {
-                CoreError::Storage(
-                    "search-corpus history retention: revision-pair count overflow".to_string(),
+        let span = diagnostic.and_then(|context| {
+            context
+                .enter(DiagnosticStageV1::RetentionMeasure, DiagnosticLaneV1(1))
+                .map_or_else(
+                    |trace_error| {
+                        context.health(match trace_error {
+                            quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                                quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                                quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                                quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                                quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
+                            }
+                        });
+                        None
+                    },
+                    Some,
                 )
-            })?;
-        let projected_total_bytes = self
-            .other_pairs_index_bytes_v1(root_without_pair)?
-            .checked_add(plan.retained_bytes())
-            .ok_or_else(|| {
-                CoreError::Storage(
-                    "search-corpus history retention: projected state-root byte total overflow"
-                        .to_string(),
-                )
-            })?;
-        if projected_pairs > self.search_corpus_history_retention.max_revision_pairs()
-            || projected_total_bytes > self.search_corpus_history_retention.max_total_bytes()
-        {
-            return Err(CoreError::Typed {
+        });
+        let child = diagnostic
+            .zip(span.as_ref())
+            .map(|(context, span)| context.child_context(span));
+        let mut observed_pairs = None;
+        let mut measure_calls = 0_u64;
+        let result = (|| {
+            let projected_pairs = root_without_pair
+                .pair_directories
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| {
+                    CoreError::Storage(
+                        "search-corpus history retention: revision-pair count overflow".to_string(),
+                    )
+                })?;
+            if child.is_some() {
+                observed_pairs = match u64::try_from(projected_pairs) {
+                    Ok(count) => Some(count),
+                    Err(_overflow) => {
+                        if let Some(context) = child.as_ref() {
+                            context
+                                .health(quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow);
+                        }
+                        None
+                    }
+                };
+                measure_calls = measure_calls.saturating_add(1);
+            }
+            let projected_total_bytes = match self
+                .index_bytes
+                .measure_state_root_index_bytes(child.as_ref())?
+            {
+                Some(physical) => physical,
+                None => self
+                    .other_pairs_index_bytes_v1(
+                        root_without_pair,
+                        child.as_ref(),
+                        &mut measure_calls,
+                    )?
+                    .checked_add(plan.retained_bytes())
+                    .ok_or_else(|| {
+                        CoreError::Storage(
+                        "search-corpus history retention: projected state-root byte total overflow"
+                            .to_string(),
+                    )
+                    })?,
+            };
+            if projected_pairs > self.search_corpus_history_retention.max_revision_pairs()
+                || projected_total_bytes > self.search_corpus_history_retention.max_total_bytes()
+            {
+                return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
                 message: format!(
                     "search-corpus history retention: state-root admission requires revision_pairs={projected_pairs} index_total_bytes={projected_total_bytes}, limits are max_revision_pairs={} max_total_bytes={}; cross-pair deletion is unavailable without product-active pin authority",
@@ -647,8 +918,17 @@ impl AuxiliaryAuthorityStore {
                     self.search_corpus_history_retention.max_total_bytes(),
                 ),
             });
+            }
+            Ok(())
+        })();
+        if let (Some(context), Some(span)) = (diagnostic, span) {
+            if let Some(projected_pairs) = observed_pairs {
+                context.counter(&span, DiagnosticCounterV1::RetainedPairs, projected_pairs);
+            }
+            context.counter(&span, DiagnosticCounterV1::MeasureCalls, measure_calls);
+            let _trace_completion = span.finish(DiagnosticTerminalV1::from_result(&result));
         }
-        Ok(())
+        result
     }
 
     pub(super) fn enforce_search_corpus_history_retention_snapshot_v1(
@@ -658,54 +938,90 @@ impl AuxiliaryAuthorityStore {
         pair_dir: &Path,
         records: Vec<SearchCorpusAuthorityFileV1>,
         plan: &SearchCorpusHistoryRetentionPlanV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<EnforcedSearchCorpusHistoryRetentionV1, CoreError> {
-        for record in &records {
-            if &record.record.repo_id != repo_id || &record.record.revision_id != revision_id {
-                return Err(CoreError::Storage(format!(
-                    "search-corpus authority: pair directory contains foreign identity in {}",
-                    record.path.display()
-                )));
+        let span = diagnostic.and_then(|context| {
+            context
+                .enter(DiagnosticStageV1::RetentionReap, DiagnosticLaneV1(1))
+                .map_or_else(
+                    |trace_error| {
+                        context.health(match trace_error {
+                            quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                                quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                                quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                                quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
+                            }
+                            quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                                quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
+                            }
+                        });
+                        None
+                    },
+                    Some,
+                )
+        });
+        let mut removed = 0_u64;
+        let result = (|| {
+            for record in &records {
+                if &record.record.repo_id != repo_id || &record.record.revision_id != revision_id {
+                    return Err(CoreError::Storage(format!(
+                        "search-corpus authority: pair directory contains foreign identity in {}",
+                        record.path.display()
+                    )));
+                }
             }
-        }
 
-        let (retained, reaped): (Vec<_>, Vec<_>) = records
-            .into_iter()
-            .partition(|record| plan.retains(record.record.generation));
-        let retained_generations = retained
-            .iter()
-            .map(|record| record.record.generation)
-            .collect();
-        let reaped_generations = reaped
-            .iter()
-            .map(|record| record.record.generation)
-            .collect();
-        for record in &reaped {
-            fs::remove_file(&record.path).map_err(|err| {
-                CoreError::Storage(format!(
-                    "search-corpus history retention: remove reaped authority {}: {err}",
-                    record.path.display()
-                ))
-            })?;
+            let (retained, reaped): (Vec<_>, Vec<_>) = records
+                .into_iter()
+                .partition(|record| plan.retains(record.record.generation));
+            let retained_generations = retained
+                .iter()
+                .map(|record| record.record.generation)
+                .collect();
+            let reaped_generations = reaped
+                .iter()
+                .map(|record| record.record.generation)
+                .collect();
+            for record in &reaped {
+                fs::remove_file(&record.path).map_err(|err| {
+                    CoreError::Storage(format!(
+                        "search-corpus history retention: remove reaped authority {}: {err}",
+                        record.path.display()
+                    ))
+                })?;
+                if span.is_some() {
+                    removed = removed.saturating_add(1);
+                }
+            }
+            if !reaped.is_empty() {
+                self.parent_sync.sync_parent(pair_dir).map_err(|err| {
+                    CoreError::Storage(format!(
+                        "search-corpus history retention: fsync pair directory {} after GC: {err}",
+                        pair_dir.display()
+                    ))
+                })?;
+            }
+            Ok(EnforcedSearchCorpusHistoryRetentionV1 {
+                retained,
+                receipt: SearchCorpusHistoryRetentionReceiptV1 {
+                    repo_id: repo_id.clone(),
+                    revision_id: revision_id.clone(),
+                    retained_generations,
+                    reaped_generations,
+                    retained_index_bytes: plan.retained_bytes(),
+                    store_reconciled_v1: true,
+                },
+            })
+        })();
+        if let (Some(context), Some(span)) = (diagnostic, span) {
+            context.counter(&span, DiagnosticCounterV1::RemovedRoots, removed);
+            let _trace_completion = span.finish(DiagnosticTerminalV1::from_result(&result));
         }
-        if !reaped.is_empty() {
-            self.parent_sync.sync_parent(pair_dir).map_err(|err| {
-                CoreError::Storage(format!(
-                    "search-corpus history retention: fsync pair directory {} after GC: {err}",
-                    pair_dir.display()
-                ))
-            })?;
-        }
-        Ok(EnforcedSearchCorpusHistoryRetentionV1 {
-            retained,
-            receipt: SearchCorpusHistoryRetentionReceiptV1 {
-                repo_id: repo_id.clone(),
-                revision_id: revision_id.clone(),
-                retained_generations,
-                reaped_generations,
-                retained_index_bytes: plan.retained_bytes(),
-                store_reconciled_v1: true,
-            },
-        })
+        result
     }
 
     pub(super) fn restore_search_corpus_history_into(
@@ -751,6 +1067,7 @@ impl AuxiliaryAuthorityStore {
         }
         let mut planned = Vec::with_capacity(snapshot.pairs.len());
         let mut projected_total_bytes = 0_u64;
+        let mut physical_bound_for_unverified_pair = None;
         for (pair_path, observed) in snapshot.pairs {
             let first = observed.first().ok_or_else(|| {
                 CoreError::Storage(format!(
@@ -776,38 +1093,93 @@ impl AuxiliaryAuthorityStore {
             }
             let measured =
                 self.index_bytes
-                    .measure_index_bytes(&repo_id, &revision_id, &generations)?;
-            let plan = if measured.absent.is_empty() {
-                self.plan_search_corpus_pair_records_v1(
-                    &repo_id,
-                    &revision_id,
-                    &observed,
-                    None,
-                    active,
-                )?
-            } else {
-                let _unresolved = self.validate_search_corpus_pair_record_pins_v1(
-                    &repo_id,
-                    &revision_id,
-                    &observed,
-                    None,
-                    active,
-                )?;
-                // A missing track remains in durable history so rollback can
-                // fail with its exact target. Do not let that ghost consume a
-                // slot and cause a healthy record to be reaped at bootstrap.
-                self.search_corpus_history_retention
-                    .preserve_unreconciled_restore(generations, measured.bytes)?
+                    .measure_index_bytes(&repo_id, &revision_id, &generations, None);
+            let plan = match measured {
+                Ok(measured) if measured.absent.is_empty() => {
+                    if let Some(plan) = self
+                        .search_corpus_history_retention
+                        .retain_all_preverified_for_restore(&generations, measured.bytes)
+                    {
+                        let _unresolved = self.validate_search_corpus_pair_record_pins_v1(
+                            &repo_id,
+                            &revision_id,
+                            &observed,
+                            None,
+                            active,
+                        )?;
+                        plan
+                    } else {
+                        self.plan_search_corpus_pair_records_v1(
+                            &repo_id,
+                            &revision_id,
+                            &observed,
+                            None,
+                            active,
+                            None,
+                        )?
+                    }
+                }
+                Ok(measured) => {
+                    let _unresolved = self.validate_search_corpus_pair_record_pins_v1(
+                        &repo_id,
+                        &revision_id,
+                        &observed,
+                        None,
+                        active,
+                    )?;
+                    // A missing track remains in durable history so rollback
+                    // can fail with its exact target. Do not let that ghost
+                    // consume a slot and reap a healthy record at bootstrap.
+                    self.search_corpus_history_retention
+                        .preserve_unreconciled_restore(generations, measured.bytes)?
+                }
+                Err(error) if is_restore_content_integrity_refusal(&error) => {
+                    let _unresolved = self.validate_search_corpus_pair_record_pins_v1(
+                        &repo_id,
+                        &revision_id,
+                        &observed,
+                        None,
+                        active,
+                    )?;
+                    // The content proof belongs to active rehydration or a
+                    // later rollback/scrub. Until then, retain every durable
+                    // history record. The complete physical state-root size
+                    // is a conservative mathematical upper bound on any one
+                    // pair; it may reject a damaged pair in a multi-pair root.
+                    let physical = match physical_bound_for_unverified_pair {
+                        Some(physical) => physical,
+                        None => match self.index_bytes.measure_state_root_index_bytes(None)? {
+                            Some(physical) => {
+                                physical_bound_for_unverified_pair = Some(physical);
+                                physical
+                            }
+                            None => return Err(error),
+                        },
+                    };
+                    self.search_corpus_history_retention
+                        .preserve_unreconciled_restore(generations, physical)?
+                }
+                Err(error) => return Err(error),
             };
-            projected_total_bytes = projected_total_bytes
-                .checked_add(plan.retained_bytes())
-                .ok_or_else(|| {
-                    CoreError::Storage(
-                        "search-corpus history retention: restore byte total overflow".to_string(),
-                    )
-                })?;
+            if physical_bound_for_unverified_pair.is_none() {
+                projected_total_bytes = projected_total_bytes
+                    .checked_add(plan.retained_bytes())
+                    .ok_or_else(|| {
+                        CoreError::Storage(
+                            "search-corpus history retention: restore byte total overflow"
+                                .to_string(),
+                        )
+                    })?;
+            }
             planned.push((pair_path, observed, repo_id, revision_id, plan));
         }
+        let projected_total_bytes = match physical_bound_for_unverified_pair {
+            Some(physical) => physical,
+            None => self
+                .index_bytes
+                .measure_state_root_index_bytes(None)?
+                .unwrap_or(projected_total_bytes),
+        };
         if projected_total_bytes > self.search_corpus_history_retention.max_total_bytes() {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
@@ -824,6 +1196,7 @@ impl AuxiliaryAuthorityStore {
                 &pair_path,
                 observed,
                 &plan,
+                None,
             )?;
             for authority in enforced.retained {
                 let record = authority.record;

@@ -1788,6 +1788,20 @@ fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
         removed_text: "secondary removed line",
         touched_text: "secondary touched line",
     })?;
+    for row in AUTHORITY_CORPUS {
+        let _candidate_ids = rt.ingest_text_chunks(
+            "repo-e2e",
+            row.path,
+            &[e2e_harness::E2eTextChunkSpec {
+                content: row.content,
+                start_line: 1,
+                end_line: 2,
+                source_repo_id: Some(PARITY_SOURCE_REPO_ID),
+            }],
+        )?;
+    }
+    rt.declare_staged_symbol_extraction_complete()?;
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_repo_commit_recency_batch(RepoCommitRecencyIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
@@ -1884,18 +1898,6 @@ fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
             },
         ],
     })?;
-    for row in AUTHORITY_CORPUS {
-        let _candidate_ids = rt.ingest_text_chunks(
-            "repo-e2e",
-            row.path,
-            &[e2e_harness::E2eTextChunkSpec {
-                content: row.content,
-                start_line: 1,
-                end_line: 2,
-                source_repo_id: Some(PARITY_SOURCE_REPO_ID),
-            }],
-        )?;
-    }
     rt.ingest_runtime_catalog(&E2eRuntimeCatalogSpec {
         producer_head_applied_at_ms: 100,
         generation_materialized_at_ms: 20,
@@ -2380,10 +2382,13 @@ fn assess_scenario(rt: &mut E2eRuntime, scenario: &ParityScenario) -> RowReport 
 fn run_parity_matrix(
     scenarios: &[ParityScenario],
     ingest: impl FnOnce(&mut E2eRuntime) -> AnyResult<()>,
+    declare_symbols: bool,
 ) -> AnyResult<Vec<RowReport>> {
     let mut rt = E2eRuntime::boot()?;
     ingest(&mut rt)?;
-    rt.declare_staged_symbol_extraction_complete()?;
+    if declare_symbols {
+        rt.declare_staged_symbol_extraction_complete()?;
+    }
     _ = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     let mut rt = rt.reopen();
@@ -2400,10 +2405,11 @@ fn run_parity_matrix(
 
 #[test]
 fn dual_syntax_lowering_parity_matrix() -> AnyResult<()> {
-    let mut failures = run_parity_matrix(SCENARIOS, ingest_corpus)?;
+    let mut failures = run_parity_matrix(SCENARIOS, ingest_corpus, true)?;
     failures.extend(run_parity_matrix(
         AUTHORITY_SCENARIOS,
         ingest_authority_fixtures,
+        false,
     )?);
 
     if failures.is_empty() {

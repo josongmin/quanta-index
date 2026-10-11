@@ -1,16 +1,7 @@
-//! One shard of the text authority: a doc-id range's slice of every
-//! derived structure, in one immutable file.
+//! Bounded segment-local posting producer and independent seal oracle.
 //!
-//! A shard file is a fixed-order CBOR array of the shard's doc-table rows
-//! (doc id, candidate id, NFC text, folded text) and its four derived
-//! indexes — byte trigrams over the NFC text, byte trigrams over the folded
-//! text, token positions under case-sensitive and under folded
-//! normalization — each restricted to the shard's documents. Doc ids are
-//! global, so the shards' indexes union without remapping.
-//!
-//! [`ShardBuilders`] owns "add this document everywhere" and "retire this
-//! document everywhere", so a full rebuild and an in-place update cannot
-//! drift on which structures a document lives in.
+//! Logical document IDs are mapped outside this module; these builders use
+//! only local IDs and feed independently readable paged Native objects.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,20 +9,28 @@ use std::path::Path;
 use quanta_index_contract::ManifestGeneration;
 use quanta_index_core::CoreError;
 use quanta_index_lq_positions::{
-    DocId as PositionsDocId, NormalizerVersion, Position, PositionsBuilder, PositionsIndex,
+    DocId as PositionsDocId, MAX_POSITIONS_PER_CELL, NormalizerVersion, Position, PositionsBuilder,
+    PositionsIndex,
 };
-use quanta_index_lq_trigram::{DocId as TrigramDocId, TrigramIndex, TrigramIndexBuilder};
-use sha2::{Digest as _, Sha256};
+use quanta_index_lq_trigram::{DocId as TrigramDocId, Trigram, TrigramIndex, TrigramIndexBuilder};
 
 use crate::normalize::{self, CaseMode, TEXT_NORMALIZER_VERSION};
 use crate::query_errors::map_positions_error;
 use crate::query_errors::map_trigram_error;
-use crate::text_authority::manifest::{SHARD_DOCS, shard_doc_range};
+// The local builder is retained as a bounded producer for paged Native
+// segments. Its IDs are segment-local and never persisted as logical IDs.
+const SHARD_DOCS: u64 = 2048;
 
-/// SHA-256 of in-memory bytes: the shard's content digest as the manifest
-/// commits to it and as its file name carries it. Infallible by construction.
-pub(crate) fn sha256_of_bytes(bytes: &[u8]) -> [u8; 32] {
-    Sha256::digest(bytes).into()
+fn shard_doc_range(index: u64) -> Result<(u64, u64), CoreError> {
+    let first = index.checked_mul(SHARD_DOCS).ok_or_else(|| {
+        CoreError::InvalidContract("lexical: Native local shard index overflows".into())
+    })?;
+    let last = first
+        .checked_add(SHARD_DOCS.saturating_sub(1))
+        .ok_or_else(|| {
+            CoreError::InvalidContract("lexical: Native local shard range overflows".into())
+        })?;
+    Ok((first, last))
 }
 
 /// The position sidecars' normalizer stamp.
@@ -41,20 +40,6 @@ pub(crate) fn sha256_of_bytes(bytes: &[u8]) -> [u8; 32] {
 /// manifest.
 const POSITIONS_NORMALIZER_VERSION: NormalizerVersion =
     NormalizerVersion::new(TEXT_NORMALIZER_VERSION.major, TEXT_NORMALIZER_VERSION.minor);
-
-/// One doc-table row as encoded: `(doc_id, candidate_id, text, folded)`.
-type DocTableRow = (u64, String, String, String);
-
-/// Wire shape of a shard file: a fixed-order CBOR array so the encoding is
-/// auditable without a derive and an extra or missing element is a decode
-/// failure.
-type ShardRow = (
-    Vec<DocTableRow>,
-    TrigramIndex,
-    TrigramIndex,
-    PositionsIndex,
-    PositionsIndex,
-);
 
 /// One document as the text authority holds it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,145 +62,227 @@ pub(crate) struct ShardBody {
 }
 
 impl ShardBody {
-    /// Bytes this decoded shard keeps on the heap: the document texts
-    /// (NFC and folded) with their ids, the trigram posting lists and the
-    /// positions posting bytes, plus a fixed per-entry allowance for the
-    /// map nodes and vector headers that hold them. An estimate that is
-    /// monotone in the real cost, which is what a byte budget needs; the
-    /// on-disk CBOR is smaller than this by the folded copy and the
-    /// expanded postings.
-    #[cfg(test)]
-    pub(crate) fn heap_bytes_estimate(&self) -> u64 {
-        const ENTRY_OVERHEAD: u64 = 64;
-        let mut bytes = 0_u64;
-        for doc in self.docs_by_id.values() {
-            bytes = bytes
-                .saturating_add(ENTRY_OVERHEAD)
-                .saturating_add(len_u64(doc.candidate_id.len()))
-                .saturating_add(len_u64(doc.indexed_text.len()))
-                .saturating_add(len_u64(doc.folded_indexed_text.len()));
-        }
-        for index in [&self.trigram, &self.trigram_folded] {
-            for (_trigram, postings) in index.iter() {
-                bytes = bytes
-                    .saturating_add(ENTRY_OVERHEAD)
-                    .saturating_add(len_u64(postings.len()).saturating_mul(8));
-            }
-        }
-        for index in [&self.positions, &self.positions_folded] {
-            for term in index.terms() {
-                let postings = index.raw_postings(term).map_or(0, <[u8]>::len);
-                bytes = bytes
-                    .saturating_add(ENTRY_OVERHEAD)
-                    .saturating_add(len_u64(term.len()))
-                    .saturating_add(len_u64(postings));
-            }
-        }
-        bytes
-    }
-
-    /// Documents in the shard.
-    pub(crate) fn rows(&self) -> Result<u64, CoreError> {
-        u64::try_from(self.docs_by_id.len()).map_err(|err| {
-            CoreError::InvalidContract(format!("lexical: text authority shard row count: {err}"))
-        })
-    }
-
-    /// Lowest and highest doc id, or `None` for an empty shard.
-    pub(crate) fn doc_id_extremes(&self) -> Option<(u64, u64)> {
-        let min = self.docs_by_id.keys().next()?;
-        let max = self.docs_by_id.keys().next_back()?;
-        Some((*min, *max))
-    }
-
-    /// Encode as the shard file's bytes.
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
-        let rows: Vec<DocTableRow> = self
-            .docs_by_id
-            .iter()
-            .map(|(doc_id, doc)| {
-                (
-                    *doc_id,
-                    doc.candidate_id.clone(),
-                    doc.indexed_text.clone(),
-                    doc.folded_indexed_text.clone(),
-                )
-            })
-            .collect();
-        let row: (
-            &Vec<DocTableRow>,
-            &TrigramIndex,
-            &TrigramIndex,
-            &PositionsIndex,
-            &PositionsIndex,
-        ) = (
-            &rows,
-            &self.trigram,
-            &self.trigram_folded,
-            &self.positions,
-            &self.positions_folded,
-        );
-        crate::channel_payloads::encode_cbor(&row, "text authority shard")
-    }
-
-    /// Decode the bytes of shard `index`, named `name` under `generation_dir`.
-    ///
-    /// Fail-closed and typed (`GENERATION_SIDECAR_CORRUPT`): the bytes must
-    /// decode as the shard row, rows must be strictly ascending doc ids
-    /// inside the shard's range, the position postings must carry this
-    /// build's normalizer, and the embedded indexes decode under their own
-    /// unknown-field and ordering checks.
-    pub(crate) fn decode(
-        bytes: &[u8],
+    /// Independently derive the four posting relations from the document table.
+    /// This seal oracle shares only the text normalizer with the writer. It
+    /// neither calls a posting builder nor decodes untrusted position counts
+    /// before comparing their complete canonical byte strings.
+    pub(crate) fn verify_semantics(
+        &self,
         index: u64,
         generation_dir: &Path,
         name: &str,
-    ) -> Result<Self, CoreError> {
+    ) -> Result<(), CoreError> {
         let corrupt =
-            |reason: String| crate::index_store::sidecar_corrupt(generation_dir, name, &reason);
-        let (rows, trigram, trigram_folded, positions, positions_folded): ShardRow =
-            crate::channel_payloads::decode_cbor_exact(bytes)
-                .map_err(|error| corrupt(format!("shard {index} does not decode: {error}")))?;
-        let (first, last) = shard_doc_range(index)?;
-        let mut docs_by_id: BTreeMap<u64, TextAuthorityDoc> = BTreeMap::new();
-        for (doc_id, candidate_id, indexed_text, folded_indexed_text) in rows {
-            if doc_id < first || doc_id > last {
-                return Err(corrupt(format!(
-                    "row doc id {doc_id} is outside the shard's range {first}..={last}"
-                )));
-            }
-            if let Some((previous, _)) = docs_by_id.last_key_value()
-                && *previous >= doc_id
-            {
-                return Err(corrupt(format!(
-                    "row doc id {doc_id} does not follow {previous}; rows must be strictly ascending"
-                )));
-            }
-            let _prior = docs_by_id.insert(
-                doc_id,
-                TextAuthorityDoc {
-                    candidate_id,
-                    indexed_text,
-                    folded_indexed_text,
-                },
-            );
-        }
-        if positions.normalizer_version() != POSITIONS_NORMALIZER_VERSION
-            || positions_folded.normalizer_version() != POSITIONS_NORMALIZER_VERSION
+            |reason: &str| crate::index_store::sidecar_corrupt(generation_dir, name, reason);
+        let generation = self.trigram.generation();
+        if generation == 0
+            || self.trigram_folded.generation() != generation
+            || self.positions.generation() != generation
+            || self.positions_folded.generation() != generation
         {
-            return Err(corrupt(format!(
-                "position postings carry normalizer {} (this build runs {POSITIONS_NORMALIZER_VERSION})",
-                positions.normalizer_version()
-            )));
+            return Err(corrupt(
+                "shard derived indexes carry different generation stamps",
+            ));
         }
-        Ok(Self {
-            docs_by_id,
-            trigram,
-            trigram_folded,
-            positions,
-            positions_folded,
-        })
+        if self.positions.normalizer_version() != POSITIONS_NORMALIZER_VERSION
+            || self.positions_folded.normalizer_version() != POSITIONS_NORMALIZER_VERSION
+        {
+            return Err(corrupt("shard position normalizer differs from policy"));
+        }
+        let (first, last) = shard_doc_range(index)?;
+        if self.docs_by_id.len()
+            > usize::try_from(SHARD_DOCS).map_err(|_error| {
+                corrupt("shard row limit cannot be represented on this platform")
+            })?
+        {
+            return Err(corrupt(
+                "shard has more document rows than its doc-id range",
+            ));
+        }
+        for (doc_id, doc) in &self.docs_by_id {
+            if *doc_id < first || *doc_id > last {
+                return Err(corrupt("shard document lies outside its doc-id range"));
+            }
+            if normalize::nfc(&doc.indexed_text).as_ref() != doc.indexed_text.as_str()
+                || normalize::fold(&doc.indexed_text) != doc.folded_indexed_text
+            {
+                return Err(corrupt("shard document normalization differs from policy"));
+            }
+        }
+        verify_trigrams(&self.docs_by_id, &self.trigram, false, &corrupt)?;
+        verify_trigrams(&self.docs_by_id, &self.trigram_folded, true, &corrupt)?;
+        verify_positions(
+            &self.docs_by_id,
+            &self.positions,
+            CaseMode::Sensitive,
+            &corrupt,
+        )?;
+        verify_positions(
+            &self.docs_by_id,
+            &self.positions_folded,
+            CaseMode::Folded,
+            &corrupt,
+        )?;
+        Ok(())
     }
+}
+
+/// Compare every gram key and its complete sorted doc list. A gram repeated
+/// within one document has one posting, including across UTF-8 byte windows.
+fn verify_trigrams(
+    docs: &BTreeMap<u64, TextAuthorityDoc>,
+    observed: &TrigramIndex,
+    folded: bool,
+    corrupt: &impl Fn(&str) -> CoreError,
+) -> Result<(), CoreError> {
+    let mut expected: BTreeMap<Trigram, Vec<TrigramDocId>> = BTreeMap::new();
+    for (doc_id, doc) in docs {
+        let text = if folded {
+            &doc.folded_indexed_text
+        } else {
+            &doc.indexed_text
+        };
+        let mut grams = Vec::<Trigram>::new();
+        grams
+            .try_reserve(text.len().saturating_sub(2))
+            .map_err(|error| {
+                CoreError::Storage(format!("lexical: reserve shard gram oracle: {error}"))
+            })?;
+        for window in text.as_bytes().windows(3) {
+            let gram: Trigram = window
+                .try_into()
+                .map_err(|_error| corrupt("shard gram window has wrong width"))?;
+            grams.push(gram);
+        }
+        grams.sort_unstable();
+        grams.dedup();
+        for gram in grams {
+            let postings = expected.entry(gram).or_default();
+            postings.try_reserve(1).map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: reserve shard gram posting oracle: {error}"
+                ))
+            })?;
+            postings.push(TrigramDocId(*doc_id));
+        }
+    }
+    let mut actual = observed.iter();
+    for (gram, postings) in &expected {
+        if actual.next() != Some((*gram, postings.as_slice())) {
+            return Err(corrupt(
+                "shard trigram postings differ from its document table",
+            ));
+        }
+    }
+    if actual.next().is_some() {
+        return Err(corrupt("shard trigram dictionary has an extra key"));
+    }
+    Ok(())
+}
+
+/// Independently encode a u32 as unsigned LEB128 for exact raw-posting
+/// comparison. Keeping this local avoids depending on the writer codec.
+fn oracle_varint(mut value: u32, bytes: &mut Vec<u8>) -> Result<(), CoreError> {
+    bytes.try_reserve(5).map_err(|error| {
+        CoreError::Storage(format!("lexical: reserve shard varint oracle: {error}"))
+    })?;
+    while value >= 128 {
+        let low = u8::try_from(value & 0x7f).map_err(|error| {
+            CoreError::InvalidContract(format!("lexical: oracle varint byte: {error}"))
+        })?;
+        bytes.push(low | 0x80);
+        value >>= 7;
+    }
+    let last = u8::try_from(value).map_err(|error| {
+        CoreError::InvalidContract(format!("lexical: oracle varint tail: {error}"))
+    })?;
+    bytes.push(last);
+    Ok(())
+}
+
+/// Compare exact term inventory and canonical per-term bytes.
+///
+/// The observed byte stream is never decoded here: a forged count cannot
+/// drive an allocation, and trailing/nonminimal bytes fail by inequality.
+fn verify_positions(
+    docs: &BTreeMap<u64, TextAuthorityDoc>,
+    observed: &PositionsIndex,
+    case: CaseMode,
+    corrupt: &impl Fn(&str) -> CoreError,
+) -> Result<(), CoreError> {
+    type OracleTermDocs = Vec<(u64, Vec<u32>)>;
+    let mut expected: BTreeMap<String, OracleTermDocs> = BTreeMap::new();
+    for (doc_id, doc) in docs {
+        let tokens = normalize::tokenize(&doc.indexed_text, case);
+        for token in tokens.indexable() {
+            let position = u32::try_from(token.position)
+                .map_err(|_error| corrupt("shard token position exceeds u32"))?;
+            let entries = expected.entry(token.text.clone()).or_default();
+            if entries.last().is_none_or(|(prior, _)| prior != doc_id) {
+                entries.try_reserve(1).map_err(|error| {
+                    CoreError::Storage(format!("lexical: reserve shard position oracle: {error}"))
+                })?;
+                entries.push((*doc_id, Vec::new()));
+            }
+            let Some((_, positions)) = entries.last_mut() else {
+                return Err(corrupt("shard position oracle lost document entry"));
+            };
+            if positions.len()
+                >= usize::try_from(MAX_POSITIONS_PER_CELL)
+                    .map_err(|_error| corrupt("position cell cap exceeds usize"))?
+            {
+                return Err(corrupt("shard position cell exceeds policy cap"));
+            }
+            positions.try_reserve(1).map_err(|error| {
+                CoreError::Storage(format!("lexical: reserve shard position cell: {error}"))
+            })?;
+            positions.push(position);
+        }
+    }
+
+    let mut actual_terms = observed.terms();
+    for (term, entries) in &expected {
+        if actual_terms.next() != Some(term.as_str()) {
+            return Err(corrupt(
+                "shard position term inventory differs from its document table",
+            ));
+        }
+        let mut bytes = Vec::new();
+        let doc_count = u32::try_from(entries.len())
+            .map_err(|_error| corrupt("shard term has too many documents"))?;
+        oracle_varint(doc_count, &mut bytes)?;
+        let mut prior_doc = 0_u64;
+        for (doc_id, positions) in entries {
+            let gap = doc_id
+                .checked_sub(prior_doc)
+                .ok_or_else(|| corrupt("shard position doc IDs are not ascending"))?;
+            let gap = u32::try_from(gap)
+                .map_err(|_error| corrupt("shard position doc gap exceeds u32"))?;
+            oracle_varint(gap, &mut bytes)?;
+            prior_doc = *doc_id;
+
+            let position_count = u32::try_from(positions.len())
+                .map_err(|_error| corrupt("shard position count exceeds u32"))?;
+            oracle_varint(position_count, &mut bytes)?;
+            let mut prior_position = 0_u32;
+            for position in positions {
+                let gap = position
+                    .checked_sub(prior_position)
+                    .ok_or_else(|| corrupt("shard token positions are not ascending"))?;
+                oracle_varint(gap, &mut bytes)?;
+                prior_position = *position;
+            }
+        }
+        if observed.raw_postings(term) != Some(bytes.as_slice()) {
+            return Err(corrupt(
+                "shard position postings differ from its document table",
+            ));
+        }
+    }
+    if actual_terms.next().is_some() {
+        return Err(corrupt("shard position dictionary has an extra term"));
+    }
+    Ok(())
 }
 
 fn sidecar_generation_id(generation: ManifestGeneration) -> u64 {
@@ -272,39 +339,6 @@ impl ShardBuilders {
                 POSITIONS_NORMALIZER_VERSION,
             ),
             table: BTreeMap::new(),
-        })
-    }
-
-    /// Continue shard `index` from its prior body instead of from nothing:
-    /// the untouched documents are carried as postings, never re-derived.
-    pub(crate) fn from_prior(
-        index: u64,
-        generation: ManifestGeneration,
-        prior: ShardBody,
-    ) -> Result<Self, CoreError> {
-        let sidecar_generation = sidecar_generation_id(generation);
-        Ok(Self {
-            index,
-            trigram: TrigramIndexBuilder::from_prior(&prior.trigram, sidecar_generation)
-                .map_err(|err| map_trigram_error("inherit trigram sidecar", &err))?,
-            trigram_folded: TrigramIndexBuilder::from_prior(
-                &prior.trigram_folded,
-                sidecar_generation,
-            )
-            .map_err(|err| map_trigram_error("inherit folded trigram sidecar", &err))?,
-            positions: PositionsBuilder::from_prior(
-                &prior.positions,
-                sidecar_generation,
-                POSITIONS_NORMALIZER_VERSION,
-            )
-            .map_err(|err| map_positions_error("inherit positions sidecar", &err))?,
-            positions_folded: PositionsBuilder::from_prior(
-                &prior.positions_folded,
-                sidecar_generation,
-                POSITIONS_NORMALIZER_VERSION,
-            )
-            .map_err(|err| map_positions_error("inherit folded positions sidecar", &err))?,
-            table: prior.docs_by_id,
         })
     }
 
@@ -367,29 +401,6 @@ impl ShardBuilders {
         Ok(())
     }
 
-    /// Remove one document from every structure of the shard; `false` when
-    /// the shard never held it.
-    pub(crate) fn retire(&mut self, doc_id: u64) -> Result<bool, CoreError> {
-        self.ensure_in_range(doc_id)?;
-        let _removed = self
-            .trigram
-            .remove_doc(TrigramDocId(doc_id))
-            .map_err(|err| map_trigram_error("retire trigram sidecar doc", &err))?;
-        let _removed = self
-            .trigram_folded
-            .remove_doc(TrigramDocId(doc_id))
-            .map_err(|err| map_trigram_error("retire folded trigram sidecar doc", &err))?;
-        let _removed = self
-            .positions
-            .remove_doc(PositionsDocId(doc_id))
-            .map_err(|err| map_positions_error("retire positions sidecar doc", &err))?;
-        let _removed = self
-            .positions_folded
-            .remove_doc(PositionsDocId(doc_id))
-            .map_err(|err| map_positions_error("retire folded positions sidecar doc", &err))?;
-        Ok(self.table.remove(&doc_id).is_some())
-    }
-
     /// Finalize into an immutable shard body.
     pub(crate) fn finish(self) -> Result<ShardBody, CoreError> {
         Ok(ShardBody {
@@ -408,75 +419,174 @@ impl ShardBuilders {
     }
 }
 
-/// A length as bytes; a length past `u64` saturates rather than wraps.
-#[cfg(test)]
-fn len_u64(length: usize) -> u64 {
-    u64::try_from(length).map_or(u64::MAX, |value| value)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::SHARD_DOCS;
     use super::{ShardBody, ShardBuilders};
-    use crate::text_authority::manifest::SHARD_DOCS;
     use quanta_index_contract::ManifestGeneration;
+    use quanta_index_lq_positions::PositionsIndex;
+    use quanta_index_lq_trigram::{DocId as TrigramDocId, TrigramIndexBuilder};
+    use std::collections::BTreeMap;
     use std::path::Path;
 
-    #[test]
-    fn a_shard_round_trips_through_its_file_bytes() {
-        let mut builders = ShardBuilders::empty(1, ManifestGeneration::new(3)).expect("empty");
+    fn semantic_fixture() -> ShardBody {
+        let mut builders = ShardBuilders::empty(0, ManifestGeneration::new(1)).expect("empty");
         builders
-            .upsert(SHARD_DOCS, "cand-a".to_string(), "Alpha Beta")
+            .upsert(1, "candidate".to_string(), "abc abc")
             .expect("upsert");
-        builders
-            .upsert(SHARD_DOCS + 7, "cand-b".to_string(), "gamma")
-            .expect("upsert");
-        let body = builders.finish().expect("finish");
-        assert_eq!(body.rows().expect("rows"), 2);
-        assert_eq!(body.doc_id_extremes(), Some((SHARD_DOCS, SHARD_DOCS + 7)));
-        let mut bytes = body.encode().expect("encode");
-        let decoded = ShardBody::decode(&bytes, 1, Path::new("/g1"), "shard").expect("decode");
-        assert_eq!(decoded.docs_by_id, body.docs_by_id);
-        assert_eq!(decoded.trigram, body.trigram);
-        assert_eq!(decoded.positions_folded, body.positions_folded);
-        bytes.push(0xff);
-        assert!(ShardBody::decode(&bytes, 1, Path::new("/g1"), "shard").is_err());
-        assert_eq!(
-            decoded
-                .docs_by_id
-                .get(&SHARD_DOCS)
-                .map(|doc| doc.folded_indexed_text.as_str()),
-            Some("alpha beta")
-        );
+        builders.finish().expect("finish")
+    }
+
+    fn verify_fixture(body: &ShardBody) -> bool {
+        body.verify_semantics(0, Path::new("/g1"), "shard").is_ok()
     }
 
     #[test]
-    fn a_shard_refuses_documents_outside_its_range() {
+    fn local_builder_rejects_documents_outside_its_segment() {
         let mut builders = ShardBuilders::empty(1, ManifestGeneration::new(3)).expect("empty");
         assert!(
             builders
-                .upsert(SHARD_DOCS - 1, "cand".to_string(), "text")
+                .upsert(SHARD_DOCS - 1, "cand".into(), "text")
                 .is_err()
         );
-        assert!(builders.retire(2 * SHARD_DOCS).is_err());
-        let body = builders.finish().expect("finish");
-        let bytes = body.encode().expect("encode");
-        assert!(ShardBody::decode(&bytes, 1, Path::new("/g1"), "shard").is_ok());
-        let mut other = ShardBuilders::empty(0, ManifestGeneration::new(3)).expect("empty");
-        other.upsert(5, "cand".to_string(), "text").expect("upsert");
-        let bytes = other.finish().expect("finish").encode().expect("encode");
-        assert!(ShardBody::decode(&bytes, 1, Path::new("/g1"), "shard").is_err());
+        assert!(builders.upsert(SHARD_DOCS, "cand".into(), "text").is_ok());
+        assert!(
+            builders
+                .upsert(2 * SHARD_DOCS, "cand".into(), "text")
+                .is_err()
+        );
     }
 
     #[test]
-    fn retiring_reports_whether_the_shard_held_the_document() {
+    fn independent_semantic_oracle_accepts_repeated_tokens_unicode_and_short_text() {
         let mut builders = ShardBuilders::empty(0, ManifestGeneration::new(1)).expect("empty");
         builders
-            .upsert(4, "cand".to_string(), "text")
-            .expect("upsert");
-        assert!(builders.retire(4).expect("retire"));
-        assert!(!builders.retire(4).expect("retire again"));
+            .upsert(1, "one".to_string(), "Straße abc abc")
+            .expect("unicode and repeated token");
+        builders
+            .upsert(2, "two".to_string(), "é")
+            .expect("short text");
         let body = builders.finish().expect("finish");
-        assert_eq!(body.rows().expect("rows"), 0);
-        assert!(body.doc_id_extremes().is_none());
+        assert!(verify_fixture(&body));
+    }
+
+    #[test]
+    fn independent_semantic_oracle_refuses_missing_extra_and_wrong_trigram_postings() {
+        let valid = semantic_fixture();
+        assert!(verify_fixture(&valid));
+        for (content, doc_id) in [
+            (b"".as_slice(), 1_u64),
+            (b"abc abczzz".as_slice(), 1_u64),
+            (b"abc abc".as_slice(), 2_u64),
+        ] {
+            let mut builder = TrigramIndexBuilder::new(1).expect("trigram builder");
+            builder
+                .upsert_doc(TrigramDocId(doc_id), content)
+                .expect("mutant posting");
+            let mut mutant = valid.clone();
+            mutant.trigram = builder.finish();
+            assert!(!verify_fixture(&mutant));
+        }
+        let mut builder = TrigramIndexBuilder::new(1).expect("folded builder");
+        builder
+            .upsert_doc(TrigramDocId(1), b"abc xyz")
+            .expect("mutant folded posting");
+        let mut mutant = valid;
+        mutant.trigram_folded = builder.finish();
+        assert!(!verify_fixture(&mutant));
+    }
+
+    #[test]
+    fn independent_semantic_oracle_refuses_position_key_and_raw_byte_mutants() {
+        let valid = semantic_fixture();
+        assert!(verify_fixture(&valid));
+        // Exactly one term "abc", one doc 1, and token positions 0 and 1.
+        let canonical = [1_u8, 1, 2, 0, 1];
+        let raw_mutants: [(&str, Option<Vec<u8>>); 7] = [
+            ("missing", None),
+            ("wrong doc", Some(vec![1, 2, 2, 0, 1])),
+            ("wrong position", Some(vec![1, 1, 2, 0, 2])),
+            ("trailing byte", Some(vec![1, 1, 2, 0, 1, 0])),
+            ("nonminimal varint", Some(vec![0x81, 0, 1, 2, 0, 1])),
+            ("truncated", Some(vec![1, 1, 2, 0])),
+            (
+                "forged huge doc count",
+                Some(vec![0xff, 0xff, 0xff, 0xff, 0x0f]),
+            ),
+        ];
+        for (label, raw) in raw_mutants {
+            let mut by_term = BTreeMap::new();
+            if let Some(raw) = raw {
+                let _prior = by_term.insert(Box::<str>::from("abc"), raw);
+            }
+            let mut mutant = valid.clone();
+            mutant.positions = PositionsIndex::from_raw(
+                valid.positions.generation(),
+                valid.positions.normalizer_version(),
+                by_term,
+            );
+            assert!(!verify_fixture(&mutant), "{label}");
+        }
+        let mut extra_term = BTreeMap::new();
+        let _prior = extra_term.insert(Box::<str>::from("abc"), canonical.to_vec());
+        let _prior = extra_term.insert(Box::<str>::from("zzz"), canonical.to_vec());
+        let mut mutant = valid.clone();
+        mutant.positions = PositionsIndex::from_raw(
+            valid.positions.generation(),
+            valid.positions.normalizer_version(),
+            extra_term,
+        );
+        assert!(!verify_fixture(&mutant));
+
+        let mut wrong_folded = BTreeMap::new();
+        let _prior = wrong_folded.insert(Box::<str>::from("abc"), vec![1, 1, 2, 0, 2]);
+        let mut mutant = valid;
+        mutant.positions_folded = PositionsIndex::from_raw(
+            mutant.positions_folded.generation(),
+            mutant.positions_folded.normalizer_version(),
+            wrong_folded,
+        );
+        assert!(!verify_fixture(&mutant));
+    }
+
+    #[test]
+    fn independent_semantic_oracle_refuses_stamp_range_and_normalization_mutants() {
+        let valid = semantic_fixture();
+        assert!(verify_fixture(&valid));
+
+        let mut changed_generation = TrigramIndexBuilder::new(2).expect("trigram builder");
+        changed_generation
+            .upsert_doc(TrigramDocId(1), b"abc abc")
+            .expect("same posting, wrong stamp");
+        let mut mutant = valid.clone();
+        mutant.trigram_folded = changed_generation.finish();
+        assert!(!verify_fixture(&mutant));
+
+        let mut mutant = valid.clone();
+        let mut by_term = BTreeMap::new();
+        let _prior = by_term.insert(Box::<str>::from("abc"), vec![1, 1, 2, 0, 1]);
+        mutant.positions = PositionsIndex::from_raw(
+            1,
+            quanta_index_lq_positions::NormalizerVersion::new(99, 0),
+            by_term,
+        );
+        assert!(!verify_fixture(&mutant));
+
+        let mut mutant = valid.clone();
+        let doc = mutant.docs_by_id.remove(&1).expect("doc");
+        let _prior = mutant.docs_by_id.insert(SHARD_DOCS, doc);
+        assert!(!verify_fixture(&mutant));
+
+        let mut mutant = valid.clone();
+        mutant.docs_by_id.get_mut(&1).expect("doc").indexed_text = "e\u{301}".to_string();
+        assert!(!verify_fixture(&mutant));
+
+        let mut mutant = valid;
+        mutant
+            .docs_by_id
+            .get_mut(&1)
+            .expect("doc")
+            .folded_indexed_text = "wrong fold".to_string();
+        assert!(!verify_fixture(&mutant));
     }
 }

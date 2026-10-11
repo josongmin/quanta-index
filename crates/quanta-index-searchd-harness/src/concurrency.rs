@@ -304,6 +304,7 @@ fn timed_request(
 ) -> AnyResult<RequestSample> {
     let envelope = SearchPlaneQueryIpcRequestEnvelope {
         request_id,
+        diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
         payload,
     };
     let policy = ClientIoPolicy::try_new(REQUEST_TIMEOUT)?;

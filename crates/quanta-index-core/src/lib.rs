@@ -8,8 +8,10 @@
 //! repo-map/storage backends) implement these ports; the composition root in
 //! `quanta-index-searchd` wires them together.
 
+pub mod diagnostic_trace;
 pub mod domains;
 pub mod error;
+pub mod index;
 pub mod ingest_resource;
 mod publication_validation;
 pub use publication_validation::PublicationValidationOwner;
@@ -18,6 +20,14 @@ pub use source_upload::SourcePublicationUploadPort;
 pub mod request_budget;
 pub mod timeref;
 
+pub use diagnostic_trace::{
+    DiagnosticAdoptionFlushReasonV1, DiagnosticAttemptGuardCoreV1, DiagnosticCaptureIdV1,
+    DiagnosticClockV1, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticEmitV1,
+    DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
+    DiagnosticObjectKindV1, DiagnosticOccupancyBucketV1, DiagnosticPhaseV1, DiagnosticPlaneV1,
+    DiagnosticRootKindV1, DiagnosticSpanGuardV1, DiagnosticSpanIdV1, DiagnosticStageV1,
+    DiagnosticSyncLabelV1, DiagnosticTerminalV1, DiagnosticTraceErrorV1, DiagnosticTraceRefV1,
+};
 pub use domains::lexical::{
     CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CodeSearchRankStudyV1,
     CodeSearchScoreComponentsV1, LexicalCollectionBudget, LexicalEndpoint,
@@ -41,9 +51,9 @@ pub use domains::auxiliary::{
     AuxiliaryRowMutationV1, AuxiliaryRowV1, AuxiliaryTrackRowV1,
 };
 pub use domains::generation::{
-    FinishedReclaims, GenerationIdentityValidatePort, GenerationQuarantineReasonV1,
-    GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
-    InventoriedSealedGenerationV1, PinnedGenerationReadinessV1,
+    FinishedReclaims, GenerationIdentityValidatePort, GenerationNamespaceReadPort,
+    GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
+    IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1, PinnedGenerationReadinessV1,
     QUARANTINE_TARGET_NOT_QUARANTINED_CODE, QuarantineDiscardOutcomeV1,
     QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
     SealedGenerationBytesV1, SealedGenerationIdentityProbePort, SealedGenerationInventoryV1,
@@ -72,7 +82,7 @@ pub use domains::integrity::{
     DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_QUARANTINED_CODE,
     GENERATION_SIDECAR_CORRUPT_CODE, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
     IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPolicyV1, IntegrityScrubPort,
-    IntegrityScrubReportV1,
+    IntegrityScrubReportV1, SharedObjectCollectionStepV1,
 };
 pub use domains::lexical::{
     FileContributorIngestPort, FileOwnershipIngestPort, HISTORY_TEXT_INDEX_CORRUPT_CODE,
@@ -141,8 +151,10 @@ pub use domains::semantic::{
     owner_key_v1,
 };
 pub use domains::source_publication::{
+    LexicalDocumentNamespaceV1, LexicalDocumentVersionRangeV1, LexicalDocumentVersionReservationV1,
+    SourceEventAllocationOutcomeV1, SourceEventAllocationRequestV1, SourceEventAllocationV1,
     SourceEventBindingV1, SourceEventPhaseV1, SourceEventRecordV1, SourceEventReservationV1,
-    SourcePublicationCatalogPort,
+    SourceEventStateV1, SourcePublicationCatalogPort,
 };
 pub use domains::structural::{
     StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralPolicy,

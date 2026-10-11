@@ -106,6 +106,7 @@ fn retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3(
         >(
             &query_socket,
             &SearchPlaneQueryIpcRequestEnvelope {
+                diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
                 request_id,
                 payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                     syntax: TextQuerySyntax::Native,

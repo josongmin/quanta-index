@@ -19,7 +19,9 @@ use quanta_index_catalog::{
     CatalogSnapshotReceiptV1, SqliteCatalog, live_catalog_receipt, snapshot_catalog_file,
     verify_snapshot,
 };
-use quanta_index_core::CoreError;
+use quanta_index_core::{
+    CoreError, IntegrityScrubBudgetV1, IntegrityScrubOutcomeV1, IntegrityScrubPort,
+};
 use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_searchd::app::runtime::StateRootLease;
 use quanta_index_searchd::app::state_format::{
@@ -78,7 +80,10 @@ fn map_receipt(receipt: &CatalogSnapshotReceiptV1) -> CatalogSnapshotV1 {
 /// The catalog's own open (crash recovery against unfinished journal rows,
 /// stale durable-lease release, and sequence reconciliation), the `RepoMap`
 /// store's catalog-versus-object reconciliation, and both index tracks'
-/// sealed-generation inventories.
+/// sealed-generation inventories. Lexical compact roots reference the shared
+/// pool outside each generation directory, so the staged root must also pass
+/// a complete lexical scrub before it can be published. This offline command
+/// holds exclusive custody; bounded scrub steps run to completion here.
 struct RootDeepOpenAdapter;
 
 impl StateRootDeepOpenPort for RootDeepOpenAdapter {
@@ -90,6 +95,12 @@ impl StateRootDeepOpenPort for RootDeepOpenAdapter {
         let lexical = quanta_index_lexical::inventory_sealed_generations(
             &root.join("indexes").join("lexical"),
         )?;
+        let lexical_adapter = quanta_index_lexical::LexicalAdapter::with_state_root(
+            root.join("indexes").join("lexical"),
+        );
+        for sealed in &lexical.sealed {
+            verify_staged_lexical_generation(&lexical_adapter, &sealed.identity)?;
+        }
         let semantic = quanta_index_semantic::inventory_persisted_generations(
             &quanta_index_semantic::semantic_state_root(root),
         )?;
@@ -101,6 +112,49 @@ impl StateRootDeepOpenPort for RootDeepOpenAdapter {
             repomap_candidates,
             catalog_rows: repomap_candidates,
         })
+    }
+}
+
+fn verify_staged_lexical_generation(
+    adapter: &dyn IntegrityScrubPort,
+    generation: &quanta_index_contract::GenerationSnapshot,
+) -> Result<(), CoreError> {
+    let mut cursor = None;
+    loop {
+        let report = adapter.scrub(
+            generation,
+            cursor,
+            IntegrityScrubBudgetV1 {
+                max_bytes: 32 * 1024 * 1024,
+            },
+        )?;
+        if report.generation != *generation {
+            return Err(CoreError::InvalidContract(
+                "offline lexical scrub returned another generation".into(),
+            ));
+        }
+        match report.outcome {
+            IntegrityScrubOutcomeV1::Completed => return Ok(()),
+            IntegrityScrubOutcomeV1::Paused { cursor: next }
+                if next.next_artifact > cursor.map_or(0, |current| current.next_artifact) =>
+            {
+                cursor = Some(next);
+            }
+            IntegrityScrubOutcomeV1::Paused { .. } => {
+                return Err(CoreError::InvalidContract(
+                    "offline lexical scrub paused without advancing".into(),
+                ));
+            }
+            IntegrityScrubOutcomeV1::Corrupt { .. } => {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    message: format!(
+                        "offline staged lexical generation {} failed shared authority integrity",
+                        generation.manifest_generation.get()
+                    ),
+                });
+            }
+        }
     }
 }
 

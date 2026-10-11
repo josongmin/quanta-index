@@ -211,6 +211,7 @@ fn publish_generation(rt: &mut E2eRuntime, label: &str, recent_at_ms: u64) -> An
     let source_repo_beta = RepoId::new("authority-beta")
         .map_err(|error| anyhow::anyhow!("static fixture repo id: {error}"))?;
 
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_repo_commit_recency_batch(RepoCommitRecencyIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),

@@ -29,7 +29,7 @@ fn assert_refused_by_both_entry_points(
     }
     let probe = ZeroMutationProbe::new(always_valid_generation());
     if !matches!(
-        probe.materializer.preflight_batch(&batch),
+        probe.materializer.preflight_batch(&batch, None),
         Err(CoreError::InvalidContract(_))
     ) {
         return Err("file mutation preflight did not refuse with InvalidContract".into());

@@ -307,7 +307,7 @@ impl SemanticAdapter {
         generation: &GenerationSnapshot,
         cursor: Option<IntegrityScrubCursorV1>,
         budget: IntegrityScrubBudgetV1,
-        before_quarantine: &dyn Fn() -> Result<(), CoreError>,
+        before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
     ) -> Result<IntegrityScrubReportV1, CoreError> {
         let _mutation = self.generation_mutation_guard(generation)?;
         let _lifecycle = self.directory_lifecycle_read_guard()?;
@@ -331,7 +331,7 @@ impl SemanticAdapter {
                 ..
             })
         ) {
-            before_quarantine()?;
+            before_quarantine(generation)?;
         }
         let SealedManifestScrubV1 {
             files_verified,
@@ -365,7 +365,7 @@ impl SemanticAdapter {
                 }
             }
             SealedManifestScrubVerdictV1::Corrupt { detail } => {
-                before_quarantine()?;
+                before_quarantine(generation)?;
                 IntegrityScrubOutcomeV1::Corrupt {
                     quarantined: quarantine(&generation_dir, &detail)?,
                 }
@@ -431,7 +431,7 @@ impl IntegrityScrubPort for SemanticAdapter {
         cursor: Option<IntegrityScrubCursorV1>,
         budget: IntegrityScrubBudgetV1,
     ) -> Result<IntegrityScrubReportV1, CoreError> {
-        self.scrub_with_fence(generation, cursor, budget, &|| Ok(()))
+        self.scrub_with_fence(generation, cursor, budget, &|_| Ok(()))
     }
 
     fn scrub_with_quarantine_fence(
@@ -439,7 +439,7 @@ impl IntegrityScrubPort for SemanticAdapter {
         generation: &GenerationSnapshot,
         cursor: Option<IntegrityScrubCursorV1>,
         budget: IntegrityScrubBudgetV1,
-        before_quarantine: &dyn Fn() -> Result<(), CoreError>,
+        before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
     ) -> Result<IntegrityScrubReportV1, CoreError> {
         self.scrub_with_fence(generation, cursor, budget, before_quarantine)
     }

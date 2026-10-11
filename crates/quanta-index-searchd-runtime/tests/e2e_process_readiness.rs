@@ -201,6 +201,7 @@ fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
         let request_id = 0x5eed_u64;
         let query = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "needle".to_owned(),
@@ -269,6 +270,7 @@ fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
         let semantic_id = 0x5eee_u64;
         let semantic_query = SearchPlaneQueryIpcRequestEnvelope {
             request_id: semantic_id,
+            diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: "needle".to_owned(),
                 constraints: QueryConstraintSetV1::unconstrained(),
@@ -365,6 +367,7 @@ fn binary_restart_replaces_request_event_instance_and_discards_prior_window() ->
     let request_id = 0x5ee1_u64;
     let query = SearchPlaneQueryIpcRequestEnvelope {
         request_id,
+        diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "needle".to_owned(),
@@ -446,6 +449,7 @@ fn binary_query_ring_reports_wrap_loss_and_retains_the_latest_request() -> TestR
             let request_id = first_id + offset;
             let request = SearchPlaneQueryIpcRequestEnvelope {
                 request_id,
+                diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
                 payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "needle".to_owned(),
@@ -685,66 +689,68 @@ fn binary_daemon_counts_inventory_read_failure_and_reopens_after_repair() -> Tes
         .generation_dir(&canonical.join("indexes/lexical"), sealed)
         .join("search-corpus-generation-identity.cbor");
     let process = SearchdBinaryProcess::start(&state_root)?;
-    let outcome =
-        (|| -> TestResult {
-            let client = process.connect()?;
-            let sockets = daemon_socket_paths(&state_root);
-            let query = |request_id| -> TestResult {
-                let request = SearchPlaneQueryIpcRequestEnvelope {
-                    request_id,
-                    payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
-                        syntax: TextQuerySyntax::Native,
-                        query_text: "needle".to_owned(),
-                        constraints: QueryConstraintSetV1::unconstrained(),
-                        generation: Some(pin.clone()),
-                        generation_selector: None,
-                        top_k: 5,
-                        cursor: None,
-                    }),
-                };
-                let response: SearchPlaneQueryIpcResponseEnvelope = quanta_index_ipc::send_request(
-                    &sockets[0],
-                    &request,
-                    quanta_index_ipc::ClientIoPolicy::default(),
-                )?;
-                if !matches!(response.payload, SearchPlaneQueryIpcResponse::Text(_)) {
-                    return Err(
-                        format!("binary inventory query returned {:?}", response.payload).into(),
-                    );
-                }
-                Ok(())
+    let outcome = (|| -> TestResult {
+        let client = process.connect()?;
+        let sockets = daemon_socket_paths(&state_root);
+        let query = |request_id| -> TestResult {
+            let request = SearchPlaneQueryIpcRequestEnvelope {
+                request_id,
+                diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
+                payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "needle".to_owned(),
+                    constraints: QueryConstraintSetV1::unconstrained(),
+                    generation: Some(pin.clone()),
+                    generation_selector: None,
+                    top_k: 5,
+                    cursor: None,
+                }),
             };
-            query(0x1a11)?;
-            let before = client.observability().metrics_snapshot()?;
-            let metric = "maintenance_inventory_admission_failures_total";
-            let initial = counter(&before, metric).ok_or("inventory failure metric absent")?;
-            if !before.gauges.iter().any(|point| {
-                point.name == "snapshot_registry_lexical_entries" && point.value >= 1.0
-            }) {
-                return Err("lexical query did not leave a resident handle to revalidate".into());
+            let response: SearchPlaneQueryIpcResponseEnvelope = quanta_index_ipc::send_request(
+                &sockets[0],
+                &request,
+                quanta_index_ipc::ClientIoPolicy::default(),
+            )?;
+            if !matches!(response.payload, SearchPlaneQueryIpcResponse::Text(_)) {
+                return Err(
+                    format!("binary inventory query returned {:?}", response.payload).into(),
+                );
             }
+            Ok(())
+        };
+        query(0x1a11)?;
+        let before = client.observability().metrics_snapshot()?;
+        let metric = "maintenance_inventory_admission_failures_total";
+        let initial = counter(&before, metric).ok_or("inventory failure metric absent")?;
+        if !before
+            .gauges
+            .iter()
+            .any(|point| point.name == "snapshot_registry_lexical_entries" && point.value >= 1.0)
+        {
+            return Err("lexical query did not leave a resident handle to revalidate".into());
+        }
 
-            let permissions = std::fs::metadata(&identity)?.permissions();
-            std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o000))?;
-            let denied = (|| -> TestResult {
-                let after = wait_for(
-                    &RealTicker::new(),
-                    Duration::from_secs(20),
-                    Duration::from_millis(50),
-                    "binary inventory read failure counter",
-                    || client.observability().metrics_snapshot(),
-                    |snapshot| counter(snapshot, metric).is_some_and(|value| value > initial),
-                    |_| true,
-                )?;
-                if counter(&after, metric).is_none_or(|value| value <= initial) {
-                    return Err("inventory read failure was not counted".into());
-                }
-                Ok(())
-            })();
-            std::fs::set_permissions(&identity, permissions)?;
-            denied?;
-            query(0x1a12)
+        let permissions = std::fs::metadata(&identity)?.permissions();
+        std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o000))?;
+        let denied = (|| -> TestResult {
+            let after = wait_for(
+                &RealTicker::new(),
+                Duration::from_secs(20),
+                Duration::from_millis(50),
+                "binary inventory read failure counter",
+                || client.observability().metrics_snapshot(),
+                |snapshot| counter(snapshot, metric).is_some_and(|value| value > initial),
+                |_| true,
+            )?;
+            if counter(&after, metric).is_none_or(|value| value <= initial) {
+                return Err("inventory read failure was not counted".into());
+            }
+            Ok(())
         })();
+        std::fs::set_permissions(&identity, permissions)?;
+        denied?;
+        query(0x1a12)
+    })();
     let stopped = process.stop();
     outcome.and(stopped)
 }
@@ -914,6 +920,7 @@ fn binary_daemon_restart_preserves_active_source_and_ranked_rows() -> TestResult
             require_eq(&ready.active_repositories, &1, "active repositories")?;
             let request = SearchPlaneQueryIpcRequestEnvelope {
                 request_id,
+                diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
                 payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "process_restart_needle".to_owned(),
@@ -1080,12 +1087,29 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
         E2eRuntime::boot_in_with_client_request_timeout(&state_root, Duration::from_secs(300))?
             .with_history_max_generations(2)
             .with_history_max_bytes(HISTORY_MAX_BYTES);
-    let chunk_ids = prepared.ingest_text_files_one_batch(&batch_files)?;
-    require_eq(&chunk_ids.len(), &expected.len(), "staged chunk count")?;
-    let sealed = prepared.seal()?;
-    prepared.activate_last_sealed_generation()?;
-    let pin = GenerationPin::new(prepared.repo(), prepared.revision(), sealed);
-    prepared.stop()?;
+    let preparation = (|| -> Result<GenerationPin, Box<dyn Error>> {
+        let chunk_ids = prepared.ingest_text_files_one_batch(&batch_files)?;
+        require_eq(&chunk_ids.len(), &expected.len(), "staged chunk count")?;
+        let sealed = prepared.seal()?;
+        prepared.activate_last_sealed_generation()?;
+        Ok(GenerationPin::new(
+            prepared.repo(),
+            prepared.revision(),
+            sealed,
+        ))
+    })();
+    let teardown = prepared.stop();
+    let pin = match (preparation, teardown) {
+        (Ok(pin), Ok(())) => pin,
+        (Err(fixture_error), Ok(())) => return Err(fixture_error),
+        (Ok(_), Err(teardown_error)) => return Err(teardown_error.into()),
+        (Err(fixture_error), Err(teardown_error)) => {
+            return Err(format!(
+                "large fixture failed: {fixture_error}; daemon teardown also failed: {teardown_error:#}"
+            )
+            .into());
+        }
+    };
 
     let observe = |process: &SearchdBinaryProcess,
                    request_id_base: u64|
@@ -1116,6 +1140,7 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
                 .ok_or("large request ID overflow")?;
             let request = SearchPlaneQueryIpcRequestEnvelope {
                 request_id,
+                diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
                 payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: QUERY.to_owned(),

@@ -1,0 +1,17 @@
+[package]
+name = "quanta-index-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Bounded immutable object storage and persistent maps for native indexes"
+
+[lints]
+workspace = true
+
+[dependencies]
+quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
+sha2.workspace = true
+rustix = { workspace = true, features = ["process"] }
+rusqlite.workspace = true
+tempfile.workspace = true

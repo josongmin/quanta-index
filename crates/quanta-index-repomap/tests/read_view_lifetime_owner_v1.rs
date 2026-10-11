@@ -284,22 +284,35 @@ fn panic_and_early_release_return_the_pin_and_gc_proceeds() -> TestResult {
     let fixture = fixture()?;
     let store = Arc::clone(&fixture.store);
     let _first = activate(store.as_ref(), 1)?;
-    let _second = activate(store.as_ref(), 2)?;
     let generation = ManifestGeneration::new(1);
+    let entered_body = std::sync::atomic::AtomicBool::new(false);
     // A panic between acquisition and completion must unwind through the
     // view's drop, returning the pin.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let view = store
             .acquire_pinned(&acquire_request(&repo(), 1))
             .expect("acquire");
+        assert_eq!(
+            store
+                .pinned_view_count(&repo(), &revision(), generation)
+                .expect("pin count"),
+            1
+        );
         let _evidence = view.evidence().clone();
+        entered_body.store(true, std::sync::atomic::Ordering::SeqCst);
         panic!("query lane failed mid-flight");
     }));
-    assert!(result.is_err());
+    let payload = result.expect_err("intentional query-body panic");
+    assert!(entered_body.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        payload.downcast_ref::<&'static str>(),
+        Some(&"query lane failed mid-flight")
+    );
     assert_eq!(
         store.pinned_view_count(&repo(), &revision(), generation)?,
         0
     );
+    let _second = activate(store.as_ref(), 2)?;
     // Cancellation is the same RAII path: an early drop returns the pin.
     {
         let _view = store.acquire_pinned(&acquire_request(&repo(), 2))?;

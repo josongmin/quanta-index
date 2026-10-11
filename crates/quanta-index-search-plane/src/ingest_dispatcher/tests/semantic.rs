@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use quanta_index_contract::ManifestGeneration;
+use quanta_index_contract::{GenerationPin, ManifestGeneration};
 use quanta_index_core::{
-    CoreError, MetricSourcePort, MetricValueV1, ResidentScopeSource, SemanticIngestHeaderV1,
-    SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticStreamTallyV1,
-    SemanticStreamWindowPolicy,
+    CoreError, MetricSourcePort, MetricValueV1, ResidentScopeSource, SemanticGenerationContractV1,
+    SemanticIngestHeaderV1, SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort,
+    SemanticStreamTallyV1, SemanticStreamWindowPolicy,
 };
 
 use crate::ingest_dispatcher::semantic::DirectSemanticMaterializer;
@@ -23,7 +23,7 @@ fn direct_semantic_materializer_builds_durably_and_receipts_the_seal() -> TestRe
     let header = SemanticIngestHeaderV1::of_batch(&batch);
     let mut source =
         ResidentScopeSource::new(&batch.replace_scopes, SemanticStreamWindowPolicy::DEFAULT)?;
-    let (receipt, _observation) = materializer.publish_stream(&header, &mut source)?;
+    let (receipt, _observation) = materializer.publish_stream(&header, &mut source, None)?;
     if !receipt.sealed || receipt.manifest_digest.as_deref() != Some(batch.manifest_digest.as_str())
     {
         return Err("unexpected semantic materialize receipt".into());
@@ -44,10 +44,20 @@ struct UndercountingBuilder;
 struct UnboundReportBuilder;
 
 impl SemanticScopeStreamBuildPort for UnboundReportBuilder {
+    fn preflight_contract(
+        &self,
+        _pin: &GenerationPin,
+        _contract: &SemanticGenerationContractV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
     fn build_stream(
         &self,
         _header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<
         (
             SemanticStreamTallyV1,
@@ -72,7 +82,7 @@ fn semantic_observation_rejects_report_not_bound_to_sink_coverage() -> TestRes {
     let header = SemanticIngestHeaderV1::of_batch(&batch);
     let mut source =
         ResidentScopeSource::new(&batch.replace_scopes, SemanticStreamWindowPolicy::DEFAULT)?;
-    match materializer.publish_stream(&header, &mut source) {
+    match materializer.publish_stream(&header, &mut source, None) {
         Err(CoreError::InvalidContract(message)) if message.contains("stage report coverage") => {
             Ok(())
         }
@@ -81,10 +91,20 @@ fn semantic_observation_rejects_report_not_bound_to_sink_coverage() -> TestRes {
 }
 
 impl SemanticScopeStreamBuildPort for UndercountingBuilder {
+    fn preflight_contract(
+        &self,
+        _pin: &GenerationPin,
+        _contract: &SemanticGenerationContractV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
     fn build_stream(
         &self,
         _header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<
         (
             SemanticStreamTallyV1,
@@ -112,7 +132,7 @@ fn a_build_whose_tally_disagrees_with_the_source_is_refused_and_counts_nothing()
     let header = SemanticIngestHeaderV1::of_batch(&batch);
     let mut source =
         ResidentScopeSource::new(&batch.replace_scopes, SemanticStreamWindowPolicy::DEFAULT)?;
-    match materializer.publish_stream(&header, &mut source) {
+    match materializer.publish_stream(&header, &mut source, None) {
         Err(CoreError::InvalidContract(message)) if message.contains("source issued") => {}
         other => return Err(format!("a tally mismatch is refused typed, got {other:?}").into()),
     }
@@ -184,7 +204,7 @@ fn stream_metrics_count_windows_and_reset_the_peak_per_generation() -> TestRes {
     // Generation 1, one-row windows: two windows, peak one row.
     let header = SemanticIngestHeaderV1::of_batch(&two_rows);
     let mut source = ResidentScopeSource::new(&two_rows.replace_scopes, one_row_window)?;
-    let _receipt = materializer.publish_stream(&header, &mut source)?;
+    let _receipt = materializer.publish_stream(&header, &mut source, None)?;
     let (windows, peak) = scrape_of(&materializer)?;
     if windows != 2 || !gauge_is(peak, one_row) {
         return Err(format!("after two one-row windows: windows={windows} peak={peak}").into());
@@ -192,7 +212,7 @@ fn stream_metrics_count_windows_and_reset_the_peak_per_generation() -> TestRes {
     // Generation 1 again, both rows in one window: the peak widens.
     let two_row_window = SemanticStreamWindowPolicy::new(2, one_row.saturating_mul(2))?;
     let mut source = ResidentScopeSource::new(&two_rows.replace_scopes, two_row_window)?;
-    let _receipt = materializer.publish_stream(&header, &mut source)?;
+    let _receipt = materializer.publish_stream(&header, &mut source, None)?;
     let (windows, peak) = scrape_of(&materializer)?;
     if windows != 3 || !gauge_is(peak, one_row.saturating_mul(2)) {
         return Err(format!("after a two-row window: windows={windows} peak={peak}").into());
@@ -201,7 +221,7 @@ fn stream_metrics_count_windows_and_reset_the_peak_per_generation() -> TestRes {
     two_rows.generation = ManifestGeneration::new(2);
     let header = SemanticIngestHeaderV1::of_batch(&two_rows);
     let mut source = ResidentScopeSource::new(&two_rows.replace_scopes, one_row_window)?;
-    let _receipt = materializer.publish_stream(&header, &mut source)?;
+    let _receipt = materializer.publish_stream(&header, &mut source, None)?;
     let (windows, peak) = scrape_of(&materializer)?;
     if windows != 5 || !gauge_is(peak, one_row) {
         return Err(format!("after a new generation: windows={windows} peak={peak}").into());

@@ -302,6 +302,7 @@ pub trait HistoryTextIndexPort: Send + Sync {
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
         build: HistoryTextBuildV1,
+        diagnostic: Option<&crate::DiagnosticContextV1>,
     ) -> Result<HistoryTextEpochReceiptV1, CoreError>;
 
     /// Open the index of `epoch` for query.
@@ -337,6 +338,7 @@ pub trait HistoryTextIndexPort: Send + Sync {
         &self,
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
+        diagnostic: Option<&crate::DiagnosticContextV1>,
     ) -> Result<HistoryTextDiscardOutcomeV1, CoreError>;
 
     /// Remove every epoch index of `generation` (the generation was
@@ -344,6 +346,7 @@ pub trait HistoryTextIndexPort: Send + Sync {
     fn discard_generation(
         &self,
         generation: &AuxiliaryGenerationKeyV1,
+        diagnostic: Option<&crate::DiagnosticContextV1>,
     ) -> Result<HistoryTextDiscardOutcomeV1, CoreError>;
 }
 

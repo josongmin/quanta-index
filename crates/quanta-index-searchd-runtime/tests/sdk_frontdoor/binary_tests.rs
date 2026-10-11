@@ -6,10 +6,11 @@ fn sdk_binary_process_dsl_roundtrip() -> TestResult {
     let runtime = SearchdBinaryProcess::start(dir.path())?;
     let result = (|| -> TestResult {
         let client = runtime.connect()?;
+        let batch = lexical_frontdoor_matrix_batch()?;
+        reserve_sdk_frontdoor_generation(&client, &batch)?;
         // The repo-meta overlay is part of the sealed contract: published
         // before the seal, never into the sealed generation (QI-BB-030).
         let _repo_meta_receipt = client.history().publish_repo_meta(&repo_meta_batch())?;
-        let batch = lexical_frontdoor_matrix_batch()?;
         let active = publish_and_activate_sdk_search_corpus(&client, &batch)?;
         if active.lexical.manifest_generation != generation()
             || active.semantic.manifest_generation != generation()

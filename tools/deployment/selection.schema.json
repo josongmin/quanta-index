@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Quanta Index Deployment Selection V1",
+  "description": "Durable selection wire shape. The launcher additionally enforces canonical existing paths, file types, private ownership and permissions, link count, and selected binary SHA-256 against file bytes under the deployment lock; those filesystem and custody checks are outside this JSON Schema.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "binary",
+    "binary_sha256",
+    "state_root",
+    "environment"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "binary": {
+      "$ref": "#/$defs/absoluteUnixPath"
+    },
+    "binary_sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "state_root": {
+      "$ref": "#/$defs/absoluteUnixPath"
+    },
+    "environment": {
+      "type": "object",
+      "description": "Closed child-process environment. Keys must be in the launcher's allowlist, and values must be NUL-free strings.",
+      "maxProperties": 69,
+      "additionalProperties": false,
+      "properties": {
+        "HOME": { "$ref": "#/$defs/environmentValue" },
+        "LANG": { "$ref": "#/$defs/environmentValue" },
+        "LC_ALL": { "$ref": "#/$defs/environmentValue" },
+        "OPENAI_API_KEY": { "$ref": "#/$defs/environmentValue" },
+        "PATH": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_CACHE_ROOT": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_CONTROL_SOCKET_ACCESS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBEDDER": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_BATCH": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_CACHE": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_CACHE_MAX_AGE_SECS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_CACHE_MAX_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_CACHE_MAX_ENTRIES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_CACHE_MAX_NAMESPACES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_CACHE_MAX_TOTAL_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_CONCURRENCY": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_DIM": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_MAX_EST_TOKENS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_MAX_RETRIES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_MODEL": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_MODEL_DIR": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_MODEL_REVISION": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EMBED_TIMEOUT_SECS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_EXPERIMENTAL_HYBRID_FETCH_FLOOR": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_INGEST_MAX_RECORDS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_INGEST_MAX_TEXT_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_INGEST_MAX_VECTOR_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_INGEST_SOCKET_ACCESS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_INTEGRITY_SCRUB_MAX_BYTES_PER_STEP": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_LEXICAL_MAX_EXAMINED_CANDIDATES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_LEXICAL_WRITER_ENVELOPE_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_LEXICAL_WRITER_HEAP_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_LEXICAL_WRITER_IDLE_SECS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_MAINTENANCE_TICK_MS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROCESS_MEMORY_CEILING_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROCESS_RSS_CEILING_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROVIDER_ENDPOINT": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_REQUESTS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROVIDER_PROFILE": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROVIDER_REGION": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROVIDER_RETENTION": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROVIDER_SOURCE_CONTENT_CONSENT": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_PROVIDER_TENANT": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_QUERY_DISPATCH_BUDGET_MS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_QUERY_DISPATCH_SLOTS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_QUERY_MAX_CONNECTIONS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_QUERY_MAX_IN_FLIGHT_PER_REPO": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_QUERY_QUEUE_WAIT_MS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_QUERY_SOCKET_ACCESS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_QUERY_STAGE_OBSERVATION": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_REGEX_CACHE_MAX_ENTRIES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_REGEX_CACHE_MAX_MATCHES_PER_ENTRY": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_REGEX_CACHE_MAX_RESIDENT_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_SCOPES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_SEMANTIC_STREAM_WINDOW_VECTOR_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_SNAPSHOT_MAX_ENTRIES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_SNAPSHOT_MAX_RESIDENT_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "QUANTA_INDEX_SOURCE_PUBLICATION_MAX_BYTES": { "$ref": "#/$defs/environmentValue" },
+        "TMPDIR": { "$ref": "#/$defs/environmentValue" },
+        "XDG_CACHE_HOME": { "$ref": "#/$defs/environmentValue" }
+      }
+    }
+  },
+  "$defs": {
+    "absoluteUnixPath": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]*$",
+      "description": "Absolute Unix path without NUL. The launcher separately requires an existing, canonical path and the expected file type."
+    },
+    "environmentValue": {
+      "type": "string",
+      "pattern": "^[^\\u0000]*$"
+    }
+  }
+}

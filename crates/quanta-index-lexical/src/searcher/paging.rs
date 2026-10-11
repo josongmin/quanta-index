@@ -14,8 +14,12 @@ use crate::ranked_page::{
     RankedRows,
 };
 use quanta_index_contract::{LexicalCursor, LqOptions, LqQuery, LqYesNoOnly};
-use quanta_index_core::{CoreError, LexicalPageSpec, RequestBudgetV1};
+use quanta_index_core::{
+    CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    LexicalPageSpec, RequestBudgetV1,
+};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tantivy::query::Query;
 use tantivy::schema::TantivyDocument;
 
@@ -149,16 +153,39 @@ impl TantivySearcher {
         surface: &str,
         budget: &RequestBudgetV1,
     ) -> Result<RankedRows, CoreError> {
+        observe_whole_set_collection(budget.diagnostic_context(), |attempts| {
+            self.collect_whole_set_observed(searcher, compiled, boost, surface, budget, attempts)
+        })
+    }
+
+    /// The optional meter is owned by one caller. Its snapshot is populated
+    /// before propagating any collector error, so refusals retain attempted
+    /// work without changing the fruit or budget decision.
+    pub(crate) fn collect_whole_set_observed(
+        &self,
+        searcher: &tantivy::Searcher,
+        compiled: &dyn Query,
+        boost: f32,
+        surface: &str,
+        budget: &RequestBudgetV1,
+        attempted_candidates: Option<&mut u64>,
+    ) -> Result<RankedRows, CoreError> {
         let examined = self.execution_budget.max_examined_candidates();
-        let collection = CollectionBudget::new(
+        let meter = attempted_candidates
+            .as_ref()
+            .map(|_| Arc::new(AtomicU64::new(0)));
+        let mut collection = CollectionBudget::new(
             self.execution_budget,
             self.execution_budget
                 .collection_budget(searcher.segment_readers().len())?,
         );
+        if let Some(meter) = &meter {
+            collection = collection.with_candidate_attempt_meter(Arc::clone(meter));
+        }
         let collector =
             RankedPageCollector::new(Arc::clone(&self.ranked_keys), examined, None, boost, true)
                 .with_collection_budget(collection.clone());
-        let fruit = budgeted_collection_with_statistics(
+        let result = budgeted_collection_with_statistics(
             searcher,
             compiled,
             &collector,
@@ -166,7 +193,11 @@ impl TantivySearcher {
             collection,
             &self.live_bm25,
             "lexical:collect",
-        )?;
+        );
+        if let (Some(attempted), Some(meter)) = (attempted_candidates, meter) {
+            *attempted = meter.load(Ordering::Relaxed);
+        }
+        let fruit = result?;
         if fruit.matched > count_from_len(examined)? {
             return Err(self.execution_budget.exceeded(surface));
         }
@@ -277,4 +308,21 @@ impl TantivySearcher {
     pub(crate) fn apply_query_boost_score(score: f32, options: &LqOptions) -> f32 {
         score * Self::boost_factor(options)
     }
+}
+
+pub(super) fn observe_whole_set_collection<T>(
+    diagnostic: Option<&DiagnosticContextV1>,
+    collect: impl FnOnce(Option<&mut u64>) -> Result<T, CoreError>,
+) -> Result<T, CoreError> {
+    let rank_span = diagnostic.and_then(|context| {
+        crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryRank)
+    });
+    let mut attempted_candidates = 0_u64;
+    let attempts = rank_span.as_ref().map(|_| &mut attempted_candidates);
+    let result = collect(attempts);
+    if let (Some(context), Some(span)) = (diagnostic, rank_span) {
+        context.counter(&span, DiagnosticCounterV1::Candidates, attempted_candidates);
+        let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
+    }
+    result
 }

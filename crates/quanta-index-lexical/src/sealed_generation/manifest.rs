@@ -19,14 +19,28 @@
 //!   a query ranks by these tables without decoding `SSTable` strings;
 //! - **live BM25** — exact live statistics bound to the index commit;
 //! - **text authority** — `None` for a generation built without one, or the
-//!   `text-authority/` manifest and every shard it lists. A door reads each
-//!   file once, hashing it as it decodes it;
+//!   `text-authority/` manifest with proved document identities and every shard
+//!   it lists. A door pins shard files and authenticates metadata; selected
+//!   reads hash and decode shard bodies;
 //! - **overlays** — every repo-metadata overlay family the generation
 //!   carries, hashed as a door decodes it. A family not listed is one the
 //!   generation does not carry; a file that appears anyway is refused;
 //! - **source coverage** — an optional commitment to the admitted file
 //!   universe and producer event, both decoded from the same proved bytes.
 //!   Absence means unavailable capability, not complete coverage.
+//!
+//! Format 19 encodes repeated map leaf values through bounded canonical
+//! dictionaries, preserving the same authenticated object dependencies.
+//! Format 18 stores one NFC Native body surface and derives folding on read.
+//! It independently proves File/Native source and posting membership
+//! at seal. Compact roots commit shared paged authorities. A door authenticates
+//! those roots; selected reads authenticate pooled pages and source bodies, and
+//! scrub authenticates the complete reachable closure. Missing, resized or
+//! rewritten pooled leaves are detected at selected read or scrub. Generation-
+//! local Tantivy files retain the length-at-open policy stated above.
+//! This policy relies on the existing trusted seal/identity construction; it is
+//! not a signature against an attacker able to rewrite all filesystem artifacts.
+//! Formats 18 and earlier require an explicit producer rebuild.
 //!
 //! Format 14 retains deletions and commits exact live BM25 statistics.
 //! Format 13 requires sealed lexical generations to have no deleted Tantivy
@@ -68,15 +82,10 @@ use crate::channel_payloads::{
     BoundedCborRows, ExactManifestRow, ValueCompatible, leading_cbor_array_version,
     preflight_manifest_shape,
 };
-use crate::file_authority::root::{
-    DIR_NAME as FILE_AUTHORITY_DIR_NAME, OBJECTS_NAME as FILE_AUTHORITY_OBJECTS_NAME,
-    ROOT_FILE_NAME as FILE_AUTHORITY_ROOT_FILE_NAME, is_object_file_name,
-};
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 use crate::overlay_codec::OverlayFamily;
 use crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME;
 use crate::sealed_generation::live_bm25;
-use crate::text_authority::TEXT_AUTHORITY_DIR_NAME;
 
 /// File name of the sealed manifest.
 pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
@@ -89,7 +98,7 @@ const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMMITMENT_ROWS: usize = MAX_SEALED_MANIFEST_BYTES.div_euclid(37);
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 15;
+pub(crate) use crate::lexical_root_names::LEXICAL_SEALED_MANIFEST_FORMAT_VERSION;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -139,7 +148,7 @@ pub(crate) struct LexicalSealedManifest {
     /// The `text-authority/` tree by `/`-joined path, ascending by name, or
     /// `None` for a generation built without a text authority.
     pub(crate) text_authority: Option<Vec<SealedArtifactCommitmentV1>>,
-    /// F15 root and its immutable packed source/posting objects.
+    /// The compact File authority root; it commits pooled source/posting pages.
     pub(crate) file_authority: Vec<SealedArtifactCommitmentV1>,
     /// Every overlay family present, in [`OverlayFamily::ALL`] order.
     pub(crate) overlays: Vec<SealedArtifactCommitmentV1>,
@@ -169,7 +178,7 @@ type SealedManifestRow = (
 );
 
 // Only the reader uses bounded collections. The writer keeps the exact
-// format-15 tuple above; both tuple layouts serialize identically.
+// format-16 tuple above; both tuple layouts serialize identically.
 type DecodedSealedManifestRow = (
     u32,
     ValueCompatible<String>,
@@ -297,7 +306,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported,
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version}, the whole-corpus text-authority layout; this build serves format {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION} with the sharded text authority, and the generation must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version}, the whole-corpus text-authority layout; this build serves format {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION} with shared paged authorities, and the generation must be rebuilt",
                     path.display()
                 ),
             });
@@ -306,7 +315,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: packed file authority with disk postings); the generation must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: shared paged lexical authorities); the generation must be rebuilt",
                     path.display()
                 ),
             });
@@ -422,38 +431,25 @@ impl LexicalSealedManifest {
         {
             return Err(manifest_corrupt(path, "invalid live BM25 commitment"));
         }
-        if let Some(files) = &self.text_authority {
-            let prefix = format!("{TEXT_AUTHORITY_DIR_NAME}/");
-            ensure_names(path, "text authority", files, |name| {
-                name.strip_prefix(prefix.as_str()).is_some_and(&top_level)
+        let max_root_bytes =
+            u64::try_from(crate::lexical_root_names::MAX_ROOT_BYTES).map_err(|error| {
+                manifest_corrupt(path, &format!("authority root bound exceeds u64: {error}"))
             })?;
-            let manifest_name = format!(
-                "{TEXT_AUTHORITY_DIR_NAME}/{}",
-                crate::text_authority::TEXT_AUTHORITY_MANIFEST_FILE_NAME
-            );
-            if !files.iter().any(|file| file.name == manifest_name) {
-                return Err(manifest_corrupt(
-                    path,
-                    "text authority is committed without its manifest",
-                ));
-            }
+        let native_name = crate::lexical_root_names::NATIVE_ROOT_NAME;
+        if !self.text_authority.as_deref().is_some_and(
+            |files| matches!(files, [root] if root.name == native_name && root.bytes <= max_root_bytes),
+        ) {
+            return Err(manifest_corrupt(
+                path,
+                "Native authority requires exactly one bounded root commitment",
+            ));
         }
-        let root_name = format!("{FILE_AUTHORITY_DIR_NAME}/{FILE_AUTHORITY_ROOT_FILE_NAME}");
-        let object_prefix = format!("{FILE_AUTHORITY_DIR_NAME}/{FILE_AUTHORITY_OBJECTS_NAME}/");
-        ensure_names(path, "file authority", &self.file_authority, |name| {
-            name == root_name
-                || name
-                    .strip_prefix(object_prefix.as_str())
-                    .is_some_and(is_object_file_name)
-        })?;
-        if !self
-            .file_authority
-            .iter()
-            .any(|file| file.name == root_name)
+        if !matches!(self.file_authority.as_slice(), [root]
+            if root.name == crate::lexical_root_names::FILE_ROOT_NAME && root.bytes <= max_root_bytes)
         {
             return Err(manifest_corrupt(
                 path,
-                "file authority is committed without its F15 root",
+                "File authority requires exactly one bounded root commitment",
             ));
         }
         if let Some(coverage) = &self.source_coverage
@@ -633,6 +629,7 @@ fn bind_manifest(
 pub(crate) fn write_manifest(
     generation_dir: &Path,
     manifest: &LexicalSealedManifest,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<(), CoreError> {
     let bytes = manifest.encode()?;
     if bytes.len() > MAX_SEALED_MANIFEST_BYTES {
@@ -640,10 +637,11 @@ pub(crate) fn write_manifest(
             "lexical: sealed generation manifest exceeds {MAX_SEALED_MANIFEST_BYTES} encoded bytes"
         )));
     }
-    crate::index_store::write_atomic_durable(
+    crate::index_store::write_atomic_durable_observed(
         &manifest_path(generation_dir),
         &bytes,
         "sealed generation manifest",
+        sync,
     )
 }
 
@@ -678,10 +676,7 @@ mod tests {
             index_segments: vec![artifact("aa.idx"), artifact("aa.term")],
             ranked_keys: vec![artifact("ranked-keys-00000000000000000000000000000000.bin")],
             live_bm25: artifact(crate::sealed_generation::live_bm25::FILE_NAME),
-            text_authority: Some(vec![
-                artifact("text-authority/manifest.cbor"),
-                artifact("text-authority/shard-00000000-0000000000000000.cbor"),
-            ]),
+            text_authority: Some(vec![artifact("text-authority/manifest.cbor")]),
             file_authority: vec![artifact("file-authority/root.cbor")],
             overlays: vec![artifact("repo-metadata.cbor"), artifact("repo-meta.cbor")],
             source_coverage: None,
@@ -703,7 +698,7 @@ mod tests {
         let bytes = manifest.encode().expect("encode");
         let decoded = LexicalSealedManifest::decode(&bytes, Path::new("/g1/m")).expect("decode");
         assert_eq!(decoded, manifest);
-        assert_eq!(decoded.all_commitments().count(), 10);
+        assert_eq!(decoded.all_commitments().count(), 9);
         assert_eq!(
             decoded
                 .all_commitments()
@@ -730,8 +725,8 @@ mod tests {
     fn small_bigpos_tagged_leading_version_keeps_prior_classification() {
         let expected = manifest();
         let bytes = expected.encode().expect("encode manifest");
-        assert_eq!(bytes.get(..2), Some([0x8c, 0x0f].as_slice()));
-        let mut tagged = vec![0x8c, 0xc2, 0x41, 0x0f];
+        assert_eq!(bytes.get(..2), Some([0x8c, 0x13].as_slice()));
+        let mut tagged = vec![0x8c, 0xc2, 0x41, 0x13];
         tagged.extend_from_slice(bytes.get(2..).expect("manifest body"));
         assert_eq!(
             LexicalSealedManifest::decode(&tagged, Path::new("/g1/m")).expect("tagged version"),
@@ -746,10 +741,10 @@ mod tests {
 
     #[test]
     fn compact_forged_commitment_count_refuses_before_materialization() {
-        // Fixed format-15 prefix followed by a million one-byte scalar rows.
+        // Fixed format-19 prefix followed by a million one-byte scalar rows.
         // The old generic Value path materialized these rows before typed
         // shape validation; the new reader refuses at the count header.
-        let mut bytes = vec![0x8c, 0x0f];
+        let mut bytes = vec![0x8c, 0x13];
         ciborium::into_writer(&"digest", &mut bytes).expect("digest field");
         ciborium::into_writer(
             &(
@@ -1047,6 +1042,10 @@ mod tests {
             12,
             13,
             14,
+            15,
+            16,
+            17,
+            18,
             LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1,
         ] {
             let other_format: SealedManifestRow = (
@@ -1115,8 +1114,8 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 10")
-                    && message.contains("serves 15")
-                    && message.contains("packed file authority with disk postings")
+                    && message.contains("serves 19")
+                    && message.contains("shared paged lexical authorities")
                     && message.contains("must be rebuilt")
         ));
     }
@@ -1134,8 +1133,8 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 12")
-                    && message.contains("serves 15")
-                    && message.contains("packed file authority with disk postings")
+                    && message.contains("serves 19")
+                    && message.contains("shared paged lexical authorities")
                     && message.contains("must be rebuilt")
         ));
     }

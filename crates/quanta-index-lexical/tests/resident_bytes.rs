@@ -4,6 +4,10 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::os::unix::fs::MetadataExt;
@@ -14,7 +18,7 @@ use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath,
     RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
 };
-use quanta_index_core::{GenerationStorageKeyV1, LexicalIndexOpenPort, SearchCorpusBatchBuildPort};
+use quanta_index_core::{GenerationStorageKeyV1, LexicalIndexOpenPort};
 use quanta_index_lexical::LexicalAdapter;
 
 #[path = "support/current_source_fixture.rs"]
@@ -160,7 +164,7 @@ fn the_estimate_excludes_transient_text_postings_and_counts_serving_metadata() -
     let temp = tempfile::tempdir()?;
     let root = temp.path().join("indexes").join("lexical");
     let adapter = LexicalAdapter::with_state_root(root.clone());
-    let _stages = adapter.build_batch(&batch(
+    let _stages = adapter.build_fixture_batch(&batch(
         1,
         None,
         vec![scope("src/a.rs", &body(1))?, scope("src/b.rs", &body(2))?],
@@ -206,8 +210,10 @@ fn a_hard_linked_delta_counts_shared_inodes_once() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().join("indexes").join("lexical");
     let adapter = LexicalAdapter::with_state_root(root.clone());
-    let _stages = adapter.build_batch(&batch(1, None, vec![scope("src/a.rs", &body(1))?])?)?;
-    let _stages = adapter.build_batch(&batch(2, Some(1), vec![scope("src/b.rs", &body(2))?])?)?;
+    let _stages =
+        adapter.build_fixture_batch(&batch(1, None, vec![scope("src/a.rs", &body(1))?])?)?;
+    let _stages =
+        adapter.build_fixture_batch(&batch(2, Some(1), vec![scope("src/b.rs", &body(2))?])?)?;
     let base = generation_dir(&root, 1);
     let delta = generation_dir(&root, 2);
     let (_base_bytes, base_inodes) =
@@ -264,7 +270,7 @@ fn transient_text_queries_keep_fixed_answers_and_old_generation_pin() -> TestRes
     let temp = tempfile::tempdir()?;
     let root = temp.path().join("indexes/lexical");
     let adapter = LexicalAdapter::with_state_root(root);
-    let _built = adapter.build_batch(&batch(
+    let _built = adapter.build_fixture_batch(&batch(
         1,
         None,
         vec![
@@ -280,7 +286,8 @@ fn transient_text_queries_keep_fixed_answers_and_old_generation_pin() -> TestRes
         &RequestBudgetV1::unbounded(),
     )?;
     let resident = old.resident_bytes_estimate();
-    let _delta = adapter.build_batch(&batch(2, Some(1), vec![scope("a.rs", "retired token")?])?)?;
+    let _delta =
+        adapter.build_fixture_batch(&batch(2, Some(1), vec![scope("a.rs", "retired token")?])?)?;
     let current = adapter.open(
         &repo(),
         &revision(),

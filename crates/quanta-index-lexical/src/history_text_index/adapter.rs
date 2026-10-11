@@ -4,13 +4,14 @@ use std::path::PathBuf;
 
 use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::{
-    AuxiliaryGenerationKeyV1, CoreError, HistoryTextBuildV1, HistoryTextDiscardOutcomeV1,
-    HistoryTextEpochReceiptV1, HistoryTextEpochStatusV1, HistoryTextIndexPort, HistoryTextSearcher,
+    AuxiliaryGenerationKeyV1, CoreError, DiagnosticContextV1, DiagnosticStageV1,
+    HistoryTextBuildV1, HistoryTextDiscardOutcomeV1, HistoryTextEpochReceiptV1,
+    HistoryTextEpochStatusV1, HistoryTextIndexPort, HistoryTextSearcher,
     LEXICAL_WRITER_HEAP_BYTES_MIN,
 };
 
 use crate::history_text_index::layout::{
-    epoch_dir, fsync_parent, generation_dir, list_epochs, list_generations, tree_bytes,
+    epoch_dir, fsync_parent_observed, generation_dir, list_epochs, list_generations, tree_bytes,
 };
 use crate::history_text_index::manifest;
 use crate::history_text_index::publish;
@@ -42,7 +43,10 @@ impl HistoryTextIndexAdapter {
         })
     }
 
-    fn discard_tree(path: &std::path::Path) -> Result<HistoryTextDiscardOutcomeV1, CoreError> {
+    fn discard_tree(
+        path: &std::path::Path,
+        sync: Option<&crate::causal_profile::SyncTotalsV1>,
+    ) -> Result<HistoryTextDiscardOutcomeV1, CoreError> {
         if !path.exists() {
             return Ok(HistoryTextDiscardOutcomeV1::Absent);
         }
@@ -53,7 +57,7 @@ impl HistoryTextIndexAdapter {
                 path.display()
             ))
         })?;
-        fsync_parent(path)?;
+        fsync_parent_observed(path, sync)?;
         Ok(HistoryTextDiscardOutcomeV1::Discarded { bytes })
     }
 }
@@ -72,8 +76,22 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
         build: HistoryTextBuildV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<HistoryTextEpochReceiptV1, CoreError> {
-        publish::publish_epoch(&self.root, generation, epoch, build, self.writer_heap_bytes)
+        crate::causal_profile::observe_result_with_sync(
+            diagnostic,
+            DiagnosticStageV1::Finalize,
+            |_diagnostic, sync| {
+                publish::publish_epoch(
+                    &self.root,
+                    generation,
+                    epoch,
+                    build,
+                    self.writer_heap_bytes,
+                    sync.as_deref(),
+                )
+            },
+        )
     }
 
     fn open_epoch(
@@ -126,14 +144,28 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
         &self,
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<HistoryTextDiscardOutcomeV1, CoreError> {
-        Self::discard_tree(&epoch_dir(&self.root, generation, epoch))
+        crate::causal_profile::observe_result_with_sync(
+            diagnostic,
+            DiagnosticStageV1::Finalize,
+            |_diagnostic, sync| {
+                Self::discard_tree(&epoch_dir(&self.root, generation, epoch), sync.as_deref())
+            },
+        )
     }
 
     fn discard_generation(
         &self,
         generation: &AuxiliaryGenerationKeyV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<HistoryTextDiscardOutcomeV1, CoreError> {
-        Self::discard_tree(&generation_dir(&self.root, generation))
+        crate::causal_profile::observe_result_with_sync(
+            diagnostic,
+            DiagnosticStageV1::Finalize,
+            |_diagnostic, sync| {
+                Self::discard_tree(&generation_dir(&self.root, generation), sync.as_deref())
+            },
+        )
     }
 }

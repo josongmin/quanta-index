@@ -16,6 +16,7 @@ pub mod socket_access;
 pub mod state_format;
 pub mod state_migration;
 pub mod supervisor;
+pub mod trace_recorder;
 pub mod umask;
 
 pub use boot_inventory::{

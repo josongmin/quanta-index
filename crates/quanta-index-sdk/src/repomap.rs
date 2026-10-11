@@ -33,7 +33,8 @@ impl<'a> RepoMapNamespace<'a> {
                 ))?;
         match response {
             SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(head) => Ok(head.active),
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
@@ -98,7 +99,8 @@ impl<'a> RepoMapNamespace<'a> {
             .dispatch_control(SearchPlaneControlIpcRequest::RepoMapActivateV2(request))?;
         match response {
             SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(receipt) => Ok(receipt),
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcResponse::Error(_)

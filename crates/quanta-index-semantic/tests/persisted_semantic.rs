@@ -15,7 +15,8 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, GenerationQuarantineReasonV1, GenerationStorageKeyV1, L2_UNIT_NORM_TOLERANCE,
-    RequestBudgetV1, SemanticIndexOpenPort,
+    RequestBudgetV1, SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource,
+    SemanticScopeStreamBuildPort, SemanticScopeWindowV1, SemanticStreamTallyV1,
 };
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, embedding_record_v1, inventory_persisted_generations,
@@ -2406,4 +2407,254 @@ fn open_with_forged_normalization_fails_closed() -> TestResult {
         return Err("forged normalization must fail closed".into());
     };
     expect_sidecar_corrupt(err, "semantic-manifest.cbor")
+}
+
+struct WindowMustNotRun {
+    calls: usize,
+}
+
+impl SemanticScopeSource for WindowMustNotRun {
+    fn next_window(&mut self) -> Result<Option<SemanticScopeWindowV1>, CoreError> {
+        self.calls = self.calls.checked_add(1).ok_or_else(|| {
+            CoreError::InvalidContract("source window call counter overflow".to_string())
+        })?;
+        Err(CoreError::InvalidContract(
+            "incompatible delta requested a source window".to_string(),
+        ))
+    }
+
+    fn tally(&self) -> SemanticStreamTallyV1 {
+        SemanticStreamTallyV1::default()
+    }
+}
+
+#[test]
+fn delta_model_and_policy_mismatches_refuse_before_first_window() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let base_generation = ManifestGeneration::new(41);
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            base_generation,
+            "src/base.rs",
+            vec![embedding_record(
+                "base",
+                "src/base.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
+    let target_generation = ManifestGeneration::new(42);
+    let mut delta = sealed_batch(target_generation, "src/delta.rs", Vec::new(), 3);
+    delta.mode = BatchIngestMode::Delta;
+    delta.base_generation = Some(base_generation);
+
+    let mut cases = Vec::new();
+    let mut other_model = delta.clone();
+    other_model.model_contract.model_id = "other-model".into();
+    cases.push(("model_id", other_model));
+    let mut other_dimension = delta.clone();
+    other_dimension.model_contract.dimension = 4;
+    cases.push(("dimension", other_dimension));
+    let mut other_revision = delta.clone();
+    other_revision.model_contract.model_version = Some("2".into());
+    cases.push(("model_version", other_revision));
+    let mut other_metric = delta.clone();
+    other_metric.model_contract.distance_metric = EmbeddingDistanceMetric::Dot;
+    cases.push(("distance_metric", other_metric));
+    let mut other_normalization = delta.clone();
+    other_normalization.model_contract.normalization = EmbeddingNormalization::None;
+    cases.push(("normalization", other_normalization));
+    let mut no_revision = delta.clone();
+    no_revision.model_contract.model_version = None;
+    cases.push(("missing revision", no_revision));
+    let mut empty_revision = delta.clone();
+    empty_revision.model_contract.model_version = Some(String::new().into_boxed_str());
+    cases.push(("empty revision", empty_revision));
+    let mut other_policy = delta.clone();
+    other_policy.model_contract.policy_digest = "other-policy".into();
+    cases.push(("policy_digest", other_policy));
+    let mut other_view = delta.clone();
+    other_view.model_contract.view_policy_digest = None;
+    cases.push(("view_policy_digest", other_view));
+    let mut other_corpus = delta;
+    other_corpus.corpus_policy_digest = Some("other-corpus".to_string());
+    cases.push(("corpus_policy_digest", other_corpus));
+
+    for (case, batch) in cases {
+        let header = SemanticIngestHeaderV1::of_batch(&batch);
+        let mut source = WindowMustNotRun { calls: 0 };
+        let result = adapter.build_stream(&header, &mut source, None);
+        match result {
+            Err(CoreError::Typed { code, .. })
+                if code
+                    == quanta_index_contract::lex::LexicalErrorCode::SemModelMismatch.into() => {}
+            other => {
+                return Err(format!("{case}: expected SEM_MODEL_MISMATCH, got {other:?}").into());
+            }
+        }
+        if source.calls != 0 || generation_dir(&root, target_generation).exists() {
+            return Err(format!("{case}: refusal called source or created target").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn delta_refuses_base_with_unknown_revision_before_first_window() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let base_generation = ManifestGeneration::new(45);
+    let mut base = sealed_batch(
+        base_generation,
+        "src/base.rs",
+        vec![embedding_record(
+            "base",
+            "src/base.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    );
+    base.model_contract.model_version = None;
+    build_resident_batch_v1(&adapter, &base)?;
+
+    let target_generation = ManifestGeneration::new(46);
+    let mut delta = sealed_batch(target_generation, "src/delta.rs", Vec::new(), 3);
+    delta.mode = BatchIngestMode::Delta;
+    delta.base_generation = Some(base_generation);
+    let header = SemanticIngestHeaderV1::of_batch(&delta);
+    let mut source = WindowMustNotRun { calls: 0 };
+    let result = adapter.build_stream(&header, &mut source, None);
+    match result {
+        Err(CoreError::Typed { code, .. })
+            if code == quanta_index_contract::lex::LexicalErrorCode::SemModelMismatch.into() => {}
+        other => return Err(format!("unknown base revision was not refused: {other:?}").into()),
+    }
+    if source.calls != 0 || generation_dir(&root, target_generation).exists() {
+        return Err("unknown base revision consumed a window or created the target".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn full_replacement_allows_a_new_model() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let first_generation = ManifestGeneration::new(48);
+    let second_generation = ManifestGeneration::new(49);
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            first_generation,
+            "src/old.rs",
+            vec![embedding_record("old", "src/old.rs", vec![1.0, 0.0, 0.0])?],
+            3,
+        ),
+    )?;
+    let mut replacement = sealed_batch(
+        second_generation,
+        "src/new.rs",
+        vec![embedding_record("new", "src/new.rs", vec![0.0, 1.0, 0.0])?],
+        3,
+    );
+    replacement.model_contract.model_id = "replacement-model".into();
+    replacement.model_contract.model_version = Some("rev-2".into());
+    replacement.model_contract.policy_digest = "replacement-policy".into();
+    build_resident_batch_v1(&adapter, &replacement)?;
+    let old = adapter.open(&repo_id(), &revision_id(), first_generation)?;
+    let new = adapter.open(&repo_id(), &revision_id(), second_generation)?;
+    if old.index_model_id() != "text-embed"
+        || new.index_model_id() != "replacement-model"
+        || new.index_model_revision() != Some("rev-2")
+    {
+        return Err(format!(
+            "replacement model identity drifted: old={} new={} revision={:?}",
+            old.index_model_id(),
+            new.index_model_id(),
+            new.index_model_revision(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn in_progress_target_policy_mismatch_refuses_before_first_window() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(44);
+    let mut first = sealed_batch(
+        generation,
+        "src/first.rs",
+        vec![embedding_record(
+            "first",
+            "src/first.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    );
+    first.seal = false;
+    build_resident_batch_v1(&adapter, &first)?;
+    let contract_path = generation_dir(&root, generation).join("semantic-build-contract.cbor");
+    let before = std::fs::read(&contract_path)?;
+
+    let mut second = sealed_batch(generation, "src/second.rs", Vec::new(), 3);
+    second.model_contract.policy_digest = "changed-policy".into();
+    let header = SemanticIngestHeaderV1::of_batch(&second);
+    let mut source = WindowMustNotRun { calls: 0 };
+    let result = adapter.build_stream(&header, &mut source, None);
+    match result {
+        Err(CoreError::InvalidContract(_)) => {}
+        other => return Err(format!("target policy mismatch was not refused: {other:?}").into()),
+    }
+    if source.calls != 0 || std::fs::read(contract_path)? != before {
+        return Err("target policy refusal consumed a window or changed contract bytes".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn forged_embedding_policy_in_sealed_manifest_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(43);
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
+            "src/base.rs",
+            vec![embedding_record(
+                "base",
+                "src/base.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
+    let path = generation_dir(&root, generation).join("semantic-manifest.cbor");
+    forge_manifest_text_field(&path, "policy_digest", "forged-policy")?;
+    let target_generation = ManifestGeneration::new(47);
+    let mut delta = sealed_batch(target_generation, "src/delta.rs", Vec::new(), 3);
+    delta.mode = BatchIngestMode::Delta;
+    delta.base_generation = Some(generation);
+    let header = SemanticIngestHeaderV1::of_batch(&delta);
+    let mut source = WindowMustNotRun { calls: 0 };
+    let Err(preflight_error) = adapter.build_stream(&header, &mut source, None) else {
+        return Err("forged base policy must fail before its first delta window".into());
+    };
+    expect_sidecar_corrupt(preflight_error, "semantic-manifest.cbor")?;
+    if source.calls != 0 || generation_dir(&root, target_generation).exists() {
+        return Err("forged base policy consumed a window or created the target".into());
+    }
+    let reopened = SemanticAdapter::with_state_root(root)?;
+    let Err(error) = reopened.open(&repo_id(), &revision_id(), generation) else {
+        return Err("forged policy must fail closed".into());
+    };
+    expect_sidecar_corrupt(error, "semantic-manifest.cbor")
 }

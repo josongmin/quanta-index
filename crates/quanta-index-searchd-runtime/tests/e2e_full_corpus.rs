@@ -1346,6 +1346,15 @@ fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<Fix
         })?;
     }
 
+    if !fixture.repo_commit_recency.is_empty()
+        || !fixture.repo_meta.is_empty()
+        || !fixture.repo_topic.is_empty()
+        || !fixture.file_ownership.is_empty()
+        || !fixture.file_contributor.is_empty()
+    {
+        let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
+    }
+
     if !fixture.repo_commit_recency.is_empty() {
         rt.publish_repo_commit_recency_batch(RepoCommitRecencyIngestBatch {
             repo_id: rt.repo(),

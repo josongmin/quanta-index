@@ -4,12 +4,14 @@ use std::sync::{
 };
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, SearchPlaneControlIpcRequest,
+    DiagnosticAttemptFieldV1, GenerationPin, GenerationSelector, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
 };
 use quanta_index_ipc::ClientIpcTimingV1;
+
+use crate::DiagnosticAttemptSourceV1;
 
 use crate::binding::{
     ControlCallBinding, IngestCallBinding, QueryCallBinding, bind_control_response,
@@ -79,6 +81,7 @@ impl ClientTransports {
 pub struct QuantaIndexClientPayloadV1 {
     transports: ClientTransports,
     next_request_id: AtomicU64,
+    diagnostic_attempt_source: Option<Arc<dyn DiagnosticAttemptSourceV1>>,
 }
 
 /// The query-plane RPC made during one observed lexical SDK call.
@@ -158,6 +161,22 @@ impl QuantaIndex {
         Ok(Self::from_resolved(resolved))
     }
 
+    /// Connect with an explicit source of one local diagnostic span per IPC send.
+    /// Arbitrary socket options do not prove peer bundle compatibility, so
+    /// this constructor leaves the wire attempt field absent.
+    pub fn connect_with_diagnostic_attempts(
+        options: ConnectOptions,
+        source: Arc<dyn DiagnosticAttemptSourceV1>,
+    ) -> Result<Self, SdkError> {
+        let resolved = options.resolve()?;
+        Ok(Self {
+            inner: Arc::new(
+                QuantaIndexClientPayloadV1::from_resolved(resolved)
+                    .with_diagnostic_attempt_source(source),
+            ),
+        })
+    }
+
     /// Connect a query-only client (S21-07): no control or ingest
     /// transport is configured or required. Calling a control or ingest
     /// method on the result fails with a typed
@@ -165,6 +184,20 @@ impl QuantaIndex {
     pub fn connect_query_only(options: ConnectOptions) -> Result<Self, SdkError> {
         let resolved = options.resolve_profile(ClientProfile::QueryOnly)?;
         Ok(Self::from_resolved(resolved))
+    }
+
+    /// Query-only equivalent of [`Self::connect_with_diagnostic_attempts`].
+    pub fn connect_query_only_with_diagnostic_attempts(
+        options: ConnectOptions,
+        source: Arc<dyn DiagnosticAttemptSourceV1>,
+    ) -> Result<Self, SdkError> {
+        let resolved = options.resolve_profile(ClientProfile::QueryOnly)?;
+        Ok(Self {
+            inner: Arc::new(
+                QuantaIndexClientPayloadV1::from_resolved(resolved)
+                    .with_diagnostic_attempt_source(source),
+            ),
+        })
     }
 
     #[must_use]
@@ -281,6 +314,14 @@ impl QuantaIndex {
 }
 
 impl QuantaIndexClientPayloadV1 {
+    fn with_diagnostic_attempt_source(
+        mut self,
+        source: Arc<dyn DiagnosticAttemptSourceV1>,
+    ) -> Self {
+        self.diagnostic_attempt_source = Some(source);
+        self
+    }
+
     #[must_use]
     pub fn lexical(&self) -> LexicalNamespace<'_> {
         LexicalNamespace::new(self)
@@ -402,9 +443,13 @@ impl QuantaIndexClientPayloadV1 {
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
             payload,
+            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
         };
         let response = if let Some(trace) = observation {
-            let (response, ipc) = self.transports.query().send_observed(envelope)?;
+            let (response, ipc) = self
+                .transports
+                .query()
+                .send_observed_traced(envelope, self.diagnostic_attempt_source.as_deref())?;
             let kind = observed_kind.ok_or_else(|| {
                 SdkError::Protocol("observed query RPC kind disappeared".to_string())
             })?;
@@ -415,7 +460,9 @@ impl QuantaIndexClientPayloadV1 {
             });
             response
         } else {
-            self.transports.query().send(envelope)?
+            self.transports
+                .query()
+                .send_traced(envelope, self.diagnostic_attempt_source.as_deref())?
         };
         if response.request_id != request_id {
             return Err(SdkError::Protocol(format!(
@@ -523,8 +570,10 @@ impl QuantaIndexClientPayloadV1 {
         let envelope = SearchPlaneControlIpcRequestEnvelope {
             request_id,
             payload,
+            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
         };
-        let response = control_transport.send(envelope)?;
+        let response =
+            control_transport.send_traced(envelope, self.diagnostic_attempt_source.as_deref())?;
         if response.request_id != request_id {
             return Err(SdkError::Protocol(format!(
                 "control response request_id {} != request {}",
@@ -538,7 +587,8 @@ impl QuantaIndexClientPayloadV1 {
                 message: error.message,
                 repair: error.repair,
             }),
-            payload @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            payload @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
@@ -569,8 +619,10 @@ impl QuantaIndexClientPayloadV1 {
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id,
             payload,
+            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
         };
-        let response = ingest_transport.send(envelope)?;
+        let response =
+            ingest_transport.send_traced(envelope, self.diagnostic_attempt_source.as_deref())?;
         if response.request_id != request_id {
             return Err(SdkError::Protocol(format!(
                 "ingest response request_id {} != request {}",
@@ -649,6 +701,9 @@ impl QuantaIndexClientPayloadV1 {
         response: &SearchPlaneControlIpcResponse,
     ) -> &'static str {
         match response {
+            SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_) => {
+                "search_corpus_generation_reservation_v1"
+            }
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_) => {
                 "search_corpus_activation_cas_ack"
             }
@@ -724,6 +779,7 @@ impl QuantaIndexClientPayloadV1 {
                 ingest: ingest.map(|path| UdsIngestTransport::new(path, io_policy)),
             },
             next_request_id: AtomicU64::new(1),
+            diagnostic_attempt_source: None,
         }
     }
 
@@ -740,6 +796,7 @@ impl QuantaIndexClientPayloadV1 {
                 ingest,
             },
             next_request_id: AtomicU64::new(1),
+            diagnostic_attempt_source: None,
         }
     }
 

@@ -18,254 +18,222 @@
 //!   one way it leaves the disk.
 
 use std::fs::File;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
 
-use ciborium::Value as CborValue;
-use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind};
-use quanta_index_core::{
-    CoreError, GenerationQuarantineReasonV1, IntegrityScrubBudgetV1, IntegrityScrubCursorV1,
-    IntegrityScrubOutcomeV1, IntegrityScrubReportV1, QuarantinedGenerationV1,
-    SealedArtifactCommitmentV1, TreeCommitmentMismatchV1, TreeScrubVerdictV1,
-    hash_committed_step_opened_v1,
+use super::receipts::{
+    LEXICAL_SCRUB_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION, MAX_RECEIPT_BYTES,
+    ScrubReceiptRow, now_unix, quarantine_content_corrupt_at, quarantine_seal_failure_at,
+    refuse_if_quarantined_at, seal_failure_quarantine_reason,
 };
-use sha2::{Digest as _, Sha256};
-
+#[cfg(test)]
+use super::receipts::{MAX_QUARANTINE_DETAIL_BYTES, bounded_quarantine_detail, read_receipt_value};
+use crate::file_authority::paged::{AuthorityRoot, FileScrubCursor, verify_scrub_step};
+use crate::lexical_store::{ObjectRef, ObjectStore};
 use crate::sealed_generation::manifest::read_bound_manifest_at;
-use crate::text_authority::leading_format_version;
+use crate::text_authority::{NativeRoot, NativeScrubCursor};
+use quanta_index_contract::GenerationSnapshot;
+use quanta_index_core::{
+    CoreError, IntegrityScrubBudgetV1, IntegrityScrubCursorV1, IntegrityScrubOutcomeV1,
+    IntegrityScrubReportV1, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
+    TreeCommitmentMismatchV1, TreeScrubVerdictV1, hash_committed_step_opened_v1,
+};
 
-/// File name of the completed-pass receipt inside the generation directory.
-pub(crate) const LEXICAL_SCRUB_RECEIPT_FILE_NAME: &str = "search-corpus-generation-scrub.cbor";
-/// Completed-pass receipt: the manifest digest the pass proved, when it
-/// completed (Unix seconds), and what it covered.
-pub(crate) const LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION: u32 = 2;
-/// File name of the quarantine receipt inside the generation directory.
-pub(crate) const LEXICAL_QUARANTINE_RECEIPT_FILE_NAME: &str =
-    "search-corpus-generation-quarantine.cbor";
-/// Quarantine receipt: the reason code, what did not match, and when.
-pub(crate) const LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION: u32 = 1;
-/// Wire shape of the completed-pass receipt: a fixed-order CBOR array,
-/// format version first.
-type ScrubReceiptRow = (u32, String, u64, u64, u64);
-/// Wire shape of the quarantine receipt, format version first.
-type QuarantineReceiptRow = (u32, String, String, u64);
-const MAX_RECEIPT_BYTES: usize = 64 * 1024;
-const MAX_QUARANTINE_DETAIL_BYTES: usize = 4 * 1024;
+const MAX_SHARED_FRONTIER: usize = 32 * 1024;
+const MAX_SHARED_DEPTH: u16 = 128;
 
-fn bounded_quarantine_detail(detail: &str) -> String {
-    if detail.len() <= MAX_QUARANTINE_DETAIL_BYTES {
-        return detail.to_string();
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum SharedScrubPhase {
+    #[default]
+    Outer,
+    Objects,
+    File,
+    Native,
+    Done,
+}
+
+/// In-process continuation for the pool and semantic proof. The core cursor
+/// remains a token issued by this adapter; restart starts at zero.
+#[derive(Default)]
+pub(crate) struct SharedScrubProgress {
+    generation: Option<GenerationSnapshot>,
+    token: u64,
+    phase: SharedScrubPhase,
+    pending: Vec<(ObjectRef, u16)>,
+    store: Option<ObjectStore>,
+    file_root: Option<AuthorityRoot>,
+    native_root: Option<NativeRoot>,
+    file_cursor: FileScrubCursor,
+    native_cursor: Option<NativeScrubCursor>,
+    object_count: u64,
+    shared_bytes_read: u64,
+}
+
+impl SharedScrubProgress {
+    pub(crate) fn fault_reference(&self) -> Result<Option<ObjectRef>, CoreError> {
+        self.store
+            .as_ref()
+            .map_or(Ok(None), ObjectStore::fault_reference)
     }
-    let fingerprint = format!("{:x}", Sha256::digest(detail.as_bytes()));
-    let suffix = format!("... [truncated; original_sha256={fingerprint}]");
-    let prefix_limit = MAX_QUARANTINE_DETAIL_BYTES.saturating_sub(suffix.len());
-    let prefix: String = detail
-        .char_indices()
-        .take_while(|(start, ch)| start.saturating_add(ch.len_utf8()) <= prefix_limit)
-        .map(|(_, ch)| ch)
-        .collect();
-    format!("{prefix}{suffix}")
-}
 
-fn scrub_receipt_path(generation_dir: &Path) -> PathBuf {
-    generation_dir.join(LEXICAL_SCRUB_RECEIPT_FILE_NAME)
-}
-
-fn quarantine_receipt_path(generation_dir: &Path) -> PathBuf {
-    generation_dir.join(LEXICAL_QUARANTINE_RECEIPT_FILE_NAME)
-}
-
-fn receipt_invalid(path: &Path, reason: &str) -> CoreError {
-    CoreError::Typed {
-        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
-        message: format!("lexical: receipt {}: {reason}", path.display()),
-    }
-}
-
-fn now_unix() -> Result<u64, CoreError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since_epoch| since_epoch.as_secs())
-        .map_err(|error| {
-            CoreError::Storage(format!("lexical: system clock before the epoch: {error}"))
-        })
-}
-
-/// Read and version-check one receipt beside a generation; `None` when
-/// there is none.
-fn read_receipt_value(
-    path: &Path,
-    what: &str,
-    format_version: u32,
-) -> Result<Option<CborValue>, CoreError> {
-    read_receipt_value_with(path, what, format_version, |directory, name| {
-        super::open_regular_nofollow(directory, name)
-    })
-}
-
-fn read_receipt_value_at(
-    root: &File,
-    path: &Path,
-    what: &str,
-    format_version: u32,
-) -> Result<Option<CborValue>, CoreError> {
-    read_receipt_value_with(path, what, format_version, |_directory, name| {
-        super::open_regular_below(root, name)
-    })
-}
-
-fn read_receipt_value_with(
-    path: &Path,
-    what: &str,
-    format_version: u32,
-    open: impl FnOnce(&Path, &Path) -> std::io::Result<File>,
-) -> Result<Option<CborValue>, CoreError> {
-    let directory = path
-        .parent()
-        .ok_or_else(|| receipt_invalid(path, "has no parent"))?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| receipt_invalid(path, "has no file name"))?;
-    let mut file = match open(directory, Path::new(name)) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) if super::is_unsafe_artifact_path(&error) => {
-            return Err(receipt_invalid(path, "is not a regular file"));
+    fn bind(&mut self, generation: &GenerationSnapshot, start: u64) -> Result<(), CoreError> {
+        if start == 0 {
+            *self = Self::default();
+            self.generation = Some(generation.clone());
+            return Ok(());
         }
-        Err(error) => {
-            return Err(CoreError::Storage(format!(
-                "lexical: read {what} {}: {error}",
-                path.display()
-            )));
+        if self.generation.as_ref() != Some(generation) || self.token != start {
+            return Err(CoreError::InvalidContract(
+                "lexical: shared scrub cursor differs from issued generation and position".into(),
+            ));
         }
-    };
-    let bytes = super::read_opened_bounded(&mut file, MAX_RECEIPT_BYTES).map_err(|error| {
-        if matches!(
-            error.kind(),
-            std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
-        ) {
-            receipt_invalid(path, &format!("cannot read admitted bytes: {error}"))
-        } else {
-            CoreError::Storage(format!("lexical: read {what} {}: {error}", path.display()))
+        Ok(())
+    }
+
+    fn advance_token(&mut self) -> Result<(), CoreError> {
+        self.token = self
+            .token
+            .checked_add(1)
+            .ok_or_else(|| CoreError::InvalidContract("lexical scrub cursor exhausted".into()))?;
+        Ok(())
+    }
+
+    fn begin_objects(&mut self, state_root: &Path, generation_dir: &Path) -> Result<(), CoreError> {
+        let (file_root, native_root) = crate::lexical_gc::protected_authorities(generation_dir)?;
+        let mut roots = file_root.object_roots();
+        roots.extend(native_root.root_objects());
+        self.pending.try_reserve(roots.len()).map_err(|error| {
+            CoreError::Storage(format!("lexical: reserve scrub roots: {error}"))
+        })?;
+        self.pending
+            .extend(roots.into_iter().rev().map(|root| (root, 0)));
+        self.store = Some(ObjectStore::open_existing(state_root)?.metered_clone());
+        self.file_root = Some(file_root);
+        self.native_root = Some(native_root);
+        self.phase = SharedScrubPhase::Objects;
+        Ok(())
+    }
+
+    fn advance_shared(&mut self, max_bytes: u64) -> Result<(u64, u64, bool), CoreError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| CoreError::InvalidContract("lexical scrub has no shared store".into()))?
+            .clone();
+        if !store.has_read_meter() {
+            return Err(CoreError::InvalidContract(
+                "lexical scrub shared store is not metered".into(),
+            ));
         }
-    })?;
-    let value: CborValue = crate::channel_payloads::decode_cbor_exact(bytes.as_slice())
-        .map_err(|error| receipt_invalid(path, &format!("does not decode: {error}")))?;
-    let found = leading_format_version(&value).map_err(|detail| receipt_invalid(path, detail))?;
-    if found != format_version {
-        return Err(receipt_invalid(
-            path,
-            &format!("has format {found}, this build serves {format_version}"),
-        ));
+        let mut bytes = 0_u64;
+        let mut reads = 0_u64;
+        // Each call is capped independently of a caller's large byte budget.
+        for _ in 0..64 {
+            if self.phase == SharedScrubPhase::Done {
+                return Ok((bytes, reads, true));
+            }
+            if reads > 0 && bytes >= max_bytes {
+                return Ok((bytes, reads, false));
+            }
+            match self.phase {
+                SharedScrubPhase::Objects => {
+                    let Some((reference, depth)) = self.pending.pop() else {
+                        self.phase = SharedScrubPhase::File;
+                        continue;
+                    };
+                    if depth >= MAX_SHARED_DEPTH {
+                        return Err(CoreError::InvalidContract(
+                            "lexical scrub shared closure depth exceeded".into(),
+                        ));
+                    }
+                    let before = store.read_meter_snapshot();
+                    let children = store.object_dependencies(&reference, None)?;
+                    let after = store.read_meter_snapshot();
+                    bytes = bytes
+                        .checked_add(after.0.checked_sub(before.0).ok_or_else(|| {
+                            CoreError::InvalidContract("lexical scrub byte meter regressed".into())
+                        })?)
+                        .ok_or_else(|| {
+                            CoreError::InvalidContract("lexical scrub bytes overflow".into())
+                        })?;
+                    reads = reads
+                        .checked_add(after.1.checked_sub(before.1).ok_or_else(|| {
+                            CoreError::InvalidContract("lexical scrub read meter regressed".into())
+                        })?)
+                        .ok_or_else(|| {
+                            CoreError::InvalidContract("lexical scrub reads overflow".into())
+                        })?;
+                    self.object_count = self.object_count.checked_add(1).ok_or_else(|| {
+                        CoreError::InvalidContract("lexical scrub object count overflow".into())
+                    })?;
+                    if self
+                        .pending
+                        .len()
+                        .checked_add(children.len())
+                        .is_none_or(|count| count > MAX_SHARED_FRONTIER)
+                    {
+                        return Err(CoreError::InvalidContract(
+                            "lexical scrub shared closure frontier exceeded".into(),
+                        ));
+                    }
+                    self.pending.try_reserve(children.len()).map_err(|error| {
+                        CoreError::Storage(format!("lexical: reserve scrub closure: {error}"))
+                    })?;
+                    let next_depth = depth.checked_add(1).ok_or_else(|| {
+                        CoreError::InvalidContract("lexical scrub depth overflow".into())
+                    })?;
+                    self.pending
+                        .extend(children.into_iter().rev().map(|child| (child, next_depth)));
+                    self.advance_token()?;
+                }
+                SharedScrubPhase::File => {
+                    let root = self.file_root.as_ref().ok_or_else(|| {
+                        CoreError::InvalidContract("lexical scrub File root absent".into())
+                    })?;
+                    let step = verify_scrub_step(&store, root, &mut self.file_cursor, None)?;
+                    bytes = bytes.checked_add(step.bytes_read).ok_or_else(|| {
+                        CoreError::InvalidContract("lexical scrub bytes overflow".into())
+                    })?;
+                    reads = reads.checked_add(step.read_count).ok_or_else(|| {
+                        CoreError::InvalidContract("lexical scrub reads overflow".into())
+                    })?;
+                    self.advance_token()?;
+                    if step.done {
+                        let native = self.native_root.as_ref().ok_or_else(|| {
+                            CoreError::InvalidContract("lexical scrub Native root absent".into())
+                        })?;
+                        self.native_cursor = Some(NativeScrubCursor::new(native)?);
+                        self.phase = SharedScrubPhase::Native;
+                    }
+                    return Ok((bytes, reads, false));
+                }
+                SharedScrubPhase::Native => {
+                    let cursor = self.native_cursor.as_mut().ok_or_else(|| {
+                        CoreError::InvalidContract("lexical scrub Native cursor absent".into())
+                    })?;
+                    let remaining = max_bytes.saturating_sub(bytes).max(1);
+                    let step = cursor.step(&store, remaining, None)?;
+                    bytes = bytes.checked_add(step.charged_bytes).ok_or_else(|| {
+                        CoreError::InvalidContract("lexical scrub bytes overflow".into())
+                    })?;
+                    reads = reads.checked_add(step.read_count).ok_or_else(|| {
+                        CoreError::InvalidContract("lexical scrub reads overflow".into())
+                    })?;
+                    self.advance_token()?;
+                    if step.done {
+                        self.phase = SharedScrubPhase::Done;
+                    }
+                    return Ok((bytes, reads, step.done));
+                }
+                SharedScrubPhase::Outer => {
+                    return Err(CoreError::InvalidContract(
+                        "lexical scrub entered shared phase before outer files".into(),
+                    ));
+                }
+                SharedScrubPhase::Done => return Ok((bytes, reads, true)),
+            }
+        }
+        Ok((bytes, reads, self.phase == SharedScrubPhase::Done))
     }
-    Ok(Some(value))
-}
-
-/// When the last completed pass over the generation sealed for `identity`
-/// finished (Unix seconds), or `None` when none ever did.
-pub(crate) fn last_completed_scrub(
-    generation_dir: &Path,
-    identity: &GenerationSnapshot,
-) -> Result<Option<u64>, CoreError> {
-    let path = scrub_receipt_path(generation_dir);
-    let Some(value) =
-        read_receipt_value(&path, "scrub receipt", LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION)?
-    else {
-        return Ok(None);
-    };
-    let (_format, manifest_digest, completed_unix, _files, _bytes): ScrubReceiptRow = value
-        .deserialized()
-        .map_err(|error| receipt_invalid(&path, &format!("does not decode: {error}")))?;
-    if manifest_digest != identity.manifest_digest {
-        return Err(receipt_invalid(
-            &path,
-            &format!(
-                "records a pass over digest {manifest_digest} but the identity says {}",
-                identity.manifest_digest
-            ),
-        ));
-    }
-    Ok(Some(completed_unix))
-}
-
-/// The quarantine receipt beside `generation_dir`, as the inventory entry
-/// it stands for, or `None` when the scrub never proved it corrupt.
-pub(crate) fn quarantined_by_scrub(
-    generation_dir: &Path,
-) -> Result<Option<QuarantinedGenerationV1>, CoreError> {
-    let path = quarantine_receipt_path(generation_dir);
-    let value = read_receipt_value(
-        &path,
-        "quarantine receipt",
-        LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION,
-    )?;
-    decode_quarantine_receipt(generation_dir, &path, value)
-}
-
-pub(crate) fn quarantined_by_scrub_at(
-    root: &File,
-    generation_dir: &Path,
-) -> Result<Option<QuarantinedGenerationV1>, CoreError> {
-    let path = quarantine_receipt_path(generation_dir);
-    let value = read_receipt_value_at(
-        root,
-        &path,
-        "quarantine receipt",
-        LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION,
-    )?;
-    decode_quarantine_receipt(generation_dir, &path, value)
-}
-
-fn decode_quarantine_receipt(
-    generation_dir: &Path,
-    path: &Path,
-    value: Option<CborValue>,
-) -> Result<Option<QuarantinedGenerationV1>, CoreError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let (_format, reason_code, detail, detected_unix): QuarantineReceiptRow = value
-        .deserialized()
-        .map_err(|error| receipt_invalid(path, &format!("does not decode: {error}")))?;
-    let reason = GenerationQuarantineReasonV1::from_code_str(&reason_code).ok_or_else(|| {
-        receipt_invalid(path, &format!("names an unknown reason `{reason_code}`"))
-    })?;
-    Ok(Some(QuarantinedGenerationV1 {
-        track: SearchPlaneTrackKind::Lexical,
-        path: generation_dir.to_path_buf(),
-        reason,
-        detail: format!("{detail} (detected at unix {detected_unix})"),
-    }))
-}
-
-/// Refuse a generation the scrub quarantined, typed, naming the receipt.
-/// Every door and the scrub itself run this first.
-pub(crate) fn refuse_if_quarantined_at(
-    root: &File,
-    generation_dir: &Path,
-) -> Result<(), CoreError> {
-    refuse_quarantine_entry(
-        generation_dir,
-        quarantined_by_scrub_at(root, generation_dir)?,
-    )
-}
-
-fn refuse_quarantine_entry(
-    generation_dir: &Path,
-    entry: Option<QuarantinedGenerationV1>,
-) -> Result<(), CoreError> {
-    let Some(entry) = entry else {
-        return Ok(());
-    };
-    Err(CoreError::Typed {
-        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantined,
-        message: format!(
-            "lexical: generation {} is quarantined as {}: {}; discard it through the quarantine surface or rebuild it from its producer",
-            generation_dir.display(),
-            entry.reason.as_code_str(),
-            entry.detail
-        ),
-    })
 }
 
 /// Every committed file present at its committed length, through an anchored
@@ -318,81 +286,21 @@ fn quarantine(
     quarantine_content_corrupt_at(root, generation_dir, &format!("scrub found {mismatch}"))
 }
 
-/// Record that `generation_dir`'s content no longer matches its seal.
+/// Defer a shared-object fault until every known referencing generation is fenced.
 ///
-/// The receipt the inventory lists as content-corrupt and every door
-/// refuses by. The scrub writes it, and so does the re-proof of a door's
-/// finding (QI-BB-017, QI-BB-026).
-pub(crate) fn quarantine_content_corrupt_at(
-    root: &File,
-    generation_dir: &Path,
-    detail: &str,
-) -> Result<QuarantinedGenerationV1, CoreError> {
-    quarantine_seal_failure_at(
-        root,
-        generation_dir,
-        GenerationQuarantineReasonV1::ContentCorrupt,
-        detail,
-    )
+/// The adapter publishes quarantine receipts after completing that ordering.
+pub(crate) enum ScrubStepResult {
+    Report(IntegrityScrubReportV1),
+    DeferredSharedFault {
+        files_verified: u64,
+        bytes_read: u64,
+    },
 }
 
-/// Classify persistent physical defects in a seal.
-///
-/// Missing and unsupported formats are not content proofs: callers fence
-/// their resident handles but retain the typed refusal.
-pub(crate) fn seal_failure_quarantine_reason(
-    error: &CoreError,
-) -> Option<GenerationQuarantineReasonV1> {
-    match error {
-        CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
-            ..
-        } => Some(GenerationQuarantineReasonV1::ContentCorrupt),
-        CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
-            ..
-        } => Some(GenerationQuarantineReasonV1::IdentityDigestMismatch),
-        CoreError::InvalidContract(_)
-        | CoreError::Typed { .. }
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)
-        | CoreError::Storage(_) => None,
+impl From<IntegrityScrubReportV1> for ScrubStepResult {
+    fn from(report: IntegrityScrubReportV1) -> Self {
+        Self::Report(report)
     }
-}
-
-pub(crate) fn quarantine_seal_failure_at(
-    root: &File,
-    generation_dir: &Path,
-    reason: GenerationQuarantineReasonV1,
-    detail: &str,
-) -> Result<QuarantinedGenerationV1, CoreError> {
-    let detail = bounded_quarantine_detail(detail);
-    let row: QuarantineReceiptRow = (
-        LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION,
-        reason.as_code_str().to_string(),
-        detail.clone(),
-        now_unix()?,
-    );
-    let bytes = crate::channel_payloads::encode_cbor(&row, "quarantine receipt")?;
-    if bytes.len() > MAX_RECEIPT_BYTES {
-        return Err(CoreError::Storage(format!(
-            "lexical: quarantine receipt exceeds {MAX_RECEIPT_BYTES} encoded bytes"
-        )));
-    }
-    crate::index_store::write_atomic_durable_at(
-        root,
-        generation_dir,
-        LEXICAL_QUARANTINE_RECEIPT_FILE_NAME,
-        &bytes,
-        "quarantine receipt",
-    )?;
-    Ok(QuarantinedGenerationV1 {
-        track: SearchPlaneTrackKind::Lexical,
-        path: generation_dir.to_path_buf(),
-        reason,
-        detail,
-    })
 }
 
 /// One bounded scrub step over the generation sealed for `identity`.
@@ -400,15 +308,19 @@ pub(crate) fn quarantine_seal_failure_at(
 /// The manifest must be the one the identity binds; a quarantined
 /// generation is refused. Every committed file is checked for presence
 /// and length, then files are hashed from `cursor` until `budget` is
-/// spent. A mismatch writes the quarantine receipt and reports `Corrupt`;
-/// a pass that reaches the end writes the completed-pass receipt.
+/// spent. A shared-object mismatch is deferred until the adapter has fenced
+/// every generation reaching that object. Other mismatches write their receipt
+/// here; a complete pass writes its completed-pass receipt.
 pub(crate) fn scrub_step(
+    state_root: &Path,
     generation_dir: &Path,
     identity: &GenerationSnapshot,
     start_artifact: u64,
     budget: IntegrityScrubBudgetV1,
-    before_quarantine: &dyn Fn() -> Result<(), CoreError>,
-) -> Result<IntegrityScrubReportV1, CoreError> {
+    before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
+    shared: &mut SharedScrubProgress,
+) -> Result<ScrubStepResult, CoreError> {
+    shared.bind(identity, start_artifact)?;
     let root = super::open_generation_dir_nofollow(generation_dir).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: open generation for scrub {}: {error}",
@@ -422,7 +334,7 @@ pub(crate) fn scrub_step(
         Ok(manifest) => manifest,
         Err(error) => {
             if let Some(reason) = seal_failure_quarantine_reason(&error) {
-                before_quarantine()?;
+                before_quarantine(identity)?;
                 return Ok(IntegrityScrubReportV1 {
                     generation: identity.clone(),
                     files_verified: 0,
@@ -435,7 +347,8 @@ pub(crate) fn scrub_step(
                             &format!("scrub cannot authenticate sealed manifest: {error}"),
                         )?,
                     },
-                });
+                }
+                .into());
             }
             if matches!(
                 &error,
@@ -446,7 +359,7 @@ pub(crate) fn scrub_step(
                     ..
                 }
             ) {
-                before_quarantine()?;
+                before_quarantine(identity)?;
             }
             return Err(error);
         }
@@ -470,7 +383,7 @@ pub(crate) fn scrub_step(
                     ..
                 },
             ) => {
-                before_quarantine()?;
+                before_quarantine(identity)?;
                 return Ok(IntegrityScrubReportV1 {
                     generation: identity.clone(),
                     files_verified: 0,
@@ -482,13 +395,14 @@ pub(crate) fn scrub_step(
                             &format!("scrub cannot authenticate committed coverage root: {error}"),
                         )?,
                     },
-                });
+                }
+                .into());
             }
             Err(error) => return Err(error),
         }
     }
     if let Some(mismatch) = verify_committed_lengths(&root, generation_dir, &committed)? {
-        before_quarantine()?;
+        before_quarantine(identity)?;
         return Ok(IntegrityScrubReportV1 {
             generation: identity.clone(),
             files_verified: 0,
@@ -496,64 +410,185 @@ pub(crate) fn scrub_step(
             outcome: IntegrityScrubOutcomeV1::Corrupt {
                 quarantined: quarantine(&root, generation_dir, &mismatch)?,
             },
-        });
-    }
-    let step = hash_committed_step_opened_v1(
-        &|name| super::open_regular_below(&root, Path::new(name)),
-        &committed,
-        start_artifact,
-        budget.max_bytes,
-    )
-    .map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: scrub {}: {error}",
-            generation_dir.display()
-        ))
-    })?;
-    let outcome = match step.verdict {
-        TreeScrubVerdictV1::Completed => {
-            let files = crate::channel_payloads::count_from_len(committed.len())?;
-            let bytes = committed.iter().fold(0_u64, |total, artifact| {
-                total.saturating_add(artifact.bytes)
-            });
-            let row: ScrubReceiptRow = (
-                LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION,
-                identity.manifest_digest.clone(),
-                now_unix()?,
-                files,
-                bytes,
-            );
-            let receipt = crate::channel_payloads::encode_cbor(&row, "scrub receipt")?;
-            if receipt.len() > MAX_RECEIPT_BYTES {
-                return Err(CoreError::Storage(format!(
-                    "lexical: scrub receipt exceeds {MAX_RECEIPT_BYTES} encoded bytes"
-                )));
-            }
-            crate::index_store::write_atomic_durable_at(
-                &root,
-                generation_dir,
-                LEXICAL_SCRUB_RECEIPT_FILE_NAME,
-                &receipt,
-                "scrub receipt",
-            )?;
-            IntegrityScrubOutcomeV1::Completed
         }
-        TreeScrubVerdictV1::Paused { next_artifact } => IntegrityScrubOutcomeV1::Paused {
-            cursor: IntegrityScrubCursorV1 { next_artifact },
-        },
-        TreeScrubVerdictV1::Mismatch(mismatch) => {
-            before_quarantine()?;
-            IntegrityScrubOutcomeV1::Corrupt {
-                quarantined: quarantine(&root, generation_dir, &mismatch)?,
+        .into());
+    }
+    let mut files_verified = 0_u64;
+    let mut bytes_read = 0_u64;
+    if shared.phase == SharedScrubPhase::Outer {
+        let step = hash_committed_step_opened_v1(
+            &|name| super::open_regular_below(&root, Path::new(name)),
+            &committed,
+            start_artifact,
+            budget.max_bytes,
+        )
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: scrub {}: {error}",
+                generation_dir.display()
+            ))
+        })?;
+        files_verified = step.files_verified;
+        bytes_read = step.bytes_read;
+        match step.verdict {
+            TreeScrubVerdictV1::Paused { next_artifact } => {
+                shared.token = next_artifact;
+                return Ok(IntegrityScrubReportV1 {
+                    generation: identity.clone(),
+                    files_verified,
+                    bytes_read,
+                    outcome: IntegrityScrubOutcomeV1::Paused {
+                        cursor: IntegrityScrubCursorV1 { next_artifact },
+                    },
+                }
+                .into());
             }
+            TreeScrubVerdictV1::Mismatch(mismatch) => {
+                before_quarantine(identity)?;
+                return Ok(IntegrityScrubReportV1 {
+                    generation: identity.clone(),
+                    files_verified,
+                    bytes_read,
+                    outcome: IntegrityScrubOutcomeV1::Corrupt {
+                        quarantined: quarantine(&root, generation_dir, &mismatch)?,
+                    },
+                }
+                .into());
+            }
+            TreeScrubVerdictV1::Completed => {
+                shared.token = crate::channel_payloads::count_from_len(committed.len())?;
+                if let Err(error) = shared.begin_objects(state_root, generation_dir) {
+                    if let Some(reason) = seal_failure_quarantine_reason(&error) {
+                        before_quarantine(identity)?;
+                        return Ok(IntegrityScrubReportV1 {
+                            generation: identity.clone(),
+                            files_verified,
+                            bytes_read,
+                            outcome: IntegrityScrubOutcomeV1::Corrupt {
+                                quarantined: quarantine_seal_failure_at(
+                                    &root,
+                                    generation_dir,
+                                    reason,
+                                    &format!("scrub cannot authenticate shared roots: {error}"),
+                                )?,
+                            },
+                        }
+                        .into());
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+    if bytes_read >= budget.max_bytes && bytes_read > 0 {
+        return Ok(IntegrityScrubReportV1 {
+            generation: identity.clone(),
+            files_verified,
+            bytes_read,
+            outcome: IntegrityScrubOutcomeV1::Paused {
+                cursor: IntegrityScrubCursorV1 {
+                    next_artifact: shared.token,
+                },
+            },
+        }
+        .into());
+    }
+    let remaining = budget.max_bytes.saturating_sub(bytes_read);
+    let (shared_bytes, shared_reads, done) = match shared.advance_shared(remaining) {
+        Ok(step) => step,
+        Err(error) => {
+            if let Some(reason) = seal_failure_quarantine_reason(&error) {
+                if shared.fault_reference()?.is_some() {
+                    return Ok(ScrubStepResult::DeferredSharedFault {
+                        files_verified,
+                        bytes_read,
+                    });
+                }
+                before_quarantine(identity)?;
+                return Ok(IntegrityScrubReportV1 {
+                    generation: identity.clone(),
+                    files_verified,
+                    bytes_read,
+                    outcome: IntegrityScrubOutcomeV1::Corrupt {
+                        quarantined: quarantine_seal_failure_at(
+                            &root,
+                            generation_dir,
+                            reason,
+                            &format!(
+                                "scrub cannot authenticate shared object or semantics: {error}"
+                            ),
+                        )?,
+                    },
+                }
+                .into());
+            }
+            return Err(error);
+        }
+    };
+    bytes_read = bytes_read.checked_add(shared_bytes).ok_or_else(|| {
+        CoreError::InvalidContract("lexical scrub step byte count overflow".into())
+    })?;
+    files_verified = files_verified.checked_add(shared_reads).ok_or_else(|| {
+        CoreError::InvalidContract("lexical scrub step read count overflow".into())
+    })?;
+    shared.shared_bytes_read = shared
+        .shared_bytes_read
+        .checked_add(shared_bytes)
+        .ok_or_else(|| {
+            CoreError::InvalidContract("lexical scrub pass byte count overflow".into())
+        })?;
+    let outcome = if done {
+        let outer_files = crate::channel_payloads::count_from_len(committed.len())?;
+        let outer_bytes = committed.iter().try_fold(0_u64, |total, artifact| {
+            total.checked_add(artifact.bytes).ok_or_else(|| {
+                CoreError::InvalidContract("lexical scrub committed byte sum overflow".into())
+            })
+        })?;
+        let files = outer_files
+            .checked_add(shared.object_count)
+            .ok_or_else(|| {
+                CoreError::InvalidContract("lexical scrub receipt file count overflow".into())
+            })?;
+        let bytes = outer_bytes
+            .checked_add(shared.shared_bytes_read)
+            .ok_or_else(|| {
+                CoreError::InvalidContract("lexical scrub receipt byte count overflow".into())
+            })?;
+        let row: ScrubReceiptRow = (
+            LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION,
+            identity.manifest_digest.clone(),
+            now_unix()?,
+            files,
+            bytes,
+        );
+        let receipt = crate::channel_payloads::encode_cbor(&row, "scrub receipt")?;
+        if receipt.len() > MAX_RECEIPT_BYTES {
+            return Err(CoreError::Storage(format!(
+                "lexical: scrub receipt exceeds {MAX_RECEIPT_BYTES} encoded bytes"
+            )));
+        }
+        crate::index_store::write_atomic_durable_at(
+            &root,
+            generation_dir,
+            LEXICAL_SCRUB_RECEIPT_FILE_NAME,
+            &receipt,
+            "scrub receipt",
+        )?;
+        IntegrityScrubOutcomeV1::Completed
+    } else {
+        IntegrityScrubOutcomeV1::Paused {
+            cursor: IntegrityScrubCursorV1 {
+                next_artifact: shared.token,
+            },
         }
     };
     Ok(IntegrityScrubReportV1 {
         generation: identity.clone(),
-        files_verified: step.files_verified,
-        bytes_read: step.bytes_read,
+        files_verified,
+        bytes_read,
         outcome,
-    })
+    }
+    .into())
 }
 
 #[cfg(test)]

@@ -127,6 +127,7 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
         build: HistoryTextBuildV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<HistoryTextEpochReceiptV1, CoreError> {
         if self
             .fail_next_publish
@@ -217,6 +218,7 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
         &self,
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<HistoryTextDiscardOutcomeV1, CoreError> {
         self.take_injected_discard_failure()?;
         let removed = Self::lock(&self.epochs, "epochs")?.remove(&(generation.clone(), epoch));
@@ -235,6 +237,7 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
     fn discard_generation(
         &self,
         generation: &AuxiliaryGenerationKeyV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<HistoryTextDiscardOutcomeV1, CoreError> {
         self.take_injected_discard_failure()?;
         let epochs = self.durable_epochs(generation)?;
@@ -242,7 +245,7 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
         let mut any = false;
         for epoch in epochs {
             if let HistoryTextDiscardOutcomeV1::Discarded { bytes: some } =
-                self.discard_epoch(generation, epoch)?
+                self.discard_epoch(generation, epoch, None)?
             {
                 any = true;
                 bytes = bytes.saturating_add(some);

@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
-    BatchPublishReceipt, IngestOperationKindV1, RepoMapPublishBundleRequestV2,
+    BatchPublishReceipt, GenerationPin, IngestOperationKindV1, RepoMapPublishBundleRequestV2,
     RepoMapTerminalReceiptV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
     canonical_repo_map_source_bundle_digest_v2,
 };
@@ -72,6 +72,15 @@ pub struct SearchPlaneIngestDispatcher {
 }
 
 impl SearchPlaneIngestDispatcher {
+    fn require_overlay_generation<B: IngestBatchBodyV1>(&self, batch: &B) -> Result<(), CoreError> {
+        self.source_publication
+            .require_reserved_generation(&GenerationPin::new(
+                batch.repo_id().clone(),
+                batch.revision_id().clone(),
+                batch.generation(),
+            ))
+    }
+
     #[must_use]
     #[expect(
         clippy::too_many_arguments,
@@ -280,6 +289,7 @@ impl SearchPlaneIngestDispatcher {
     fn publish_source_idempotent(
         &self,
         batch: &mut quanta_index_contract::SearchCorpusIngestBatch,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
         apply: impl FnOnce(
             &quanta_index_contract::SearchCorpusIngestBatch,
             &mut quanta_index_core::PublicationValidationOwner,
@@ -302,72 +312,92 @@ impl SearchPlaneIngestDispatcher {
             .source_publication
             .inspect_source_event(&batch.repo_id, &batch.source_event)?
         {
-            if record.phase != quanta_index_core::SourceEventPhaseV1::Pending {
-                let target = &record.binding.target;
-                if self.source_authority.inspect_sealed_search_corpus(
-                    &target.repo_id,
-                    &target.revision_id,
-                    target.manifest_generation,
-                    &target.manifest_digest,
-                )? != crate::SealedSearchCorpusAuthorityStateV1::Exact
-                {
-                    return Err(CoreError::Typed {
-                        code: quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration,
-                        message: "source event original generation is no longer retained".into(),
-                    });
-                }
-            }
-            match self.idempotency.inspect(&record.binding.journal_key)? {
-                OperationInspectV1::Committed {
-                    receipt,
-                    durable_sequence,
-                } => {
-                    let target = &record.binding.target;
-                    if self.source_authority.inspect_sealed_search_corpus(
-                        &target.repo_id,
-                        &target.revision_id,
-                        target.manifest_generation,
-                        &target.manifest_digest,
-                    )? != crate::SealedSearchCorpusAuthorityStateV1::Exact
+            match record.state {
+                quanta_index_core::SourceEventStateV1::Allocated => {
+                    if record.allocation.request.revision_id != batch.revision_id
+                        || record.allocation.generation != batch.generation
                     {
                         return Err(CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy,
+                        message: "source event allocation cannot be retargeted to another revision or generation".into(),
+                    });
+                    }
+                }
+                quanta_index_core::SourceEventStateV1::Bound { binding, phase } => {
+                    if phase != quanta_index_core::SourceEventPhaseV1::Pending {
+                        let target = &binding.target;
+                        if self.source_authority.inspect_sealed_search_corpus(
+                            &target.repo_id,
+                            &target.revision_id,
+                            target.manifest_generation,
+                            &target.manifest_digest,
+                        )? != crate::SealedSearchCorpusAuthorityStateV1::Exact
+                        {
+                            return Err(CoreError::Typed {
+                                code:
+                                    quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration,
+                                message: "source event original generation is no longer retained"
+                                    .into(),
+                            });
+                        }
+                    }
+                    match self.idempotency.inspect(&binding.journal_key)? {
+                        OperationInspectV1::Committed {
+                            receipt,
+                            durable_sequence,
+                        } => {
+                            let target = &binding.target;
+                            if self.source_authority.inspect_sealed_search_corpus(
+                                &target.repo_id,
+                                &target.revision_id,
+                                target.manifest_generation,
+                                &target.manifest_digest,
+                            )? != crate::SealedSearchCorpusAuthorityStateV1::Exact
+                            {
+                                return Err(CoreError::Typed {
                             code: quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration,
                             message: "source event original generation is no longer retained"
                                 .into(),
                         });
-                    }
-                    let reconciled = self.source_publication.reconcile_source_event(
-                        &batch.repo_id,
-                        &batch.source_event,
-                        self.idempotency.as_ref(),
-                    )?;
-                    return Ok((
-                        receipt.recorded_at(durable_sequence).replayed(),
-                        publication_binding(&reconciled.binding),
-                    ));
-                }
-                OperationInspectV1::CommittedRepoMap { .. } => {
-                    return Err(journal_payload_mismatch(&record.binding.journal_key));
-                }
-                OperationInspectV1::Refused { code, message, .. } => {
-                    return Err(CoreError::Typed { code, message });
-                }
-                OperationInspectV1::Absent
-                | OperationInspectV1::InFlight { .. }
-                | OperationInspectV1::Uncertain { .. } => {
-                    if record.phase != quanta_index_core::SourceEventPhaseV1::Pending {
-                        return Err(CoreError::Typed {
+                            }
+                            let reconciled = self.source_publication.reconcile_source_event(
+                                &batch.repo_id,
+                                &batch.source_event,
+                                self.idempotency.as_ref(),
+                            )?;
+                            return Ok((
+                                receipt.recorded_at(durable_sequence).replayed(),
+                                publication_binding(reconciled.binding_v1().ok_or_else(|| {
+                                    CoreError::Storage(
+                                        "committed source event has no final binding".into(),
+                                    )
+                                })?),
+                            ));
+                        }
+                        OperationInspectV1::CommittedRepoMap { .. } => {
+                            return Err(journal_payload_mismatch(&binding.journal_key));
+                        }
+                        OperationInspectV1::Refused { code, message, .. } => {
+                            return Err(CoreError::Typed { code, message });
+                        }
+                        OperationInspectV1::Absent
+                        | OperationInspectV1::InFlight { .. }
+                        | OperationInspectV1::Uncertain { .. } => {
+                            if phase != quanta_index_core::SourceEventPhaseV1::Pending {
+                                return Err(CoreError::Typed {
                             code: quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration,
                             message:
                                 "source event original journal or generation is no longer available"
                                     .into(),
                         });
-                    }
-                    if record.binding.journal_key.revision_id != batch.revision_id
-                        || record.binding.journal_key.generation != batch.generation
-                        || record.binding.journal_key.batch_digest != batch.batch_digest
-                    {
-                        return Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy, message: "source event is pending; reconcile the original publication without retargeting it".into() });
+                            }
+                            if binding.journal_key.revision_id != batch.revision_id
+                                || binding.journal_key.generation != batch.generation
+                                || binding.journal_key.batch_digest != batch.batch_digest
+                            {
+                                return Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy, message: "source event is pending; reconcile the original publication without retargeting it".into() });
+                            }
+                        }
                     }
                 }
             }
@@ -388,7 +418,8 @@ impl SearchPlaneIngestDispatcher {
                 let mut owner = validation.try_borrow_mut().map_err(|error| {
                     CoreError::Storage(format!("source publication proof custody: {error}"))
                 })?;
-                self.lexical.preflight_batch_with_owner(batch, &mut owner)
+                self.lexical
+                    .preflight_batch_with_owner(batch, &mut owner, diagnostic)
             },
             |batch| {
                 let mut owner = validation.try_borrow_mut().map_err(|error| {
@@ -402,7 +433,12 @@ impl SearchPlaneIngestDispatcher {
             &batch.source_event,
             self.idempotency.as_ref(),
         )?;
-        Ok((receipt, publication_binding(&reconciled.binding)))
+        Ok((
+            receipt,
+            publication_binding(reconciled.binding_v1().ok_or_else(|| {
+                CoreError::Storage("published source event has no final binding".into())
+            })?),
+        ))
     }
 
     /// Same seven stages as [`Self::publish_idempotent`], keyed by
@@ -594,21 +630,25 @@ impl SearchPlaneIngestDispatcher {
             }
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(mut batch) => {
                 let mut observation = None;
-                match self.publish_source_idempotent(&mut batch, |batch, owner| {
-                    let outcome = self
-                        .lexical
-                        .publish_batch_with_owner(batch, budget, owner)?;
-                    outcome
-                        .publication
-                        .validate_receipt(
-                            &quanta_index_contract::SourcePublicationBinding::for_batch(batch),
-                            batch.seal,
-                            &outcome.receipt,
-                        )
-                        .map_err(CoreError::InvalidContract)?;
-                    observation = outcome.observation;
-                    Ok(outcome.receipt)
-                }) {
+                match self.publish_source_idempotent(
+                    &mut batch,
+                    budget.diagnostic_context(),
+                    |batch, owner| {
+                        let outcome = self
+                            .lexical
+                            .publish_batch_with_owner(batch, budget, owner)?;
+                        outcome
+                            .publication
+                            .validate_receipt(
+                                &quanta_index_contract::SourcePublicationBinding::for_batch(batch),
+                                batch.seal,
+                                &outcome.receipt,
+                            )
+                            .map_err(CoreError::InvalidContract)?;
+                        observation = outcome.observation;
+                        Ok(outcome.receipt)
+                    },
+                ) {
                     Ok((receipt, publication)) => {
                         if !receipt.applied {
                             observation =
@@ -640,56 +680,69 @@ impl SearchPlaneIngestDispatcher {
             }
             SearchPlaneIngestIpcRequest::PublishHistoryBatch(mut batch) => {
                 match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
-                    self.history.publish_batch(batch)
+                    self.history
+                        .publish_batch(batch, budget.diagnostic_context())
                 }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::HistoryReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(mut batch) => {
-                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
-                    self.repo_commit_recency.publish_batch(batch)
-                }) {
+                match self.publish_idempotent(
+                    &mut batch,
+                    |batch| self.require_overlay_generation(batch),
+                    |batch| self.repo_commit_recency.publish_batch(batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(mut batch) => {
-                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
-                    self.repo_topic.publish_batch(batch)
-                }) {
+                match self.publish_idempotent(
+                    &mut batch,
+                    |batch| self.require_overlay_generation(batch),
+                    |batch| self.repo_topic.publish_batch(batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(mut batch) => {
-                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
-                    self.repo_description.publish_batch(batch)
-                }) {
+                match self.publish_idempotent(
+                    &mut batch,
+                    |batch| self.require_overlay_generation(batch),
+                    |batch| self.repo_description.publish_batch(batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(mut batch) => {
-                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
-                    self.file_ownership.publish_batch(batch)
-                }) {
+                match self.publish_idempotent(
+                    &mut batch,
+                    |batch| self.require_overlay_generation(batch),
+                    |batch| self.file_ownership.publish_batch(batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishFileContributorBatch(mut batch) => {
-                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
-                    self.file_contributor.publish_batch(batch)
-                }) {
+                match self.publish_idempotent(
+                    &mut batch,
+                    |batch| self.require_overlay_generation(batch),
+                    |batch| self.file_contributor.publish_batch(batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(mut batch) => {
-                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
-                    self.repo_meta.publish_batch(batch)
-                }) {
+                match self.publish_idempotent(
+                    &mut batch,
+                    |batch| self.require_overlay_generation(batch),
+                    |batch| self.repo_meta.publish_batch(batch),
+                ) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }

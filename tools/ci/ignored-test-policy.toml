@@ -115,6 +115,30 @@ review_by = "2026-12-31"
 
 [[exceptions]]
 path = "crates/quanta-index-sdk/tests/l2_daemon_publication.rs"
+test = "reserved_generation_survives_restart_and_requires_explicit_activation"
+reason = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"
+owner = "quanta-index-sdk"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-sdk/tests/l2_daemon_publication.rs"
+test = "activation_failure_preserves_original_publication_across_restart"
+reason = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"
+owner = "quanta-index-sdk"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-sdk/tests/l2_daemon_publication.rs"
+test = "prepared_text_and_markdown_move_delete_noop_survive_restart"
+reason = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"
+owner = "quanta-index-sdk"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-sdk/tests/l2_daemon_publication.rs"
 test = "unresolved_cross_stream_publication_orders_activation_after_restart"
 reason = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"
 owner = "quanta-index-sdk"
@@ -132,7 +156,7 @@ review_by = "2026-12-31"
 [[exceptions]]
 path = "crates/quanta-index-lexical/src/publication_faults/tests.rs"
 test = "publication_crash_child"
-reason = "private subprocess entrypoint; parent matrix supplies the exact fixture and kills this process"
+reason = "private subprocess entrypoint; parent matrix supplies cut and kills process"
 owner = "quanta-index-lexical"
 cadence = "release"
 review_by = "2026-12-31"

@@ -9,7 +9,7 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::time::Duration;
 
 use quanta_index_contract::{
@@ -19,7 +19,7 @@ use quanta_index_contract::{
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 use quanta_index_searchd_harness::{
-    fixture_source_scope_v1, private_tempdir,
+    E2eRuntime, fixture_source_scope_v1, private_tempdir,
     scale::{
         SCALE_HISTORY_MAX_BYTES, SCALE_HISTORY_MAX_TOTAL_BYTES, ScaleTier, ScopedFile,
         ScopedOracle, generate_scoped_corpus, params_for, repo_query_token,
@@ -28,7 +28,7 @@ use quanta_index_searchd_harness::{
 use sha2::{Digest, Sha256};
 
 use crate::fail_closed_wait::{RealTicker, wait_for};
-use crate::searchd_binary_process::SearchdBinaryProcess;
+use crate::searchd_binary_process::{SearchdBinaryProcess, terminate_child, wait_for_sockets};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -353,6 +353,366 @@ fn large_scale_source_survives_real_daemon_process_restart_and_delete() -> TestR
 #[ignore = "manual costly XL32768 supported-profile real daemon process restart"]
 fn xlarge_scale_source_survives_real_daemon_process_restart_and_delete() -> TestResult {
     run_scale_process_restart(ScaleTier::Xlarge)
+}
+
+#[test]
+fn restored_shared_object_corpus_serves_in_two_fresh_daemon_processes() -> TestResult {
+    let source = private_tempdir()?;
+    let destination = private_tempdir()?;
+    let path = "src/restored.rs";
+    let body = "pub fn restored_process_needle_73() {}";
+    let mut runtime = E2eRuntime::boot_in(source.path())?;
+    let expected_id = runtime.ingest_text_with_candidate_id("repo-e2e", path, body)?;
+    runtime.ingest_text("repo-e2e", "src/decoy.rs", "pub fn unrelated() {}\n")?;
+    let generation = runtime.seal()?;
+    runtime.activate_last_sealed_generation()?;
+    let pin = GenerationPin::new(runtime.repo(), runtime.revision(), generation);
+    runtime.stop()?;
+    let incarnation = "activations/.activation-root-incarnation-v1";
+    let source_incarnation = std::fs::read(source.path().join(incarnation))?;
+    let command = scale_process_command(source.path())?;
+    let backup = destination.path().join("backup");
+    let restored = destination.path().join("restored");
+    for (operation, from, to) in [
+        ("backup-state", source.path(), backup.as_path()),
+        ("restore-state", backup.as_path(), restored.as_path()),
+    ] {
+        let output = Command::new(command.get_program())
+            .arg(operation)
+            .arg("--source")
+            .arg(from)
+            .arg("--destination")
+            .arg(to)
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "{operation} refused: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+    }
+    if std::fs::read(restored.join(incarnation))? == source_incarnation {
+        return Err("restore did not rotate the allocation incarnation".into());
+    }
+    // The fixture source contains the chunk followed by one framing newline.
+    let expected_hash: [u8; 32] =
+        Sha256::digest(b"pub fn restored_process_needle_73() {}\n").into();
+    // Fixed SHA-256 golden for the public CodeSearch file identity framing.
+    let file_id = "file:8998eaad62423ab013d01fd4a54ffa4068781322a295c2aafae820b56c0f2e31";
+    let mut first_answer = None;
+    for _ in 0..2 {
+        let daemon = start_process(&restored, ScaleTier::Medium)?;
+        let client = daemon.connect()?;
+        let mut answers = Vec::new();
+        for (query, id) in [
+            (
+                client
+                    .lexical()
+                    .query()
+                    .native("restored_process_needle_73"),
+                expected_id.as_str(),
+            ),
+            (
+                client
+                    .lexical()
+                    .query()
+                    .code_search("restored_process_needle_73"),
+                file_id,
+            ),
+        ] {
+            let answer = query.pinned(pin.clone()).top_k(10).execute()?;
+            if answer.generation != pin || answer.results.len() != 1 {
+                return Err("restored process returned a different generation or hit count".into());
+            }
+            let row = answer.results.first().ok_or("restored result absent")?;
+            if row.candidate_id.as_str() != id
+                || row.repo_relative_path.as_str() != path
+                || row.source.as_ref().map(|source| source.source_sha256) != Some(expected_hash)
+            {
+                return Err("restored process changed the source identity or bytes".into());
+            }
+            answers.push(answer.results);
+        }
+        if let Some(first) = &first_answer {
+            if first != &answers {
+                return Err("fresh daemon restart changed the restored ranked result".into());
+            }
+        } else {
+            first_answer = Some(answers);
+        }
+        drop(client);
+        daemon.stop()?;
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "trace assertions are fixed goldens; process and I/O failures propagate"
+)]
+fn trace_timeline_process_close_keeps_clock_domains_separate() -> TestResult {
+    let first_state = private_tempdir()?;
+    let second_state = private_tempdir()?;
+    prepare_trace_state(first_state.path())?;
+    prepare_trace_state(second_state.path())?;
+    let first_trace = first_state.path().join("first-process.jsonl");
+    let second_trace = second_state.path().join("second-process.jsonl");
+
+    let mut first = start_traced_process(first_state.path(), &first_trace)?;
+    std::thread::sleep(Duration::from_millis(150));
+    stop_with_sigterm(&mut first)?;
+    let mut second = start_traced_process(second_state.path(), &second_trace)?;
+    std::thread::sleep(Duration::from_millis(150));
+    stop_with_sigterm(&mut second)?;
+
+    let first_rows = read_trace_rows(&first_trace)?;
+    let second_rows = read_trace_rows(&second_trace)?;
+    let first_capture = assert_closed_trace(&first_rows)?;
+    let second_capture = assert_closed_trace(&second_rows)?;
+    assert_ne!(
+        first_capture, second_capture,
+        "process captures share an identity"
+    );
+    let first_export = export_trace_status(&first_trace, &first_state.path().join("first-export"))?;
+    let second_export =
+        export_trace_status(&second_trace, &second_state.path().join("second-export"))?;
+    assert_eq!(json_str(&first_export, "capture_status")?, "complete");
+    assert_eq!(json_str(&second_export, "capture_status")?, "complete");
+    assert_eq!(
+        json_str(&first_export, "capture_id")?,
+        first_capture.as_str()
+    );
+    assert_eq!(
+        json_str(&second_export, "capture_id")?,
+        second_capture.as_str()
+    );
+    assert_ne!(
+        json_str(&first_export, "clock_domain")?,
+        json_str(&second_export, "clock_domain")?
+    );
+    assert_eq!(
+        json_str(&first_export, "clock_mapping")?,
+        "single_process_capture_origin_only"
+    );
+    assert_eq!(
+        json_str(&second_export, "clock_mapping")?,
+        "single_process_capture_origin_only"
+    );
+    let mixed = first_state.path().join("mixed-processes.jsonl");
+    let mut mixed_bytes = std::fs::read(&first_trace)?;
+    mixed_bytes.extend(std::fs::read(&second_trace)?);
+    std::fs::write(&mixed, mixed_bytes)?;
+    let mixed_export = export_trace_status(&mixed, &first_state.path().join("mixed-export"))?;
+    assert_eq!(json_str(&mixed_export, "capture_status")?, "invalid");
+    assert_eq!(json_field(&mixed_export, "viewer_available")?, false);
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "trace assertions are fixed goldens; process and I/O failures propagate"
+)]
+fn trace_timeline_process_kill_keeps_partial_without_cross_clock_join() -> TestResult {
+    let state = private_tempdir()?;
+    prepare_trace_state(state.path())?;
+    let trace = state.path().join("killed-process.jsonl");
+    let mut child = start_traced_process(state.path(), &trace)?;
+    std::thread::sleep(Duration::from_millis(250));
+    child.kill()?;
+    let _status = child.wait()?;
+
+    let rows = read_trace_prefix_rows(&trace)?;
+    let header = rows
+        .first()
+        .ok_or("trace should contain a flushed header")?;
+    assert_eq!(json_str(header, "record_type")?, "header");
+    assert!(
+        rows.iter().all(
+            |row| row.get("record_type").and_then(serde_json::Value::as_str) != Some("footer")
+        )
+    );
+    let capture = json_str(header, "capture_id")?;
+    assert!(
+        rows.iter()
+            .all(|row| row.get("capture_id").and_then(serde_json::Value::as_str) == Some(capture))
+    );
+    let killed_export = export_trace_status(&trace, &state.path().join("killed-export"))?;
+    assert_eq!(json_str(&killed_export, "capture_status")?, "partial");
+    assert_eq!(json_str(&killed_export, "capture_id")?, capture);
+    assert_eq!(json_str(&killed_export, "clock_domain")?, capture);
+    assert_eq!(
+        json_str(&killed_export, "clock_mapping")?,
+        "single_process_capture_origin_only"
+    );
+
+    let other_state = private_tempdir()?;
+    prepare_trace_state(other_state.path())?;
+    let other_trace = other_state.path().join("other-process.jsonl");
+    let mut other = start_traced_process(other_state.path(), &other_trace)?;
+    std::thread::sleep(Duration::from_millis(150));
+    stop_with_sigterm(&mut other)?;
+    let other_export = export_trace_status(&other_trace, &other_state.path().join("other-export"))?;
+    assert_eq!(json_str(&other_export, "capture_status")?, "complete");
+    assert_ne!(
+        json_str(&killed_export, "capture_id")?,
+        json_str(&other_export, "capture_id")?
+    );
+    assert_ne!(
+        json_str(&killed_export, "clock_domain")?,
+        json_str(&other_export, "clock_domain")?
+    );
+
+    let other_rows = read_trace_rows(&other_trace)?;
+    let foreign_event = other_rows
+        .get(1)
+        .ok_or("other process trace has no event")?;
+    assert_eq!(json_str(foreign_event, "record_type")?, "event");
+    assert_eq!(json_field(foreign_event, "output_seq")?, 1);
+    assert_eq!(
+        json_str(foreign_event, "capture_id")?,
+        json_str(&other_export, "capture_id")?
+    );
+    let mixed = state.path().join("mixed-after-kill.jsonl");
+    std::fs::write(&mixed, format!("{header}\n{foreign_event}\n"))?;
+    let mixed_export = export_trace_status(&mixed, &state.path().join("mixed-export"))?;
+    assert_eq!(json_str(&mixed_export, "capture_status")?, "invalid");
+    assert_eq!(
+        json_str(&mixed_export, "reason")?,
+        "causal event capture ID changed"
+    );
+    assert_eq!(json_field(&mixed_export, "viewer_available")?, false);
+    Ok(())
+}
+
+fn start_traced_process(state: &Path, trace: &Path) -> Result<Child, Box<dyn Error>> {
+    let mut command = scale_process_command(state)?;
+    let _configured = command.arg("--diagnostic-trace").arg(trace);
+    let mut child = command.spawn()?;
+    if let Err(error) = wait_for_sockets(state, &mut child) {
+        let _cleanup = terminate_child(&mut child);
+        return Err(error);
+    }
+    Ok(child)
+}
+
+fn prepare_trace_state(state: &Path) -> TestResult {
+    let mut runtime = E2eRuntime::boot_in(state)?;
+    runtime.start()?;
+    runtime.stop()?;
+    Ok(())
+}
+
+fn stop_with_sigterm(child: &mut Child) -> Result<(), Box<dyn Error>> {
+    let pid = child.id().to_string();
+    let status = Command::new("kill").args(["-TERM", &pid]).status()?;
+    if !status.success() {
+        return Err(format!("failed to send SIGTERM to searchd pid {pid}").into());
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(format!("searchd pid {pid} did not stop cleanly: {status}").into());
+    }
+    Ok(())
+}
+
+fn read_trace_rows(path: &Path) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
+    std::fs::read_to_string(path)?
+        .lines()
+        .map(|line| serde_json::from_str(line).map_err(Into::into))
+        .collect()
+}
+
+fn read_trace_prefix_rows(path: &Path) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
+    let raw = std::fs::read(path)?;
+    let end = match raw.iter().rposition(|byte| *byte == b'\n') {
+        Some(index) => index.checked_add(1).ok_or("trace prefix length overflow")?,
+        None => 0,
+    };
+    raw.get(..end)
+        .ok_or("trace prefix exceeds input length")?
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).map_err(Into::into))
+        .collect()
+}
+
+fn export_trace_status(
+    trace: &Path,
+    output_root: &Path,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = Command::new("uv")
+        .current_dir(repo_root)
+        .args([
+            "run",
+            "--frozen",
+            "--extra",
+            "dev",
+            "python",
+            "-m",
+            "tools.benchmark.retrieval.causal_cost_capture",
+            "--offline-input",
+        ])
+        .arg(trace)
+        .arg("--out-root")
+        .arg(output_root)
+        .output()?;
+    let status: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(output_root.join("timeline-status.json"))?)?;
+    let viewer_available = json_field(&status, "viewer_available")?
+        .as_bool()
+        .ok_or("offline exporter status has non-boolean viewer_available")?;
+    if output.status.success() != viewer_available {
+        return Err(format!(
+            "offline exporter exit/status disagree: exit={} status={} stderr={}",
+            output.status,
+            status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(status)
+}
+
+fn json_field<'a>(
+    value: &'a serde_json::Value,
+    key: &str,
+) -> Result<&'a serde_json::Value, Box<dyn Error>> {
+    value
+        .get(key)
+        .ok_or_else(|| format!("missing trace field {key}").into())
+}
+
+fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, Box<dyn Error>> {
+    json_field(value, key)?
+        .as_str()
+        .ok_or_else(|| format!("trace field {key} is not a string").into())
+}
+
+fn assert_closed_trace(rows: &[serde_json::Value]) -> Result<String, Box<dyn Error>> {
+    let header = rows.first().ok_or("closed trace is empty")?;
+    if header["record_type"] != "header" {
+        return Err("closed trace does not begin with a header".into());
+    }
+    let capture = header["capture_id"]
+        .as_str()
+        .ok_or("trace header has no capture identity")?;
+    if header["clock_domain"] != capture {
+        return Err("trace header clock domain differs from its capture identity".into());
+    }
+    if rows
+        .last()
+        .is_none_or(|row| row["record_type"] != "footer" || row["status"] != "complete")
+    {
+        return Err("gracefully stopped process did not write a complete footer".into());
+    }
+    if !rows.iter().all(|row| row["capture_id"] == capture) {
+        return Err("trace rows crossed process capture identities".into());
+    }
+    Ok(capture.to_string())
 }
 
 fn start_process(

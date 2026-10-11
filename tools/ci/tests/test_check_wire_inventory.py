@@ -54,6 +54,21 @@ INGEST_RS = """
     }
 """
 
+NATIVE_RS = """
+    pub enum NativeIndexRequest {
+        CreateWorkspace { workspace: WorkspaceKey, epoch: u64 },
+        /// Immutable operation submission.
+        Submit(UpdateRequest),
+    }
+
+    pub enum NativeIndexResponse {
+        Created(ViewRef),
+        Error(NativeIndexWireError),
+    }
+
+    pub enum NativeIndexErrorCode { InvalidInput }
+"""
+
 LEXICAL_LIB_RS = """
     const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 3;
     const MAX_WRITERS: u32 = 12;
@@ -94,6 +109,20 @@ INVENTORY_OK = """
     plane = "ingest"
     direction = "response"
     variants = ["SearchCorpusReceipt", "Error"]
+
+    [[ipc]]
+    enum = "NativeIndexRequest"
+    file = "crates/quanta-index-contract/src/native_protocol.rs"
+    plane = "control"
+    direction = "request"
+    variants = ["CreateWorkspace", "Submit"]
+
+    [[ipc]]
+    enum = "NativeIndexResponse"
+    file = "crates/quanta-index-contract/src/native_protocol.rs"
+    plane = "control"
+    direction = "response"
+    variants = ["Created", "Error"]
 
     [[artifact]]
     id = "lexical-sealed-manifest"
@@ -137,6 +166,7 @@ def make_workspace(tmp_path: Path) -> Path:
     _write(root / "crates/quanta-index-lexical/Cargo.toml", "[package]\nname = 'l'\n")
     _write(root / "crates/quanta-index-contract/src/ipc/split.rs", SPLIT_RS)
     _write(root / "crates/quanta-index-contract/src/ipc/ingest/envelope.rs", INGEST_RS)
+    _write(root / "crates/quanta-index-contract/src/native_protocol.rs", NATIVE_RS)
     _write(root / "crates/quanta-index-lexical/src/lib.rs", LEXICAL_LIB_RS)
     # A tests/ tree must be ignored even when it declares a format constant.
     _write(
@@ -247,6 +277,78 @@ def test_ipc_enum_parser_refuses_a_variant_shape_it_does_not_understand():
         assert "unrecognized variant line" in str(err)
     else:
         raise AssertionError("a unit variant must be a finding, not a skipped line")
+
+
+def test_native_control_parser_reads_record_and_newtype_variants():
+    assert MODULE.parse_native_enums(textwrap.dedent(NATIVE_RS)) == {
+        "NativeIndexRequest": ["CreateWorkspace", "Submit"],
+        "NativeIndexResponse": ["Created", "Error"],
+    }
+
+
+def test_native_control_parser_refuses_unrecognized_variant_shape():
+    source = NATIVE_RS.replace("Submit(UpdateRequest)", "Submit")
+    try:
+        MODULE.parse_native_enums(textwrap.dedent(source))
+    except ValueError as error:
+        assert "unrecognized native variant shape" in str(error)
+    else:
+        raise AssertionError("a native unit variant must fail closed")
+
+
+def test_native_control_enum_without_inventory_row_fails(tmp_path: Path):
+    root = make_workspace(tmp_path)
+    inventory = load(INVENTORY_OK)
+    inventory["ipc"] = [
+        row for row in inventory["ipc"] if row["enum"] != "NativeIndexResponse"
+    ]
+    found = messages(MODULE.check(inventory, root))
+    assert any("`NativeIndexResponse` has no [[ipc]] row" in message for message in found)
+
+
+def test_native_control_new_variant_requires_inventory_update(tmp_path: Path):
+    root = make_workspace(tmp_path)
+    _write(
+        root / "crates/quanta-index-contract/src/native_protocol.rs",
+        NATIVE_RS.replace(
+            "Submit(UpdateRequest),", "Submit(UpdateRequest),\n        Resume(OperationKey),"
+        ),
+    )
+    found = messages(MODULE.check(load(INVENTORY_OK), root))
+    assert any(
+        "variant `Resume` exists in the code but is not listed" in message
+        for message in found
+    )
+
+
+def test_native_control_inventory_rejects_unknown_and_duplicate_variants(tmp_path: Path):
+    root = make_workspace(tmp_path)
+    inventory = load(INVENTORY_OK)
+    request = next(row for row in inventory["ipc"] if row["enum"] == "NativeIndexRequest")
+    request["variants"] = ["CreateWorkspace", "CreateWorkspace", "Ghost"]
+    found = messages(MODULE.check(inventory, root))
+    assert any("`variants` lists a name twice" in message for message in found)
+    assert any(
+        "variant `Submit` exists in the code but is not listed" in message
+        for message in found
+    )
+    assert any(
+        "variant `Ghost` is listed but the enum has no such variant" in message
+        for message in found
+    )
+
+
+def test_native_control_row_cannot_claim_another_plane_or_direction(tmp_path: Path):
+    root = make_workspace(tmp_path)
+    inventory = load(INVENTORY_OK)
+    request = next(row for row in inventory["ipc"] if row["enum"] == "NativeIndexRequest")
+    request["plane"] = "native"
+    request["direction"] = "response"
+    found = messages(MODULE.check(inventory, root))
+    assert any(
+        "native control row must use plane='control' and direction='request'" in message
+        for message in found
+    )
 
 
 def test_a_code_variant_missing_from_the_inventory_fails(tmp_path: Path):

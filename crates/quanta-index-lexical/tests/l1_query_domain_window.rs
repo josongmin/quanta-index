@@ -6,6 +6,10 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::error::Error;
 use std::fmt::Debug;
 
@@ -22,7 +26,6 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
-    SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use sha2::{Digest as _, Sha256};
@@ -164,7 +167,7 @@ fn fixture_with_scopes(
         seal: true,
     };
     batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
-    let _stages = adapter.build_batch(&batch)?;
+    let _stages = adapter.build_fixture_batch(&batch)?;
     let searcher = adapter.open(
         &repo,
         &revision,

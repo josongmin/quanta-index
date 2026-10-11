@@ -59,9 +59,9 @@ pub struct RepoMapGenerationStore {
     objects: Option<RepoMapObjectStore>,
     snapshots: RwLock<BTreeMap<RepoMapStoreKeyV1, Arc<RepoMapIndexedSnapshot>>>,
     activated: RwLock<BTreeMap<(String, String), ActivatedHeadV1>>,
-    /// Serializes catalog activation and its in-process projection. The
-    /// catalog remains durable authority; this gate only prevents an older
-    /// completed writer from projecting over a newer catalog transaction.
+    /// Serializes acquire-to-pin, publish/activation projection, and
+    /// retirement-to-unlink within this store. The catalog remains durable
+    /// authority; the gate does not coordinate independent store handles.
     activation_commit_gate: Mutex<()>,
     /// Keeps one store's discard receipt, live-reference decision and
     /// physical reclaim in order. The catalog remains the durable authority.
@@ -476,9 +476,10 @@ impl RepoMapGenerationStore {
 
     fn commit_bundle(
         &self,
-        bundle: &RepoMapSourceBundle,
+        request: &RepoMapPublishBundleRequestV2,
         meta: &CandidateProjectionMeta,
-    ) -> Result<RepoMapMutationCommit, CoreError> {
+    ) -> Result<RepoMapTerminalReceiptV2, CoreError> {
+        let bundle = &request.bundle;
         if bundle.manifest_digest.trim().is_empty() {
             return Err(CoreError::InvalidContract(
                 "repomap ingest: manifest_digest must not be empty".to_string(),
@@ -498,16 +499,37 @@ impl RepoMapGenerationStore {
             .objects
             .as_ref()
             .ok_or_else(|| legacy_root_refusal(&self.root))?;
-        // Attach fence (S21-05): a pinned logical generation may not have
-        // its physical artifact swapped underneath an in-flight read
-        // view, so a republish of a pinned generation is refused typed
-        // before any object, catalog or registry mutation.
+        let meta_json = meta.to_json()?;
+        // Compilation is pure and may be expensive. Recheck durable replay
+        // and pins after taking the lifecycle gate, before sealing anything.
+        let candidate = RepoMapGraphCompiler::with_default_budget()
+            .compile(bundle)
+            .map_err(|refusal| {
+                CoreError::InvalidContract(format!("repomap compile refused: {refusal}"))
+            })?;
+        let identity = logical_identity(
+            &bundle.repo_id,
+            &bundle.revision_id,
+            bundle.manifest_generation,
+        );
+        let envelope = candidate.envelope(identity).map_err(|error| {
+            CoreError::InvalidContract(format!("repomap candidate envelope refused: {error}"))
+        })?;
+        let _lifecycle_guard = self
+            .activation_commit_gate
+            .lock()
+            .map_err(|err| storage_poisoned("lifecycle gate", &err))?;
+        if let Some(replay) = self.replay_bundle_if_present_locked(request, meta, objects)? {
+            return Ok(replay);
+        }
+        // Attach fence (S21-05): no pin may be installed between this check
+        // and the catalog/registry projection under the same store gate.
+        let publish_key = RepoMapStoreKeyV1::new(
+            &bundle.repo_id,
+            &bundle.revision_id,
+            bundle.manifest_generation,
+        );
         {
-            let publish_key = RepoMapStoreKeyV1::new(
-                &bundle.repo_id,
-                &bundle.revision_id,
-                bundle.manifest_generation,
-            );
             let pins = self
                 .pins
                 .read()
@@ -522,22 +544,7 @@ impl RepoMapGenerationStore {
                 )));
             }
         }
-        let meta_json = meta.to_json()?;
-        // Compile (typed refusal ⇒ zero object/catalog/registry mutation)
-        // and seal the immutable object; only then commit the catalog row.
-        let candidate = RepoMapGraphCompiler::with_default_budget()
-            .compile(bundle)
-            .map_err(|refusal| {
-                CoreError::InvalidContract(format!("repomap compile refused: {refusal}"))
-            })?;
-        let identity = logical_identity(
-            &bundle.repo_id,
-            &bundle.revision_id,
-            bundle.manifest_generation,
-        );
-        let envelope = candidate.envelope(identity).map_err(|error| {
-            CoreError::InvalidContract(format!("repomap candidate envelope refused: {error}"))
-        })?;
+        // Seal the immutable object before committing the catalog row.
         let _sealed = objects.seal(&envelope)?;
         let commitment = envelope
             .commitment()
@@ -581,7 +588,7 @@ impl RepoMapGenerationStore {
         let activation = self
             .catalog
             .repomap_activation_row(bundle.repo_id.as_str(), bundle.revision_id.as_str())?;
-        receipt(
+        let commit = receipt(
             activation
                 .as_ref()
                 .filter(|row| row.active)
@@ -590,7 +597,16 @@ impl RepoMapGenerationStore {
             activation.as_ref().map_or(0, |row| row.epoch),
             outcome.terminal_sequence,
             outcome.replayed,
-        )
+        )?;
+        self.validate_published_candidate_custody_v2(
+            bundle,
+            request.source_bundle_digest.as_str(),
+        )?;
+        Ok(terminal_publish_receipt_v2(
+            bundle,
+            request.source_bundle_digest.clone(),
+            commit,
+        ))
     }
 
     pub fn ingest_bundle_v2(
@@ -611,6 +627,28 @@ impl RepoMapGenerationStore {
             .objects
             .as_ref()
             .ok_or_else(|| legacy_root_refusal(&self.root))?;
+        // Exact terminal replay takes precedence over compilation. Hold the
+        // lifecycle gate through object verification so GC cannot unlink it.
+        {
+            let _lifecycle_guard = self
+                .activation_commit_gate
+                .lock()
+                .map_err(|err| storage_poisoned("lifecycle gate", &err))?;
+            if let Some(replay) = self.replay_bundle_if_present_locked(request, &meta, objects)? {
+                return Ok(replay);
+            }
+        }
+        self.commit_bundle(request, &meta)
+    }
+
+    /// Caller holds `activation_commit_gate` through the catalog lookup and
+    /// object verification. This helper never attempts to reacquire it.
+    fn replay_bundle_if_present_locked(
+        &self,
+        request: &RepoMapPublishBundleRequestV2,
+        meta: &CandidateProjectionMeta,
+        objects: &RepoMapObjectStore,
+    ) -> Result<Option<RepoMapTerminalReceiptV2>, CoreError> {
         if let Some(existing) = self.catalog.repomap_candidate_row(
             request.bundle.repo_id.as_str(),
             request.bundle.revision_id.as_str(),
@@ -619,9 +657,8 @@ impl RepoMapGenerationStore {
             // A terminal ACK may be lost after the catalog commit. Resolve an
             // exact replay from durable custody before compilation or sealing;
             // a different request for this logical key must not do work first.
-            if CandidateProjectionMeta::from_json(&existing.projection_meta)? != meta
-                || existing.projection_meta != meta.to_json()?
-            {
+            let stored_meta = CandidateProjectionMeta::from_json(&existing.projection_meta)?;
+            if &stored_meta != meta || existing.projection_meta != meta.to_json()? {
                 return Err(CoreError::Typed {
                     code:
                         quanta_index_contract::SearchPlaneErrorCodeV2::CandidateCommitmentConflict,
@@ -667,22 +704,13 @@ impl RepoMapGenerationStore {
                 existing.terminal_sequence,
                 true,
             )?;
-            return Ok(terminal_publish_receipt_v2(
+            return Ok(Some(terminal_publish_receipt_v2(
                 &request.bundle,
                 request.source_bundle_digest.clone(),
                 replay,
-            ));
+            )));
         }
-        let receipt = self.commit_bundle(&request.bundle, &meta)?;
-        self.validate_published_candidate_custody_v2(
-            &request.bundle,
-            request.source_bundle_digest.as_str(),
-        )?;
-        Ok(terminal_publish_receipt_v2(
-            &request.bundle,
-            request.source_bundle_digest.clone(),
-            receipt,
-        ))
+        Ok(None)
     }
 
     /// Re-read the durable catalog row before issuing a V2 terminal receipt.
@@ -901,11 +929,10 @@ impl RepoMapGenerationStore {
     /// Acquire the serving snapshot for one logical identity in a single
     /// critical section (S21-05).
     ///
-    /// Lock order (canonical, one owner): `activated` read guard, then
-    /// `snapshots` read guard; the `pins` write guard comes after both
-    /// are released. No store guard is ever held across a catalog call,
-    /// a disk object open/verify, or a query execution — the pinned
-    /// snapshot queries the `Arc` it holds and nothing else.
+    /// Lock order (canonical, one owner): the lifecycle gate precedes
+    /// `activated` and `snapshots` read guards, then the `pins` write
+    /// guard. The short registry guards are released before pin insertion,
+    /// while the lifecycle gate stays held. Query execution holds no gate.
     ///
     /// The active identity, its candidate commitment, its activation
     /// epoch and the artifact reference are observed together: a
@@ -914,14 +941,28 @@ impl RepoMapGenerationStore {
     /// (the pinned view keeps the old commitment to completion). A
     /// generation that is not the serving head is refused typed; it is
     /// never resolved to another generation.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "both guards must be held through the whole acquisition block: one critical section observes head and snapshot together"
-    )]
     pub fn acquire_pinned(
         &self,
         acquire: &RepoMapSnapshotAcquireV1,
     ) -> Result<PinnedRepoMapSnapshotV1, CoreError> {
+        self.acquire_pinned_with_before_pin(acquire, || {})
+    }
+
+    // The private callback is a unit-test seam at the former read-to-pin
+    // gap. Production passes an empty closure; it runs with the gate held.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "both registry guards must observe the head and snapshot together"
+    )]
+    fn acquire_pinned_with_before_pin<F: FnOnce()>(
+        &self,
+        acquire: &RepoMapSnapshotAcquireV1,
+        before_pin: F,
+    ) -> Result<PinnedRepoMapSnapshotV1, CoreError> {
+        let _lifecycle_guard = self
+            .activation_commit_gate
+            .lock()
+            .map_err(|err| storage_poisoned("lifecycle gate", &err))?;
         let key = RepoMapStoreKeyV1::new(
             &acquire.repo_id,
             &acquire.revision_id,
@@ -982,6 +1023,7 @@ impl RepoMapGenerationStore {
                 .to_wire_string(),
             activation_epoch: head.epoch,
         };
+        before_pin();
         let lease = RepoMapPinLease::new(Arc::clone(&self.pins), key)?;
         Ok(PinnedRepoMapSnapshotV1::new(snapshot, evidence, lease))
     }
@@ -1022,6 +1064,20 @@ impl RepoMapGenerationStore {
             if row.state != quanta_index_catalog::RepoMapCandidateStateV1::ActivationInvalidated {
                 continue;
             }
+            let _lifecycle_guard = self
+                .activation_commit_gate
+                .lock()
+                .map_err(|err| storage_poisoned("lifecycle gate", &err))?;
+            // The listing was only a candidate set. Re-read durable state
+            // under the gate before deciding that this address is retired.
+            let current = self.catalog.repomap_candidate_row(
+                row.repo_id.as_str(),
+                row.revision_id.as_str(),
+                row.manifest_generation,
+            )?;
+            if current.as_ref() != Some(&row) {
+                continue;
+            }
             outcome.considered = outcome.considered.saturating_add(1);
             let repo_id = RepoId::new(row.repo_id.as_str()).map_err(|error| CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
@@ -1034,8 +1090,9 @@ impl RepoMapGenerationStore {
                 })?;
             let generation = ManifestGeneration::new(row.manifest_generation);
             let key = RepoMapStoreKeyV1::new(&repo_id, &revision_id, generation);
-            // Pin gate first, under the pin read guard only: no other
-            // store guard is held across the unlink or the registry edit.
+            // Pin decision, physical unlink and registry retirement share
+            // the lifecycle gate with acquire and publish. Drop only takes
+            // the pin table, so it never waits for this gate in reverse.
             {
                 let pins = self
                     .pins
@@ -1347,5 +1404,116 @@ mod receipt_tests {
         }
         let valid = receipt(None, commitment, 0, 1, false).expect("positive sequence");
         assert_eq!(valid.terminal_sequence, 1);
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_gate_tests {
+    use std::error::Error;
+    use std::sync::{Arc, TryLockError, mpsc};
+    use std::time::Duration;
+
+    use quanta_index_catalog::SqliteCatalog;
+    use quanta_index_contract::{
+        FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
+        RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+        RepoMapItemIndexAvailability, RepoMapNode, RepoMapPublishBundleRequestV2,
+        RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
+    };
+    use quanta_index_core::{PinnedRepoMapSnapshot, RepoMapSnapshotAcquireV1};
+
+    use super::RepoMapGenerationStore;
+
+    fn bundle(generation: u64) -> RepoMapSourceBundle {
+        RepoMapSourceBundle::new(
+            RepoId::new("repo-gate").expect("fixture repo"),
+            RevisionId::new("rev-gate").expect("fixture revision"),
+            ManifestGeneration::new(generation),
+            format!("{}{:04x}", "ab".repeat(30), generation),
+            format!("snapshot-{generation}"),
+            1,
+            "d".repeat(64),
+            RepoMapGraphCoverage {
+                item_index_availability: RepoMapItemIndexAvailability::Available,
+                graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+            },
+            RepoMapExactnessSummary::Exact,
+            RepoMapRedactionState::Unredacted,
+        )
+        .with_node(RepoMapNode::File(RepoMapFileNode {
+            file_id: FileId::new("file://src/lib.rs"),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            line_count: 10,
+        }))
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Assertions are independent lifecycle-gate and pin-count regression oracles"
+    )]
+    fn read_to_pin_holds_lifecycle_gate_until_lease_is_registered() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let catalog = Arc::new(SqliteCatalog::open(dir.path(), Duration::from_secs(5))?);
+        let store =
+            Arc::new(RepoMapGenerationStore::open(dir.path().join("repo-map"), catalog)?.store);
+        let first = bundle(1);
+        let _published =
+            store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(first.clone())?)?;
+        let mut first_activation = RepoMapActivateGenerationRequestV2::for_bundle(&first)?;
+        first_activation.expected_active =
+            store.active_head_token(&first.repo_id, &first.revision_id)?;
+        let _activated = store.activate_generation_v2(&first_activation)?;
+        let second = bundle(2);
+        let _published =
+            store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(second.clone())?)?;
+        let mut second_activation = RepoMapActivateGenerationRequestV2::for_bundle(&second)?;
+        second_activation.expected_active =
+            store.active_head_token(&second.repo_id, &second.revision_id)?;
+
+        let (at_gap_tx, at_gap_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let acquirer_store = Arc::clone(&store);
+        let acquirer = std::thread::spawn(move || {
+            acquirer_store.acquire_pinned_with_before_pin(
+                &RepoMapSnapshotAcquireV1 {
+                    repo_id: first.repo_id,
+                    revision_id: first.revision_id,
+                    manifest_generation: first.manifest_generation,
+                },
+                || {
+                    at_gap_tx.send(()).expect("signal read-to-pin boundary");
+                    release_rx.recv().expect("release read-to-pin boundary");
+                },
+            )
+        });
+        at_gap_rx.recv_timeout(Duration::from_secs(5))?;
+        // This assertion fails on the old read-to-pin gap even if the
+        // scheduler does not happen to run the competing activation first.
+        assert!(matches!(
+            store.activation_commit_gate.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+        let activating_store = Arc::clone(&store);
+        let activator = std::thread::spawn(move || -> Result<_, quanta_index_core::CoreError> {
+            let _activated = activating_store.activate_generation_v2(&second_activation)?;
+            activating_store.gc_retired_objects()
+        });
+        release_tx.send(())?;
+        let view = acquirer.join().expect("acquirer thread")?;
+        assert_eq!(view.evidence().activation_epoch, 1);
+        assert_eq!(
+            store.pinned_view_count(
+                &second.repo_id,
+                &second.revision_id,
+                ManifestGeneration::new(1)
+            )?,
+            1
+        );
+        let deferred = activator.join().expect("activation thread")?;
+        assert_eq!(deferred.deferred_pinned, 1);
+        drop(view);
+        assert_eq!(store.gc_retired_objects()?.reclaimed, 1);
+        Ok(())
     }
 }

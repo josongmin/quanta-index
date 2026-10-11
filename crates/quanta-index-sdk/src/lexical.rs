@@ -10,8 +10,9 @@ use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
     ChunkRecord, ClusterMembershipReplaceV1, ContinuationTokenV2, GenerationSelector,
     ManifestGeneration, RepoId, RevisionId, SearchCorpusActivationValidationErrorV1,
-    SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
+    SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
+    SearchCorpusGenerationReservationRequestV1, SearchCorpusGenerationReservationV1,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
     SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind, SearchScopeSurface,
@@ -366,6 +367,47 @@ impl<'a> SearchCorpusNamespace<'a> {
         Self { client }
     }
 
+    /// Reserve the durable generation for a source event before publication.
+    /// Replaying the same event returns the original reservation; this call
+    /// does not publish a batch or activate a generation.
+    /// Publish lexical overlays only after reserving their source target.
+    pub fn reserve_generation(
+        &self,
+        request: &SearchCorpusGenerationReservationRequestV1,
+    ) -> Result<SearchCorpusGenerationReservationV1, SdkError> {
+        request.validate_v1().map_err(|error| {
+            SdkError::Protocol(format!("invalid generation reservation request: {error}"))
+        })?;
+        let response = self.client.dispatch_control(
+            SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(request.clone()),
+        )?;
+        match response {
+            SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(reservation) => {
+                Ok(reservation)
+            }
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected search corpus generation reservation, got {}",
+                    QuantaIndexClientPayloadV1::control_response_kind(&other)
+                )))
+            }
+            SearchPlaneControlIpcResponse::Error(_) => Err(SdkError::Protocol(
+                "control dispatch leaked an error response".to_string(),
+            )),
+        }
+    }
+
     /// Typed search-corpus publish entry point backed by the crate-private
     /// namespace trait owner. See QI-NS-01.
     pub fn publish<const SEALED: bool>(
@@ -542,7 +584,8 @@ fn dispatch_activation_request_v1(
     )?;
     match response {
         SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => Ok(ack),
-        other @ (SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+        other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+        | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
         | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
         | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)

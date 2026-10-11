@@ -104,8 +104,12 @@ impl<'de> Deserialize<'de> for ProbeRequest {
 }
 
 impl RequestEnvelope<u64> for ProbeRequest {
-    fn into_parts(self) -> (u64, u64) {
-        (self.request_id, self.payload)
+    fn into_parts(self) -> (u64, u64, quanta_index_contract::DiagnosticAttemptFieldV1) {
+        (
+            self.request_id,
+            self.payload,
+            quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
+        )
     }
 
     fn repo_scope(_request: &u64) -> Option<String> {

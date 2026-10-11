@@ -30,7 +30,8 @@ use rustix::fs::{
 use sha2::{Digest as _, Sha256};
 
 use super::generation::FinishedReclaims;
-use crate::{CoreError, RequestBudgetV1};
+use crate::diagnostic_trace::DiagnosticInodeCensusV1;
+use crate::{CoreError, DiagnosticContextV1, RequestBudgetV1};
 
 /// The reserved directory under a track root that holds admitted deletions
 /// in progress. Inventories skip it: it is neither a generation family nor
@@ -213,6 +214,7 @@ fn tree_bytes_at(
     seen: &mut BTreeSet<(u64, u64)>,
     skip: &dyn Fn(&str) -> bool,
     budget: Option<&RequestBudgetV1>,
+    mut census: Option<&mut DiagnosticInodeCensusV1>,
 ) -> io::Result<u64> {
     let checkpoint = || -> io::Result<()> {
         if let Some(budget) = budget {
@@ -226,8 +228,12 @@ fn tree_bytes_at(
     let path = Path::new(name);
     let metadata = statat(parent, path, AtFlags::SYMLINK_NOFOLLOW).map_err(io_error)?;
     let file_type = FileType::from_raw_mode(metadata.st_mode);
+    if let Some(census) = census.as_deref_mut() {
+        census.visit_inode();
+    }
     if file_type.is_file() {
-        return Ok(if seen.insert(inode_key(&metadata)?) {
+        let unique = seen.insert(inode_key(&metadata)?);
+        let bytes = if unique {
             u64::try_from(metadata.st_size).map_err(|error| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -236,7 +242,11 @@ fn tree_bytes_at(
             })?
         } else {
             0
-        });
+        };
+        if let Some(census) = census.as_deref_mut() {
+            census.visit_file(unique.then_some(bytes));
+        }
+        return Ok(bytes);
     }
     if !file_type.is_dir() {
         return Ok(0);
@@ -263,6 +273,9 @@ fn tree_bytes_at(
                 Err(error) => return Err(io_error(error)),
             };
             let child_type = FileType::from_raw_mode(child_stat.st_mode);
+            if let Some(census) = census.as_deref_mut() {
+                census.visit_inode();
+            }
             if child_type.is_dir() {
                 let mut components = frame.components.clone();
                 components.push(child);
@@ -270,13 +283,21 @@ fn tree_bytes_at(
                     components,
                     identity: inode_key(&child_stat)?,
                 });
-            } else if child_type.is_file() && seen.insert(inode_key(&child_stat)?) {
-                let bytes = u64::try_from(child_stat.st_size).map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("invalid file size {}: {error}", child_stat.st_size),
-                    )
-                })?;
+            } else if child_type.is_file() {
+                let unique = seen.insert(inode_key(&child_stat)?);
+                let bytes = if unique {
+                    u64::try_from(child_stat.st_size).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("invalid file size {}: {error}", child_stat.st_size),
+                        )
+                    })?
+                } else {
+                    0
+                };
+                if let Some(census) = census.as_deref_mut() {
+                    census.visit_file(unique.then_some(bytes));
+                }
                 total = total.saturating_add(bytes);
             }
         }
@@ -292,7 +313,9 @@ pub fn unique_inode_tree_bytes_below_track(
     track_root: &Path,
     path: &Path,
     skip: &dyn Fn(&str) -> bool,
+    diagnostic: Option<&DiagnosticContextV1>,
 ) -> Result<u64, CoreError> {
+    let mut census = DiagnosticInodeCensusV1::new(diagnostic);
     let track = open(track_root, DIRECTORY_FLAGS, Mode::empty())
         .map(File::from)
         .map_err(|error| storage("open track root", track_root, &io_error(error)))?;
@@ -305,8 +328,18 @@ pub fn unique_inode_tree_bytes_below_track(
             path.display()
         )));
     }
-    tree_bytes_at(&parent, &name, &mut BTreeSet::new(), skip, None)
-        .map_err(|error| storage("measure tree", path, &error))
+    let measured = tree_bytes_at(
+        &parent,
+        &name,
+        &mut BTreeSet::new(),
+        skip,
+        None,
+        census.as_mut(),
+    );
+    if let Some(census) = census.take() {
+        census.finish(measured.is_ok());
+    }
+    measured.map_err(|error| storage("measure tree", path, &error))
 }
 
 /// Measure several generation roots with one inode set. Missing families or
@@ -316,16 +349,24 @@ pub fn unique_inode_tree_bytes_for_roots_below_track(
     track_root: &Path,
     roots: &[PathBuf],
     skip: &dyn Fn(&str) -> bool,
+    diagnostic: Option<&DiagnosticContextV1>,
 ) -> Result<(u64, Vec<bool>), CoreError> {
+    let mut census = DiagnosticInodeCensusV1::new(diagnostic);
     for root in roots {
         let _names = source_names(track_root, root)?;
     }
     if roots.is_empty() {
+        if let Some(census) = census.take() {
+            census.finish(true);
+        }
         return Ok((0, Vec::new()));
     }
     let track = match open(track_root, DIRECTORY_FLAGS, Mode::empty()) {
         Ok(track) => File::from(track),
         Err(error) if error == rustix::io::Errno::NOENT => {
+            if let Some(census) = census.take() {
+                census.finish(true);
+            }
             return Ok((0, vec![false; roots.len()]));
         }
         Err(error) => return Err(storage("open track root", track_root, &io_error(error))),
@@ -352,10 +393,20 @@ pub fn unique_inode_tree_bytes_for_roots_below_track(
                 root.display()
             )));
         }
-        let bytes = tree_bytes_at(&parent, &name, &mut seen, skip, None)
-            .map_err(|error| storage("measure tree", root, &error))?;
+        let bytes = match tree_bytes_at(&parent, &name, &mut seen, skip, None, census.as_mut()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if let Some(census) = census.take() {
+                    census.finish(false);
+                }
+                return Err(storage("measure tree", root, &error));
+            }
+        };
         total = total.saturating_add(bytes);
         present.push(true);
+    }
+    if let Some(census) = census.take() {
+        census.finish(true);
     }
     Ok((total, present))
 }
@@ -365,7 +416,9 @@ pub fn unique_inode_tree_bytes_in_track(
     track_root: &Path,
     skip: &dyn Fn(&str) -> bool,
     budget: &RequestBudgetV1,
+    diagnostic: Option<&DiagnosticContextV1>,
 ) -> Result<u64, CoreError> {
+    let mut census = DiagnosticInodeCensusV1::new(diagnostic);
     budget.checkpoint("track-disk-usage:entry")?;
     let track = open(track_root, DIRECTORY_FLAGS, Mode::empty())
         .map(File::from)
@@ -376,8 +429,12 @@ pub fn unique_inode_tree_bytes_in_track(
         &mut BTreeSet::new(),
         skip,
         Some(budget),
+        census.as_mut(),
     );
     budget.checkpoint("track-disk-usage:complete")?;
+    if let Some(census) = census.take() {
+        census.finish(measured.is_ok());
+    }
     measured.map_err(|error| storage("measure track root", track_root, &error))
 }
 
@@ -549,10 +606,17 @@ fn reclaim_directory_removing_with(
 /// Remove every entry the reclaim area of `track_root` holds: the rest of
 /// reclaims a crash or a failed removal interrupted. Idempotent; an absent
 /// area has nothing to finish.
-pub fn finish_interrupted_reclaims(track_root: &Path) -> Result<FinishedReclaims, CoreError> {
+pub fn finish_interrupted_reclaims(
+    track_root: &Path,
+    diagnostic: Option<&DiagnosticContextV1>,
+) -> Result<FinishedReclaims, CoreError> {
+    let mut census = DiagnosticInodeCensusV1::new(diagnostic);
     let area = reclaim_area(track_root);
     match std::fs::symlink_metadata(&area) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(census) = census.take() {
+                census.finish(true);
+            }
             return Ok(FinishedReclaims::default());
         }
         Ok(_) => {}
@@ -569,8 +633,15 @@ pub fn finish_interrupted_reclaims(track_root: &Path) -> Result<FinishedReclaims
         }
         for name in names {
             let path = area.join(&name);
-            let bytes = tree_bytes_at(&area_directory, &name, &mut seen, &|_name| false, None)
-                .map_err(|error| storage("measure", &path, &error))?;
+            let bytes = tree_bytes_at(
+                &area_directory,
+                &name,
+                &mut seen,
+                &|_name| false,
+                None,
+                census.as_mut(),
+            )
+            .map_err(|error| storage("measure", &path, &error))?;
             remove_tree_at(&area_directory, &name)
                 .map_err(|error| storage("remove", &path, &error))?;
             finished.bytes = finished.bytes.saturating_add(bytes);
@@ -581,6 +652,9 @@ pub fn finish_interrupted_reclaims(track_root: &Path) -> Result<FinishedReclaims
         area_directory
             .sync_all()
             .map_err(|error| storage("sync reclaim area", &area, &error))?;
+    }
+    if let Some(census) = census.take() {
+        census.finish(true);
     }
     Ok(finished)
 }
@@ -626,6 +700,7 @@ mod tests {
                 false
             },
             &RequestBudgetV1::unbounded(),
+            None,
         );
         rename
             .into_inner()
@@ -641,6 +716,7 @@ mod tests {
             root.path(),
             &|_| false,
             &RequestBudgetV1::unbounded(),
+            None,
         )?;
         if recovered != 9 {
             return Err(format!("recovered scan measured {recovered}, expected 9").into());
@@ -657,6 +733,7 @@ mod tests {
             root.path(),
             &|_| false,
             &RequestBudgetV1::for_duration(Duration::from_secs(1)),
+            None,
         )?;
         if completed != 7 {
             return Err(format!("complete walker measured {completed}, expected 7").into());
@@ -679,6 +756,7 @@ mod tests {
                     false
                 },
                 &budget,
+                None,
             )
         });
         entered_rx.recv_timeout(Duration::from_secs(2))?;
@@ -754,7 +832,7 @@ mod tests {
         if !left.join("payload").join("data").is_file() {
             return Err("the interrupted reclaim leaves the whole tree in the area".into());
         }
-        let finished = finish_interrupted_reclaims(root.path())?;
+        let finished = finish_interrupted_reclaims(root.path(), None)?;
         if finished
             != (FinishedReclaims {
                 entries: 1,
@@ -766,7 +844,7 @@ mod tests {
                 format!("finishing removes the entry and its 12 bytes: {finished:?}").into(),
             );
         }
-        if finish_interrupted_reclaims(root.path())? != FinishedReclaims::default() {
+        if finish_interrupted_reclaims(root.path(), None)? != FinishedReclaims::default() {
             return Err("a second finish has nothing to do".into());
         }
         Ok(())
@@ -806,18 +884,21 @@ mod tests {
             root.path(),
             &[root.path().join("family/g3")],
             &|_| false,
+            None,
         )
         .is_ok()
             || unique_inode_tree_bytes_below_track(
                 root.path(),
                 &root.path().join("family"),
                 &|_| false,
+                None,
             )
             .is_ok()
             || unique_inode_tree_bytes_in_track(
                 root.path(),
                 &|_| false,
                 &RequestBudgetV1::unbounded(),
+                None,
             )? != 0
         {
             return Err("measurement followed a family symlink".into());
@@ -836,7 +917,7 @@ mod tests {
         if reclaim_directory(root.path(), &dir, "family.g3").is_ok()
             || !dir.join("payload/data").is_file()
             || !outside.path().join("family.g3/keep").is_file()
-            || finish_interrupted_reclaims(root.path()).is_ok()
+            || finish_interrupted_reclaims(root.path(), None).is_ok()
         {
             return Err("reclaim followed a symlinked reclaim area".into());
         }
@@ -866,7 +947,7 @@ mod tests {
         let file = family.join("unreadable");
         std::fs::write(&file, b"payload")?;
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000))?;
-        let bytes = unique_inode_tree_bytes_below_track(root.path(), &family, &|_| false)?;
+        let bytes = unique_inode_tree_bytes_below_track(root.path(), &family, &|_| false, None)?;
         if bytes != 7 {
             return Err(format!("expected seven metadata bytes, observed {bytes}").into());
         }
@@ -886,15 +967,19 @@ mod tests {
         std::fs::hard_link(base.join("payload/data"), delta.join("payload/data"))?;
         let roots = vec![base, root.path().join("family/g3"), delta];
         let (bytes, present) =
-            unique_inode_tree_bytes_for_roots_below_track(root.path(), &roots, &|_| false)?;
+            unique_inode_tree_bytes_for_roots_below_track(root.path(), &roots, &|_| false, None)?;
         if bytes != 7 || present != [true, false, true] {
             return Err(format!(
                 "expected one shared payload and two identities: {bytes}, {present:?}"
             )
             .into());
         }
-        if unique_inode_tree_bytes_in_track(root.path(), &|_| false, &RequestBudgetV1::unbounded())?
-            != 7
+        if unique_inode_tree_bytes_in_track(
+            root.path(),
+            &|_| false,
+            &RequestBudgetV1::unbounded(),
+            None,
+        )? != 7
         {
             return Err("track measurement double-counted the hard link".into());
         }
@@ -906,12 +991,17 @@ mod tests {
         let root = tempfile::tempdir()?;
         let missing_track = root.path().join("not-created");
         let roots = vec![missing_track.join("family/g1")];
-        let measured =
-            unique_inode_tree_bytes_for_roots_below_track(&missing_track, &roots, &|_| false)?;
+        let measured = unique_inode_tree_bytes_for_roots_below_track(
+            &missing_track,
+            &roots,
+            &|_| false,
+            None,
+        )?;
         if measured != (0, vec![false]) {
             return Err(format!("missing track was not absent: {measured:?}").into());
         }
-        let empty = unique_inode_tree_bytes_for_roots_below_track(&missing_track, &[], &|_| false)?;
+        let empty =
+            unique_inode_tree_bytes_for_roots_below_track(&missing_track, &[], &|_| false, None)?;
         if empty != (0, Vec::new()) {
             return Err(format!("empty root set was not empty: {empty:?}").into());
         }
@@ -919,6 +1009,7 @@ mod tests {
             &missing_track,
             &[root.path().join("outside")],
             &|_| false,
+            None,
         )
         .is_ok()
         {
@@ -940,7 +1031,7 @@ mod tests {
         for index in 0..260 {
             std::fs::write(leaf.join(format!("file-{index}")), b"x")?;
         }
-        if unique_inode_tree_bytes_below_track(root.path(), &family, &|_| false)? != 260 {
+        if unique_inode_tree_bytes_below_track(root.path(), &family, &|_| false, None)? != 260 {
             return Err("nested quarantine measurement lost files".into());
         }
         reclaim_quarantined_directory(root.path(), &family)?;
@@ -954,7 +1045,7 @@ mod tests {
     #[test]
     fn an_absent_reclaim_area_has_nothing_to_finish() -> TestResult {
         let root = tempfile::tempdir()?;
-        if finish_interrupted_reclaims(root.path())? != FinishedReclaims::default() {
+        if finish_interrupted_reclaims(root.path(), None)? != FinishedReclaims::default() {
             return Err("no area, nothing finished".into());
         }
         Ok(())

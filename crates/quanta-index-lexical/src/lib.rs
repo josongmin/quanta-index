@@ -11,26 +11,18 @@
 //! Layout:
 //!   `{state_root}/generation-v1-{sha256(repo, revision)}/g{generation}/`
 //!
-//! Beside the Tantivy index, a generation carries its text authority under
-//! `text-authority/`: a bounded manifest plus immutable shard files, each
-//! shard a fixed doc-id range's slice of the doc table, the byte-trigram
-//! postings and the token positions (see the crate-private
-//! `text_authority` module). Every text document stores its text-authority
-//! doc id in the index, so a delta names exactly the documents it retires
-//! and rewrites only the shards it touches; every other shard is the base
-//! generation's file, hard-linked.
+//! Each generation commits compact File and Native authority roots under
+//! `file-authority/` and `text-authority/`. Authenticated source bodies,
+//! posting pages and copy-on-write map pages live in the track-wide
+//! `lexical-object-pool`. Durable source-event ID ranges identify logical
+//! document versions across generations. Bounded segment compaction retains
+//! those logical IDs while rewriting physical locators and postings.
 //!
-//! Beside the index and the text authority, a generation carries the
-//! repo-metadata overlays (the crate-private `sealed_generation::overlay`
-//! families): whole-snapshot files the aux ingest routes publish before the
-//! seal. The seal writes a manifest that names every file a query opens —
-//! the Tantivy commit and the segment files it references, the immutable
-//! ranked-key tables, the text-authority tree, and the overlays — each with
-//! length and digest. Nothing may land in a sealed generation afterwards:
-//! an index-mutating op and an
-//! overlay publish alike are refused typed. The activation validator and
-//! the query open walk that manifest through one function, so activation
-//! can only admit a generation a query can open (QI-BB-030).
+//! The seal binds the Tantivy commit, ranked keys, coverage, authority roots
+//! and auxiliary overlays. Open verifies control metadata; selected immutable
+//! objects authenticate at use. Scrub verifies the complete shared closure.
+//! Sealed generations reject index and overlay mutations. Snapshot retirement
+//! fences every retained generation affected by shared-object corruption.
 //!
 //! The adapter caches one `IndexWriter` per generation to amortize the
 //! per-commit cost across many ops, and one `IndexReader` per opened
@@ -39,7 +31,7 @@
 //! Text semantics — NFC, Unicode case folding, token boundaries, and the
 //! split between token surfaces (keyword, phrase) and byte surfaces (raw
 //! string, regex) — are defined once in the crate-private `normalize`
-//! module and consumed by the index analyzer, every text-authority shard,
+//! module and consumed by the index analyzer, every Native segment,
 //! and the `index:no` scan alike. A sealed generation records the normalizer
 //! version and the text-authority format it was built under and is refused
 //! typed when either differs from the running one.
@@ -60,6 +52,7 @@ pub const FILE_COVERAGE_ENCODED_BYTES_LIMIT: u64 = 64 * 1024 * 1024;
 pub const FILE_COVERAGE_DECODE_HEAP_BYTES_LIMIT: u64 = 256 * 1024 * 1024;
 
 mod analyzer;
+pub mod native;
 
 mod authority_doc_set;
 
@@ -70,6 +63,12 @@ mod dense_admission;
 mod doc_census;
 
 mod file_authority;
+mod lexical_allocation;
+mod lexical_compaction;
+mod lexical_gc;
+mod lexical_publication;
+mod lexical_root_names;
+mod lexical_store;
 
 pub mod filters;
 
@@ -130,6 +129,11 @@ mod writer_cache;
 
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+extern crate self as quanta_index_lexical;
+#[cfg(test)]
+#[path = "../tests/support/publication_fixture.rs"]
+mod publication_fixture;
 
 #[cfg(test)]
 mod publication_faults;
@@ -192,7 +196,7 @@ use crate::regex::RegexPolicy;
 
 use crate::regex_match_cache::RegexMatchCache;
 
-use crate::text_authority::{AddedTextDoc, ShardedTextAuthority, TextAuthorityManifest};
+use crate::text_authority::{AddedTextDoc, NativeAuthority, NativeRoot, NativeSourceEdit};
 
 use tantivy::schema::{Field, Schema};
 
@@ -395,23 +399,15 @@ struct FileContributorShard {
         BTreeMap<String, BTreeMap<String, BTreeSet<FileContributorIdentityEntry>>>,
 }
 
-/// One text document as the index stores it: candidate id and the
-/// text-authority doc id the sidecar shares with it.
-struct IndexedTextDoc {
-    candidate_id: String,
-    doc_id: u64,
-}
-
 /// Hands out text-authority doc ids while a batch's ops are applied, and
 /// keeps what it handed out so the sidecar update can add exactly the
 /// documents the index received.
 ///
-/// Ids continue from the watermark the plan read — the prior manifest's
-/// `max_doc_id`, or the highest id the index stores when there is no prior
-/// authority — and are never reused within the generation's chain, so a
-/// batch's new documents share the last shard or open new ones.
+/// IDs belong to an original source-event reservation persisted by the catalog.
+/// The allocator never derives authority from the index or a generation path.
 struct TextDocAllocator {
     next_doc_id: u64,
+    remaining: u64,
     added: Vec<AddedTextDoc>,
 }
 
@@ -419,19 +415,11 @@ struct TextDocAllocator {
 enum TextAuthorityWrite {
     /// Nothing in the batch touched indexed text.
     None,
-    /// Every shard is derived from a full scan of the live index: the
-    /// generation has no prior authority yet, the batch clears the text
-    /// surface or uses the legacy per-chunk ops, or the index names a
-    /// retired document the prior authority never saw (a publish that
-    /// crashed after its commit).
-    Rebuild,
-    /// The batch replaces or tombstones scopes only: the retired documents
-    /// are removed from, and the added ones appended to, exactly the shards
-    /// `touched_shards` names; every other shard is listed unchanged.
-    Incremental {
-        /// Retired doc id → candidate id, read from the pre-mutation index.
-        retired: BTreeMap<u64, String>,
-        touched_shards: BTreeSet<u64>,
+    /// Changed source memberships and segments are published atomically.
+    Delta {
+        retired: Vec<u64>,
+        source_edits: Vec<NativeSourceEdit>,
+        clear_all: bool,
     },
 }
 
@@ -439,20 +427,7 @@ enum TextAuthorityWrite {
 struct TextAuthorityPlan {
     write: TextAuthorityWrite,
     allocator: TextDocAllocator,
-    prior: Option<TextAuthorityManifest>,
-}
-
-/// The text ops of a batch, classified.
-struct TextOpSummary {
-    /// Some op adds, replaces or retires text documents.
-    touches_text: bool,
-    /// Some op retires the text surface wholesale or uses the legacy
-    /// per-chunk ops, whose retirements are not scope-addressed.
-    forces_rebuild: bool,
-    /// Paths whose text documents the batch retires.
-    retired_files: Vec<quanta_index_contract::SourceFileKey>,
-    /// Text documents the batch will write.
-    added_count: u64,
+    prior: Option<NativeRoot>,
 }
 
 /// Tantivy-backed lexical adapter.
@@ -492,6 +467,8 @@ pub struct LexicalAdapter {
     /// builds for the whole hash step.
     directory_lifecycle: RwLock<()>,
     scrub_progress: Mutex<quanta_index_core::domains::integrity::IntegrityScrubProgressV1>,
+    shared_scrub_progress: Mutex<sealed_generation::SharedScrubProgress>,
+    shared_gc: Mutex<Option<lexical_gc::SharedGcProgress>>,
 }
 
 /// Whether an op changes the Tantivy index (and therefore needs a writer and
@@ -526,10 +503,8 @@ const fn op_writes_generation(op: &LexicalChannelOp) -> bool {
 /// The open visitor retains authenticated text descriptors and serving metadata.
 #[derive(Default)]
 struct LoadedGeneration {
-    shards: Vec<text_authority::ProvedTextShard>,
-    documents: BTreeMap<u64, text_authority::TextDocIdentity>,
-    text_authority: Option<ShardedTextAuthority>,
-    file_authority: Option<file_authority::FileAuthority>,
+    text_authority: Option<NativeAuthority>,
+    file_authority: Option<file_authority::paged::PagedFileAuthority>,
     repo_metadata: Option<LexicalRepoMetadataPayload>,
     repo_commit_recency: Option<RepoCommitRecencyShard>,
     repo_meta: Option<RepoMetaShard>,
@@ -559,8 +534,8 @@ struct TantivySearcher {
     regex_policy: RegexPolicy,
     /// Examined-candidate budget every exact-set execution runs under.
     execution_budget: LexicalExecutionBudgetV1,
-    text_authority: Option<ShardedTextAuthority>,
-    file_authority: Option<file_authority::FileAuthority>,
+    text_authority: Option<NativeAuthority>,
+    file_authority: Option<file_authority::paged::PagedFileAuthority>,
     repo_commit_recency: Option<RepoCommitRecencyShard>,
     repo_meta: Option<RepoMetaShard>,
     repo_topic: Option<RepoTopicShard>,

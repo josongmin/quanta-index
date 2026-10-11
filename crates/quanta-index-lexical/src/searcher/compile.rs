@@ -7,6 +7,7 @@
 
 use crate::metadata_normalize::normalize_language;
 use crate::predicate_registry::{PREDICATE_OWNER, PredicateKind, kind_of, unimplemented_predicate};
+use crate::searcher::authorities::NativeQueryScope;
 use crate::{PreparedExecutableQuery, PreparedPredicatePlan, QueryDocKind, TantivySearcher};
 use quanta_index_contract::{
     LqExpr, LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, QueryConstraintSetV1,
@@ -22,16 +23,19 @@ impl TantivySearcher {
         options: &LqOptions,
         include_path_terms: bool,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<Box<dyn Query>, CoreError> {
         match expr {
             LqExpr::Empty => Ok(Box::new(AllQuery)),
-            LqExpr::Leaf(leaf) => self.compile_leaf(leaf, options, include_path_terms, budget),
+            LqExpr::Leaf(leaf) => {
+                self.compile_leaf(leaf, options, include_path_terms, budget, native)
+            }
             LqExpr::All(parts) => {
                 let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
                 for part in parts {
                     clauses.push((
                         Occur::Must,
-                        self.compile_expr(part, options, false, budget)?,
+                        self.compile_expr(part, options, false, budget, native)?,
                     ));
                 }
                 Ok(Box::new(BooleanQuery::new(clauses)))
@@ -41,13 +45,13 @@ impl TantivySearcher {
                 for part in parts {
                     clauses.push((
                         Occur::Should,
-                        self.compile_expr(part, options, false, budget)?,
+                        self.compile_expr(part, options, false, budget, native)?,
                     ));
                 }
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
             LqExpr::Not(inner) => {
-                let inner_q = self.compile_expr(inner, options, false, budget)?;
+                let inner_q = self.compile_expr(inner, options, false, budget, native)?;
                 let clauses: Vec<(Occur, Box<dyn Query>)> =
                     vec![(Occur::Must, Box::new(AllQuery)), (Occur::MustNot, inner_q)];
                 Ok(Box::new(BooleanQuery::new(clauses)))
@@ -86,8 +90,9 @@ impl TantivySearcher {
         source: &str,
         options: &LqOptions,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<Box<dyn Query>, CoreError> {
-        let members = self.regex_match_set(source, options, budget)?;
+        let members = self.regex_match_set(source, options, budget, native)?;
         Ok(self.authority_restriction_query(members))
     }
 
@@ -97,6 +102,7 @@ impl TantivySearcher {
         options: &LqOptions,
         include_path_terms: bool,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<Box<dyn Query>, CoreError> {
         if let LqLeaf::Predicate { name, args } = leaf
             && let Some(exact) =
@@ -112,19 +118,19 @@ impl TantivySearcher {
                 // dialect filter, candidate admission, and the
                 // typed `LEX_REGEX_*` error codes.
                 if options.pattern_type == LqPatternType::Regexp {
-                    return self.compile_regex_content_leaf(text, options, budget);
+                    return self.compile_regex_content_leaf(text, options, budget, native);
                 }
                 if matches!(leaf, LqLeaf::RawString(_)) {
-                    let members = self.raw_substring_match_set(text, options, budget)?;
+                    let members = self.raw_substring_match_set(text, options, budget, native)?;
                     return Ok(self.authority_restriction_query(Arc::new(members)));
                 }
                 self.compile_keyword_leaf(text, options, include_path_terms)
             }
             LqLeaf::Phrase(text) => {
-                let members = self.phrase_match_set(text, options, budget)?;
+                let members = self.phrase_match_set(text, options, budget, native)?;
                 Ok(self.authority_restriction_query(Arc::new(members)))
             }
-            LqLeaf::Regex(text) => self.compile_regex_content_leaf(text, options, budget),
+            LqLeaf::Regex(text) => self.compile_regex_content_leaf(text, options, budget, native),
             LqLeaf::StructuralBlock(_) => Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
                     quanta_index_contract::lex::LexicalErrorCode::StrProducerParseTreeUnavailable,
@@ -143,8 +149,12 @@ impl TantivySearcher {
                     };
                     let constraint =
                         self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
-                    let repo_ids =
-                        self.collect_repo_ids_for_repo_has_file(&constraint, options, budget)?;
+                    let repo_ids = self.collect_repo_ids_for_repo_has_file(
+                        &constraint,
+                        options,
+                        budget,
+                        native,
+                    )?;
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
@@ -160,7 +170,7 @@ impl TantivySearcher {
                     };
                     let leaf = self.repo_content_constraint(&canonical_name, &canonical_args)?;
                     let repo_ids =
-                        self.collect_repo_ids_for_repo_has_content(&leaf, options, budget)?;
+                        self.collect_repo_ids_for_repo_has_content(&leaf, options, budget, native)?;
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
@@ -262,11 +272,12 @@ impl TantivySearcher {
                     let constraint =
                         self.content_predicate_constraint(&canonical_name, &canonical_args)?;
                     if constraint.has_scopes() {
-                        let members = self.content_predicate_match_set(&constraint, budget)?;
+                        let members =
+                            self.content_predicate_match_set(&constraint, budget, native)?;
                         return Ok(self.authority_restriction_query(Arc::new(members)));
                     }
                     let lowered = self.predicate_content_leaf_from_constraint(&constraint);
-                    self.compile_leaf(&lowered, options, false, budget)
+                    self.compile_leaf(&lowered, options, false, budget, native)
                 }
                 None => Err(unimplemented_predicate(format!(
                     "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
@@ -280,6 +291,7 @@ impl TantivySearcher {
         filter: &LqFilter,
         options: &LqOptions,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<Option<Box<dyn Query>>, CoreError> {
         match filter {
             LqFilter::Repo { pattern, revs } => {
@@ -301,9 +313,9 @@ impl TantivySearcher {
             LqFilter::File { pattern, scope } => {
                 Ok(Some(self.compile_file_filter(pattern.as_str(), *scope)?))
             }
-            LqFilter::Content { leaf } => {
-                Ok(Some(self.compile_leaf(leaf, options, false, budget)?))
-            }
+            LqFilter::Content { leaf } => Ok(Some(
+                self.compile_leaf(leaf, options, false, budget, native)?,
+            )),
             LqFilter::Lang { id } => {
                 let Some(language) = normalize_language(id.as_str()) else {
                     return Err(CoreError::InvalidContract(
@@ -387,6 +399,7 @@ impl TantivySearcher {
         query: &LqQuery,
         prepared: &PreparedPredicatePlan,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<Option<Box<dyn Query>>, CoreError> {
         if prepared.force_empty {
             return Ok(None);
@@ -396,11 +409,19 @@ impl TantivySearcher {
         if !matches!(prepared.expr, LqExpr::Empty) {
             clauses.push((
                 Occur::Must,
-                self.compile_expr(&prepared.expr, &query.options, include_path_terms, budget)?,
+                self.compile_expr(
+                    &prepared.expr,
+                    &query.options,
+                    include_path_terms,
+                    budget,
+                    native,
+                )?,
             ));
         }
         for filter in &query.filters {
-            if let Some(compiled_filter) = self.compile_filter(filter, &query.options, budget)? {
+            if let Some(compiled_filter) =
+                self.compile_filter(filter, &query.options, budget, native)?
+            {
                 clauses.push((Occur::Must, compiled_filter));
             }
         }
@@ -433,18 +454,20 @@ impl TantivySearcher {
         prepared: &PreparedPredicatePlan,
         constraints: &QueryConstraintSetV1,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<Option<Box<dyn Query>>, CoreError> {
         if matches!(prepared.expr, LqExpr::Empty) && constraints.repo_relative_path_exact.is_some()
         {
             return Ok(Some(Box::new(AllQuery)));
         }
-        self.compile_query_from_prepared(query, prepared, budget)
+        self.compile_query_from_prepared(query, prepared, budget, native)
     }
 
     pub(crate) fn prepare_executable_query(
         &self,
         plan: &quanta_index_core::ValidatedLexicalPlan,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<Option<PreparedExecutableQuery>, CoreError> {
         crate::planner::LexicalPlanner::validate_query_primitives(
             plan,
@@ -468,7 +491,7 @@ impl TantivySearcher {
             });
         }
         self.validate_symbol_coverage_for_plan(plan, budget)?;
-        let predicate_plan = self.prepare_predicate_plan(&prepared_query, budget)?;
+        let predicate_plan = self.prepare_predicate_plan(&prepared_query, budget, native)?;
         if predicate_plan.force_empty {
             return Ok(None);
         }

@@ -321,7 +321,12 @@ fn publish_structural_ready_fixture(socket: &Path, corpus: &mut SourceCorpusFixt
             1,
             "fn main() {}",
         )?],
-        Some(b"manifest".to_vec()),
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &[],
+        )?),
     )?;
     seal_lexical(socket, corpus)?;
     publish_structural_scope(
@@ -394,6 +399,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     let response = send_ingest_request(
         socket,
         &SearchPlaneIngestIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: next_request_id(),
             payload,
         },
@@ -716,6 +722,7 @@ fn verify_publish_dispatch_sourcegraph_roundtrip(socket: &Path) -> TestResult {
     let response = send_query_request(
         socket,
         &SearchPlaneQueryIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 44,
             payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
@@ -764,7 +771,12 @@ fn publish_dispatch_queries_share_one_indexed_fixture() -> TestResult {
             chunk_record("c2", "hello rust")?,
             chunk_record("c3", "goodbye")?,
         ],
-        Some(b"manifest".to_vec()),
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &[],
+        )?),
     )?;
     seal_lexical(&ingest_socket, &mut corpus)?;
 
@@ -796,11 +808,17 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
             chunk_record_with_metadata("beta", "src/main.rs", "rust", 10, 18, "needle beta")?,
             chunk_record_with_metadata("gamma", "src/lib.py", "python", 20, 24, "needle gamma")?,
         ],
-        Some(b"manifest".to_vec()),
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &[],
+        )?),
     )?;
     seal_lexical(&ingest_socket, &mut corpus)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 7,
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
@@ -899,7 +917,12 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
     publish_search_corpus_chunks(
         &mut corpus,
         vec![chunk_record("history-lex", "history shard lexical proof")?],
-        Some(b"manifest".to_vec()),
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &[],
+        )?),
     )?;
     publish_history_commits(&ingest_socket, vec![history_commit_record()])?;
     seal_lexical(&ingest_socket, &mut corpus)?;
@@ -1030,7 +1053,12 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
                 "catalog_surface_needle",
             )?,
         ],
-        Some(b"manifest".to_vec()),
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &[],
+        )?),
     )?;
     publish_history_authority_fixture(&ingest_socket)?;
     seal_lexical(&ingest_socket, &mut corpus)?;
@@ -1202,6 +1230,7 @@ fn verify_hybrid_requires_joint_materialization(socket: &Path) -> TestResult {
     // Hybrid query still fails on the lexical gate first when neither lexical
     // nor semantic generation has materialized yet.
     let hybrid_req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 1,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
             text_query: TextQueryRequest {
@@ -1249,6 +1278,7 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     // Wait for joint lexical/semantic materialization from search-corpus ingest.
     if !wait_until(READINESS_TIMEOUT, || {
         let req = SearchPlaneQueryIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: next_request_id(),
             payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
                 text_query: TextQueryRequest {
@@ -1275,6 +1305,7 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
 
     // Final hybrid: must return both candidates fused with alpha ranked first.
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 99,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
             text_query: TextQueryRequest {
@@ -1317,6 +1348,7 @@ fn verify_hybrid_generation_pin_mismatch(socket: &Path) -> TestResult {
     let response = send_query_request(
         socket,
         &SearchPlaneQueryIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 40,
             payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
                 text_query: TextQueryRequest {
@@ -1357,6 +1389,7 @@ fn verify_hybrid_generation_pin_mismatch(socket: &Path) -> TestResult {
 
 fn verify_sourcegraph_context_filter(socket: &Path) -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 17,
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
@@ -1401,6 +1434,7 @@ fn verify_sourcegraph_context_filter(socket: &Path) -> TestResult {
 fn verify_hybrid_visibility_filter(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 41,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
             text_query: TextQueryRequest {
@@ -1492,6 +1526,7 @@ fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
 
 fn verify_semantic_requires_materialization(socket: &Path) -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: next_request_id(),
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "semantic".to_string(),
@@ -1520,6 +1555,7 @@ fn verify_semantic_requires_materialization(socket: &Path) -> TestResult {
 fn verify_semantic_without_lexical_scope(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 42,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "alpha".to_string(),
@@ -1620,6 +1656,7 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 7,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "the cat is sleeping".to_string(),
@@ -1680,6 +1717,7 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
 
 fn verify_semantic_search_owned_text_derivation(socket: &Path) -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 43,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "typed semantic parser".to_string(),
@@ -1743,6 +1781,7 @@ fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile()
     seal_lexical(&ingest_socket, &mut corpus)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "typed semantic parser".to_string(),
@@ -1786,6 +1825,7 @@ fn verify_semantic_generation_pin_mismatch(socket: &Path) -> TestResult {
     let response = send_query_request(
         socket,
         &SearchPlaneQueryIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 43,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: "scope".to_string(),
@@ -1828,6 +1868,7 @@ fn verify_semantic_generation_pin_mismatch(socket: &Path) -> TestResult {
 fn verify_semantic_scoped_unindexed_lexical_scope(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "alpha".to_string(),
@@ -1894,6 +1935,7 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
     seal_lexical(&ingest_socket, &mut corpus)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 41,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "needle".to_string(),
@@ -1958,6 +2000,7 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
     seal_lexical(&ingest_socket, &mut corpus)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 42,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "focus alpha".to_string(),
@@ -2005,6 +2048,7 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
 
 fn verify_semantic_empty_text_refusal(socket: &Path) -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 43,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "!!!".to_string(),
@@ -2059,7 +2103,12 @@ fn default_indexed_queries_share_one_fixture() -> TestResult {
             chunk_record("derivation-beta", "archive storage compaction")?,
             chunk_record("history-fallback", "fix only lives in lexical content")?,
         ],
-        Some(b"manifest".to_vec()),
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &[],
+        )?),
     )?;
     seal_lexical(&ingest_socket, &mut corpus)?;
 
@@ -2113,6 +2162,7 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
     seal_lexical(&ingest_socket, &mut corpus)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "semantic meaning".to_string(),
@@ -2158,6 +2208,7 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
 /// code, on the same connection.
 fn verify_hybrid_zero_top_k_refusal(socket: &Path) -> TestResult {
     let hybrid = |top_k: u32| SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
             text_query: TextQueryRequest {
@@ -2284,6 +2335,7 @@ fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() ->
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 45,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
             text_query: TextQueryRequest {
@@ -2419,6 +2471,7 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let request = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 46,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
             text_query: TextQueryRequest {
@@ -2476,6 +2529,7 @@ fn verify_structural_generation_not_ready(socket: &Path) -> TestResult {
     let response = send_query_request(
         socket,
         &SearchPlaneQueryIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 42,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
                 text_query: TextQueryRequest {
@@ -2536,7 +2590,12 @@ fn orphan_structural_tree_is_refused_before_query_readiness() -> TestResult {
                 "fn semantic_sentinel() {}",
             )?,
         ],
-        Some(b"manifest".to_vec()),
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &[],
+        )?),
     )?;
     tombstone_lexical_scopes(&mut corpus, &["src/lib.rs"])?;
     seal_lexical(&ingest_socket, &mut corpus)?;
@@ -2573,6 +2632,7 @@ fn orphan_structural_tree_is_refused_before_query_readiness() -> TestResult {
     seal_structural(&ingest_socket)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
             text_query: TextQueryRequest {
@@ -2632,6 +2692,7 @@ fn verify_structural_composition_wiring(socket: &Path) -> TestResult {
     let response = send_query_request(
         socket,
         &SearchPlaneQueryIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 43,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
                 text_query: TextQueryRequest {
@@ -2683,6 +2744,7 @@ fn verify_structural_composition_wiring(socket: &Path) -> TestResult {
 fn verify_structural_sourcegraph_match(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let request = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 46,
         payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
             text_query: TextQueryRequest {
@@ -2761,6 +2823,7 @@ fn verify_structural_sourcegraph_match(socket: &Path) -> TestResult {
 fn verify_structural_sourcegraph_regex_match(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let request = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 46,
         payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
             text_query: TextQueryRequest {
@@ -2840,6 +2903,7 @@ fn verify_structural_pattern_type_required(socket: &Path) -> TestResult {
     let response = send_query_request(
         socket,
         &SearchPlaneQueryIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 47,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
                 text_query: TextQueryRequest {
@@ -2872,6 +2936,7 @@ fn verify_structural_pattern_type_required(socket: &Path) -> TestResult {
 
 fn verify_structural_sourcegraph_select_refusal(socket: &Path) -> TestResult {
     let request = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 48,
         payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
             text_query: TextQueryRequest {
@@ -2926,6 +2991,7 @@ fn verify_structural_timeout_refusal(socket: &Path) -> TestResult {
     let response = send_query_request(
         socket,
         &SearchPlaneQueryIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 49,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
                 text_query: TextQueryRequest {
@@ -2956,6 +3022,7 @@ fn verify_structural_timeout_refusal(socket: &Path) -> TestResult {
 fn verify_structural_typed_holes(socket: &Path) -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let expr_request = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 48,
         payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
             text_query: TextQueryRequest {
@@ -3027,6 +3094,7 @@ fn verify_structural_typed_holes(socket: &Path) -> TestResult {
     let item_response = send_query_request(
         socket,
         &SearchPlaneQueryIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 49,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
                 text_query: TextQueryRequest {
@@ -3105,6 +3173,7 @@ fn verify_structural_typed_hole_kind_refusal(socket: &Path) -> TestResult {
     let response = send_query_request(
         socket,
         &SearchPlaneQueryIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 49,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
                 text_query: TextQueryRequest {
@@ -3192,6 +3261,7 @@ fn request_validation_refusals_share_one_runtime() -> TestResult {
 
 fn lex_query(needle: &str) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: next_request_id(),
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Sourcegraph,
@@ -3214,6 +3284,7 @@ fn history_query_with_syntax(
     query_text: &str,
 ) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: next_request_id(),
         payload: SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
             text_query: TextQueryRequest {
@@ -3240,6 +3311,7 @@ fn runtime_metadata_query_with_syntax(
     query_text: &str,
 ) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: next_request_id(),
         payload: SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
             text_query: TextQueryRequest {

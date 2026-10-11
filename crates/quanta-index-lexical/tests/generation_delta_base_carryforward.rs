@@ -20,6 +20,10 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::Write as _;
@@ -41,9 +45,10 @@ use quanta_index_contract::{
     SearchCorpusReplaceScope, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    CoreError, LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RequestBudgetV1,
-    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SearchCorpusBatchBuildPort,
-    SearchCorpusPreflightPhaseV1, TextAuthorityUpdateStats, WriterAdmissionPort,
+    CoreError, GenerationStorageKeyV1, LexicalIndexOpenPort, LexicalSearcher,
+    RepoCommitRecencyIngestPort, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
+    SealedGenerationReclaimPort, SearchCorpusBatchBuildPort, SearchCorpusPreflightPhaseV1,
+    TextAuthorityUpdateStats, WriterAdmissionPort,
 };
 use quanta_index_lexical::{LexicalAdapter, LexicalCoverageReadStats};
 
@@ -299,7 +304,8 @@ fn delta_keeps_its_proved_base_from_reclaim_until_seal() -> TestResult {
     let root = dir.path().to_path_buf();
     let base = ManifestGeneration::new(1);
     let target = ManifestGeneration::new(2);
-    let _stages = LexicalAdapter::with_state_root(root.clone()).build_batch(&base_batch(base)?)?;
+    let _stages =
+        LexicalAdapter::with_state_root(root.clone()).build_fixture_batch(&base_batch(base)?)?;
 
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -311,7 +317,7 @@ fn delta_keeps_its_proved_base_from_reclaim_until_seal() -> TestResult {
     )?);
     let delta = delta_batch(target, base)?;
     let building = Arc::clone(&adapter);
-    let builder = std::thread::spawn(move || building.build_batch(&delta));
+    let builder = std::thread::spawn(move || building.build_fixture_batch(&delta));
     entered_rx.recv_timeout(Duration::from_secs(10))?;
 
     let identity = GenerationSnapshot {
@@ -326,7 +332,7 @@ fn delta_keeps_its_proved_base_from_reclaim_until_seal() -> TestResult {
     let reclaiming = Arc::clone(&adapter);
     let reclaimer = std::thread::spawn(move || {
         let _sent = started_tx.send(());
-        let result = reclaiming.reclaim_sealed_generation(&identity);
+        let result = reclaiming.reclaim_sealed_generation(&identity, None);
         let _completed = completed_tx.send(());
         result
     });
@@ -364,11 +370,11 @@ fn delta_generation_inherits_unmutated_base_scopes() -> TestResult {
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
 
-    let _stages = adapter.build_batch(&base_batch(g1)?)?;
+    let _stages = adapter.build_fixture_batch(&base_batch(g1)?)?;
     assert_hits(&adapter, g1, ALPHA_MARKER, &["chunk-alpha"], "base")?;
     assert_hits(&adapter, g1, BETA_MARKER, &["chunk-beta"], "base")?;
 
-    let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let _stages = adapter.build_fixture_batch(&delta_batch(g2, g1)?)?;
     assert_hits(&adapter, g2, ALPHA_MARKER, &["chunk-alpha"], "delta")?;
     assert_hits(&adapter, g2, BETA_MARKER_V2, &["chunk-beta"], "delta")?;
     assert_hits(&adapter, g2, BETA_MARKER, &[], "delta")?;
@@ -387,11 +393,11 @@ fn delta_generation_inherits_base_when_a_sidecar_authority_lands_first() -> Test
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
 
-    let _stages = adapter.build_batch(&base_batch(g1)?)?;
+    let _stages = adapter.build_fixture_batch(&base_batch(g1)?)?;
     assert_hits(&adapter, g1, ALPHA_MARKER, &["chunk-alpha"], "base")?;
 
     let _receipt = adapter.publish_batch(&recency_batch(g2))?;
-    let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let _stages = adapter.build_fixture_batch(&delta_batch(g2, g1)?)?;
 
     assert_hits(
         &adapter,
@@ -410,8 +416,7 @@ fn delta_generation_inherits_base_when_a_sidecar_authority_lands_first() -> Test
     Ok(())
 }
 
-/// The generation-local directory holding the text authority: its manifest
-/// and its shard files.
+/// The generation-local directory holding the committed Native root.
 const TEXT_AUTHORITY_DIR: &str = "text-authority";
 
 /// The text-authority files under `root`, sorted, with their sizes.
@@ -425,7 +430,8 @@ fn text_authority_files(root: &Path) -> Result<Vec<(std::path::PathBuf, u64)>, B
     Ok(files)
 }
 
-/// Total bytes of the per-generation text authority under `root`.
+/// Generation-local Native root bytes. Immutable posting/body objects live in
+/// the shared pool and are not included in this number.
 fn text_authority_bytes(root: &Path) -> Result<u64, Box<dyn Error>> {
     Ok(text_authority_files(root)?
         .iter()
@@ -784,11 +790,53 @@ fn inodes_and_bytes(root: &Path) -> Result<(BTreeSet<u64>, u64), Box<dyn Error>>
     Ok((inodes, total))
 }
 
-/// QI-BB-006: a one-scope delta must not rewrite the inherited index.
+type PoolObjectFacts = (u64, u64, [u8; 32]);
+type PoolObjectSnapshot = BTreeMap<String, PoolObjectFacts>;
+
+/// Snapshot canonical physical pool objects, excluding journal/control writes.
 ///
-/// Text authority has a separate inode oracle. Coverage is an independent,
-/// generation-bound full-snapshot artifact, so report its rewrite cost rather
-/// than silently counting it as index bytes or pretending this test bounds it.
+/// Path, inode, length, and digest expose inherited-object overwrites and
+/// new-object write amplification.
+fn pool_object_snapshot(state_root: &Path) -> Result<PoolObjectSnapshot, Box<dyn Error>> {
+    let objects = state_root.join("lexical-object-pool/objects");
+    let mut result = BTreeMap::new();
+    for shard in std::fs::read_dir(&objects)? {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            return Err(
+                format!("pool shard is not a directory: {}", shard.path().display()).into(),
+            );
+        }
+        for object in std::fs::read_dir(shard.path())? {
+            let object = object?;
+            if !object.file_type()?.is_file() {
+                return Err(
+                    format!("pool object is not regular: {}", object.path().display()).into(),
+                );
+            }
+            let meta = object.metadata()?;
+            let path = object.path();
+            let name = path.strip_prefix(&objects)?.to_string_lossy().into_owned();
+            if name.contains(".tmp-") {
+                return Err(format!("pool temporary persisted: {name}").into());
+            }
+            let facts = (
+                meta.ino(),
+                meta.len(),
+                Sha256::digest(std::fs::read(path)?).into(),
+            );
+            if result.insert(name, facts).is_some() {
+                return Err("pool object path repeated".into());
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// QI-BB-006: a one-scope delta preserves inherited Tantivy and pool objects.
+///
+/// Count fresh generation-local and physical pool bytes independently. Report
+/// the generation-bound, full-snapshot coverage artifact separately.
 #[test]
 fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -796,14 +844,43 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
 
-    let _stages = adapter.build_batch(&base_batch_with_filler(g1, COST_FIXTURE_FILLER_SCOPES)?)?;
+    let _stages =
+        adapter.build_fixture_batch(&base_batch_with_filler(g1, COST_FIXTURE_FILLER_SCOPES)?)?;
     let base_dir = generation_dir(dir.path(), g1)?;
     let (base_inodes, base_bytes) = inodes_and_bytes(&base_dir)?;
+    let base_pool = pool_object_snapshot(dir.path())?;
+    let base_pool_bytes = base_pool
+        .values()
+        .try_fold(0_u64, |sum, (_, len, _)| sum.checked_add(*len))
+        .ok_or("base pool byte count overflow")?;
     let base_native = native_segment_inventory(&base_dir)?;
     assert_fixture_candidate_ids(&base_native)?;
 
-    let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let _stages = adapter.build_fixture_batch(&delta_batch(g2, g1)?)?;
     let delta_dir = generation_dir(dir.path(), g2)?;
+    let delta_pool = pool_object_snapshot(dir.path())?;
+    for (name, facts) in &base_pool {
+        if delta_pool.get(name) != Some(facts) {
+            return Err(format!("delta mutated or removed inherited pool object {name}").into());
+        }
+    }
+    let fresh_pool_bytes = delta_pool
+        .iter()
+        .filter(|(name, _)| !base_pool.contains_key(*name))
+        .try_fold(0_u64, |sum, (_, (_, len, _))| sum.checked_add(*len))
+        .ok_or("fresh pool byte count overflow")?;
+    if base_pool_bytes == 0 || fresh_pool_bytes == 0 {
+        return Err("Native/File pool byte comparison is vacuous".into());
+    }
+    let pool_budget = base_pool_bytes
+        .checked_mul(2)
+        .ok_or("pool byte budget overflow")?;
+    if fresh_pool_bytes > pool_budget {
+        return Err(format!(
+            "one-scope delta wrote {fresh_pool_bytes} new pool bytes against {base_pool_bytes} base bytes (budget {pool_budget})"
+        )
+        .into());
+    }
     let (fresh_bytes, fresh_entries) = bytes_not_shared_with(&delta_dir, &base_inodes)?;
     let base_native_after = native_segment_inventory(&base_dir)?;
     if base_native_after != base_native {
@@ -848,6 +925,8 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
         .collect();
     emit_evidence(&[
         ("base_bytes", base_bytes.to_string()),
+        ("base_pool_object_bytes", base_pool_bytes.to_string()),
+        ("delta_new_pool_object_bytes", fresh_pool_bytes.to_string()),
         ("base_text_authority_bytes", base_sidecar_bytes.to_string()),
         ("base_coverage_bytes", base_coverage_bytes.to_string()),
         ("delta_fresh_bytes", fresh_bytes.to_string()),
@@ -862,9 +941,8 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
     if base_bytes == 0 {
         return Err("base generation wrote no bytes; the measurement is vacuous".into());
     }
-    // Scope: the indexed-data half of QI-BB-006. The source-coverage
-    // publication and text-authority shards are separate artifacts; a delta
-    // writes its own coverage event even when it reuses index segments.
+    // This ratio covers generation-local Tantivy/control files only. Shared
+    // Native/File objects are measured by the separate pool snapshot above.
     let index_fresh_bytes: u64 = fresh_entries
         .iter()
         .filter(|(name, _)| !name.starts_with(TEXT_AUTHORITY_DIR) && name != SOURCE_COVERAGE_FILE)
@@ -952,7 +1030,7 @@ fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult
     let g2 = ManifestGeneration::new(2);
 
     let start = Instant::now();
-    let _stages = adapter.build_batch(&base_batch_with_filler(g1, filler_scopes)?)?;
+    let _stages = adapter.build_fixture_batch(&base_batch_with_filler(g1, filler_scopes)?)?;
     let base_ms = start.elapsed().as_millis();
     let base_dir = generation_dir(dir.path(), g1)?;
     let (base_inodes, base_bytes) = inodes_and_bytes(&base_dir)?;
@@ -985,19 +1063,23 @@ fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult
 
     let before_preflight = adapter.coverage_read_stats()?;
     let start = Instant::now();
-    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
+    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent, None)?;
     let first_preflight_ms = start.elapsed().as_millis();
     let after_first_preflight = adapter.coverage_read_stats()?;
     let first_preflight_read = coverage_read_delta(before_preflight, after_first_preflight)?;
     // SearchCorpus runs this again after acquiring the publication lock.
     let start = Instant::now();
-    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::UnderOperationLock)?;
+    adapter.preflight_batch(
+        &delta,
+        SearchCorpusPreflightPhaseV1::UnderOperationLock,
+        None,
+    )?;
     let second_preflight_ms = start.elapsed().as_millis();
     let after_second_preflight = adapter.coverage_read_stats()?;
     let second_preflight_read = coverage_read_delta(after_first_preflight, after_second_preflight)?;
     let before_seal = adapter.seal_commitment_stats()?;
     let start = Instant::now();
-    let _stages = adapter.build_batch(&delta)?;
+    let _stages = adapter.build_fixture_batch(&delta)?;
     let build_ms = start.elapsed().as_millis();
     let after_build = adapter.coverage_read_stats()?;
     let build_read = coverage_read_delta(after_second_preflight, after_build)?;
@@ -1190,43 +1272,23 @@ fn one_file_delta_pipeline_cost_2048_files() -> TestResult {
 
 /// Resolves the on-disk directory for one generation of the fixture corpus.
 ///
-/// The adapter owns its layout, so the test discovers the directory instead of
-/// reconstructing the hash: exactly one repo/revision root exists under the
-/// state root for this fixture.
+/// The canonical repo/revision key selects the fixture's generation family;
+/// the state root also contains the shared lexical object pool.
 fn generation_dir(
     state_root: &Path,
     generation: ManifestGeneration,
 ) -> Result<std::path::PathBuf, Box<dyn Error>> {
-    let mut roots: Vec<std::path::PathBuf> = Vec::new();
-    for entry in std::fs::read_dir(state_root)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            roots.push(entry.path());
-        }
-    }
-    let [root] = roots.as_slice() else {
-        return Err(format!(
-            "expected exactly one corpus root under the state root, got {roots:?}"
-        )
-        .into());
-    };
-    let path = root.join(format!("g{}", generation.get()));
+    let path = GenerationStorageKeyV1::for_repo_revision(&repo(), &revision())
+        .generation_dir(state_root, generation);
     if !path.is_dir() {
         return Err(format!("generation directory {} does not exist", path.display()).into());
     }
     Ok(path)
 }
 
-/// A delta must not mutate the base generation's text-authority files.
-///
-/// The touched shards and the manifest are rewritten whenever a batch
-/// touches indexed text. They used to be written with `File::create`, which
-/// truncates in place: once a delta generation shares storage with its base
-/// (materialization inherits unchanged files), that rewrite mutated the
-/// base's bytes out from under readers still pinned to it. Every file is
-/// published by atomic rename now, and this test is the regression: it
-/// compares the base's file identities and sizes across a delta that
-/// rewrites its one shard and its manifest.
+/// A delta must not mutate the sealed base's Native root. Immutable bodies and
+/// postings are shared through the object pool; their hashes are checked by
+/// the selected-read and scrub tests.
 #[test]
 fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -1234,7 +1296,7 @@ fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
 
-    let _stages = adapter.build_batch(&base_batch(g1)?)?;
+    let _stages = adapter.build_fixture_batch(&base_batch(g1)?)?;
     let base_dir = generation_dir(dir.path(), g1)?;
     let base_files: Vec<std::path::PathBuf> = text_authority_files(&base_dir)?
         .into_iter()
@@ -1242,7 +1304,7 @@ fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult
         .collect();
     let before = sidecar_facts(&base_files)?;
 
-    let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let _stages = adapter.build_fixture_batch(&delta_batch(g2, g1)?)?;
     let after = sidecar_facts(&base_files)?;
 
     if before != after {
@@ -1327,7 +1389,7 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
     let g9 = ManifestGeneration::new(9);
 
     // Base: alpha + beta + fillers.
-    let _stages = adapter.build_batch(&base_batch_with_filler(g1, FILLERS)?)?;
+    let _stages = adapter.build_fixture_batch(&base_batch_with_filler(g1, FILLERS)?)?;
 
     // Delta: replace beta, tombstone filler 7, add a brand-new scope.
     let mut delta = delta_batch(g2, g1)?;
@@ -1353,7 +1415,7 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
             },
         });
     current_source_fixture::finish_batch(&mut delta)?;
-    let _stages = adapter.build_batch(&delta)?;
+    let _stages = adapter.build_fixture_batch(&delta)?;
 
     // Oracle: the same final content, built fresh with no base.
     let mut oracle = base_batch_with_filler(g9, FILLERS)?;
@@ -1380,7 +1442,7 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
             .cmp(right.coverage.source.file.repo_relative_path.as_str())
     });
     current_source_fixture::finish_batch(&mut oracle)?;
-    let _stages = adapter.build_batch(&oracle)?;
+    let _stages = adapter.build_fixture_batch(&oracle)?;
 
     let probes: Vec<(&str, LqLeaf)> = vec![
         (
@@ -1454,16 +1516,13 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
     Ok(())
 }
 
-/// Cost shape of the text-authority update: in-place delta vs full rebuild.
+/// Logical source-update count for a one-scope delta vs full rebuild.
 ///
-/// The oracle is the adapter's own work count, not a clock: a one-scope
-/// delta derives exactly the one chunk the scope carries, retires exactly
-/// the one it replaced and writes exactly the one shard both live in, while
-/// a fresh build of the identical final corpus derives every document. Wall
-/// times are printed for the ledger only; on a shared host they are a
-/// shape, not an assertion.
+/// `docs_derived` counts added source documents, not documents reprocessed by
+/// bounded segment compaction. The page/segment counters expose physical
+/// writes separately. Wall times are diagnostic, not an admission threshold.
 #[test]
-fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
+fn delta_text_authority_update_admits_only_the_changed_scope() -> TestResult {
     const FILLERS: usize = 1_500;
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
@@ -1471,27 +1530,29 @@ fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
     let g2 = ManifestGeneration::new(2);
     let g9 = ManifestGeneration::new(9);
 
-    let _stages = adapter.build_batch(&base_batch_with_filler(g1, FILLERS)?)?;
+    let _stages = adapter.build_fixture_batch(&base_batch_with_filler(g1, FILLERS)?)?;
     let after_base = adapter.text_authority_update_stats()?;
     let total_docs = u64::try_from(FILLERS.saturating_add(2))?;
-    if after_base
-        != (TextAuthorityUpdateStats {
-            rebuilds: 1,
-            incremental_updates: 0,
-            docs_derived: total_docs,
-            docs_retired: 0,
-            shards_written: 1,
-            shards_inherited: 0,
-        })
+    if after_base.rebuilds != 1
+        || after_base.incremental_updates != 0
+        || after_base.docs_derived != total_docs
+        || after_base.docs_retired != 0
+        || after_base.compaction_rederived_docs != 0
+        || after_base.compaction_rederived_text_bytes != 0
+        || after_base.shards_written != 1
+        || after_base.shards_inherited != 0
+        || after_base.posting_pages_written == 0
+        || after_base.oversized_posting_pages != 0
+        || after_base.oversized_posting_bytes != 0
     {
         return Err(format!(
-            "a fresh generation rebuilds its text authority from every document into one shard: {after_base:?}"
+            "fresh Native publication must index every source document into bounded pages: {after_base:?}"
         )
         .into());
     }
 
     let delta_started = std::time::Instant::now();
-    let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let _stages = adapter.build_fixture_batch(&delta_batch(g2, g1)?)?;
     let delta_wall = delta_started.elapsed();
     let after_delta = adapter.text_authority_update_stats()?;
     let delta_work = TextAuthorityUpdateStats {
@@ -1505,27 +1566,44 @@ fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
         docs_retired: after_delta
             .docs_retired
             .saturating_sub(after_base.docs_retired),
+        compaction_rederived_docs: after_delta
+            .compaction_rederived_docs
+            .saturating_sub(after_base.compaction_rederived_docs),
+        compaction_rederived_text_bytes: after_delta
+            .compaction_rederived_text_bytes
+            .saturating_sub(after_base.compaction_rederived_text_bytes),
         shards_written: after_delta
             .shards_written
             .saturating_sub(after_base.shards_written),
         shards_inherited: after_delta
             .shards_inherited
             .saturating_sub(after_base.shards_inherited),
+        posting_pages_written: after_delta
+            .posting_pages_written
+            .saturating_sub(after_base.posting_pages_written),
+        oversized_posting_pages: after_delta
+            .oversized_posting_pages
+            .saturating_sub(after_base.oversized_posting_pages),
+        oversized_posting_bytes: after_delta
+            .oversized_posting_bytes
+            .saturating_sub(after_base.oversized_posting_bytes),
     };
-    // The corpus fits one shard, so the one touched shard is the one
-    // written; the multi-shard shape is the shard test's oracle.
-    if delta_work
-        != (TextAuthorityUpdateStats {
-            rebuilds: 0,
-            incremental_updates: 1,
-            docs_derived: 1,
-            docs_retired: 1,
-            shards_written: 1,
-            shards_inherited: 0,
-        })
+    // One new segment may contain the changed doc alone or merge it with the
+    // retired segment's live rows. Neither shape admits an unrelated scope.
+    if delta_work.rebuilds != 0
+        || delta_work.incremental_updates != 1
+        || delta_work.docs_derived != 1
+        || delta_work.docs_retired != 1
+        || delta_work.compaction_rederived_docs > 2_048
+        || delta_work.compaction_rederived_text_bytes > 2 * 1024 * 1024
+        || delta_work.shards_written != 1
+        || delta_work.shards_inherited > 1
+        || delta_work.posting_pages_written == 0
+        || delta_work.oversized_posting_pages != 0
+        || delta_work.oversized_posting_bytes != 0
     {
         return Err(format!(
-            "a one-scope delta derives one chunk and retires one, never the corpus: {delta_work:?}"
+            "one-scope delta changed unexpected logical documents or physical segments: {delta_work:?}"
         )
         .into());
     }
@@ -1548,7 +1626,7 @@ fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
     });
     current_source_fixture::finish_batch(&mut full)?;
     let full_started = std::time::Instant::now();
-    let _stages = adapter.build_batch(&full)?;
+    let _stages = adapter.build_fixture_batch(&full)?;
     let full_wall = full_started.elapsed();
     let after_full = adapter.text_authority_update_stats()?;
     let full_work = after_full
@@ -1571,5 +1649,362 @@ fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
         ("delta_one_scope_ms", delta_wall.as_millis().to_string()),
         ("full_rebuild_ms", full_wall.as_millis().to_string()),
     ]);
+    Ok(())
+}
+
+fn churn_delta(
+    generation: ManifestGeneration,
+    base: ManifestGeneration,
+    replacements: &[(&str, &str, &str)],
+    tombstones: &[&str],
+) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
+    let mut batch = delta_batch(generation, base)?;
+    batch.replace_scopes = replacements
+        .iter()
+        .map(|(path, id, body)| scope(path, id, body))
+        .collect::<Result<Vec<_>, _>>()?;
+    batch.replace_scopes.sort_by(|left, right| {
+        left.coverage
+            .source
+            .file
+            .repo_relative_path
+            .as_str()
+            .cmp(right.coverage.source.file.repo_relative_path.as_str())
+    });
+    batch.tombstone_scopes = tombstones
+        .iter()
+        .map(|path| quanta_index_contract::SearchCorpusTombstoneScope {
+            file: quanta_index_contract::SourceFileKey {
+                source_repo_id: repo(),
+                repo_relative_path: RepoRelativePath::new(*path),
+            },
+        })
+        .collect();
+    current_source_fixture::finish_batch(&mut batch)?;
+    Ok(batch)
+}
+
+fn assert_churn_snapshot(
+    searcher: &dyn LexicalSearcher,
+    generation: ManifestGeneration,
+    sources: &[(&str, &str, &str)],
+    markers: &[&str],
+) -> TestResult {
+    for marker in markers {
+        let mut expected = sources
+            .iter()
+            .filter(|(_, _, body)| body.contains(*marker))
+            .map(|(_, id, _)| (*id).to_owned())
+            .collect::<Vec<_>>();
+        expected.sort();
+        let hits = searcher.search(
+            &leaf_query(LqLeaf::Regex((*marker).to_owned())),
+            16,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        let mut actual = hits
+            .iter()
+            .map(|hit| hit.candidate_id.clone())
+            .collect::<Vec<_>>();
+        actual.sort();
+        if actual != expected {
+            return Err(format!(
+                "g{} marker {marker} expected {expected:?}, got {actual:?}",
+                generation.get()
+            )
+            .into());
+        }
+        for hit in &hits {
+            let (_, _, body) = sources
+                .iter()
+                .find(|(path, id, source)| {
+                    *path == hit.repo_relative_path.as_str()
+                        && *id == hit.candidate_id
+                        && source.contains(*marker)
+                })
+                .ok_or_else(|| format!("g{} unexpected source for {marker}", generation.get()))?;
+            let source = hit
+                .source
+                .as_ref()
+                .ok_or("matched text has no source identity")?;
+            let expected_sha: [u8; 32] = Sha256::digest(body.as_bytes()).into();
+            if hit.manifest_generation != generation || source.source_sha256 != expected_sha {
+                return Err(format!(
+                    "g{} marker {marker} has stale generation or source bytes",
+                    generation.get()
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Repeated retirements must preserve both the current source view and a held
+/// old read handle through several independently observed compaction cycles.
+#[test]
+fn native_compaction_cycles_preserve_current_and_held_source_views() -> TestResult {
+    const MARKERS: &[&str] = &[
+        ALPHA_MARKER,
+        BETA_MARKER,
+        BETA_RETIRED_WORD,
+        "firstreplacementword",
+        "recreatedbetaword",
+        "updatedalphaword",
+        "pairedbetaword",
+        "finalbetaword",
+    ];
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let g1 = ManifestGeneration::new(1);
+    let _stages = adapter.build_fixture_batch(&base_batch(g1)?)?;
+    let held = adapter.open(&repo(), &revision(), g1, &RequestBudgetV1::unbounded())?;
+    let base_sources = [
+        (ALPHA_PATH, "chunk-alpha", ALPHA_MARKER),
+        (BETA_PATH, "chunk-beta", "beta_marker retiredsentinel"),
+    ];
+    assert_churn_snapshot(held.as_ref(), g1, &base_sources, MARKERS)?;
+
+    let steps = [
+        (
+            vec![(BETA_PATH, "chunk-beta", "firstreplacementword")],
+            vec![],
+            vec![
+                (ALPHA_PATH, "chunk-alpha", ALPHA_MARKER),
+                (BETA_PATH, "chunk-beta", "firstreplacementword"),
+            ],
+        ),
+        (
+            vec![],
+            vec![BETA_PATH],
+            vec![(ALPHA_PATH, "chunk-alpha", ALPHA_MARKER)],
+        ),
+        (
+            vec![(BETA_PATH, "chunk-beta", "recreatedbetaword")],
+            vec![],
+            vec![
+                (ALPHA_PATH, "chunk-alpha", ALPHA_MARKER),
+                (BETA_PATH, "chunk-beta", "recreatedbetaword"),
+            ],
+        ),
+        (
+            vec![
+                (ALPHA_PATH, "chunk-alpha", "updatedalphaword"),
+                (BETA_PATH, "chunk-beta", "pairedbetaword"),
+            ],
+            vec![],
+            vec![
+                (ALPHA_PATH, "chunk-alpha", "updatedalphaword"),
+                (BETA_PATH, "chunk-beta", "pairedbetaword"),
+            ],
+        ),
+        (
+            vec![(BETA_PATH, "chunk-beta", "finalbetaword")],
+            vec![],
+            vec![
+                (ALPHA_PATH, "chunk-alpha", "updatedalphaword"),
+                (BETA_PATH, "chunk-beta", "finalbetaword"),
+            ],
+        ),
+        (
+            vec![],
+            vec![],
+            vec![
+                (ALPHA_PATH, "chunk-alpha", "updatedalphaword"),
+                (BETA_PATH, "chunk-beta", "finalbetaword"),
+            ],
+        ),
+    ];
+    let mut previous = g1;
+    let initial_work = adapter.text_authority_update_stats()?;
+    let mut prior_compaction_docs = initial_work.compaction_rederived_docs;
+    let mut prior_derived_docs = initial_work.docs_derived;
+    let mut observed_cycles = 0_u32;
+    for (offset, (replacements, tombstones, current_sources)) in steps.iter().enumerate() {
+        let generation = ManifestGeneration::new(
+            u64::try_from(offset)?
+                .checked_add(2)
+                .ok_or("churn fixture generation overflow")?,
+        );
+        let batch = churn_delta(generation, previous, replacements, tombstones)?;
+        let _stages = adapter.build_fixture_batch(&batch)?;
+        let current = adapter.open(
+            &repo(),
+            &revision(),
+            generation,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        assert_churn_snapshot(current.as_ref(), generation, current_sources, MARKERS)?;
+        assert_churn_snapshot(held.as_ref(), g1, &base_sources, MARKERS)?;
+        let work = adapter.text_authority_update_stats()?;
+        if work.compaction_rederived_docs > prior_compaction_docs {
+            observed_cycles = observed_cycles.saturating_add(1);
+        }
+        if offset == 5
+            && (work.docs_derived != prior_derived_docs
+                || work.compaction_rederived_docs != prior_compaction_docs)
+        {
+            return Err("no-op rederived a Native source or compaction body".into());
+        }
+        prior_compaction_docs = work.compaction_rederived_docs;
+        prior_derived_docs = work.docs_derived;
+        previous = generation;
+    }
+    if observed_cycles < 3 {
+        return Err(format!(
+            "expected at least three Native compaction cycles, saw {observed_cycles}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The Native root is a compact CBOR control row. Decode its exact public
+/// on-disk shape to observe debt independently of producer counters.
+type DebtObjectRefWire = (ciborium::Value, u64, [u8; 32]);
+type DebtPageRefWire = (DebtObjectRefWire, Vec<u8>, Vec<u8>, u64, u8);
+type DebtMapRootWire = (Option<DebtPageRefWire>, u64);
+type DebtNativeRootWire = (
+    u16,
+    (u16, u16),
+    [u8; 32],
+    DebtMapRootWire,
+    DebtMapRootWire,
+    DebtMapRootWire,
+    DebtMapRootWire,
+    DebtMapRootWire,
+    DebtMapRootWire,
+    DebtMapRootWire,
+    u64,
+    u64,
+);
+
+fn native_debt_and_live(
+    state_root: &Path,
+    generation: ManifestGeneration,
+) -> Result<(u64, u64), Box<dyn Error>> {
+    let path = generation_dir(state_root, generation)?
+        .join(TEXT_AUTHORITY_DIR)
+        .join("manifest.cbor");
+    let bytes = std::fs::read(path)?;
+    let root: DebtNativeRootWire = ciborium::from_reader(bytes.as_slice())?;
+    Ok((root.9.1, root.11))
+}
+
+/// A real no-op source event pays queued physical debt without changing its
+/// logical source set.
+///
+/// Coverage admission still rejects an independent Chunk
+/// clear, leaving the sealed debt-bearing base available.
+#[test]
+fn native_noop_pays_debt_without_mutating_base_or_weakening_clear_admission() -> TestResult {
+    const DOCUMENTS: usize = 10;
+    const TEXT_PADDING_BYTES: usize = 700 * 1024;
+    const MARKER: &str = "debtfixturetoken";
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let g1 = ManifestGeneration::new(1);
+    let g2 = ManifestGeneration::new(2);
+    let g3 = ManifestGeneration::new(3);
+    let g4 = ManifestGeneration::new(4);
+
+    // Three 700-KiB bodies exceed the Native 2-MiB segment byte target, so
+    // ten documents form five two-document segments. Retire one in each.
+    let sources = (0..DOCUMENTS)
+        .map(|index| {
+            (
+                format!("src/debt_{index:02}.rs"),
+                format!("chunk-debt-{index:02}"),
+                format!("{MARKER}_{index:02} {}", " ".repeat(TEXT_PADDING_BYTES)),
+            )
+        })
+        .collect::<Vec<_>>();
+    let all_sources = sources
+        .iter()
+        .map(|(path, id, body)| (path.as_str(), id.as_str(), body.as_str()))
+        .collect::<Vec<_>>();
+    let surviving_sources = all_sources
+        .iter()
+        .enumerate()
+        .filter_map(|(index, source)| (index % 2 == 1).then_some(*source))
+        .collect::<Vec<_>>();
+    let mut initial = base_batch(g1)?;
+    initial.replace_scopes = all_sources
+        .iter()
+        .map(|(path, id, body)| scope(path, id, body))
+        .collect::<Result<Vec<_>, _>>()?;
+    current_source_fixture::finish_batch(&mut initial)?;
+    let _stages = adapter.build_fixture_batch(&initial)?;
+    let held = adapter.open(&repo(), &revision(), g1, &RequestBudgetV1::unbounded())?;
+    assert_churn_snapshot(held.as_ref(), g1, &all_sources, &[MARKER])?;
+
+    let retired_paths = sources
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (path, _, _))| (index % 2 == 0).then_some(path.as_str()))
+        .collect::<Vec<_>>();
+    let retirement = churn_delta(g2, g1, &[], &retired_paths)?;
+    let _stages = adapter.build_fixture_batch(&retirement)?;
+    let (debt_before, live_before) = native_debt_and_live(dir.path(), g2)?;
+    if (debt_before, live_before) != (3, 5) {
+        return Err(format!(
+            "five distinct retired segments must leave three queued debts: debt={debt_before}, live={live_before}"
+        )
+        .into());
+    }
+    let prior_stats = adapter.text_authority_update_stats()?;
+    let base_dir = generation_dir(dir.path(), g2)?;
+    let base_files = text_authority_files(&base_dir)?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect::<Vec<_>>();
+    let base_sidecars = sidecar_facts(&base_files)?;
+    let inherited_pool = pool_object_snapshot(dir.path())?;
+
+    let no_op = churn_delta(g3, g2, &[], &[])?;
+    let _stages = adapter.build_fixture_batch(&no_op)?;
+    let (debt_after, live_after) = native_debt_and_live(dir.path(), g3)?;
+    let after_stats = adapter.text_authority_update_stats()?;
+    if (debt_after, live_after) != (1, 5)
+        || after_stats.docs_derived != prior_stats.docs_derived
+        || after_stats.docs_retired != prior_stats.docs_retired
+        || after_stats.compaction_rederived_docs <= prior_stats.compaction_rederived_docs
+    {
+        return Err(format!(
+            "no-op did not pay exactly two queued debts without logical mutation: before={prior_stats:?}, after={after_stats:?}, debt={debt_after}, live={live_after}"
+        )
+        .into());
+    }
+    if sidecar_facts(&base_files)? != base_sidecars {
+        return Err("no-op changed its sealed base Native sidecar".into());
+    }
+    let current_pool = pool_object_snapshot(dir.path())?;
+    if inherited_pool
+        .iter()
+        .any(|(name, facts)| current_pool.get(name) != Some(facts))
+    {
+        return Err("no-op mutated or removed an inherited physical pool object".into());
+    }
+    let current = adapter.open(&repo(), &revision(), g3, &RequestBudgetV1::unbounded())?;
+    assert_churn_snapshot(current.as_ref(), g3, &surviving_sources, &[MARKER])?;
+    assert_churn_snapshot(held.as_ref(), g1, &all_sources, &[MARKER])?;
+
+    let mut clear = churn_delta(g4, g3, &[], &[])?;
+    clear
+        .clear_surfaces
+        .push(quanta_index_contract::SearchScopeSurface::Chunk);
+    current_source_fixture::finish_batch(&mut clear)?;
+    match adapter.build_fixture_batch(&clear) {
+        Err(CoreError::InvalidContract(message))
+            if message.contains("forbid independent Chunk/Symbol clear") => {}
+        other => return Err(format!("independent Chunk clear was not refused: {other:?}").into()),
+    }
+    if generation_dir(dir.path(), g4).is_ok() {
+        return Err("refused Chunk clear created a target generation".into());
+    }
+    if native_debt_and_live(dir.path(), g3)? != (1, 5) {
+        return Err("refused Chunk clear changed the sealed debt-bearing base".into());
+    }
+    assert_churn_snapshot(held.as_ref(), g1, &all_sources, &[MARKER])?;
     Ok(())
 }

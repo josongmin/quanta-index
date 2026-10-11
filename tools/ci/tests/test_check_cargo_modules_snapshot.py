@@ -187,11 +187,15 @@ def test_update_does_not_promote_first_tree_when_second_producer_fails(
     spec.loader.exec_module(module)
     first = tmp_path / "quanta-index-contract.txt"
     second = tmp_path / "quanta-index-core.txt"
+    third = tmp_path / "quanta-index-kernel.txt"
     first.write_text("contract previous\n")
     second.write_text("core previous\n")
+    third.write_text("kernel previous\n")
     monkeypatch.setattr(module, "BASELINE_DIR", tmp_path)
     monkeypatch.setattr(
-        module, "workspace_member_names", lambda: {"quanta-index-contract", "quanta-index-core"}
+        module,
+        "workspace_member_names",
+        lambda: {"quanta-index-contract", "quanta-index-core", "quanta-index-kernel"},
     )
     monkeypatch.setattr(module, "validate_workspace_dependencies", lambda: None)
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--update-baseline"])
@@ -206,6 +210,7 @@ def test_update_does_not_promote_first_tree_when_second_producer_fails(
         module.main()
     assert first.read_text() == "contract previous\n"
     assert second.read_text() == "core previous\n"
+    assert third.read_text() == "kernel previous\n"
 
 
 def test_update_with_missing_protected_crate_does_not_promote_present_tree(
@@ -240,7 +245,9 @@ def test_update_writes_all_resolved_module_trees(tmp_path, monkeypatch) -> None:
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "BASELINE_DIR", tmp_path)
     monkeypatch.setattr(
-        module, "workspace_member_names", lambda: {"quanta-index-contract", "quanta-index-core"}
+        module,
+        "workspace_member_names",
+        lambda: {"quanta-index-contract", "quanta-index-core", "quanta-index-kernel"},
     )
     monkeypatch.setattr(module, "validate_workspace_dependencies", lambda: None)
     monkeypatch.setattr(
@@ -250,3 +257,4 @@ def test_update_writes_all_resolved_module_trees(tmp_path, monkeypatch) -> None:
     assert module.main() == 0
     assert (tmp_path / "quanta-index-contract.txt").read_text() == "crate quanta_index_contract\n"
     assert (tmp_path / "quanta-index-core.txt").read_text() == "crate quanta_index_core\n"
+    assert (tmp_path / "quanta-index-kernel.txt").read_text() == "crate quanta_index_kernel\n"

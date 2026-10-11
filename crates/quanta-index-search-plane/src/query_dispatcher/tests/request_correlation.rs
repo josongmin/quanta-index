@@ -15,6 +15,7 @@ use crate::query_dispatcher::tests::support::common::TestResult;
 fn text_envelope(request_id: u64) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
         request_id,
+        diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "needle".to_string(),
@@ -44,7 +45,7 @@ fn json_envelope_with_zero_id_refuses_typed() -> TestResult {
 fn json_envelope_with_nonzero_id_validates_with_payload() -> TestResult {
     let json = serde_json::to_value(text_envelope(41))?;
     let decoded: SearchPlaneQueryIpcRequestEnvelope = serde_json::from_value(json)?;
-    let (admitted, payload) = decoded
+    let (admitted, payload, _diagnostic_attempt) = decoded
         .validated()
         .map_err(|err| format!("nonzero id must validate: {err}"))?;
     if admitted.get() != 41 {

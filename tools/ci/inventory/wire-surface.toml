@@ -3,10 +3,9 @@
 # Machine-checked by `tools/ci/lint/check-wire-inventory.py` (`just
 # rust-wire-inventory`, part of `just rust-policy`):
 #
-#   * every `SearchPlane{Query,Control,Ingest}Ipc{Request,Response}` variant
-#     in `crates/quanta-index-contract/src/ipc/{split,ingest}.rs` must be
-#     listed under `[[ipc]]`, and nothing may be listed that the code does
-#     not have;
+#   * every `SearchPlane{Query,Control,Ingest}Ipc{Request,Response}` and
+#     `NativeIndex{Request,Response}` variant in the contract's IPC/native
+#     sources must be listed under `[[ipc]]`, with no extra variants;
 #   * every on-disk format-version constant in workspace `src/` trees
 #     (`*FORMAT_VERSION*`, `*_SCHEMA_V<n>`, `*CONTRACT_VERSION`,
 #     `RECEIPT_FORMAT`, plus the text normalizer stamp) must be named by
@@ -171,6 +170,7 @@ file = "crates/quanta-index-contract/src/ipc/split.rs"
 plane = "control"
 direction = "request"
 variants = [
+  "ReserveSearchCorpusGenerationV1",
   "ActivateSearchCorpusGenerationCas",
   "RollbackSearchCorpusGenerationCas",
   "RepoMapActivateV2",
@@ -191,6 +191,7 @@ file = "crates/quanta-index-contract/src/ipc/split.rs"
 plane = "control"
 direction = "response"
 variants = [
+  "SearchCorpusGenerationReservationV1",
   "SearchCorpusActivationCasAck",
   "SearchCorpusRollbackCasAck",
   "RepoMapTerminalReceiptV2",
@@ -251,6 +252,60 @@ variants = [
   "Error",
 ]
 
+[[ipc]]
+enum = "NativeIndexRequest"
+file = "crates/quanta-index-contract/src/native_protocol.rs"
+plane = "control"
+direction = "request"
+variants = [
+  "CreateWorkspace",
+  "StageSource",
+  "StageProfile",
+  "StageProjectionOutput",
+  "StageProjectionOwner",
+  "StageProjectionCertificate",
+  "Submit",
+  "Resume",
+  "ReadView",
+  "Status",
+  "ReadyWork",
+  "ClaimWork",
+  "RenewWork",
+  "WorkStatus",
+  "BeginInput",
+  "StageMutationPage",
+  "SealMutations",
+  "DiscardInput",
+  "SearchLiteral",
+  "QueryPaths",
+  "StageSources",
+]
+
+[[ipc]]
+enum = "NativeIndexResponse"
+file = "crates/quanta-index-contract/src/native_protocol.rs"
+plane = "control"
+direction = "response"
+variants = [
+  "Created",
+  "Staged",
+  "Submitted",
+  "View",
+  "Status",
+  "ReadyWork",
+  "Claimed",
+  "Renewed",
+  "WorkStatus",
+  "Error",
+  "InputOpened",
+  "MutationPageStaged",
+  "MutationsStaged",
+  "InputDiscarded",
+  "LiteralPage",
+  "PathPage",
+  "StagedSources",
+]
+
 # ---------------------------------------------------------------------------
 # On-disk artifacts, by owning crate
 # ---------------------------------------------------------------------------
@@ -267,11 +322,11 @@ id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Seal commitment binds identity digest, normalizer, Tantivy commit and segment components, text authority, overlays, optional source coverage and ranked keys. Format 9 added bounded coverage pages; format 10 added full-file authority and immutable source bytes with four-surface posting counts; format 11 counts folded content and path postings only; format 12 binds explicit symbol-name source policy; format 13 required exact live BM25 token totals and zero deleted documents at seal; format 14 commits mandatory producer document census and exact live per-segment BM25 statistics while preserving immutable segments with tombstones. The current decoder accepts format 15; formats 1-14 are refused typed and require a producer rebuild."
+notes = "Format 19 binds compact File and Native roots with canonical QLMAP002 leaf value dictionaries and single-surface NFC Native bodies. Shared object dependencies, identity digest, normalizer, Tantivy components, live BM25 statistics, overlays, source coverage and ranked keys remain authenticated. Selected shared objects authenticate on use; full shared closure validation belongs to offline scrub. Older sealed formats require a producer rebuild."
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
+file = "crates/quanta-index-lexical/src/lexical_root_names.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
-value = 15
+value = 19
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
@@ -328,11 +383,11 @@ path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/{s
 reproduction = "cache"
 notes = "Receipts the integrity scrub leaves beside a sealed lexical generation (QI-BB-017): the completed pass (the manifest digest it proved, its completion epoch, files and bytes covered; staleness order for the maintenance scheduler and the boot scrape; format 2 records Unix seconds from the adapter clock, format 1 was a caller stamp and is refused), and the durable quarantine written when a committed file no longer matches the seal (the inventory sets the generation aside as GENERATION_QUARANTINE_CONTENT_CORRUPT and every door refuses it as GENERATION_QUARANTINED). Neither is part of the sealed commitment; a scrub receipt is regenerable by the next pass, a quarantine receipt leaves only through the quarantine discard."
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/sealed_generation/scrub.rs"
+file = "crates/quanta-index-lexical/src/sealed_generation/receipts.rs"
 name = "LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION"
 value = 2
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/sealed_generation/scrub.rs"
+file = "crates/quanta-index-lexical/src/sealed_generation/receipts.rs"
 name = "LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION"
 value = 1
 
@@ -353,12 +408,34 @@ notes = "Tantivy 0.22 segment files (immutable, hard-linked across delta generat
 [[artifact]]
 id = "lexical-text-authority"
 owner = "quanta-index-lexical"
-path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/text-authority/{manifest.cbor,shard-<index:08>-<sha256[..8]>.cbor}"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/text-authority/manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Doc-id range shards (SHARD_DOCS=2048) holding doc table + trigram + positions; untouched shards are hard links of the base generation (QI-BB-006)."
+notes = "Format 6 compact Native root binds QLMAP002 current-document, membership, routing and bounded segment objects in the shared pool. Native bodies persist NFC text once and derive folding on read. Logical document-version IDs are catalog-reserved u64 values. Older roots are refused; there is no legacy reader."
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/text_authority/manifest.rs"
-name = "TEXT_AUTHORITY_FORMAT_VERSION"
+file = "crates/quanta-index-lexical/src/text_authority/paged_manifest.rs"
+name = "NATIVE_FORMAT"
+value = 6
+
+[[artifact]]
+id = "lexical-file-authority"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/file-authority/root.cbor"
+reproduction = "producer-rebuild"
+notes = "Format 18 compact File root binds QLMAP002 source/document/routing maps and bounded immutable segments in the shared pool. Raw source blocks remain authoritative for exact verification. Older authority formats require producer rebuild."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/file_authority/paged.rs"
+name = "FILE_AUTHORITY_FORMAT"
+value = 18
+
+[[artifact]]
+id = "lexical-shared-object-pool"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/lexical-object-pool/{objects,attempts}/"
+reproduction = "producer-rebuild"
+notes = "Object format 1 binds typed kind, dependency references, payload length and SHA-256 in bounded immutable objects. Adoption records protect prepared/retried roots; epoch-fenced GC marks all protected closures before sweeping. Backups must preserve the pool together with referencing generation roots. Missing or corrupt referenced objects cause typed refusal, never partial results."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/lexical_store/store.rs"
+name = "OBJECT_FORMAT"
 value = 1
 
 [[artifact]]
@@ -395,22 +472,22 @@ id = "semantic-manifest"
 owner = "quanta-index-semantic"
 path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Exactly one format is served; older formats are refused typed at decode, open, validate and inventory. Format 11 required typed-source-only semantic derivation; format 12 adds generation-wide record_id and embedding_id uniqueness at seal. Older artifacts cannot prove those identities and require a producer rebuild, including embedding calls and ANN training."
+notes = "Exactly one format is served; older formats are refused typed at decode, open, validate and inventory. Format 13 persists embedding and view policy digests alongside the model contract. Older artifacts require a producer rebuild, including embedding calls and ANN training."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/manifest.rs"
 name = "FORMAT_VERSION"
-value = 12
+value = 13
 
 [[artifact]]
 id = "semantic-build-contract"
 owner = "quanta-index-semantic"
 path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-build-contract.cbor"
 reproduction = "producer-rebuild"
-notes = "Model id / revision / dimension / normalization / corpus policy the generation was built under. Exactly one format is served; formats 1 and 2 are refused typed. Version 3 prevents a pre-cutover unfinished generation from resuming under the typed-only writer."
+notes = "Model id / revision / dimension / metric / normalization / embedding policy / view policy / corpus policy the generation was built under. Version 4 persists both policy digests; formats 1-3 are refused typed and require a producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/generation_contract.rs"
 name = "GENERATION_CONTRACT_VERSION"
-value = 3
+value = 4
 
 [[artifact]]
 id = "semantic-sealed-manifest"
@@ -463,9 +540,13 @@ value = 1
 [[artifact]]
 id = "activation-catalog"
 owner = "quanta-index-search-plane"
-path = "state_root/activations/<pair-digest>--corpus.json"
+path = "state_root/activations/<repo-digest>--corpus.json"
 reproduction = "current-format-backup"
-notes = "Query-time serve-head authority (`ActivationCatalog`): the active composite (lexical, semantic) generation pair per repo/revision. Persisted as `PersistedSearchCorpusGenerationRootV1` JSON; no in-file version field. The operator's activation choice is not derivable from producer input."
+notes = "ActivationCatalog repository envelope format 4 contains composite active heads, source event allocations/bindings, stream lineage, per-revision generation high-water and separate monotonic File/Native document-version ranges. The catalog-owned root incarnation fences unfinished allocations after controlled restore. Older envelopes require rebuild; missing current-format counters are corruption. Activation choice, retained event identities and monotonic number custody require current-format backup."
+[[artifact.version_constants]]
+file = "crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs"
+name = "REPOSITORY_ENVELOPE_FORMAT_VERSION"
+value = 4
 
 [[artifact]]
 id = "search-corpus-rollback-history"
@@ -573,3 +654,17 @@ notes = "P10 (S21-11) whole-root freeze boundary, written by the offline `backup
 file = "crates/quanta-index-searchd/src/app/state_format.rs"
 name = "STATE_ROOT_MANIFEST_FORMAT_VERSION"
 value = 1
+
+
+[[tool_artifact]]
+id = "deployment-selection-v1"
+owner = "tools/deployment/launcher.py"
+path = "operator-owned deployment directory/selection.json"
+producer = "python -m tools.deployment.launcher install"
+consumers = ["python -m tools.deployment.launcher serve", "python -m tools.deployment.launcher verify-bootstrap"]
+version = 1
+schema_file = "tools/deployment/selection.schema.json"
+decoder = "tools/deployment/launcher.py"
+compatibility = "Only schema 1 with exact fields, canonical existing paths, lowercase executable SHA256 and a closed explicit environment is accepted. Private singly linked selection and deployment lock are required. No fallback decoder or root discovery."
+migration_fixture = "deployment_selection_unsupported_version_refused"
+notes = "Bootstrap artifact verification precedes atomic selection replace and directory fsync. Mutable-state serve/restart is admitted by the selected daemon boot owner. The cooperative deployment lock is inherited by the child through normal drain and launcher loss; post-rename persistence failure remains uncertain."

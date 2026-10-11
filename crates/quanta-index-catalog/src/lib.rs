@@ -27,6 +27,7 @@ mod candidate;
 mod connection;
 mod idempotency;
 mod integrity;
+mod native;
 mod open;
 mod sequence;
 

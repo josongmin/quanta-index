@@ -186,6 +186,7 @@ fn publish_with_backoff(
     let started = Instant::now();
     loop {
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id,
             payload: request.clone(),
         };
@@ -327,6 +328,7 @@ fn binary_restart_replays_original_operation_and_refuses_conflicting_source_dige
         send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
             &socket,
             &SearchPlaneIngestIpcRequestEnvelope {
+                diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
                 request_id: 901,
                 payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
             },
@@ -353,6 +355,7 @@ fn binary_restart_replays_original_operation_and_refuses_conflicting_source_dige
         send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
             &socket,
             &SearchPlaneIngestIpcRequestEnvelope {
+                diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
                 request_id: 902,
                 payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
             },
@@ -381,6 +384,7 @@ fn binary_restart_replays_original_operation_and_refuses_conflicting_source_dige
     let conflict = send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
         &socket,
         &SearchPlaneIngestIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 903,
             payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(conflicting),
         },

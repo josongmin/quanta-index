@@ -70,7 +70,8 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> 
                     manifest_digest: "digest".to_string(),
                 })
             }
-            other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
+            other @ (SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(_)
+            | SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
             | SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_)
@@ -202,6 +203,7 @@ impl Served {
 fn request(repo: &str) -> SearchPlaneControlIpcRequestEnvelope {
     SearchPlaneControlIpcRequestEnvelope {
         request_id: 3,
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneControlIpcRequest::CurrentGeneration(CurrentGenerationRequest {
             repo_id: RepoId::new(repo).expect("test fixture ID satisfies canonical policy"),
             revision_id: RevisionId::new("rev")
@@ -240,6 +242,7 @@ fn expect_snapshot(response: SearchPlaneControlIpcResponse, repo: &str) -> TestR
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
         | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
         | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+        | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
         | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
             Err(format!("expected a snapshot for {repo}, got {other:?}").into())
         }

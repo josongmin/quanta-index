@@ -29,6 +29,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use quanta_index_core::{
+    DiagnosticCaptureIdV1, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticHealthCodeV1,
+    DiagnosticLaneV1, DiagnosticPlaneV1, DiagnosticRootKindV1, DiagnosticSpanGuardV1,
+    DiagnosticSpanIdV1, DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceRefV1,
     RequestBudgetV1, RequestCorrelationV1, RequestProviderStageV1, RequestStageDiagnosticPortV1,
 };
 
@@ -39,9 +42,10 @@ use crate::peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};
 use crate::socket_access::{PeerRefusal, SocketAccessPolicy, admit_peer};
 
 use quanta_index_contract::{
-    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponseEnvelope,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponseEnvelope,
+    DiagnosticAttemptFieldV1, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequestEnvelope,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponseEnvelope,
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
@@ -62,7 +66,10 @@ use rustix::net::{SocketFlags, socket_with};
 
 #[cfg(test)]
 use crate::codec::decode_request;
-use crate::codec::{decode_request_guarded, decode_response, encode_request, encode_response};
+use crate::codec::{
+    DIAGNOSTIC_ACK_BYTES, DIAGNOSTIC_PREFACE_MAGIC, decode_request_guarded, decode_response,
+    diagnostic_ack, diagnostic_ack_accepted, diagnostic_preface, encode_request, encode_response,
+};
 use crate::counters::{IpcServerCounters, RequestEventSinkV1, RequestEventStageV1, RequestEventV1};
 use crate::error::{IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES};
 use crate::plane::IpcPlane;
@@ -100,11 +107,21 @@ pub struct DispatchContextV1 {
     pub events: Arc<dyn RequestEventSinkV1>,
     /// Admission's monotonic start, shared with backend stage timings.
     pub request_started: Instant,
+    /// This request's explicit child context when tracing is configured.
+    pub diagnostic_context: Option<DiagnosticContextV1>,
+    /// Request-local typed backend error observation for diagnostic terminal state.
+    pub diagnostic_backend_error: Arc<AtomicBool>,
 }
 
 impl DispatchContextV1 {
     /// Emit a payload-free backend stage under the transport's validated ID.
     pub fn record_event_v1(&self, stage: RequestEventStageV1) {
+        if matches!(
+            stage,
+            RequestEventStageV1::BackendOutcome { error: Some(_), .. }
+        ) {
+            self.diagnostic_backend_error.store(true, Ordering::Release);
+        }
         self.events.record_request_event_v1(RequestEventV1 {
             request_id: self.request_id,
             connection_id: self.connection_id,
@@ -132,19 +149,121 @@ struct RequestEventScope<'a> {
     connection_id: u64,
     started: Instant,
     finished: bool,
+    diagnostic_root: Option<DiagnosticSpanGuardV1>,
+    diagnostic_context: Option<DiagnosticContextV1>,
+    backend_error: Arc<AtomicBool>,
+}
+
+fn trace_span_or_health(
+    context: &DiagnosticContextV1,
+    result: Result<DiagnosticSpanGuardV1, quanta_index_core::DiagnosticTraceErrorV1>,
+) -> Option<DiagnosticSpanGuardV1> {
+    match result {
+        Ok(span) => Some(span),
+        Err(error) => {
+            let code = match error {
+                quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                    DiagnosticHealthCodeV1::CounterOverflow
+                }
+                quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                    DiagnosticHealthCodeV1::ClockRegressed
+                }
+                quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                    DiagnosticHealthCodeV1::ForeignCaptureSpan
+                }
+                quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                    DiagnosticHealthCodeV1::MissingParentSpan
+                }
+            };
+            context.health(code);
+            None
+        }
+    }
 }
 
 impl<'a> RequestEventScope<'a> {
-    fn new(sink: &'a IpcServerCounters, request_id: NonZeroU64, connection_id: u64) -> Self {
+    fn new(
+        sink: &'a IpcServerCounters,
+        request_id: NonZeroU64,
+        plane: IpcPlane,
+        connection_id: u64,
+        capture: Option<&DiagnosticContextV1>,
+        attempt: DiagnosticAttemptFieldV1,
+    ) -> Self {
+        let diagnostic_root = capture.and_then(|capture| {
+            trace_span_or_health(
+                capture,
+                capture.enter_root(DiagnosticRootKindV1::Request, DiagnosticLaneV1(0)),
+            )
+        });
+        let diagnostic_context = diagnostic_root
+            .as_ref()
+            .zip(capture)
+            .map(|(root, capture)| capture.child_context(root));
+        if let (Some(root), Some(context)) = (diagnostic_root.as_ref(), diagnostic_context.as_ref())
+        {
+            let trace_plane = match plane {
+                IpcPlane::Query => DiagnosticPlaneV1::Query,
+                IpcPlane::Control => DiagnosticPlaneV1::Control,
+                IpcPlane::Ingest => DiagnosticPlaneV1::Ingest,
+            };
+            context.request_identity(root, request_id.get(), trace_plane, connection_id);
+        }
+        if let (Some(root), Some(context), Some(token)) = (
+            diagnostic_root.as_ref(),
+            diagnostic_context.as_ref(),
+            attempt.token(),
+        ) {
+            context.link(
+                root,
+                DiagnosticTraceRefV1 {
+                    capture_id: DiagnosticCaptureIdV1(token.capture_id()),
+                    span_id: DiagnosticSpanIdV1::from_nonzero(token.attempt_span_id()),
+                },
+            );
+        }
+        if let (Some(root), Some(context)) = (diagnostic_root.as_ref(), diagnostic_context.as_ref())
+        {
+            match attempt {
+                DiagnosticAttemptFieldV1::Invalid => {
+                    context.counter(root, DiagnosticCounterV1::InvalidAttemptTokens, 1);
+                    context.health(DiagnosticHealthCodeV1::InvalidAttemptToken);
+                    context.health(DiagnosticHealthCodeV1::UnlinkedAttempt);
+                }
+                DiagnosticAttemptFieldV1::Duplicate => {
+                    context.counter(root, DiagnosticCounterV1::InvalidAttemptTokens, 1);
+                    context.health(DiagnosticHealthCodeV1::DuplicateAttemptToken);
+                    context.health(DiagnosticHealthCodeV1::UnlinkedAttempt);
+                }
+                DiagnosticAttemptFieldV1::Absent | DiagnosticAttemptFieldV1::Linked(_) => {}
+            }
+        }
         let scope = Self {
             sink,
             request_id,
             connection_id,
             started: Instant::now(),
             finished: false,
+            diagnostic_root,
+            diagnostic_context,
+            backend_error: Arc::new(AtomicBool::new(false)),
         };
         scope.emit(RequestEventStageV1::Validated);
         scope
+    }
+
+    fn diagnostic_context(&self) -> Option<&DiagnosticContextV1> {
+        self.diagnostic_context.as_ref()
+    }
+
+    fn backend_error(&self) -> bool {
+        self.backend_error.load(Ordering::Acquire)
+    }
+
+    fn enter(&self, stage: DiagnosticStageV1) -> Option<DiagnosticSpanGuardV1> {
+        self.diagnostic_context.as_ref().and_then(|context| {
+            trace_span_or_health(context, context.enter(stage, DiagnosticLaneV1(0)))
+        })
     }
 
     fn emit(&self, stage: RequestEventStageV1) {
@@ -157,7 +276,40 @@ impl<'a> RequestEventScope<'a> {
     }
 
     fn finish(&mut self, stage: RequestEventStageV1) {
+        let outcome = match stage {
+            RequestEventStageV1::ResponseWritten if self.backend_error() => {
+                DiagnosticTerminalV1::Error { code: 4 }
+            }
+            RequestEventStageV1::ResponseWritten => DiagnosticTerminalV1::Ok,
+            RequestEventStageV1::PeerCancelled => DiagnosticTerminalV1::Cancelled { code: 1 },
+            RequestEventStageV1::Validated
+            | RequestEventStageV1::ShuttingDown
+            | RequestEventStageV1::QueueAdmitted
+            | RequestEventStageV1::QueueRefusedGlobal
+            | RequestEventStageV1::QueueRefusedRepository
+            | RequestEventStageV1::DispatchStarted
+            | RequestEventStageV1::BackendStarted
+            | RequestEventStageV1::BackendReturned
+            | RequestEventStageV1::BackendOutcome { .. }
+            | RequestEventStageV1::ProviderStarted { .. }
+            | RequestEventStageV1::ProviderReturned { .. }
+            | RequestEventStageV1::IngestWindowStarted { .. }
+            | RequestEventStageV1::IngestWindowReturned { .. }
+            | RequestEventStageV1::DispatchReturned
+            | RequestEventStageV1::PeerWatchFailed
+            | RequestEventStageV1::ResponseEncodeFailed
+            | RequestEventStageV1::ResponseWriteFailed
+            | RequestEventStageV1::Aborted
+            | RequestEventStageV1::Panicked => DiagnosticTerminalV1::Error { code: 1 },
+        };
+        self.finish_with_outcome(stage, outcome);
+    }
+
+    fn finish_with_outcome(&mut self, stage: RequestEventStageV1, outcome: DiagnosticTerminalV1) {
         self.emit(stage);
+        if let Some(root) = self.diagnostic_root.take() {
+            let _diagnostic_result = root.finish(outcome);
+        }
         self.finished = true;
     }
 }
@@ -230,16 +382,16 @@ pub trait IpcDispatcher<Request, Response>: Send + Sync {
 }
 
 pub trait RequestEnvelope<Request>: serde::de::DeserializeOwned + Send + Sync + 'static {
-    fn into_parts(self) -> (u64, Request);
+    fn into_parts(self) -> (u64, Request, DiagnosticAttemptFieldV1);
 
     /// Split the envelope and prove its request id is admissible
     /// (W10-R2): 0 is a malformed envelope refused with a typed error
     /// before admission, dispatch and any response. The single gate every
     /// plane's connection loop calls; the wire shape stays `u64`.
-    fn validated(self) -> Result<(NonZeroU64, Request), IpcError> {
-        let (request_id, payload) = self.into_parts();
+    fn validated(self) -> Result<(NonZeroU64, Request, DiagnosticAttemptFieldV1), IpcError> {
+        let (request_id, payload, attempt) = self.into_parts();
         let admitted = NonZeroU64::new(request_id).ok_or(IpcError::ZeroRequestId)?;
-        Ok((admitted, payload))
+        Ok((admitted, payload, attempt))
     }
 
     /// The repository this request is scoped to, for the per-repository
@@ -289,8 +441,14 @@ fn pinned_repo_scope(
 impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
     for SearchPlaneQueryIpcRequestEnvelope
 {
-    fn into_parts(self) -> (u64, quanta_index_contract::SearchPlaneQueryIpcRequest) {
-        (self.request_id, self.payload)
+    fn into_parts(
+        self,
+    ) -> (
+        u64,
+        quanta_index_contract::SearchPlaneQueryIpcRequest,
+        DiagnosticAttemptFieldV1,
+    ) {
+        (self.request_id, self.payload, self.diagnostic_attempt)
     }
 
     /// Every query route names its repository through a generation pin or
@@ -394,8 +552,14 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneQueryIpcResponse>
 impl RequestEnvelope<quanta_index_contract::SearchPlaneControlIpcRequest>
     for SearchPlaneControlIpcRequestEnvelope
 {
-    fn into_parts(self) -> (u64, quanta_index_contract::SearchPlaneControlIpcRequest) {
-        (self.request_id, self.payload)
+    fn into_parts(
+        self,
+    ) -> (
+        u64,
+        quanta_index_contract::SearchPlaneControlIpcRequest,
+        DiagnosticAttemptFieldV1,
+    ) {
+        (self.request_id, self.payload, self.diagnostic_attempt)
     }
 
     /// Control runs one dispatch at a time by policy; a per-repository
@@ -445,8 +609,14 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneControlIpcResponse>
 impl RequestEnvelope<quanta_index_contract::SearchPlaneIngestIpcRequest>
     for SearchPlaneIngestIpcRequestEnvelope
 {
-    fn into_parts(self) -> (u64, quanta_index_contract::SearchPlaneIngestIpcRequest) {
-        (self.request_id, self.payload)
+    fn into_parts(
+        self,
+    ) -> (
+        u64,
+        quanta_index_contract::SearchPlaneIngestIpcRequest,
+        DiagnosticAttemptFieldV1,
+    ) {
+        (self.request_id, self.payload, self.diagnostic_attempt)
     }
 
     /// Ingest runs one dispatch at a time by policy; see the control
@@ -512,6 +682,7 @@ pub struct UdsServer {
     /// connections, which the accept loop refuses past the policy's cap
     /// instead of queueing without bound, and every admission outcome.
     counters: Arc<IpcServerCounters>,
+    diagnostic_context: Option<DiagnosticContextV1>,
     /// One-up connection ids, so every dispatch context names the
     /// connection it arrived on (S21-10).
     next_connection_id: std::sync::atomic::AtomicU64,
@@ -962,6 +1133,7 @@ impl UdsServer {
             owner,
             peer_source,
             counters,
+            diagnostic_context: None,
             next_connection_id: std::sync::atomic::AtomicU64::new(1),
         })
     }
@@ -975,6 +1147,13 @@ impl UdsServer {
     #[must_use]
     pub fn with_ingress_budget(mut self, ingress: Arc<IngressBudget>) -> Self {
         self.ingress = ingress;
+        self
+    }
+
+    /// Attach the process-local capture explicitly to this socket server.
+    #[must_use]
+    pub fn with_diagnostic_context(mut self, context: DiagnosticContextV1) -> Self {
+        self.diagnostic_context = Some(context);
         self
     }
 
@@ -1070,21 +1249,15 @@ impl UdsServer {
         ));
         let max_connections =
             u64::try_from(self.policy.max_connections()).map_or(u64::MAX, |cap| cap);
-        let mut connection_threads: Vec<std::thread::JoinHandle<ConnectionCloseReason>> =
-            Vec::new();
-        while !self.shutdown.load(Ordering::Acquire) {
+        let mut connection_threads = OwnedConnectionThreads::new(Arc::clone(&self.shutdown));
+        let accept_result: Result<(), IpcError> = loop {
+            if self.shutdown.load(Ordering::Acquire) {
+                break Ok(());
+            }
             // Finished connection handles are joined, never dropped
             // unjoined (S21-09): after `is_finished` the join is bounded
             // teardown, and a panicked connection is observed here.
-            let mut still_running: Vec<std::thread::JoinHandle<ConnectionCloseReason>> = Vec::new();
-            for handle in std::mem::take(&mut connection_threads) {
-                if handle.is_finished() {
-                    let _finished = handle.join();
-                } else {
-                    still_running.push(handle);
-                }
-            }
-            connection_threads = still_running;
+            connection_threads.reap_finished();
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
                     let admitted = match self.screen(&stream, max_connections) {
@@ -1112,6 +1285,7 @@ impl UdsServer {
                     let dispatcher = Arc::clone(dispatcher);
                     let slots = Arc::clone(&slots);
                     let counters = Arc::clone(&self.counters);
+                    let diagnostic_context = self.diagnostic_context.clone();
                     let shutdown = Arc::clone(&self.shutdown);
                     let policy = self.policy;
                     let owner_uid = self.owner;
@@ -1121,7 +1295,7 @@ impl UdsServer {
                     let spawned = std::thread::Builder::new()
                         .name("uds-connection".to_string())
                         .spawn(move || {
-                            let reason = handle_connection::<
+                            let reason = handle_connection_traced::<
                                 RequestEnvelopeT,
                                 Request,
                                 ResponseEnvelopeT,
@@ -1138,6 +1312,7 @@ impl UdsServer {
                                 connection_id,
                                 &shutdown,
                                 &counters,
+                                diagnostic_context.as_ref(),
                             );
                             drop(live);
                             reason
@@ -1145,20 +1320,24 @@ impl UdsServer {
                     match spawned {
                         Ok(handle) => connection_threads.push(handle),
                         // The un-moved guard releases the live count here.
-                        Err(err) => return Err(IpcError::Io(err)),
+                        Err(err) => break Err(IpcError::Io(err)),
                     }
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
                     std::thread::sleep(accept_idle);
                 }
-                Err(err) => return Err(IpcError::Io(err)),
+                Err(err) => break Err(IpcError::Io(err)),
             }
+        };
+        // An accept/spawn failure must stop further dispatch and retain the
+        // caller's resources until every already accepted worker exits.
+        if let Err(_error) = &accept_result {
+            self.shutdown.store(true, Ordering::Release);
         }
-        for handle in connection_threads {
-            let _reason = handle.join();
-        }
-        self.remove_owned_socket_path().map_err(IpcError::Io)?;
-        Ok(())
+        let accept_result = finish_connection_threads(connection_threads, accept_result);
+        let remove_result = self.remove_owned_socket_path().map_err(IpcError::Io);
+        accept_result?;
+        remove_result
     }
 
     fn remove_owned_socket_path(&self) -> std::io::Result<()> {
@@ -1167,6 +1346,52 @@ impl UdsServer {
         }
         Ok(())
     }
+}
+
+/// Retains connection ownership through normal return, errors and unwinding.
+struct OwnedConnectionThreads<T> {
+    handles: Vec<std::thread::JoinHandle<T>>,
+    shutdown: Arc<AtomicBool>,
+}
+
+impl<T> OwnedConnectionThreads<T> {
+    fn new(shutdown: Arc<AtomicBool>) -> Self {
+        Self {
+            handles: Vec::new(),
+            shutdown,
+        }
+    }
+
+    fn push(&mut self, handle: std::thread::JoinHandle<T>) {
+        self.handles.push(handle);
+    }
+
+    fn reap_finished(&mut self) {
+        for handle in self.handles.extract_if(.., |handle| handle.is_finished()) {
+            drop(handle.join());
+        }
+    }
+
+    fn join_all(&mut self) {
+        for handle in self.handles.drain(..) {
+            drop(handle.join());
+        }
+    }
+}
+
+impl<T> Drop for OwnedConnectionThreads<T> {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        self.join_all();
+    }
+}
+
+fn finish_connection_threads<T>(
+    mut connection_threads: OwnedConnectionThreads<T>,
+    accept_result: Result<(), IpcError>,
+) -> Result<(), IpcError> {
+    connection_threads.join_all();
+    accept_result
 }
 
 impl Drop for UdsServer {
@@ -1314,7 +1539,7 @@ impl core::fmt::Display for ConnectionCloseReason {
     clippy::too_many_arguments,
     reason = "the transport threads the connection's kernel identity (plane, peer credentials, owner uid, connection id) plus admission and observability handles; bundling them would hide which identity a context was built from"
 )]
-fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
+fn handle_connection_traced<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
     mut stream: UnixStream,
     dispatcher: &D,
     slots: &DispatchSlots,
@@ -1325,6 +1550,7 @@ fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
     connection_id: u64,
     shutdown: &AtomicBool,
     counters: &Arc<IpcServerCounters>,
+    diagnostic_context: Option<&DiagnosticContextV1>,
 ) -> ConnectionCloseReason
 where
     RequestEnvelopeT: RequestEnvelope<Request>,
@@ -1356,11 +1582,39 @@ where
             saw_frame_bytes: false,
             first_read: true,
         };
-        let (request, _decode_permit) = match decode_request_guarded::<RequestEnvelopeT, _, _>(
-            &mut ingress_reader,
-            |body_bytes| slots.try_acquire_decode(body_bytes, plane),
-            DecodePermit::reserve,
-        ) {
+        let (request, _decode_permit, attested_capture) = match (|| {
+            let mut prefix = [0_u8; 4];
+            read_exact_transport(&mut ingress_reader, &mut prefix)?;
+            let mut attested_capture = None;
+            if prefix == DIAGNOSTIC_PREFACE_MAGIC[..4] {
+                let mut rest = [0_u8; 20];
+                read_exact_transport(&mut ingress_reader, &mut rest)?;
+                if rest[..4] != DIAGNOSTIC_PREFACE_MAGIC[4..] {
+                    return Err(IpcError::Decode(
+                        "invalid diagnostic preface version".into(),
+                    ));
+                }
+                let mut capture_id = [0_u8; 16];
+                capture_id.copy_from_slice(&rest[4..]);
+                let accepted =
+                    diagnostic_context.is_some_and(|context| context.capture_id().0 == capture_id);
+                ingress_reader
+                    .stream
+                    .write_all(&diagnostic_ack(accepted))
+                    .map_err(IpcError::Io)?;
+                if accepted {
+                    attested_capture = Some(capture_id);
+                }
+                read_exact_transport(&mut ingress_reader, &mut prefix)?;
+            }
+            let mut prefixed = std::io::Cursor::new(prefix).chain(&mut ingress_reader);
+            let (request, permit) = decode_request_guarded::<RequestEnvelopeT, _, _>(
+                &mut prefixed,
+                |body_bytes| slots.try_acquire_decode(body_bytes, plane),
+                DecodePermit::reserve,
+            )?;
+            Ok::<_, IpcError>((request, permit, attested_capture))
+        })() {
             Ok(request) => request,
             Err(err @ IpcError::IngressSaturated { .. }) => {
                 counters.ingress_admission_refused();
@@ -1380,14 +1634,30 @@ where
         // W10-R2: the id gate runs before shutdown, admission and
         // dispatch alike — a 0 envelope is malformed, refused typed, and
         // answered with nothing, exactly like a corrupt frame.
-        let (request_id, request_payload) = match request.validated() {
+        let (request_id, request_payload, attempt) = match request.validated() {
             Ok(parts) => parts,
             Err(err) => {
                 counters.request_decode_failed();
                 return ConnectionCloseReason::RequestDecodeFailed(err);
             }
         };
-        let mut event_scope = RequestEventScope::new(counters, request_id, connection_id);
+        let attempt = match (attested_capture, attempt) {
+            (Some(capture), DiagnosticAttemptFieldV1::Linked(token))
+                if token.capture_id() == capture =>
+            {
+                DiagnosticAttemptFieldV1::Linked(token)
+            }
+            (_, DiagnosticAttemptFieldV1::Linked(_)) => DiagnosticAttemptFieldV1::Invalid,
+            (_, other) => other,
+        };
+        let mut event_scope = RequestEventScope::new(
+            counters,
+            request_id,
+            plane,
+            connection_id,
+            diagnostic_context,
+            attempt,
+        );
         // A request that arrives during shutdown is not dispatched; the
         // connection closes so the peer retries against the next process.
         if shutdown.load(Ordering::Acquire) {
@@ -1399,9 +1669,18 @@ where
         // and per repository. A full queue is a typed answer, not an
         // unbounded wait.
         let repo_scope = RequestEnvelopeT::repo_scope(&request_payload);
+        let queue_span = event_scope.enter(DiagnosticStageV1::QueueWait);
         let permit = match slots.acquire(policy.queue_wait(), repo_scope.as_deref()) {
-            Ok(permit) => permit,
+            Ok(permit) => {
+                if let Some(span) = queue_span {
+                    let _diagnostic_result = span.finish(DiagnosticTerminalV1::Ok);
+                }
+                permit
+            }
             Err(refusal) => {
+                if let Some(span) = queue_span {
+                    let _diagnostic_result = span.finish(DiagnosticTerminalV1::Error { code: 2 });
+                }
                 counters.request_overloaded(refusal.is_repo_scoped());
                 event_scope.emit(if refusal.is_repo_scoped() {
                     RequestEventStageV1::QueueRefusedRepository
@@ -1415,9 +1694,12 @@ where
                         waited: refusal.waited(),
                     };
                 };
-                match write_response(&mut stream, &response, counters) {
+                match write_response(&mut stream, &response, counters, &event_scope) {
                     Ok(()) => {
-                        event_scope.finish(RequestEventStageV1::ResponseWritten);
+                        event_scope.finish_with_outcome(
+                            RequestEventStageV1::ResponseWritten,
+                            DiagnosticTerminalV1::Error { code: 2 },
+                        );
                         continue;
                     }
                     Err(reason) => {
@@ -1452,9 +1734,12 @@ where
             connection_id,
             started: event_scope.started,
         });
-        let budget = RequestBudgetV1::for_duration(policy.dispatch_budget())
+        let mut budget = RequestBudgetV1::for_duration(policy.dispatch_budget())
             .with_correlation(RequestCorrelationV1::from_admitted(request_id))
             .with_diagnostics(diagnostics);
+        if let Some(trace) = event_scope.diagnostic_context() {
+            budget = budget.with_diagnostic_context(trace.clone());
+        }
         // S21-10: the transport builds the kernel-derived dispatch
         // context every dispatcher authorizes against. The principal is
         // the accept-time kernel report; the payload never asserts one.
@@ -1469,6 +1754,8 @@ where
             cancellation: budget.cancel_handle(),
             events: event_sink,
             request_started: event_scope.started,
+            diagnostic_context: event_scope.diagnostic_context().cloned(),
+            diagnostic_backend_error: Arc::clone(&event_scope.backend_error),
         };
         // The dispatch slot and the in-flight count are one RAII pair
         // (S21-09): a panicking dispatcher unwinds through both drops,
@@ -1488,7 +1775,16 @@ where
                 }
             };
             event_scope.emit(RequestEventStageV1::DispatchStarted);
+            let backend_span = event_scope.enter(DiagnosticStageV1::Backend);
             let response_payload = dispatcher.dispatch(&context, request_payload, &budget);
+            if let Some(span) = backend_span {
+                let outcome = if event_scope.backend_error() {
+                    DiagnosticTerminalV1::Error { code: 4 }
+                } else {
+                    DiagnosticTerminalV1::Ok
+                };
+                let _diagnostic_result = span.finish(outcome);
+            }
             event_scope.emit(RequestEventStageV1::DispatchReturned);
             let peer_hung_up = match watch.disarm() {
                 Ok(PeerWatchOutcome::HungUp) => true,
@@ -1509,12 +1805,15 @@ where
             return ConnectionCloseReason::PeerClosed;
         }
         let response = ResponseEnvelopeT::from_parts(request_id.get(), response_payload);
+        let mut encode_span = event_scope.enter(DiagnosticStageV1::Encode);
+        let mut response_too_large = false;
         let frame = match encode_response(&response) {
             Ok(frame) => frame,
             // The answer was computed but cannot cross the wire. Tell the
             // caller so with a typed refusal instead of dropping the
             // connection, which would be indistinguishable from a crash.
             Err(IpcError::Oversized(encoded_bytes)) => {
+                response_too_large = true;
                 let limit_bytes =
                     u64::try_from(MAX_FRAME_BODY_BYTES).map_or(u64::MAX, |limit| limit);
                 let Some(refusal) = ResponseEnvelopeT::result_too_large(
@@ -1522,6 +1821,10 @@ where
                     encoded_bytes,
                     limit_bytes,
                 ) else {
+                    if let Some(span) = encode_span.take() {
+                        let _diagnostic_result =
+                            span.finish(DiagnosticTerminalV1::Error { code: 5 });
+                    }
                     event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
                     return ConnectionCloseReason::ResponseEncodeFailed(IpcError::Oversized(
                         encoded_bytes,
@@ -1530,24 +1833,85 @@ where
                 match encode_response(&refusal) {
                     Ok(frame) => frame,
                     Err(err) => {
+                        if let Some(span) = encode_span.take() {
+                            let _diagnostic_result =
+                                span.finish(DiagnosticTerminalV1::Error { code: 5 });
+                        }
                         event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
                         return ConnectionCloseReason::ResponseEncodeFailed(err);
                     }
                 }
             }
             Err(err) => {
+                if let Some(span) = encode_span.take() {
+                    let _diagnostic_result = span.finish(DiagnosticTerminalV1::Error { code: 5 });
+                }
                 event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
                 return ConnectionCloseReason::ResponseEncodeFailed(err);
             }
         };
+        if let Some(span) = encode_span.take() {
+            let _diagnostic_result = span.finish(DiagnosticTerminalV1::Ok);
+        }
+        let write_span = event_scope.enter(DiagnosticStageV1::Write);
         if let Err(err) = stream.write_all(&frame) {
+            if let Some(span) = write_span {
+                let _diagnostic_result = span.finish(DiagnosticTerminalV1::Error { code: 3 });
+            }
             event_scope.finish(RequestEventStageV1::ResponseWriteFailed);
             return ConnectionCloseReason::ResponseWriteFailed(err.to_string());
         }
+        if let Some(span) = write_span {
+            let _diagnostic_result = span.finish(DiagnosticTerminalV1::Ok);
+        }
         counters.response_written(frame_bytes(&frame));
-        event_scope.finish(RequestEventStageV1::ResponseWritten);
+        if response_too_large {
+            event_scope.finish_with_outcome(
+                RequestEventStageV1::ResponseWritten,
+                DiagnosticTerminalV1::Error { code: 5 },
+            );
+        } else {
+            event_scope.finish(RequestEventStageV1::ResponseWritten);
+        }
         // continue: next request on same conn
     }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves the established untraced test call shape"
+)]
+fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
+    stream: UnixStream,
+    dispatcher: &D,
+    slots: &DispatchSlots,
+    policy: ServerAdmissionPolicy,
+    plane: IpcPlane,
+    principal: PeerCredentials,
+    owner_uid: u32,
+    connection_id: u64,
+    shutdown: &AtomicBool,
+    counters: &Arc<IpcServerCounters>,
+) -> ConnectionCloseReason
+where
+    RequestEnvelopeT: RequestEnvelope<Request>,
+    ResponseEnvelopeT: ResponseEnvelope<Response>,
+    D: IpcDispatcher<Request, Response> + ?Sized,
+{
+    handle_connection_traced::<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
+        stream,
+        dispatcher,
+        slots,
+        policy,
+        plane,
+        principal,
+        owner_uid,
+        connection_id,
+        shutdown,
+        counters,
+        None,
+    )
 }
 
 /// Server ingress deadline across the whole request, including all fragments.
@@ -1583,6 +1947,16 @@ impl Read for IngressDeadlineReader<'_> {
     }
 }
 
+fn read_exact_transport(reader: &mut impl Read, bytes: &mut [u8]) -> Result<(), IpcError> {
+    reader.read_exact(bytes).map_err(|error| {
+        if error.kind() == ErrorKind::UnexpectedEof {
+            IpcError::Truncated
+        } else {
+            IpcError::Io(error)
+        }
+    })
+}
+
 /// A close before any bytes of the next frame is not a malformed request.
 /// A truncated or reset connection after even one byte is a failed decode.
 fn peer_closed_before_frame(error: &IpcError, saw_frame_bytes: bool) -> bool {
@@ -1602,11 +1976,35 @@ fn write_response<ResponseEnvelopeT: serde::Serialize>(
     stream: &mut UnixStream,
     response: &ResponseEnvelopeT,
     counters: &IpcServerCounters,
+    scope: &RequestEventScope<'_>,
 ) -> Result<(), ConnectionCloseReason> {
-    let frame = encode_response(response).map_err(ConnectionCloseReason::ResponseEncodeFailed)?;
-    stream
-        .write_all(&frame)
-        .map_err(|err| ConnectionCloseReason::ResponseWriteFailed(err.to_string()))?;
+    let encode_span = scope.enter(DiagnosticStageV1::Encode);
+    let frame = match encode_response(response) {
+        Ok(frame) => {
+            if let Some(span) = encode_span {
+                let _diagnostic_result = span.finish(DiagnosticTerminalV1::Ok);
+            }
+            frame
+        }
+        Err(error) => {
+            if let Some(span) = encode_span {
+                let _diagnostic_result = span.finish(DiagnosticTerminalV1::Error { code: 5 });
+            }
+            return Err(ConnectionCloseReason::ResponseEncodeFailed(error));
+        }
+    };
+    let write_span = scope.enter(DiagnosticStageV1::Write);
+    if let Err(error) = stream.write_all(&frame) {
+        if let Some(span) = write_span {
+            let _diagnostic_result = span.finish(DiagnosticTerminalV1::Error { code: 3 });
+        }
+        return Err(ConnectionCloseReason::ResponseWriteFailed(
+            error.to_string(),
+        ));
+    }
+    if let Some(span) = write_span {
+        let _diagnostic_result = span.finish(DiagnosticTerminalV1::Ok);
+    }
     counters.response_written(frame_bytes(&frame));
     Ok(())
 }
@@ -1661,7 +2059,34 @@ where
     RequestEnvelopeT: serde::Serialize,
     ResponseEnvelopeT: serde::de::DeserializeOwned,
 {
-    send_request_inner(socket, request, io_policy, None)
+    send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, ResponseEnvelopeT>(
+        socket, request, None, io_policy, None,
+    )
+}
+
+/// Send a diagnostic token only after the peer acknowledges this capture.
+///
+/// A peer's acknowledgement must arrive on the same stream. An older peer's rejection uses a fresh stream
+/// for the original envelope under the same absolute request deadline.
+pub fn send_request_negotiated<RequestEnvelopeT, LinkedEnvelopeT, ResponseEnvelopeT>(
+    socket: &Path,
+    plain_request: &RequestEnvelopeT,
+    linked_request: &LinkedEnvelopeT,
+    capture_id: [u8; 16],
+    io_policy: ClientIoPolicy,
+) -> Result<ResponseEnvelopeT, IpcError>
+where
+    RequestEnvelopeT: serde::Serialize,
+    LinkedEnvelopeT: serde::Serialize,
+    ResponseEnvelopeT: serde::de::DeserializeOwned,
+{
+    send_request_inner(
+        socket,
+        plain_request,
+        Some((linked_request, capture_id)),
+        io_policy,
+        None,
+    )
 }
 
 /// The same one-shot request with opt-in, request-local client attribution.
@@ -1678,18 +2103,49 @@ where
     ResponseEnvelopeT: serde::de::DeserializeOwned,
 {
     let mut timing = ClientIpcTimingV1::default();
-    let response = send_request_inner(socket, request, io_policy, Some(&mut timing))?;
+    let response = send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, ResponseEnvelopeT>(
+        socket,
+        request,
+        None,
+        io_policy,
+        Some(&mut timing),
+    )?;
     Ok((response, timing))
 }
 
-fn send_request_inner<RequestEnvelopeT, ResponseEnvelopeT>(
+pub fn send_request_observed_negotiated<RequestEnvelopeT, LinkedEnvelopeT, ResponseEnvelopeT>(
+    socket: &Path,
+    plain_request: &RequestEnvelopeT,
+    linked_request: &LinkedEnvelopeT,
+    capture_id: [u8; 16],
+    io_policy: ClientIoPolicy,
+) -> Result<(ResponseEnvelopeT, ClientIpcTimingV1), IpcError>
+where
+    RequestEnvelopeT: serde::Serialize,
+    LinkedEnvelopeT: serde::Serialize,
+    ResponseEnvelopeT: serde::de::DeserializeOwned,
+{
+    let mut timing = ClientIpcTimingV1::default();
+    let response = send_request_inner(
+        socket,
+        plain_request,
+        Some((linked_request, capture_id)),
+        io_policy,
+        Some(&mut timing),
+    )?;
+    Ok((response, timing))
+}
+
+fn send_request_inner<RequestEnvelopeT, LinkedEnvelopeT, ResponseEnvelopeT>(
     socket: &Path,
     request: &RequestEnvelopeT,
+    linked_request: Option<(&LinkedEnvelopeT, [u8; 16])>,
     io_policy: ClientIoPolicy,
     mut timing: Option<&mut ClientIpcTimingV1>,
 ) -> Result<ResponseEnvelopeT, IpcError>
 where
     RequestEnvelopeT: serde::Serialize,
+    LinkedEnvelopeT: serde::Serialize,
     ResponseEnvelopeT: serde::de::DeserializeOwned,
 {
     let total_started = timing.as_ref().map(|_| Instant::now());
@@ -1706,6 +2162,57 @@ where
         timing.connect = observed_ns(started.elapsed())?;
     }
     let mut stream = DeadlineStream::new(stream, deadline);
+    let selected_request = if let Some((linked, capture_id)) = linked_request {
+        // Keep 100 ms of the original request budget for a plain-envelope
+        // fallback. The optional probe may use at most another 100 ms.
+        const FALLBACK_RESERVE: Duration = Duration::from_millis(100);
+        const MAX_PROBE_TIME: Duration = Duration::from_millis(100);
+        let probe_started = Instant::now();
+        let probe_deadline = deadline
+            .checked_sub(FALLBACK_RESERVE)
+            .filter(|limit| *limit > probe_started)
+            .map(|limit| limit.min(probe_started.checked_add(MAX_PROBE_TIME).unwrap_or(limit)));
+        if let Some(probe_deadline) = probe_deadline {
+            stream.deadline = probe_deadline;
+            let negotiated: std::io::Result<bool> = (|| {
+                stream.write_all(&diagnostic_preface(capture_id))?;
+                let mut ack = [0_u8; DIAGNOSTIC_ACK_BYTES];
+                stream.read_exact(&mut ack)?;
+                let accepted = diagnostic_ack_accepted(&ack).ok_or_else(|| {
+                    std::io::Error::new(
+                        ErrorKind::InvalidData,
+                        "invalid diagnostic acknowledgement",
+                    )
+                })?;
+                ensure_deadline_remaining(probe_deadline)?;
+                Ok(accepted)
+            })();
+            stream.deadline = deadline;
+            match negotiated {
+                Ok(true) => Some(linked),
+                Ok(false) => None,
+                Err(_) => {
+                    // The first stream contained transport control only. The
+                    // original product envelope starts on a fresh stream.
+                    drop(stream);
+                    let retry = connect_before_deadline(socket, deadline).map_err(|error| {
+                        classify_client_io_error(error, IpcIoOperation::Connect, io_policy)
+                    })?;
+                    stream = DeadlineStream::new(retry, deadline);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let frame = if let Some(linked) = selected_request {
+        encode_request(linked)?
+    } else {
+        frame
+    };
     let write_started = timing.as_ref().map(|_| Instant::now());
     stream
         .write_all(&frame)

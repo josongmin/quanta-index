@@ -44,6 +44,7 @@ fn regular_file_bytes(rt: &E2eRuntime) -> Result<u64, Box<dyn Error>> {
     Ok(unique_inode_tree_bytes(
         &[rt.state_root().to_path_buf()],
         &|_| false,
+        None,
     )?)
 }
 

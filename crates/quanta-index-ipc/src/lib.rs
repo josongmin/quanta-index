@@ -16,6 +16,7 @@ mod cbor_preflight;
 mod codec;
 mod counters;
 mod error;
+mod native_protocol;
 mod peer_credentials;
 mod plane;
 mod server;
@@ -33,8 +34,8 @@ pub use batch_digest::{
     BatchDigestVerdictV1, canonical_batch_digest_v1, stamp_batch_digest_v1, verify_batch_digest_v1,
 };
 pub use codec::{
-    cbor_payload_len, decode_cbor_payload, decode_request, decode_response, encode_cbor_payload,
-    encode_request, encode_response,
+    RequestSizeDecisionV1, cbor_payload_len, decode_cbor_payload, decode_request, decode_response,
+    encode_cbor_payload, encode_request, encode_response, request_size_decision_v1,
 };
 pub use counters::{
     IpcServerCounters, IpcServerCountersSnapshot, RequestEventSinkV1, RequestEventStageV1,
@@ -50,7 +51,7 @@ pub use quanta_index_core::{
 pub use server::{
     BoundSocketPathProbe, ClientIoPolicy, ClientIpcTimingV1, DEFAULT_CLIENT_IO_TIMEOUT,
     DispatchContextV1, IpcDispatcher, RequestEnvelope, ResponseEnvelope, ShutdownHandle, UdsServer,
-    send_request, send_request_observed,
+    send_request, send_request_negotiated, send_request_observed, send_request_observed_negotiated,
 };
 pub use socket_access::{
     GROUP_DIRECTORY_MODE, GROUP_SOCKET_MODE, PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE,

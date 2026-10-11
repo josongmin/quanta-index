@@ -81,6 +81,7 @@ impl SqliteCatalog {
             .execute_batch(crate::candidate::SCHEMA)
             .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
         crate::candidate::verify_installed_schema(&initialization, &path)?;
+        crate::native::initialize(&initialization, &path)?;
         crate::idempotency::seed_fence_allocator(&initialization, &path, fresh_root)?;
         // A missing or recast GC floor must refuse before recovery mutates
         // journal rows or clears old mutation leases.

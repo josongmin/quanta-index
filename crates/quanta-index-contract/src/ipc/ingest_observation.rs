@@ -59,14 +59,16 @@ pub struct LexicalBuildStageDurationsV1 {
     pub prep_coverage_write_ns: Option<u64>,
     pub writer_mutation_ns: u64,
     pub text_authority_ns: u64,
-    /// Present for a full rebuild; a touched-shard delta does not enumerate live docs.
+    /// Legacy full-rebuild collection, when measured separately. Paged authority
+    /// publication reports only `text_authority_ns` and leaves this absent.
     pub text_authority_collect_ns: Option<u64>,
-    /// Present for rebuilds and touched-shard deltas, including prior-shard loads.
+    /// Legacy shard construction, when measured separately; absent for paged publication.
     pub text_authority_shard_build_ns: Option<u64>,
-    /// Present for rebuilds and deltas; includes encode, durable writes, and cleanup.
+    /// Legacy shard publication, when measured separately; absent for paged publication.
     pub text_authority_publish_ns: Option<u64>,
     pub file_authority_ns: u64,
-    /// Source-byte write loop, including existence checks; manifest and cleanup remain in the parent.
+    /// Source-byte writes, when measured separately. Paged map and root publication
+    /// report only `file_authority_ns` and leave this absent.
     pub file_authority_source_write_ns: Option<u64>,
     pub seal_ns: Option<u64>,
     pub seal_writer_commit_ns: Option<u64>,

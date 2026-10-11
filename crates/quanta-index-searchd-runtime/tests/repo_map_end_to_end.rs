@@ -322,6 +322,7 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
 
 fn repo_map_request() -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 77,
         payload: SearchPlaneQueryIpcRequest::RepoMapQuery(RepoMapQueryRequest {
             repo_id: repo(),
@@ -341,6 +342,7 @@ fn repo_map_request() -> SearchPlaneQueryIpcRequestEnvelope {
 // RepoMap bundle ingest flows over the ingest IPC, not the control IPC.
 fn repo_map_ingest_envelope() -> Result<SearchPlaneIngestIpcRequestEnvelope, Box<dyn Error>> {
     Ok(SearchPlaneIngestIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 75,
         payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(
             RepoMapPublishBundleRequestV2::new(repo_map_bundle()?)?,
@@ -371,6 +373,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     let source = repo_map_bundle()?;
     let publish_request = RepoMapPublishBundleRequestV2::new(source.clone())?;
     let publish_envelope = SearchPlaneIngestIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 75,
         payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(publish_request.clone()),
     };
@@ -401,6 +404,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     let refusal = send_ingest_request(
         &ingest_socket,
         &SearchPlaneIngestIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 76,
             payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(
                 RepoMapPublishBundleRequestV2::new(substituted)?,
@@ -418,6 +422,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     let activate = send_control_request(
         &control_socket,
         &SearchPlaneControlIpcRequestEnvelope {
+            diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
             request_id: 77,
             payload: SearchPlaneControlIpcRequest::RepoMapActivateV2(
                 RepoMapActivateGenerationRequestV2::for_bundle(&source)?,
@@ -467,6 +472,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     let source = repo_map_bundle()?;
     let publish_request = RepoMapPublishBundleRequestV2::new(source.clone())?;
     let publish_envelope = SearchPlaneIngestIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 75,
         payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(publish_request),
     };
@@ -483,6 +489,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         }
     };
     let activate_envelope = SearchPlaneControlIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 76,
         payload: SearchPlaneControlIpcRequest::RepoMapActivateV2(
             RepoMapActivateGenerationRequestV2::for_bundle(&source)?,

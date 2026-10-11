@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::fmt::Write as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{GenerationQuarantineReasonV1, GenerationStorageKeyV1};
 use quanta_index_searchd_harness as e2e_harness;
+use sha2::{Digest, Sha256};
 
 use e2e_harness::E2eRuntime;
 
@@ -198,8 +200,10 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), Box<dyn Error>> {
 
 /// Bytes of every regular file under `roots`, each `(device, inode)` once:
 /// what `du` reports for the set, independently of the daemon's measure.
-fn inode_set_bytes(roots: &[PathBuf]) -> Result<u64, Box<dyn Error>> {
-    let mut seen = BTreeSet::new();
+fn inode_set_bytes_with_seen(
+    roots: &[PathBuf],
+    seen: &mut BTreeSet<(u64, u64)>,
+) -> Result<u64, Box<dyn Error>> {
     let mut total = 0_u64;
     let mut pending: Vec<PathBuf> = roots.to_vec();
     while let Some(directory) = pending.pop() {
@@ -211,9 +215,213 @@ fn inode_set_bytes(roots: &[PathBuf]) -> Result<u64, Box<dyn Error>> {
             } else if file_type.is_file() {
                 let metadata = entry.metadata()?;
                 if seen.insert((metadata.dev(), metadata.ino())) {
-                    total = total.saturating_add(metadata.len());
+                    total = total
+                        .checked_add(metadata.len())
+                        .ok_or("inode byte total overflow")?;
                 }
             }
+        }
+    }
+    Ok(total)
+}
+
+fn inode_set_bytes(roots: &[PathBuf]) -> Result<u64, Box<dyn Error>> {
+    inode_set_bytes_with_seen(roots, &mut BTreeSet::new())
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct DiskObjectRef {
+    kind: u8,
+    bytes: u64,
+    sha256: [u8; 32],
+}
+
+fn cbor_array(
+    value: &ciborium::Value,
+    length: usize,
+) -> Result<&[ciborium::Value], Box<dyn Error>> {
+    if let ciborium::Value::Array(rows) = value
+        && rows.len() == length
+    {
+        return Ok(rows);
+    }
+    Err(format!("expected CBOR array of {length} elements").into())
+}
+
+fn cbor_u64(value: &ciborium::Value) -> Result<u64, Box<dyn Error>> {
+    if let ciborium::Value::Integer(number) = value {
+        return Ok(u64::try_from(*number)?);
+    }
+    Err("expected CBOR unsigned integer".into())
+}
+
+fn cbor_object_ref(value: &ciborium::Value) -> Result<DiskObjectRef, Box<dyn Error>> {
+    let row = cbor_array(value, 3)?;
+    let kind = u8::try_from(cbor_u64(row.first().ok_or("missing object kind")?)?)?;
+    if !(1..=11).contains(&kind) {
+        return Err("unknown object kind".into());
+    }
+    let bytes = cbor_u64(row.get(1).ok_or("missing object bytes")?)?;
+    let digest = match row.get(2) {
+        Some(ciborium::Value::Bytes(octets)) => <[u8; 32]>::try_from(octets.as_slice())?,
+        Some(ciborium::Value::Array(octets)) if octets.len() == 32 => {
+            let mut digest = [0_u8; 32];
+            for (slot, octet) in digest.iter_mut().zip(octets) {
+                *slot = u8::try_from(cbor_u64(octet)?)?;
+            }
+            digest
+        }
+        _ => return Err("object reference lacks a 32-byte digest".into()),
+    };
+    Ok(DiskObjectRef {
+        kind,
+        bytes,
+        sha256: digest,
+    })
+}
+
+/// These fixed positions are the independent F18 File/F6 Native root wires:
+/// version at 0, seven map roots at 3..10, each map holding one optional page.
+fn disk_root_objects(
+    path: &Path,
+    format: u64,
+    width: usize,
+) -> Result<Vec<DiskObjectRef>, Box<dyn Error>> {
+    let bytes = std::fs::read(path)?;
+    let value: ciborium::Value = ciborium::from_reader(bytes.as_slice())?;
+    let row = cbor_array(&value, width)?;
+    if cbor_u64(row.first().ok_or("missing root format")?)? != format {
+        return Err(format!("unexpected root format in {}", path.display()).into());
+    }
+    let mut roots = Vec::new();
+    for offset in 3..10 {
+        let map = cbor_array(row.get(offset).ok_or("missing root map")?, 2)?;
+        let page = map.first().ok_or("missing map page")?;
+        if matches!(page, ciborium::Value::Null) {
+            if cbor_u64(map.get(1).ok_or("missing map count")?)? != 0 {
+                return Err("empty map page has nonzero count".into());
+            }
+        } else {
+            let page = cbor_array(page, 5)?;
+            let object = cbor_object_ref(page.first().ok_or("missing page object")?)?;
+            if object.kind != 8 {
+                return Err("map root does not reference a map page".into());
+            }
+            roots.push(object);
+        }
+    }
+    Ok(roots)
+}
+
+fn disk_dependency(bytes: &[u8]) -> Result<DiskObjectRef, Box<dyn Error>> {
+    if bytes.len() != 41 {
+        return Err("object dependency has wrong width".into());
+    }
+    let kind = *bytes.first().ok_or("missing dependency kind")?;
+    if !(1..=11).contains(&kind) {
+        return Err("unknown dependency kind".into());
+    }
+    let length = <[u8; 8]>::try_from(bytes.get(1..9).ok_or("missing dependency length")?)?;
+    let sha256 = <[u8; 32]>::try_from(bytes.get(9..41).ok_or("missing dependency digest")?)?;
+    Ok(DiskObjectRef {
+        kind,
+        bytes: u64::from_be_bytes(length),
+        sha256,
+    })
+}
+
+/// Follow only committed root references. Reaped objects can remain in the
+/// shared pool until the asynchronous collector completes.
+fn retained_pool_bytes(
+    rt: &E2eRuntime,
+    retained: &BTreeSet<u64>,
+    seen_inodes: &mut BTreeSet<(u64, u64)>,
+) -> Result<u64, Box<dyn Error>> {
+    let lexical_pair = pair_dir(rt, "indexes/lexical")?;
+    let pool =
+        std::fs::canonicalize(rt.state_root())?.join("indexes/lexical/lexical-object-pool/objects");
+    let mut pending = Vec::new();
+    for generation in retained {
+        let directory = lexical_pair.join(format!("g{generation}"));
+        pending.extend(disk_root_objects(
+            &directory.join("file-authority/root.cbor"),
+            18,
+            14,
+        )?);
+        pending.extend(disk_root_objects(
+            &directory.join("text-authority/manifest.cbor"),
+            6,
+            12,
+        )?);
+    }
+    let mut seen_refs = BTreeMap::<[u8; 32], (u8, u64)>::new();
+    let mut total = 0_u64;
+    while let Some(reference) = pending.pop() {
+        if let Some(previous) =
+            seen_refs.insert(reference.sha256, (reference.kind, reference.bytes))
+        {
+            if previous != (reference.kind, reference.bytes) {
+                return Err("one digest has conflicting object references".into());
+            }
+            continue;
+        }
+        let mut name = String::with_capacity(64);
+        for byte in reference.sha256 {
+            write!(&mut name, "{byte:02x}")?;
+        }
+        let shard = name.get(..2).ok_or("short object digest")?;
+        let path = pool.join(shard).join(name);
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if !metadata.file_type().is_file()
+            || metadata.len() != reference.bytes
+            || reference.bytes > 96 * 1024
+        {
+            return Err(format!("invalid pooled object size/type: {}", path.display()).into());
+        }
+        let encoded = std::fs::read(&path)?;
+        let digest: [u8; 32] = Sha256::digest(&encoded).into();
+        if u64::try_from(encoded.len())? != reference.bytes || digest != reference.sha256 {
+            return Err(format!(
+                "pooled object differs from its reference: {}",
+                path.display()
+            )
+            .into());
+        }
+        if encoded.get(..8) != Some(b"QLSTOR01".as_slice())
+            || encoded.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
+            || encoded.get(10) != Some(&reference.kind)
+        {
+            return Err("pooled object has unexpected envelope".into());
+        }
+        let count = u16::from_be_bytes(<[u8; 2]>::try_from(
+            encoded.get(11..13).ok_or("missing dependency count")?,
+        )?);
+        let payload = u64::from_be_bytes(<[u8; 8]>::try_from(
+            encoded.get(13..21).ok_or("missing payload length")?,
+        )?);
+        if count > 128 || payload > 64 * 1024 {
+            return Err("pooled object exceeds physical bounds".into());
+        }
+        let deps_bytes = usize::from(count)
+            .checked_mul(41)
+            .ok_or("dependency width overflow")?;
+        let payload_start = 21_usize
+            .checked_add(deps_bytes)
+            .ok_or("object header overflow")?;
+        if payload_start.checked_add(usize::try_from(payload)?) != Some(encoded.len()) {
+            return Err("pooled object encoded length differs".into());
+        }
+        for dependency in encoded
+            .get(21..payload_start)
+            .ok_or("missing dependency rows")?
+            .chunks_exact(41)
+        {
+            pending.push(disk_dependency(dependency)?);
+        }
+        if seen_inodes.insert((metadata.dev(), metadata.ino())) {
+            total = total
+                .checked_add(metadata.len())
+                .ok_or("pooled byte total overflow")?;
         }
     }
     Ok(total)
@@ -412,13 +620,20 @@ fn gc_metrics_report_reclaimed_and_retained_bytes_that_match_the_disk() -> TestR
         .take(KEEP)
         .map(|generation| generation.get())
         .collect();
-    let retained_bytes = inode_set_bytes(&generation_dirs(&rt, &retained)?)?;
+    let mut seen_inodes = BTreeSet::new();
+    let retained_directories = generation_dirs(&rt, &retained)?;
+    let retained_directory_bytes =
+        inode_set_bytes_with_seen(&retained_directories, &mut seen_inodes)?;
+    let retained_pool_bytes = retained_pool_bytes(&rt, &retained, &mut seen_inodes)?;
+    let retained_bytes = retained_directory_bytes
+        .checked_add(retained_pool_bytes)
+        .ok_or("retained index byte total overflow")?;
     let reported = after.gauge("search_corpus_retained_index_bytes")?;
     // Integer-valued gauges are exact in f64 below 2^53; compare the bits.
     let expected = f64::from(u32::try_from(retained_bytes)?);
     if retained_bytes == 0 || reported.to_bits() != expected.to_bits() {
         return Err(format!(
-            "retention reports {reported} retained index bytes, the retained directories hold {retained_bytes}"
+            "retention reports {reported} retained index bytes, retained directories hold {retained_directory_bytes} and their pooled closure holds {retained_pool_bytes}"
         )
         .into());
     }

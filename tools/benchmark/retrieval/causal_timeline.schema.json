@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.invalid/schemas/causal-timeline-v2.json",
+  "title": "Quanta Index causal timeline JSONL record",
+  "description": "One bounded record per JSONL line. The first record is a header and the final record is a footer. Event sequence is writer order, not causal order.",
+  "oneOf": [
+    { "$ref": "#/$defs/header" },
+    { "$ref": "#/$defs/event" },
+    { "$ref": "#/$defs/footer" }
+  ],
+  "$defs": {
+    "id128": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "maxLength": 32
+    },
+    "spanId": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "counterKey": {
+      "type": "string",
+      "enum": [
+        "files_visited", "files_read", "files_hashed", "files_decoded",
+        "inodes_visited", "unique_inodes", "physical_bytes_measured", "bytes_read", "bytes_hashed",
+        "bytes_decoded", "sqlite_rows", "sqlite_batches", "sqlite_elapsed_ns", "candidates",
+        "candidates_verified", "matches", "rejected_at_guard", "sync_calls",
+        "sync_failures", "sync_elapsed_ns", "new_objects", "reused_objects",
+        "compacted_documents", "compacted_segments", "compacted_bytes", "posting_mutations",
+        "map_page_mutations", "invalid_attempt_tokens", "unique_closure_refs",
+        "closure_dependency_edges", "closure_authenticated_bytes", "closure_read_elapsed_ns",
+        "closure_hash_elapsed_ns", "closure_decode_elapsed_ns", "queue_dropped", "queue_accepted",
+        "output_written", "output_unwritten", "retained_pairs", "measure_calls",
+        "removed_roots", "semantic_windows", "semantic_owner_scopes",
+        "semantic_delete_calls", "semantic_append_calls", "semantic_rows_appended",
+        "semantic_rows_deleted", "semantic_vector_bytes", "query_admitted_limit",
+        "query_read_limit", "query_byte_limit", "regex_literal_count",
+        "regex_alternative_count", "regex_necessary_gram_count"
+      ]
+    },
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type", "schema_version", "capture_id", "stream_id",
+        "clock_domain", "process_instance", "started_ns", "max_record_bytes",
+        "max_counters_per_event", "coverage"
+      ],
+      "properties": {
+        "record_type": { "const": "header" },
+        "schema_version": { "const": 2 },
+        "capture_id": { "$ref": "#/$defs/id128" },
+        "stream_id": { "$ref": "#/$defs/id128" },
+        "clock_domain": { "$ref": "#/$defs/id128" },
+        "process_instance": { "$ref": "#/$defs/id128" },
+        "plane": { "type": "string", "maxLength": 64 },
+        "started_ns": { "type": "integer", "minimum": 0 },
+        "max_record_bytes": { "type": "integer", "minimum": 256, "maximum": 1048576 },
+        "max_counters_per_event": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "coverage": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 96 }
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_type", "output_seq", "capture_id", "ts_ns", "kind"],
+      "properties": {
+        "record_type": { "const": "event" },
+        "output_seq": { "type": "integer", "minimum": 1 },
+        "capture_id": { "$ref": "#/$defs/id128" },
+        "ts_ns": { "type": "integer", "minimum": 0 },
+        "kind": {
+          "oneOf": [
+            { "$ref": "#/$defs/spanBegin" },
+            { "$ref": "#/$defs/spanEnd" },
+            { "$ref": "#/$defs/requestIdentity" },
+            { "$ref": "#/$defs/phaseIdentity" },
+            { "$ref": "#/$defs/counter" },
+            { "$ref": "#/$defs/syncAggregate" },
+            { "$ref": "#/$defs/objectKindAggregate" },
+            { "$ref": "#/$defs/adoptionGroupAggregate" },
+            { "$ref": "#/$defs/bm25CensusAggregate" },
+            { "$ref": "#/$defs/bm25BoundaryAggregate" },
+            { "$ref": "#/$defs/bm25LiveBuildAggregate" },
+            { "$ref": "#/$defs/link" },
+            { "$ref": "#/$defs/health" }
+          ]
+        }
+      }
+    },
+    "spanBegin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "stage", "lane_id"],
+      "properties": {
+        "type": { "const": "span_begin" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "parent_span_id": { "$ref": "#/$defs/spanId" },
+        "root_kind": { "enum": ["request", "operation", "capture"] },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "request", "operation", "client_attempt", "ingress", "queue_wait",
+            "dispatch", "backend", "encode", "write", "build_preflight",
+            "build_prepare", "semantic_build", "lexical_build", "finalize",
+            "bm25_census_build", "bm25_live_build", "bm25_boundary",
+            "activate", "retention_pair_lock_wait", "retention_pair_lock_hold",
+            "retention_root_lock_wait", "retention_root_lock_hold",
+            "retention_root_snapshot", "source_transaction_one", "source_transaction_two",
+            "retention_plan", "retention_measure",
+            "closure_read", "closure_hash", "closure_decode", "sqlite_work",
+            "physical_inode_census", "native_publish", "file_publish", "lexical_seal",
+            "lexical_proof", "compaction",
+            "query_parse", "query_plan", "query_read_view", "query_candidate",
+            "query_verify", "query_rank", "query_project", "harness_phase",
+            "observer_setup", "observer_sample", "observer_teardown", "artifact_write", "runtime_boot",
+            "boot_restore", "boot_reclaim", "boot_inventory", "boot_active_proof",
+            "runtime_maintenance", "runtime_stop", "runtime_join",
+            "semantic_prepare", "semantic_stream", "semantic_delete",
+            "semantic_append", "semantic_seal", "semantic_promote",
+            "retention_write", "retention_reap"
+          ]
+        },
+        "lane_id": { "type": "integer", "minimum": 0, "maximum": 65535 }
+      }
+    },
+    "spanEnd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "outcome"],
+      "properties": {
+        "type": { "const": "span_end" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "outcome": { "enum": ["ok", "error", "cancelled", "aborted"] },
+        "error_code": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      }
+    },
+    "requestIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "request_id", "plane", "connection_id"],
+      "properties": {
+        "type": { "const": "request_identity" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "request_id": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
+        "plane": { "enum": ["query", "control", "ingest"] },
+        "connection_id": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 }
+      }
+    },
+    "phaseIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "phase"],
+      "properties": {
+        "type": { "const": "phase_identity" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "phase": {
+          "enum": [
+            "full_ingest_seal", "full_ingest", "full_seal", "full_activate",
+            "delta_ingest_seal", "delta_activate", "noop_seal", "noop_activate",
+            "delete_seal", "delete_activate", "same_process_reopen"
+          ]
+        }
+      }
+    },
+    "counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "key", "value"],
+      "properties": {
+        "type": { "const": "counter" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "key": { "$ref": "#/$defs/counterKey" },
+        "value": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "syncAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "label", "calls", "elapsed_sum_ns", "elapsed_max_ns", "failures"],
+      "properties": {
+        "type": { "const": "sync_aggregate" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "label": {
+          "enum": [
+            "generation_directory", "publication_directory", "publication_parent",
+            "overlay_directory", "history_manifest_file",
+            "coverage_orphan_directory", "history_layout_directory", "atomic_file",
+            "atomic_parent", "atomic_at_file", "atomic_at_parent", "sealed_leftover_directory",
+            "pool_new_directory_full", "pool_new_parent_full", "pool_adoption_full_barrier",
+            "pool_data_file_posix", "pool_object_file_full", "pool_control_file_full",
+            "pool_data_shard_posix", "pool_object_shard_full", "pool_control_parent_full",
+            "pool_reused_file_posix", "pool_reused_shard_posix", "pool_adoption_journal_full",
+            "pool_sync_all", "state_sync_all"
+          ]
+        },
+        "calls": { "type": "integer", "minimum": 0 },
+        "elapsed_sum_ns": { "type": "integer", "minimum": 0 },
+        "elapsed_max_ns": { "type": "integer", "minimum": 0 },
+        "failures": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "objectKindAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "kind", "new_objects", "reused_objects"],
+      "properties": {
+        "type": { "const": "object_kind_aggregate" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "kind": {
+          "enum": [
+            "file_body", "file_postings", "native_body", "native_trigrams",
+            "native_positions", "segment", "record", "map_page", "blob_block",
+            "blob_node", "attempt_batch"
+          ]
+        },
+        "new_objects": { "type": "integer", "minimum": 0 },
+        "reused_objects": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "adoptionGroupAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "reason", "refs_bucket", "bytes_bucket", "groups", "failed_groups"],
+      "properties": {
+        "type": { "const": "adoption_group_aggregate" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "reason": { "enum": ["ref_limit", "byte_limit", "explicit"] },
+        "refs_bucket": { "enum": ["zero", "up_to_25_percent", "up_to_50_percent", "up_to_75_percent", "up_to_100_percent", "over_100_percent"] },
+        "bytes_bucket": { "enum": ["zero", "up_to_25_percent", "up_to_50_percent", "up_to_75_percent", "up_to_100_percent", "over_100_percent"] },
+        "groups": { "type": "integer", "minimum": 0 },
+        "failed_groups": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "bm25CensusAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "calls", "elapsed_ns", "docs", "encoded_bytes"],
+      "properties": {
+        "type": { "const": "bm25_census_aggregate" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "calls": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "elapsed_ns": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "docs": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "encoded_bytes": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+      }
+    },
+    "bm25BoundaryAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "label", "calls", "elapsed_sum_ns", "logical_bytes", "index_files"],
+      "properties": {
+        "type": { "const": "bm25_boundary_aggregate" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "label": { "enum": ["base_read", "encode"] },
+        "calls": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "elapsed_sum_ns": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "logical_bytes": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "index_files": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+      }
+    },
+    "bm25LiveBuildAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type", "span_id", "calls", "elapsed_ns", "reused_segments", "changed_segments",
+        "new_segments", "mask_docs", "new_census_docs", "newly_dead_docs", "logical_census_bytes",
+        "changed_ns", "new_ns", "death_ns", "correction_keys", "segment_fanout", "retained_estimate_bytes"
+      ],
+      "properties": {
+        "type": { "const": "bm25_live_build_aggregate" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "calls": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "elapsed_ns": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "reused_segments": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "changed_segments": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "new_segments": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "mask_docs": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "new_census_docs": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "newly_dead_docs": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "logical_census_bytes": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "changed_ns": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "new_ns": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "death_ns": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "correction_keys": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "segment_fanout": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "retained_estimate_bytes": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+      }
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "target_capture_id", "target_span_id"],
+      "properties": {
+        "type": { "const": "link" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "target_capture_id": { "$ref": "#/$defs/id128" },
+        "target_span_id": { "$ref": "#/$defs/spanId" }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "code"],
+      "properties": {
+        "type": { "const": "health" },
+        "code": {
+          "enum": [
+            "invalid_attempt_token", "duplicate_attempt_token", "unlinked_attempt",
+            "span_id_exhausted", "clock_regressed", "missing_parent_span", "counter_overflow",
+            "queue_overflow", "record_too_large", "producer_after_close",
+            "foreign_capture_span"
+          ]
+        },
+        "count": { "type": "integer", "minimum": 1 },
+        "detail": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "footer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type", "schema_version", "capture_id", "closed_ns", "status",
+        "last_output_seq", "producer_leases", "events_attempted", "events_accepted",
+        "events_dropped", "events_written", "events_unwritten", "open_spans"
+      ],
+      "properties": {
+        "record_type": { "const": "footer" },
+        "schema_version": { "const": 2 },
+        "capture_id": { "$ref": "#/$defs/id128" },
+        "closed_ns": { "type": "integer", "minimum": 0 },
+        "status": { "enum": ["complete", "partial", "invalid"] },
+        "close_reason": { "enum": ["normal", "producer_timeout", "writer_error", "capture_cancelled"] },
+        "last_output_seq": { "type": "integer", "minimum": 0 },
+        "producer_leases": { "type": "integer", "minimum": 0 },
+        "events_attempted": { "type": "integer", "minimum": 0 },
+        "events_accepted": { "type": "integer", "minimum": 0 },
+        "events_dropped": { "type": "integer", "minimum": 0 },
+        "events_written": { "type": "integer", "minimum": 0 },
+        "events_unwritten": { "type": "integer", "minimum": 0 },
+        "open_spans": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

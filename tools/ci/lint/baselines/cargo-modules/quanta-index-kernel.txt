@@ -1,0 +1,35 @@
+
+crate quanta_index_kernel
+├── mod identity: pub(crate)
+├── mod projection: pub(crate)
+│   ├── struct ProjectionChange: pub(crate)
+│   ├── struct ProjectionDelta: pub(crate)
+│   └── struct ProjectionEditCursor: pub(self)
+├── mod registry: pub(crate)
+│   ├── struct Adapter: pub(self)
+│   ├── struct AdapterDescriptor: pub
+│   ├── struct AdapterRegistry: pub
+│   ├── trait ErasedAdapter: pub(self)
+│   ├── trait ErasedOwnerAdapter: pub(self)
+│   └── struct OwnerAdapter: pub(self)
+├── mod source: pub(crate)
+│   ├── struct PathRow: pub(self)
+│   ├── struct PathScratch: pub(self)
+│   └── struct SourceEditCursor: pub(self)
+├── mod spool: pub(crate)
+│   ├── struct EditSpool: pub(crate)
+│   ├── struct EditSpoolCursor: pub(crate)
+│   ├── type WorkScratchRow: pub(self)
+│   ├── struct WorkSpool: pub(crate)
+│   └── struct WorkSpoolMapCursor: pub(self)
+├── mod ticket: pub(crate)
+│   └── struct ReadTicket: pub
+└── mod update: pub(crate)
+    ├── trait ControlCatalog: pub
+    ├── struct IngressSink: pub(self)
+    ├── struct Kernel: pub
+    ├── struct KernelServices: pub
+    ├── enum OperationExecutionClass: pub
+    ├── struct PendingCoverageLeaf: pub(self)
+    ├── enum ResumeDispatch: pub
+    └── struct StageMutationCursor: pub(self)

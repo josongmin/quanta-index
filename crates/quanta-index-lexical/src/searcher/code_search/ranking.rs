@@ -213,7 +213,7 @@ fn stored_offset(doc: &TantivyDocument, field: tantivy::schema::Field) -> Result
 pub(super) fn typo_declaration_distances(
     owner: &TantivySearcher,
     authority: &FileAuthority,
-    selected: &[&quanta_index_contract::SourceFileKey],
+    selected: &[quanta_index_contract::SourceFileKey],
     identifier: &str,
     case: CaseMode,
     budget: &RequestBudgetV1,
@@ -228,10 +228,7 @@ pub(super) fn typo_declaration_distances(
         else {
             continue;
         };
-        let file = authority
-            .files
-            .get(*key)
-            .ok_or_else(|| CoreError::Storage("lexical: declaration file is absent".into()))?;
+        let file = metadata_for_key(authority, key, budget)?;
         if coverage.source != file.source {
             return Err(CoreError::Storage(
                 "lexical: declaration coverage has stale source".into(),
@@ -240,7 +237,7 @@ pub(super) fn typo_declaration_distances(
         if matches!(coverage.symbols, SymbolCoverage::Complete { symbol_count } if symbol_count > 0)
             && coverage.symbol_name_source_policy == SymbolNameSourcePolicyV1::RawAsciiLocalName
         {
-            let _inserted = files.insert((*key).clone());
+            let _inserted = files.insert(key.clone());
         }
     }
     let mut distances = BTreeMap::new();
@@ -279,10 +276,8 @@ pub(super) fn typo_declaration_distances(
         let source = symbol
             .source
             .ok_or_else(|| CoreError::Storage("lexical: typo declaration lacks source".into()))?;
-        let file = authority.files.get(&source.file).ok_or_else(|| {
-            CoreError::Storage("lexical: typo declaration has no file authority".into())
-        })?;
-        if source != file.source || !files.contains(&source.file) {
+        let metadata = metadata_for_key(authority, &source.file, budget)?;
+        if source != metadata.source || !files.contains(&source.file) {
             return Err(CoreError::Storage(
                 "lexical: typo declaration source differs".into(),
             ));
@@ -301,6 +296,7 @@ pub(super) fn typo_declaration_distances(
         }
         let start = stored_offset(&doc, owner.fields.symbol_definition_start_byte)?;
         let end = stored_offset(&doc, owner.fields.symbol_definition_end_byte)?;
+        let file = authority.load_file_for_key(&source.file, budget)?;
         let definition = file.bytes.get(start..end).ok_or_else(|| {
             CoreError::Storage("lexical: typo declaration range is outside source".into())
         })?;

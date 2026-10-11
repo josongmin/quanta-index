@@ -6,8 +6,7 @@
 )]
 
 use crate::index_store::{
-    copy_atomic_durable, require_current_unsealed_index_format_if_materialized,
-    sealed_identity_entry_present, write_atomic_durable,
+    require_current_unsealed_index_format_if_materialized, sealed_identity_entry_present,
 };
 #[cfg(test)]
 use crate::publication_faults::{Cut, Side, inherited_cut_core, reach_core};
@@ -76,26 +75,42 @@ fn read_generation_marker(
     Ok(Some(ManifestGeneration::new(raw)))
 }
 
+#[cfg(test)]
 pub(crate) fn persist_lexical_delta_base(
     generation_dir: &Path,
     base_generation: ManifestGeneration,
 ) -> Result<(), CoreError> {
-    persist_generation_marker(&lexical_delta_base_path(generation_dir), base_generation)
+    persist_lexical_delta_base_observed(generation_dir, base_generation, None)
 }
 
-pub(crate) fn persist_delta_clone_intent(
+pub(crate) fn persist_lexical_delta_base_observed(
     generation_dir: &Path,
     base_generation: ManifestGeneration,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<(), CoreError> {
+    persist_generation_marker(
+        &lexical_delta_base_path(generation_dir),
+        base_generation,
+        sync,
+    )
+}
+
+pub(crate) fn persist_delta_clone_intent_observed(
+    generation_dir: &Path,
+    base_generation: ManifestGeneration,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<(), CoreError> {
     persist_generation_marker(
         &generation_dir.join(LEXICAL_DELTA_CLONE_INTENT_FILE_NAME),
         base_generation,
+        sync,
     )
 }
 
 fn persist_generation_marker(
     path: &Path,
     base_generation: ManifestGeneration,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<(), CoreError> {
     let mut bytes = Vec::new();
     ciborium::into_writer(&base_generation.get(), &mut bytes).map_err(|error| {
@@ -104,11 +119,14 @@ fn persist_generation_marker(
             base_generation.get()
         ))
     })?;
-    write_atomic_durable(path, &bytes, "delta base marker")
+    crate::index_store::write_atomic_durable_observed(path, &bytes, "delta base marker", sync)
 }
 
 /// Called only after the completed-base marker has been published durably.
-pub(crate) fn finish_delta_clone_intent(generation_dir: &Path) -> Result<(), CoreError> {
+pub(crate) fn finish_delta_clone_intent_observed(
+    generation_dir: &Path,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<(), CoreError> {
     #[cfg(test)]
     reach_core(Cut::DeltaCloneIntentCleanup, Side::Before)?;
     match std::fs::remove_file(generation_dir.join(LEXICAL_DELTA_CLONE_INTENT_FILE_NAME)) {
@@ -124,7 +142,7 @@ pub(crate) fn finish_delta_clone_intent(generation_dir: &Path) -> Result<(), Cor
     reach_core(Cut::DeltaCloneIntentCleanup, Side::After)?;
     #[cfg(test)]
     reach_core(Cut::DeltaCloneDirectorySync, Side::Before)?;
-    sync_generation_directory(generation_dir)?;
+    sync_generation_directory_observed(generation_dir, sync)?;
     #[cfg(test)]
     reach_core(Cut::DeltaCloneDirectorySync, Side::After)?;
     Ok(())
@@ -178,7 +196,11 @@ pub(crate) fn is_seal_marker_entry(file_name: &str) -> bool {
 }
 
 /// Materializes one inherited entry: link the immutable ones, copy the rest.
-pub(crate) fn inherit_generation_entry(source: &Path, target: &Path) -> Result<(), CoreError> {
+fn inherit_generation_entry_observed(
+    source: &Path,
+    target: &Path,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<(), CoreError> {
     let file_name = source
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
@@ -189,7 +211,7 @@ pub(crate) fn inherit_generation_entry(source: &Path, target: &Path) -> Result<(
             ))
         })?;
     if is_generation_local_entry(file_name) {
-        return copy_atomic_durable(source, target);
+        return crate::index_store::copy_atomic_durable_observed(source, target, sync);
     }
     // Both paths live under one state root, so they are always on one device.
     // A failure here is a real storage fault, not a reason to quietly fall back
@@ -244,7 +266,7 @@ pub(crate) fn clone_generation_directory_preserving_existing(
     src: &Path,
     dst: &Path,
 ) -> Result<(), CoreError> {
-    clone_generation_directory(src, dst, false)
+    clone_generation_directory(src, dst, false, None)
 }
 
 /// Resume inheritance before any writer can open the target.
@@ -252,14 +274,20 @@ pub(crate) fn clone_generation_directory_preserving_existing(
 /// Recopy private Tantivy metadata on retry: an interrupted copy can leave an existing but
 /// incomplete file. Immutable links and generation-owned overlays retain
 /// their existing precedence.
-pub(crate) fn clone_generation_directory_replaying_intent(
+pub(crate) fn clone_generation_directory_replaying_intent_observed(
     src: &Path,
     dst: &Path,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<(), CoreError> {
-    clone_generation_directory(src, dst, true)
+    clone_generation_directory(src, dst, true, sync)
 }
 
-fn clone_generation_directory(src: &Path, dst: &Path, replaying: bool) -> Result<(), CoreError> {
+fn clone_generation_directory(
+    src: &Path,
+    dst: &Path,
+    replaying: bool,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<(), CoreError> {
     if !src.exists() {
         return Err(CoreError::NotReady(format!(
             "lexical: base generation missing at {}",
@@ -293,7 +321,7 @@ fn clone_generation_directory(src: &Path, dst: &Path, replaying: bool) -> Result
             ))
         })?;
         if file_type.is_dir() {
-            clone_generation_directory(&entry_path, &target_path, replaying)?;
+            clone_generation_directory(&entry_path, &target_path, replaying, sync)?;
             continue;
         }
         if replaying
@@ -302,7 +330,7 @@ fn clone_generation_directory(src: &Path, dst: &Path, replaying: bool) -> Result
                 .to_str()
                 .is_some_and(is_generation_local_entry)
         {
-            inherit_generation_entry(&entry_path, &target_path)?;
+            inherit_generation_entry_observed(&entry_path, &target_path, sync)?;
             continue;
         }
         if target_path.exists() {
@@ -315,10 +343,10 @@ fn clone_generation_directory(src: &Path, dst: &Path, replaying: bool) -> Result
         {
             continue;
         }
-        inherit_generation_entry(&entry_path, &target_path)?;
+        inherit_generation_entry_observed(&entry_path, &target_path, sync)?;
     }
     if replaying {
-        sync_generation_directory(dst)?;
+        sync_generation_directory_observed(dst, sync)?;
     }
     Ok(())
 }
@@ -343,9 +371,20 @@ pub(crate) fn ensure_unsealed(
 
 /// Make the generation directory's entries durable before a door admits it.
 pub(crate) fn sync_generation_directory(generation_dir: &Path) -> Result<(), CoreError> {
+    sync_generation_directory_observed(generation_dir, None)
+}
+
+pub(crate) fn sync_generation_directory_observed(
+    generation_dir: &Path,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<(), CoreError> {
     sealed_generation::open_generation_dir_nofollow(generation_dir)
         .and_then(|directory| {
-            crate::causal_profile::timed_sync("generation_directory", || directory.sync_all())
+            crate::causal_profile::observed_sync_legacy(
+                sync,
+                quanta_index_core::DiagnosticSyncLabelV1::GenerationDirectory,
+                || directory.sync_all(),
+            )
         })
         .map_err(|error| {
             CoreError::Storage(format!(
@@ -361,12 +400,21 @@ pub(crate) fn sync_generation_directory(generation_dir: &Path) -> Result<(), Cor
 /// hard-linked into another generation counts here too; the disk frees it
 /// when its last link goes. Writer lock files and symlinks are excluded.
 pub(crate) fn generation_tree_bytes(track_root: &Path, root: &Path) -> Result<u64, CoreError> {
-    unique_inode_tree_bytes_below_track(track_root, root, &is_writer_lock_entry).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: measure generation dir {}: {error}",
-            root.display()
-        ))
-    })
+    generation_tree_bytes_observed(track_root, root, None)
+}
+
+pub(crate) fn generation_tree_bytes_observed(
+    track_root: &Path,
+    root: &Path,
+    diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+) -> Result<u64, CoreError> {
+    unique_inode_tree_bytes_below_track(track_root, root, &is_writer_lock_entry, diagnostic)
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: measure generation dir {}: {error}",
+                root.display()
+            ))
+        })
 }
 
 #[cfg(test)]

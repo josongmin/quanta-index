@@ -503,6 +503,27 @@ pub(crate) fn read_committed_coverage_root_at(
     Ok(bytes)
 }
 
+/// Authenticate the publication identity without decoding every coverage page.
+///
+/// Sealed-attempt settlement needs only this committed event and the owning
+/// generation, while serving and scrub retain their full coverage checks.
+pub(crate) fn read_committed_publication_at(
+    opened: &File,
+    directory: &Path,
+    root: &SealedArtifactCommitmentV1,
+    expected: &GenerationSnapshot,
+) -> Result<SourcePublicationEvent, CoreError> {
+    let bytes = read_committed_coverage_root_at(opened, directory, root)?;
+    let ((_, identity, publication, _), _) = decode_root(&bytes, directory)?;
+    if identity != *expected {
+        return Err(corrupt(
+            directory,
+            "publication root belongs to another generation",
+        ));
+    }
+    Ok(publication)
+}
+
 #[cfg(test)]
 pub(crate) fn decode_coverage_pages(
     bytes: &[u8],
@@ -663,6 +684,7 @@ pub(crate) fn read_coverage_root(directory: &Path) -> Result<Option<Vec<u8>>, Co
     }
 }
 
+#[cfg(test)]
 pub(crate) fn write_coverage_pages(
     directory: &Path,
     identity: &GenerationSnapshot,
@@ -670,6 +692,26 @@ pub(crate) fn write_coverage_pages(
     snapshot: &CoverageSnapshot,
     base: Option<&CoverageWriteBase>,
     touched: &BTreeSet<u8>,
+) -> Result<SealedArtifactCommitmentV1, CoreError> {
+    write_coverage_pages_observed(
+        directory,
+        identity,
+        publication,
+        snapshot,
+        base,
+        touched,
+        None,
+    )
+}
+
+pub(crate) fn write_coverage_pages_observed(
+    directory: &Path,
+    identity: &GenerationSnapshot,
+    publication: &SourcePublicationEvent,
+    snapshot: &CoverageSnapshot,
+    base: Option<&CoverageWriteBase>,
+    touched: &BTreeSet<u8>,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<SealedArtifactCommitmentV1, CoreError> {
     publication
         .validate()
@@ -774,7 +816,7 @@ pub(crate) fn write_coverage_pages(
                 return Err(corrupt(directory, "pre-existing coverage page differs"));
             }
         } else if let Some(raw) = encoded.get(&name) {
-            crate::index_store::write_atomic_durable(&target, raw, "coverage page")?;
+            crate::index_store::write_atomic_durable_observed(&target, raw, "coverage page", sync)?;
         } else if let Some(base) = base {
             std::fs::hard_link(base.directory.join(&name), &target).map_err(|error| {
                 CoreError::Storage(format!("inherit coverage page {name}: {error}"))
@@ -786,10 +828,11 @@ pub(crate) fn write_coverage_pages(
     // Publish the new root while every page named by the old root still
     // exists. A crash before the rename leaves the old root readable; a
     // crash after it leaves the new root readable. The retry cleans orphans.
-    crate::index_store::write_atomic_durable(
+    crate::index_store::write_atomic_durable_observed(
         &directory.join(SOURCE_FILE_COVERAGE_FILE_NAME),
         &root,
         "coverage root",
+        sync,
     )?;
     let mut removed_orphan = false;
     for entry in
@@ -808,9 +851,11 @@ pub(crate) fn write_coverage_pages(
     if removed_orphan {
         File::open(directory)
             .and_then(|directory| {
-                crate::causal_profile::timed_sync("coverage_orphan_directory", || {
-                    directory.sync_all()
-                })
+                crate::causal_profile::observed_sync_legacy(
+                    sync,
+                    quanta_index_core::DiagnosticSyncLabelV1::CoverageOrphanDirectory,
+                    || directory.sync_all(),
+                )
             })
             .map_err(|error| {
                 CoreError::Storage(format!(

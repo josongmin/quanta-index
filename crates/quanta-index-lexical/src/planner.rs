@@ -554,7 +554,7 @@ mod tests {
             let matched_leaf = matches!(
                 &plan.root,
                 PlanNode::Leaf { leaf: PlanLeaf::Regex { source, plan: regex_plan }, .. }
-                    if source == "foo.bar" && !regex_plan.literal_alternation().is_empty()
+                    if source == "foo.bar" && !matches!(regex_plan.necessary_gram_expr(), quanta_index_lq_trigram::NecessaryGramExpr::AllDocs)
             );
             assert!(
                 matched_leaf,

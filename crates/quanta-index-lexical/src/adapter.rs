@@ -14,14 +14,10 @@ use crate::documents::{
 };
 use crate::generation_dir::ensure_unsealed;
 use crate::generation_dir::{
-    clone_generation_directory_replaying_intent, ensure_base_generation_is_servable,
-    finish_delta_clone_intent, lexical_index_content_exists, persist_delta_clone_intent,
-    persist_lexical_delta_base, read_delta_clone_intent, read_lexical_delta_base,
+    ensure_base_generation_is_servable, lexical_index_content_exists, read_delta_clone_intent,
+    read_lexical_delta_base,
 };
-use crate::index_store::{
-    ensure_current_unsealed_index_format_for_writer, read_lexical_sealed_identity,
-    validate_lexical_sealed_identity,
-};
+use crate::index_store::{read_lexical_sealed_identity, validate_lexical_sealed_identity};
 use crate::overlay_codec::OverlayFamily;
 use crate::overlay_codec::{decode_repo_metadata_payload, encode_repo_metadata_payload};
 use crate::regex::RegexPolicy;
@@ -51,6 +47,12 @@ use tantivy::schema::TantivyDocument;
 use tantivy::{IndexWriter, Term};
 
 impl LexicalAdapter {
+    /// The configured lexical track root. This accessor does not open or create it.
+    #[must_use]
+    pub fn state_root(&self) -> &std::path::Path {
+        &self.state_root
+    }
+
     /// Construct an adapter rooted at the given directory with the default
     /// [`RegexPolicy`] and [`LexicalExecutionBudgetV1`]. The directory will be
     /// created lazily as generations are materialized.
@@ -95,6 +97,10 @@ impl LexicalAdapter {
             scrub_progress: Mutex::new(
                 quanta_index_core::domains::integrity::IntegrityScrubProgressV1::default(),
             ),
+            shared_scrub_progress: Mutex::new(
+                crate::sealed_generation::SharedScrubProgress::default(),
+            ),
+            shared_gc: Mutex::new(None),
         }
     }
 
@@ -222,6 +228,21 @@ impl LexicalAdapter {
         stats.shards_inherited = stats
             .shards_inherited
             .saturating_add(receipt.shards_inherited);
+        stats.posting_pages_written = stats
+            .posting_pages_written
+            .saturating_add(receipt.posting_pages_written);
+        stats.oversized_posting_pages = stats
+            .oversized_posting_pages
+            .saturating_add(receipt.oversized_posting_pages);
+        stats.oversized_posting_bytes = stats
+            .oversized_posting_bytes
+            .saturating_add(receipt.oversized_posting_bytes);
+        stats.compaction_rederived_docs = stats
+            .compaction_rederived_docs
+            .saturating_add(receipt.compaction_rederived_docs);
+        stats.compaction_rederived_text_bytes = stats
+            .compaction_rederived_text_bytes
+            .saturating_add(receipt.compaction_rederived_text_bytes);
         drop(stats);
         Ok(())
     }
@@ -298,11 +319,20 @@ impl LexicalAdapter {
     /// scores use live rows, and drops the writer from the cache so nothing
     /// can commit to this generation again. A sealed generation is never built again,
     /// so its heap goes back to the envelope now.
+    #[cfg(test)]
     pub(crate) fn finalize_index_for_seal(
         &self,
         key: &GenKey,
     ) -> Result<crate::writer_cache::WriterSealTimings, CoreError> {
-        let handle = self.writer_handle(key)?;
+        self.finalize_index_for_seal_observed(key, None)
+    }
+
+    pub(crate) fn finalize_index_for_seal_observed(
+        &self,
+        key: &GenKey,
+        sync: Option<&crate::causal_profile::SyncTotalsV1>,
+    ) -> Result<crate::writer_cache::WriterSealTimings, CoreError> {
+        let handle = self.writer_handle_observed(key, sync)?;
         drop(handle);
         self.writers
             .lock()
@@ -310,16 +340,17 @@ impl LexicalAdapter {
             .release(key, WriterRelease::Seal)
     }
 
-    pub(crate) fn writer_handle(
+    pub(crate) fn writer_handle_observed(
         &self,
         key: &GenKey,
+        sync: Option<&crate::causal_profile::SyncTotalsV1>,
     ) -> Result<Arc<Mutex<GenerationWriter>>, CoreError> {
         let path = self.index_path(key);
         let mut guard = self
             .writers
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
-        guard.get_or_open(key, &self.fields, &path, Instant::now())
+        guard.get_or_open_observed(key, &self.fields, &path, Instant::now(), sync)
     }
 
     /// Commit and release every writer nothing has touched for the policy's
@@ -387,6 +418,15 @@ impl LexicalAdapter {
         key: &GenKey,
         base: Option<ManifestGeneration>,
     ) -> Result<(), CoreError> {
+        self.prepare_generation_from_base_observed(key, base, None)
+    }
+
+    pub(crate) fn prepare_generation_from_base_observed(
+        &self,
+        key: &GenKey,
+        base: Option<ManifestGeneration>,
+        sync: Option<&crate::causal_profile::SyncTotalsV1>,
+    ) -> Result<(), CoreError> {
         let Some(requested_base) = base else {
             return Ok(());
         };
@@ -402,7 +442,10 @@ impl LexicalAdapter {
             if recorded_base == requested_base {
                 // Missing intent can mean unlink succeeded but its directory
                 // barrier failed. Replay the barrier without re-cloning.
-                return finish_delta_clone_intent(&target_path);
+                return crate::generation_dir::finish_delta_clone_intent_observed(
+                    &target_path,
+                    sync,
+                );
             }
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
@@ -434,13 +477,28 @@ impl LexicalAdapter {
         // The base manifest (or an unsealed producer marker) proves its index
         // format. Stamp the empty delta target before copying its index commit;
         // a crash after the copy must never relabel an unproved old index.
-        ensure_current_unsealed_index_format_for_writer(&target_path)?;
+        crate::index_store::ensure_current_unsealed_index_format_for_writer_observed(
+            &target_path,
+            sync,
+        )?;
         if pending_base.is_none() {
-            persist_delta_clone_intent(&target_path, requested_base)?;
+            crate::generation_dir::persist_delta_clone_intent_observed(
+                &target_path,
+                requested_base,
+                sync,
+            )?;
         }
-        clone_generation_directory_replaying_intent(&base_path, &target_path)?;
-        persist_lexical_delta_base(&target_path, requested_base)?;
-        finish_delta_clone_intent(&target_path)
+        crate::generation_dir::clone_generation_directory_replaying_intent_observed(
+            &base_path,
+            &target_path,
+            sync,
+        )?;
+        crate::generation_dir::persist_lexical_delta_base_observed(
+            &target_path,
+            requested_base,
+            sync,
+        )?;
+        crate::generation_dir::finish_delta_clone_intent_observed(&target_path, sync)
     }
 
     pub(crate) fn delete_scope_docs(
@@ -482,6 +540,7 @@ impl LexicalAdapter {
         &self,
         key: &GenKey,
         op: &LexicalChannelOp,
+        sync: Option<&crate::causal_profile::SyncTotalsV1>,
     ) -> Result<bool, CoreError> {
         if let LexicalChannelOp::FullBundle(bundle) = op {
             let generation_dir = self.index_path(key);
@@ -490,8 +549,9 @@ impl LexicalAdapter {
                     &generation_dir,
                     OverlayFamily::RepoMetadata,
                     &encode_repo_metadata_payload(&metadata)?,
+                    sync,
                 )?,
-                None => remove_overlay(&generation_dir, OverlayFamily::RepoMetadata)?,
+                None => remove_overlay(&generation_dir, OverlayFamily::RepoMetadata, sync)?,
             }
         }
         Ok(false)
@@ -515,7 +575,7 @@ impl LexicalAdapter {
         let _lifecycle = self.directory_lifecycle_read_guard()?;
         let generation_dir = self.index_path(key);
         ensure_unsealed(&generation_dir, key.generation, family.file_name())?;
-        persist_overlay(&generation_dir, family, bytes)?;
+        persist_overlay(&generation_dir, family, bytes, None)?;
         let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
             key.generation,
             None,
@@ -570,6 +630,7 @@ impl LexicalAdapter {
         op: &LexicalChannelOp,
         allocator: &mut TextDocAllocator,
         census_observation: &mut crate::doc_census::CensusBuildObservation,
+        sync: Option<&crate::causal_profile::SyncTotalsV1>,
     ) -> Result<bool, CoreError> {
         match op {
             LexicalChannelOp::UpsertChunk(upsert) => {
@@ -577,7 +638,11 @@ impl LexicalAdapter {
                 let term = Term::from_field_text(self.fields.candidate_id, candidate_id);
                 let _opstamp = writer.delete_term(term);
                 let chunk = decode_chunk_payload(&upsert.payload)?;
-                let doc_id = allocator.allocate(candidate_id, chunk.text.as_ref())?;
+                let source_file = quanta_index_contract::SourceFileKey {
+                    source_repo_id: chunk.searchable_repo_id(&key.repo_id).clone(),
+                    repo_relative_path: chunk.repo_relative_path.clone(),
+                };
+                let doc_id = allocator.allocate(candidate_id, chunk.text.as_ref(), &source_file)?;
                 let mut doc = TantivyDocument::new();
                 doc.add_u64(self.fields.text_authority_doc_id, doc_id);
                 doc.add_text(self.fields.candidate_id, candidate_id);
@@ -657,8 +722,11 @@ impl LexicalAdapter {
                     decode_replace_scope_payload(&payload.payload)?;
                 self.delete_scope_docs(writer, &scope.coverage.source.file)?;
                 for chunk in &scope.chunks {
-                    let doc_id =
-                        allocator.allocate(chunk.chunk_id.as_str(), chunk.text.as_ref())?;
+                    let doc_id = allocator.allocate(
+                        chunk.chunk_id.as_str(),
+                        chunk.text.as_ref(),
+                        &scope.coverage.source.file,
+                    )?;
                     let mut doc = TantivyDocument::new();
                     doc.add_u64(self.fields.text_authority_doc_id, doc_id);
                     doc.add_text(self.fields.candidate_id, chunk.chunk_id.as_str());
@@ -754,7 +822,7 @@ impl LexicalAdapter {
             }
             // FullBundle/Seal carry no document-level effect (dispatcher's
             // ledger update observes Seal).
-            LexicalChannelOp::FullBundle(_) => self.apply_snapshot_op(key, op),
+            LexicalChannelOp::FullBundle(_) => self.apply_snapshot_op(key, op, sync),
             LexicalChannelOp::Seal(_)
             | LexicalChannelOp::UpsertCommit(_)
             | LexicalChannelOp::UpsertRef(_)

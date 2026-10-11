@@ -158,6 +158,7 @@ fn query(
     phrase: &str,
 ) -> Result<SearchPlaneQueryIpcResponse, Box<dyn Error>> {
     let request = SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id,
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Native,

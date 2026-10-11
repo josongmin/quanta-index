@@ -28,6 +28,7 @@ use quanta_index_contract::{
     RepoMapActiveHeadRequestV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
     RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapQueryResponse,
     RepoMapTerminalReceiptV2, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1,
+    SearchCorpusGenerationReservationRequestV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
@@ -85,6 +86,7 @@ impl ExpectedQueryResponseV1 {
 /// The one response variant a control-plane call accepts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExpectedControlResponseV1 {
+    SearchCorpusGenerationReservationV1,
     SearchCorpusActivationCasAck,
     SearchCorpusRollbackCasAck,
     RepoMapTerminalReceiptV2,
@@ -103,6 +105,7 @@ impl ExpectedControlResponseV1 {
     #[must_use]
     pub(crate) const fn kind(self) -> &'static str {
         match self {
+            Self::SearchCorpusGenerationReservationV1 => "search_corpus_generation_reservation_v1",
             Self::SearchCorpusActivationCasAck => "search_corpus_activation_cas_ack",
             Self::SearchCorpusRollbackCasAck => "search_corpus_rollback_cas_ack",
             Self::RepoMapTerminalReceiptV2 => "repomap_terminal_receipt_v2",
@@ -1108,6 +1111,7 @@ pub(crate) struct ControlCallBinding {
 enum ControlCall {
     /// A response whose request carries no identity to echo.
     Intrinsic,
+    ReserveGeneration(SearchCorpusGenerationReservationRequestV1),
     Activate(SearchPlaneActivateSearchCorpusGenerationCasRequest),
     Rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest),
     ActivateRepoMapV2(RepoMapActivateGenerationRequestV2),
@@ -1129,6 +1133,10 @@ impl ControlCallBinding {
     /// over the closed request enum.
     pub(crate) fn from_request(request: &SearchPlaneControlIpcRequest) -> Self {
         match request {
+            SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(payload) => Self {
+                expected: ExpectedControlResponseV1::SearchCorpusGenerationReservationV1,
+                inner: ControlCall::ReserveGeneration(payload.clone()),
+            },
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(payload) => Self {
                 expected: ExpectedControlResponseV1::SearchCorpusActivationCasAck,
                 inner: ControlCall::Activate(payload.clone()),
@@ -1335,6 +1343,31 @@ pub(crate) fn bind_control_response(
         )
     };
     match response {
+        SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(reservation) => {
+            if binding.expected != ExpectedControlResponseV1::SearchCorpusGenerationReservationV1 {
+                return Err(variant("search_corpus_generation_reservation_v1"));
+            }
+            reservation.validate_v1().map_err(|error| {
+                SdkError::Protocol(format!(
+                    "invalid search corpus generation reservation: {error}"
+                ))
+            })?;
+            let ControlCall::ReserveGeneration(request) = &binding.inner else {
+                return Err(variant("search_corpus_generation_reservation_v1"));
+            };
+            if reservation.repo_id != request.repo_id
+                || reservation.revision_id != request.revision_id
+                || reservation.source_event != request.source_event
+            {
+                return Err(binding_error(
+                    route,
+                    ResponseBindingAxis::TargetIdentity,
+                    "the requested repo/revision/source event",
+                    "a different reservation identity",
+                ));
+            }
+            Ok(())
+        }
         SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => {
             if binding.expected != ExpectedControlResponseV1::SearchCorpusActivationCasAck {
                 return Err(variant("search_corpus_activation_cas_ack"));

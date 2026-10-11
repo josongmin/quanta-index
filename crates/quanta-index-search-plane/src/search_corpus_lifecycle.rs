@@ -7,6 +7,8 @@
 //! check guards against).  Lower storage owners must not introduce another
 //! pair-local mutation lock.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -34,7 +36,7 @@ mod pair_lock;
 
 pub(crate) use pair_lock::{
     ActiveSearchCorpusPinReadPort, SearchCorpusPairMutationCoordinator,
-    SearchCorpusPairMutationGuard,
+    SearchCorpusPairMutationGuard, UnresolvedSourceTargetV1,
 };
 
 pub(crate) const ERR_ACTIVATION_TARGET_UNOPENABLE: quanta_index_contract::SearchPlaneErrorCodeV2 =
@@ -348,16 +350,59 @@ impl ActivationPromotionParts {
                 ));
             }
         };
-        // Retire before the adapter writes a quarantine receipt. Otherwise a
-        // previously resident handle could keep serving the quarantined key.
-        // The fence is released after the re-proof: a fresh open must consult
-        // the receipt (or re-prove a finding that was not reproduced).
-        let finding = door_findings.quarantine_door_finding(target);
-        let finished = self.snapshots.finish_retirement(
-            target.track,
-            &key,
-            SnapshotRetirementOwner::DoorFinding,
-        );
+        // The initial target is already retired above. Shared storage can
+        // discover more affected generations during re-proof; fence each one
+        // before its receipt is published, including in-flight promotions.
+        let fenced = RefCell::new(BTreeMap::from([(key, target.clone())]));
+        let before_quarantine = |affected: &GenerationSnapshot| -> Result<(), CoreError> {
+            if affected.track != target.track {
+                return Err(CoreError::InvalidContract(
+                    "door finding: quarantine fence crossed storage tracks".into(),
+                ));
+            }
+            let affected_key = SnapshotKey::new(
+                &affected.repo_id,
+                &affected.revision_id,
+                affected.manifest_generation,
+            );
+            if fenced.borrow().contains_key(&affected_key) {
+                return Ok(());
+            }
+            let _retired = match affected.track {
+                SearchPlaneTrackKind::Lexical => self
+                    .snapshots
+                    .lexical
+                    .retire(&affected_key, SnapshotRetirementOwner::DoorFinding)?,
+                SearchPlaneTrackKind::Semantic => self
+                    .snapshots
+                    .semantic
+                    .retire(&affected_key, SnapshotRetirementOwner::DoorFinding)?,
+                SearchPlaneTrackKind::Structural => {
+                    return Err(CoreError::InvalidContract(
+                        "door finding: structural is not a search-corpus track".into(),
+                    ));
+                }
+            };
+            let _prior = fenced.borrow_mut().insert(affected_key, affected.clone());
+            Ok(())
+        };
+        let finding = door_findings.quarantine_door_finding_with_fence(target, &before_quarantine);
+        // A failed re-proof may have fenced a generation without making its
+        // receipt durable. Keep admission closed until a clean proof or repair
+        // settles it. Successful re-proofs can defer future admission to disk.
+        let finished = match &finding {
+            Ok(_) => fenced
+                .borrow()
+                .iter()
+                .try_for_each(|(affected_key, affected)| {
+                    self.snapshots.finish_retirement(
+                        affected.track,
+                        affected_key,
+                        SnapshotRetirementOwner::DoorFinding,
+                    )
+                }),
+            Err(_) => Ok(()),
+        };
         let recorded = match (finding, finished) {
             (Ok(DoorFindingOutcome::Quarantined { quarantined }), Err(error)) => format!(
                 "quarantined as {} at {}, but the snapshot retirement could not finish: {error}",
@@ -379,7 +424,9 @@ impl ActivationPromotionParts {
             (Ok(DoorFindingOutcome::NotReproduced), Ok(())) => {
                 "the re-proof admitted the generation; nothing was quarantined".to_string()
             }
-            (Err(error), Ok(())) => format!("the quarantine was not recorded: {error}"),
+            (Err(error), Ok(())) => {
+                format!("the quarantine re-proof failed; admission remains fenced: {error}")
+            }
         };
         CoreError::Typed {
             code: gate.error_code,
@@ -467,8 +514,13 @@ impl SearchCorpusLifecycleService {
                 event,
                 self.idempotency.as_ref(),
             )?;
+            let binding = record.binding_v1().ok_or_else(|| {
+                CoreError::NotReady(
+                    "source activation has an allocation without a committed publication".into(),
+                )
+            })?;
             let OperationInspectV1::Committed { receipt, .. } =
-                self.idempotency.inspect(&record.binding.journal_key)?
+                self.idempotency.inspect(&binding.journal_key)?
             else {
                 return Err(CoreError::NotReady(
                     "source activation lost its original committed journal".into(),
@@ -692,8 +744,8 @@ mod tests {
         SnapshotRegistries, SnapshotRegistryPolicy,
     };
     use quanta_index_core::{
-        CoreError, LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SemanticIndexOpenPort,
-        SemanticSearcher,
+        CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, LexicalIndexOpenPort,
+        LexicalSearcher, RequestBudgetV1, SemanticIndexOpenPort, SemanticSearcher,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -1275,6 +1327,109 @@ mod tests {
         Ok(())
     }
 
+    struct SharedDoorFindings {
+        affected: Vec<GenerationSnapshot>,
+        fail_after_fencing: bool,
+    }
+
+    impl DoorFindingQuarantinePort for SharedDoorFindings {
+        fn quarantine_door_finding(
+            &self,
+            _generation: &GenerationSnapshot,
+        ) -> Result<DoorFindingOutcome, CoreError> {
+            Err(CoreError::InvalidContract(
+                "shared finding requires resident fences".into(),
+            ))
+        }
+
+        fn quarantine_door_finding_with_fence(
+            &self,
+            generation: &GenerationSnapshot,
+            before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
+        ) -> Result<DoorFindingOutcome, CoreError> {
+            for affected in &self.affected {
+                before_quarantine(affected)?;
+            }
+            if self.fail_after_fencing {
+                return Err(CoreError::Storage("shared receipt failure".into()));
+            }
+            Ok(DoorFindingOutcome::Quarantined {
+                quarantined: quanta_index_core::QuarantinedGenerationV1 {
+                    track: generation.track,
+                    path: scripted_quarantine_path(generation),
+                    reason: quanta_index_core::GenerationQuarantineReasonV1::ContentCorrupt,
+                    detail: "shared corruption".into(),
+                },
+            })
+        }
+    }
+
+    #[test]
+    fn shared_door_findings_fence_all_references_and_keep_partial_failure_closed() -> TestResult {
+        let candidate = active_generation()?;
+        let target = candidate.lexical().clone();
+        let mut sibling = target.clone();
+        sibling.manifest_generation =
+            quanta_index_contract::ManifestGeneration::new(target.manifest_generation.get() + 1);
+        for fail_after_fencing in [false, true] {
+            let (mut promotion, _, _) = promotion_refusing(
+                Some((SearchPlaneTrackKind::Lexical, DoorRefusal::ContentDefect)),
+                ScriptedFinding::Quarantines,
+            );
+            promotion.lexical_door_findings = Arc::new(SharedDoorFindings {
+                affected: vec![target.clone(), sibling.clone()],
+                fail_after_fencing,
+            });
+            for affected in [&target, &sibling] {
+                let key = SnapshotKey::new(
+                    &affected.repo_id,
+                    &affected.revision_id,
+                    affected.manifest_generation,
+                );
+                let handle: Arc<dyn LexicalSearcher> = Arc::from(promotion.lexical_open.open(
+                    &affected.repo_id,
+                    &affected.revision_id,
+                    affected.manifest_generation,
+                    &RequestBudgetV1::unbounded(),
+                )?);
+                let _promoted = promotion.snapshots.lexical.begin_promotion(&key)?.promote(
+                    &OpenedSnapshot {
+                        handle,
+                        resident_bytes: 1,
+                    },
+                )?;
+            }
+            let (_, message) = refused_proof(&promotion, ACTIVATION_GATE)?;
+            assert_eq!(promotion.snapshots.lexical.stats()?.retirements, 2);
+            for affected in [&target, &sibling] {
+                let key = SnapshotKey::new(
+                    &affected.repo_id,
+                    &affected.revision_id,
+                    affected.manifest_generation,
+                );
+                let permit = promotion.snapshots.lexical.begin_promotion(&key);
+                assert_eq!(permit.is_err(), fail_after_fencing, "{message}");
+                drop(permit);
+            }
+            if fail_after_fencing {
+                for affected in [&target, &sibling] {
+                    let key = SnapshotKey::new(
+                        &affected.repo_id,
+                        &affected.revision_id,
+                        affected.manifest_generation,
+                    );
+                    assert!(
+                        promotion
+                            .snapshots
+                            .finish_integrity_fences_after_clean_proof(affected.track, &key)?
+                    );
+                    let _permit = promotion.snapshots.lexical.begin_promotion(&key)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Restart proves the serve head and fails closed.
     ///
     /// Its content defect is refused without asking any adapter to record
@@ -1319,7 +1474,7 @@ mod tests {
             ),
             (
                 ScriptedFinding::Fails,
-                "the quarantine was not recorded: not found: scripted: the generation directory is gone",
+                "the quarantine re-proof failed; admission remains fenced: not found: scripted: the generation directory is gone",
             ),
         ] {
             let (promotion, lexical, semantic) = promotion_refusing(

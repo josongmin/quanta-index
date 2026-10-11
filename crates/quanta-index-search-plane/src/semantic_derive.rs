@@ -50,7 +50,7 @@ struct ValidatedSemanticSourceScope<'a> {
     cluster_memberships: Vec<quanta_index_contract::ClusterMembershipReplaceV1>,
 }
 
-fn embedding_model_contract_for(
+pub(crate) fn embedding_model_contract_for(
     embedder: &dyn TextEmbeddingProvider,
     policy_digest: &str,
     view_policy_digest: Option<&str>,
@@ -77,6 +77,32 @@ fn embedding_model_contract_for(
         distance_metric: EmbeddingDistanceMetric::Cosine,
         policy_digest: format!("{model_id}:{policy_digest}").into_boxed_str(),
         view_policy_digest: view_policy_digest.map(|value| value.to_string().into_boxed_str()),
+    })
+}
+
+/// Project the same model and corpus contract as the streamed derivation,
+/// without constructing a scope source or invoking the embedding provider.
+///
+/// Paired ingest uses this for its before-intent and under-lock preflights.
+pub(crate) fn semantic_contract_for_search_corpus_preflight_v1(
+    batch: &SearchCorpusIngestBatch,
+    embedder: &dyn TextEmbeddingProvider,
+) -> Result<SemanticGenerationContractV1, CoreError> {
+    batch
+        .validate_surface_mutations_v1()
+        .map_err(|err| CoreError::InvalidContract(format!("semantic derivation: {err}")))?;
+    require_embedder_dimension(embedder)?;
+    let validated_scopes = validated_semantic_source_scopes_v1(batch)?;
+    Ok(SemanticGenerationContractV1 {
+        mode: batch.mode,
+        base_generation: batch.base_generation,
+        model_contract: embedding_model_contract_for(
+            embedder,
+            SEMANTIC_SOURCE_POLICY_DIGEST,
+            Some(SEMANTIC_SOURCE_VIEW_POLICY_DIGEST),
+        )?,
+        required_corpora: required_corpora_for_semantic_sources_v1(&validated_scopes),
+        corpus_policy_digest: Some(SEMANTIC_SOURCE_POLICY_DIGEST.to_string()),
     })
 }
 
@@ -1382,6 +1408,35 @@ mod tests {
         fn normalization(&self) -> EmbeddingNormalization {
             self.inner.normalization()
         }
+    }
+
+    #[test]
+    fn preflight_projection_matches_stream_contract_without_embedding() -> TestRes {
+        let batch = fixture_search_batch()?;
+        let embedder = RecordingEmbedder::new();
+        let projected = semantic_contract_for_search_corpus_preflight_v1(&batch, &embedder)?;
+        let derived = derive_semantic_stream_from_semantic_sources_v1(
+            &batch,
+            &embedder,
+            SemanticStreamWindowPolicy::DEFAULT,
+            None,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        if projected != derived.header.contract {
+            return Err(format!(
+                "preflight projection differs from streamed contract: projected={projected:?} streamed={:?}",
+                derived.header.contract,
+            )
+            .into());
+        }
+        let provider_calls = embedder.calls()?;
+        if !provider_calls.is_empty() {
+            return Err(format!(
+                "preflight projection or stream construction called provider: {provider_calls:?}"
+            )
+            .into());
+        }
+        Ok(())
     }
 
     /// Five typed owners distributed over three files.

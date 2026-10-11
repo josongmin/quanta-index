@@ -286,7 +286,11 @@ fn history_text_docs_of_delta(
 }
 
 impl HistoryIngestPort for DirectHistoryMaterializer {
-    fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+    fn publish_batch(
+        &self,
+        batch: &HistoryIngestBatch,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<BatchPublishReceipt, CoreError> {
         const WHAT: &str = "direct history materialize";
         let _serial = self.parts.coordinator.lock(&coordinator_owner())?;
         // The next epoch and the current snapshot are read under the
@@ -326,9 +330,10 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
             })
             .transpose()?;
         if let (Some(parts), Some(build)) = (&self.history_text, text_build) {
-            let _receipt = parts
-                .port
-                .publish_epoch(&delta.generation, delta.epoch, build)?;
+            let _receipt =
+                parts
+                    .port
+                    .publish_epoch(&delta.generation, delta.epoch, build, diagnostic)?;
         }
         let _durable = self.parts.catalog.apply(&history_delta_rows(&delta)?)?;
         {
@@ -354,7 +359,7 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
             // held by a reader, and any discard the storage fails, are left
             // to the next mutation of the generation, which reconciles
             // again; a refusal fails closed.
-            parts.reconcile_after_durable(&delta.generation, &retained)?;
+            parts.reconcile_after_durable(&delta.generation, &retained, diagnostic)?;
         }
         let mut receipt = BatchPublishReceipt::empty_for(
             batch.generation,

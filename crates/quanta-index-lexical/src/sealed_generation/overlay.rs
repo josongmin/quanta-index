@@ -23,6 +23,7 @@ pub(crate) fn persist_overlay(
     generation_dir: &Path,
     family: OverlayFamily,
     bytes: &[u8],
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<(), CoreError> {
     std::fs::create_dir_all(generation_dir).map_err(|err| {
         CoreError::Storage(format!(
@@ -31,10 +32,11 @@ pub(crate) fn persist_overlay(
             family.file_name()
         ))
     })?;
-    crate::index_store::write_atomic_durable(
+    crate::index_store::write_atomic_durable_observed(
         &family.path(generation_dir),
         bytes,
         family.file_name(),
+        sync,
     )
 }
 
@@ -42,6 +44,7 @@ pub(crate) fn persist_overlay(
 pub(crate) fn remove_overlay(
     generation_dir: &Path,
     family: OverlayFamily,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<(), CoreError> {
     let path = family.path(generation_dir);
     match std::fs::remove_file(&path) {
@@ -57,7 +60,11 @@ pub(crate) fn remove_overlay(
     }
     File::open(generation_dir)
         .and_then(|directory| {
-            crate::causal_profile::timed_sync("overlay_directory", || directory.sync_all())
+            crate::causal_profile::observed_sync_legacy(
+                sync,
+                quanta_index_core::DiagnosticSyncLabelV1::OverlayDirectory,
+                || directory.sync_all(),
+            )
         })
         .map_err(|err| {
             CoreError::Storage(format!(

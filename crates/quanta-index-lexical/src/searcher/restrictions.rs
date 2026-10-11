@@ -9,12 +9,13 @@ use crate::authority_doc_set::AuthorityDocSetQuery;
 use crate::metadata_normalize::standard_pattern_options;
 use crate::normalize::TextQueryError;
 use crate::query_errors::{map_text_query_error, text_query_tokens};
+use crate::searcher::authorities::NativeQueryScope;
 use crate::{TEXT_DOC_KIND, TantivySearcher, normalize};
 use quanta_index_contract::{
     LqExpr, LqFileScope, LqLeaf, LqOptions, LqPatternType, QueryConstraintSetV1,
 };
 use quanta_index_core::{CoreError, RequestBudgetV1};
-use roaring::RoaringBitmap;
+use roaring::RoaringTreemap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tantivy::Term;
@@ -186,7 +187,7 @@ impl TantivySearcher {
     /// (QI-BB-024). An empty set matches nothing.
     pub(crate) fn authority_restriction_query(
         &self,
-        members: Arc<RoaringBitmap>,
+        members: Arc<RoaringTreemap>,
     ) -> Box<dyn Query> {
         if members.is_empty() {
             return self.match_none_query();
@@ -304,6 +305,7 @@ impl TantivySearcher {
         &self,
         leaf: &LqLeaf,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<BTreeSet<quanta_index_contract::SourceFileKey>, CoreError> {
         // Predicate scope collection (`file.contains` / `file.has.content`)
         // intentionally compiles with `LqPatternType::Standard` regardless of
@@ -312,7 +314,7 @@ impl TantivySearcher {
         // to the user-facing executor pass downstream.
         let scope_options = standard_pattern_options();
         let compiled = self.with_doc_kind(
-            self.compile_leaf(leaf, &scope_options, false, budget)?,
+            self.compile_leaf(leaf, &scope_options, false, budget, native)?,
             TEXT_DOC_KIND,
         );
         let searcher = self.reader.searcher();

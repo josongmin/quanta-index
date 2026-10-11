@@ -23,11 +23,13 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, CoreError, FileContributorIngestPort, FileOwnershipIngestPort,
-    IdempotencyKeyV1, IngestBatchBodyV1 as _, IngestResourcePolicy, PublicationValidationOwner,
+    IdempotencyCatalogPort as _, IdempotencyKeyV1, IngestBatchBodyV1, IngestResourcePolicy,
+    OperationInspectV1, OperationJournalStateV1, PublicationValidationOwner,
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
     RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, RequestProviderStageV1,
     RequestStageDiagnosticPortV1, SearchCorpusIngestPort, SemanticIngestPort,
-    SemanticStreamWindowPolicy, TextEmbeddingProvider,
+    SemanticStreamWindowPolicy, SourceEventAllocationOutcomeV1, SourceEventAllocationRequestV1,
+    SourcePublicationCatalogPort as _, TextEmbeddingProvider,
 };
 use quanta_index_ipc::{canonical_batch_digest_v1, stamp_batch_digest_v1};
 
@@ -62,12 +64,43 @@ impl RequestStageDiagnosticPortV1 for RecordingProviderStages {
 /// A route the test never expects to reach.
 struct Unreachable;
 
+#[derive(Default)]
+struct CountingOverlay {
+    applies: AtomicUsize,
+}
+
+macro_rules! counting_overlay_port {
+    ($port:ident, $batch:ident) => {
+        impl $port for CountingOverlay {
+            fn publish_batch(&self, batch: &$batch) -> Result<BatchPublishReceipt, CoreError> {
+                let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
+                Ok(BatchPublishReceipt::empty_for(
+                    batch.generation,
+                    None,
+                    batch.batch_digest.clone(),
+                ))
+            }
+        }
+    };
+}
+
+counting_overlay_port!(RepoCommitRecencyIngestPort, RepoCommitRecencyIngestBatch);
+counting_overlay_port!(RepoTopicIngestPort, RepoTopicIngestBatch);
+counting_overlay_port!(RepoDescriptionIngestPort, RepoDescriptionIngestBatch);
+counting_overlay_port!(FileOwnershipIngestPort, FileOwnershipIngestBatch);
+counting_overlay_port!(FileContributorIngestPort, FileContributorIngestBatch);
+counting_overlay_port!(RepoMetaIngestPort, RepoMetaIngestBatch);
+
 fn unreachable_route(route: &str) -> CoreError {
     CoreError::Storage(format!("test: {route} route must not be reached"))
 }
 
 impl SearchCorpusIngestPort for Unreachable {
-    fn preflight_batch(&self, _batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+    fn preflight_batch(
+        &self,
+        _batch: &SearchCorpusIngestBatch,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
         Err(unreachable_route("search corpus preflight"))
     }
 
@@ -80,7 +113,11 @@ impl SearchCorpusIngestPort for Unreachable {
     }
 }
 impl HistoryIngestPort for Unreachable {
-    fn publish_batch(&self, _batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+    fn publish_batch(
+        &self,
+        _batch: &HistoryIngestBatch,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<BatchPublishReceipt, CoreError> {
         Err(unreachable_route("history"))
     }
 }
@@ -306,15 +343,20 @@ impl CountingSearchCorpus {
 }
 
 impl SearchCorpusIngestPort for CountingSearchCorpus {
-    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+    fn preflight_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
         let _prior = self.preflights.fetch_add(1, Ordering::SeqCst);
-        self.inner.preflight_batch(batch)
+        self.inner.preflight_batch(batch, diagnostic)
     }
 
     fn preflight_batch_with_owner(
         &self,
         batch: &SearchCorpusIngestBatch,
         owner: &mut PublicationValidationOwner,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
         owner.bind_batch(batch)?;
         let witness = owner.proof_state::<DispatchValidationWitness>(
@@ -327,7 +369,8 @@ impl SearchCorpusIngestPort for CountingSearchCorpus {
         }
         witness.preflight_entered = true;
         let _prior = self.preflights.fetch_add(1, Ordering::SeqCst);
-        self.inner.preflight_batch_with_owner(batch, owner)
+        self.inner
+            .preflight_batch_with_owner(batch, owner, diagnostic)
     }
 
     fn publish_batch(
@@ -452,6 +495,172 @@ fn dirty_batch(doc: &str) -> Result<DirtyIngestBatch, Box<dyn std::error::Error>
     };
     stamp_batch_digest_v1(&mut batch)?;
     Ok(batch)
+}
+
+fn overlay_requests(
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    generation: ManifestGeneration,
+) -> Result<Vec<(SearchPlaneIngestIpcRequest, IdempotencyKeyV1)>, Box<dyn std::error::Error>> {
+    fn key<B: IngestBatchBodyV1>(batch: &B) -> IdempotencyKeyV1 {
+        IdempotencyKeyV1 {
+            kind: B::OPERATION,
+            repo_id: batch.repo_id().clone(),
+            revision_id: batch.revision_id().clone(),
+            generation: batch.generation(),
+            batch_digest: batch.batch_digest().to_string(),
+        }
+    }
+    macro_rules! request {
+        ($batch:ident, $variant:ident) => {{
+            let mut batch = $batch {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+                generation,
+                batch_digest: String::new(),
+                entries: Vec::new(),
+            };
+            stamp_batch_digest_v1(&mut batch)?;
+            (
+                SearchPlaneIngestIpcRequest::$variant(batch.clone()),
+                key(&batch),
+            )
+        }};
+    }
+    Ok(vec![
+        request!(RepoCommitRecencyIngestBatch, PublishRepoCommitRecencyBatch),
+        request!(RepoTopicIngestBatch, PublishRepoTopicBatch),
+        request!(RepoDescriptionIngestBatch, PublishRepoDescriptionBatch),
+        request!(FileOwnershipIngestBatch, PublishFileOwnershipBatch),
+        request!(FileContributorIngestBatch, PublishFileContributorBatch),
+        request!(RepoMetaIngestBatch, PublishRepoMetaBatch),
+    ])
+}
+
+fn overlay_receipt(response: SearchPlaneIngestIpcResponse) -> Result<BatchPublishReceipt, String> {
+    match response {
+        SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt)
+        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt) => Ok(receipt),
+        other @ (SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+        | SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+        | SearchPlaneIngestIpcResponse::Error(_)) => {
+            Err(format!("expected lexical overlay receipt, got {other:?}"))
+        }
+    }
+}
+
+#[test]
+fn lexical_overlays_require_retained_generation_before_claim_and_replay_terminal() -> TestRes {
+    let catalog = Arc::new(MemoryIdempotencyCatalog::default());
+    let overlay = Arc::new(CountingOverlay::default());
+    let unreachable = Arc::new(Unreachable);
+    let dispatcher = SearchPlaneIngestDispatcher::new(
+        unreachable.clone(),
+        unreachable.clone(),
+        overlay.clone(),
+        overlay.clone(),
+        overlay.clone(),
+        overlay.clone(),
+        overlay.clone(),
+        overlay.clone(),
+        unreachable.clone(),
+        unreachable.clone(),
+        unreachable,
+        catalog.clone(),
+        catalog.source_publication.clone(),
+        Arc::new(super::support::RecordingSearchCorpusAuthority {
+            exact: true,
+            ..Default::default()
+        }),
+    );
+    let source = fixture_search_corpus_batch()?;
+    let repo_id = source.repo_id.clone();
+    let revision_id = source.revision_id.clone();
+    let requests = overlay_requests(&repo_id, &revision_id, ManifestGeneration::new(1))?;
+    let budget = RequestBudgetV1::unbounded();
+
+    for (request, key) in &requests {
+        let refused = dispatcher.dispatch(request.clone(), &budget);
+        let SearchPlaneIngestIpcResponse::Error(error) = refused else {
+            return Err(format!("unreserved overlay reached a route: {refused:?}").into());
+        };
+        if !error.message.contains("no source generation reservation") {
+            return Err(format!("wrong unreserved refusal: {error:?}").into());
+        }
+        if !matches!(
+            catalog.inspect(key)?,
+            OperationInspectV1::InFlight {
+                state: OperationJournalStateV1::Prepared,
+                ..
+            }
+        ) {
+            return Err(format!("unreserved overlay was claimed or made terminal: {key:?}").into());
+        }
+    }
+    if overlay.applies.load(Ordering::SeqCst) != 0 {
+        return Err("unreserved overlay reached its physical port".into());
+    }
+
+    let allocation = SourceEventAllocationRequestV1 {
+        repo_id: repo_id.clone(),
+        revision_id: revision_id.clone(),
+        event: source.source_event,
+    };
+    let SourceEventAllocationOutcomeV1::Allocated(record) = catalog
+        .source_publication
+        .allocate_source_event(&allocation)?
+    else {
+        return Err("fixture source allocation unexpectedly replayed".into());
+    };
+    if record.allocation.generation != ManifestGeneration::new(1) {
+        return Err("fixture source allocation changed the first generation".into());
+    }
+
+    for (request, key) in &requests {
+        let first = overlay_receipt(dispatcher.dispatch(request.clone(), &budget))?;
+        if !first.applied || first.generation != ManifestGeneration::new(1) {
+            return Err(format!("reserved overlay did not apply: {first:?}").into());
+        }
+        let replay = overlay_receipt(dispatcher.dispatch(request.clone(), &budget))?;
+        if replay.applied || replay.durable_sequence != first.durable_sequence {
+            return Err(format!("overlay replay changed terminal receipt: {replay:?}").into());
+        }
+        if !matches!(catalog.inspect(key)?, OperationInspectV1::Committed { .. }) {
+            return Err(format!("overlay did not commit its journal: {key:?}").into());
+        }
+    }
+    if overlay.applies.load(Ordering::SeqCst) != requests.len() {
+        return Err("reserved overlays applied more than once".into());
+    }
+    let future = overlay_requests(&repo_id, &revision_id, ManifestGeneration::new(2))?;
+    for (request, key) in future {
+        let refused = dispatcher.dispatch(request, &budget);
+        if !matches!(refused, SearchPlaneIngestIpcResponse::Error(_)) {
+            return Err(format!("unreserved future generation was admitted: {refused:?}").into());
+        }
+        if !matches!(
+            catalog.inspect(&key)?,
+            OperationInspectV1::InFlight {
+                state: OperationJournalStateV1::Prepared,
+                ..
+            }
+        ) {
+            return Err(format!("future overlay crossed the claim boundary: {key:?}").into());
+        }
+    }
+    if overlay.applies.load(Ordering::SeqCst) != requests.len() {
+        return Err("unreserved future overlay reached its physical port".into());
+    }
+    Ok(())
 }
 
 #[test]
@@ -668,10 +877,15 @@ fn staged_source_publication_is_inert_until_commit_and_replays_one_original_even
         .source_publication
         .inspect_source_event(&batch.repo_id, &batch.source_event)?
         .ok_or("original event missing")?;
-    if source.binding.event != commit.publication.event
-        || source.binding.target != commit.publication.target
-        || source.binding.journal_key.batch_digest != commit.publication.batch_digest
-        || source.phase != quanta_index_core::SourceEventPhaseV1::Staged
+    if source.binding_v1().expect("publication is bound").event != commit.publication.event
+        || source.binding_v1().expect("publication is bound").target != commit.publication.target
+        || source
+            .binding_v1()
+            .expect("publication is bound")
+            .journal_key
+            .batch_digest
+            != commit.publication.batch_digest
+        || source.phase_v1() != Some(quanta_index_core::SourceEventPhaseV1::Staged)
     {
         return Err(format!("committed source binding or phase drifted: {source:?}").into());
     }
@@ -1340,16 +1554,22 @@ fn cancelled_peer_after_admitted_apply_still_commits_and_replays_exactly() -> Te
     }
 
     impl SearchCorpusIngestPort for PauseAfterApply {
-        fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
-            self.inner.preflight_batch(batch)
+        fn preflight_batch(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+        ) -> Result<(), CoreError> {
+            self.inner.preflight_batch(batch, diagnostic)
         }
 
         fn preflight_batch_with_owner(
             &self,
             batch: &SearchCorpusIngestBatch,
             owner: &mut PublicationValidationOwner,
+            diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
         ) -> Result<(), CoreError> {
-            self.inner.preflight_batch_with_owner(batch, owner)
+            self.inner
+                .preflight_batch_with_owner(batch, owner, diagnostic)
         }
 
         fn publish_batch(
@@ -1874,6 +2094,7 @@ fn source_event_repair_refusal_leaves_the_stream_available_for_a_new_publication
                     [base.generation],
                 ),
             ),
+            None,
         )?;
         let counting = Arc::new(CountingSearchCorpus::new(materializer));
         let dispatcher = search_corpus_dispatcher_with_port(counting.clone(), catalog.clone());
@@ -1924,8 +2145,13 @@ fn source_event_repair_refusal_leaves_the_stream_available_for_a_new_publication
             .ok_or("new publication did not reserve its source event")?;
         if !receipt.applied
             || receipt.generation != next.generation
-            || record.phase != quanta_index_core::SourceEventPhaseV1::Staged
-            || record.binding.target.manifest_generation != next.generation
+            || record.phase_v1() != Some(quanta_index_core::SourceEventPhaseV1::Staged)
+            || record
+                .binding_v1()
+                .expect("publication is bound")
+                .target
+                .manifest_generation
+                != next.generation
         {
             return Err("new publication did not stage after a repair refusal".into());
         }
@@ -1964,7 +2190,7 @@ fn source_event_semantic_admission_refusal_leaves_no_reservation_or_track_work()
             .source_publication
             .inspect_source_event(&batch.repo_id, &batch.source_event)?
             .is_some()
-        || counting.applies() != 1
+        || counting.applies() != 0
         || !fakes
             .lexical_builder
             .batches
@@ -2005,16 +2231,22 @@ fn completed_delta_recovers_after_retention_retires_base_before_journal_ack() ->
         failures: AtomicUsize,
     }
     impl SearchCorpusIngestPort for FailAfterRetirement {
-        fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
-            self.inner.preflight_batch(batch)
+        fn preflight_batch(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+        ) -> Result<(), CoreError> {
+            self.inner.preflight_batch(batch, diagnostic)
         }
 
         fn preflight_batch_with_owner(
             &self,
             batch: &SearchCorpusIngestBatch,
             owner: &mut PublicationValidationOwner,
+            diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
         ) -> Result<(), CoreError> {
-            self.inner.preflight_batch_with_owner(batch, owner)
+            self.inner
+                .preflight_batch_with_owner(batch, owner, diagnostic)
         }
 
         fn publish_batch(
@@ -2037,7 +2269,8 @@ fn completed_delta_recovers_after_retention_retires_base_before_journal_ack() ->
                 let retention = crate::readiness::SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
                     &batch.repo_id, &batch.revision_id, [batch.generation],
                 );
-                self.inner.finalize_generation_v1(batch, Some(&retention))?;
+                self.inner
+                    .finalize_generation_v1(batch, Some(&retention), None)?;
                 return Err(CoreError::Storage(
                     "injected failure after delta base retirement".into(),
                 ));
@@ -2063,7 +2296,7 @@ fn completed_delta_recovers_after_retention_retires_base_before_journal_ack() ->
         .inspect_source_event(&base.repo_id, &base.source_event)?
         .ok_or("base source event absent")?;
     catalog.source_publication.activate_staged(
-        &staged.binding,
+        staged.binding_v1().expect("publication is bound"),
         receipt
             .semantic_content
             .ok_or("sealed semantic content absent")?,
@@ -2089,9 +2322,14 @@ fn completed_delta_recovers_after_retention_retires_base_before_journal_ack() ->
         .source_publication
         .inspect_source_event(&delta.repo_id, &delta.source_event)?
         .ok_or("delta source event absent")?;
-    if pending.phase != SourceEventPhaseV1::Pending
+    if pending.phase_v1() != Some(SourceEventPhaseV1::Pending)
         || !matches!(
-            catalog.inspect(&pending.binding.journal_key)?,
+            catalog.inspect(
+                &pending
+                    .binding_v1()
+                    .expect("publication is bound")
+                    .journal_key
+            )?,
             OperationInspectV1::Uncertain { .. }
         )
     {
@@ -2145,7 +2383,7 @@ fn completed_delta_recovers_after_retention_retires_base_before_journal_ack() ->
     };
     set_marker(None)?;
     if !matches!(
-        port.preflight_batch(&delta),
+        port.preflight_batch(&delta, None),
         Err(CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
             ..
@@ -2158,7 +2396,7 @@ fn completed_delta_recovers_after_retention_retires_base_before_journal_ack() ->
     super::support::restamp_search_corpus_fixture(&mut unreserved)?;
     set_marker(Some(unreserved.batch_digest.clone()))?;
     if !matches!(
-        port.preflight_batch(&unreserved),
+        port.preflight_batch(&unreserved, None),
         Err(CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
             ..
@@ -2204,14 +2442,23 @@ fn source_event_apply_errors_retry_the_original_journal_without_retargeting() ->
         preflights: AtomicUsize,
     }
     impl SearchCorpusIngestPort for FailAfterPublishOnce {
-        fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
-            self.preflight_batch_with_owner(batch, &mut PublicationValidationOwner::default())
+        fn preflight_batch(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+        ) -> Result<(), CoreError> {
+            self.preflight_batch_with_owner(
+                batch,
+                &mut PublicationValidationOwner::default(),
+                diagnostic,
+            )
         }
 
         fn preflight_batch_with_owner(
             &self,
             batch: &SearchCorpusIngestBatch,
             owner: &mut PublicationValidationOwner,
+            diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
         ) -> Result<(), CoreError> {
             owner.bind_batch(batch)?;
             if self.preflights.fetch_add(1, Ordering::SeqCst) == 1 {
@@ -2220,7 +2467,8 @@ fn source_event_apply_errors_retry_the_original_journal_without_retargeting() ->
                     message: "transient source preflight refusal after an uncertain apply".into(),
                 });
             }
-            self.inner.preflight_batch_with_owner(batch, owner)
+            self.inner
+                .preflight_batch_with_owner(batch, owner, diagnostic)
         }
 
         fn publish_batch(
@@ -2290,8 +2538,12 @@ fn source_event_apply_errors_retry_the_original_journal_without_retargeting() ->
         if !matches!(&failed, SearchPlaneIngestIpcResponse::Error(error)
             if error.message.contains(message))
             || !matches!(catalog.inspect(&key)?, OperationInspectV1::Uncertain { .. })
-            || pending.phase != SourceEventPhaseV1::Pending
-            || pending.binding.journal_key != key
+            || pending.phase_v1() != Some(SourceEventPhaseV1::Pending)
+            || pending
+                .binding_v1()
+                .expect("publication is bound")
+                .journal_key
+                != key
         {
             return Err(format!("apply error froze or released a source event: {failed:?}").into());
         }
@@ -2354,8 +2606,9 @@ fn source_event_apply_errors_retry_the_original_journal_without_retargeting() ->
             .ok_or("retried source event disappeared")?;
         if !receipt.applied
             || receipt.durable_sequence == 0
-            || staged.phase != SourceEventPhaseV1::Staged
-            || staged.binding != pending.binding
+            || staged.phase_v1() != Some(SourceEventPhaseV1::Staged)
+            || staged.binding_v1().expect("publication is bound")
+                != pending.binding_v1().expect("publication is bound")
             || port.applies.load(Ordering::SeqCst) != 2
         {
             return Err(

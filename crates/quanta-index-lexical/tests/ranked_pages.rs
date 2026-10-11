@@ -18,6 +18,10 @@
 #[path = "support/source_fixture.rs"]
 mod source_fixture;
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -31,7 +35,6 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
-    SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -142,7 +145,7 @@ fn query(filters: Vec<LqFilter>) -> LqQuery {
 fn searcher() -> Result<(tempfile::TempDir, Box<dyn LexicalSearcher>), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let _stages = adapter.build_batch(&sealed_batch()?)?;
+    let _stages = adapter.build_fixture_batch(&sealed_batch()?)?;
     let searcher = adapter.open(
         &repo(),
         &revision(),

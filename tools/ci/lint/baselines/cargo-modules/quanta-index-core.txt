@@ -1,5 +1,32 @@
 
 crate quanta_index_core
+├── mod diagnostic_trace: pub
+│   ├── enum DiagnosticAdoptionFlushReasonV1: pub
+│   ├── struct DiagnosticAttemptGuardCoreV1: pub
+│   ├── enum DiagnosticBm25BoundaryLabelV1: pub
+│   ├── struct DiagnosticCaptureIdV1: pub
+│   ├── trait DiagnosticClockV1: pub
+│   ├── struct DiagnosticContextV1: pub
+│   ├── enum DiagnosticCounterV1: pub
+│   ├── struct DiagnosticEmitV1: pub
+│   ├── enum DiagnosticEventKindV1: pub
+│   ├── trait DiagnosticEventSinkV1: pub
+│   ├── enum DiagnosticHealthCodeV1: pub
+│   ├── struct DiagnosticInodeCensusV1: pub(crate)
+│   ├── struct DiagnosticLaneV1: pub
+│   ├── enum DiagnosticObjectKindV1: pub
+│   ├── enum DiagnosticOccupancyBucketV1: pub
+│   ├── enum DiagnosticPhaseV1: pub
+│   ├── enum DiagnosticPlaneV1: pub
+│   ├── enum DiagnosticRootKindV1: pub
+│   ├── struct DiagnosticSpanGuardV1: pub
+│   ├── struct DiagnosticSpanIdV1: pub
+│   ├── enum DiagnosticStageV1: pub
+│   ├── enum DiagnosticSyncLabelV1: pub
+│   ├── enum DiagnosticTerminalV1: pub
+│   ├── enum DiagnosticTraceErrorV1: pub
+│   ├── struct DiagnosticTraceRefV1: pub
+│   └── struct TraceSessionV1: pub(self)
 ├── mod domains: pub
 │   ├── mod auxiliary: pub
 │   │   ├── trait AuxiliaryAuthorityCatalogPort: pub
@@ -15,6 +42,7 @@ crate quanta_index_core
 │   ├── mod generation: pub
 │   │   ├── struct FinishedReclaims: pub
 │   │   ├── trait GenerationIdentityValidatePort: pub
+│   │   ├── trait GenerationNamespaceReadPort: pub
 │   │   ├── enum GenerationQuarantineReasonV1: pub
 │   │   ├── struct GenerationStorageKeyV1: pub
 │   │   ├── enum IncompleteGenerationDiscardOutcomeV1: pub
@@ -73,7 +101,8 @@ crate quanta_index_core
 │   │   ├── struct IntegrityScrubPolicyV1: pub
 │   │   ├── trait IntegrityScrubPort: pub
 │   │   ├── struct IntegrityScrubProgressV1: pub
-│   │   └── struct IntegrityScrubReportV1: pub
+│   │   ├── struct IntegrityScrubReportV1: pub
+│   │   └── enum SharedObjectCollectionStepV1: pub
 │   ├── mod lexical: pub
 │   │   ├── mod collection_budget: pub(self)
 │   │   │   ├── struct CollectionState: pub(self)
@@ -243,10 +272,17 @@ crate quanta_index_core
 │   │       ├── enum SemanticWindowPlacementV1: pub
 │   │       └── struct SemanticWindowResidencyV1: pub
 │   ├── mod source_publication: pub
+│   │   ├── enum LexicalDocumentNamespaceV1: pub
+│   │   ├── struct LexicalDocumentVersionRangeV1: pub
+│   │   ├── struct LexicalDocumentVersionReservationV1: pub
+│   │   ├── enum SourceEventAllocationOutcomeV1: pub
+│   │   ├── struct SourceEventAllocationRequestV1: pub
+│   │   ├── struct SourceEventAllocationV1: pub
 │   │   ├── struct SourceEventBindingV1: pub
 │   │   ├── enum SourceEventPhaseV1: pub
 │   │   ├── struct SourceEventRecordV1: pub
 │   │   ├── enum SourceEventReservationV1: pub
+│   │   ├── enum SourceEventStateV1: pub
 │   │   └── trait SourcePublicationCatalogPort: pub
 │   └── mod structural: pub
 │       ├── mod inbound: pub(self)
@@ -266,6 +302,95 @@ crate quanta_index_core
 │           └── struct StructuralMatchCandidate: pub
 ├── mod error: pub
 │   └── enum CoreError: pub
+├── mod index: pub
+│   ├── mod attempt: pub(self)
+│   │   └── struct AttemptSink: pub(self)
+│   ├── mod budget: pub
+│   │   ├── enum IndexError: pub
+│   │   ├── struct WorkBudget: pub
+│   │   ├── struct WorkLimits: pub
+│   │   └── struct WorkUsage: pub
+│   ├── mod effort: pub
+│   │   ├── struct AdmittedEffort: pub
+│   │   ├── enum CancellationStatus: pub
+│   │   ├── enum ContextStatus: pub
+│   │   ├── enum CoverageExactness: pub
+│   │   ├── struct DecisionFrame: pub
+│   │   ├── enum DecisionReason: pub
+│   │   ├── struct EffortAuthority: pub
+│   │   ├── enum EffortError: pub
+│   │   ├── struct EffortGovernor: pub
+│   │   ├── trait EffortPolicy: pub
+│   │   ├── enum EffortPreference: pub
+│   │   ├── struct EffortSignals: pub
+│   │   ├── struct EnvelopeCostEstimator: pub
+│   │   ├── enum ExecutionPhase: pub
+│   │   ├── struct HysteresisConfig: pub
+│   │   ├── struct HysteresisPolicy: pub
+│   │   ├── struct PolicyProposal: pub
+│   │   ├── struct PolicyState: pub
+│   │   ├── enum PressureState: pub(self)
+│   │   ├── struct PressureThresholds: pub
+│   │   ├── enum ProviderAvailability: pub
+│   │   ├── enum ProviderMode: pub
+│   │   ├── enum ProviderPermission: pub
+│   │   ├── struct ProviderSignal: pub
+│   │   ├── enum RequiredProofStatus: pub
+│   │   ├── struct ReservationGuard: pub
+│   │   ├── struct ResourceNeed: pub
+│   │   ├── trait ResourceScheduler: pub
+│   │   ├── enum Signal: pub
+│   │   ├── struct SignalSample: pub
+│   │   ├── trait StageCostEstimator: pub
+│   │   ├── enum StageObligation: pub
+│   │   ├── struct StageOffer: pub
+│   │   └── enum UnknownReason: pub
+│   ├── mod mutations: pub(self)
+│   │   ├── struct OwnerMutationCursor: pub
+│   │   ├── struct OwnerMutationDigest: pub
+│   │   └── struct SourceChangeCursor: pub
+│   ├── mod ports: pub
+│   │   ├── struct AttemptContext: pub
+│   │   ├── trait CatalogPublicationPort: pub
+│   │   ├── trait CatalogReadPort: pub
+│   │   ├── trait ImmutableObjectPort: pub
+│   │   ├── trait IndexBuildPort: pub
+│   │   ├── type IndexFuture: pub
+│   │   ├── trait IndexOwnerBuildPort: pub
+│   │   ├── trait IndexReadPort: pub
+│   │   ├── trait InputStagingPort: pub
+│   │   ├── trait MapEditCursor: pub
+│   │   ├── trait ObjectCustodyPort: pub
+│   │   ├── trait ObjectWriteSink: pub
+│   │   ├── trait OperationJournalPort: pub
+│   │   ├── trait PersistentMapPort: pub
+│   │   ├── trait WorkActionCursor: pub
+│   │   └── trait WorkClaimPort: pub
+│   ├── mod records: pub(self)
+│   │   ├── enum AdmissionOutcome: pub
+│   │   ├── enum BaseMember: pub
+│   │   ├── enum DeltaInput: pub
+│   │   ├── struct MapBatchRequest: pub
+│   │   ├── struct MapBatchWrite: pub
+│   │   ├── struct MapEdit: pub
+│   │   ├── struct MapPage: pub
+│   │   ├── struct MapWrite: pub
+│   │   ├── struct ObjectBatchInput: pub
+│   │   ├── struct OrdinalMapEdit: pub
+│   │   ├── struct PlanContext: pub
+│   │   ├── enum PlanDecision: pub
+│   │   ├── struct PreparedPublication: pub
+│   │   ├── struct RegisteredObject: pub
+│   │   ├── struct SourceChange: pub
+│   │   ├── struct SourceDelta: pub
+│   │   ├── struct StoredObject: pub
+│   │   └── struct TicketRecord: pub
+│   ├── mod work: pub(self)
+│   │   ├── enum WorkAction: pub
+│   │   ├── struct WorkActionDigest: pub
+│   │   └── struct WorkActionSet: pub
+│   └── mod work_cursor: pub(self)
+│       └── struct WorkActionManifestCursor: pub
 ├── mod ingest_resource: pub
 │   ├── struct IngestBatchFootprint: pub
 │   └── struct IngestResourcePolicy: pub

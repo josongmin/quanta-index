@@ -14,7 +14,7 @@
 //! `scrub_corruptions_total`, `scrub_errors_total` and
 //! `scrub_last_completed_unix`.
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -106,12 +106,13 @@ pub struct ScrubSchedulerV1 {
     tallies: Arc<ScrubTalliesV1>,
     in_flight: Option<InFlightScrubV1>,
     attempted_cycle: BTreeSet<ScrubCandidateKeyV1>,
+    next_collection_port: usize,
 }
 
 /// What one tick of the scheduler did.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ScrubTickV1 {
-    /// No port names a candidate right now.
+    /// No integrity candidate is named; shared collection may still advance.
     Idle,
     /// One bounded step ran over `generation` and ended as `outcome`.
     Stepped {
@@ -143,6 +144,7 @@ impl ScrubSchedulerV1 {
             tallies,
             in_flight: None,
             attempted_cycle: BTreeSet::new(),
+            next_collection_port: 0,
         }
     }
 
@@ -198,10 +200,26 @@ impl ScrubSchedulerV1 {
 
     /// Run one bounded step.
     pub fn tick(&mut self) -> ScrubTickV1 {
-        let (in_flight, listing_errors) = self.next();
+        // Collection advances independently of integrity completion, so a
+        // large paused scrub or an empty sealed inventory cannot starve GC.
+        // One port gets a bounded step per tick; no extra worker is introduced.
+        let mut collection_errors = Vec::new();
+        if let Some(port) = self.ports.get(self.next_collection_port) {
+            if let Err(error) = port.collect_shared_objects_step(256) {
+                self.tallies.record_error();
+                collection_errors.push(format!("shared object collection: {error}"));
+            }
+            self.next_collection_port = self
+                .next_collection_port
+                .checked_add(1)
+                .filter(|next| *next < self.ports.len())
+                .unwrap_or(0);
+        }
+        let (in_flight, mut listing_errors) = self.next();
         for _error in &listing_errors {
             self.tallies.record_error();
         }
+        listing_errors.extend(collection_errors);
         let Some(in_flight) = in_flight else {
             return if listing_errors.is_empty() {
                 ScrubTickV1::Idle
@@ -226,27 +244,37 @@ impl ScrubSchedulerV1 {
             &in_flight.generation.revision_id,
             in_flight.generation.manifest_generation,
         );
-        let fenced = Cell::new(false);
-        let before_quarantine = || -> Result<(), CoreError> {
-            if fenced.get() {
+        let fenced = RefCell::new(BTreeMap::<SnapshotKey, GenerationSnapshot>::new());
+        let before_quarantine = |affected: &GenerationSnapshot| -> Result<(), CoreError> {
+            if affected.track != in_flight.generation.track {
+                return Err(CoreError::InvalidContract(
+                    "integrity scrub: quarantine fence crossed storage tracks".into(),
+                ));
+            }
+            let affected_key = SnapshotKey::new(
+                &affected.repo_id,
+                &affected.revision_id,
+                affected.manifest_generation,
+            );
+            if fenced.borrow().contains_key(&affected_key) {
                 return Ok(());
             }
-            let _retire_outcome = match in_flight.generation.track {
+            let _retire_outcome = match affected.track {
                 SearchPlaneTrackKind::Lexical => self
                     .snapshots
                     .lexical
-                    .retire(&key, SnapshotRetirementOwner::IntegrityScrub)?,
+                    .retire(&affected_key, SnapshotRetirementOwner::IntegrityScrub)?,
                 SearchPlaneTrackKind::Semantic => self
                     .snapshots
                     .semantic
-                    .retire(&key, SnapshotRetirementOwner::IntegrityScrub)?,
+                    .retire(&affected_key, SnapshotRetirementOwner::IntegrityScrub)?,
                 SearchPlaneTrackKind::Structural => {
                     return Err(CoreError::InvalidContract(
                         "integrity scrub: structural is not a scrubbed track".into(),
                     ));
                 }
             };
-            fenced.set(true);
+            let _prior = fenced.borrow_mut().insert(affected_key, affected.clone());
             Ok(())
         };
         let scrubbed = port.scrub_with_quarantine_fence(
@@ -258,25 +286,26 @@ impl ScrubSchedulerV1 {
         // An error after the callback can mean the receipt never became
         // durable. Keep admission fenced until a later successful scrub or
         // repair settles this generation; cold open only checks the layout.
-        if fenced.get()
-            && matches!(
-                scrubbed.as_ref(),
-                Ok(IntegrityScrubReportV1 {
-                    outcome: IntegrityScrubOutcomeV1::Corrupt { .. },
-                    ..
-                })
-            )
-            && let Err(error) = self.snapshots.finish_retirement(
-                in_flight.generation.track,
-                &key,
-                SnapshotRetirementOwner::IntegrityScrub,
-            )
-        {
-            self.tallies.record_error();
-            return ScrubTickV1::Failed {
-                generation: in_flight.generation,
-                error: format!("integrity scrub: finish quarantine fence: {error}"),
-            };
+        if matches!(
+            scrubbed.as_ref(),
+            Ok(IntegrityScrubReportV1 {
+                outcome: IntegrityScrubOutcomeV1::Corrupt { .. },
+                ..
+            })
+        ) {
+            for (affected_key, affected) in fenced.borrow().iter() {
+                if let Err(error) = self.snapshots.finish_retirement(
+                    affected.track,
+                    affected_key,
+                    SnapshotRetirementOwner::IntegrityScrub,
+                ) {
+                    self.tallies.record_error();
+                    return ScrubTickV1::Failed {
+                        generation: in_flight.generation,
+                        error: format!("integrity scrub: finish quarantine fence: {error}"),
+                    };
+                }
+            }
         }
         let report = match scrubbed {
             Ok(report) => report,
@@ -307,7 +336,7 @@ impl ScrubSchedulerV1 {
                 // clean proof can release that scrub-owned admission fence.
                 if let Err(error) = self
                     .snapshots
-                    .finish_scrub_fence_after_clean_proof(in_flight.generation.track, &key)
+                    .finish_integrity_fences_after_clean_proof(in_flight.generation.track, &key)
                 {
                     self.tallies.record_error();
                     return ScrubTickV1::Failed {
@@ -331,7 +360,7 @@ impl ScrubSchedulerV1 {
             }
             IntegrityScrubOutcomeV1::Corrupt { .. } => {
                 self.tallies.record_corruption();
-                if !fenced.get() {
+                if !fenced.borrow().contains_key(&key) {
                     self.tallies.record_error();
                     return ScrubTickV1::Failed {
                         generation: in_flight.generation,
@@ -564,11 +593,11 @@ mod tests {
             generation: &GenerationSnapshot,
             cursor: Option<IntegrityScrubCursorV1>,
             budget: IntegrityScrubBudgetV1,
-            before_quarantine: &dyn Fn() -> Result<(), CoreError>,
+            before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
         ) -> Result<IntegrityScrubReportV1, CoreError> {
             let report = self.scrub(generation, cursor, budget)?;
             if matches!(report.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }) {
-                before_quarantine()?;
+                before_quarantine(generation)?;
             }
             Ok(report)
         }
@@ -597,7 +626,7 @@ mod tests {
             generation: &GenerationSnapshot,
             cursor: Option<IntegrityScrubCursorV1>,
             budget: IntegrityScrubBudgetV1,
-            _before_quarantine: &dyn Fn() -> Result<(), CoreError>,
+            _before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
         ) -> Result<IntegrityScrubReportV1, CoreError> {
             self.scrub(generation, cursor, budget)
         }
@@ -887,6 +916,146 @@ mod tests {
         );
     }
 
+    struct SharedCorruptionPort {
+        snapshots: SnapshotRegistries,
+        fail_after_fencing: bool,
+        fence_checks: Mutex<Vec<bool>>,
+    }
+
+    impl IntegrityScrubPort for SharedCorruptionPort {
+        fn scrub_candidates(&self) -> Result<Vec<IntegrityScrubCandidateV1>, CoreError> {
+            Ok(vec![IntegrityScrubCandidateV1 {
+                identity: identity(5),
+                last_completed_unix: None,
+            }])
+        }
+
+        fn scrub(
+            &self,
+            _generation: &GenerationSnapshot,
+            _cursor: Option<IntegrityScrubCursorV1>,
+            _budget: IntegrityScrubBudgetV1,
+        ) -> Result<IntegrityScrubReportV1, CoreError> {
+            Err(CoreError::InvalidContract(
+                "shared corruption requires a fence".into(),
+            ))
+        }
+
+        fn scrub_with_quarantine_fence(
+            &self,
+            generation: &GenerationSnapshot,
+            _cursor: Option<IntegrityScrubCursorV1>,
+            _budget: IntegrityScrubBudgetV1,
+            before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
+        ) -> Result<IntegrityScrubReportV1, CoreError> {
+            for affected in [identity(5), identity(6)] {
+                before_quarantine(&affected)?;
+                let key = SnapshotKey::new(
+                    &affected.repo_id,
+                    &affected.revision_id,
+                    affected.manifest_generation,
+                );
+                let result = self.snapshots.semantic.acquire(
+                    &key,
+                    &RequestBudgetV1::unbounded(),
+                    || -> Result<OpenedSnapshot<dyn SemanticSearcher>, CoreError> {
+                        Err(CoreError::Storage(
+                            "quarantine preceded admission fence".into(),
+                        ))
+                    },
+                );
+                self.fence_checks.lock().expect("fence observations").push(
+                    matches!(result, Err(CoreError::Typed { code, .. })
+                        if code == quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration),
+                );
+            }
+            if self.fail_after_fencing {
+                return Err(CoreError::Storage("injected shared receipt failure".into()));
+            }
+            Ok(IntegrityScrubReportV1 {
+                generation: generation.clone(),
+                files_verified: 1,
+                bytes_read: 10,
+                outcome: IntegrityScrubOutcomeV1::Corrupt {
+                    quarantined: QuarantinedGenerationV1 {
+                        track: generation.track,
+                        path: std::path::PathBuf::from("/state/g5"),
+                        reason: GenerationQuarantineReasonV1::ContentCorrupt,
+                        detail: "shared object corruption".into(),
+                    },
+                },
+            })
+        }
+    }
+
+    #[test]
+    fn shared_corruption_fences_each_reference_and_preserves_unrelated_handles() {
+        for fail_after_fencing in [false, true] {
+            let snapshots = SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT);
+            for generation in [5, 6, 7] {
+                let candidate = identity(generation);
+                let key = SnapshotKey::new(
+                    &candidate.repo_id,
+                    &candidate.revision_id,
+                    candidate.manifest_generation,
+                );
+                drop(
+                    snapshots
+                        .semantic
+                        .acquire(&key, &RequestBudgetV1::unbounded(), || {
+                            Ok(OpenedSnapshot {
+                                handle: Arc::new(ResidentHandle),
+                                resident_bytes: 1,
+                            })
+                        })
+                        .expect("resident fixture"),
+                );
+            }
+            let port = Arc::new(SharedCorruptionPort {
+                snapshots: snapshots.clone(),
+                fail_after_fencing,
+                fence_checks: Mutex::new(Vec::new()),
+            });
+            let mut scheduler = ScrubSchedulerV1::new(
+                vec![port.clone()],
+                IntegrityScrubPolicyV1::DEFAULT,
+                snapshots.clone(),
+                Arc::new(ScrubTalliesV1::default()),
+            );
+            let tick = scheduler.tick();
+            assert_eq!(
+                *port.fence_checks.lock().expect("fence observations"),
+                vec![true, true]
+            );
+            assert_eq!(
+                matches!(tick, ScrubTickV1::Failed { .. }),
+                fail_after_fencing
+            );
+            let stats = snapshots.semantic.stats().expect("registry stats");
+            assert_eq!(stats.entries, 1, "only unrelated g7 remains resident");
+            assert_eq!(stats.retirements, 2, "both shared references were retired");
+            if fail_after_fencing {
+                for generation in [5, 6] {
+                    let candidate = identity(generation);
+                    let key = SnapshotKey::new(
+                        &candidate.repo_id,
+                        &candidate.revision_id,
+                        candidate.manifest_generation,
+                    );
+                    let result = snapshots.semantic.acquire(
+                        &key,
+                        &RequestBudgetV1::unbounded(),
+                        || -> Result<OpenedSnapshot<dyn SemanticSearcher>, CoreError> {
+                            panic!("a partial fanout failure must keep every admission fence")
+                        },
+                    );
+                    assert!(matches!(result, Err(CoreError::Typed { code, .. })
+                        if code == quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration));
+                }
+            }
+        }
+    }
+
     struct ReceiptWriteFailurePort {
         calls: AtomicUsize,
         clean_generation: u64,
@@ -916,10 +1085,10 @@ mod tests {
             generation: &GenerationSnapshot,
             _cursor: Option<IntegrityScrubCursorV1>,
             _budget: IntegrityScrubBudgetV1,
-            before_quarantine: &dyn Fn() -> Result<(), CoreError>,
+            before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
         ) -> Result<IntegrityScrubReportV1, CoreError> {
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                before_quarantine()?;
+                before_quarantine(generation)?;
                 return Err(CoreError::Storage("quarantine receipt write failed".into()));
             }
             Ok(IntegrityScrubReportV1 {
@@ -1049,6 +1218,86 @@ mod tests {
         assert_eq!(paced.step_if_due(at(1_000)), None, "one step per interval");
         assert_eq!(paced.step_if_due(at(1_999)), None);
         assert_eq!(paced.step_if_due(at(2_000)), Some(ScrubTickV1::Idle));
+    }
+
+    struct CollectionOnlyPort {
+        calls: Mutex<Vec<u32>>,
+        scrub_calls: AtomicUsize,
+        fail: bool,
+    }
+
+    impl IntegrityScrubPort for CollectionOnlyPort {
+        fn collect_shared_objects_step(
+            &self,
+            max_work_units: u32,
+        ) -> Result<quanta_index_core::SharedObjectCollectionStepV1, CoreError> {
+            self.calls
+                .lock()
+                .expect("collection calls")
+                .push(max_work_units);
+            if self.fail {
+                Err(CoreError::Storage("injected collection failure".into()))
+            } else {
+                Ok(quanta_index_core::SharedObjectCollectionStepV1::Paused)
+            }
+        }
+
+        fn scrub_candidates(&self) -> Result<Vec<IntegrityScrubCandidateV1>, CoreError> {
+            Ok(Vec::new())
+        }
+        fn scrub(
+            &self,
+            _generation: &GenerationSnapshot,
+            _cursor: Option<IntegrityScrubCursorV1>,
+            _budget: IntegrityScrubBudgetV1,
+        ) -> Result<IntegrityScrubReportV1, CoreError> {
+            let _prior = self.scrub_calls.fetch_add(1, Ordering::SeqCst);
+            Err(CoreError::InvalidContract(
+                "empty inventory started integrity proof".into(),
+            ))
+        }
+        fn scrub_with_quarantine_fence(
+            &self,
+            generation: &GenerationSnapshot,
+            cursor: Option<IntegrityScrubCursorV1>,
+            budget: IntegrityScrubBudgetV1,
+            _before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
+        ) -> Result<IntegrityScrubReportV1, CoreError> {
+            self.scrub(generation, cursor, budget)
+        }
+    }
+
+    #[test]
+    fn empty_inventory_advances_bounded_collection_and_a_failure_does_not_starve_other_ports() {
+        let failing = Arc::new(CollectionOnlyPort {
+            calls: Mutex::new(Vec::new()),
+            scrub_calls: AtomicUsize::new(0),
+            fail: true,
+        });
+        let healthy = Arc::new(CollectionOnlyPort {
+            calls: Mutex::new(Vec::new()),
+            scrub_calls: AtomicUsize::new(0),
+            fail: false,
+        });
+        let mut scheduler = ScrubSchedulerV1::new(
+            vec![failing.clone(), healthy.clone()],
+            IntegrityScrubPolicyV1::DEFAULT,
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+            Arc::new(ScrubTalliesV1::default()),
+        );
+        assert!(matches!(
+            scheduler.tick(),
+            ScrubTickV1::ListingFailed { .. }
+        ));
+        assert_eq!(scheduler.tick(), ScrubTickV1::Idle);
+        assert!(matches!(
+            scheduler.tick(),
+            ScrubTickV1::ListingFailed { .. }
+        ));
+        assert_eq!(*failing.calls.lock().expect("failed calls"), vec![256, 256]);
+        assert_eq!(*healthy.calls.lock().expect("healthy calls"), vec![256]);
+        assert_eq!(failing.scrub_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(healthy.scrub_calls.load(Ordering::SeqCst), 0);
     }
 
     /// With no candidates the scheduler idles and touches nothing.

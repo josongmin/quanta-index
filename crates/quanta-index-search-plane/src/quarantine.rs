@@ -33,7 +33,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::domains::generation::GenerationStorageKeyV1;
 use quanta_index_core::{
-    CoreError, GenerationQuarantineReasonV1, InventoriedSealedGenerationV1,
+    CoreError, DiagnosticContextV1, GenerationQuarantineReasonV1, InventoriedSealedGenerationV1,
     QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort, QuarantinedGenerationV1,
     QuarantinedRepoMapFileV1, RepoMapQuarantinePort, SealedGenerationInventoryV1,
     SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SealedGenerationScanPort,
@@ -247,11 +247,20 @@ impl QuarantineService {
 
     /// Discard one entry exactly as a listing reported it.
     pub fn discard(&self, target: &QuarantineTargetV1) -> Result<QuarantineDiscardAck, CoreError> {
+        self.discard_with_context(target, None)
+    }
+
+    /// Discard one entry with the current request's diagnostic context.
+    pub fn discard_with_context(
+        &self,
+        target: &QuarantineTargetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<QuarantineDiscardAck, CoreError> {
         let outcome = match target {
             QuarantineTargetV1::Generation(entry) => {
                 let core_entry = generation_entry_from_wire(entry)?;
                 if core_entry.reason == GenerationQuarantineReasonV1::Orphaned {
-                    self.discard_orphan(&core_entry)?
+                    self.discard_orphan(&core_entry, diagnostic)?
                 } else {
                     self.discard_adapter_quarantine(&core_entry)?
                 }
@@ -488,6 +497,7 @@ impl QuarantineService {
     fn discard_orphan(
         &self,
         entry: &QuarantinedGenerationV1,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
         let ports = self.track(entry.track)?;
         let (inventory, orphaned) = self.track_inventory(entry.track)?;
@@ -601,7 +611,7 @@ impl QuarantineService {
         };
         let outcome = match ports
             .reclaim
-            .reclaim_sealed_generation_with_settlement(identity, &on_absent)
+            .reclaim_sealed_generation_with_settlement(identity, &on_absent, diagnostic)
         {
             Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes }) => {
                 QuarantineDiscardOutcomeV1::Discarded { bytes }
@@ -787,6 +797,7 @@ pub(crate) mod tests {
             &self,
             retired: &GenerationSnapshot,
             on_absent: &dyn Fn() -> Result<(), CoreError>,
+            _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
         ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
             let mut sealed = self
                 .scanner
@@ -813,6 +824,7 @@ pub(crate) mod tests {
             &self,
             repo_id: &RepoId,
             revision_id: &RevisionId,
+            _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
         ) -> Result<Vec<GenerationSnapshot>, CoreError> {
             Ok(self
                 .scanner
@@ -832,6 +844,7 @@ pub(crate) mod tests {
             _repo_id: &RepoId,
             _revision_id: &RevisionId,
             generations: &BTreeSet<ManifestGeneration>,
+            _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
         ) -> Result<SealedGenerationBytesV1, CoreError> {
             Ok(SealedGenerationBytesV1 {
                 bytes: 1_000_u64
@@ -842,6 +855,7 @@ pub(crate) mod tests {
 
         fn finish_interrupted_reclaims(
             &self,
+            _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
         ) -> Result<quanta_index_core::FinishedReclaims, CoreError> {
             Ok(quanta_index_core::FinishedReclaims::default())
         }

@@ -11,7 +11,11 @@ use crate::readiness::SearchCorpusHistoryRetentionReceiptV1;
 use crate::{AuxiliaryAuthorityStore, SealedSearchCorpusAuthorityStateV1};
 
 pub trait HistoryIngestPort: Send + Sync {
-    fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
+    fn publish_batch(
+        &self,
+        batch: &HistoryIngestBatch,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<BatchPublishReceipt, CoreError>;
 }
 
 pub trait RuntimeMetadataIngestPort: Send + Sync {
@@ -63,6 +67,7 @@ pub trait SearchCorpusAuthorityWritePort: SearchCorpusAuthorityInspectPort {
         revision_id: &RevisionId,
         generation: ManifestGeneration,
         manifest_digest: &str,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError>;
 }
 
@@ -85,7 +90,15 @@ impl SearchCorpusAuthorityWritePort for AuxiliaryAuthorityStore {
         revision_id: &RevisionId,
         generation: ManifestGeneration,
         manifest_digest: &str,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
-        Self::record_sealed_search_corpus(self, repo_id, revision_id, generation, manifest_digest)
+        Self::record_sealed_search_corpus_observed(
+            self,
+            repo_id,
+            revision_id,
+            generation,
+            manifest_digest,
+            diagnostic,
+        )
     }
 }

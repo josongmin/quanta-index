@@ -15,8 +15,11 @@
 #[macro_use]
 pub mod macros;
 
+mod native_serde;
+
 mod activation_token;
 pub mod ids;
+pub mod index_refs;
 pub mod query;
 pub mod results;
 mod retained_scalar_decode_v1;

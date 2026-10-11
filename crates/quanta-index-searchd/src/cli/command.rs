@@ -22,12 +22,14 @@ use crate::app::state_migration::{OfflineStateCommandV1, OfflineStateOperationV1
 #[derive(Clone, Debug)]
 pub struct SearchdCommand {
     state_root_override: Option<PathBuf>,
+    diagnostic_trace_path: Option<PathBuf>,
     offline: Option<OfflineStateCommandV1>,
 }
 
 impl SearchdCommand {
     pub fn from_env() -> Result<Self> {
         let mut state_root_override: Option<PathBuf> = None;
+        let mut diagnostic_trace_path: Option<PathBuf> = None;
         let mut source_root: Option<PathBuf> = None;
         let mut destination_root: Option<PathBuf> = None;
         let mut operation: Option<OfflineStateOperationV1> = None;
@@ -43,6 +45,12 @@ impl SearchdCommand {
                         .next()
                         .ok_or_else(|| anyhow::anyhow!("--state-root requires a path"))?;
                     state_root_override = Some(PathBuf::from(next));
+                }
+                "--diagnostic-trace" => {
+                    let next = args
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--diagnostic-trace requires a path"))?;
+                    diagnostic_trace_path = Some(PathBuf::from(next));
                 }
                 "--source" => {
                     let next = args
@@ -69,6 +77,11 @@ impl SearchdCommand {
                 None
             }
             Some(operation) => {
+                if diagnostic_trace_path.is_some() {
+                    return Err(anyhow::anyhow!(
+                        "--diagnostic-trace is only valid for serve"
+                    ));
+                }
                 if state_root_override.is_some() {
                     return Err(anyhow::anyhow!(
                         "--state-root configures `serve`; an offline state command names its roots with --source/--destination"
@@ -98,6 +111,7 @@ impl SearchdCommand {
         };
         Ok(Self {
             state_root_override,
+            diagnostic_trace_path,
             offline,
         })
     }
@@ -106,6 +120,11 @@ impl SearchdCommand {
     #[must_use]
     pub fn offline_operation(&self) -> Option<&OfflineStateCommandV1> {
         self.offline.as_ref()
+    }
+
+    #[must_use]
+    pub fn diagnostic_trace_path(&self) -> Option<&PathBuf> {
+        self.diagnostic_trace_path.as_ref()
     }
 
     pub fn into_config(self) -> Result<SearchdConfig> {

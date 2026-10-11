@@ -15,10 +15,19 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 quanta-index-lq-norm = { path = ".." }
+quanta-index-lq-regex = { path = "../../quanta-index-lq-regex" }
+quanta-index-lq-trigram = { path = "../../quanta-index-lq-trigram" }
 
 [[bin]]
 name = "lq_parse_pipeline"
 path = "fuzz_targets/lq_parse_pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "regex_necessary_gram"
+path = "fuzz_targets/regex_necessary_gram.rs"
 test = false
 doc = false
 bench = false

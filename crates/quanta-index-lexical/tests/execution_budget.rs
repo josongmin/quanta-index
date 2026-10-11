@@ -16,6 +16,10 @@
 #[path = "support/source_fixture.rs"]
 mod source_fixture;
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::error::Error;
 
 use quanta_index_contract::lex::LanguageCode;
@@ -28,7 +32,7 @@ use quanta_index_contract::{
 use quanta_index_core::{
     CoreError, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LexicalExecutionBudgetV1,
     LexicalIndexOpenPort, LexicalPageSpec, LexicalWriterPolicy, RegexMatchCachePolicy,
-    RequestBudgetV1, SearchCorpusBatchBuildPort,
+    RequestBudgetV1,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -132,7 +136,7 @@ fn is_budget_refusal(err: &CoreError) -> bool {
 fn seeded(budget: usize) -> Result<(tempfile::TempDir, LexicalAdapter), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let adapter = adapter_with_budget(dir.path().to_path_buf(), budget)?;
-    let _stages = adapter.build_batch(&sealed_batch()?)?;
+    let _stages = adapter.build_fixture_batch(&sealed_batch()?)?;
     Ok((dir, adapter))
 }
 
@@ -408,7 +412,7 @@ fn unindexed_scan_obeys_native_collection_byte_limit() -> TestResult {
         RegexMatchCachePolicy::DEFAULT,
         LexicalWriterPolicy::DEFAULT,
     );
-    let _stages = adapter.build_batch(&sealed_batch()?)?;
+    let _stages = adapter.build_fixture_batch(&sealed_batch()?)?;
     let searcher = adapter.open(
         &repo(),
         &revision(),

@@ -31,9 +31,9 @@ use std::time::Duration;
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    FileId, GenerationPin, ManifestGeneration, QuarantineDiscardOutcomeDtoV1, QuarantineTargetV1,
-    QuarantinedGenerationEntryV1, RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage,
-    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
+    FileId, GenerationPin, GenerationSnapshot, ManifestGeneration, QuarantineDiscardOutcomeDtoV1,
+    QuarantineTargetV1, QuarantinedGenerationEntryV1, RepoMapExactnessSummary, RepoMapFileNode,
+    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
     RepoMapPublishBundleRequestV2, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
     SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchPlaneControlIpcResponse,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
@@ -41,13 +41,16 @@ use quanta_index_contract::{
     SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{
-    GenerationQuarantineReasonV1, GenerationStorageKeyV1, QuarantinedGenerationV1,
-    SearchCorpusBatchBuildPort,
+    GenerationQuarantineReasonV1, GenerationStorageKeyV1, IdempotencyKeyV1,
+    PublicationValidationOwner, QuarantinedGenerationV1, SearchCorpusBatchBuildPort,
+    SourceEventBindingV1, SourcePublicationCatalogPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
+use quanta_index_search_plane::{PairIndexBytesMeasurer, SearchCorpusLifecycleOwner};
 use quanta_index_searchd::app::{HalfSealedPair, SealedGenerationKey};
 use quanta_index_searchd_harness as e2e_harness;
+use quanta_index_semantic::SemanticAdapter;
 
 use e2e_harness::E2eRuntime;
 
@@ -623,6 +626,7 @@ fn control_refusal(response: &SearchPlaneControlIpcResponse) -> Option<(&'static
         | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
         | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
         | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+        | SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
         | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
         | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_) => None,
@@ -899,14 +903,15 @@ fn lexical_half(
     rt: &E2eRuntime,
     generation: ManifestGeneration,
 ) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
-    quanta_index_searchd_harness::SourceCorpusFixture::new(
+    let mut batch = quanta_index_searchd_harness::SourceCorpusFixture::new(
         rt.repo(),
         rt.revision(),
         generation,
         "boot-lexical-half-event".into(),
     )
-    .frozen_batch()
-    .map_err(Into::into)
+    .frozen_batch()?;
+    rt.issue_fixture_source_event(&mut batch)?;
+    Ok(batch)
 }
 
 /// A generation sealed on one track only is named at boot (QI-BB-029
@@ -927,14 +932,71 @@ fn a_generation_sealed_on_one_track_only_is_named_at_boot() -> TestResult {
     rt.activate_last_sealed_generation()?;
     let mut rt = rt.reopen();
     let half = ManifestGeneration::new(7);
-    let lexical_root = std::fs::canonicalize(rt.state_root())?.join("indexes/lexical");
-    let _stages =
-        LexicalAdapter::with_state_root(lexical_root).build_batch(&lexical_half(&rt, half)?)?;
+    {
+        let state_root = std::fs::canonicalize(rt.state_root())?;
+        let lexical = Arc::new(LexicalAdapter::with_state_root(
+            state_root.join("indexes/lexical"),
+        ));
+        let semantic = Arc::new(SemanticAdapter::with_state_root(
+            quanta_index_semantic::semantic_state_root(&state_root),
+        )?);
+        let history =
+            quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1::new(
+                e2e_harness::DEFAULT_HISTORY_MAX_GENERATIONS,
+                e2e_harness::HARNESS_HISTORY_MAX_BYTES,
+                e2e_harness::HARNESS_HISTORY_MAX_REVISION_PAIRS,
+                e2e_harness::HARNESS_HISTORY_MAX_TOTAL_BYTES,
+            )?;
+        let lifecycle = SearchCorpusLifecycleOwner::open(
+            &state_root,
+            history,
+            Arc::new(PairIndexBytesMeasurer::new(
+                lexical.clone(),
+                semantic.clone(),
+            )),
+        )?;
+        let catalog = lifecycle.activation_catalog();
+        catalog.configure_generation_namespace_reads_v1(lexical.clone(), semantic)?;
+        let batch = lexical_half(&rt, half)?;
+        let binding = SourceEventBindingV1 {
+            event: batch.source_event.clone(),
+            target: GenerationSnapshot {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: batch.generation,
+                manifest_digest: batch.manifest_digest.clone(),
+            },
+            journal_key: IdempotencyKeyV1 {
+                kind: quanta_index_contract::IngestOperationKindV1::SearchCorpus,
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                batch_digest: batch.batch_digest.clone(),
+            },
+        };
+        let source = catalog.reserve_source_event(&binding)?;
+        let allocation = match source {
+            quanta_index_core::SourceEventReservationV1::Reserved(record)
+            | quanta_index_core::SourceEventReservationV1::Existing(record) => record.allocation,
+        };
+        let file_count = u64::try_from(batch.replace_scopes.len())?;
+        let native_count = batch.replace_scopes.iter().try_fold(0_u64, |sum, scope| {
+            let count = u64::try_from(scope.chunks.len()).map_err(std::io::Error::other)?;
+            sum.checked_add(count)
+                .ok_or_else(|| std::io::Error::other("native document count overflow"))
+        })?;
+        let reservation =
+            catalog.reserve_lexical_document_versions(&binding, file_count, native_count)?;
+        let mut owner = PublicationValidationOwner::default();
+        owner.bind_source_allocation(&batch, &allocation)?;
+        owner.bind_lexical_reservation(&batch, &reservation)?;
+        let _stages = lexical.build_batch_with_owner(&batch, &mut owner, None)?;
+    }
     let half_dir = generation_dir(&rt, "indexes/lexical", half)?;
     if !half_dir.is_dir() || generation_dir(&rt, "indexes/semantic", half)?.exists() {
         return Err("the fixture seals the lexical half only".into());
     }
-
     rt.start()?;
     let report = rt
         .boot_inventory()

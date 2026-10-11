@@ -14,6 +14,10 @@ mod op_fixture;
 #[path = "support/source_fixture.rs"]
 mod source_fixture;
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::error::Error;
 
 use quanta_index_contract::channel::LexicalChannelOp;
@@ -25,7 +29,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LexicalCandidateExplanationV1, LexicalIndexOpenPort, LexicalPageSpec,
-    LexicalScoreEngineV1, LexicalScoreTraceV1, RequestBudgetV1, SearchCorpusBatchBuildPort,
+    LexicalScoreEngineV1, LexicalScoreTraceV1, RequestBudgetV1,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -81,7 +85,7 @@ fn upsert(chunk_id: &str, text: &str) -> Result<LexicalChannelOp, Box<dyn Error>
 
 /// Build one canonical, source-bound fixture generation.
 fn seal(adapter: &LexicalAdapter, ops: &[LexicalChannelOp]) -> Result<(), CoreError> {
-    SearchCorpusBatchBuildPort::build_batch(
+    FixtureBatchBuildPort::build_fixture_batch(
         adapter,
         &op_fixture::batch(&repo(), &revision(), generation(), ops)?,
     )

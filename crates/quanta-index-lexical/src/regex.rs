@@ -17,6 +17,7 @@ use core::fmt;
 
 use quanta_index_contract::LqOptions;
 use quanta_index_lq_regex::{ForbiddenKind, RegexCompilationPlan, RegexErrorCode, RegexExecutor};
+use quanta_index_lq_trigram::NecessaryGramExpr;
 
 /// Typed regex planner errors.
 ///
@@ -104,7 +105,7 @@ impl RegexPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexPlan {
     source: String,
-    literal_alternation: Vec<Vec<u8>>,
+    necessary_grams: NecessaryGramExpr,
 }
 
 impl RegexPlan {
@@ -114,13 +115,11 @@ impl RegexPlan {
         &self.source
     }
 
-    /// Borrow the planner-extracted byte-literal alternation.
-    ///
-    /// A match must contain **one** of these, not all of them; see
-    /// `quanta_index_lq_regex::extract_prefilter_literal_alternation`.
+    /// Borrow the sound necessary condition over the exact matcher's raw NFC
+    /// byte stream. `AllDocs` requires admitted verification, never no results.
     #[must_use]
-    pub fn literal_alternation(&self) -> &[Vec<u8>] {
-        &self.literal_alternation
+    pub fn necessary_gram_expr(&self) -> &NecessaryGramExpr {
+        &self.necessary_grams
     }
 }
 
@@ -130,9 +129,8 @@ impl RegexPlan {
 ///
 /// 1. prepare validated HIR and apply the upstream planning-state budget;
 /// 2. enforce the deployment's tighter state budget before engine creation;
-/// 3. extract mandatory byte literals via
-///    `RegexCompilationPlan::prefilter_literal_alternation`;
-/// 4. enforce [`RegexPolicy::require_literal`] when set.
+/// 3. enforce existing extracted-literal admission when strict policy is set;
+/// 4. derive one bounded Boolean necessary gram condition from validated HIR.
 ///
 /// Errors are typed against [`RegexPlannerError`]; no silent fallback.
 pub fn plan_regex(
@@ -163,31 +161,20 @@ pub(crate) fn plan_regex_prepared(
             budget,
         });
     }
-    let mut literals = match prepared.prefilter_literal_alternation() {
-        Ok(v) => v,
-        Err(err)
-            if err.code == RegexErrorCode::RegexPrefilterUnusable && !policy.require_literal =>
-        {
-            // An explicit empty alternation selects the bounded verify-only
-            // path. This preserves regex truth when no usable literal exists.
-            Vec::new()
-        }
-        Err(err) => return Err(map_literal_error(source, &err, policy)),
-    };
-    if literals.is_empty() || literals.iter().any(Vec::is_empty) {
-        if policy.require_literal {
+    if policy.require_literal {
+        let literals = prepared
+            .prefilter_literal_alternation()
+            .map_err(|err| map_literal_error(source, &err, policy))?;
+        if literals.is_empty() || literals.iter().any(Vec::is_empty) {
             return Err(RegexPlannerError::UnsupportedFeature {
                 feature: "regex_without_extractable_literal",
             });
         }
-        // An empty alternative gives no nonempty witness for every match.
-        // Normalize it to the explicit bounded verify-only plan.
-        literals.clear();
     }
     Ok((
         RegexPlan {
             source: source.to_owned(),
-            literal_alternation: literals,
+            necessary_grams: prepared.necessary_gram_expr(),
         },
         prepared,
     ))
@@ -277,6 +264,20 @@ const fn forbidden_label(kind: ForbiddenKind) -> &'static str {
 mod tests {
     use super::{RegexPlannerError, RegexPolicy, plan_regex};
     use quanta_index_contract::LqOptions;
+    use quanta_index_lq_trigram::NecessaryGramExpr;
+
+    fn requires_gram(expr: &NecessaryGramExpr, gram: [u8; 3]) -> bool {
+        match expr {
+            NecessaryGramExpr::AllDocs => false,
+            NecessaryGramExpr::Gram(found) => *found == gram,
+            NecessaryGramExpr::And(children) => {
+                children.iter().any(|child| requires_gram(child, gram))
+            }
+            NecessaryGramExpr::Or(children) => {
+                !children.is_empty() && children.iter().all(|child| requires_gram(child, gram))
+            }
+        }
+    }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -296,7 +297,7 @@ mod tests {
         );
         policy.max_nfa_states = 7;
         let admitted = plan_regex("needle", &LqOptions::defaults(), &policy)?;
-        assert_eq!(admitted.literal_alternation(), &[b"needle".to_vec()]);
+        assert!(requires_gram(admitted.necessary_gram_expr(), *b"nee"));
         Ok(())
     }
 
@@ -323,7 +324,7 @@ mod tests {
     fn fallback_only_requires_literal_when_policy_explicitly_demands_it() -> TestResult {
         let mut policy = RegexPolicy::defaults();
         let admitted = plan_regex(".*", &LqOptions::defaults(), &policy)?;
-        assert!(admitted.literal_alternation().is_empty());
+        assert_eq!(admitted.necessary_gram_expr(), &NecessaryGramExpr::AllDocs);
         policy.require_literal = true;
         assert_eq!(
             plan_regex(".*", &LqOptions::defaults(), &policy),
@@ -341,7 +342,7 @@ mod tests {
             &LqOptions::defaults(),
             &RegexPolicy::defaults(),
         )?;
-        assert_eq!(plan.literal_alternation(), &[b"needle".to_vec()]);
+        assert!(requires_gram(plan.necessary_gram_expr(), *b"nee"));
         Ok(())
     }
 
@@ -361,7 +362,11 @@ mod tests {
                 "zero-width alternative bypassed literal policy: {source:?}"
             );
             let admitted = plan_regex(source, &LqOptions::defaults(), &RegexPolicy::defaults())?;
-            assert!(admitted.literal_alternation().is_empty(), "{source:?}");
+            assert_eq!(
+                admitted.necessary_gram_expr(),
+                &NecessaryGramExpr::AllDocs,
+                "{source:?}"
+            );
         }
         Ok(())
     }
@@ -379,5 +384,48 @@ mod tests {
                 budget: quanta_index_lq_regex::MAX_NFA_STATES,
             })
         );
+    }
+
+    #[test]
+    fn bounded_gram_plan_does_not_inherit_obsolete_prefix_length_refusal() -> TestResult {
+        let source = "z".repeat(2_000);
+        let plan = plan_regex(&source, &LqOptions::defaults(), &RegexPolicy::defaults())?;
+        assert!(requires_gram(plan.necessary_gram_expr(), *b"zzz"));
+        // Strict deployments retain the extractor's existing admission:
+        // it truncates long prefixes, and rejects an unfilterable pattern.
+        assert!(
+            plan_regex(
+                &source,
+                &LqOptions::defaults(),
+                &RegexPolicy {
+                    require_literal: true,
+                    ..RegexPolicy::defaults()
+                }
+            )
+            .is_ok()
+        );
+        assert!(
+            plan_regex(
+                ".*",
+                &LqOptions::defaults(),
+                &RegexPolicy {
+                    require_literal: true,
+                    ..RegexPolicy::defaults()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            plan_regex(
+                "a",
+                &LqOptions::defaults(),
+                &RegexPolicy {
+                    require_literal: true,
+                    ..RegexPolicy::defaults()
+                }
+            )
+            .is_ok()
+        );
+        Ok(())
     }
 }

@@ -180,6 +180,7 @@ impl Harness {
 fn text_query(request_id: u64, repo: &str) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
         request_id,
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "needle".to_string(),

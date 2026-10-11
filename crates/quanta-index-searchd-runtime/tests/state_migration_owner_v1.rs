@@ -17,11 +17,29 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
 use quanta_index_catalog::{SqliteCatalog, live_catalog_receipt, verify_snapshot};
-use quanta_index_contract::SearchPlaneErrorCodeV2;
-use quanta_index_core::CoreError;
+use quanta_index_contract::lex::LanguageCode;
+use quanta_index_contract::{
+    BatchIngestMode, ChunkId, ChunkRecord, FileOwnershipEntry, FileOwnershipIngestBatch,
+    GenerationPin, GenerationSnapshot, IngestOperationKindV1, LQ_VERSION_TAG, LqExpr, LqLeaf,
+    LqOptions, LqQuery, LqSpan, ManifestGeneration, RepoRelativePath, SearchCorpusIngestBatch,
+    SearchPlaneErrorCodeV2, SearchPlaneTrackKind, SourceFileKey, SourcePublicationEvent,
+    TextQuerySyntax, source_event_payload_sha256,
+};
+use quanta_index_core::{
+    CoreError, GenerationStorageKeyV1, IdempotencyKeyV1, LexicalIndexOpenPort,
+    PublicationValidationOwner, RequestBudgetV1, SearchCorpusBatchBuildPort, SourceEventBindingV1,
+    SourcePublicationCatalogPort,
+};
+use quanta_index_ipc::stamp_batch_digest_v1;
+use quanta_index_lexical::LexicalAdapter;
+use quanta_index_search_plane::{
+    PairIndexBytesMeasurer, SearchCorpusLifecycleOwner,
+    readiness::SearchCorpusHistoryRetentionPolicyV1,
+};
 use quanta_index_searchd::app::runtime::StateRootLease;
 use quanta_index_searchd::app::state_format::{
     LEGACY_AUXILIARY_SNAPSHOT_RELATIVES, NoStateMigrationFaultsV1, OfflineRootRoleV1,
@@ -37,10 +55,11 @@ use quanta_index_searchd::app::state_migration::{
     SourceFreezeReceiptV1, StateRootDeepOpenPort, StateRootDeepOpenReceiptV1,
     run_offline_backup_v1, run_offline_restore_v1, run_offline_verify_v1,
 };
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::{E2eQueryResult, E2eRuntime, fixture_source_scope_v1};
 use quanta_index_searchd_runtime::state_migration::{
     render_offline_outcome_v1, run_offline_state_command_with_v1,
 };
+use quanta_index_semantic::{SemanticAdapter, semantic_state_root};
 use sha2::{Digest as _, Sha256};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -679,6 +698,439 @@ fn make_backup(source: &Path, destination: &Path) -> TestResult {
         &backup_command(source, destination),
         &NoStateMigrationFaultsV1,
     )?;
+    Ok(())
+}
+
+const MIGRATION_NEEDLE: &str = "migration_needle_47";
+const MIGRATION_PATH: &str = "src/migration.rs";
+// CodeSearch returns a file candidate. This fixed golden is
+// SHA-256("quanta-index:code-search-file:v1\0" || framed("repo-e2e") ||
+// framed("src/migration.rs")), where each frame starts with a LE-u64 byte
+// length. The harness revision is "rev-e2e"; file IDs are revision-stable.
+const MIGRATION_FILE_CANDIDATE_ID: &str =
+    "file:3c95b3152f276384c83c74ed7f113e9eb0caaa7f944d588e26d6360fb6c7e66a";
+
+fn published_search_corpus(
+    root: &Path,
+) -> Result<(String, GenerationPin), Box<dyn std::error::Error>> {
+    let mut runtime = E2eRuntime::boot_in(root)?;
+    let expected_id = runtime.ingest_text_with_candidate_id(
+        "repo-e2e",
+        MIGRATION_PATH,
+        "pub fn migration_needle_47() -> bool { true }\n",
+    )?;
+    runtime.ingest_text("repo-e2e", "src/decoy.rs", "pub fn unrelated() {}\n")?;
+    let _reserved = runtime.reserve_pending_source_generation_v1()?;
+    runtime.publish_file_ownership_batch(FileOwnershipIngestBatch {
+        repo_id: runtime.repo(),
+        revision_id: runtime.revision(),
+        generation: runtime.current_generation(),
+        batch_digest: "migration-file-ownership".into(),
+        entries: vec![FileOwnershipEntry {
+            source_repo_id: runtime.repo(),
+            repo_relative_path: RepoRelativePath::new(MIGRATION_PATH),
+            owners: vec!["@migration-owner".into()],
+        }],
+    })?;
+    let _sealed = runtime.seal()?;
+    runtime.activate_last_sealed_generation()?;
+    let identity = runtime
+        .last_sealed_search_corpus_identity()
+        .ok_or("real harness publish returned no SearchCorpus identity")?;
+    let pin = GenerationPin::new(
+        runtime.repo(),
+        runtime.revision(),
+        identity.lexical.manifest_generation,
+    );
+    assert_published_searches(&mut runtime, &pin, &expected_id);
+    runtime.stop()?;
+    Ok((expected_id, pin))
+}
+
+fn assert_one_candidate(result: &E2eQueryResult, expected_id: &str) {
+    assert!(
+        result.typed_error.is_none(),
+        "search refused: {:?}",
+        result.typed_error
+    );
+    assert_eq!(result.candidate_ids.len(), 1);
+    assert_eq!(
+        result.candidate_ids.first().map(String::as_str),
+        Some(expected_id)
+    );
+    assert_eq!(result.candidates.len(), 1);
+    assert_eq!(
+        result
+            .candidates
+            .first()
+            .map(|candidate| candidate.repo_relative_path.as_str()),
+        Some(MIGRATION_PATH)
+    );
+}
+
+fn assert_published_searches(runtime: &mut E2eRuntime, pin: &GenerationPin, expected_id: &str) {
+    let native = runtime.query_text_with_pin(
+        TextQuerySyntax::Native,
+        MIGRATION_NEEDLE,
+        10,
+        Some(pin.clone()),
+    );
+    assert_one_candidate(&native, expected_id);
+    let code = runtime.query_text_with_pin(
+        TextQuerySyntax::CodeSearch,
+        MIGRATION_NEEDLE,
+        10,
+        Some(pin.clone()),
+    );
+    assert_one_candidate(&code, MIGRATION_FILE_CANDIDATE_ID);
+    let files = runtime.query_text_with_pin(
+        TextQuerySyntax::Sourcegraph,
+        &format!("select:file.owners {MIGRATION_NEEDLE}"),
+        10,
+        Some(pin.clone()),
+    );
+    // Sourcegraph ownership selection preserves the lexical chunk candidate
+    // domain and adds file-owner rows; it does not adopt CodeSearch file IDs.
+    assert_one_candidate(&files, expected_id);
+    assert_eq!(files.file_owner_rows.len(), 1);
+    assert_eq!(
+        files
+            .file_owner_rows
+            .first()
+            .map(|row| row.repo_relative_path.as_str()),
+        Some(MIGRATION_PATH)
+    );
+    assert_eq!(
+        files.file_owner_rows.first().map(|row| &row.owners),
+        Some(&vec!["@migration-owner".to_string()])
+    );
+}
+
+fn pooled_object_of_kind(root: &Path, kind: u8) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let objects = root.join("indexes/lexical/lexical-object-pool/objects");
+    for shard in fs::read_dir(objects)? {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            continue;
+        }
+        for object in fs::read_dir(shard.path())? {
+            let object = object?;
+            if !object.file_type()?.is_file() {
+                continue;
+            }
+            let bytes = fs::read(object.path())?;
+            if bytes.get(..8) == Some(b"QLSTOR01".as_slice()) && bytes.get(10) == Some(&kind) {
+                return Ok(object.path());
+            }
+        }
+    }
+    Err(format!("published lexical pool has no physical object of kind {kind}").into())
+}
+
+const RESTORED_NEEDLE: &str = "restored_fresh_needle_89";
+const RESTORED_CHUNK_ID: &str = "restored-fresh-chunk";
+
+fn post_restore_batch(
+    pin: &GenerationPin,
+    generation: ManifestGeneration,
+    base_generation: Option<ManifestGeneration>,
+    stream: &str,
+) -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
+    let path = RepoRelativePath::new("src/post_restore.rs");
+    let text = format!("pub fn {RESTORED_NEEDLE}() -> bool {{ true }}");
+    let scope = fixture_source_scope_v1(
+        SourceFileKey {
+            source_repo_id: pin.repo_id.clone(),
+            repo_relative_path: path.clone(),
+        },
+        pin.revision_id.clone(),
+        vec![ChunkRecord {
+            chunk_id: ChunkId::new(RESTORED_CHUNK_ID),
+            repo_relative_path: path,
+            language: LanguageCode::new("rust")?,
+            start_byte: 0,
+            end_byte: u32::try_from(text.len())?,
+            start_line: 1,
+            end_line: 1,
+            text: text.into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+            source_repo_id: Some(pin.repo_id.clone()),
+        }],
+        Vec::new(),
+    )?;
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: stream.to_string(),
+            event_id: format!("{stream}-g{}", generation.get()),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
+        repo_id: pin.repo_id.clone(),
+        revision_id: pin.revision_id.clone(),
+        generation,
+        base_generation,
+        manifest_digest: format!("post-restore-g{}", generation.get()),
+        batch_digest: String::new(),
+        mode: if base_generation.is_some() {
+            BatchIngestMode::Delta
+        } else {
+            BatchIngestMode::ReplaceGeneration
+        },
+        bundle_payload: None,
+        clear_surfaces: Vec::new(),
+        replace_scopes: vec![scope],
+        tombstone_scopes: Vec::new(),
+        semantic_replace_scopes: Vec::new(),
+        semantic_tombstone_scopes: Vec::new(),
+        seal: true,
+    };
+    batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
+    stamp_batch_digest_v1(&mut batch)?;
+    batch.validate_v1()?;
+    batch.validate_surface_mutations_v1()?;
+    Ok(batch)
+}
+
+fn build_post_restore_lexical(
+    root: &Path,
+    batch: &SearchCorpusIngestBatch,
+) -> Result<Arc<LexicalAdapter>, CoreError> {
+    let state_root = fs::canonicalize(root).map_err(|error| {
+        CoreError::Storage(format!("canonicalize restored state root: {error}"))
+    })?;
+    let lexical = Arc::new(LexicalAdapter::with_state_root(
+        state_root.join("indexes/lexical"),
+    ));
+    let semantic = Arc::new(SemanticAdapter::with_state_root(semantic_state_root(
+        &state_root,
+    ))?);
+    let retention = SearchCorpusHistoryRetentionPolicyV1::new(8, u64::MAX, 1, u64::MAX)?;
+    let lifecycle = SearchCorpusLifecycleOwner::open(
+        &state_root,
+        retention,
+        Arc::new(PairIndexBytesMeasurer::new(
+            lexical.clone(),
+            semantic.clone(),
+        )),
+    )?;
+    let catalog = lifecycle.activation_catalog();
+    catalog.configure_generation_namespace_reads_v1(lexical.clone(), semantic)?;
+    let binding = SourceEventBindingV1 {
+        event: batch.source_event.clone(),
+        target: GenerationSnapshot {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: batch.generation,
+            manifest_digest: batch.manifest_digest.clone(),
+        },
+        journal_key: IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::SearchCorpus,
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            batch_digest: batch.batch_digest.clone(),
+        },
+    };
+    let source = catalog.reserve_source_event(&binding)?;
+    let allocation = match source {
+        quanta_index_core::SourceEventReservationV1::Reserved(record)
+        | quanta_index_core::SourceEventReservationV1::Existing(record) => record.allocation,
+    };
+    let file_count = u64::try_from(batch.replace_scopes.len())
+        .map_err(|error| CoreError::InvalidContract(format!("file count: {error}")))?;
+    let native_count = batch
+        .replace_scopes
+        .iter()
+        .try_fold(0_u64, |total, scope| {
+            let count = u64::try_from(scope.chunks.len())
+                .map_err(|error| CoreError::InvalidContract(format!("Native count: {error}")))?;
+            total.checked_add(count).ok_or_else(|| {
+                CoreError::InvalidContract("Native document count exceeds u64".into())
+            })
+        })?;
+    let reservation =
+        catalog.reserve_lexical_document_versions(&binding, file_count, native_count)?;
+    let mut owner = PublicationValidationOwner::default();
+    owner.bind_source_allocation(batch, &allocation)?;
+    owner.bind_lexical_reservation(batch, &reservation)?;
+    let _stages = lexical.build_batch_with_owner(batch, &mut owner, None)?;
+    Ok(lexical)
+}
+
+#[test]
+fn real_search_corpus_backup_restore_preserves_file_and_native_queries() -> TestResult {
+    let source = private_root()?;
+    let backup_parent = private_root()?;
+    let restore_parent = private_root()?;
+    let (expected_id, pin) = published_search_corpus(source.path())?;
+    let source_incarnation = fs::read(source.path().join(INCARNATION))?;
+    let _file_body = pooled_object_of_kind(source.path(), 1)?;
+    let _native_body = pooled_object_of_kind(source.path(), 3)?;
+
+    let backup = backup_parent.path().join("real-corpus-backup");
+    make_backup(source.path(), &backup)?;
+    let backup_manifest = read_root_manifest_v1(&backup.join("state-backup-manifest-v1.txt"))?;
+    assert!(
+        backup_manifest.objects.iter().any(|object| {
+            object
+                .relative_path
+                .starts_with("indexes/lexical/lexical-object-pool/objects/")
+        }),
+        "backup manifest must bind the shared lexical object pool"
+    );
+    let _copied_file_body = pooled_object_of_kind(&backup, 1)?;
+    let _copied_native_body = pooled_object_of_kind(&backup, 3)?;
+
+    let restored = restore_parent.path().join("restored-real-corpus");
+    let _outcome = run_offline_state_command_with_v1(
+        &OfflineStateCommandV1 {
+            operation: OfflineStateOperationV1::Restore,
+            source_root: backup,
+            destination_root: Some(restored.clone()),
+        },
+        &NoStateMigrationFaultsV1,
+    )?;
+    assert_ne!(fs::read(restored.join(INCARNATION))?, source_incarnation);
+    let mut runtime = E2eRuntime::boot_in(&restored)?;
+    assert_published_searches(&mut runtime, &pin, &expected_id);
+    runtime.stop()?;
+
+    // Restore rotates the allocation incarnation without invalidating the
+    // sealed G1 read. A new catalog-owned full replacement must acquire IDs
+    // under the new incarnation and make a separately queryable G2.
+    assert_eq!(pin.manifest_generation, ManifestGeneration::new(1));
+    let fresh_generation = ManifestGeneration::new(2);
+    let full = post_restore_batch(&pin, fresh_generation, None, "post-restore-full-bootstrap")?;
+    let lexical = build_post_restore_lexical(&restored, &full)?;
+    let fresh_searcher = lexical.open(
+        &pin.repo_id,
+        &pin.revision_id,
+        fresh_generation,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let query = |needle: &str| LqQuery {
+        lq_version: LQ_VERSION_TAG,
+        expr: LqExpr::Leaf(LqLeaf::Keyword(needle.to_string())),
+        filters: Vec::new(),
+        options: LqOptions::defaults(),
+        directives: Vec::new(),
+        source_span: LqSpan::eof(0),
+    };
+    let fresh_hits =
+        fresh_searcher.search(&query(RESTORED_NEEDLE), 10, &RequestBudgetV1::unbounded())?;
+    assert_eq!(fresh_hits.len(), 1);
+    assert_eq!(
+        fresh_hits.first().map(|hit| hit.candidate_id.as_str()),
+        Some(RESTORED_CHUNK_ID)
+    );
+    let inherited_searcher = lexical.open(
+        &pin.repo_id,
+        &pin.revision_id,
+        pin.manifest_generation,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let inherited_hits =
+        inherited_searcher.search(&query(MIGRATION_NEEDLE), 10, &RequestBudgetV1::unbounded())?;
+    assert_eq!(inherited_hits.len(), 1);
+    assert_eq!(
+        inherited_hits.first().map(|hit| hit.candidate_id.as_str()),
+        Some(expected_id.as_str())
+    );
+
+    // A new-range Delta over restored G1 would mix old-incarnation logical
+    // IDs with new-incarnation IDs. Declare G1's real source parent so the
+    // separate stream-lineage guard cannot hide the allocation-scope refusal.
+    let delta_generation = ManifestGeneration::new(3);
+    let mut old_base_delta = post_restore_batch(
+        &pin,
+        delta_generation,
+        Some(pin.manifest_generation),
+        "post-restore-old-base-delta",
+    )?;
+    let base_directory = GenerationStorageKeyV1::for_repo_revision(&pin.repo_id, &pin.revision_id)
+        .generation_dir(lexical.state_root(), pin.manifest_generation);
+    let (coverage_format, coverage_identity, parent, _pages): (
+        u32,
+        GenerationSnapshot,
+        SourcePublicationEvent,
+        ciborium::Value,
+    ) = quanta_index_ipc::decode_cbor_payload(&fs::read(
+        base_directory.join("source-file-coverage.cbor"),
+    )?)?;
+    assert_eq!(coverage_format, 2);
+    assert_eq!(
+        coverage_identity.manifest_generation,
+        pin.manifest_generation
+    );
+    assert_eq!(coverage_identity.repo_id, pin.repo_id);
+    assert_eq!(coverage_identity.revision_id, pin.revision_id);
+    old_base_delta.source_event.stream_id = parent.stream_id;
+    old_base_delta.source_event.expected_base_event_id = Some(parent.event_id);
+    old_base_delta.source_event.payload_sha256 = source_event_payload_sha256(&old_base_delta)?;
+    stamp_batch_digest_v1(&mut old_base_delta)?;
+    let Err(refusal) = build_post_restore_lexical(&restored, &old_base_delta) else {
+        return Err("old-incarnation delta was published".into());
+    };
+    assert_eq!(
+        refusal.clone().into_search_plane_wire().0,
+        SearchPlaneErrorCodeV2::InvalidRequest,
+        "old-base delta must be a typed contract refusal: {refusal}"
+    );
+    assert!(
+        refusal.to_string().contains("allocation scope"),
+        "delta refused before the old-base scope check: {refusal}"
+    );
+    let refused_target = GenerationStorageKeyV1::for_repo_revision(&pin.repo_id, &pin.revision_id)
+        .generation_dir(lexical.state_root(), delta_generation);
+    assert!(
+        !refused_target.exists(),
+        "old-base delta must not publish or stage G3"
+    );
+    Ok(())
+}
+
+#[test]
+fn real_search_corpus_backup_refuses_missing_or_corrupt_pooled_native_body() -> TestResult {
+    let source = private_root()?;
+    let _published = published_search_corpus(source.path())?;
+    let body = pooled_object_of_kind(source.path(), 3)?;
+    let original = fs::read(&body)?;
+    for missing in [true, false] {
+        let destination_parent = private_root()?;
+        if missing {
+            fs::remove_file(&body)?;
+        } else {
+            let mut bytes = original.clone();
+            let last = bytes.last_mut().ok_or("empty pooled native body")?;
+            *last ^= 1;
+            fs::write(&body, bytes)?;
+        }
+        let backup = destination_parent.path().join("refused-backup");
+        let error = run_offline_state_command_with_v1(
+            &backup_command(source.path(), &backup),
+            &NoStateMigrationFaultsV1,
+        )
+        .expect_err("staged deep-open must refuse an invalid pooled Native body");
+        assert_eq!(
+            command_code(&error),
+            Some(SearchPlaneErrorCodeV2::GenerationSidecarCorrupt),
+            "missing={missing}: {error}"
+        );
+        assert!(
+            !backup.exists(),
+            "invalid pooled body must not publish backup"
+        );
+        let staging = staging_directory_for_v1(&backup);
+        assert!(
+            !staging.join("state-backup-manifest-v1.txt").exists(),
+            "failed staged backup must not publish a manifest"
+        );
+        fs::write(&body, &original)?;
+        make_backup(source.path(), &backup)?;
+        assert!(!staging.exists(), "retry must consume stale staging");
+    }
     Ok(())
 }
 

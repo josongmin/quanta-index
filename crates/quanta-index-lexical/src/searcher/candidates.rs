@@ -12,6 +12,7 @@ use crate::searcher::snippets::{
     SelectedSnippetSource, SnippetContext, SnippetLimits, integrity, render_selected,
     verify_raw_digest,
 };
+use crate::text_authority::NativeAuthority;
 use quanta_index_contract::lex::{SymbolKindCode, SymbolKindFamily};
 use quanta_index_contract::{LexicalCandidate, RepoRelativePath, SymbolCandidate};
 use quanta_index_contract::{
@@ -35,6 +36,7 @@ pub(crate) struct SelectedPreviewContext<'a> {
     query: &'a LqQuery,
     prepared: &'a PreparedPredicatePlan,
     request: &'a RequestBudgetV1,
+    native_authority: Option<NativeAuthority>,
     ledger: LexicalCollectionBudget,
     executors: BTreeMap<String, RegexExecutor>,
     executor_reservations: Vec<LexicalMemoryReservation>,
@@ -256,12 +258,14 @@ impl TantivySearcher {
         query: &'a LqQuery,
         prepared: &'a PreparedPredicatePlan,
         request: &'a RequestBudgetV1,
+        native: &super::authorities::NativeQueryScope,
     ) -> Result<SelectedPreviewContext<'a>, CoreError> {
         let ledger = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
         Ok(SelectedPreviewContext {
             query,
             prepared,
             request,
+            native_authority: native.optional_authority(),
             ledger,
             executors: BTreeMap::new(),
             executor_reservations: Vec::new(),
@@ -345,8 +349,8 @@ impl TantivySearcher {
             }
             let digest = source_digest(doc, self.fields.chunk_raw_sha256)?
                 .ok_or_else(|| integrity("immutable raw digest missing"))?;
-            let authority = self
-                .text_authority
+            let authority = context
+                .native_authority
                 .as_ref()
                 .ok_or_else(|| integrity("selected text authority missing"))?;
             let id = crate::text_docs::stored_text_authority_doc_id(
@@ -355,7 +359,7 @@ impl TantivySearcher {
                 &candidate.candidate_id,
             )
             .map_err(|error| integrity(&format!("invalid selected text authority id: {error}")))?;
-            if !authority.matches_document(id, &candidate.candidate_id, indexed) {
+            if !authority.matches_document(id, &candidate.candidate_id, indexed, context.request)? {
                 return Err(integrity("selected document disagrees with text authority"));
             }
             context
@@ -565,14 +569,17 @@ mod l4_source_decode_regressions {
     use super::*;
     use crate::analyzer::register_analyzers;
     use crate::documents::{add_content_fields, add_metadata_fields, add_snippet_field};
+    use crate::lexical_store::{AttemptBinding, ObjectStore};
     use crate::ranked_keys::{self, RankedKeyTables, SegmentKeys};
     use crate::regex::RegexPolicy;
     use crate::regex_match_cache::RegexMatchCache;
-    use crate::text_authority::{self, AddedTextDoc, ShardedTextAuthority};
+    use crate::text_authority::{self, AddedTextDoc, NativeAuthority, NativeSourceEdit};
     use crate::{SchemaFields, TantivySearcher};
     use quanta_index_contract::{
         LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery, LqSpan, LqYesNoOnly,
-        ManifestGeneration, PreviewUnavailableReason, RepoId, RevisionId, SearchPlaneErrorCodeV2,
+        ManifestGeneration, PreviewUnavailableReason, RepoId, RepoRelativePath, RevisionId,
+        SearchPlaneErrorCodeV2, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+        SymbolCoverage, SymbolNameSourcePolicyV1,
     };
     use quanta_index_core::{
         LexicalArtifactIdentityV1, LexicalExecutionBudgetV1, LexicalSearcher,
@@ -631,30 +638,52 @@ mod l4_source_decode_regressions {
         let ranked_keys = Arc::new(RankedKeyTables::bind(tables, segment_readers)?);
 
         let generation = ManifestGeneration::new(1);
-        let _receipt = text_authority::rebuild(
-            state.path(),
-            generation,
-            vec![AddedTextDoc {
+        let source_file = SourceFileKey {
+            source_repo_id: RepoId::new("source-repo")?,
+            repo_relative_path: RepoRelativePath::new("needle.rs"),
+        };
+        let coverage = SourceFileCoverage {
+            source: SourceFileRevision {
+                file: source_file.clone(),
+                revision_id: RevisionId::new("source-r1")?,
+                source_sha256: source_digest,
+            },
+            language: quanta_index_contract::lex::LanguageCode::new("rust")?,
+            producer_policy_sha256: [1; 32],
+            symbol_name_source_policy: SymbolNameSourcePolicyV1::Unspecified,
+            unit_set_sha256: [2; 32],
+            text_admitted: true,
+            symbols: SymbolCoverage::Complete { symbol_count: 0 },
+        };
+        let store = ObjectStore::open(state.path())?;
+        let binding = AttemptBinding {
+            root_incarnation: [1; 16],
+            repository_sha256: [2; 32],
+            revision_sha256: [5; 32],
+            source_event_sha256: [3; 32],
+            target_generation: generation.get(),
+            base_root_sha256: None,
+            operations_sha256: [4; 32],
+            format: 1,
+        };
+        let lease = store.begin_attempt(&binding, &[])?;
+        let (root, _receipt) = text_authority::publish_delta(
+            &store,
+            &lease,
+            None,
+            &[NativeSourceEdit::Upsert(coverage)],
+            &[],
+            &[AddedTextDoc {
                 doc_id: 1,
+                source_file,
                 candidate_id: "chunk-needle.rs".into(),
                 text: raw.into(),
             }],
-            None,
-            1,
+            false,
+            generation,
+            [9; 32],
         )?;
-        let manifest = text_authority::read_manifest(state.path())?
-            .ok_or("text authority manifest missing")?;
-        let shards = manifest
-            .shards
-            .iter()
-            .map(|entry| {
-                Ok((
-                    entry.index,
-                    text_authority::load_shard(state.path(), entry)?,
-                ))
-            })
-            .collect::<Result<Vec<_>, CoreError>>()?;
-        let text_authority = ShardedTextAuthority::from_proved_shards(shards)?;
+        let text_authority = NativeAuthority::open(store, root)?;
         let live_bm25 = Arc::new(
             crate::sealed_generation::live_bm25::LiveBm25Statistics::build(
                 &index,

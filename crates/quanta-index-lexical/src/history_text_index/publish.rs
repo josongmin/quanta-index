@@ -32,7 +32,7 @@ use quanta_index_core::{
 use tantivy::{Index, IndexWriter, TantivyDocument};
 
 use crate::analyzer::register_analyzers;
-use crate::history_text_index::layout::{epoch_dir, fsync_parent, kind_dir, staging_dir};
+use crate::history_text_index::layout::{epoch_dir, fsync_parent_observed, kind_dir, staging_dir};
 use crate::history_text_index::manifest::{self, HistoryTextManifest};
 use crate::history_text_index::schema::{KindSchema, doc_key_text};
 
@@ -302,6 +302,7 @@ pub(super) fn publish_epoch(
     epoch: AuxEpochV1,
     build: HistoryTextBuildV1,
     writer_heap_bytes: usize,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<HistoryTextEpochReceiptV1, CoreError> {
     let staging = staging_dir(root, generation, epoch);
     let published = epoch_dir(root, generation, epoch);
@@ -351,7 +352,7 @@ pub(super) fn publish_epoch(
             writer_heap_bytes,
         )?);
     }
-    HistoryTextManifest::describe(&staging, epoch)?.write(&staging)?;
+    HistoryTextManifest::describe(&staging, epoch)?.write_observed(&staging, sync)?;
     if published.exists() {
         // A leftover of an attempt whose rows never landed; nothing can
         // hold it (see the port contract).
@@ -369,7 +370,7 @@ pub(super) fn publish_epoch(
             published.display()
         ))
     })?;
-    fsync_parent(&published)?;
+    fsync_parent_observed(&published, sync)?;
     Ok(HistoryTextEpochReceiptV1 {
         docs_written: written,
     })

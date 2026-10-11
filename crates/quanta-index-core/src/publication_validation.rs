@@ -18,6 +18,8 @@ use crate::CoreError;
 #[derive(Default)]
 pub struct PublicationValidationOwner {
     binding: Option<PublicationBodyBinding>,
+    source_allocation: Option<crate::SourceEventAllocationV1>,
+    lexical_reservation: Option<crate::LexicalDocumentVersionReservationV1>,
     lexical_proof: Option<Box<dyn Any + Send + Sync>>,
     semantic_proof: Option<Box<dyn Any + Send + Sync>>,
 }
@@ -31,6 +33,87 @@ struct PublicationBodyBinding {
 }
 
 impl PublicationValidationOwner {
+    /// Bind catalog-owned document IDs to the exact validated mutation body.
+    pub fn bind_lexical_reservation(
+        &mut self,
+        batch: &SearchCorpusIngestBatch,
+        reservation: &crate::LexicalDocumentVersionReservationV1,
+    ) -> Result<(), CoreError> {
+        reservation.validate()?;
+        self.bind_source_allocation(batch, &reservation.allocation)?;
+        let file_count = u64::try_from(batch.replace_scopes.len()).map_err(|error| {
+            CoreError::InvalidContract(format!("source file count exceeds u64: {error}"))
+        })?;
+        let native_text_count = batch.replace_scopes.iter().try_fold(0u64, |total, scope| {
+            let count = u64::try_from(scope.chunks.len()).map_err(|error| {
+                CoreError::InvalidContract(format!("native text count exceeds u64: {error}"))
+            })?;
+            total
+                .checked_add(count)
+                .ok_or_else(|| CoreError::InvalidContract("native text count exceeds u64".into()))
+        })?;
+        if reservation.file.count != file_count
+            || reservation.native_text.count != native_text_count
+        {
+            return Err(CoreError::InvalidContract(
+                "lexical reservation differs from publication document counts".into(),
+            ));
+        }
+        match &self.lexical_reservation {
+            Some(previous) if previous != reservation => Err(CoreError::InvalidContract(
+                "lexical document IDs changed within one publication".into(),
+            )),
+            Some(_) => Ok(()),
+            None => {
+                self.lexical_reservation = Some(reservation.clone());
+                Ok(())
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn lexical_reservation(&self) -> Option<&crate::LexicalDocumentVersionReservationV1> {
+        self.lexical_reservation.as_ref()
+    }
+
+    /// Retain the original catalog allocation before component mutation.
+    ///
+    /// The materializer obtains this record from the source-publication catalog;
+    /// neither a generation path nor a component watermark supplies incarnation.
+    pub fn bind_source_allocation(
+        &mut self,
+        batch: &SearchCorpusIngestBatch,
+        allocation: &crate::SourceEventAllocationV1,
+    ) -> Result<(), CoreError> {
+        self.bind_batch(batch)?;
+        allocation.validate()?;
+        if allocation.request.repo_id != batch.repo_id
+            || allocation.request.revision_id != batch.revision_id
+            || allocation.request.event != batch.source_event
+            || allocation.generation != batch.generation
+        {
+            return Err(CoreError::InvalidContract(
+                "publication allocation differs from the original source-corpus target".into(),
+            ));
+        }
+        match &self.source_allocation {
+            Some(previous) if previous != allocation => Err(CoreError::InvalidContract(
+                "publication allocation changed within one mutation scope".into(),
+            )),
+            Some(_) => Ok(()),
+            None => {
+                self.source_allocation = Some(allocation.clone());
+                Ok(())
+            }
+        }
+    }
+
+    /// Original durable allocation, available after materializer reservation.
+    #[must_use]
+    pub fn source_allocation(&self) -> Option<&crate::SourceEventAllocationV1> {
+        self.source_allocation.as_ref()
+    }
+
     /// Bind this scope before any physical validation or mutation. Reusing a
     /// publication owner for another body is a contract error, even when the
     /// two bodies happen to name the same generation.

@@ -1,9 +1,10 @@
 //! Deep integrity of sealed generations, off the serving path (QI-BB-017).
 //!
 //! A door — activation, restart, a cold open — proves a sealed generation
-//! by its layout: every committed file exists at its committed length, and
-//! the two decoded sidecars hash to their commitments. Byte integrity of the
-//! dataset itself is proven here instead, by a scrub the composition root
+//! by its committed metadata and adapter-specific storage policy. Shared paged
+//! authorities authenticate their compact roots at the door and pooled leaves
+//! when selected; generation-local files may check length at open. The complete
+//! reachable dataset is proven here by a scrub the composition root
 //! runs as quota'd maintenance: bounded bytes per step, a cursor to resume
 //! from, and a typed outcome. A generation the scrub finds corrupt is
 //! quarantined through the QI-BB-026 surface, durably, so the boot
@@ -98,7 +99,11 @@ impl IntegrityScrubProgressV1 {
     }
 }
 
-/// The most bytes one scrub step may read.
+/// The byte threshold checked between indivisible scrub units.
+///
+/// A step may exceed this value by its final committed artifact or bounded
+/// shared-object/semantic unit. Zero-length artifacts may share a step;
+/// a paused result carries the continuation cursor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IntegrityScrubBudgetV1 {
     pub max_bytes: u64,
@@ -230,20 +235,58 @@ pub trait DoorFindingQuarantinePort: Send + Sync {
         &self,
         generation: &GenerationSnapshot,
     ) -> Result<DoorFindingOutcome, CoreError>;
+
+    /// Fence every affected resident generation before its quarantine receipt
+    /// is published. Shared-storage adapters override this to include retained
+    /// generations that reference the same corrupt object. If this fails after
+    /// a callback, the caller must keep those admission fences until recovery.
+    fn quarantine_door_finding_with_fence(
+        &self,
+        generation: &GenerationSnapshot,
+        before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
+    ) -> Result<DoorFindingOutcome, CoreError> {
+        before_quarantine(generation)?;
+        self.quarantine_door_finding(generation)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SharedObjectCollectionStepV1 {
+    Paused,
+    Completed,
+    /// A concurrent publication invalidated the protected-root snapshot.
+    Stale,
 }
 
 /// Deep, bounded, resumable integrity verification of one adapter's sealed
 /// generations (QI-BB-017).
 ///
-/// Implementations hash committed files against the seal, never decode a
-/// row, read at most `budget.max_bytes` per step (plus the one file that
-/// crosses it), and on a mismatch write a durable quarantine receipt that
+/// Implementations authenticate committed files and shared object closures,
+/// including semantic relationships where their storage contract requires it.
+/// Steps read at most `budget.max_bytes` (plus the final admitted artifact
+/// crossing it), and on a mismatch write a durable quarantine receipt that
 /// their own inventory reports as
 /// [`GenerationQuarantineReasonV1::ContentCorrupt`](super::generation::GenerationQuarantineReasonV1::ContentCorrupt)
 /// and their own doors refuse under [`GENERATION_QUARANTINED_CODE`]. A
 /// completed scrub is recorded beside the generation so the next
 /// [`Self::scrub_candidates`] can order by staleness.
 pub trait IntegrityScrubPort: Send + Sync {
+    /// Advance unreachable shared-object collection by bounded work units.
+    /// Full mark and inventory precede deletion. Restart discards partial
+    /// scratch; retention and held-reader fences remain with their owners.
+    /// Adapters without shared storage have no additional collection work.
+    fn collect_shared_objects_step(
+        &self,
+        max_work_units: u32,
+    ) -> Result<SharedObjectCollectionStepV1, CoreError> {
+        if max_work_units == 0 {
+            return Err(CoreError::InvalidContract(
+                "shared collection requires positive work units".into(),
+            ));
+        }
+        Ok(SharedObjectCollectionStepV1::Completed)
+    }
+
     /// Every sealed generation this adapter can scrub right now, cheaply:
     /// identities and receipts only, no content.
     fn scrub_candidates(&self) -> Result<Vec<IntegrityScrubCandidateV1>, CoreError>;
@@ -260,13 +303,14 @@ pub trait IntegrityScrubPort: Send + Sync {
     /// Run one step while calling `before_quarantine` after proving a
     /// mismatch but before publishing its quarantine receipt. The caller
     /// fences resident query handles in that callback. A clean or paused
-    /// step must not call it.
+    /// step must not call it. Shared storage can affect several retained
+    /// generations; fence each named generation before publishing its receipt.
     fn scrub_with_quarantine_fence(
         &self,
         generation: &GenerationSnapshot,
         cursor: Option<IntegrityScrubCursorV1>,
         budget: IntegrityScrubBudgetV1,
-        before_quarantine: &dyn Fn() -> Result<(), CoreError>,
+        before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
     ) -> Result<IntegrityScrubReportV1, CoreError>;
 }
 

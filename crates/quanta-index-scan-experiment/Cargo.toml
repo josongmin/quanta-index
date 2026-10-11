@@ -8,10 +8,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
-# Exploratory scaling experiment (indexed query vs full-text scan). It drives
-# the lexical adapter directly and has nothing to do with the searchd runtime,
-# so it lives in its own crate rather than polluting the runtime test/bench
-# harness. Never gated; see tools/benchmark/run_scan_vs_index.py.
+# Exploratory scaling experiment (indexed query vs full-text scan). It builds
+# the lexical track under real catalog-owned source and document ID reservations,
+# then queries the lexical adapter in-process. It does not run searchd.
+# Never gated; see tools/benchmark/run_scan_vs_index.py.
 [[bin]]
 name = "scan_vs_index"
 path = "src/main.rs"
@@ -23,6 +23,8 @@ quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
+quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
+quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
 # The one benchmark artifact envelope (`BenchArtifactV1`) and its
 # provenance (exact head, digests, host, peak RSS) live in the harness.
 quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-searchd-harness" }

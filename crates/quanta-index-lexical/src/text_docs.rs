@@ -5,16 +5,12 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
-use crate::documents::{required_stored_text, stored_doc_kind};
-use crate::text_authority::AddedTextDoc;
-use crate::{IndexedTextDoc, SchemaFields, TEXT_DOC_KIND};
+use crate::SchemaFields;
 use quanta_index_contract::SourceFileKey;
 use quanta_index_core::CoreError;
-use roaring::RoaringBitmap;
-use tantivy::collector::TopDocs;
-use tantivy::query::{AllQuery, BooleanQuery, Occur, TermQuery};
+use tantivy::Term;
+use tantivy::query::{BooleanQuery, Occur, TermQuery};
 use tantivy::schema::{IndexRecordOption, TantivyDocument, Value};
-use tantivy::{Index, IndexReader, ReloadPolicy, Term};
 
 /// The text-authority doc id stored on a text document.
 ///
@@ -47,7 +43,7 @@ pub(crate) fn stored_text_authority_doc_id(
             "lexical: text document {candidate_id} stores a malformed text-authority doc id"
         ))
     })?;
-    if !(1..=crate::text_authority::MAX_DOC_ID).contains(&doc_id) {
+    if doc_id == 0 {
         return Err(CoreError::Storage(format!(
             "lexical: text document {candidate_id} stores text-authority doc id {doc_id} outside the allocated domain"
         )));
@@ -57,26 +53,15 @@ pub(crate) fn stored_text_authority_doc_id(
 
 /// A text-authority doc id as a restriction member.
 ///
-/// The authority allocates ids in `1..=MAX_DOC_ID`, the 32-bit range, so an
-/// id outside it is a corrupt authority, refused rather than dropped.
-pub(crate) fn authority_member(doc_id: u64, surface: &str) -> Result<u32, CoreError> {
-    u32::try_from(doc_id).map_err(|err| {
-        CoreError::Storage(format!(
-            "lexical: {surface} names text-authority doc id {doc_id} outside the 32-bit id space: {err}"
-        ))
-    })
-}
-
-/// Text-authority doc ids as the restriction set they form.
-pub(crate) fn authority_member_set(
-    doc_ids: impl IntoIterator<Item = u64>,
-    surface: &str,
-) -> Result<RoaringBitmap, CoreError> {
-    let mut members = RoaringBitmap::new();
-    for doc_id in doc_ids {
-        let _inserted: bool = members.insert(authority_member(doc_id, surface)?);
+/// Zero is reserved for the absence of a text document. Logical IDs remain
+/// u64 through the query bridge; only Tantivy's segment-local IDs are u32.
+pub(crate) fn authority_member(doc_id: u64, surface: &str) -> Result<u64, CoreError> {
+    if doc_id == 0 {
+        return Err(CoreError::Storage(format!(
+            "lexical: {surface} names reserved text-authority doc id zero"
+        )));
     }
-    Ok(members)
+    Ok(doc_id)
 }
 
 /// Exact source ownership is the conjunction of two separately indexed terms;
@@ -100,120 +85,20 @@ pub(crate) fn source_file_query(fields: &SchemaFields, file: &SourceFileKey) -> 
     ])
 }
 
-/// The text documents currently indexed under one path, with their doc ids.
-///
-/// Read from the committed index before a scope mutation is applied, so an
-/// incremental text-authority update knows exactly which documents — and
-/// therefore which shards — the mutation retires.
-pub(crate) fn text_candidates_at_file(
-    index: &Index,
-    fields: &SchemaFields,
-    file: &SourceFileKey,
-) -> Result<Vec<IndexedTextDoc>, CoreError> {
-    let reader: IndexReader = index
-        .reader_builder()
-        .reload_policy(ReloadPolicy::Manual)
-        .try_into()
-        .map_err(|err| CoreError::Storage(format!("lexical: scope candidate reader: {err}")))?;
-    reader.reload().map_err(|err| {
-        CoreError::Storage(format!("lexical: scope candidate reader reload: {err}"))
-    })?;
-    let searcher = reader.searcher();
-    let query = source_file_query(fields, file);
-    let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-        CoreError::InvalidContract(format!(
-            "lexical: num_docs overflow while collecting scope candidates: {err}"
-        ))
-    })?;
-    if limit == 0 {
-        return Ok(Vec::new());
-    }
-    let hits = searcher
-        .search(&query, &TopDocs::with_limit(limit))
-        .map_err(|err| CoreError::Storage(format!("lexical: scope candidate scan: {err}")))?;
-    let mut candidates = Vec::with_capacity(hits.len());
-    for (_score, doc_address) in hits {
-        let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: fetch scope candidate doc {doc_address:?}: {err}"
-            ))
-        })?;
-        if stored_doc_kind(&doc, fields.doc_kind)? != TEXT_DOC_KIND {
-            continue;
-        }
-        let candidate_id = required_stored_text(&doc, fields.candidate_id, "candidate_id")?;
-        let doc_id = stored_text_authority_doc_id(&doc, fields, candidate_id)?;
-        candidates.push(IndexedTextDoc {
-            candidate_id: candidate_id.to_owned(),
-            doc_id,
-        });
-    }
-    Ok(candidates)
-}
-
-/// Every live text document with its doc id and stored text, in doc-id
-/// order: the input of a full text-authority rebuild.
-pub(crate) fn collect_text_authority_docs(
-    index: &Index,
-    fields: &SchemaFields,
-) -> Result<Vec<AddedTextDoc>, CoreError> {
-    let reader: IndexReader = index
-        .reader_builder()
-        .reload_policy(ReloadPolicy::Manual)
-        .try_into()
-        .map_err(|err| CoreError::Storage(format!("lexical: text authority reader: {err}")))?;
-    reader.reload().map_err(|err| {
-        CoreError::Storage(format!("lexical: text authority reader reload: {err}"))
-    })?;
-    let searcher = reader.searcher();
-    let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-        CoreError::InvalidContract(format!(
-            "lexical: num_docs overflow while rebuilding text authority: {err}"
-        ))
-    })?;
-    if limit == 0 {
-        return Ok(Vec::new());
-    }
-    let hits = searcher
-        .search(&AllQuery, &TopDocs::with_limit(limit))
-        .map_err(|err| CoreError::Storage(format!("lexical: text authority scan: {err}")))?;
-    let mut docs: Vec<AddedTextDoc> = Vec::new();
-    for (_score, doc_address) in hits {
-        let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: fetch text authority doc {doc_address:?}: {err}"
-            ))
-        })?;
-        if stored_doc_kind(&doc, fields.doc_kind)? != TEXT_DOC_KIND {
-            continue;
-        }
-        let candidate_id = required_stored_text(&doc, fields.candidate_id, "candidate_id")?;
-        let text = required_stored_text(&doc, fields.chunk_text, "chunk_text")?;
-        let doc_id = stored_text_authority_doc_id(&doc, fields, candidate_id)?;
-        docs.push(AddedTextDoc {
-            doc_id,
-            candidate_id: candidate_id.to_owned(),
-            text: text.to_owned(),
-        });
-    }
-    docs.sort_by_key(|doc| doc.doc_id);
-    Ok(docs)
-}
-
 #[cfg(test)]
 #[expect(
     clippy::panic_in_result_fn,
     reason = "source-authority regressions assert fixed decoding invariants"
 )]
 mod l4_authority_id_regressions {
-    use super::{SchemaFields, collect_text_authority_docs, stored_text_authority_doc_id};
-    use tantivy::Index;
+    use super::{SchemaFields, stored_text_authority_doc_id};
+    use crate::documents::required_stored_text;
     use tantivy::schema::TantivyDocument;
 
     #[test]
     fn stored_authority_id_rejects_ambiguity_and_invalid_domain() {
         let fields = SchemaFields::build();
-        for ids in [vec![1, 2], vec![2, 1], vec![1, 1], vec![0], vec![u64::MAX]] {
+        for ids in [vec![1, 2], vec![2, 1], vec![1, 1], vec![0]] {
             let mut doc = TantivyDocument::new();
             for id in &ids {
                 doc.add_u64(fields.text_authority_doc_id, *id);
@@ -236,7 +121,7 @@ mod l4_authority_id_regressions {
     fn stored_authority_id_accepts_single_valid_boundary_values()
     -> Result<(), quanta_index_core::CoreError> {
         let fields = SchemaFields::build();
-        for id in [1, u64::from(u32::MAX)] {
+        for id in [1, u64::from(u32::MAX), u64::MAX] {
             let mut doc = TantivyDocument::new();
             doc.add_u64(fields.text_authority_doc_id, id);
             assert_eq!(
@@ -248,48 +133,34 @@ mod l4_authority_id_regressions {
     }
 
     #[test]
-    fn authority_rebuild_refuses_duplicate_ids_from_stored_index()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn stored_authority_id_refuses_duplicate_ids() {
         let fields = SchemaFields::build();
-        let index = Index::create_in_ram(fields.schema.clone());
-        crate::analyzer::register_analyzers(&index);
-        let mut writer = index.writer_with_num_threads(1, 15_000_000)?;
         let mut doc = TantivyDocument::new();
         doc.add_text(fields.doc_kind, crate::TEXT_DOC_KIND);
         doc.add_text(fields.candidate_id, "candidate");
         doc.add_text(fields.chunk_text, "needle");
         doc.add_u64(fields.text_authority_doc_id, 1);
         doc.add_u64(fields.text_authority_doc_id, 2);
-        let _operation = writer.add_document(doc)?;
-        let _commit = writer.commit()?;
         assert!(
-            collect_text_authority_docs(&index, &fields).is_err(),
-            "stored decoding and authority rebuild silently chose the first ID"
+            stored_text_authority_doc_id(&doc, &fields, "candidate").is_err(),
+            "stored decoding silently chose the first ID"
         );
-        Ok(())
     }
 
     #[test]
-    fn authority_rebuild_refuses_ambiguous_required_text_fields()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn stored_text_refuses_ambiguous_required_fields() {
         let fields = SchemaFields::build();
         for duplicate in [fields.candidate_id, fields.chunk_text] {
-            let index = Index::create_in_ram(fields.schema.clone());
-            crate::analyzer::register_analyzers(&index);
-            let mut writer = index.writer_with_num_threads(1, 15_000_000)?;
             let mut doc = TantivyDocument::new();
             doc.add_text(fields.doc_kind, crate::TEXT_DOC_KIND);
             doc.add_text(fields.candidate_id, "candidate");
             doc.add_text(fields.chunk_text, "needle");
             doc.add_u64(fields.text_authority_doc_id, 1);
             doc.add_text(duplicate, "conflicting");
-            let _operation = writer.add_document(doc)?;
-            let _commit = writer.commit()?;
             assert!(
-                collect_text_authority_docs(&index, &fields).is_err(),
-                "authority rebuild accepted a duplicate required field"
+                required_stored_text(&doc, duplicate, "required").is_err(),
+                "stored decoding accepted a duplicate required field"
             );
         }
-        Ok(())
     }
 }

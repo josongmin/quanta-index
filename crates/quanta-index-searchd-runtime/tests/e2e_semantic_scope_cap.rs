@@ -169,6 +169,7 @@ fn scope_top_k_shares_the_public_gate() -> TestResult {
     let mut rt = seeded_runtime()?;
     let pin = rt.generation_pin();
     let request = |scope_top_k: u32| SearchPlaneQueryIpcRequestEnvelope {
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         request_id: 7,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: QUERY.to_string(),

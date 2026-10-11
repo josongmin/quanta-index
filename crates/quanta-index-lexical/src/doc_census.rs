@@ -15,7 +15,10 @@ use std::io::Write;
 use std::marker::PhantomData;
 use std::time::Instant;
 
-use quanta_index_core::CoreError;
+use quanta_index_core::{
+    CoreError, DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticSpanGuardV1,
+    DiagnosticStageV1, DiagnosticTerminalV1,
+};
 use serde::de::{self, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeSeq, Serializer};
 use serde::{Deserialize, Deserializer};
@@ -167,6 +170,9 @@ pub(crate) struct DocCensus {
 /// This is not native writer time, memory peak, or physical I/O.
 pub(crate) struct CensusBuildObservation {
     enabled: bool,
+    legacy_enabled: bool,
+    diagnostic: Option<DiagnosticContextV1>,
+    span: Option<DiagnosticSpanGuardV1>,
     docs: u64,
     encoded_bytes: u64,
     elapsed_ns: u64,
@@ -174,9 +180,16 @@ pub(crate) struct CensusBuildObservation {
 }
 
 impl CensusBuildObservation {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(diagnostic: Option<&DiagnosticContextV1>) -> Self {
+        let span = diagnostic.and_then(|context| {
+            crate::causal_profile::enter_span(context, DiagnosticStageV1::Bm25CensusBuild)
+        });
+        let legacy_enabled = crate::causal_profile::enabled();
         Self {
-            enabled: crate::causal_profile::enabled(),
+            enabled: legacy_enabled || span.is_some(),
+            legacy_enabled,
+            diagnostic: diagnostic.cloned(),
+            span,
             docs: 0,
             encoded_bytes: 0,
             elapsed_ns: 0,
@@ -213,8 +226,26 @@ impl CensusBuildObservation {
         clippy::print_stderr,
         reason = "bounded opt-in causal marker is replayed against the scale artifact"
     )]
-    pub(crate) fn emit(&self) {
-        if !self.enabled {
+    pub(crate) fn emit(mut self, succeeded: bool) {
+        if let (Some(context), Some(span)) = (self.diagnostic.as_ref(), self.span.take()) {
+            if self.invalid {
+                context.health(DiagnosticHealthCodeV1::CounterOverflow);
+            } else {
+                context.bm25_census_aggregate(
+                    &span,
+                    1,
+                    self.elapsed_ns,
+                    self.docs,
+                    self.encoded_bytes,
+                );
+            }
+            let _finished = span.finish(if succeeded {
+                DiagnosticTerminalV1::Ok
+            } else {
+                DiagnosticTerminalV1::Error { code: 1 }
+            });
+        }
+        if !self.legacy_enabled || !succeeded {
             return;
         }
         if self.invalid {

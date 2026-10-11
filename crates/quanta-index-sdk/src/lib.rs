@@ -13,6 +13,8 @@ mod history;
 pub(crate) mod lexical;
 mod namespace;
 pub mod native_connect_v1;
+pub mod native_index;
+pub mod native_uds;
 mod observability;
 pub mod preparation;
 mod quarantine;
@@ -72,6 +74,7 @@ pub(crate) use transport::{
     ControlTransport, IngestTransport, QueryTransport, UdsControlTransport, UdsIngestTransport,
     UdsQueryTransport,
 };
+pub use transport::{DiagnosticAttemptGuardV1, DiagnosticAttemptSourceV1};
 
 pub use quanta_index_contract::lex::{
     CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode, ParseRoleTag,

@@ -36,15 +36,17 @@ use futures::TryStreamExt as _;
 use lancedb::connect;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
-    EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, IngestStageReport,
-    OwnerDocKind, SearchScopeSurface, SemanticCorpusKindV1, SemanticReplaceScope,
-    SemanticTombstoneScope, canonical_order::first_canonical_order_break_v1,
+    EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, GenerationPin,
+    IngestStageReport, OwnerDocKind, SearchScopeSurface, SemanticCorpusKindV1,
+    SemanticReplaceScope, SemanticTombstoneScope, canonical_order::first_canonical_order_break_v1,
     cluster_membership_content_digest_v1,
 };
 use quanta_index_core::domains::semantic::SemanticPolicy;
 use quanta_index_core::{
-    CoreError, SemanticIngestHeaderV1, SemanticScopeSource, SemanticScopeWindowV1,
-    SemanticStreamTallyV1, SemanticStreamWindowPolicy, owner_key_v1,
+    CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticLaneV1, DiagnosticSpanGuardV1,
+    DiagnosticStageV1, DiagnosticTerminalV1, SemanticGenerationContractV1, SemanticIngestHeaderV1,
+    SemanticScopeSource, SemanticScopeWindowV1, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
+    owner_key_v1,
 };
 
 use crate::durable_write::write_atomic;
@@ -79,6 +81,64 @@ const BACKUP_DIR_NAME: &str = "dataset.backup";
 // Private backend SQL allocation ceiling, independent of vector residency.
 // Refuse oversized exact-owner predicates; never split or broaden deletion.
 const MAX_DELETE_PREDICATE_BYTES: usize = 32 * 1024 * 1024;
+
+fn begin_build_stage(
+    diagnostic: Option<&DiagnosticContextV1>,
+    stage: DiagnosticStageV1,
+) -> Option<DiagnosticSpanGuardV1> {
+    diagnostic.and_then(|context| {
+        context.enter(stage, DiagnosticLaneV1(3)).map_or_else(
+            |trace_error| {
+                context.health(match trace_error {
+                    quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                        quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                        quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                        quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                        quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
+                    }
+                });
+                None
+            },
+            Some,
+        )
+    })
+}
+
+fn finish_build_stage(span: Option<DiagnosticSpanGuardV1>, success: bool) {
+    if let Some(span) = span {
+        let outcome = if success {
+            DiagnosticTerminalV1::Ok
+        } else {
+            DiagnosticTerminalV1::Error { code: 1 }
+        };
+        let _trace_completion = span.finish(outcome);
+    }
+}
+
+fn build_counter(
+    diagnostic: Option<&DiagnosticContextV1>,
+    span: Option<&DiagnosticSpanGuardV1>,
+    key: DiagnosticCounterV1,
+    value: u64,
+) {
+    if let (Some(context), Some(span)) = (diagnostic, span) {
+        context.counter(span, key, value);
+    }
+}
+
+/// Rows and vector bytes acknowledged by the semantic table's staging add.
+/// Promotion may still fail.
+#[derive(Default)]
+struct AppendedVectors {
+    rows: u64,
+    bytes: u64,
+}
 
 /// Test-only environment variable consumed by the subprocess crash matrix.
 ///
@@ -1126,10 +1186,11 @@ async fn delete_scope_batch(
     tables: &WorkingTables,
     scopes: &BTreeSet<(&str, &str, &str)>,
     report: &mut IngestStageReport,
+    deleted_rows: &mut u64,
 ) -> Result<(), CoreError> {
     let _sizes = delete_predicate_bytes(scopes)?;
     if let Some(predicate) = semantic_scope_delete_predicate(scopes) {
-        delete_semantic_predicate(&tables.table, &predicate, report).await?;
+        delete_semantic_predicate(&tables.table, &predicate, report, deleted_rows).await?;
     }
     if let Some(predicate) = membership_scope_delete_predicate(scopes) {
         delete_membership_predicate(&tables.membership_table, &predicate, report).await?;
@@ -1141,12 +1202,14 @@ async fn delete_semantic_predicate(
     table: &lancedb::Table,
     predicate: &str,
     report: &mut IngestStageReport,
+    deleted_rows: &mut u64,
 ) -> Result<(), CoreError> {
     let delete_started = Instant::now();
-    let _result = table
+    let result = table
         .delete(predicate)
         .await
         .map_err(|err| lancedb_err(&format!("delete predicate `{predicate}`"), err))?;
+    *deleted_rows = deleted_rows.saturating_add(result.num_deleted_rows);
     report.durations.semantic_delete = report
         .durations
         .semantic_delete
@@ -1253,16 +1316,18 @@ async fn delete_surface_rows(
     table: &lancedb::Table,
     surface: SearchScopeSurface,
     report: &mut IngestStageReport,
+    deleted_rows: &mut u64,
 ) -> Result<(), CoreError> {
     report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
     let predicate = semantic_surface_delete_predicate_v1(surface)?;
     let delete_started = Instant::now();
-    let _result = table.delete(predicate.as_str()).await.map_err(|err| {
+    let result = table.delete(predicate.as_str()).await.map_err(|err| {
         lancedb_err(
             &format!("delete semantic surface {surface:?} predicate `{predicate}`"),
             err,
         )
     })?;
+    *deleted_rows = deleted_rows.saturating_add(result.num_deleted_rows);
     report.durations.semantic_delete = report
         .durations
         .semantic_delete
@@ -1278,6 +1343,7 @@ async fn append_window(
     window: &SemanticScopeWindowV1,
     dimension: usize,
     report: &mut IngestStageReport,
+    appended: &mut AppendedVectors,
 ) -> Result<(), CoreError> {
     let mut rows: Vec<&EmbeddingRecord> = Vec::new();
     for scope in window.scopes() {
@@ -1292,6 +1358,18 @@ async fn append_window(
     if rows.is_empty() {
         return Ok(());
     }
+    let row_count = u64::try_from(rows.len()).map_err(|error| {
+        CoreError::InvalidContract(format!("semantic: appended row count overflow: {error}"))
+    })?;
+    let total_rows = appended.rows.checked_add(row_count).ok_or_else(|| {
+        CoreError::InvalidContract("semantic: appended row count overflow".into())
+    })?;
+    let total_bytes = appended
+        .bytes
+        .checked_add(window.vector_bytes())
+        .ok_or_else(|| {
+            CoreError::InvalidContract("semantic: appended vector byte count overflow".into())
+        })?;
     let batch = build_record_batch(&rows, dimension)?;
     let append_started = Instant::now();
     let _result = table
@@ -1304,6 +1382,8 @@ async fn append_window(
         .semantic_append
         .saturating_add(monotonic_nanos_since(append_started));
     report.semantic_append_calls = report.semantic_append_calls.saturating_add(1);
+    appended.rows = total_rows;
+    appended.bytes = total_bytes;
     Ok(())
 }
 
@@ -1400,6 +1480,210 @@ fn ensure_generation_contract(
     fs::create_dir_all(generation_dir)
         .map_err(|err| fs_err("create generation dir", generation_dir, &err))?;
     Ok(GenerationContract::from_batch(&header.contract))
+}
+
+/// Observe the persisted target and sealed base without creating or changing
+/// either generation. Callers hold the target/base and directory lifecycle
+/// guards when this observation is used to admit a build.
+pub(crate) fn preflight_contract(
+    semantic_root: &Path,
+    pin: &GenerationPin,
+    contract: &SemanticGenerationContractV1,
+) -> Result<(), CoreError> {
+    use quanta_index_contract::lex::LexicalErrorCode;
+
+    GenerationContract::validate_batch_shape(contract)?;
+    if contract.model_contract.model_id.is_empty()
+        || contract.model_contract.policy_digest.is_empty()
+        || contract
+            .model_contract
+            .view_policy_digest
+            .as_deref()
+            .is_some_and(str::is_empty)
+    {
+        return Err(CoreError::InvalidContract(
+            "semantic: model identity and embedding policy must be nonempty".to_string(),
+        ));
+    }
+    if contract.base_generation.is_some()
+        && contract
+            .model_contract
+            .model_version
+            .as_deref()
+            .is_none_or(str::is_empty)
+    {
+        return Err(CoreError::Typed {
+            code: LexicalErrorCode::SemModelMismatch.into(),
+            message:
+                "semantic: delta target has no immutable model revision; rebuild the generation"
+                    .to_string(),
+        });
+    }
+
+    let target_dir = layout::generation_dir(
+        semantic_root,
+        &pin.repo_id,
+        &pin.revision_id,
+        pin.manifest_generation,
+    );
+    let target_contract_path = layout::build_contract_path(&target_dir);
+    if crate::control_file::regular_file_present(&target_contract_path).map_err(|error| {
+        fs_err(
+            "inspect target generation contract",
+            &target_contract_path,
+            &error,
+        )
+    })? {
+        let bytes = crate::control_file::read_bounded(
+            &target_contract_path,
+            crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
+        )
+        .map_err(|error| {
+            fs_err(
+                "read target generation contract",
+                &target_contract_path,
+                &error,
+            )
+        })?;
+        let existing = GenerationContract::decode(&bytes)?;
+        let _merged = existing.merge_batch(contract)?;
+    } else if preflight_directory_present(&layout::dataset_dir(&target_dir))? {
+        return Err(CoreError::Storage(format!(
+            "semantic: target dataset exists without generation contract for {}",
+            target_dir.display()
+        )));
+    }
+
+    if let Some(base_generation) = contract.base_generation {
+        let base_dir = layout::generation_dir(
+            semantic_root,
+            &pin.repo_id,
+            &pin.revision_id,
+            base_generation,
+        );
+        if !preflight_directory_present(&base_dir)? {
+            return Err(CoreError::NotReady(format!(
+                "semantic: delta base generation {} is absent for repo={} revision={}",
+                base_generation.get(),
+                pin.repo_id.as_str(),
+                pin.revision_id.as_str()
+            )));
+        }
+        let marker_path = layout::sealed_marker_path(&base_dir);
+        if !crate::control_file::regular_file_present(&marker_path)
+            .map_err(|error| fs_err("inspect delta base sealed marker", &marker_path, &error))?
+        {
+            return Err(CoreError::NotReady(format!(
+                "semantic: delta base generation {} is not sealed",
+                base_generation.get()
+            )));
+        }
+        if !preflight_directory_present(&layout::dataset_dir(&base_dir))? {
+            return Err(CoreError::NotReady(format!(
+                "semantic: delta base generation {} has no dataset",
+                base_generation.get()
+            )));
+        }
+        let marker_digest = crate::control_file::read_string_bounded(
+            &marker_path,
+            crate::control_file::MAX_SEALED_MARKER_BYTES,
+        )
+        .map_err(|error| fs_err("read delta base sealed marker", &marker_path, &error))?;
+        crate::sealed_manifest::verify_sealed_sidecars(&base_dir, &marker_digest)?;
+        let manifest_path = layout::manifest_path(&base_dir);
+        let manifest = SemanticManifest::decode(
+            &crate::control_file::read_bounded(
+                &manifest_path,
+                crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
+            )
+            .map_err(|error| fs_err("read delta base manifest", &manifest_path, &error))?,
+        )?;
+        manifest.validate_scope(&pin.repo_id, &pin.revision_id, base_generation)?;
+        if manifest.manifest_digest != marker_digest {
+            return Err(CoreError::Storage(format!(
+                "semantic: delta base generation {} manifest and sealed marker disagree",
+                base_generation.get()
+            )));
+        }
+        let base_contract_path = layout::build_contract_path(&base_dir);
+        let base_contract = GenerationContract::decode(
+            &crate::control_file::read_bounded(
+                &base_contract_path,
+                crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
+            )
+            .map_err(|error| {
+                fs_err(
+                    "read delta base generation contract",
+                    &base_contract_path,
+                    &error,
+                )
+            })?,
+        )?;
+        manifest.validate_against(&base_contract)?;
+        let target = GenerationContract::from_batch(contract);
+        for (field, matches) in [
+            ("model_id", base_contract.model_id == target.model_id),
+            (
+                "model_version",
+                base_contract.model_version == target.model_version,
+            ),
+            ("dimension", base_contract.dimension == target.dimension),
+            (
+                "distance_metric",
+                base_contract.distance_metric == target.distance_metric,
+            ),
+            (
+                "normalization",
+                base_contract.normalization == target.normalization,
+            ),
+            (
+                "policy_digest",
+                base_contract.policy_digest == target.policy_digest,
+            ),
+            (
+                "view_policy_digest",
+                base_contract.view_policy_digest == target.view_policy_digest,
+            ),
+            (
+                "corpus_policy_digest",
+                base_contract.corpus_policy_digest == target.corpus_policy_digest,
+            ),
+        ] {
+            if !matches {
+                return Err(CoreError::Typed {
+                    code: LexicalErrorCode::SemModelMismatch.into(),
+                    message: format!(
+                        "semantic: delta base {field} differs from target; rebuild the generation"
+                    ),
+                });
+            }
+        }
+        if base_contract
+            .model_version
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            return Err(CoreError::Typed {
+                code: LexicalErrorCode::SemModelMismatch.into(),
+                message:
+                    "semantic: delta base has no immutable model revision; rebuild the generation"
+                        .to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn preflight_directory_present(path: &Path) -> Result<bool, CoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => Err(CoreError::Storage(format!(
+            "semantic: path {} is not a directory",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(fs_err("inspect preflight dataset", path, &error)),
+    }
 }
 
 #[cfg(test)]
@@ -1673,9 +1957,10 @@ async fn apply_clear_surfaces(
     tables: &WorkingTables,
     surfaces: &[SearchScopeSurface],
     report: &mut IngestStageReport,
+    deleted_rows: &mut u64,
 ) -> Result<(), CoreError> {
     for surface in surfaces {
-        delete_surface_rows(&tables.table, *surface, report).await?;
+        delete_surface_rows(&tables.table, *surface, report, deleted_rows).await?;
         delete_cluster_membership_for_surface(&tables.membership_table, *surface, report).await?;
     }
     Ok(())
@@ -1688,6 +1973,9 @@ async fn apply_window(
     window: &SemanticScopeWindowV1,
     dimension: usize,
     report: &mut IngestStageReport,
+    appended: &mut AppendedVectors,
+    diagnostic: Option<&DiagnosticContextV1>,
+    deleted_rows: &mut u64,
 ) -> Result<(), CoreError> {
     let scopes = window
         .scopes()
@@ -1695,15 +1983,71 @@ async fn apply_window(
         .flat_map(|scope| &scope.embeddings)
         .map(semantic_scope_tuple_from_embedding)
         .collect();
+    let delete_before = report
+        .semantic_delete_calls
+        .saturating_add(report.membership_delete_calls);
     for _scope in window.scopes() {
         report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
         report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
     }
-    delete_scope_batch(tables, &scopes, report).await?;
-    append_window(&tables.table, window, dimension, report).await?;
-    for scope in window.scopes() {
-        append_cluster_membership_scope(&tables.membership_table, scope, report).await?;
+    let delete_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticDelete);
+    let rows_before = *deleted_rows;
+    let deleted = delete_scope_batch(tables, &scopes, report, deleted_rows).await;
+    build_counter(
+        diagnostic,
+        delete_span.as_ref(),
+        DiagnosticCounterV1::SemanticDeleteCalls,
+        report
+            .semantic_delete_calls
+            .saturating_add(report.membership_delete_calls)
+            .saturating_sub(delete_before),
+    );
+    build_counter(
+        diagnostic,
+        delete_span.as_ref(),
+        DiagnosticCounterV1::SemanticRowsDeleted,
+        deleted_rows.saturating_sub(rows_before),
+    );
+    finish_build_stage(delete_span, deleted.is_ok());
+    deleted?;
+
+    let append_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticAppend);
+    let append_before = report
+        .semantic_append_calls
+        .saturating_add(report.membership_append_calls);
+    let rows_before = appended.rows;
+    let bytes_before = appended.bytes;
+    let appended_result: Result<(), CoreError> = async {
+        append_window(&tables.table, window, dimension, report, appended).await?;
+        for scope in window.scopes() {
+            append_cluster_membership_scope(&tables.membership_table, scope, report).await?;
+        }
+        Ok(())
     }
+    .await;
+    build_counter(
+        diagnostic,
+        append_span.as_ref(),
+        DiagnosticCounterV1::SemanticAppendCalls,
+        report
+            .semantic_append_calls
+            .saturating_add(report.membership_append_calls)
+            .saturating_sub(append_before),
+    );
+    build_counter(
+        diagnostic,
+        append_span.as_ref(),
+        DiagnosticCounterV1::SemanticRowsAppended,
+        appended.rows.saturating_sub(rows_before),
+    );
+    build_counter(
+        diagnostic,
+        append_span.as_ref(),
+        DiagnosticCounterV1::SemanticVectorBytes,
+        appended.bytes.saturating_sub(bytes_before),
+    );
+    finish_build_stage(append_span, appended_result.is_ok());
+    appended_result?;
     Ok(())
 }
 
@@ -1712,6 +2056,7 @@ async fn apply_tombstones(
     tombstones: &[SemanticTombstoneScope],
     policy: SemanticStreamWindowPolicy,
     report: &mut IngestStageReport,
+    deleted_rows: &mut u64,
 ) -> Result<(), CoreError> {
     for chunk in tombstones.chunks(policy.max_owner_scopes()) {
         let scopes = tombstone_tuples(chunk);
@@ -1719,7 +2064,7 @@ async fn apply_tombstones(
             report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
             report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
         }
-        delete_scope_batch(tables, &scopes, report).await?;
+        delete_scope_batch(tables, &scopes, report, deleted_rows).await?;
     }
     Ok(())
 }
@@ -1748,6 +2093,10 @@ async fn seal_manifest_bytes(
 /// outside the runtime, and only the storage steps are driven through the
 /// crate's async seam. Counts windows and owner scopes into `report` as
 /// they are admitted (observation only).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Streaming owner carries distinct authority, storage, progress and diagnostic state without changing admission."
+)]
 fn apply_scope_stream(
     runtime: &tokio::runtime::Runtime,
     tables: &WorkingTables,
@@ -1756,6 +2105,9 @@ fn apply_scope_stream(
     authority: &mut StreamScopeAuthorityV1,
     source: (Option<SemanticScopeWindowV1>, &mut dyn SemanticScopeSource),
     report: &mut IngestStageReport,
+    appended: &mut AppendedVectors,
+    diagnostic: Option<&DiagnosticContextV1>,
+    deleted_rows: &mut u64,
 ) -> Result<SemanticStreamTallyV1, CoreError> {
     let dimension = header.dimension()?;
     let normalization = header.contract.model_contract.normalization;
@@ -1771,7 +2123,18 @@ fn apply_scope_stream(
             report.owner_scopes = report.owner_scopes.saturating_add(1);
         }
         let rows = window.rows()?;
-        crate::run_blocking(runtime, apply_window(tables, &window, dimension, report))?;
+        crate::run_blocking(
+            runtime,
+            apply_window(
+                tables,
+                &window,
+                dimension,
+                report,
+                appended,
+                diagnostic,
+                deleted_rows,
+            ),
+        )?;
         tally.count_window(window.scopes().len(), rows, window.vector_bytes())?;
         drop(window);
         next_window = scopes.next_window()?;
@@ -1800,6 +2163,7 @@ pub(crate) fn build_stream(
 /// The [`IngestStageReport`] is observation only: the durability sequence
 /// below is un-reordered, with every seal/promotion step intact. The test
 /// helper `build_stream` projects the tally without creating another build.
+#[cfg(test)]
 pub(crate) fn build_stream_reported(
     runtime: &tokio::runtime::Runtime,
     semantic_root: &Path,
@@ -1808,8 +2172,30 @@ pub(crate) fn build_stream_reported(
     scopes: &mut dyn SemanticScopeSource,
     seal_tallies: &SealTalliesV1,
 ) -> Result<(SemanticStreamTallyV1, IngestStageReport), CoreError> {
+    build_stream_reported_with_diagnostic(
+        runtime,
+        semantic_root,
+        policy,
+        header,
+        scopes,
+        seal_tallies,
+        None,
+    )
+}
+
+pub(crate) fn build_stream_reported_with_diagnostic(
+    runtime: &tokio::runtime::Runtime,
+    semantic_root: &Path,
+    policy: SemanticStreamWindowPolicy,
+    header: &SemanticIngestHeaderV1,
+    scopes: &mut dyn SemanticScopeSource,
+    seal_tallies: &SealTalliesV1,
+    diagnostic: Option<&DiagnosticContextV1>,
+) -> Result<(SemanticStreamTallyV1, IngestStageReport), CoreError> {
     let build_started = Instant::now();
     let mut report = IngestStageReport::default();
+    let mut appended = AppendedVectors::default();
+    let mut deleted_rows = 0_u64;
     let generation_dir = layout::generation_dir(
         semantic_root,
         &header.pin.repo_id,
@@ -1825,6 +2211,7 @@ pub(crate) fn build_stream_reported(
             header.pin.manifest_generation.get()
         )));
     }
+    preflight_contract(semantic_root, &header.pin, &header.contract)?;
     if header.contract.model_contract.distance_metric != EmbeddingDistanceMetric::Cosine {
         return Err(CoreError::InvalidContract(format!(
             "semantic: unsupported distance metric {:?}; this backend serves cosine only",
@@ -1843,36 +2230,80 @@ pub(crate) fn build_stream_reported(
     // Lease only the first window before preparing storage. Subsequent windows
     // are admitted before their writes; failures never promote earlier staging.
     let prefetch_started = Instant::now();
-    let first_window = scopes.next_window()?;
-    if let Some(window) = &first_window {
-        let _fill = policy.admit(window)?;
-        preflight_window_delete_predicates(window)?;
-    }
+    let prefetch_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticStream);
+    let first_window = (|| {
+        let first_window = scopes.next_window()?;
+        if let Some(window) = &first_window {
+            let _fill = policy.admit(window)?;
+            preflight_window_delete_predicates(window)?;
+        }
+        Ok::<_, CoreError>(first_window)
+    })();
+    finish_build_stage(prefetch_span, first_window.is_ok());
+    let first_window = first_window?;
     let prefetch_elapsed = monotonic_nanos_since(prefetch_started);
 
     let prepare_started = Instant::now();
-    recover_dataset_artifacts(&generation_dir)?;
-    let generation_contract = ensure_generation_contract(&generation_dir, header)?;
-    let working_dataset = prepare_staging_dataset(
-        semantic_root,
-        &generation_dir,
-        &generation_contract,
-        &header.pin.repo_id,
-        &header.pin.revision_id,
-    )?;
-
-    let (tally, manifest_bytes) = {
+    let prepare_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticPrepare);
+    let prepared = (|| {
+        recover_dataset_artifacts(&generation_dir)?;
+        let generation_contract = ensure_generation_contract(&generation_dir, header)?;
+        let working_dataset = prepare_staging_dataset(
+            semantic_root,
+            &generation_dir,
+            &generation_contract,
+            &header.pin.repo_id,
+            &header.pin.revision_id,
+        )?;
         let tables =
             crate::run_blocking(runtime, open_working_tables(&working_dataset, dimension))?;
-        report.durations.prepare = monotonic_nanos_since(prepare_started);
+        Ok::<_, CoreError>((generation_contract, tables))
+    })();
+    finish_build_stage(prepare_span, prepared.is_ok());
+    let (generation_contract, tables) = prepared?;
+    report.durations.prepare = monotonic_nanos_since(prepare_started);
+
+    let (tally, manifest_bytes) = {
         let clear_started = Instant::now();
-        crate::run_blocking(
+        let clear_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticDelete);
+        let clear_before = report
+            .semantic_delete_calls
+            .saturating_add(report.membership_delete_calls);
+        let cleared = crate::run_blocking(
             runtime,
-            apply_clear_surfaces(&tables, &header.mutations.clear_surfaces, &mut report),
-        )?;
+            apply_clear_surfaces(
+                &tables,
+                &header.mutations.clear_surfaces,
+                &mut report,
+                &mut deleted_rows,
+            ),
+        );
+        build_counter(
+            diagnostic,
+            clear_span.as_ref(),
+            DiagnosticCounterV1::SemanticDeleteCalls,
+            report
+                .semantic_delete_calls
+                .saturating_add(report.membership_delete_calls)
+                .saturating_sub(clear_before),
+        );
+        build_counter(
+            diagnostic,
+            clear_span.as_ref(),
+            DiagnosticCounterV1::SemanticRowsDeleted,
+            deleted_rows,
+        );
+        finish_build_stage(clear_span, cleared.is_ok());
+        cleared?;
         report.durations.clear_surfaces = monotonic_nanos_since(clear_started);
         let stream_started = Instant::now();
-        let tally = apply_scope_stream(
+        let stream_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticStream);
+        let stream_context = diagnostic
+            .zip(stream_span.as_ref())
+            .map(|(context, span)| context.child_context(span));
+        let windows_before = report.windows;
+        let scopes_before = report.owner_scopes;
+        let streamed = apply_scope_stream(
             runtime,
             &tables,
             policy,
@@ -1880,31 +2311,75 @@ pub(crate) fn build_stream_reported(
             &mut authority,
             (first_window, scopes),
             &mut report,
-        )?;
+            &mut appended,
+            stream_context.as_ref(),
+            &mut deleted_rows,
+        );
+        build_counter(
+            diagnostic,
+            stream_span.as_ref(),
+            DiagnosticCounterV1::SemanticWindows,
+            report.windows.saturating_sub(windows_before),
+        );
+        build_counter(
+            diagnostic,
+            stream_span.as_ref(),
+            DiagnosticCounterV1::SemanticOwnerScopes,
+            report.owner_scopes.saturating_sub(scopes_before),
+        );
+        finish_build_stage(stream_span, streamed.is_ok());
+        let tally = streamed?;
         report.durations.stream =
             prefetch_elapsed.saturating_add(monotonic_nanos_since(stream_started));
         let tombstones_started = Instant::now();
-        crate::run_blocking(
+        let tombstones_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticDelete);
+        let tombstones_before = report
+            .semantic_delete_calls
+            .saturating_add(report.membership_delete_calls);
+        let tombstone_rows_before = deleted_rows;
+        let deleted = crate::run_blocking(
             runtime,
             apply_tombstones(
                 &tables,
                 &header.mutations.tombstone_scopes,
                 policy,
                 &mut report,
+                &mut deleted_rows,
             ),
-        )?;
+        );
+        build_counter(
+            diagnostic,
+            tombstones_span.as_ref(),
+            DiagnosticCounterV1::SemanticDeleteCalls,
+            report
+                .semantic_delete_calls
+                .saturating_add(report.membership_delete_calls)
+                .saturating_sub(tombstones_before),
+        );
+        build_counter(
+            diagnostic,
+            tombstones_span.as_ref(),
+            DiagnosticCounterV1::SemanticRowsDeleted,
+            deleted_rows.saturating_sub(tombstone_rows_before),
+        );
+        finish_build_stage(tombstones_span, deleted.is_ok());
+        deleted?;
         report.durations.tombstones = monotonic_nanos_since(tombstones_started);
         let manifest_bytes = if header.batch.seal {
             let seal_started = Instant::now();
+            let seal_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticSeal);
             let sealed = crate::run_blocking(
                 runtime,
                 seal_manifest_bytes(semantic_root, &tables, header, &generation_contract),
-            )?;
+            );
+            finish_build_stage(seal_span, sealed.is_ok());
+            let sealed = sealed?;
             report.durations.seal = Some(monotonic_nanos_since(seal_started));
             Some(sealed)
         } else {
             None
         };
+        drop(tables);
         (tally, manifest_bytes)
     };
 
@@ -1914,81 +2389,88 @@ pub(crate) fn build_stream_reported(
     // already durable, so a rejected append/tombstone/seal cannot advance policy
     // independently of its rows.
     let promotion_started = Instant::now();
-    let staged_contract_path = stage_generation_contract(&generation_dir, &generation_contract)?;
-    #[cfg(test)]
-    exit_for_promotion_crash_boundary(PRE_DATASET_PROMOTION);
-    if let Err(promote_err) = promote_staging_dataset(&generation_dir) {
-        if let Err(cleanup_err) = fs::remove_file(&staged_contract_path) {
-            return Err(CoreError::Storage(format!(
-                "semantic: dataset promotion failed ({promote_err}); cleanup staged generation contract {} also failed: {cleanup_err}",
-                staged_contract_path.display()
-            )));
+    let promotion_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticPromote);
+    let promotion_result = (|| -> Result<(), CoreError> {
+        let staged_contract_path =
+            stage_generation_contract(&generation_dir, &generation_contract)?;
+        #[cfg(test)]
+        exit_for_promotion_crash_boundary(PRE_DATASET_PROMOTION);
+        if let Err(promote_err) = promote_staging_dataset(&generation_dir) {
+            if let Err(cleanup_err) = fs::remove_file(&staged_contract_path) {
+                return Err(CoreError::Storage(format!(
+                    "semantic: dataset promotion failed ({promote_err}); cleanup staged generation contract {} also failed: {cleanup_err}",
+                    staged_contract_path.display()
+                )));
+            }
+            return Err(promote_err);
         }
-        return Err(promote_err);
-    }
-    #[cfg(test)]
-    exit_for_promotion_crash_boundary(POST_DATASET_PRE_CONTRACT_PROMOTION);
-    if let Err(contract_err) =
-        promote_staged_generation_contract(&generation_dir, &staged_contract_path)
-    {
-        let rollback_result = rollback_promoted_dataset(&generation_dir);
-        let cleanup_result = fs::remove_file(&staged_contract_path);
-        if let Err(rollback_err) = rollback_result {
-            return Err(CoreError::Storage(format!(
-                "semantic: generation contract promotion failed ({contract_err}); dataset rollback also failed: {rollback_err}"
-            )));
+        #[cfg(test)]
+        exit_for_promotion_crash_boundary(POST_DATASET_PRE_CONTRACT_PROMOTION);
+        if let Err(contract_err) =
+            promote_staged_generation_contract(&generation_dir, &staged_contract_path)
+        {
+            let rollback_result = rollback_promoted_dataset(&generation_dir);
+            let cleanup_result = fs::remove_file(&staged_contract_path);
+            if let Err(rollback_err) = rollback_result {
+                return Err(CoreError::Storage(format!(
+                    "semantic: generation contract promotion failed ({contract_err}); dataset rollback also failed: {rollback_err}"
+                )));
+            }
+            if let Err(cleanup_err) = cleanup_result {
+                return Err(CoreError::Storage(format!(
+                    "semantic: generation contract promotion failed ({contract_err}); staged contract cleanup {} also failed: {cleanup_err}",
+                    staged_contract_path.display()
+                )));
+            }
+            return Err(contract_err);
         }
-        if let Err(cleanup_err) = cleanup_result {
-            return Err(CoreError::Storage(format!(
-                "semantic: generation contract promotion failed ({contract_err}); staged contract cleanup {} also failed: {cleanup_err}",
-                staged_contract_path.display()
-            )));
-        }
-        return Err(contract_err);
-    }
-    finalize_promoted_dataset(&generation_dir)?;
+        finalize_promoted_dataset(&generation_dir)?;
 
-    write_atomic(
-        &layout::ready_marker_path(&generation_dir),
-        b"ready",
-        "write ready marker",
-    )?;
-    if let Some(manifest_bytes) = manifest_bytes {
         write_atomic(
-            &layout::manifest_path(&generation_dir),
-            &manifest_bytes,
-            "write manifest",
+            &layout::ready_marker_path(&generation_dir),
+            b"ready",
+            "write ready marker",
         )?;
-        // The file commitment every door checks the layout of and the scrub
-        // proves the bytes of (QI-BB-017): measured after the dataset, the
-        // contract and the scope manifest are durable, written before the
-        // marker that makes the generation sealed. A delta inherits its
-        // base's digests for every file it still shares by inode, so the
-        // bytes hashed here are proportional to what this generation added
-        // (QI-BB-006 #4); the measurement is tallied for the scrape.
-        let base_dir = delta_base_dir_v1(semantic_root, header, &generation_contract);
-        let (sealed_manifest_bytes, measurement) = build_sealed_manifest_bytes(
-            &generation_dir,
-            header.batch.manifest_digest.as_str(),
-            base_dir.as_deref(),
-        )?;
-        seal_tallies.record(measurement);
-        write_atomic(
-            &sealed_manifest_path(&generation_dir),
-            &sealed_manifest_bytes,
-            "write sealed generation manifest",
-        )?;
-        crate::control_file::ensure_bounded(
-            header.batch.manifest_digest.as_bytes(),
-            crate::control_file::MAX_SEALED_MARKER_BYTES,
-            "sealed marker",
-        )?;
-        write_atomic(
-            &layout::sealed_marker_path(&generation_dir),
-            header.batch.manifest_digest.as_bytes(),
-            "write sealed marker",
-        )?;
-    }
+        if let Some(manifest_bytes) = manifest_bytes {
+            write_atomic(
+                &layout::manifest_path(&generation_dir),
+                &manifest_bytes,
+                "write manifest",
+            )?;
+            // The file commitment every door checks the layout of and the scrub
+            // proves the bytes of (QI-BB-017): measured after the dataset, the
+            // contract and the scope manifest are durable, written before the
+            // marker that makes the generation sealed. A delta inherits its
+            // base's digests for every file it still shares by inode, so the
+            // bytes hashed here are proportional to what this generation added
+            // (QI-BB-006 #4); the measurement is tallied for the scrape.
+            let base_dir = delta_base_dir_v1(semantic_root, header, &generation_contract);
+            let (sealed_manifest_bytes, measurement) = build_sealed_manifest_bytes(
+                &generation_dir,
+                header.batch.manifest_digest.as_str(),
+                base_dir.as_deref(),
+            )?;
+            seal_tallies.record(measurement);
+            write_atomic(
+                &sealed_manifest_path(&generation_dir),
+                &sealed_manifest_bytes,
+                "write sealed generation manifest",
+            )?;
+            crate::control_file::ensure_bounded(
+                header.batch.manifest_digest.as_bytes(),
+                crate::control_file::MAX_SEALED_MARKER_BYTES,
+                "sealed marker",
+            )?;
+            write_atomic(
+                &layout::sealed_marker_path(&generation_dir),
+                header.batch.manifest_digest.as_bytes(),
+                "write sealed marker",
+            )?;
+        }
+        Ok(())
+    })();
+    finish_build_stage(promotion_span, promotion_result.is_ok());
+    promotion_result?;
     report.durations.promotion = monotonic_nanos_since(promotion_started);
     report.durations.total = monotonic_nanos_since(build_started);
     Ok((tally, report))

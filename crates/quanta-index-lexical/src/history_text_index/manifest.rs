@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use quanta_index_contract::AuxEpochV1;
 use quanta_index_core::{CoreError, HistoryTextEpochStatusV1, HistoryTextKindV1, sha256_of_file};
 
-use crate::history_text_index::layout::{fsync_parent, kind_dir};
+use crate::history_text_index::layout::{fsync_parent_observed, kind_dir};
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 
 const MANIFEST_FILE_NAME: &str = "history-text-manifest.cbor";
@@ -104,7 +104,16 @@ impl HistoryTextManifest {
 
     /// Write the manifest into `epoch_dir` durably: a temporary file,
     /// fsync, atomic rename, directory fsync.
+    #[cfg(test)]
     pub(super) fn write(&self, epoch_dir: &Path) -> Result<(), CoreError> {
+        self.write_observed(epoch_dir, None)
+    }
+
+    pub(super) fn write_observed(
+        &self,
+        epoch_dir: &Path,
+        sync: Option<&crate::causal_profile::SyncTotalsV1>,
+    ) -> Result<(), CoreError> {
         let path = manifest_path(epoch_dir);
         let temporary = epoch_dir.join(format!("{MANIFEST_FILE_NAME}.tmp"));
         let mut bytes = Vec::new();
@@ -124,13 +133,17 @@ impl HistoryTextManifest {
                     temporary.display()
                 ))
             })?;
-            crate::causal_profile::timed_sync("history_manifest_file", || file.sync_all())
-                .map_err(|err| {
-                    CoreError::Storage(format!(
-                        "history text index: fsync manifest {}: {err}",
-                        temporary.display()
-                    ))
-                })?;
+            crate::causal_profile::observed_sync_legacy(
+                sync,
+                quanta_index_core::DiagnosticSyncLabelV1::HistoryManifestFile,
+                || file.sync_all(),
+            )
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "history text index: fsync manifest {}: {err}",
+                    temporary.display()
+                ))
+            })?;
         }
         std::fs::rename(&temporary, &path).map_err(|err| {
             CoreError::Storage(format!(
@@ -138,7 +151,7 @@ impl HistoryTextManifest {
                 path.display()
             ))
         })?;
-        fsync_parent(&path)
+        fsync_parent_observed(&path, sync)
     }
 
     /// The manifest a published epoch directory carries.

@@ -14,3 +14,12 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'binary(=runtime_extended_suite) & test(=e2e_ann_incremental_seal::a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so)'
 threads-required = "num-test-threads"
+
+# The 4,096-source publication and binary restart proof exceeded its existing
+# 300-second IPC deadline alongside other corpus E2Es, then passed alone with
+# the same deadline and source/pagination oracles. Reserve the pool for this
+# fixture in both the owner target and suite launcher instead of widening
+# production or client deadlines.
+[[profile.default.overrides]]
+filter = '(binary(=runtime_extended_suite) | binary(=process_readiness_owner_v1)) & test(=e2e_process_readiness::binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page)'
+threads-required = "num-test-threads"

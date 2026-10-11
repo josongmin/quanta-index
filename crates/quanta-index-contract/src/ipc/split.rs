@@ -8,15 +8,16 @@ use serde::{
 
 use crate::{
     ActiveGenerationResolutionV1, ClusterMembershipBatchReadRequestV1,
-    ClusterMembershipBatchReadResponseV1, CurrentGenerationRequest, GenerationPin,
-    GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest, HistoryQueryRequest,
-    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
-    MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest, ProcessReadinessV1,
-    ProcessRequestEventsRequestV1, ProcessRequestEventsV1, QuarantineDiscardAck,
-    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
-    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2,
-    RepoMapQueryRequest, RepoMapQueryResponse, RepoMapTerminalReceiptV2,
-    RuntimeMetadataQueryRequest, SearchCorpusActiveHeadObservationV1,
+    ClusterMembershipBatchReadResponseV1, CurrentGenerationRequest, DiagnosticAttemptFieldV1,
+    GenerationPin, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
+    HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
+    HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest,
+    ProcessReadinessV1, ProcessRequestEventsRequestV1, ProcessRequestEventsV1,
+    QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
+    QuarantineInventoryV1, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
+    RepoMapActiveHeadResponseV2, RepoMapQueryRequest, RepoMapQueryResponse,
+    RepoMapTerminalReceiptV2, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadObservationV1,
+    SearchCorpusGenerationReservationRequestV1, SearchCorpusGenerationReservationV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
@@ -26,6 +27,10 @@ use crate::{
     TextQueryResponse,
 };
 
+const SEARCH_PLANE_QUERY_REQUEST_ENVELOPE_FIELDS: &[&str] =
+    &["request_id", "payload", "diagnostic_attempt"];
+const SEARCH_PLANE_CONTROL_REQUEST_ENVELOPE_FIELDS: &[&str] =
+    &["request_id", "payload", "diagnostic_attempt"];
 const SEARCH_PLANE_ENVELOPE_FIELDS: &[&str] = &["request_id", "payload"];
 const SEARCH_PLANE_ADJACENT_TAG_FIELDS: &[&str] = &["kind", "payload"];
 const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
@@ -62,6 +67,7 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Error",
 ];
 const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
+    "ReserveSearchCorpusGenerationV1",
     "ActivateSearchCorpusGenerationCas",
     "RollbackSearchCorpusGenerationCas",
     "RepoMapActivateV2",
@@ -76,6 +82,7 @@ const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "ProcessRequestEventsV1",
 ];
 const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
+    "SearchCorpusGenerationReservationV1",
     "SearchCorpusActivationCasAck",
     "SearchCorpusRollbackCasAck",
     "RepoMapTerminalReceiptV2",
@@ -95,6 +102,7 @@ const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
 pub struct SearchPlaneQueryIpcRequestEnvelope {
     pub request_id: u64,
     pub payload: SearchPlaneQueryIpcRequest,
+    pub diagnostic_attempt: DiagnosticAttemptFieldV1,
 }
 
 /// Dedicated work-bounded semantic request.
@@ -317,10 +325,13 @@ impl SearchPlaneQueryIpcResponse {
 pub struct SearchPlaneControlIpcRequestEnvelope {
     pub request_id: u64,
     pub payload: SearchPlaneControlIpcRequest,
+    pub diagnostic_attempt: DiagnosticAttemptFieldV1,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneControlIpcRequest {
+    /// Durable number reservation before final publication body construction.
+    ReserveSearchCorpusGenerationV1(SearchCorpusGenerationReservationRequestV1),
     /// Atomic activation of the complete lexical + semantic corpus identity.
     ActivateSearchCorpusGenerationCas(SearchPlaneActivateSearchCorpusGenerationCasRequest),
     /// Explicit composite rollback CAS; normal activation remains monotonic.
@@ -357,6 +368,7 @@ pub struct SearchPlaneControlIpcResponseEnvelope {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneControlIpcResponse {
+    SearchCorpusGenerationReservationV1(SearchCorpusGenerationReservationV1),
     SearchCorpusActivationCasAck(SearchPlaneSearchCorpusActivationCasAck),
     SearchCorpusRollbackCasAck(SearchPlaneSearchCorpusRollbackCasAck),
     RepoMapTerminalReceiptV2(RepoMapTerminalReceiptV2),
@@ -392,6 +404,74 @@ where
     state.serialize_field("request_id", &request_id)?;
     state.serialize_field("payload", payload)?;
     state.end()
+}
+
+fn serialize_request_envelope<S, Payload>(
+    name: &'static str,
+    request_id: u64,
+    payload: &Payload,
+    diagnostic_attempt: DiagnosticAttemptFieldV1,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    Payload: Serialize,
+{
+    let token = diagnostic_attempt.token();
+    let mut state = serializer.serialize_struct(name, if token.is_some() { 3 } else { 2 })?;
+    state.serialize_field("request_id", &request_id)?;
+    state.serialize_field("payload", payload)?;
+    if let Some(token) = token {
+        state.serialize_field("diagnostic_attempt", &token)?;
+    }
+    state.end()
+}
+
+fn deserialize_request_envelope<'de, A, Payload>(
+    mut map: A,
+) -> Result<(u64, Payload, DiagnosticAttemptFieldV1), A::Error>
+where
+    A: MapAccess<'de>,
+    Payload: Deserialize<'de>,
+{
+    let mut request_id: Option<u64> = None;
+    let mut payload: Option<Payload> = None;
+    let mut diagnostic_attempt = DiagnosticAttemptFieldV1::Absent;
+    let mut attempt_seen = false;
+    while let Some(key) = map.next_key::<String>()? {
+        match key.as_str() {
+            "request_id" => {
+                if request_id.is_some() {
+                    return Err(de::Error::duplicate_field("request_id"));
+                }
+                request_id = Some(map.next_value()?);
+            }
+            "payload" => {
+                if payload.is_some() {
+                    return Err(de::Error::duplicate_field("payload"));
+                }
+                payload = Some(map.next_value()?);
+            }
+            "diagnostic_attempt" => {
+                let decoded: super::diagnostic_context::TolerantDiagnosticAttemptV1 =
+                    map.next_value()?;
+                if attempt_seen {
+                    diagnostic_attempt = DiagnosticAttemptFieldV1::Duplicate;
+                } else {
+                    diagnostic_attempt = decoded.0;
+                    attempt_seen = true;
+                }
+            }
+            _other => {
+                let _: de::IgnoredAny = map.next_value()?;
+            }
+        }
+    }
+    Ok((
+        request_id.ok_or_else(|| de::Error::missing_field("request_id"))?,
+        payload.ok_or_else(|| de::Error::missing_field("payload"))?,
+        diagnostic_attempt,
+    ))
 }
 
 fn deserialize_envelope<'de, A, Payload>(mut map: A) -> Result<(u64, Payload), A::Error>
@@ -456,10 +536,11 @@ impl Serialize for SearchPlaneQueryIpcRequestEnvelope {
     where
         S: Serializer,
     {
-        serialize_envelope(
+        serialize_request_envelope(
             "SearchPlaneQueryIpcRequestEnvelope",
             self.request_id,
             &self.payload,
+            self.diagnostic_attempt,
             serializer,
         )
     }
@@ -478,10 +559,11 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestEnvelopeVisitor {
     where
         A: MapAccess<'de>,
     {
-        let (request_id, payload) = deserialize_envelope(map)?;
+        let (request_id, payload, diagnostic_attempt) = deserialize_request_envelope(map)?;
         Ok(SearchPlaneQueryIpcRequestEnvelope {
             request_id,
             payload,
+            diagnostic_attempt,
         })
     }
 }
@@ -493,7 +575,7 @@ impl<'de> Deserialize<'de> for SearchPlaneQueryIpcRequestEnvelope {
     {
         deserializer.deserialize_struct(
             "SearchPlaneQueryIpcRequestEnvelope",
-            SEARCH_PLANE_ENVELOPE_FIELDS,
+            SEARCH_PLANE_QUERY_REQUEST_ENVELOPE_FIELDS,
             SearchPlaneQueryIpcRequestEnvelopeVisitor,
         )
     }
@@ -942,10 +1024,11 @@ impl Serialize for SearchPlaneControlIpcRequestEnvelope {
     where
         S: Serializer,
     {
-        serialize_envelope(
+        serialize_request_envelope(
             "SearchPlaneControlIpcRequestEnvelope",
             self.request_id,
             &self.payload,
+            self.diagnostic_attempt,
             serializer,
         )
     }
@@ -964,10 +1047,11 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestEnvelopeVisitor {
     where
         A: MapAccess<'de>,
     {
-        let (request_id, payload) = deserialize_envelope(map)?;
+        let (request_id, payload, diagnostic_attempt) = deserialize_request_envelope(map)?;
         Ok(SearchPlaneControlIpcRequestEnvelope {
             request_id,
             payload,
+            diagnostic_attempt,
         })
     }
 }
@@ -979,7 +1063,7 @@ impl<'de> Deserialize<'de> for SearchPlaneControlIpcRequestEnvelope {
     {
         deserializer.deserialize_struct(
             "SearchPlaneControlIpcRequestEnvelope",
-            SEARCH_PLANE_ENVELOPE_FIELDS,
+            SEARCH_PLANE_CONTROL_REQUEST_ENVELOPE_FIELDS,
             SearchPlaneControlIpcRequestEnvelopeVisitor,
         )
     }
@@ -991,6 +1075,12 @@ impl Serialize for SearchPlaneControlIpcRequest {
         S: Serializer,
     {
         match self {
+            Self::ReserveSearchCorpusGenerationV1(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcRequest",
+                "ReserveSearchCorpusGenerationV1",
+                payload,
+                serializer,
+            ),
             Self::ActivateSearchCorpusGenerationCas(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcRequest",
                 "ActivateSearchCorpusGenerationCas",
@@ -1098,6 +1188,11 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                         .as_deref()
                         .ok_or_else(|| payload_before_kind_error("SearchPlaneControlIpcRequest"))?;
                     let decoded = match kind_value {
+                        "ReserveSearchCorpusGenerationV1" => {
+                            SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(
+                                map.next_value()?,
+                            )
+                        }
                         "ActivateSearchCorpusGenerationCas" => {
                             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
                                 map.next_value()?,
@@ -1233,6 +1328,12 @@ impl Serialize for SearchPlaneControlIpcResponse {
         S: Serializer,
     {
         match self {
+            Self::SearchCorpusGenerationReservationV1(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcResponse",
+                "SearchCorpusGenerationReservationV1",
+                payload,
+                serializer,
+            ),
             Self::SearchCorpusActivationCasAck(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcResponse",
                 "SearchCorpusActivationCasAck",
@@ -1346,6 +1447,11 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                         payload_before_kind_error("SearchPlaneControlIpcResponse")
                     })?;
                     let decoded = match kind_value {
+                        "SearchCorpusGenerationReservationV1" => {
+                            SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(
+                                map.next_value()?,
+                            )
+                        }
                         "SearchCorpusActivationCasAck" => {
                             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
                                 map.next_value()?,
@@ -1593,6 +1699,7 @@ mod tests {
     fn active_resolution_query_variants_round_trip_over_json_and_cbor() {
         let request = SearchPlaneQueryIpcRequestEnvelope {
             request_id: 29,
+            diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::ResolveActiveGeneration(
                 CurrentGenerationRequest {
                     repo_id: fixture_repo(),
@@ -1695,6 +1802,7 @@ mod tests {
     fn lexical_plan_resolution_variants_round_trip_over_json_and_cbor() {
         let request = SearchPlaneQueryIpcRequestEnvelope {
             request_id: 31,
+            diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "needle rev:at.time(2024-06-01T12:34:56Z)".to_string(),
@@ -1758,6 +1866,7 @@ mod tests {
     fn query_request_envelope_json_shape_and_cbor_round_trip() {
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id: 7,
+            diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                 syntax: TextQuerySyntax::Native,
                 query_text: "needle".to_string(),
@@ -1902,6 +2011,7 @@ mod tests {
     fn control_request_envelope_json_shape_and_cbor_round_trip() {
         let envelope = SearchPlaneControlIpcRequestEnvelope {
             request_id: 9,
+            diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneControlIpcRequest::CurrentGeneration(CurrentGenerationRequest {
                 repo_id: fixture_repo(),
                 revision_id: fixture_revision(),
@@ -2043,6 +2153,7 @@ mod tests {
         let candidate = corpus_identity_v1(11, "digest-11");
         let request = SearchPlaneControlIpcRequestEnvelope {
             request_id: 13,
+            diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
                 SearchPlaneActivateSearchCorpusGenerationCasRequest {
                     candidate,
@@ -2092,6 +2203,7 @@ mod tests {
     fn search_corpus_active_head_control_variants_round_trip_v1() {
         let request = SearchPlaneControlIpcRequestEnvelope {
             request_id: 14,
+            diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneControlIpcRequest::SearchCorpusActiveHead(
                 GenerationStatusRequest {
                     repo_id: fixture_repo(),
@@ -2219,6 +2331,7 @@ mod tests {
         let target = corpus_identity_v1(10, "digest-10");
         let request = SearchPlaneControlIpcRequestEnvelope {
             request_id: 11,
+            diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
                 SearchPlaneRollbackSearchCorpusGenerationCasRequest {
                     expected_active: expected_active.clone(),
@@ -2281,6 +2394,7 @@ mod tests {
         );
         let request = SearchPlaneQueryIpcRequestEnvelope {
             request_id: 23,
+            diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
             payload: SearchPlaneQueryIpcRequest::ClusterMembershipRead(
                 ClusterMembershipBatchReadRequestV1::single_v1(
                     crate::ClusterMembershipReadRequestV1 {
@@ -2485,6 +2599,7 @@ mod tests {
         let result = (|| -> Result<(), String> {
             let envelope = SearchPlaneQueryIpcRequestEnvelope {
                 request_id: 0,
+                diagnostic_attempt: crate::DiagnosticAttemptFieldV1::Absent,
                 payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
                     query_text: "needle".to_string(),

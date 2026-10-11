@@ -580,6 +580,7 @@ fn every_route_refuses_out_of_range_top_k_with_one_code_from_typed_and_raw_calle
             // The client side: the typed request refuses to encode under
             // the shared code, so no SDK or harness caller can emit it.
             let typed = quanta_index_contract::SearchPlaneQueryIpcRequestEnvelope {
+                diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
                 request_id: 1,
                 payload: (route.build)(Some(pin.clone()), top_k),
             };
@@ -597,6 +598,7 @@ fn every_route_refuses_out_of_range_top_k_with_one_code_from_typed_and_raw_calle
             // The daemon side: bytes no encoder produced, carrying the
             // value in every `top_k` position the route has.
             let in_range = quanta_index_contract::SearchPlaneQueryIpcRequestEnvelope {
+                diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
                 request_id: 1,
                 payload: (route.build)(Some(pin.clone()), 1),
             };

@@ -104,8 +104,9 @@ pub(crate) fn require_current_unsealed_index_format_if_materialized(
 
 /// Establish current producer provenance durably before an index is created
 /// or a proved current-format base is copied into an empty delta target.
-pub(crate) fn ensure_current_unsealed_index_format_for_writer(
+pub(crate) fn ensure_current_unsealed_index_format_for_writer_observed(
     generation_dir: &Path,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<(), CoreError> {
     require_current_unsealed_index_format_if_materialized(generation_dir)?;
     match read_unsealed_index_format(generation_dir)? {
@@ -127,10 +128,11 @@ pub(crate) fn ensure_current_unsealed_index_format_for_writer(
                     generation_dir.display()
                 ))
             })?;
-            write_atomic_durable(
+            write_atomic_durable_observed(
                 &unsealed_index_format_path(generation_dir),
                 &bytes,
                 "unsealed index format",
+                sync,
             )
         }
     }
@@ -211,7 +213,16 @@ pub(crate) fn is_durable_write_temporary(name: &str) -> bool {
 /// Free function rather than a method so [`WriterCache`] can call it without
 /// holding a reference to the adapter (which would require re-entering the
 /// cache mutex).
+#[cfg(test)]
 pub(crate) fn open_or_create_index(fields: &SchemaFields, path: &Path) -> Result<Index, CoreError> {
+    open_or_create_index_observed(fields, path, None)
+}
+
+pub(crate) fn open_or_create_index_observed(
+    fields: &SchemaFields,
+    path: &Path,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<Index, CoreError> {
     match std::fs::symlink_metadata(path.join(crate::LEXICAL_DELTA_CLONE_INTENT_FILE_NAME)) {
         Ok(_) => {
             return Err(CoreError::Typed {
@@ -232,7 +243,7 @@ pub(crate) fn open_or_create_index(fields: &SchemaFields, path: &Path) -> Result
             path.display()
         ))
     })?;
-    ensure_current_unsealed_index_format_for_writer(path)?;
+    ensure_current_unsealed_index_format_for_writer_observed(path, sync)?;
     let directory = tantivy::directory::MmapDirectory::open(path).map_err(|err| {
         CoreError::Storage(format!(
             "lexical: open generation directory {}: {err}",
@@ -257,17 +268,22 @@ pub(crate) fn lexical_sealed_identity_path(generation_dir: &Path) -> PathBuf {
 /// the parent. A crash leaves either the old file or the new one, never a
 /// torn one, plus at most a temporary the seal removes
 /// ([`is_durable_write_temporary`]).
-pub(crate) fn write_atomic_durable(
+pub(crate) fn write_atomic_durable_observed(
     path: &Path,
     bytes: &[u8],
     label: &str,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<(), CoreError> {
-    write_atomic_durable_with(path, label, |file| file.write_all(bytes))
+    write_atomic_durable_with(path, label, sync, |file| file.write_all(bytes))
 }
 
 /// Replacing an interrupted metadata copy never writes through a base inode
 /// or destination symlink. Copy through a fresh private file before rename.
-pub(crate) fn copy_atomic_durable(source: &Path, target: &Path) -> Result<(), CoreError> {
+pub(crate) fn copy_atomic_durable_observed(
+    source: &Path,
+    target: &Path,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<(), CoreError> {
     let parent = source
         .parent()
         .ok_or_else(|| CoreError::Storage("clone source has no parent".into()))?;
@@ -276,7 +292,7 @@ pub(crate) fn copy_atomic_durable(source: &Path, target: &Path) -> Result<(), Co
         .ok_or_else(|| CoreError::Storage("clone source has no name".into()))?;
     let mut source = crate::sealed_generation::open_regular_nofollow(parent, Path::new(name))
         .map_err(|error| CoreError::Storage(format!("lexical: open cloned metadata: {error}")))?;
-    write_atomic_durable_with(target, "cloned metadata", |target| {
+    write_atomic_durable_with(target, "cloned metadata", sync, |target| {
         let expected_bytes = source.metadata()?.len();
         let copied = std::io::copy(&mut source, target)?;
         if copied != expected_bytes || source.metadata()?.len() != expected_bytes {
@@ -289,6 +305,7 @@ pub(crate) fn copy_atomic_durable(source: &Path, target: &Path) -> Result<(), Co
 fn write_atomic_durable_with(
     path: &Path,
     label: &str,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
     write: impl FnOnce(&mut File) -> std::io::Result<()>,
 ) -> Result<(), CoreError> {
     let parent = path.parent().ok_or_else(|| {
@@ -333,7 +350,12 @@ fn write_atomic_durable_with(
     root_cut_core(Cut::RootWrite, Side::After, path)?;
     #[cfg(test)]
     root_cut_core(Cut::RootFileSync, Side::Before, path)?;
-    crate::causal_profile::timed_sync("atomic_file", || file.sync_all()).map_err(|error| {
+    crate::causal_profile::observed_sync_legacy(
+        sync,
+        quanta_index_core::DiagnosticSyncLabelV1::AtomicFile,
+        || file.sync_all(),
+    )
+    .map_err(|error| {
         CoreError::Storage(format!(
             "lexical: fsync {label} temporary {}: {error}",
             temporary.display()
@@ -357,7 +379,11 @@ fn write_atomic_durable_with(
     root_cut_core(Cut::RootDirectorySync, Side::Before, path)?;
     File::open(parent)
         .and_then(|directory| {
-            crate::causal_profile::timed_sync("atomic_parent", || directory.sync_all())
+            crate::causal_profile::observed_sync_legacy(
+                sync,
+                quanta_index_core::DiagnosticSyncLabelV1::AtomicParent,
+                || directory.sync_all(),
+            )
         })
         .map_err(|error| {
             CoreError::Storage(format!(
@@ -378,7 +404,8 @@ fn write_atomic_durable_with(
 /// directory's publication boundary; this must never run against active writers.
 pub(crate) fn remove_publish_leftovers(
     directory: &Path,
-    sync_domain: &'static str,
+    sync_domain: quanta_index_core::DiagnosticSyncLabelV1,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<(), CoreError> {
     let mut removed_any = false;
     for entry in std::fs::read_dir(directory).map_err(|error| {
@@ -417,7 +444,9 @@ pub(crate) fn remove_publish_leftovers(
         authority_cut_core(Cut::RootTemporaryDirectorySync, Side::Before, directory)?;
         File::open(directory)
             .and_then(|directory| {
-                crate::causal_profile::timed_sync(sync_domain, || directory.sync_all())
+                crate::causal_profile::observed_sync_legacy(sync, sync_domain, || {
+                    directory.sync_all()
+                })
             })
             .map_err(|error| {
                 CoreError::Storage(format!(
@@ -427,6 +456,85 @@ pub(crate) fn remove_publish_leftovers(
             })?;
         #[cfg(test)]
         authority_cut_core(Cut::RootTemporaryDirectorySync, Side::After, directory)?;
+    }
+    Ok(())
+}
+
+fn remove_atomic_at_temporary(
+    root: &File,
+    temporary: &str,
+    generation_dir: &Path,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<(), CoreError> {
+    use rustix::fs::{AtFlags, unlinkat};
+
+    match unlinkat(root, temporary, AtFlags::empty()) {
+        Ok(()) => crate::causal_profile::observed_sync_legacy(
+            sync,
+            quanta_index_core::DiagnosticSyncLabelV1::AtomicAtParent,
+            || root.sync_all(),
+        )
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: sync temporary root cleanup in {}: {error}",
+                generation_dir.display()
+            ))
+        }),
+        Err(rustix::io::Errno::NOENT) => Ok(()),
+        Err(error) => Err(CoreError::Storage(format!(
+            "lexical: remove temporary root in {}: {error}",
+            generation_dir.display()
+        ))),
+    }
+}
+
+fn remove_atomic_at_leftovers(
+    root: &File,
+    name: &str,
+    generation_dir: &Path,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<(), CoreError> {
+    let prefix = format!(".{name}{DURABLE_WRITE_TEMPORARY_MARKER}");
+    let mut entries = rustix::fs::Dir::read_from(root).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: enumerate root temporaries in {}: {error}",
+            generation_dir.display()
+        ))
+    })?;
+    while let Some(entry) = entries.read() {
+        let entry = entry.map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: read root temporary entry in {}: {error}",
+                generation_dir.display()
+            ))
+        })?;
+        let bytes = entry.file_name().to_bytes();
+        let Some(suffix) = bytes.strip_prefix(prefix.as_bytes()) else {
+            continue;
+        };
+        let Some(separator) = suffix.iter().position(|byte| *byte == b'-') else {
+            continue;
+        };
+        let Some((pid, sequence)) = suffix.get(..separator).zip(
+            separator
+                .checked_add(1)
+                .and_then(|start| suffix.get(start..)),
+        ) else {
+            continue;
+        };
+        if pid.is_empty()
+            || sequence.is_empty()
+            || !pid.iter().all(u8::is_ascii_digit)
+            || !sequence.iter().all(u8::is_ascii_digit)
+        {
+            continue;
+        }
+        let temporary = std::str::from_utf8(bytes).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: root temporary name is not UTF-8: {error}"
+            ))
+        })?;
+        remove_atomic_at_temporary(root, temporary, generation_dir, sync)?;
     }
     Ok(())
 }
@@ -441,7 +549,18 @@ pub(crate) fn write_atomic_durable_at(
     bytes: &[u8],
     label: &str,
 ) -> Result<(), CoreError> {
-    use rustix::fs::{Mode, OFlags, openat, renameat};
+    write_atomic_durable_at_observed(root, generation_dir, name, bytes, label, None)
+}
+
+pub(crate) fn write_atomic_durable_at_observed(
+    root: &File,
+    generation_dir: &Path,
+    name: &str,
+    bytes: &[u8],
+    label: &str,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+) -> Result<(), CoreError> {
+    use rustix::fs::{FlockOperation, Mode, OFlags, flock, openat, renameat};
 
     let mut components = Path::new(name).components();
     if name.contains('/')
@@ -452,6 +571,36 @@ pub(crate) fn write_atomic_durable_at(
             "lexical: {label} name is not a top-level generation entry"
         )));
     }
+    #[cfg(test)]
+    let target_path = generation_dir.join(name);
+
+    // Lock this inode through an independently opened description. The
+    // adapter's in-memory generation guard does not fence another process,
+    // and `flock` on a cloned description would not serialize it either.
+    let directory_lock = File::from(
+        openat(
+            root,
+            ".",
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: open root directory lock in {}: {error}",
+                generation_dir.display()
+            ))
+        })?,
+    );
+    flock(&directory_lock, FlockOperation::LockExclusive).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: lock root directory in {}: {error}",
+            generation_dir.display()
+        ))
+    })?;
+
+    // An earlier writer may have stopped before rename. Under the same
+    // cross-process lock, remove only this leaf's private temporaries.
+    remove_atomic_at_leftovers(root, name, generation_dir, sync)?;
 
     let temporary = format!(
         ".{name}{DURABLE_WRITE_TEMPORARY_MARKER}{}-{}",
@@ -472,36 +621,79 @@ pub(crate) fn write_atomic_durable_at(
             ))
         })?,
     );
-    file.write_all(bytes).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: write {label} temporary in {}: {error}",
-            generation_dir.display()
-        ))
-    })?;
-    crate::causal_profile::timed_sync("atomic_at_file", || file.sync_all()).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: fsync {label} temporary in {}: {error}",
-            generation_dir.display()
-        ))
-    })?;
-    drop(file);
-    renameat(root, temporary.as_str(), root, name).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: publish {label} in {}: {error}",
-            generation_dir.display()
-        ))
-    })?;
-    crate::causal_profile::timed_sync("atomic_at_parent", || root.sync_all()).map_err(|error| {
+    let before_rename = (|| -> Result<(), CoreError> {
+        #[cfg(test)]
+        root_cut_core(Cut::RootWrite, Side::Before, &target_path)?;
+        file.write_all(bytes).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: write {label} temporary in {}: {error}",
+                generation_dir.display()
+            ))
+        })?;
+        #[cfg(test)]
+        root_cut_core(Cut::RootWrite, Side::After, &target_path)?;
+        #[cfg(test)]
+        root_cut_core(Cut::RootFileSync, Side::Before, &target_path)?;
+        crate::causal_profile::observed_sync_legacy(
+            sync,
+            quanta_index_core::DiagnosticSyncLabelV1::AtomicAtFile,
+            || file.sync_all(),
+        )
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: fsync {label} temporary in {}: {error}",
+                generation_dir.display()
+            ))
+        })?;
+        #[cfg(test)]
+        root_cut_core(Cut::RootFileSync, Side::After, &target_path)?;
+        drop(file);
+        #[cfg(test)]
+        root_cut_core(Cut::RootRename, Side::Before, &target_path)?;
+        renameat(root, temporary.as_str(), root, name).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: publish {label} in {}: {error}",
+                generation_dir.display()
+            ))
+        })?;
+        Ok(())
+    })();
+    if let Err(error) = before_rename {
+        remove_atomic_at_temporary(root, &temporary, generation_dir, sync)?;
+        return Err(error);
+    }
+    #[cfg(test)]
+    root_cut_core(Cut::RootRename, Side::After, &target_path)?;
+    #[cfg(test)]
+    root_cut_core(Cut::RootDirectorySync, Side::Before, &target_path)?;
+    crate::causal_profile::observed_sync_legacy(
+        sync,
+        quanta_index_core::DiagnosticSyncLabelV1::AtomicAtParent,
+        || root.sync_all(),
+    )
+    .map_err(|error| {
         CoreError::Storage(format!(
             "lexical: fsync {label} generation {}: {error}",
             generation_dir.display()
         ))
-    })
+    })?;
+    #[cfg(test)]
+    root_cut_core(Cut::RootDirectorySync, Side::After, &target_path)?;
+    Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn persist_lexical_sealed_identity(
     generation_dir: &Path,
     identity: &GenerationSnapshot,
+) -> Result<(), CoreError> {
+    persist_lexical_sealed_identity_observed(generation_dir, identity, None)
+}
+
+pub(crate) fn persist_lexical_sealed_identity_observed(
+    generation_dir: &Path,
+    identity: &GenerationSnapshot,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<(), CoreError> {
     let mut bytes = Vec::new();
     ciborium::into_writer(identity, &mut bytes).map_err(|error| {
@@ -512,10 +704,11 @@ pub(crate) fn persist_lexical_sealed_identity(
             identity.manifest_generation.get(),
         ))
     })?;
-    write_atomic_durable(
+    write_atomic_durable_observed(
         &lexical_sealed_identity_path(generation_dir),
         &bytes,
         "sealed generation identity",
+        sync,
     )
 }
 

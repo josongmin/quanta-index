@@ -44,6 +44,7 @@ mod integrity;
 mod layout;
 mod manifest;
 mod membership_integrity;
+pub mod native;
 #[cfg(feature = "proof")]
 pub mod proof;
 mod sealed_manifest;
@@ -65,15 +66,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use quanta_index_contract::{
-    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
-    SemanticContentRootsV1,
+    GenerationPin, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
+    SearchPlaneTrackKind, SemanticContentRootsV1,
 };
 use quanta_index_core::{
-    CoreError, FinishedReclaims, GenerationIdentityValidatePort, MetricPointV1, MetricSourcePort,
-    RECLAIM_AREA_DIR_NAME, RequestBudgetV1, SealedGenerationIdentityProbePort,
-    SealedGenerationScanPort, SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource,
-    SemanticScopeStreamBuildPort, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
-    TrackDiskUsagePort,
+    CoreError, DiagnosticContextV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    FinishedReclaims, GenerationIdentityValidatePort, GenerationNamespaceReadPort, MetricPointV1,
+    MetricSourcePort, RECLAIM_AREA_DIR_NAME, RequestBudgetV1, SealedGenerationIdentityProbePort,
+    SealedGenerationScanPort, SemanticGenerationContractV1, SemanticIndexOpenPort,
+    SemanticIngestHeaderV1, SemanticScopeSource, SemanticScopeStreamBuildPort,
+    SemanticStreamTallyV1, SemanticStreamWindowPolicy, TrackDiskUsagePort,
     domains::generation::{
         GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
         IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1, QuarantineDiscardOutcomeV1,
@@ -92,6 +94,44 @@ use crate::integrity::{SealTalliesV1, read_quarantine_receipt};
 use crate::manifest::SemanticManifest;
 use crate::sealed_manifest::inspect_sealed_manifest_identity;
 use crate::search::{LoadedGeneration, PersistedSemanticSearcher, open_generation};
+
+fn observe_result<T>(
+    diagnostic: Option<&DiagnosticContextV1>,
+    stage: DiagnosticStageV1,
+    operation: impl FnOnce(Option<&DiagnosticContextV1>) -> Result<T, CoreError>,
+) -> Result<T, CoreError> {
+    let span = diagnostic.and_then(|context| {
+        context.enter(stage, DiagnosticLaneV1(3)).map_or_else(
+            |trace_error| {
+                context.health(match trace_error {
+                    quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                        quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                        quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                        quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
+                    }
+                    quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                        quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
+                    }
+                });
+                None
+            },
+            Some,
+        )
+    });
+    let child = diagnostic
+        .zip(span.as_ref())
+        .map(|(context, span)| context.child_context(span));
+    let result = operation(child.as_ref());
+    if let Some(span) = span {
+        let outcome = DiagnosticTerminalV1::from_result(&result);
+        let _trace_completion = span.finish(outcome);
+    }
+    result
+}
 
 #[cfg(debug_assertions)]
 pub mod test_support {
@@ -269,14 +309,19 @@ impl SemanticAdapter {
         &self,
         header: &SemanticIngestHeaderV1,
     ) -> Result<Vec<MutexGuard<'_, ()>>, CoreError> {
-        let repo_id = &header.pin.repo_id;
-        let revision_id = &header.pin.revision_id;
-        let mut stripes = vec![self.generation_mutation_stripe(
-            repo_id,
-            revision_id,
-            header.pin.manifest_generation,
-        )?];
-        if let Some(base) = header.contract.base_generation {
+        self.generation_contract_guards(&header.pin, &header.contract)
+    }
+
+    fn generation_contract_guards(
+        &self,
+        pin: &GenerationPin,
+        contract: &SemanticGenerationContractV1,
+    ) -> Result<Vec<MutexGuard<'_, ()>>, CoreError> {
+        let repo_id = &pin.repo_id;
+        let revision_id = &pin.revision_id;
+        let mut stripes =
+            vec![self.generation_mutation_stripe(repo_id, revision_id, pin.manifest_generation)?];
+        if let Some(base) = contract.base_generation {
             stripes.push(self.generation_mutation_stripe(repo_id, revision_id, base)?);
         }
         stripes.sort_unstable();
@@ -312,10 +357,28 @@ impl SemanticAdapter {
 }
 
 impl SemanticScopeStreamBuildPort for SemanticAdapter {
+    fn preflight_contract(
+        &self,
+        pin: &GenerationPin,
+        contract: &SemanticGenerationContractV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        observe_result(
+            diagnostic,
+            DiagnosticStageV1::BuildPreflight,
+            |_diagnostic| {
+                let _mutation = self.generation_contract_guards(pin, contract)?;
+                let _lifecycle = self.directory_lifecycle_read_guard()?;
+                build::preflight_contract(&self.state_root, pin, contract)
+            },
+        )
+    }
+
     fn build_stream(
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<
         (
             SemanticStreamTallyV1,
@@ -323,16 +386,68 @@ impl SemanticScopeStreamBuildPort for SemanticAdapter {
         ),
         CoreError,
     > {
-        let _mutation = self.generation_build_guards(header)?;
+        observe_result(diagnostic, DiagnosticStageV1::SemanticBuild, |diagnostic| {
+            let _mutation = self.generation_build_guards(header)?;
+            let _lifecycle = self.directory_lifecycle_read_guard()?;
+            build::build_stream_reported_with_diagnostic(
+                &self.runtime,
+                &self.state_root,
+                self.window_policy,
+                header,
+                scopes,
+                &self.seal_tallies,
+                diagnostic,
+            )
+        })
+    }
+}
+
+impl GenerationNamespaceReadPort for SemanticAdapter {
+    fn generation_namespace_is_empty(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<bool, CoreError> {
         let _lifecycle = self.directory_lifecycle_read_guard()?;
-        build::build_stream_reported(
-            &self.runtime,
-            &self.state_root,
-            self.window_policy,
-            header,
-            scopes,
-            &self.seal_tallies,
-        )
+        for directory in [
+            self.state_root.clone(),
+            self.state_root
+                .join(GenerationStorageKeyV1::for_repo_revision(repo_id, revision_id).as_str()),
+        ] {
+            match std::fs::symlink_metadata(&directory) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => {
+                    return Err(CoreError::Storage(format!(
+                        "semantic: generation namespace {} is not a directory",
+                        directory.display()
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+                Err(error) => {
+                    return Err(CoreError::Storage(format!(
+                        "semantic: inspect generation namespace {}: {error}",
+                        directory.display()
+                    )));
+                }
+            }
+        }
+        let pair_dir = self
+            .state_root
+            .join(GenerationStorageKeyV1::for_repo_revision(repo_id, revision_id).as_str());
+        let mut entries = std::fs::read_dir(&pair_dir).map_err(|error| {
+            CoreError::Storage(format!(
+                "semantic: read generation namespace {}: {error}",
+                pair_dir.display()
+            ))
+        })?;
+        match entries.next() {
+            None => Ok(true),
+            Some(Ok(_entry)) => Ok(false),
+            Some(Err(error)) => Err(CoreError::Storage(format!(
+                "semantic: inspect generation namespace entry {}: {error}",
+                pair_dir.display()
+            ))),
+        }
     }
 }
 
@@ -385,7 +500,12 @@ impl TrackDiskUsagePort for SemanticAdapter {
         if !self.state_root.exists() {
             return Ok(0);
         }
-        unique_inode_tree_bytes_in_track(&self.state_root, &|_name| false, budget)
+        unique_inode_tree_bytes_in_track(
+            &self.state_root,
+            &|_name| false,
+            budget,
+            budget.diagnostic_context(),
+        )
     }
 }
 
@@ -745,138 +865,34 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
         &self,
         retired: &GenerationSnapshot,
         on_absent: &dyn Fn() -> Result<(), CoreError>,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
-        if retired.track != SearchPlaneTrackKind::Semantic {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic sealed-generation reclaim received {:?} track",
-                retired.track
-            )));
-        }
-        let generation_dir = layout::generation_dir(
-            &self.state_root,
-            &retired.repo_id,
-            &retired.revision_id,
-            retired.manifest_generation,
-        );
-        let _lifecycle = self.directory_lifecycle_guard()?;
-        match std::fs::symlink_metadata(&generation_dir) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                on_absent()?;
-                return Ok(SealedGenerationReclaimOutcomeV1::Absent);
-            }
-            Ok(_) => {}
-            Err(error) => {
-                return Err(CoreError::Storage(format!(
-                    "semantic: inspect generation namespace {}: {error}",
-                    generation_dir.display()
+        observe_result(diagnostic, DiagnosticStageV1::Compaction, |diagnostic| {
+            if retired.track != SearchPlaneTrackKind::Semantic {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic sealed-generation reclaim received {:?} track",
+                    retired.track
                 )));
             }
-        }
-        let marker_path = layout::sealed_marker_path(&generation_dir);
-        if !control_file::regular_file_present(&marker_path).map_err(|error| {
-            CoreError::Storage(format!(
-                "semantic: inspect sealed marker {}: {error}",
-                marker_path.display()
-            ))
-        })? {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNotSealed,
-                message: format!(
-                    "semantic: refusing to reclaim unsealed generation {} as retired history",
-                    retired.manifest_generation.get()
-                ),
-            });
-        }
-        let observed_digest =
-            control_file::read_string_bounded(&marker_path, control_file::MAX_SEALED_MARKER_BYTES)
-                .map_err(|error| {
-                    CoreError::Storage(format!(
-                        "semantic: read sealed marker {}: {error}",
-                        marker_path.display()
-                    ))
-                })?;
-        if observed_digest != retired.manifest_digest {
-            return Err(generation_digest_mismatch(retired, "sealed marker"));
-        }
-        let manifest_path = layout::manifest_path(&generation_dir);
-        let manifest = SemanticManifest::decode(
-            &control_file::read_bounded(&manifest_path, control_file::MAX_SCOPE_MANIFEST_BYTES)
-                .map_err(|error| {
-                    CoreError::Storage(format!(
-                        "semantic: read manifest {}: {error}",
-                        manifest_path.display()
-                    ))
-                })?,
-        )?;
-        manifest.validate_scope(
-            &retired.repo_id,
-            &retired.revision_id,
-            retired.manifest_generation,
-        )?;
-        if manifest.manifest_digest != retired.manifest_digest {
-            return Err(generation_digest_mismatch(retired, "manifest"));
-        }
-        let bytes = crate::search::dataset_tree_bytes(&self.state_root, &generation_dir)?;
-        self.scrub_progress
-            .lock()
-            .map_err(|error| {
-                CoreError::Storage(format!("semantic scrub progress poisoned: {error}"))
-            })?
-            .clear_if_invalidated(|paused| paused == retired);
-        // Out of the generation namespace by one durable rename, then
-        // removed: a crash leaves a reclaim-area entry, never a partial tree
-        // that would read as an unsealed build (QI-BB-003).
-        let reclaimed = reclaim_directory(
-            &self.state_root,
-            &generation_dir,
-            &GenerationStorageKeyV1::for_repo_revision(&retired.repo_id, &retired.revision_id)
-                .reclaim_entry_name(retired.manifest_generation),
-        );
-        match std::fs::symlink_metadata(&generation_dir) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => on_absent()?,
-            Ok(_) if reclaimed.is_ok() => {
-                return Err(CoreError::Storage(
-                    "semantic reclaim reported removal but generation namespace remains present"
-                        .into(),
-                ));
-            }
-            Ok(_) => {}
-            Err(error) => {
-                return Err(CoreError::Storage(format!(
-                    "semantic reclaim failed ({reclaimed:?}); namespace probe failed: {error}"
-                )));
-            }
-        }
-        reclaimed?;
-        Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes })
-    }
-
-    fn finish_interrupted_reclaims(&self) -> Result<FinishedReclaims, CoreError> {
-        let _lifecycle = self.directory_lifecycle_guard()?;
-        quanta_index_core::finish_interrupted_reclaims(&self.state_root)
-    }
-
-    fn sealed_generations_for_pair(
-        &self,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-    ) -> Result<Vec<GenerationSnapshot>, CoreError> {
-        let pair_dir = self
-            .state_root
-            .join(GenerationStorageKeyV1::for_repo_revision(repo_id, revision_id).as_str());
-        let mut out = Vec::new();
-        if !pair_dir.exists() {
-            return Ok(out);
-        }
-        for entry in std::fs::read_dir(&pair_dir).map_err(|error| {
-            CoreError::Storage(format!("semantic: list {}: {error}", pair_dir.display()))
-        })? {
-            let entry = entry.map_err(|error| {
-                CoreError::Storage(format!("semantic: read generation entry: {error}"))
-            })?;
-            let generation_dir = entry.path();
-            if !generation_dir.is_dir() {
-                continue;
+            let generation_dir = layout::generation_dir(
+                &self.state_root,
+                &retired.repo_id,
+                &retired.revision_id,
+                retired.manifest_generation,
+            );
+            let _lifecycle = self.directory_lifecycle_guard()?;
+            match std::fs::symlink_metadata(&generation_dir) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    on_absent()?;
+                    return Ok(SealedGenerationReclaimOutcomeV1::Absent);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(CoreError::Storage(format!(
+                        "semantic: inspect generation namespace {}: {error}",
+                        generation_dir.display()
+                    )));
+                }
             }
             let marker_path = layout::sealed_marker_path(&generation_dir);
             if !control_file::regular_file_present(&marker_path).map_err(|error| {
@@ -885,7 +901,26 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
                     marker_path.display()
                 ))
             })? {
-                continue;
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNotSealed,
+                    message: format!(
+                        "semantic: refusing to reclaim unsealed generation {} as retired history",
+                        retired.manifest_generation.get()
+                    ),
+                });
+            }
+            let observed_digest = control_file::read_string_bounded(
+                &marker_path,
+                control_file::MAX_SEALED_MARKER_BYTES,
+            )
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "semantic: read sealed marker {}: {error}",
+                    marker_path.display()
+                ))
+            })?;
+            if observed_digest != retired.manifest_digest {
+                return Err(generation_digest_mismatch(retired, "sealed marker"));
             }
             let manifest_path = layout::manifest_path(&generation_dir);
             let manifest = SemanticManifest::decode(
@@ -897,48 +932,157 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
                         ))
                     })?,
             )?;
-            let generation = ManifestGeneration::new(manifest.generation);
-            manifest.validate_scope(repo_id, revision_id, generation)?;
-            if layout::generation_dir(&self.state_root, repo_id, revision_id, generation)
-                != generation_dir
-            {
-                return Err(CoreError::Typed {
+            manifest.validate_scope(
+                &retired.repo_id,
+                &retired.revision_id,
+                retired.manifest_generation,
+            )?;
+            if manifest.manifest_digest != retired.manifest_digest {
+                return Err(generation_digest_mismatch(retired, "manifest"));
+            }
+            let bytes = crate::search::dataset_tree_bytes_observed(
+                &self.state_root,
+                &generation_dir,
+                diagnostic,
+            )?;
+            self.scrub_progress
+                .lock()
+                .map_err(|error| {
+                    CoreError::Storage(format!("semantic scrub progress poisoned: {error}"))
+                })?
+                .clear_if_invalidated(|paused| paused == retired);
+            // Out of the generation namespace by one durable rename, then
+            // removed: a crash leaves a reclaim-area entry, never a partial tree
+            // that would read as an unsealed build (QI-BB-003).
+            let reclaimed = reclaim_directory(
+                &self.state_root,
+                &generation_dir,
+                &GenerationStorageKeyV1::for_repo_revision(&retired.repo_id, &retired.revision_id)
+                    .reclaim_entry_name(retired.manifest_generation),
+            );
+            match std::fs::symlink_metadata(&generation_dir) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => on_absent()?,
+                Ok(_) if reclaimed.is_ok() => {
+                    return Err(CoreError::Storage(
+                    "semantic reclaim reported removal but generation namespace remains present"
+                        .into(),
+                ));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(CoreError::Storage(format!(
+                        "semantic reclaim failed ({reclaimed:?}); namespace probe failed: {error}"
+                    )));
+                }
+            }
+            reclaimed?;
+            Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes })
+        })
+    }
+
+    fn finish_interrupted_reclaims(
+        &self,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<FinishedReclaims, CoreError> {
+        observe_result(diagnostic, DiagnosticStageV1::Compaction, |diagnostic| {
+            let _lifecycle = self.directory_lifecycle_guard()?;
+            quanta_index_core::finish_interrupted_reclaims(&self.state_root, diagnostic)
+        })
+    }
+
+    fn sealed_generations_for_pair(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+        observe_result(
+            diagnostic,
+            DiagnosticStageV1::RetentionRootSnapshot,
+            |_diagnostic| {
+                let pair_dir = self
+                    .state_root
+                    .join(GenerationStorageKeyV1::for_repo_revision(repo_id, revision_id).as_str());
+                let mut out = Vec::new();
+                if !pair_dir.exists() {
+                    return Ok(out);
+                }
+                for entry in std::fs::read_dir(&pair_dir).map_err(|error| {
+                    CoreError::Storage(format!("semantic: list {}: {error}", pair_dir.display()))
+                })? {
+                    let entry = entry.map_err(|error| {
+                        CoreError::Storage(format!("semantic: read generation entry: {error}"))
+                    })?;
+                    let generation_dir = entry.path();
+                    if !generation_dir.is_dir() {
+                        continue;
+                    }
+                    let marker_path = layout::sealed_marker_path(&generation_dir);
+                    if !control_file::regular_file_present(&marker_path).map_err(|error| {
+                        CoreError::Storage(format!(
+                            "semantic: inspect sealed marker {}: {error}",
+                            marker_path.display()
+                        ))
+                    })? {
+                        continue;
+                    }
+                    let manifest_path = layout::manifest_path(&generation_dir);
+                    let manifest = SemanticManifest::decode(
+                        &control_file::read_bounded(
+                            &manifest_path,
+                            control_file::MAX_SCOPE_MANIFEST_BYTES,
+                        )
+                        .map_err(|error| {
+                            CoreError::Storage(format!(
+                                "semantic: read manifest {}: {error}",
+                                manifest_path.display()
+                            ))
+                        })?,
+                    )?;
+                    let generation = ManifestGeneration::new(manifest.generation);
+                    manifest.validate_scope(repo_id, revision_id, generation)?;
+                    if layout::generation_dir(&self.state_root, repo_id, revision_id, generation)
+                        != generation_dir
+                    {
+                        return Err(CoreError::Typed {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityScopeMismatch,
                     message: format!(
                         "semantic: manifest does not own physical path {}",
                         generation_dir.display()
                     ),
                 });
-            }
-            let marker_digest = control_file::read_string_bounded(
-                &marker_path,
-                control_file::MAX_SEALED_MARKER_BYTES,
-            )
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "semantic: read sealed marker {}: {error}",
-                    marker_path.display()
-                ))
-            })?;
-            if marker_digest != manifest.manifest_digest {
-                return Err(CoreError::Typed {
+                    }
+                    let marker_digest = control_file::read_string_bounded(
+                        &marker_path,
+                        control_file::MAX_SEALED_MARKER_BYTES,
+                    )
+                    .map_err(|error| {
+                        CoreError::Storage(format!(
+                            "semantic: read sealed marker {}: {error}",
+                            marker_path.display()
+                        ))
+                    })?;
+                    if marker_digest != manifest.manifest_digest {
+                        return Err(CoreError::Typed {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
                     message: format!(
                         "semantic: sealed marker and manifest disagree at {}",
                         generation_dir.display()
                     ),
                 });
-            }
-            out.push(GenerationSnapshot {
-                repo_id: repo_id.clone(),
-                revision_id: revision_id.clone(),
-                track: SearchPlaneTrackKind::Semantic,
-                manifest_generation: generation,
-                manifest_digest: manifest.manifest_digest.clone(),
-            });
-        }
-        out.sort_by_key(|identity| identity.manifest_generation);
-        Ok(out)
+                    }
+                    out.push(GenerationSnapshot {
+                        repo_id: repo_id.clone(),
+                        revision_id: revision_id.clone(),
+                        track: SearchPlaneTrackKind::Semantic,
+                        manifest_generation: generation,
+                        manifest_digest: manifest.manifest_digest.clone(),
+                    });
+                }
+                out.sort_by_key(|identity| identity.manifest_generation);
+                Ok(out)
+            },
+        )
     }
 
     /// Bytes the named generation directories occupy together, by unique
@@ -948,15 +1092,24 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
-        let roots: Vec<_> = generations
-            .iter()
-            .map(|generation| {
-                layout::generation_dir(&self.state_root, repo_id, revision_id, *generation)
-            })
-            .collect();
-        let (bytes, present) =
-            unique_inode_tree_bytes_for_roots_below_track(&self.state_root, &roots, &|_name| false)
+        observe_result(
+            diagnostic,
+            DiagnosticStageV1::RetentionMeasure,
+            |diagnostic| {
+                let roots: Vec<_> = generations
+                    .iter()
+                    .map(|generation| {
+                        layout::generation_dir(&self.state_root, repo_id, revision_id, *generation)
+                    })
+                    .collect();
+                let (bytes, present) = unique_inode_tree_bytes_for_roots_below_track(
+                    &self.state_root,
+                    &roots,
+                    &|_name| false,
+                    diagnostic,
+                )
                 .map_err(|err| {
                     CoreError::Storage(format!(
                         "semantic: measure sealed generations of repo={} revision={}: {err}",
@@ -964,12 +1117,30 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
                         revision_id.as_str()
                     ))
                 })?;
-        let absent = generations
-            .iter()
-            .zip(present)
-            .filter_map(|(generation, present)| (!present).then_some(*generation))
-            .collect();
-        Ok(SealedGenerationBytesV1 { bytes, absent })
+                let absent = generations
+                    .iter()
+                    .zip(present)
+                    .filter_map(|(generation, present)| (!present).then_some(*generation))
+                    .collect();
+                Ok(SealedGenerationBytesV1 { bytes, absent })
+            },
+        )
+    }
+
+    fn measure_track_physical_bytes(
+        &self,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<u64, CoreError> {
+        observe_result(
+            diagnostic,
+            DiagnosticStageV1::PhysicalInodeCensus,
+            |diagnostic| {
+                let budget = diagnostic.map_or_else(RequestBudgetV1::unbounded, |diagnostic| {
+                    RequestBudgetV1::unbounded().with_diagnostic_context(diagnostic.clone())
+                });
+                self.track_disk_bytes(&budget)
+            },
+        )
     }
 }
 
@@ -1562,6 +1733,79 @@ fn is_dir(entry: &std::fs::DirEntry) -> Result<bool, CoreError> {
 }
 
 #[cfg(test)]
+mod namespace_read_tests {
+    use super::*;
+
+    #[test]
+    fn absent_or_empty_pair_is_empty_but_any_entry_is_occupied() {
+        let temp = tempfile::tempdir().expect("state root fixture");
+        let state_root = temp.path().join("semantic");
+        let adapter = SemanticAdapter::with_state_root(state_root.clone()).expect("adapter");
+        let repo = RepoId::new("repo").expect("static repo ID");
+        let revision = RevisionId::new("revision").expect("static revision ID");
+        assert!(
+            adapter
+                .generation_namespace_is_empty(&repo, &revision)
+                .expect("absent root")
+        );
+        assert!(!state_root.exists(), "probe must not create the root");
+
+        let pair =
+            state_root.join(GenerationStorageKeyV1::for_repo_revision(&repo, &revision).as_str());
+        std::fs::create_dir_all(&pair).expect("create empty pair");
+        assert!(
+            adapter
+                .generation_namespace_is_empty(&repo, &revision)
+                .expect("empty pair")
+        );
+        std::fs::create_dir(pair.join("g1")).expect("create incomplete generation");
+        assert!(
+            !adapter
+                .generation_namespace_is_empty(&repo, &revision)
+                .expect("incomplete")
+        );
+        std::fs::remove_dir(pair.join("g1")).expect("remove incomplete generation");
+        std::fs::write(pair.join("unknown-entry"), b"unknown").expect("create unknown entry");
+        assert!(
+            !adapter
+                .generation_namespace_is_empty(&repo, &revision)
+                .expect("unknown")
+        );
+        std::fs::remove_file(pair.join("unknown-entry")).expect("remove unknown entry");
+        std::fs::create_dir(pair.join("g2")).expect("create sealed generation dir");
+        std::fs::write(
+            pair.join("g2").join(layout::MARKER_SEALED_FILE_NAME),
+            b"digest",
+        )
+        .expect("create sealed marker");
+        assert!(
+            !adapter
+                .generation_namespace_is_empty(&repo, &revision)
+                .expect("sealed")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_pair_is_not_accepted_as_empty() {
+        let temp = tempfile::tempdir().expect("state root fixture");
+        let state_root = temp.path().join("semantic");
+        std::fs::create_dir(&state_root).expect("create root");
+        let adapter = SemanticAdapter::with_state_root(state_root.clone()).expect("adapter");
+        let repo = RepoId::new("repo").expect("static repo ID");
+        let revision = RevisionId::new("revision").expect("static revision ID");
+        let pair =
+            state_root.join(GenerationStorageKeyV1::for_repo_revision(&repo, &revision).as_str());
+        std::os::unix::fs::symlink(temp.path(), pair).expect("create pair symlink");
+        assert!(
+            adapter
+                .generation_namespace_is_empty(&repo, &revision)
+                .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
 mod incomplete_generation_discard_tests {
     use super::*;
     use crate::manifest::FORMAT_VERSION;
@@ -1593,6 +1837,8 @@ mod incomplete_generation_discard_tests {
             dimension: 3,
             distance_metric: "cosine".to_string(),
             normalization: "l2_unit".to_string(),
+            policy_digest: "policy:fixture".to_string(),
+            view_policy_digest: None,
             row_count: 0,
             semantic_row_root_digest: format!("sha256:{}", "0".repeat(64)),
             built_at_unix_nanos: 0,

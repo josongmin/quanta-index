@@ -16,6 +16,10 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -27,7 +31,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, GenerationQuarantineReasonV1,
-    GenerationStorageKeyV1, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
+    GenerationStorageKeyV1, SealedGenerationScanPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -147,7 +151,7 @@ fn inventory_quarantines_untrusted_directories_and_never_reads_content() -> Test
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let g1 = ManifestGeneration::new(1);
-    let _stages = adapter.build_batch(&sealed_batch(g1)?)?;
+    let _stages = adapter.build_fixture_batch(&sealed_batch(g1)?)?;
     let sealed_dir = generation_dir(&root, g1);
     let family_dir = sealed_dir
         .parent()

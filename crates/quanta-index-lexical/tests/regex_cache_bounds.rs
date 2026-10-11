@@ -19,6 +19,10 @@
 #[path = "support/source_fixture.rs"]
 mod source_fixture;
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::error::Error;
 
 use quanta_index_contract::lex::LanguageCode;
@@ -31,7 +35,7 @@ use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind};
 use quanta_index_core::{
     LexicalExecutionBudgetV1, LexicalIndexOpenPort, LexicalSearcher, LexicalWriterPolicy,
     RegexMatchCachePolicy, RegexMatchCacheStats, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
-    SealedGenerationReclaimPort, SearchCorpusBatchBuildPort,
+    SealedGenerationReclaimPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
@@ -137,7 +141,7 @@ fn adapter_of(
         policy,
         LexicalWriterPolicy::DEFAULT,
     );
-    let _stages = adapter.build_batch(&sealed_batch_of(docs)?)?;
+    let _stages = adapter.build_fixture_batch(&sealed_batch_of(docs)?)?;
     Ok(adapter)
 }
 
@@ -287,13 +291,16 @@ fn eviction_and_generation_reclaim_do_not_break_a_held_searcher() -> TestResult 
     if stats(&adapter)?.evictions != 1 {
         return Err(format!("the first set was evicted: {:?}", stats(&adapter)?).into());
     }
-    let reclaimed = adapter.reclaim_sealed_generation(&GenerationSnapshot {
-        repo_id: repo(),
-        revision_id: revision(),
-        track: SearchPlaneTrackKind::Lexical,
-        manifest_generation: ManifestGeneration::new(1),
-        manifest_digest: "regex-cache-manifest:1".to_string(),
-    })?;
+    let reclaimed = adapter.reclaim_sealed_generation(
+        &GenerationSnapshot {
+            repo_id: repo(),
+            revision_id: revision(),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: ManifestGeneration::new(1),
+            manifest_digest: "regex-cache-manifest:1".to_string(),
+        },
+        None,
+    )?;
     if !matches!(
         reclaimed,
         SealedGenerationReclaimOutcomeV1::Reclaimed { .. }

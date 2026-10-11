@@ -76,6 +76,7 @@ impl SearchCorpusIndexBytesPort for ScriptedIndexBytesV1 {
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &std::collections::BTreeSet<quanta_index_contract::ManifestGeneration>,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         Ok(SealedGenerationBytesV1 {
             bytes: TEST_INDEX_BYTES_PER_GENERATION
@@ -364,7 +365,7 @@ impl ActiveSearchCorpusPinReadPort for NoActiveSearchCorpusPinsV1 {
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
-    ) -> Result<Vec<quanta_index_contract::GenerationSnapshot>, CoreError> {
+    ) -> Result<Vec<crate::search_corpus_lifecycle::UnresolvedSourceTargetV1>, CoreError> {
         Ok(Vec::new())
     }
 

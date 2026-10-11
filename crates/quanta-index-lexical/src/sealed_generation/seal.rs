@@ -17,9 +17,9 @@
 //! are hashed at seal because in-place changes must not bypass the prepared
 //! coverage root. A fresh generation is therefore proved whole at its seal.
 //!
-//! F15 admission checks the aggregate root and each changed source. Reused
-//! buckets retain their verified base descriptors; cold open independently
-//! checks complete source and posting contents before serving.
+//! V17 independently checks changed File sources against the original mutation
+//! before publishing the identity. Immutable pool objects are authenticated by
+//! the File and Native verifiers, separately from generation-local hashing.
 //!
 //! The measurements are reported per seal so a test can hold the seal to
 //! that shape with an inode oracle instead of a clock.
@@ -31,8 +31,12 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use quanta_index_contract::GenerationSnapshot;
-use quanta_index_core::CoreError;
+use quanta_index_core::diagnostic_trace::DiagnosticBm25BoundaryLabelV1;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
+use quanta_index_core::{
+    CoreError, DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticSpanGuardV1,
+    DiagnosticStageV1, DiagnosticTerminalV1,
+};
 use sha2::{Digest, Sha256};
 use tantivy::collector::Count;
 use tantivy::query::TermQuery;
@@ -49,19 +53,16 @@ use crate::sealed_generation::live_bm25::{self, BaseSnapshot, LiveBm25Statistics
 use crate::sealed_generation::manifest::{
     IndexSegmentVerificationV1, LexicalSealedManifest, write_manifest,
 };
-use crate::text_authority::{
-    TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME, TextAuthorityManifest,
-    finalize_for_seal,
-};
+use crate::text_authority::TEXT_AUTHORITY_DIR_NAME;
 use crate::{SchemaFields, TANTIVY_INDEX_META_FILE_NAME, TEXT_DOC_KIND};
 
 /// What the seals of one adapter read to commit their generations
 /// (QI-BB-006 보완 #4).
 ///
-/// Every committed file is counted under exactly one of two sources.
-/// `bytes_hashed` is what the commitment hasher reads; `bytes_inherited`
-/// bypasses that hasher. Changed staged source payload reads are reported
-/// separately from packed object reads and commitment hashing.
+/// Every generation-local committed file is counted under exactly one of two
+/// sources. `bytes_hashed` is what the commitment hasher reads;
+/// `bytes_inherited` bypasses that hasher. Verified File source input counts
+/// are logical mutation bytes, separate from pool object physical I/O.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LexicalSealCommitmentStats {
     /// Generations sealed.
@@ -75,14 +76,10 @@ pub struct LexicalSealCommitmentStats {
     pub files_inherited: u64,
     /// Their length, not read by the commitment hasher.
     pub bytes_inherited: u64,
-    /// Changed staged source paths read for F15 production.
-    pub file_admission_files_read: u64,
-    /// Changed staged source bytes read for F15 production.
-    pub file_admission_bytes_read: u64,
-    /// Durable unsealed-root replay objects read and SHA-checked; inherited
-    /// same-inode base objects do not enter this counter.
-    pub file_authority_replay_files_read: u64,
-    pub file_authority_replay_bytes_read: u64,
+    /// Upsert source inputs whose bytes were independently verified at seal.
+    pub file_admission_sources_verified: u64,
+    /// Logical raw bytes of those verified Upsert source inputs.
+    pub file_admission_source_bytes_verified: u64,
 }
 
 impl LexicalSealCommitmentStats {
@@ -93,18 +90,12 @@ impl LexicalSealCommitmentStats {
         self.bytes_hashed = self.bytes_hashed.saturating_add(seal.bytes_hashed);
         self.files_inherited = self.files_inherited.saturating_add(seal.files_inherited);
         self.bytes_inherited = self.bytes_inherited.saturating_add(seal.bytes_inherited);
-        self.file_admission_files_read = self
-            .file_admission_files_read
-            .saturating_add(seal.file_admission_files_read);
-        self.file_admission_bytes_read = self
-            .file_admission_bytes_read
-            .saturating_add(seal.file_admission_bytes_read);
-        self.file_authority_replay_files_read = self
-            .file_authority_replay_files_read
-            .saturating_add(seal.file_authority_replay_files_read);
-        self.file_authority_replay_bytes_read = self
-            .file_authority_replay_bytes_read
-            .saturating_add(seal.file_authority_replay_bytes_read);
+        self.file_admission_sources_verified = self
+            .file_admission_sources_verified
+            .saturating_add(seal.file_admission_sources_verified);
+        self.file_admission_source_bytes_verified = self
+            .file_admission_source_bytes_verified
+            .saturating_add(seal.file_admission_source_bytes_verified);
     }
 
     fn hashed(&mut self, bytes: u64) {
@@ -289,10 +280,13 @@ impl Measurer {
     reason = "bounded opt-in causal marker is replayed against the scale artifact"
 )]
 fn emit_bm25_boundary(
-    label: &'static str,
+    label: DiagnosticBm25BoundaryLabelV1,
     started: Option<Instant>,
     logical_bytes: Option<usize>,
     index_files: usize,
+    legacy_enabled: bool,
+    diagnostic: Option<&DiagnosticContextV1>,
+    span: Option<DiagnosticSpanGuardV1>,
 ) {
     let Some(started) = started else {
         return;
@@ -308,11 +302,33 @@ fn emit_bm25_boundary(
         Some((bytes, index_files, elapsed_ns))
     });
     if let Some((logical_bytes, index_files, elapsed_ns)) = counts {
-        eprintln!(
-            "QI_CAUSAL_V1 kind=bm25_boundary label={label} ok=1 elapsed_ns={elapsed_ns} logical_bytes={logical_bytes} index_files={index_files}",
-        );
+        if let (Some(context), Some(span)) = (diagnostic, span) {
+            context.bm25_boundary_aggregate(
+                &span,
+                label,
+                1,
+                elapsed_ns,
+                logical_bytes,
+                index_files,
+            );
+            let _finished = span.finish(DiagnosticTerminalV1::Ok);
+        }
+        if legacy_enabled {
+            eprintln!(
+                "QI_CAUSAL_V1 kind=bm25_boundary label={} ok=1 elapsed_ns={elapsed_ns} logical_bytes={logical_bytes} index_files={index_files}",
+                label.as_str(),
+            );
+        }
     } else {
-        eprintln!("QI_CAUSAL_V1 kind=bm25_boundary label={label} ok=0 reason=counter_overflow");
+        if let Some(context) = diagnostic {
+            context.health(DiagnosticHealthCodeV1::CounterOverflow);
+        }
+        if legacy_enabled {
+            eprintln!(
+                "QI_CAUSAL_V1 kind=bm25_boundary label={} ok=0 reason=counter_overflow",
+                label.as_str(),
+            );
+        }
     }
 }
 
@@ -320,11 +336,18 @@ fn emit_bm25_boundary(
 ///
 /// This custody belongs to the seal door; the statistics
 /// builder receives a verified capability and has no index-store dependency.
-fn read_bm25_base(dir: &Path) -> Result<Option<BaseSnapshot>, CoreError> {
+fn read_bm25_base(
+    dir: &Path,
+    diagnostic: Option<&DiagnosticContextV1>,
+) -> Result<Option<BaseSnapshot>, CoreError> {
     if !crate::index_store::sealed_identity_entry_present(dir)? {
         return Ok(None);
     }
-    let started = crate::causal_profile::enabled().then(Instant::now);
+    let span = diagnostic.and_then(|context| {
+        crate::causal_profile::enter_span(context, DiagnosticStageV1::Bm25Boundary)
+    });
+    let legacy_enabled = crate::causal_profile::enabled();
+    let started = (legacy_enabled || span.is_some()).then(Instant::now);
     let root = super::open_generation_dir_nofollow(dir).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: open BM25 base {}: {error}",
@@ -344,10 +367,13 @@ fn read_bm25_base(dir: &Path) -> Result<Option<BaseSnapshot>, CoreError> {
     let statistics =
         LiveBm25Statistics::decode(&bytes, dir, manifest.index_meta.sha256, &reader.searcher())?;
     emit_bm25_boundary(
-        "base_read",
+        DiagnosticBm25BoundaryLabelV1::BaseRead,
         started,
         meta_len.checked_add(bytes.len()),
         manifest.index_segments.len(),
+        legacy_enabled,
+        diagnostic,
+        span,
     );
     Ok(Some(BaseSnapshot {
         statistics,
@@ -366,8 +392,15 @@ pub(crate) fn seal_generation(
     identity: &GenerationSnapshot,
     base_dir: Option<&Path>,
     prepared_coverage_root: &SealedArtifactCommitmentV1,
+    publication: &crate::lexical_publication::PublicationContext,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
+    diagnostic: Option<&DiagnosticContextV1>,
 ) -> Result<(LexicalSealCommitmentStats, u64), CoreError> {
-    crate::index_store::remove_publish_leftovers(generation_dir, "sealed_leftover_directory")?;
+    crate::index_store::remove_publish_leftovers(
+        generation_dir,
+        quanta_index_core::DiagnosticSyncLabelV1::SealedLeftoverDirectory,
+        sync,
+    )?;
     let mut measurer = Measurer {
         generation_dir: generation_dir.to_path_buf(),
         base: BaseCommitments::read(base_dir)?,
@@ -382,62 +415,137 @@ pub(crate) fn seal_generation(
     for name in referenced_index_files(&index, generation_dir)? {
         index_segments.push(measurer.commit(&name)?);
     }
-    let base_statistics = base_dir.map(read_bm25_base).transpose()?.flatten();
-    let live_statistics = LiveBm25Statistics::build(
+    let base_statistics = base_dir
+        .map(|dir| read_bm25_base(dir, diagnostic))
+        .transpose()?
+        .flatten();
+    let live_statistics = LiveBm25Statistics::build_observed(
         &index,
         fields,
         index_meta.sha256,
         generation_dir,
         base_statistics.as_ref(),
         &index_segments,
+        diagnostic,
     )?;
-    let encode_started = crate::causal_profile::enabled().then(Instant::now);
+    let encode_span = diagnostic.and_then(|context| {
+        crate::causal_profile::enter_span(context, DiagnosticStageV1::Bm25Boundary)
+    });
+    let legacy_enabled = crate::causal_profile::enabled();
+    let encode_started = (legacy_enabled || encode_span.is_some()).then(Instant::now);
     let live_bytes = live_statistics.encode()?;
     emit_bm25_boundary(
-        "encode",
+        DiagnosticBm25BoundaryLabelV1::Encode,
         encode_started,
         Some(live_bytes.len()),
         index_segments.len(),
+        legacy_enabled,
+        diagnostic,
+        encode_span,
     );
-    crate::index_store::write_atomic_durable(
+    crate::index_store::write_atomic_durable_observed(
         &generation_dir.join(live_bm25::FILE_NAME),
         &live_bytes,
         "live BM25 statistics",
+        sync,
     )?;
     let live_bm25 = measurer.hash(live_bm25::FILE_NAME)?;
-    let ranked_keys = commit_ranked_keys(&index, &mut measurer)?;
-    let text_authority_manifest = finalize_for_seal(generation_dir)?;
-    ensure_text_authority_covers_index(
-        &index,
-        generation_dir,
-        fields,
-        text_authority_manifest.as_ref(),
-    )?;
-    let text_authority = text_authority_manifest
-        .as_ref()
-        .map(|manifest| commit_text_authority(&mut measurer, manifest))
-        .transpose()?;
+    let ranked_keys = commit_ranked_keys(&index, &mut measurer, sync)?;
     let file_admission_started = Instant::now();
-    let coverage_for_files =
-        crate::sealed_generation::coverage::read_staged_coverage(generation_dir, identity)?
-            .ok_or_else(|| {
-                crate::index_store::sidecar_corrupt(
-                    generation_dir,
-                    file_authority::DIR,
-                    "staged source coverage is missing",
-                )
-            })?;
-    let (expected_files, files_read, bytes_read, replay_files_read, replay_bytes_read) =
-        file_authority::build_for_seal(generation_dir, base_dir, &coverage_for_files.coverage)?;
-    let file_admission_ns = crate::stage_timing::elapsed_stage_ns(file_admission_started)?;
-    measurer.stats.file_admission_files_read = files_read;
-    measurer.stats.file_admission_bytes_read = bytes_read;
-    measurer.stats.file_authority_replay_files_read = replay_files_read;
-    measurer.stats.file_authority_replay_bytes_read = replay_bytes_read;
-    let mut file_authority = Vec::with_capacity(expected_files.len());
-    for name in expected_files {
-        file_authority.push(measurer.commit(&name)?);
+    let native = crate::lexical_publication::read_native_root(generation_dir)?;
+    if publication.native_root.as_ref() != Some(&native) {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            crate::lexical_publication::NATIVE_ROOT_NAME,
+            "root differs from publication witness",
+        ));
     }
+    let native_mutation = publication
+        .native_mutation
+        .as_ref()
+        .ok_or_else(|| CoreError::InvalidContract("Native publication witness missing".into()))?;
+    crate::causal_profile::timed_work("seal_native_transition", || {
+        crate::text_authority::verify_transition_for_seal(
+            &publication.store,
+            &native,
+            publication.native_base.as_ref(),
+            &publication.reservation.native_text,
+            &native_mutation.sources,
+            &native_mutation.retired,
+            &native_mutation.added,
+            native_mutation.clear_all,
+            publication
+                .native_base
+                .as_ref()
+                .map_or(1, |root| root.next_segment_id),
+            None,
+        )
+    })?;
+    crate::causal_profile::timed_work("seal_native_changed_segments", || {
+        crate::text_authority::verify_changed_segments_for_seal(
+            &publication.store,
+            &native,
+            publication
+                .native_base
+                .as_ref()
+                .map_or(1, |root| root.next_segment_id),
+        )
+    })?;
+    crate::causal_profile::timed_work("seal_native_index_coverage", || {
+        ensure_text_authority_covers_index(&index, generation_dir, fields, &native)
+    })?;
+    let text_authority = Some(vec![
+        measurer.hash(crate::lexical_publication::NATIVE_ROOT_NAME)?,
+    ]);
+    let file_bytes = crate::lexical_publication::read_root_bytes(
+        generation_dir,
+        crate::lexical_publication::FILE_ROOT_NAME,
+    )?;
+    let file_root = file_authority::paged::AuthorityRoot::decode(&file_bytes)?;
+    let mutation = publication
+        .file_mutation
+        .as_ref()
+        .ok_or_else(|| CoreError::InvalidContract("File publication witness missing".into()))?;
+    if publication.file_root.as_ref() != Some(&file_root)
+        || mutation.operations_sha256 != publication.operations_sha256
+    {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            crate::lexical_publication::FILE_ROOT_NAME,
+            "root or mutation differs from publication witness",
+        ));
+    }
+    crate::causal_profile::timed_work("seal_file_transition_and_segments", || {
+        file_authority::paged::verify_for_seal(
+            &publication.store,
+            &file_root,
+            publication.file_base.as_ref(),
+            &publication.reservation.file,
+            mutation,
+        )
+    })?;
+    for edit in &mutation.edits {
+        if let file_authority::paged::FileSourceEdit::Upsert { bytes, .. } = edit {
+            measurer.stats.file_admission_sources_verified = measurer
+                .stats
+                .file_admission_sources_verified
+                .checked_add(1)
+                .ok_or_else(|| {
+                    CoreError::InvalidContract("verified source count overflow".into())
+                })?;
+            measurer.stats.file_admission_source_bytes_verified = measurer
+                .stats
+                .file_admission_source_bytes_verified
+                .checked_add(u64::try_from(bytes.len()).map_err(|error| {
+                    CoreError::InvalidContract(format!("verified source byte width: {error}"))
+                })?)
+                .ok_or_else(|| {
+                    CoreError::InvalidContract("verified source bytes overflow".into())
+                })?;
+        }
+    }
+    let file_admission_ns = crate::stage_timing::elapsed_stage_ns(file_admission_started)?;
+    let file_authority = vec![measurer.hash(crate::lexical_publication::FILE_ROOT_NAME)?];
     let mut overlays = Vec::new();
     for family in OverlayFamily::ALL {
         let path = family.path(generation_dir);
@@ -523,7 +631,7 @@ pub(crate) fn seal_generation(
         overlays,
         source_coverage,
     };
-    write_manifest(generation_dir, &manifest)?;
+    write_manifest(generation_dir, &manifest, sync)?;
     Ok((measurer.stats, file_admission_ns))
 }
 
@@ -535,6 +643,7 @@ pub(crate) fn seal_generation(
 fn commit_ranked_keys(
     index: &Index,
     measurer: &mut Measurer,
+    sync: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<Vec<SealedArtifactCommitmentV1>, CoreError> {
     let reader: IndexReader = index
         .reader_builder()
@@ -609,7 +718,7 @@ fn commit_ranked_keys(
         };
         if inherited.is_none() {
             let bytes = ranked_keys::encode(segment)?;
-            crate::index_store::write_atomic_durable(&path, &bytes, "ranked keys")?;
+            crate::index_store::write_atomic_durable_observed(&path, &bytes, "ranked keys", sync)?;
         }
         let commitment = measurer.commit(&name)?;
         total = total
@@ -623,37 +732,6 @@ fn commit_ranked_keys(
         commitments.push(commitment);
     }
     Ok(commitments)
-}
-
-/// The `text-authority/` tree as the seal commits it: the manifest file
-/// hashed, each listed shard measured (or inherited by inode) and held to
-/// the digest its manifest lists, ascending by name.
-///
-/// A shard whose bytes are not what the text-authority manifest says
-/// refuses the seal: the two manifests can never disagree about what a
-/// query will decode.
-fn commit_text_authority(
-    measurer: &mut Measurer,
-    manifest: &TextAuthorityManifest,
-) -> Result<Vec<SealedArtifactCommitmentV1>, CoreError> {
-    let mut files = Vec::with_capacity(manifest.shards.len().saturating_add(1));
-    files.push(measurer.hash(&format!(
-        "{TEXT_AUTHORITY_DIR_NAME}/{TEXT_AUTHORITY_MANIFEST_FILE_NAME}"
-    ))?);
-    for shard in &manifest.shards {
-        let name = format!("{TEXT_AUTHORITY_DIR_NAME}/{}", shard.file_name());
-        let committed = measurer.commit(&name)?;
-        if committed.bytes != shard.bytes || committed.sha256 != shard.sha256 {
-            return Err(crate::index_store::sidecar_corrupt(
-                &measurer.generation_dir,
-                &name,
-                "content digest differs from the digest the text-authority manifest lists",
-            ));
-        }
-        files.push(committed);
-    }
-    files.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(files)
 }
 
 /// How many live text documents the committed index holds.
@@ -677,7 +755,7 @@ fn live_text_doc_count(index: &Index, fields: &SchemaFields) -> Result<u64, Core
 /// The seal's coverage proof: the text authority lists exactly as many
 /// documents as the index holds live text documents.
 ///
-/// The two are published separately (Tantivy commit, then the shards), so
+/// The two are published separately (Tantivy commit, then the Native root), so
 /// a publish that crashed in between leaves the index ahead of the
 /// authority; sealing that would serve keyword hits a regex or phrase can
 /// never see. The count is one term query, never a scan.
@@ -685,15 +763,10 @@ fn ensure_text_authority_covers_index(
     index: &Index,
     generation_dir: &Path,
     fields: &SchemaFields,
-    manifest: Option<&TextAuthorityManifest>,
+    manifest: &crate::text_authority::NativeRoot,
 ) -> Result<(), CoreError> {
     let live = live_text_doc_count(index, fields)?;
-    let listed = manifest.map_or(0, |manifest| {
-        manifest
-            .shards
-            .iter()
-            .fold(0_u64, |total, shard| total.saturating_add(shard.rows))
-    });
+    let listed = manifest.live_docs;
     if live != listed {
         return Err(crate::index_store::sidecar_corrupt(
             generation_dir,

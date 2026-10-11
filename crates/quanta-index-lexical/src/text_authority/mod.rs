@@ -1,26 +1,30 @@
-//! The sharded text authority: manifest, shards, reader, writer.
-//!
-//! See [`manifest`] for the layout and its versioning, [`shard`] for the
-//! shard file, [`reader`] for the query-time union and [`writer`] for the
-//! O(delta) publish.
+//! Paged Native text authority with durable logical IDs and selected reads.
 
-mod manifest;
-mod reader;
+mod paged_bootstrap;
+mod paged_manifest;
+mod paged_posting_page;
+mod paged_reader;
+mod paged_segment;
+mod paged_transition;
+mod paged_verify;
+mod paged_wire;
+mod paged_writer;
 mod shard;
-mod writer;
+mod types;
 
-pub(crate) use manifest::{
-    MAX_DOC_ID, MAX_MANIFEST_BYTES, TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME,
-    TextAuthorityManifest, leading_format_version, read_manifest, shard_index_of,
-    text_authority_dir,
-};
 #[cfg(test)]
-pub(crate) use reader::load_shard;
-pub(crate) use reader::{
-    ProvedTextShard, ShardedTextAuthority, TextDocIdentity, document_identities, load_shard_file_at,
+mod paged_bootstrap_tests;
+
+pub(crate) use paged_manifest::NativeRoot;
+pub(crate) use paged_reader::NativeAuthority;
+pub(crate) use paged_transition::verify_transition_for_seal;
+pub(crate) use paged_verify::{
+    NativeScrubCursor, verify_all_for_scrub, verify_changed_segments_for_seal,
 };
-pub(crate) use shard::{ShardBody, sha256_of_bytes};
-pub(crate) use writer::{
-    AddedTextDoc, TextAuthorityWriteReceipt, TextAuthorityWriteResult, finalize_for_seal, rebuild,
-    update,
+pub(crate) use paged_wire::NativeSourceEdit;
+#[cfg(test)]
+pub(crate) use paged_writer::publish_delta;
+pub(crate) use paged_writer::{
+    PreparedNativeCompaction, prepare_compaction, publish_delta_prepared, source_ids,
 };
+pub(crate) use types::{AddedTextDoc, TEXT_AUTHORITY_DIR_NAME, TextAuthorityWriteReceipt};

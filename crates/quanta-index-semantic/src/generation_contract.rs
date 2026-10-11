@@ -18,8 +18,8 @@ use quanta_index_core::{CoreError, SemanticGenerationContractV1};
 
 use crate::codec::{self, cbor_serde, decode_current_format, format_unsupported};
 
-/// Version 3 rejects pre-cutover unfinished generations before any write.
-pub(crate) const GENERATION_CONTRACT_VERSION: u32 = 3;
+/// Version 4 persists the complete embedding model and policy identity.
+pub(crate) const GENERATION_CONTRACT_VERSION: u32 = 4;
 
 /// Return `Err($variant(format!(...)))` when two contract fields disagree.
 ///
@@ -47,6 +47,8 @@ pub(crate) struct GenerationContract {
     pub(crate) dimension: u32,
     pub(crate) distance_metric: String,
     pub(crate) normalization: String,
+    pub(crate) policy_digest: String,
+    pub(crate) view_policy_digest: Option<String>,
     pub(crate) required_corpora: Vec<String>,
     pub(crate) corpus_policy_digest: Option<String>,
 }
@@ -60,6 +62,8 @@ cbor_serde!(GenerationContract {
     dimension: u32,
     distance_metric: String,
     normalization: String,
+    policy_digest: String,
+    view_policy_digest: Option<String>,
     required_corpora: Vec<String>,
     corpus_policy_digest: Option<String>,
 });
@@ -79,6 +83,12 @@ impl GenerationContract {
             dimension: batch.model_contract.dimension,
             distance_metric: distance_metric_token(batch.model_contract.distance_metric).to_owned(),
             normalization: normalization_token(batch.model_contract.normalization).to_owned(),
+            policy_digest: batch.model_contract.policy_digest.to_string(),
+            view_policy_digest: batch
+                .model_contract
+                .view_policy_digest
+                .as_deref()
+                .map(str::to_owned),
             required_corpora: batch
                 .required_corpora
                 .iter()
@@ -172,6 +182,18 @@ impl GenerationContract {
             observed.normalization,
             "semantic: existing generation normalization `{}` does not match batch normalization `{}`"
         );
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.policy_digest,
+            observed.policy_digest,
+            "semantic: existing generation policy_digest `{}` does not match batch policy_digest `{}`"
+        );
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.view_policy_digest,
+            observed.view_policy_digest,
+            "semantic: existing generation view_policy_digest {:?} does not match batch view_policy_digest {:?}"
+        );
         let corpus_policy_digest = match (
             self.corpus_policy_digest.as_ref(),
             observed.corpus_policy_digest.as_ref(),
@@ -201,6 +223,8 @@ impl GenerationContract {
             dimension: self.dimension,
             distance_metric: self.distance_metric.clone(),
             normalization: self.normalization.clone(),
+            policy_digest: self.policy_digest.clone(),
+            view_policy_digest: self.view_policy_digest.clone(),
             required_corpora,
             corpus_policy_digest,
         })
@@ -272,6 +296,34 @@ mod tests {
         normalization: String,
     });
 
+    /// The pre-policy format had corpus identity but did not retain the
+    /// embedding and view policies needed to prove delta compatibility.
+    struct BuildContractFormat3 {
+        format_version: u32,
+        mode: BatchIngestMode,
+        base_generation: Option<quanta_index_contract::ManifestGeneration>,
+        model_id: String,
+        model_version: Option<String>,
+        dimension: u32,
+        distance_metric: String,
+        normalization: String,
+        required_corpora: Vec<String>,
+        corpus_policy_digest: Option<String>,
+    }
+
+    crate::codec::cbor_serde!(BuildContractFormat3 {
+        format_version: u32,
+        mode: BatchIngestMode,
+        base_generation: Option<quanta_index_contract::ManifestGeneration>,
+        model_id: String,
+        model_version: Option<String>,
+        dimension: u32,
+        distance_metric: String,
+        normalization: String,
+        required_corpora: Vec<String>,
+        corpus_policy_digest: Option<String>,
+    });
+
     #[test]
     fn a_format_1_contract_is_refused_typed_with_a_rebuild_instruction()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -313,6 +365,8 @@ mod tests {
             dimension: 3,
             distance_metric: "cosine".to_string(),
             normalization: "l2_unit".to_string(),
+            policy_digest: "policy:v1".to_string(),
+            view_policy_digest: None,
             required_corpora: vec!["RawCodeFallback".to_string()],
             corpus_policy_digest: Some("semantic-source.v1".to_string()),
         };
@@ -325,6 +379,66 @@ mod tests {
             }
             other => panic!("format-2 contract must be refused, got {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_format_3_contract_without_policy_fields_requires_rebuild()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let legacy = BuildContractFormat3 {
+            format_version: 3,
+            mode: BatchIngestMode::ReplaceGeneration,
+            base_generation: None,
+            model_id: "old-model".to_string(),
+            model_version: Some("rev-1".to_string()),
+            dimension: 3,
+            distance_metric: "cosine".to_string(),
+            normalization: "l2_unit".to_string(),
+            required_corpora: vec!["RawCodeFallback".to_string()],
+            corpus_policy_digest: Some("semantic-source.v1".to_string()),
+        };
+        let bytes = crate::codec::encode(&legacy, "format-3 generation contract fixture")?;
+        assert!(matches!(
+            GenerationContract::decode(&bytes),
+            Err(CoreError::Typed { code, message })
+                if code == FORMAT_UNSUPPORTED_CODE && message.contains("rebuild")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn current_format_missing_optional_value_key_is_corrupt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let current = GenerationContract {
+            format_version: GENERATION_CONTRACT_VERSION,
+            mode: BatchIngestMode::ReplaceGeneration,
+            base_generation: None,
+            model_id: "model".to_string(),
+            model_version: Some("rev-1".to_string()),
+            dimension: 3,
+            distance_metric: "cosine".to_string(),
+            normalization: "l2_unit".to_string(),
+            policy_digest: "policy:v1".to_string(),
+            view_policy_digest: None,
+            required_corpora: Vec::new(),
+            corpus_policy_digest: None,
+        };
+        let bytes = current.encode()?;
+        assert_eq!(GenerationContract::decode(&bytes)?, current);
+        let mut value: ciborium::value::Value =
+            crate::codec::decode(&bytes, "current generation contract fixture")?;
+        if let ciborium::value::Value::Map(fields) = &mut value {
+            let count = fields.len();
+            fields.retain(|(key, _)| {
+                key != &ciborium::value::Value::Text("view_policy_digest".to_string())
+            });
+            assert_eq!(fields.len() + 1, count);
+        }
+        let bytes = crate::codec::encode(&value, "missing-key generation contract fixture")?;
+        assert!(matches!(
+            GenerationContract::decode(&bytes),
+            Err(CoreError::Storage(_))
+        ));
         Ok(())
     }
 }

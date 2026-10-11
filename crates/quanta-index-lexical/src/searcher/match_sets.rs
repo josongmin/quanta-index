@@ -5,26 +5,20 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
-use crate::budgeted_search::BudgetProbe;
 use crate::phrase::{PhraseField, PhrasePolicy, plan_phrase};
-use crate::query_errors::{
-    fold_literal_prefix, map_phrase_plan_error, map_positions_error, map_trigram_error,
-};
+use crate::query_errors::{map_phrase_plan_error, map_positions_error, map_trigram_error};
 use crate::regex_match_cache::{RegexMatchCacheKey, RegexMatchCacheRefusal};
 use crate::searcher::authorities::TextAuthorityFeature;
 use crate::searcher::planner_errors::map_regex_plan_error;
-use crate::text_docs::authority_member_set;
 use crate::{GenKey, TantivySearcher, normalize};
 use quanta_index_contract::LqOptions;
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_core::{CoreError, RequestBudgetV1};
-use quanta_index_lq_positions::query_phrase;
 use quanta_index_lq_regex::RegexExecutor;
-use quanta_index_lq_trigram::{
-    DocId as TrigramDocId, LimitDimension, MAX_CANDIDATE_PRE_VERIFY, TrigramError,
-    TrigramErrorCode, query_raw_substring, regex_prefilter_any_of,
-};
-use roaring::RoaringBitmap;
+#[cfg(test)]
+use quanta_index_lq_trigram::{DocId as TrigramDocId, MAX_CANDIDATE_PRE_VERIFY};
+use quanta_index_lq_trigram::{LimitDimension, TrigramError};
+use roaring::RoaringTreemap;
 use std::sync::Arc;
 
 use crate::searcher::preview_types::{
@@ -35,16 +29,23 @@ use core::ops::Range;
 use quanta_index_contract::{LqExpr, LqLeaf, LqPatternType, PreviewUnavailableReason};
 use quanta_index_lq_regex::executor::RegexRangeError;
 use quanta_index_lq_text_normalizer::MappedText;
-use quanta_index_lq_trigram::{DocResolver, TrigramPostingSource};
-use std::cell::{Cell, RefCell};
+#[cfg(test)]
+use quanta_index_lq_trigram::TrigramPostingSource;
+use std::cell::Cell;
+#[cfg(test)]
+use std::cell::RefCell;
+#[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 /// Preserve the union's candidate cap per intersection, including regex alternatives.
+#[cfg(test)]
 struct CountingTrigramSource<'a, S> {
     source: &'a S,
     counts: &'a RefCell<BTreeMap<Vec<[u8; 3]>, usize>>,
     seen: RefCell<BTreeSet<Vec<[u8; 3]>>>,
 }
+#[cfg(test)]
 impl<S: TrigramPostingSource> TrigramPostingSource for CountingTrigramSource<'_, S> {
     fn intersect_trigrams(&self, grams: &[[u8; 3]]) -> Result<Vec<TrigramDocId>, TrigramError> {
         let part = self.source.intersect_trigrams(grams)?;
@@ -66,19 +67,12 @@ impl<S: TrigramPostingSource> TrigramPostingSource for CountingTrigramSource<'_,
     }
 }
 
-/// Only prefiltered NFC candidate texts survive a shard callback.
-struct RegexCandidateTexts(BTreeMap<TrigramDocId, String>);
-impl DocResolver for RegexCandidateTexts {
-    fn resolve(&self, doc_id: TrigramDocId) -> Option<&[u8]> {
-        self.0.get(&doc_id).map(String::as_bytes)
-    }
-}
-
 /// Verify-only regexes have the same pre-verify candidate cap as a usable
 /// trigram prefilter.
 ///
 /// Observe cancellation before advancing the authority
 /// iterator and refuse an oversized set before allocating its next slot.
+#[cfg(test)]
 fn bounded_verify_only_candidates(
     mut doc_ids: impl Iterator<Item = u64>,
     budget: &RequestBudgetV1,
@@ -116,30 +110,57 @@ impl TantivySearcher {
         needle: &str,
         options: &LqOptions,
         budget: &RequestBudgetV1,
-    ) -> Result<RoaringBitmap, CoreError> {
-        let authority = self.text_authority(TextAuthorityFeature::RawSubstring)?;
+        native: &super::authorities::NativeQueryScope,
+    ) -> Result<RoaringTreemap, CoreError> {
+        let authority = native.authority(TextAuthorityFeature::RawSubstring)?;
         let folded = !Self::is_case_sensitive(options);
         let needle = normalize::nfc(needle);
         let query_bytes = normalize::apply_case(needle.as_ref(), Self::case_mode(options))
             .into_owned()
             .into_bytes();
-        let counts = RefCell::new(BTreeMap::new());
-        let mut out = RoaringBitmap::new();
-        authority.visit_shards(budget, |shard| {
-            let index = shard.trigram_index(folded);
-            let source = CountingTrigramSource { source: &index, counts: &counts, seen: RefCell::new(BTreeSet::new()) };
-            let resolver = shard.resolver(folded);
-            let ids = query_raw_substring(&source, &query_bytes, &resolver)
-                .map_err(|err| match err.code {
-                    TrigramErrorCode::RegexPrefilterUnusable => CoreError::Typed {
-                        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRawSubstringTrigramIndexMissing,
-                        message: format!("lexical: raw substring requires verify-only fallback: {err}"),
-                    },
-                    TrigramErrorCode::InvalidGeneration | TrigramErrorCode::PlanLimitExceeded | TrigramErrorCode::IndexDeserialize | TrigramErrorCode::IndexCorrupted => map_trigram_error("raw substring prefilter", &err),
-                })?;
-            out |= authority_member_set(ids.iter().map(|id| id.0), "raw substring")?;
-            Ok(())
-        })?;
+        let mut out = RoaringTreemap::new();
+        if query_bytes.is_empty() {
+            return Ok(out);
+        }
+        if query_bytes.len() < 3 {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRawSubstringTrigramIndexMissing,
+                message: "lexical: raw substring shorter than three bytes requires a verify-only route".into(),
+            });
+        }
+        let mut grams: Vec<[u8; 3]> = quanta_index_lq_trigram::trigrams_of(&query_bytes).collect();
+        grams.sort_unstable();
+        grams.dedup();
+        if grams.len() > quanta_index_lq_trigram::MAX_TRIGRAMS_PER_QUERY {
+            return Err(map_trigram_error(
+                "raw substring prefilter",
+                &TrigramError::plan_limit(
+                    LimitDimension::Trigrams,
+                    format!(
+                        "needle yields {} distinct trigrams (cap {})",
+                        grams.len(),
+                        quanta_index_lq_trigram::MAX_TRIGRAMS_PER_QUERY,
+                    ),
+                ),
+            ));
+        }
+        for id in authority.intersect_grams(&grams, folded, budget)? {
+            budget.checkpoint("lexical:raw-substring-verify")?;
+            let document = authority.read_document(id, budget)?.ok_or_else(|| {
+                CoreError::Storage(format!(
+                    "lexical: raw substring candidate {id} has no current Native body"
+                ))
+            })?;
+            let bytes = if folded {
+                document.folded_text.as_bytes()
+            } else {
+                document.indexed_text.as_bytes()
+            };
+            if memchr::memmem::find(bytes, &query_bytes).is_some() {
+                let _inserted = out.insert(id);
+            }
+        }
+        budget.checkpoint("lexical:raw-substring-complete")?;
         Ok(out)
     }
 
@@ -153,10 +174,6 @@ impl TantivySearcher {
             return source.into_owned();
         }
         format!("(?i){source}")
-    }
-
-    pub(crate) fn regex_timeout_budget_ms(options: &LqOptions) -> Option<u64> {
-        options.timeout_ms
     }
 
     pub(crate) fn regex_match_cache_key(&self, normalized_source: &str) -> RegexMatchCacheKey {
@@ -182,7 +199,8 @@ impl TantivySearcher {
         source: &str,
         options: &LqOptions,
         budget: &RequestBudgetV1,
-    ) -> Result<Arc<RoaringBitmap>, CoreError> {
+        native: &super::authorities::NativeQueryScope,
+    ) -> Result<Arc<RoaringTreemap>, CoreError> {
         let normalized_source = Self::regex_source_for_options(source, options);
         let cache_key = options
             .timeout_ms
@@ -192,13 +210,12 @@ impl TantivySearcher {
             let mut cache = self.regex_match_cache.lock().map_err(|err| {
                 CoreError::Storage(format!("lexical regex cache poisoned: {err}"))
             })?;
-            // A hit shares the set; nothing is cloned per candidate.
             if let Some(cached) = cache.get(cache_key) {
                 budget.checkpoint("lexical:regex-cache-hit")?;
                 return Ok(cached);
             }
         }
-        let authority = self.text_authority(TextAuthorityFeature::RegexTrigram)?;
+        let authority = native.authority(TextAuthorityFeature::RegexTrigram)?;
         let (plan, prepared) =
             crate::regex::plan_regex_prepared(&normalized_source, options, &self.regex_policy)
                 .map_err(map_regex_plan_error)?;
@@ -207,120 +224,49 @@ impl TantivySearcher {
                 code: crate::query_errors::regex_wire_code(err.code),
                 message: format!("lexical: regex execution compile for {source:?}: {err}"),
             })?;
-        let folded = !Self::is_case_sensitive(options);
-        // The planner hands back an alternation, not a conjunction: a match
-        // needs one of these literals. Case-insensitive patterns make that
-        // concrete — `(?i)fresh` extracts `fresh` and `freſh` — so the prefilter
-        // unions per alternative. AND-ing them filtered every document away.
-        // Under `case:no` the folded trigram copy is searched, so every
-        // alternative is folded with the same per-char fold that built it;
-        // an alternative is a char-boundary prefix of some match, so its
-        // fold is a prefix of the match's fold and the prefilter stays sound.
-        let literal_alternation = if folded {
-            plan.literal_alternation()
-                .iter()
-                .map(|literal| fold_literal_prefix(literal))
-                .collect::<Vec<_>>()
-        } else {
-            plan.literal_alternation().to_vec()
-        };
-        let counts = RefCell::new(BTreeMap::new());
-        let mut candidates = RegexCandidateTexts(BTreeMap::new());
-        let mut fallback_count = 0_usize;
-        authority.visit_shards(budget, |shard| {
-            let index = shard.trigram_index(folded);
-            let source = CountingTrigramSource {
-                source: &index,
-                counts: &counts,
-                seen: RefCell::new(BTreeSet::new()),
-            };
-            let ids = match regex_prefilter_any_of(&source, &literal_alternation) {
-                Ok(ids) => ids,
-                Err(err) if err.code == TrigramErrorCode::RegexPrefilterUnusable => {
-                    let ids = bounded_verify_only_candidates(shard.doc_ids(), budget)?;
-                    fallback_count = fallback_count.saturating_add(ids.len());
-                    if fallback_count > MAX_CANDIDATE_PRE_VERIFY {
-                        return Err(map_trigram_error(
-                            "regex verify-only prefilter",
-                            &TrigramError::plan_limit(
-                                LimitDimension::CandidateSet,
-                                "verify-only candidate union exceeds cap",
-                            ),
-                        ));
-                    }
-                    ids
-                }
-                Err(err) => return Err(map_trigram_error("regex prefilter", &err)),
-            };
-            for id in ids {
-                budget.checkpoint("lexical:regex-candidate-text")?;
-                let doc = shard.doc(id.0).ok_or_else(|| {
-                    CoreError::Storage(format!("lexical: regex resolver missing doc {}", id.0))
-                })?;
-                if candidates.0.insert(id, doc.indexed_text.clone()).is_some() {
-                    return Err(CoreError::Storage(
-                        "lexical: duplicate text shard candidate".into(),
-                    ));
-                }
-            }
-            Ok(())
-        })?;
-        let prefiltered_doc_ids = candidates.0.keys().copied().collect::<Vec<_>>();
-        let resolver = candidates;
-        let budget_ms = Self::regex_timeout_budget_ms(options).unwrap_or(0);
-        if options.timeout_ms == Some(0) && !prefiltered_doc_ids.is_empty() {
-            return Err(CoreError::Typed {
-                code: LexicalErrorCode::QueryTimeout.into(),
-                message:
-                    "lexical: regex verify timed out before candidate verification began (budget 0ms)"
-                        .to_string(),
-            });
-        }
-        // The request budget is observed between candidates (W5 phase 2);
-        // the probe looks every interval so a large candidate set costs
-        // nothing extra per document.
-        let probe = BudgetProbe::new(budget);
-        let verified_doc_ids = executor
-            .execute_interruptible(&prefiltered_doc_ids, &resolver, budget_ms, &|| {
-                probe.tick()
-            })
-            .map_err(|err| match err.code {
-                quanta_index_lq_regex::RegexErrorCode::QueryTimeout => CoreError::Typed {
+        let candidates = authority.regex_candidates(plan.necessary_gram_expr(), budget)?;
+        let timeout = options.timeout_ms.map(Duration::from_millis);
+        let mut verification_elapsed = Duration::ZERO;
+        let mut out = RoaringTreemap::new();
+        for id in candidates {
+            budget.checkpoint("lexical:regex-verify")?;
+            if timeout.is_some_and(|limit| limit.is_zero() || verification_elapsed >= limit) {
+                return Err(CoreError::Typed {
                     code: LexicalErrorCode::QueryTimeout.into(),
-                    message: format!("lexical: regex verify timed out: {err}"),
-                },
-                quanta_index_lq_regex::RegexErrorCode::Interrupted => probe
-                    .interruption_error("lexical:regex-verify")
-                    .unwrap_or_else(|| {
-                        CoreError::Storage(format!(
-                            "lexical: regex verify reported an interruption the budget probe did not observe: {err}"
-                        ))
-                    }),
-                quanta_index_lq_regex::RegexErrorCode::ParseFail
-                | quanta_index_lq_regex::RegexErrorCode::ForbiddenSyntax
-                | quanta_index_lq_regex::RegexErrorCode::PlanLimitExceeded
-                | quanta_index_lq_regex::RegexErrorCode::RegexPrefilterUnusable
-                | quanta_index_lq_regex::RegexErrorCode::ExecutionInternal => CoreError::Typed {
-                    code: crate::query_errors::regex_wire_code(err.code),
-                    message: format!("lexical: regex verify failed: {err}"),
-                },
+                    message: "lexical: regex verify timed out before candidate verification".into(),
+                });
+            }
+            let document = authority.read_document(id, budget)?.ok_or_else(|| {
+                CoreError::Storage(format!(
+                    "lexical: regex candidate {id} has no current Native body"
+                ))
             })?;
-        // The interval probe can miss cancellation during its final few
-        // candidates. Observe the request before materializing or publishing
-        // the complete match set.
+            let started = Instant::now();
+            let matched = executor.verify(document.indexed_text.as_bytes());
+            verification_elapsed = verification_elapsed
+                .checked_add(started.elapsed())
+                .ok_or_else(|| {
+                    CoreError::Storage("lexical: regex verify duration overflow".into())
+                })?;
+            if timeout.is_some_and(|limit| verification_elapsed > limit) {
+                return Err(CoreError::Typed {
+                    code: LexicalErrorCode::QueryTimeout.into(),
+                    message: "lexical: regex cumulative verification timed out".into(),
+                });
+            }
+            budget.checkpoint("lexical:regex-candidate-verified")?;
+            if matched {
+                let _inserted = out.insert(id);
+            }
+        }
         budget.checkpoint("lexical:regex-verify-complete")?;
-        let out = Arc::new(authority_member_set(
-            verified_doc_ids.iter().map(|doc_id| doc_id.0),
-            "regex",
-        )?);
+        let out = Arc::new(out);
         let mut cache = self
             .regex_match_cache
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical regex cache poisoned: {err}")))?;
         cache.record_built(&out);
         if let Some(cache_key) = cache_key {
-            // A result too wide for one entry is served but not kept; the
-            // refusal is counted in the stats rather than logged.
             let _kept: Result<(), RegexMatchCacheRefusal> =
                 cache.insert(cache_key, Arc::clone(&out));
         }
@@ -338,8 +284,9 @@ impl TantivySearcher {
         text: &str,
         options: &LqOptions,
         budget: &RequestBudgetV1,
-    ) -> Result<RoaringBitmap, CoreError> {
-        let authority = self.text_authority(TextAuthorityFeature::PhrasePositions)?;
+        native: &super::authorities::NativeQueryScope,
+    ) -> Result<RoaringTreemap, CoreError> {
+        let authority = native.authority(TextAuthorityFeature::PhrasePositions)?;
         let plan = plan_phrase(
             text,
             options,
@@ -347,27 +294,85 @@ impl TantivySearcher {
             PhraseField::Content,
         )
         .map_err(map_phrase_plan_error)?;
+        if plan.tokens.len()
+            > usize::try_from(quanta_index_lq_positions::MAX_PHRASE_LEN)
+                .map_or(usize::MAX, |count| count)
+        {
+            return Err(map_positions_error(
+                "phrase query",
+                &quanta_index_lq_positions::PositionsError::plan_limit_exceeded(
+                    quanta_index_lq_positions::LimitDimension::PhraseLen,
+                    "phrase exceeds position-engine length cap",
+                ),
+            ));
+        }
         let terms = plan.tokens.iter().map(String::as_str).collect::<Vec<_>>();
-        let mut out = RoaringBitmap::new();
-        authority.visit_shards(budget, |shard| {
-            let index = shard.positions_index(plan.case_sensitive);
-            let matches = query_phrase(&index, &terms)
-                .map_err(|err| map_positions_error("phrase query", &err))?;
-            if let Some(unheld) = matches
-                .matches
-                .iter()
-                .find(|m| shard.doc(m.doc_id.0).is_none())
-            {
-                return Err(CoreError::Storage(format!(
-                    "lexical: phrase resolver missing doc {}",
-                    unheld.doc_id.0
-                )));
+        let mut unique_terms = terms.clone();
+        unique_terms.sort_unstable();
+        unique_terms.dedup();
+        let mut out = RoaringTreemap::new();
+        for id in authority.intersect_terms(&unique_terms, plan.case_sensitive, budget)? {
+            budget.checkpoint("lexical:phrase-verify")?;
+            let document = authority.read_document(id, budget)?.ok_or_else(|| {
+                CoreError::Storage(format!(
+                    "lexical: phrase candidate {id} has no current Native body"
+                ))
+            })?;
+            if phrase_contains(&document.indexed_text, &terms, plan.case_sensitive)? {
+                let _inserted = out.insert(id);
             }
-            out |= authority_member_set(matches.matches.iter().map(|m| m.doc_id.0), "phrase")?;
-            Ok(())
-        })?;
+        }
+        budget.checkpoint("lexical:phrase-complete")?;
         Ok(out)
     }
+}
+
+/// KMP over indexable tokens, resetting across skipped overlong tokens.
+fn phrase_contains(indexed: &str, terms: &[&str], case_sensitive: bool) -> Result<bool, CoreError> {
+    let invalid_state =
+        || CoreError::InvalidContract("phrase prefix state exceeds its pattern".into());
+    let term_at = |index| terms.get(index).copied().ok_or_else(invalid_state);
+    if terms.is_empty() {
+        return Ok(false);
+    }
+    let mut failure = vec![0_usize; terms.len()];
+    let mut matched = 0_usize;
+    for (index, expected) in terms.iter().enumerate().skip(1) {
+        while matched > 0 && *expected != term_at(matched)? {
+            matched = *failure
+                .get(matched.saturating_sub(1))
+                .ok_or_else(invalid_state)?;
+        }
+        if *expected == term_at(matched)? {
+            matched = matched.saturating_add(1);
+        }
+        *failure.get_mut(index).ok_or_else(invalid_state)? = matched;
+    }
+    let mut matched = 0_usize;
+    let mut previous_position = None;
+    for token in normalize::tokenize(
+        indexed,
+        normalize::CaseMode::from_case_sensitive(case_sensitive),
+    )
+    .indexable()
+    {
+        if previous_position.is_some_and(|prior: usize| token.position != prior.saturating_add(1)) {
+            matched = 0;
+        }
+        previous_position = Some(token.position);
+        while matched > 0 && token.text != term_at(matched)? {
+            matched = *failure
+                .get(matched.saturating_sub(1))
+                .ok_or_else(invalid_state)?;
+        }
+        if token.text == term_at(matched)? {
+            matched = matched.saturating_add(1);
+            if matched == terms.len() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 #[derive(Clone)]

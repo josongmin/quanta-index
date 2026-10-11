@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result as AnyResult;
+use anyhow::{Context as _, Result as AnyResult};
 use nix::sys::resource::{UsageWho, getrusage};
 #[cfg(unix)]
 use nix::sys::statvfs::statvfs;
@@ -49,7 +49,11 @@ use quanta_index_contract::{
     IngestObservationStatus, LexicalCandidate, ManifestGeneration, MetricsSnapshotV1,
     QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1};
+use quanta_index_core::{
+    DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticPhaseV1,
+    DiagnosticRootKindV1, DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    DiagnosticTraceErrorV1, LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1,
+};
 use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_search_plane::lower_lexical_text_query;
@@ -102,6 +106,25 @@ pub struct ScaleRuntimeConfig {
     pub client_timeout: Option<Duration>,
     pub history_max_bytes: Option<u64>,
     pub history_max_total_bytes: Option<u64>,
+    pub disk_observation: DiskObservationMode,
+}
+
+/// Disk census policy for a timed phase. Both modes retain boundary snapshots.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DiskObservationMode {
+    #[default]
+    BoundaryOnly,
+    Periodic,
+}
+
+impl DiskObservationMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BoundaryOnly => "boundary-only",
+            Self::Periodic => "periodic",
+        }
+    }
 }
 
 impl ScaleRuntimeConfig {
@@ -151,6 +174,7 @@ impl ScaleRuntimeConfig {
 
     pub fn execution_json(self) -> AnyResult<Value> {
         with_capacity_profile(json!({
+            "disk_observation_mode": self.disk_observation.as_str(),
             "client_request_timeout_ms": self.effective_timeout_ms()?,
             "requested_client_request_timeout_ms": self.client_timeout.map(|_| self.effective_timeout_ms()).transpose()?,
             "history_max_generations": 2,
@@ -972,6 +996,7 @@ pub struct DeleteReopenMeasurementV1 {
 #[derive(Clone, Debug)]
 pub struct TierMeasurement {
     pub tier: ScaleTier,
+    pub disk_observation: DiskObservationMode,
     pub seed: u64,
     pub file_count: usize,
     pub corpus_digest: String,
@@ -1353,6 +1378,7 @@ pub struct PhaseDiskSampleV1 {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhaseDiskV1 {
+    pub observation_mode: DiskObservationMode,
     pub start: DiskSnapshotV1,
     pub end: DiskSnapshotV1,
     /// Greatest observed allocated-block sample, not a continuous peak.
@@ -1473,6 +1499,7 @@ fn disk_point(root: &Path, stopped: Option<&AtomicBool>) -> DiskPoint {
 }
 
 fn summarize_phase_disk(
+    observation_mode: DiskObservationMode,
     started: Instant,
     ended: Instant,
     start: DiskPoint,
@@ -1509,6 +1536,7 @@ fn summarize_phase_disk(
         high = None;
     }
     PhaseDiskV1 {
+        observation_mode,
         start: start.snapshot,
         end: end.snapshot,
         sampled_max_allocated_bytes: high,
@@ -1536,8 +1564,10 @@ fn sampler_panic(kind: &str, panic: &(dyn std::any::Any + Send)) -> anyhow::Erro
 }
 
 struct PhaseSampler {
+    disk_observation: DiskObservationMode,
     started: Instant,
     cpu_started: CpuSnapshot,
+    process_write_io_enabled: bool,
     process_write_io_started: AnyResult<ProcessWriteIoV1>,
     rss_start: RssPoint,
     disk_root: Option<PathBuf>,
@@ -1548,8 +1578,44 @@ struct PhaseSampler {
     disk_worker: Option<thread::JoinHandle<(Vec<DiskPoint>, f64)>>,
 }
 
+// Sampling and measurement continue when trace spans fail, while the capture
+// records the typed fault for the final trace verdict.
+fn optional_diagnostic_span(
+    context: &DiagnosticContextV1,
+    result: Result<DiagnosticSpanGuardV1, DiagnosticTraceErrorV1>,
+) -> Option<DiagnosticSpanGuardV1> {
+    match result {
+        Ok(span) => Some(span),
+        Err(error) => {
+            let code = match error {
+                DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                    DiagnosticHealthCodeV1::CounterOverflow
+                }
+                DiagnosticTraceErrorV1::ClockRegressed => DiagnosticHealthCodeV1::ClockRegressed,
+                DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                    DiagnosticHealthCodeV1::ForeignCaptureSpan
+                }
+                DiagnosticTraceErrorV1::MissingParentSpan => {
+                    DiagnosticHealthCodeV1::MissingParentSpan
+                }
+            };
+            context.health(code);
+            None
+        }
+    }
+}
+
 impl PhaseSampler {
-    fn start(disk_root: Option<&Path>) -> AnyResult<Self> {
+    #[cfg(test)]
+    fn start(disk_root: Option<&Path>, disk_observation: DiskObservationMode) -> AnyResult<Self> {
+        Self::start_traced(disk_root, disk_observation, None)
+    }
+
+    fn start_traced(
+        disk_root: Option<&Path>,
+        disk_observation: DiskObservationMode,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> AnyResult<Self> {
         let setup_started = Instant::now();
         let disk_root = disk_root.map(Path::to_path_buf);
         // Boundary probes remain owned by setup/teardown even if the periodic
@@ -1563,6 +1629,7 @@ impl PhaseSampler {
         let cpu_started = CpuSnapshot::observe()?;
         let stopped = Arc::new(AtomicBool::new(false));
         let worker_stopped = Arc::clone(&stopped);
+        let rss_diagnostic = diagnostic.cloned();
         let worker = thread::Builder::new()
             .name("scale-rss-sampler".to_string())
             .spawn(move || {
@@ -1573,9 +1640,18 @@ impl PhaseSampler {
                     if worker_stopped.load(Ordering::Acquire) {
                         break;
                     }
+                    let sample = rss_diagnostic.as_ref().and_then(|context| {
+                        optional_diagnostic_span(
+                            context,
+                            context.enter(DiagnosticStageV1::ObserverSample, DiagnosticLaneV1(2)),
+                        )
+                    });
                     let probe_started = Instant::now();
                     let bytes = current_rss_bytes()?;
                     probe_wall_ms += probe_started.elapsed().as_secs_f64() * 1_000.0;
+                    if let Some(sample) = sample {
+                        let _finished = sample.finish(DiagnosticTerminalV1::Ok);
+                    }
                     samples.push(RssPoint {
                         at: Instant::now(),
                         bytes,
@@ -1583,8 +1659,11 @@ impl PhaseSampler {
                 }
                 Ok((samples, probe_wall_ms))
             })?;
-        let disk_worker = if let Some(root) = disk_root.clone() {
+        let disk_worker = if let (Some(root), DiskObservationMode::Periodic) =
+            (disk_root.clone(), disk_observation)
+        {
             let worker_stopped = Arc::clone(&stopped);
+            let disk_diagnostic = diagnostic.cloned();
             match thread::Builder::new()
                 .name("scale-disk-sampler".to_owned())
                 .spawn(move || {
@@ -1595,9 +1674,19 @@ impl PhaseSampler {
                         if worker_stopped.load(Ordering::Acquire) {
                             break;
                         }
+                        let sample = disk_diagnostic.as_ref().and_then(|context| {
+                            optional_diagnostic_span(
+                                context,
+                                context
+                                    .enter(DiagnosticStageV1::ObserverSample, DiagnosticLaneV1(3)),
+                            )
+                        });
                         let started = Instant::now();
                         points.push(disk_point(&root, Some(&worker_stopped)));
                         probe_wall_ms += started.elapsed().as_secs_f64() * 1_000.0;
+                        if let Some(sample) = sample {
+                            let _finished = sample.finish(DiagnosticTerminalV1::Ok);
+                        }
                     }
                     (points, probe_wall_ms)
                 }) {
@@ -1611,7 +1700,8 @@ impl PhaseSampler {
         } else {
             None
         };
-        let process_write_io_started = if causal_profile_enabled() {
+        let process_write_io_enabled = causal_profile_enabled() || diagnostic.is_some();
+        let process_write_io_started = if process_write_io_enabled {
             process_write_io_snapshot()
         } else {
             Err(anyhow::anyhow!("opt-in causal profile disabled"))
@@ -1619,8 +1709,10 @@ impl PhaseSampler {
         let started = Instant::now();
         let setup_ms = setup_started.elapsed().as_secs_f64() * 1_000.0;
         Ok(Self {
+            disk_observation,
             started,
             cpu_started,
+            process_write_io_enabled,
             process_write_io_started,
             rss_start,
             disk_root,
@@ -1634,7 +1726,7 @@ impl PhaseSampler {
 
     fn stop(mut self) -> AnyResult<PhaseResourceV1> {
         let ended = Instant::now();
-        let process_write_io_ended = if causal_profile_enabled() {
+        let process_write_io_ended = if self.process_write_io_enabled {
             process_write_io_snapshot()
         } else {
             Err(anyhow::anyhow!("opt-in causal profile disabled"))
@@ -1701,6 +1793,7 @@ impl PhaseSampler {
             (self.disk_root.as_deref(), disk_start, disk_end)
         {
             resources.disk = Some(summarize_phase_disk(
+                self.disk_observation,
                 self.started,
                 ended,
                 start,
@@ -1832,7 +1925,7 @@ fn summarize_phase_resources(
 
 #[cfg(test)]
 fn observe_phase<T>(work: impl FnOnce() -> AnyResult<T>) -> AnyResult<(T, PhaseResourceV1)> {
-    observe_phase_at_root("test", None, work)
+    observe_phase_at_root("test", None, DiskObservationMode::BoundaryOnly, work)
 }
 
 #[derive(Clone, Copy)]
@@ -1866,46 +1959,177 @@ fn write_causal_phase_marker(name: &str, marker: CausalPhaseMarker) -> AnyResult
     write_causal_phase_marker_to(&mut stderr.lock(), name, marker)
 }
 
+#[cfg(test)]
 fn observe_phase_at_root<T>(
     name: &'static str,
     root: Option<&Path>,
+    disk_observation: DiskObservationMode,
     work: impl FnOnce() -> AnyResult<T>,
 ) -> AnyResult<(T, PhaseResourceV1)> {
-    observe_phase_at_root_with_marker(root, work, causal_profile_enabled(), |marker| {
-        write_causal_phase_marker(name, marker)
-    })
-    .map_err(|error| error.context(format!("scale: phase {name}")))
+    observe_phase_at_root_traced(name, root, disk_observation, None, work)
 }
 
+fn observe_phase_at_root_traced<T>(
+    name: &'static str,
+    root: Option<&Path>,
+    disk_observation: DiskObservationMode,
+    diagnostic: Option<&DiagnosticContextV1>,
+    work: impl FnOnce() -> AnyResult<T>,
+) -> AnyResult<(T, PhaseResourceV1)> {
+    observe_phase_at_root_traced_with_context(name, root, disk_observation, diagnostic, |_| work())
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "causal diagnostics must preserve the primary failure before daemon cleanup"
+)]
+fn observe_phase_at_root_traced_with_context<T>(
+    name: &'static str,
+    root: Option<&Path>,
+    disk_observation: DiskObservationMode,
+    diagnostic: Option<&DiagnosticContextV1>,
+    work: impl FnOnce(Option<&DiagnosticContextV1>) -> AnyResult<T>,
+) -> AnyResult<(T, PhaseResourceV1)> {
+    let trace_root = diagnostic.and_then(|context| {
+        optional_diagnostic_span(
+            context,
+            if context.has_parent() {
+                context.enter(DiagnosticStageV1::Operation, DiagnosticLaneV1(1))
+            } else {
+                context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))
+            },
+        )
+    });
+    let root_context = trace_root
+        .as_ref()
+        .zip(diagnostic)
+        .map(|(root, context)| context.child_context(root));
+    let result = observe_phase_at_root_with_marker_and_trace(
+        root,
+        disk_observation,
+        work,
+        causal_profile_enabled(),
+        |marker| write_causal_phase_marker(name, marker),
+        root_context.as_ref(),
+        diagnostic_phase(name),
+    )
+    .map_err(|error| {
+        let error = error.context(format!("scale: phase {name}"));
+        if causal_profile_enabled() {
+            eprintln!("QI_SCALE_PHASE_FAILURE_V1 name={name} error={error:#}");
+        }
+        error
+    });
+    let outcome = DiagnosticTerminalV1::from_result(&result);
+    if let Some(root) = trace_root {
+        let _finished = root.finish(outcome);
+    }
+    result
+}
+
+fn diagnostic_phase(name: &str) -> Option<DiagnosticPhaseV1> {
+    match name {
+        "full_ingest_seal" => Some(DiagnosticPhaseV1::FullIngestSeal),
+        "full_ingest" => Some(DiagnosticPhaseV1::FullIngest),
+        "full_seal" => Some(DiagnosticPhaseV1::FullSeal),
+        "full_activate" => Some(DiagnosticPhaseV1::FullActivate),
+        "delta_ingest_seal" => Some(DiagnosticPhaseV1::DeltaIngestSeal),
+        "delta_activate" => Some(DiagnosticPhaseV1::DeltaActivate),
+        "noop_seal" => Some(DiagnosticPhaseV1::NoopSeal),
+        "noop_activate" => Some(DiagnosticPhaseV1::NoopActivate),
+        "delete_seal" => Some(DiagnosticPhaseV1::DeleteSeal),
+        "delete_activate" => Some(DiagnosticPhaseV1::DeleteActivate),
+        "same_process_reopen" => Some(DiagnosticPhaseV1::SameProcessReopen),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
 fn observe_phase_at_root_with_marker<T>(
     root: Option<&Path>,
+    disk_observation: DiskObservationMode,
     work: impl FnOnce() -> AnyResult<T>,
     causal_profile: bool,
-    mut emit_marker: impl FnMut(CausalPhaseMarker) -> AnyResult<()>,
+    emit_marker: impl FnMut(CausalPhaseMarker) -> AnyResult<()>,
 ) -> AnyResult<(T, PhaseResourceV1)> {
-    let sampler = PhaseSampler::start(root)
+    observe_phase_at_root_with_marker_and_trace(
+        root,
+        disk_observation,
+        |_| work(),
+        causal_profile,
+        emit_marker,
+        None,
+        None,
+    )
+}
+
+fn observe_phase_at_root_with_marker_and_trace<T>(
+    root: Option<&Path>,
+    disk_observation: DiskObservationMode,
+    work: impl FnOnce(Option<&DiagnosticContextV1>) -> AnyResult<T>,
+    causal_profile: bool,
+    mut emit_marker: impl FnMut(CausalPhaseMarker) -> AnyResult<()>,
+    diagnostic: Option<&DiagnosticContextV1>,
+    phase_identity: Option<DiagnosticPhaseV1>,
+) -> AnyResult<(T, PhaseResourceV1)> {
+    let setup = diagnostic.and_then(|context| {
+        optional_diagnostic_span(
+            context,
+            context.enter(DiagnosticStageV1::ObserverSetup, DiagnosticLaneV1(2)),
+        )
+    });
+    let sampler = PhaseSampler::start_traced(root, disk_observation, diagnostic)
         .map_err(|error| stage_or_preserve("resource_observation", error))?;
-    if causal_profile && let Err(primary) = emit_marker(CausalPhaseMarker::Start) {
-        let observation = sampler
-            .stop()
-            .map_err(|error| stage_or_preserve("resource_observation", error));
-        return combine_phase_result(Err(primary), observation);
+    if let Some(setup) = setup {
+        let _finished = setup.finish(DiagnosticTerminalV1::Ok);
     }
-    let measurement = work();
-    let marker = if causal_profile {
-        emit_marker(CausalPhaseMarker::End {
-            succeeded: measurement.is_ok(),
-        })
+    let phase = diagnostic.and_then(|context| {
+        optional_diagnostic_span(
+            context,
+            context.enter(DiagnosticStageV1::HarnessPhase, DiagnosticLaneV1(1)),
+        )
+    });
+    if let (Some(context), Some(phase), Some(identity)) =
+        (diagnostic, phase.as_ref(), phase_identity)
+    {
+        context.phase_identity(phase, identity);
+    }
+    let phase_context = phase
+        .as_ref()
+        .and_then(|phase| diagnostic.map(|context| context.child_context(phase)));
+    let (measurement, marker) = if causal_profile {
+        match emit_marker(CausalPhaseMarker::Start) {
+            Ok(()) => {
+                let measurement = work(phase_context.as_ref());
+                let marker = emit_marker(CausalPhaseMarker::End {
+                    succeeded: measurement.is_ok(),
+                });
+                (measurement, marker)
+            }
+            Err(error) => (Err(error), Ok(())),
+        }
     } else {
-        Ok(())
+        (work(phase_context.as_ref()), Ok(()))
     };
+    let result = combine_phase_marker_result(measurement, marker);
+    let phase_outcome = DiagnosticTerminalV1::from_result(&result);
+    if let Some(phase) = phase {
+        let _finished = phase.finish(phase_outcome);
+    }
+    let teardown = diagnostic.and_then(|context| {
+        optional_diagnostic_span(
+            context,
+            context.enter(DiagnosticStageV1::ObserverTeardown, DiagnosticLaneV1(2)),
+        )
+    });
     let observation = sampler
         .stop()
         .map_err(|error| stage_or_preserve("resource_observation", error));
-    combine_phase_result(
-        combine_phase_marker_result(measurement, marker),
-        observation,
-    )
+    if let Some(teardown) = teardown {
+        let outcome = DiagnosticTerminalV1::from_result(&observation);
+        let _finished = teardown.finish(outcome);
+    }
+    combine_phase_result(result, observation)
 }
 
 fn combine_phase_marker_result<T>(
@@ -1997,11 +2221,23 @@ impl CpuSnapshot {
 }
 
 fn scale_runtime(config: ScaleRuntimeConfig) -> AnyResult<E2eRuntime> {
+    scale_runtime_with_capture(config, None)
+}
+
+fn scale_runtime_with_capture(
+    config: ScaleRuntimeConfig,
+    capture: Option<quanta_index_searchd::DiagnosticCaptureLeaseV1>,
+) -> AnyResult<E2eRuntime> {
     let runtime = E2eRuntime::boot_with_client_request_timeout(
         config.client_timeout.unwrap_or(SCALE_CLIENT_IO_TIMEOUT),
     )?
     .with_query_admission_policy(scale_query_admission_policy()?)
     .with_history_max_generations(2);
+    let runtime = if let Some(capture) = capture {
+        runtime.with_diagnostic_capture(capture)?
+    } else {
+        runtime
+    };
     let policy = quanta_index_core::IngestResourcePolicy::new(
         SCALE_INGEST_MAX_RECORDS,
         SCALE_INGEST_TEXT_BYTES,
@@ -2311,6 +2547,32 @@ fn require_no_source_file(result: &crate::harness::E2eQueryResult) -> AnyResult<
     Ok(())
 }
 
+/// Probe two source-unique anchors through both `CodeSearch` content paths.
+/// This is a fixed four-query correctness check, outside measured windows.
+fn verify_code_search_file_anchors(rt: &mut E2eRuntime, repo0_present: bool) -> AnyResult<()> {
+    let path = "src/file_0.rs";
+    for (token, expected_repo) in [
+        (file_query_token(0, 0), repo0_present.then_some("repo0")),
+        (file_query_token(1, 0), Some("repo1")),
+    ] {
+        for query in [
+            format!("content:{token}"),
+            format!("content:regex:/{token}/"),
+        ] {
+            let response = rt.query_text(TextQuerySyntax::CodeSearch, &query, SCALE_TOP_K);
+            match expected_repo {
+                Some(source_repo_id) => {
+                    require_single_source_file(&response, source_repo_id, path)
+                        .with_context(|| format!("CodeSearch anchor {query:?}"))?;
+                }
+                None => require_no_source_file(&response)
+                    .with_context(|| format!("CodeSearch deleted anchor {query:?}"))?,
+            }
+        }
+    }
+    Ok(())
+}
+
 struct ScopedDeleteObservation {
     timing: DeleteReopenMeasurementV1,
     phase_resources: BTreeMap<&'static str, PhaseResourceV1>,
@@ -2323,8 +2585,10 @@ fn measure_scoped_delete_reopen(
     rt: &mut E2eRuntime,
     oracle: &ScopedOracle,
     file: &ScopedFile,
+    disk_observation: DiskObservationMode,
 ) -> AnyResult<ScopedDeleteObservation> {
     let disk_root = rt.state_root().to_path_buf();
+    let diagnostic = rt.diagnostic_context().cloned();
     if file.source_repo_id != "repo0" || file.repo_relative_path != "src/file_0.rs" {
         anyhow::bail!("scale: deletion fixture must be repo0/src/file_0.rs");
     }
@@ -2336,21 +2600,31 @@ fn measure_scoped_delete_reopen(
     require_single_source_file(&retained_before, "repo1", &file.repo_relative_path)?;
 
     let before_seal = seal_work_snapshot(&rt.metrics_snapshot()?)?;
-    let (ingest_observation, delete_resource) =
-        observe_phase_at_root("delete_seal", Some(&disk_root), || {
+    let (ingest_observation, delete_resource) = observe_phase_at_root_traced(
+        "delete_seal",
+        Some(&disk_root),
+        disk_observation,
+        diagnostic.as_ref(),
+        || {
             let delete_started = Instant::now();
             rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
                 .map_err(|error| ScaleStageError::operation("delete", &error))?;
             measure_observed_seal(rt, delete_started, "delete_seal")
-        })?;
+        },
+    )?;
     let delete_seal_ms = ingest_observation.wall_ms();
-    let (delete_activation_ms, activation_resource) =
-        observe_phase_at_root("delete_activate", Some(&disk_root), || {
+    let (delete_activation_ms, activation_resource) = observe_phase_at_root_traced(
+        "delete_activate",
+        Some(&disk_root),
+        disk_observation,
+        diagnostic.as_ref(),
+        || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
                 .map_err(|error| ScaleStageError::operation("delete_activate", &error))?;
             Ok(elapsed_ms(activation_started))
-        })?;
+        },
+    )?;
     let after_seal = rt.metrics_snapshot()?;
     let delete_retained = retained_index_bytes_from_snapshot(&after_seal)?;
     let delete_work = seal_work_window(&before_seal, &after_seal)?;
@@ -2363,16 +2637,22 @@ fn measure_scoped_delete_reopen(
     let global_after = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
     let _count = validate_scoped_response(&successor, None, &global_after)?;
     verify_scoped_repositories(rt, &successor)?;
+    verify_code_search_file_anchors(rt, false)?;
 
-    let (same_process_reopen_ms, reopen_resource) =
-        observe_phase_at_root("same_process_reopen", Some(&disk_root), || {
+    let (same_process_reopen_ms, reopen_resource) = observe_phase_at_root_traced_with_context(
+        "same_process_reopen",
+        Some(&disk_root),
+        disk_observation,
+        diagnostic.as_ref(),
+        |phase_context| {
             let reopen_started = Instant::now();
-            rt.try_reopen_in_place()
+            rt.try_reopen_in_place_with_context(phase_context)
                 .map_err(|error| ScaleStageError::operation("reopen_stop", &error))?;
-            rt.start()
+            rt.start_with_context(phase_context)
                 .map_err(|error| ScaleStageError::operation("reopen_start", &error))?;
             Ok(elapsed_ms(reopen_started))
-        })?;
+        },
+    )?;
     let first_query_started = Instant::now();
     let retained_reopened = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
     let reopened_first_query_ms = elapsed_ms(first_query_started);
@@ -2382,6 +2662,7 @@ fn measure_scoped_delete_reopen(
     let global_reopened = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
     let _count = validate_scoped_response(&successor, None, &global_reopened)?;
     verify_scoped_repositories(rt, &successor)?;
+    verify_code_search_file_anchors(rt, false)?;
     let mut phase_resources = BTreeMap::new();
     record_phase(&mut phase_resources, "delete_seal", delete_resource)?;
     record_phase(&mut phase_resources, "delete_activate", activation_resource)?;
@@ -2464,10 +2745,8 @@ const SEAL_WORK_COUNTERS: &[&str] = &[
     "lexical_seal_bytes_hashed_total",
     "lexical_seal_files_inherited_total",
     "lexical_seal_bytes_inherited_total",
-    "lexical_seal_file_admission_files_read_total",
-    "lexical_seal_file_admission_bytes_read_total",
-    "lexical_seal_file_authority_replay_files_read_total",
-    "lexical_seal_file_authority_replay_bytes_read_total",
+    "lexical_seal_file_admission_sources_verified_total",
+    "lexical_seal_file_admission_source_bytes_verified_total",
 ];
 
 fn seal_work_snapshot(snapshot: &MetricsSnapshotV1) -> AnyResult<BTreeMap<&'static str, u64>> {
@@ -2559,8 +2838,10 @@ fn retained_index_bytes_from_snapshot(snapshot: &MetricsSnapshotV1) -> AnyResult
 fn measure_delta(
     rt: &mut E2eRuntime,
     seed: u64,
+    disk_observation: DiskObservationMode,
 ) -> AnyResult<ObservedSealPhase<DeltaMeasurementV1>> {
     let disk_root = rt.state_root().to_path_buf();
+    let diagnostic = rt.diagnostic_context().cloned();
     let corpus = generate_corpus(ScaleTier::Small, seed);
     let Some((path, original)) = corpus.first() else {
         return Err(anyhow::anyhow!("scale: the corpus has no file to change"));
@@ -2569,21 +2850,31 @@ fn measure_delta(
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let serving_owner = rt.repo();
-    let (ingest_observation, update_resource) =
-        observe_phase_at_root("delta_ingest_seal", Some(&disk_root), || {
+    let (ingest_observation, update_resource) = observe_phase_at_root_traced(
+        "delta_ingest_seal",
+        Some(&disk_root),
+        disk_observation,
+        diagnostic.as_ref(),
+        || {
             let update_started = Instant::now();
             rt.ingest_text(serving_owner.as_str(), path, &changed)?;
             measure_observed_seal(rt, update_started, "delta_seal")
-        })?;
+        },
+    )?;
     let update_ms = ingest_observation.wall_ms();
     let after_build = directory_bytes(rt.state_root())?;
-    let (activation_with_reclaim_ms, activation_resource) =
-        observe_phase_at_root("delta_activate", Some(&disk_root), || {
+    let (activation_with_reclaim_ms, activation_resource) = observe_phase_at_root_traced(
+        "delta_activate",
+        Some(&disk_root),
+        disk_observation,
+        diagnostic.as_ref(),
+        || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
                 .map_err(|error| ScaleStageError::operation("delta_activate", &error))?;
             Ok(elapsed_ms(activation_started))
-        })?;
+        },
+    )?;
     let after_activation = directory_bytes(rt.state_root())?;
     let mut phase_resources = BTreeMap::new();
     record_phase(&mut phase_resources, "delta_ingest_seal", update_resource)?;
@@ -2601,20 +2892,32 @@ fn measure_delta(
     ))
 }
 
-fn measure_noop(rt: &mut E2eRuntime) -> AnyResult<ObservedSealPhase<NoOpMeasurementV1>> {
+fn measure_noop(
+    rt: &mut E2eRuntime,
+    disk_observation: DiskObservationMode,
+) -> AnyResult<ObservedSealPhase<NoOpMeasurementV1>> {
     let disk_root = rt.state_root().to_path_buf();
-    let (ingest_observation, seal_resource) =
-        observe_phase_at_root("noop_seal", Some(&disk_root), || {
-            measure_observed_seal(rt, Instant::now(), "noop_seal")
-        })?;
+    let diagnostic = rt.diagnostic_context().cloned();
+    let (ingest_observation, seal_resource) = observe_phase_at_root_traced(
+        "noop_seal",
+        Some(&disk_root),
+        disk_observation,
+        diagnostic.as_ref(),
+        || measure_observed_seal(rt, Instant::now(), "noop_seal"),
+    )?;
     let seal_ms = ingest_observation.wall_ms();
-    let (activation_ms, activation_resource) =
-        observe_phase_at_root("noop_activate", Some(&disk_root), || {
+    let (activation_ms, activation_resource) = observe_phase_at_root_traced(
+        "noop_activate",
+        Some(&disk_root),
+        disk_observation,
+        diagnostic.as_ref(),
+        || {
             let started = Instant::now();
             rt.activate_last_sealed_generation()
                 .map_err(|error| ScaleStageError::operation("noop_activate", &error))?;
             Ok(elapsed_ms(started))
-        })?;
+        },
+    )?;
     let mut phases = BTreeMap::new();
     record_phase(&mut phases, "noop_seal", seal_resource)?;
     record_phase(&mut phases, "noop_activate", activation_resource)?;
@@ -2669,6 +2972,14 @@ fn measure_small_tier_with_config(
     seed: u64,
     config: ScaleRuntimeConfig,
 ) -> AnyResult<TierMeasurement> {
+    measure_small_tier_with_config_and_capture(seed, config, None)
+}
+
+fn measure_small_tier_with_config_and_capture(
+    seed: u64,
+    config: ScaleRuntimeConfig,
+    capture: Option<quanta_index_searchd::DiagnosticCaptureLeaseV1>,
+) -> AnyResult<TierMeasurement> {
     let effective_timeout_ms = config.effective_timeout_ms()?;
     let effective_history_max_bytes = config.effective_history_max_bytes()?;
     let corpus = generate_corpus(ScaleTier::Small, seed);
@@ -2686,8 +2997,11 @@ fn measure_small_tier_with_config(
     // The search-corpus history contract requires at least two generations.
     let cpu_started =
         CpuSnapshot::observe().map_err(|error| stage_or_preserve("resource_observation", error))?;
-    let mut rt = scale_runtime(config).map_err(|error| stage_or_preserve("runtime_boot", error))?;
+    let mut rt = scale_runtime_with_capture(config, capture)
+        .map_err(|error| stage_or_preserve("runtime_boot", error))?;
     let disk_root = rt.state_root().to_path_buf();
+    let diagnostic = rt.diagnostic_context().cloned();
+    let disk_observation = config.disk_observation;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
 
@@ -2695,27 +3009,37 @@ fn measure_small_tier_with_config(
         let before_build = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?;
         let serving_owner = rt.repo();
-        let (full_ingest_observation, build_resource) =
-            observe_phase_at_root("full_ingest_seal", Some(&disk_root), || {
+        let (full_ingest_observation, build_resource) = observe_phase_at_root_traced(
+            "full_ingest_seal",
+            Some(&disk_root),
+            disk_observation,
+            diagnostic.as_ref(),
+            || {
                 let build_started = Instant::now();
                 for (path, content) in &corpus {
                     rt.ingest_text(serving_owner.as_str(), path, content)
                         .map_err(|error| stage_or_preserve("build_ingest", error))?;
                 }
                 measure_observed_seal(&mut rt, build_started, "build_seal")
-            })?;
+            },
+        )?;
         let build_ms = full_ingest_observation.wall_ms();
         let build_bytes_written = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
 
-        let (activation_ms, activation_resource) =
-            observe_phase_at_root("full_activate", Some(&disk_root), || {
+        let (activation_ms, activation_resource) = observe_phase_at_root_traced(
+            "full_activate",
+            Some(&disk_root),
+            disk_observation,
+            diagnostic.as_ref(),
+            || {
                 let activation_started = Instant::now();
                 rt.activate_last_sealed_generation()
                     .map_err(|error| ScaleStageError::operation("build_activate", &error))?;
                 Ok(elapsed_ms(activation_started))
-            })?;
+            },
+        )?;
 
         let scrape_before_first = rt
             .metrics_snapshot()
@@ -2764,7 +3088,8 @@ fn measure_small_tier_with_config(
             .map_err(|error| stage_or_preserve("adapter", error))?;
         let before_delta = seal_work_snapshot(&rt.metrics_snapshot()?)?;
         let (delta, delta_resources, delta_ingest_observation) =
-            measure_delta(&mut rt, seed).map_err(|error| stage_or_preserve("delta", error))?;
+            measure_delta(&mut rt, seed, config.disk_observation)
+                .map_err(|error| stage_or_preserve("delta", error))?;
         let after_delta_seal = rt.metrics_snapshot()?;
         let delta_retained = retained_index_bytes_from_snapshot(&after_delta_seal)
             .map_err(|error| stage_or_preserve("retention_delta", error))?;
@@ -2778,7 +3103,8 @@ fn measure_small_tier_with_config(
         .map_err(|error| stage_or_preserve("noop_verify", error))?;
         let before_noop_seal = seal_work_snapshot(&rt.metrics_snapshot()?)?;
         let (noop, noop_resources, noop_ingest_observation) =
-            measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
+            measure_noop(&mut rt, config.disk_observation)
+                .map_err(|error| stage_or_preserve("noop", error))?;
         let after_noop_seal = rt.metrics_snapshot()?;
         let noop_retained = retained_index_bytes_from_snapshot(&after_noop_seal)
             .map_err(|error| stage_or_preserve("retention_noop", error))?;
@@ -2797,6 +3123,7 @@ fn measure_small_tier_with_config(
 
         Ok(TierMeasurement {
             tier: ScaleTier::Small,
+            disk_observation,
             seed,
             file_count,
             corpus_digest,
@@ -2876,14 +3203,20 @@ fn measure_small_tier_with_config(
 fn measure_scoped_delta(
     rt: &mut E2eRuntime,
     file: &ScopedFile,
+    disk_observation: DiskObservationMode,
 ) -> AnyResult<ObservedSealPhase<DeltaMeasurementV1>> {
     let disk_root = rt.state_root().to_path_buf();
+    let diagnostic = rt.diagnostic_context().cloned();
     let changed = format!("{}// delta {SCALE_QUERY_TOKEN} touched\n", file.content);
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let serving_owner = rt.repo();
-    let (ingest_observation, update_resource) =
-        observe_phase_at_root("delta_ingest_seal", Some(&disk_root), || {
+    let (ingest_observation, update_resource) = observe_phase_at_root_traced(
+        "delta_ingest_seal",
+        Some(&disk_root),
+        disk_observation,
+        diagnostic.as_ref(),
+        || {
             let update_started = Instant::now();
             let _ids = rt.ingest_text_chunks(
                 serving_owner.as_str(),
@@ -2896,16 +3229,22 @@ fn measure_scoped_delta(
                 }],
             )?;
             measure_observed_seal(rt, update_started, "delta_seal")
-        })?;
+        },
+    )?;
     let update_ms = ingest_observation.wall_ms();
     let after_build = directory_bytes(rt.state_root())?;
-    let (activation_with_reclaim_ms, activation_resource) =
-        observe_phase_at_root("delta_activate", Some(&disk_root), || {
+    let (activation_with_reclaim_ms, activation_resource) = observe_phase_at_root_traced(
+        "delta_activate",
+        Some(&disk_root),
+        disk_observation,
+        diagnostic.as_ref(),
+        || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
                 .map_err(|error| ScaleStageError::operation("delta_activate", &error))?;
             Ok(elapsed_ms(activation_started))
-        })?;
+        },
+    )?;
     let after_activation = directory_bytes(rt.state_root())?;
     let mut phase_resources = BTreeMap::new();
     record_phase(&mut phase_resources, "delta_ingest_seal", update_resource)?;
@@ -2944,6 +3283,7 @@ pub fn measure_tier_with_client_timeout(
             client_timeout,
             history_max_bytes: None,
             history_max_total_bytes: None,
+            disk_observation: DiskObservationMode::BoundaryOnly,
         },
     )
 }
@@ -2953,10 +3293,20 @@ pub fn measure_tier_with_runtime_config(
     seed: u64,
     config: ScaleRuntimeConfig,
 ) -> AnyResult<TierMeasurement> {
+    measure_tier_with_runtime_config_and_capture(tier, seed, config, None)
+}
+
+/// Trace a scale run through the same recorder used by the daemon runtime.
+pub fn measure_tier_with_runtime_config_and_capture(
+    tier: ScaleTier,
+    seed: u64,
+    config: ScaleRuntimeConfig,
+    capture: Option<quanta_index_searchd::DiagnosticCaptureLeaseV1>,
+) -> AnyResult<TierMeasurement> {
     let effective_timeout_ms = config.effective_timeout_ms()?;
     let effective_history_max_bytes = config.effective_history_max_bytes()?;
     if tier == ScaleTier::Small {
-        return measure_small_tier_with_config(seed, config);
+        return measure_small_tier_with_config_and_capture(seed, config, capture);
     }
     let files = generate_scoped_corpus(tier, seed)
         .map_err(|error| stage_or_preserve("source_fixture", error))?;
@@ -2977,8 +3327,11 @@ pub fn measure_tier_with_runtime_config(
 
     let cpu_started =
         CpuSnapshot::observe().map_err(|error| stage_or_preserve("resource_observation", error))?;
-    let mut rt = scale_runtime(config).map_err(|error| stage_or_preserve("runtime_boot", error))?;
+    let mut rt = scale_runtime_with_capture(config, capture)
+        .map_err(|error| stage_or_preserve("runtime_boot", error))?;
     let disk_root = rt.state_root().to_path_buf();
+    let diagnostic = rt.diagnostic_context().cloned();
+    let disk_observation = config.disk_observation;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
         let before_full = seal_work_snapshot(&rt.metrics_snapshot()?)?;
@@ -3000,34 +3353,49 @@ pub fn measure_tier_with_runtime_config(
             .zip(&chunks)
             .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
             .collect::<Vec<_>>();
-        let (ingest_ms, ingest_resource) =
-            observe_phase_at_root("full_ingest", Some(&disk_root), || {
+        let (ingest_ms, ingest_resource) = observe_phase_at_root_traced(
+            "full_ingest",
+            Some(&disk_root),
+            disk_observation,
+            diagnostic.as_ref(),
+            || {
                 let ingest_started = Instant::now();
                 let _ids = rt
                     .ingest_text_files_one_batch(&batch_files)
                     .map_err(|error| stage_or_preserve("build_ingest", error))?;
                 Ok(elapsed_ms(ingest_started))
-            })?;
+            },
+        )?;
         let (ingest_decoded_bytes, ingest_wire_bytes) = rt
             .preview_pending_search_corpus_wire_bytes()
             .map_err(|error| ScaleStageError::wire_admission(&error))?;
-        let (full_ingest_observation, seal_resource) =
-            observe_phase_at_root("full_seal", Some(&disk_root), || {
+        let (full_ingest_observation, seal_resource) = observe_phase_at_root_traced(
+            "full_seal",
+            Some(&disk_root),
+            disk_observation,
+            diagnostic.as_ref(),
+            || {
                 let seal_started = Instant::now();
                 measure_observed_seal(&mut rt, seal_started, "build_seal")
-            })?;
+            },
+        )?;
         let seal_ms = full_ingest_observation.wall_ms();
         let build_ms = ingest_ms + seal_ms;
         let build_bytes_written = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
-        let (activation_ms, activation_resource) =
-            observe_phase_at_root("full_activate", Some(&disk_root), || {
+        let (activation_ms, activation_resource) = observe_phase_at_root_traced(
+            "full_activate",
+            Some(&disk_root),
+            disk_observation,
+            diagnostic.as_ref(),
+            || {
                 let activation_started = Instant::now();
                 rt.activate_last_sealed_generation()
                     .map_err(|error| ScaleStageError::operation("build_activate", &error))?;
                 Ok(elapsed_ms(activation_started))
-            })?;
+            },
+        )?;
 
         let scrape_before_first = rt
             .metrics_snapshot()
@@ -3079,12 +3447,14 @@ pub fn measure_tier_with_runtime_config(
 
         let (adapter, open_resident_estimate) = measure_adapter_phases(&rt, Some(&oracle))
             .map_err(|error| stage_or_preserve("adapter", error))?;
+        verify_code_search_file_anchors(&mut rt, true)
+            .map_err(|error| stage_or_preserve("code_search_full_probe", error))?;
         let delta_file = files
             .first()
             .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
         let before_delta = seal_work_snapshot(&rt.metrics_snapshot()?)?;
         let (delta, delta_resources, delta_ingest_observation) =
-            measure_scoped_delta(&mut rt, delta_file)
+            measure_scoped_delta(&mut rt, delta_file, config.disk_observation)
                 .map_err(|error| stage_or_preserve("delta", error))?;
         let after_delta_seal = rt.metrics_snapshot()?;
         let delta_retained = retained_index_bytes_from_snapshot(&after_delta_seal)
@@ -3095,9 +3465,12 @@ pub fn measure_tier_with_runtime_config(
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
+        verify_code_search_file_anchors(&mut rt, true)
+            .map_err(|error| stage_or_preserve("code_search_delta_probe", error))?;
         let before_noop_seal = seal_work_snapshot(&rt.metrics_snapshot()?)?;
         let (noop, noop_resources, noop_ingest_observation) =
-            measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
+            measure_noop(&mut rt, config.disk_observation)
+                .map_err(|error| stage_or_preserve("noop", error))?;
         let after_noop_seal = rt.metrics_snapshot()?;
         let noop_retained = retained_index_bytes_from_snapshot(&after_noop_seal)
             .map_err(|error| stage_or_preserve("retention_noop", error))?;
@@ -3109,8 +3482,11 @@ pub fn measure_tier_with_runtime_config(
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
-        let delete = measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
-            .map_err(|error| stage_or_preserve("delete_reopen", error))?;
+        verify_code_search_file_anchors(&mut rt, true)
+            .map_err(|error| stage_or_preserve("code_search_noop_probe", error))?;
+        let delete =
+            measure_scoped_delete_reopen(&mut rt, &oracle, delta_file, config.disk_observation)
+                .map_err(|error| stage_or_preserve("delete_reopen", error))?;
         let mut phase_resources = delta_resources;
         for (name, observation) in noop_resources {
             record_phase(&mut phase_resources, name, observation)?;
@@ -3123,6 +3499,7 @@ pub fn measure_tier_with_runtime_config(
         record_phase(&mut phase_resources, "full_activate", activation_resource)?;
         Ok(TierMeasurement {
             tier,
+            disk_observation,
             seed,
             file_count,
             corpus_digest,
@@ -3478,7 +3855,7 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
                 "sampled_max_is_true_peak": false,
                 "rss_method": if cfg!(target_os = "linux") { "proc_self_status_vmrss" } else { "mach_task_basic_info_resident_size" },
                 "sample_interval_ms": PHASE_RSS_INTERVAL.as_millis(),
-                "disk_sample_interval_ms": PHASE_DISK_INTERVAL.as_millis(),
+                "disk_sample_interval_ms": (measurement.disk_observation == DiskObservationMode::Periodic).then_some(PHASE_DISK_INTERVAL.as_millis()),
                 "maximum_allowed_gap_ms": PHASE_RSS_MAX_GAP.as_millis(),
                 "interior_required_after_ms": PHASE_RSS_INTERIOR_REQUIRED_AFTER.as_millis(),
                 "observed_max_gap_ms": observation.observed_max_gap_ms,
@@ -3494,12 +3871,17 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
                 "observer_teardown_ms": observation.observer_teardown_ms,
                 "observer_periodic_probe_wall_ms": observation.observer_periodic_probe_wall_ms,
                 "disk": observation.disk.as_ref().map(|disk| json!({
+                    "observation_mode": disk.observation_mode.as_str(),
                     "method": disk.method,
-                    "scope": "same state root; unique inode allocated blocks and filesystem statvfs; not physical write I/O; periodic samples can miss peaks and external filesystem users affect free/available bytes",
+                    "scope": "same state root; unique inode allocated blocks and filesystem statvfs; not physical write I/O; optional periodic samples can miss peaks and external filesystem users affect free/available bytes",
                     "start": disk_snapshot_json(&disk.start),
                     "end": disk_snapshot_json(&disk.end),
                     "sampled_max_allocated_root_bytes": disk.sampled_max_allocated_bytes,
-                    "sampled_high_water_status": if disk.sampled_max_allocated_bytes.is_some() { "observed" } else { "unavailable_no_interior_allocation_sample" },
+                    "sampled_high_water_status": match disk.observation_mode {
+                        DiskObservationMode::BoundaryOnly => "unavailable_periodic_sampling_disabled",
+                        DiskObservationMode::Periodic if disk.sampled_max_allocated_bytes.is_some() => "observed",
+                        DiskObservationMode::Periodic => "unavailable_no_interior_allocation_sample",
+                    },
                     "sampled_max_is_true_peak": false,
                     "observed_max_gap_ms": disk.observed_max_gap_ms,
                     "periodic_probe_wall_ms": disk.periodic_probe_wall_ms,
@@ -3512,9 +3894,26 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
             }))
         })
         .collect::<BTreeMap<_, _>>();
+    let source_admission = measurement.source_admission.map(|admission| {
+        json!({
+            "source_bytes_including_newline_framing": admission.source_bytes,
+            "distinct_path_content_trigram_memberships": admission.posting_memberships,
+            "posting_membership_limit": scale_posting_membership_limit(),
+        })
+    });
+    let delete_reopen = measurement.delete_reopen.map(|timing| {
+        json!({
+            "delete_seal_ms": timing.delete_seal,
+            "delete_activation_ms": timing.delete_activation,
+            "same_process_reopen_ms": timing.same_process_reopen,
+            "reopened_first_query_ms": timing.reopened_first_query,
+            "scope": "same OS process and state root; daemon thread restarted; page cache not cleared",
+        })
+    });
     with_capacity_profile(json!({
         "tier": measurement.tier.as_str(),
         "seed": measurement.seed,
+        "disk_observation_mode": measurement.disk_observation.as_str(),
         "client_request_timeout_ms": measurement.client_request_timeout_ms,
         "requested_client_request_timeout_ms": measurement.requested_client_request_timeout_ms,
         "history_max_generations": 2,
@@ -3555,16 +3954,12 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
             "by_seal": ingest_observations,
         },
         "phase_resources": phase_resources,
-        "phase_resources_method": "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, disk sampler and observer probes; RSS and allocated-root maxima are sampled, not true peaks; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
+        "phase_resources_method": "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, optional disk sampler and observer probes; RSS maximum is sampled, disk high-water is available only with periodic disk samples, neither is a true peak; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
         "file_count": measurement.file_count,
         "serving_owner_count": 1,
         "source_repo_count": measurement.source_repo_count,
         "corpus_bytes": measurement.corpus_bytes,
-        "source_admission": measurement.source_admission.map(|admission| json!({
-            "source_bytes_including_newline_framing": admission.source_bytes,
-            "distinct_path_content_trigram_memberships": admission.posting_memberships,
-            "posting_membership_limit": scale_posting_membership_limit(),
-        })),
+        "source_admission": source_admission,
         "ingest_envelope_bytes": {
             "decoded": measurement.ingest_decoded_bytes,
             "wire": measurement.ingest_wire_bytes,
@@ -3607,13 +4002,7 @@ fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
             "activation_ms": measurement.noop.activation_ms,
             "scope": "new source publication event and generation with no source replacement or tombstone; result parity checked after activation",
         },
-        "delete_reopen": measurement.delete_reopen.map(|timing| json!({
-            "delete_seal_ms": timing.delete_seal,
-            "delete_activation_ms": timing.delete_activation,
-            "same_process_reopen_ms": timing.same_process_reopen,
-            "reopened_first_query_ms": timing.reopened_first_query,
-            "scope": "same OS process and state root; daemon thread restarted; page cache not cleared",
-        })),
+        "delete_reopen": delete_reopen,
         "result_count": measurement.result_count,
     }))
 }
@@ -3682,6 +4071,7 @@ pub fn artifact(
             .map(Duration::from_millis),
         history_max_bytes: measurement.requested_history_max_bytes,
         history_max_total_bytes: measurement.requested_history_max_total_bytes,
+        disk_observation: measurement.disk_observation,
     };
     if history.history_policy_id()? != measurement.history_policy_id
         || history.effective_history_max_bytes()? != measurement.history_max_bytes
@@ -3809,6 +4199,51 @@ pub fn artifact(
         anyhow::bail!("scale: measured tier is missing a required phase resource observation");
     }
     for (phase, observation) in &measurement.phase_resources {
+        let disk = observation.disk.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("scale: phase {phase} has no disk boundary observation")
+        })?;
+        if disk.observation_mode != measurement.disk_observation
+            || !disk.observed_max_gap_ms.is_finite()
+            || disk.observed_max_gap_ms < 0.0
+            || !disk.periodic_probe_wall_ms.is_finite()
+            || disk.periodic_probe_wall_ms < 0.0
+            || (disk.observation_mode == DiskObservationMode::BoundaryOnly
+                && (!disk.sampled.is_empty()
+                    || disk.sampled_max_allocated_bytes.is_some()
+                    || disk.periodic_probe_wall_ms != 0.0))
+        {
+            anyhow::bail!("scale: phase {phase} has inconsistent disk observation mode");
+        }
+        let mut disk_previous_offset_ms = 0.0_f64;
+        let mut derived_disk_max_gap_ms = 0.0_f64;
+        let mut disk_high = None::<u64>;
+        for sample in &disk.sampled {
+            if !sample.offset_ms.is_finite()
+                || sample.offset_ms <= disk_previous_offset_ms
+                || sample.offset_ms >= observation.observation_span_ms
+            {
+                anyhow::bail!("scale: phase {phase} has invalid disk sample offset");
+            }
+            derived_disk_max_gap_ms =
+                derived_disk_max_gap_ms.max(sample.offset_ms - disk_previous_offset_ms);
+            disk_previous_offset_ms = sample.offset_ms;
+            if let Some(bytes) = sample.snapshot.allocated_bytes {
+                disk_high = Some(disk_high.map_or(bytes, |prior| prior.max(bytes)));
+            }
+        }
+        derived_disk_max_gap_ms =
+            derived_disk_max_gap_ms.max(observation.observation_span_ms - disk_previous_offset_ms);
+        if (disk.observed_max_gap_ms - derived_disk_max_gap_ms).abs() > 0.000_001 {
+            anyhow::bail!("scale: phase {phase} has invalid disk sample gap");
+        }
+        let derived_disk_high = disk_high.map(|interior| {
+            interior
+                .max(disk.start.allocated_bytes.unwrap_or(0))
+                .max(disk.end.allocated_bytes.unwrap_or(0))
+        });
+        if disk.sampled_max_allocated_bytes != derived_disk_high {
+            anyhow::bail!("scale: phase {phase} has invalid disk sampled maximum");
+        }
         if observation.process_write_io.is_some()
             == observation.process_write_io_unavailable_reason.is_some()
             || observation
@@ -3907,7 +4342,15 @@ pub fn artifact(
                     ),
                     (
                         "phase_disk_interval_ms",
-                        PHASE_DISK_INTERVAL.as_millis().to_string(),
+                        if measurement.disk_observation == DiskObservationMode::Periodic {
+                            PHASE_DISK_INTERVAL.as_millis().to_string()
+                        } else {
+                            "disabled".to_owned()
+                        },
+                    ),
+                    (
+                        "disk_observation_mode",
+                        measurement.disk_observation.as_str().to_owned(),
                     ),
                     (
                         "phase_rss_max_gap_ms",
@@ -4135,13 +4578,24 @@ mod tests {
         ensure_equal!(default["process_memory_ceiling_bytes"], 4_294_967_296_u64);
         ensure_predicate!(default["requested_history_max_total_bytes"].is_null());
         ensure_equal!(default["history_max_revision_pairs"], 128);
+        ensure_equal!(default["disk_observation_mode"], "boundary-only");
 
         let explicit = ScaleRuntimeConfig {
             client_timeout: Some(Duration::from_secs(300)),
             history_max_bytes: Some(268_435_456),
             history_max_total_bytes: None,
+            disk_observation: DiskObservationMode::BoundaryOnly,
         };
         let execution = explicit.execution_json()?;
+        ensure_equal!(execution["disk_observation_mode"], "boundary-only");
+        let periodic = ScaleRuntimeConfig {
+            disk_observation: DiskObservationMode::Periodic,
+            ..explicit
+        };
+        ensure_equal!(
+            periodic.execution_json()?["disk_observation_mode"],
+            "periodic"
+        );
         ensure_equal!(execution["client_request_timeout_ms"], 300_000);
         ensure_equal!(execution["query_dispatch_budget_ms"], 600_000);
         ensure_equal!(execution["requested_client_request_timeout_ms"], 300_000);
@@ -4202,6 +4656,7 @@ mod tests {
             client_timeout: None,
             history_max_bytes: Some(1),
             history_max_total_bytes: None,
+            disk_observation: DiskObservationMode::BoundaryOnly,
         })?;
         let owner = runtime.repo();
         runtime.ingest_text(owner.as_str(), "source.rs", "fn budget_fixture() {}\n")?;
@@ -4595,6 +5050,7 @@ mod tests {
             unavailable_reason: None,
         };
         let phase = summarize_phase_disk(
+            DiskObservationMode::Periodic,
             base + Duration::from_millis(10),
             base + Duration::from_millis(300),
             DiskPoint {
@@ -4627,6 +5083,7 @@ mod tests {
         ensure_equal!(phase.sampled[1].snapshot.allocated_bytes, None);
         ensure_predicate!(phase.sampled[1].snapshot.unavailable_reason.is_some());
         let no_interior = summarize_phase_disk(
+            DiskObservationMode::Periodic,
             base + Duration::from_millis(10),
             base + Duration::from_millis(300),
             DiskPoint {
@@ -4641,6 +5098,44 @@ mod tests {
             0.0,
         );
         ensure_equal!(no_interior.sampled_max_allocated_bytes, None);
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_disk_observation_keeps_census_without_starting_a_disk_worker() -> AnyResult<()> {
+        let root = tempfile::tempdir()?;
+        let sampler = PhaseSampler::start(Some(root.path()), DiskObservationMode::BoundaryOnly)?;
+        ensure_predicate!(sampler.worker.is_some(), "RSS worker must remain active");
+        ensure_predicate!(
+            sampler.disk_worker.is_none(),
+            "boundary mode started a disk worker"
+        );
+        fs::write(root.path().join("new-source.bin"), vec![11_u8; 64 * 1024])?;
+        let disk = sampler
+            .stop()?
+            .disk
+            .ok_or_else(|| anyhow::anyhow!("disk boundary census missing"))?;
+        ensure_equal!(disk.observation_mode, DiskObservationMode::BoundaryOnly);
+        ensure_predicate!(disk.start.allocated_bytes.is_some());
+        ensure_predicate!(disk.end.allocated_bytes.is_some());
+        ensure_predicate!(disk.end.allocated_bytes >= disk.start.allocated_bytes);
+        ensure_predicate!(disk.sampled.is_empty());
+        ensure_equal!(disk.sampled_max_allocated_bytes, None);
+        ensure_equal!(disk.periodic_probe_wall_ms.to_bits(), 0.0_f64.to_bits());
+
+        let periodic = PhaseSampler::start(Some(root.path()), DiskObservationMode::Periodic)?;
+        ensure_predicate!(
+            periodic.disk_worker.is_some(),
+            "periodic mode omitted disk worker"
+        );
+        ensure_equal!(
+            periodic
+                .stop()?
+                .disk
+                .as_ref()
+                .map(|disk| disk.observation_mode),
+            Some(DiskObservationMode::Periodic)
+        );
         Ok(())
     }
 
@@ -4884,15 +5379,20 @@ mod tests {
 
     #[test]
     fn phase_context_preserves_the_typed_operation_failure() -> AnyResult<()> {
-        let failure = observe_phase_at_root("delta_preflight", None, || {
-            Err::<(), _>(
-                ScaleStageError::operation(
-                    "source_preflight",
-                    &anyhow::anyhow!("fixed source fault"),
+        let failure = observe_phase_at_root(
+            "delta_preflight",
+            None,
+            DiskObservationMode::BoundaryOnly,
+            || {
+                Err::<(), _>(
+                    ScaleStageError::operation(
+                        "source_preflight",
+                        &anyhow::anyhow!("fixed source fault"),
+                    )
+                    .into(),
                 )
-                .into(),
-            )
-        })
+            },
+        )
         .err()
         .ok_or_else(|| anyhow::anyhow!("fixed source fault passed"))?;
         ensure_equal!(failure.to_string(), "scale: phase delta_preflight");
@@ -4901,6 +5401,256 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("phase context hid the typed failure"))?;
         ensure_equal!(typed.stage, "source_preflight");
         ensure_equal!(typed.message, "fixed source fault");
+        Ok(())
+    }
+
+    #[test]
+    fn phase_under_capture_invocation_keeps_explicit_parent() -> AnyResult<()> {
+        let output = tempfile::tempdir()?;
+        let trace_path = output.path().join("phase-parent.jsonl");
+        let mut capture = quanta_index_searchd::DiagnosticCaptureV1::start(
+            trace_path.clone(),
+            quanta_index_searchd::DiagnosticCaptureLimitsV1::default(),
+        )?;
+        let lease = capture
+            .lease()
+            .ok_or_else(|| anyhow::anyhow!("capture refused invocation lease"))?;
+        let invocation = lease
+            .context()
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))?;
+        let invocation_id = invocation.span_id().get();
+        let runtime = lease
+            .child_of(&invocation)
+            .ok_or_else(|| anyhow::anyhow!("capture refused runtime child lease"))?;
+        let (_value, _resource) = observe_phase_at_root_traced_with_context(
+            "full_activate",
+            None,
+            DiskObservationMode::BoundaryOnly,
+            Some(runtime.context()),
+            |_| Ok(()),
+        )?;
+        drop(runtime);
+        invocation.finish(DiagnosticTerminalV1::Ok)?;
+        drop(lease);
+        let closed = capture.close(Duration::from_secs(5))?;
+        ensure_equal!(
+            closed.status,
+            quanta_index_searchd::DiagnosticCaptureStatusV1::Complete
+        );
+        let rows: Vec<Value> = fs::read_to_string(trace_path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        let events = rows
+            .iter()
+            .filter(|row| row["record_type"] == "event")
+            .collect::<Vec<_>>();
+        let outer = events
+            .iter()
+            .find(|row| {
+                row["kind"]["type"] == "span_begin"
+                    && row["kind"]["stage"] == "operation"
+                    && row["kind"]["parent_span_id"].as_u64() == Some(invocation_id)
+            })
+            .and_then(|row| row["kind"]["span_id"].as_u64())
+            .ok_or_else(|| anyhow::anyhow!("phase operation detached from invocation"))?;
+        let phase = events
+            .iter()
+            .find(|row| {
+                row["kind"]["type"] == "span_begin"
+                    && row["kind"]["stage"] == "harness_phase"
+                    && row["kind"]["parent_span_id"].as_u64() == Some(outer)
+            })
+            .and_then(|row| row["kind"]["span_id"].as_u64())
+            .ok_or_else(|| anyhow::anyhow!("named phase detached from operation"))?;
+        ensure_predicate!(events.iter().any(|row| {
+            row["kind"]["type"] == "phase_identity"
+                && row["kind"]["span_id"].as_u64() == Some(phase)
+                && row["kind"]["phase"] == "full_activate"
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn small_scale_trace_negotiates_query_attempts_without_health_events() -> AnyResult<()> {
+        let output = tempfile::tempdir()?;
+        let trace_path = output.path().join("small-scale-negotiated.jsonl");
+        let mut capture = quanta_index_searchd::DiagnosticCaptureV1::start(
+            trace_path.clone(),
+            quanta_index_searchd::DiagnosticCaptureLimitsV1::default(),
+        )?;
+        let lease = capture
+            .lease()
+            .ok_or_else(|| anyhow::anyhow!("capture refused scale runtime lease"))?;
+        let measured = measure_tier_with_runtime_config_and_capture(
+            ScaleTier::Small,
+            7,
+            ScaleRuntimeConfig::default(),
+            Some(lease),
+        )?;
+        ensure_equal!(measured.tier, ScaleTier::Small);
+        let closed = capture.close(Duration::from_secs(5))?;
+        ensure_equal!(
+            closed.status,
+            quanta_index_searchd::DiagnosticCaptureStatusV1::Complete
+        );
+        let rows: Vec<Value> = fs::read_to_string(trace_path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        let events = rows
+            .iter()
+            .filter(|row| row["record_type"] == "event")
+            .collect::<Vec<_>>();
+        ensure_predicate!(
+            !events.is_empty(),
+            "scale trace has no events despite a completed query"
+        );
+        ensure_predicate!(
+            events.iter().all(|row| row["kind"]["type"] != "health"),
+            "scale trace contains a health event"
+        );
+        let attempt_ids = events
+            .iter()
+            .filter(|row| {
+                row["kind"]["type"] == "span_begin" && row["kind"]["stage"] == "client_attempt"
+            })
+            .filter_map(|row| row["kind"]["span_id"].as_u64())
+            .collect::<BTreeSet<_>>();
+        ensure_predicate!(!attempt_ids.is_empty(), "scale trace has no client attempt");
+        ensure_predicate!(
+            events.iter().any(|row| {
+                row["kind"]["type"] == "link"
+                    && row["kind"]["target_capture_id"] == row["capture_id"]
+                    && row["kind"]["target_span_id"]
+                        .as_u64()
+                        .is_some_and(|id| attempt_ids.contains(&id))
+            }),
+            "server request did not link to a negotiated client attempt"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn small_scale_capture_negotiates_query_attempt_links() -> AnyResult<()> {
+        let output = tempfile::tempdir()?;
+        let trace_path = output.path().join("small-query-attempts.jsonl");
+        let mut capture = quanta_index_searchd::DiagnosticCaptureV1::start(
+            trace_path.clone(),
+            quanta_index_searchd::DiagnosticCaptureLimitsV1::default(),
+        )?;
+        let lease = capture
+            .lease()
+            .ok_or_else(|| anyhow::anyhow!("capture refused the scale runtime lease"))?;
+
+        let _measurement = measure_tier_with_runtime_config_and_capture(
+            ScaleTier::Small,
+            1,
+            ScaleRuntimeConfig::default(),
+            Some(lease),
+        )?;
+
+        let closed = capture.close(Duration::from_secs(5))?;
+        ensure_equal!(
+            closed.status,
+            quanta_index_searchd::DiagnosticCaptureStatusV1::Complete
+        );
+        let rows: Vec<Value> = fs::read_to_string(trace_path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        ensure_predicate!(
+            rows.iter()
+                .all(|row| { row["record_type"] != "event" || row["kind"]["type"] != "health" })
+        );
+        ensure_predicate!(
+            rows.iter()
+                .any(|row| { row["record_type"] == "event" && row["kind"]["type"] == "link" })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn same_process_reopen_lifecycle_spans_are_children_of_named_phase() -> AnyResult<()> {
+        let output = tempfile::tempdir()?;
+        let trace_path = output.path().join("same-process-reopen.jsonl");
+        let mut capture = quanta_index_searchd::DiagnosticCaptureV1::start(
+            trace_path.clone(),
+            quanta_index_searchd::DiagnosticCaptureLimitsV1::default(),
+        )?;
+        let lease = capture
+            .lease()
+            .ok_or_else(|| anyhow::anyhow!("capture refused the runtime lease"))?;
+        let mut runtime = E2eRuntime::boot()?.with_diagnostic_capture(lease)?;
+        runtime.start()?;
+        let root = runtime.state_root().to_path_buf();
+        let diagnostic = runtime.diagnostic_context().cloned();
+        let (_elapsed, _resources) = observe_phase_at_root_traced_with_context(
+            "same_process_reopen",
+            Some(&root),
+            DiskObservationMode::BoundaryOnly,
+            diagnostic.as_ref(),
+            |phase_context| {
+                runtime.try_reopen_in_place_with_context(phase_context)?;
+                runtime.start_with_context(phase_context)?;
+                Ok(())
+            },
+        )?;
+        runtime.stop()?;
+        drop(diagnostic);
+        let closed = capture.close(Duration::from_secs(5))?;
+        ensure_equal!(
+            closed.status,
+            quanta_index_searchd::DiagnosticCaptureStatusV1::Complete
+        );
+
+        let rows: Vec<Value> = fs::read_to_string(trace_path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        let events = rows
+            .iter()
+            .filter(|row| row["record_type"] == "event")
+            .collect::<Vec<_>>();
+        let phase_id = events
+            .iter()
+            .find(|row| {
+                row["kind"]["type"] == "phase_identity"
+                    && row["kind"]["phase"] == "same_process_reopen"
+            })
+            .and_then(|row| row["kind"]["span_id"].as_u64())
+            .ok_or_else(|| anyhow::anyhow!("named reopen phase is absent"))?;
+        let parents = events
+            .iter()
+            .filter(|row| row["kind"]["type"] == "span_begin")
+            .filter_map(|row| {
+                Some((
+                    row["kind"]["span_id"].as_u64()?,
+                    row["kind"]["parent_span_id"].as_u64(),
+                ))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let descends_from_phase = |span_id: u64| {
+            let mut cursor = Some(span_id);
+            while let Some(current) = cursor {
+                if current == phase_id {
+                    return true;
+                }
+                cursor = parents.get(&current).copied().flatten();
+            }
+            false
+        };
+        for stage in ["runtime_stop", "runtime_join", "runtime_boot"] {
+            let found = events
+                .iter()
+                .filter(|row| row["kind"]["type"] == "span_begin" && row["kind"]["stage"] == stage)
+                .any(|row| {
+                    row["kind"]["span_id"]
+                        .as_u64()
+                        .is_some_and(descends_from_phase)
+                });
+            ensure_predicate!(found, "{stage} is outside the named reopen phase");
+        }
         Ok(())
     }
 
@@ -4939,6 +5689,7 @@ mod tests {
         let mut start_work_ran = false;
         let start = observe_phase_at_root_with_marker(
             None,
+            DiskObservationMode::BoundaryOnly,
             || {
                 start_work_ran = true;
                 Ok(())
@@ -4961,6 +5712,7 @@ mod tests {
         let mut end_work_ran = false;
         let end = observe_phase_at_root_with_marker(
             None,
+            DiskObservationMode::BoundaryOnly,
             || {
                 end_work_ran = true;
                 Ok(())
@@ -5883,9 +6635,29 @@ mod tests {
             observer_teardown_ms: 2.0,
             observer_periodic_probe_wall_ms: 3.0,
             discarded_outside_phase_samples: 0,
-            disk: None,
+            disk: Some(PhaseDiskV1 {
+                observation_mode: DiskObservationMode::BoundaryOnly,
+                start: DiskSnapshotV1 {
+                    allocated_bytes: Some(100),
+                    filesystem_free_bytes: Some(1_000),
+                    filesystem_available_bytes: Some(1_000),
+                    unavailable_reason: None,
+                },
+                end: DiskSnapshotV1 {
+                    allocated_bytes: Some(100),
+                    filesystem_free_bytes: Some(1_000),
+                    filesystem_available_bytes: Some(1_000),
+                    unavailable_reason: None,
+                },
+                sampled_max_allocated_bytes: None,
+                sampled: Vec::new(),
+                observed_max_gap_ms: 200.0,
+                periodic_probe_wall_ms: 0.0,
+                method: "unique_inode_st_blocks_512_plus_statvfs",
+            }),
         };
         TierMeasurement {
+            disk_observation: DiskObservationMode::BoundaryOnly,
             client_request_timeout_ms: 600_000,
             requested_client_request_timeout_ms: None,
             history_max_bytes: SCALE_HISTORY_MAX_BYTES,
@@ -6023,6 +6795,29 @@ mod tests {
         };
         let complete = sample_measurement();
         let _artifact = artifact(&complete, head.clone(), host.clone())?;
+        let mut missing_disk = complete.clone();
+        missing_disk
+            .phase_resources
+            .get_mut("full_activate")
+            .ok_or_else(|| anyhow::anyhow!("missing full activation fixture"))?
+            .disk = None;
+        ensure_predicate!(artifact(&missing_disk, head.clone(), host.clone()).is_err());
+        let mut mislabeled_disk = complete.clone();
+        mislabeled_disk
+            .phase_resources
+            .get_mut("full_activate")
+            .and_then(|phase| phase.disk.as_mut())
+            .ok_or_else(|| anyhow::anyhow!("missing disk fixture"))?
+            .observation_mode = DiskObservationMode::Periodic;
+        ensure_predicate!(artifact(&mislabeled_disk, head.clone(), host.clone()).is_err());
+        let mut fake_boundary_peak = complete;
+        fake_boundary_peak
+            .phase_resources
+            .get_mut("full_activate")
+            .and_then(|phase| phase.disk.as_mut())
+            .ok_or_else(|| anyhow::anyhow!("missing disk fixture"))?
+            .sampled_max_allocated_bytes = Some(100);
+        ensure_predicate!(artifact(&fake_boundary_peak, head.clone(), host.clone()).is_err());
         let mut missing_work = sample_measurement();
         let _removed = missing_work.seal_work_by_seal.remove("delta");
         ensure_predicate!(artifact(&missing_work, head.clone(), host.clone()).is_err());
@@ -6120,7 +6915,10 @@ mod tests {
         };
         let work = seal_work_window(&before, &after)?;
         ensure_equal!(work["lexical_seals_total"], 1);
-        ensure_equal!(work["lexical_seal_file_admission_bytes_read_total"], 3);
+        ensure_equal!(
+            work["lexical_seal_file_admission_source_bytes_verified_total"],
+            3
+        );
         let duplicate = after.counters[0].clone();
         after.counters.push(duplicate);
         ensure_predicate!(seal_work_window(&before, &after).is_err());
@@ -6223,6 +7021,20 @@ mod tests {
         let tier = &measured[0];
         assert_eq!(tier["tier"], "small");
         assert_eq!(tier["status"], "measured");
+        assert_eq!(tier["disk_observation_mode"], "boundary-only");
+        assert!(tier["phase_resources"]["full_ingest_seal"]["disk_sample_interval_ms"].is_null());
+        assert_eq!(
+            tier["phase_resources"]["full_ingest_seal"]["disk"]["observation_mode"],
+            "boundary-only"
+        );
+        assert_eq!(
+            tier["phase_resources"]["full_ingest_seal"]["disk"]["sampled_high_water_status"],
+            "unavailable_periodic_sampling_disabled"
+        );
+        assert!(
+            tier["phase_resources"]["full_ingest_seal"]["disk"]["sampled_max_allocated_root_bytes"]
+                .is_null()
+        );
         assert_eq!(tier["build"]["build_ms"], 1.5);
         assert_eq!(tier["activation_ms"], 0.5);
         assert_eq!(tier["wall_across_socket"]["first_query_ms"], 0.75);
@@ -6257,7 +7069,7 @@ mod tests {
         );
         assert_eq!(
             tier["phase_resources_method"],
-            "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, disk sampler and observer probes; RSS and allocated-root maxima are sampled, not true peaks; observer setup and teardown are outside operation wall timers; physical write I/O is not measured"
+            "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, optional disk sampler and observer probes; RSS maximum is sampled, disk high-water is available only with periodic disk samples, neither is a true peak; observer setup and teardown are outside operation wall timers; physical write I/O is not measured"
         );
         assert_eq!(
             tier["phase_resources"]["full_ingest_seal"]["interior_samples"],
@@ -6367,5 +7179,75 @@ mod tests {
         let mut missing_cpu = sample_measurement();
         missing_cpu.cpu = None;
         assert!(artifact(&missing_cpu, head, host).is_err());
+    }
+
+    #[test]
+    fn disk_observation_mode_changes_identity_and_rejects_forged_gaps() -> AnyResult<()> {
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
+        let host = HostV1 {
+            os: "linux".to_owned(),
+            arch: "x86_64".to_owned(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".to_owned(),
+        };
+        let boundary = sample_measurement();
+        let boundary_json = artifact(&boundary, head.clone(), host.clone())?.to_json()?;
+        for forged_gap in [0.0, 250.0] {
+            let mut forged = boundary.clone();
+            forged
+                .phase_resources
+                .get_mut("full_activate")
+                .and_then(|phase| phase.disk.as_mut())
+                .ok_or_else(|| anyhow::anyhow!("missing disk fixture"))?
+                .observed_max_gap_ms = forged_gap;
+            ensure_predicate!(artifact(&forged, head.clone(), host.clone()).is_err());
+        }
+        let mut periodic = boundary;
+        periodic.disk_observation = DiskObservationMode::Periodic;
+        for phase in periodic.phase_resources.values_mut() {
+            let disk = phase
+                .disk
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("missing disk fixture"))?;
+            disk.observation_mode = DiskObservationMode::Periodic;
+            disk.sampled = vec![PhaseDiskSampleV1 {
+                offset_ms: 100.0,
+                snapshot: DiskSnapshotV1 {
+                    allocated_bytes: Some(150),
+                    filesystem_free_bytes: Some(950),
+                    filesystem_available_bytes: Some(950),
+                    unavailable_reason: None,
+                },
+            }];
+            disk.sampled_max_allocated_bytes = Some(150);
+            disk.observed_max_gap_ms = 100.0;
+            disk.periodic_probe_wall_ms = 1.0;
+        }
+        let periodic_json = artifact(&periodic, head.clone(), host.clone())?.to_json()?;
+        for forged_gap in [0.0, 150.0] {
+            let mut forged = periodic.clone();
+            forged
+                .phase_resources
+                .get_mut("full_activate")
+                .and_then(|phase| phase.disk.as_mut())
+                .ok_or_else(|| anyhow::anyhow!("missing disk fixture"))?
+                .observed_max_gap_ms = forged_gap;
+            ensure_predicate!(artifact(&forged, head.clone(), host.clone()).is_err());
+        }
+        ensure_predicate!(
+            boundary_json["provenance"]["config_digest"]
+                != periodic_json["provenance"]["config_digest"]
+        );
+        let observed =
+            &periodic_json["detail"]["measured_tiers"][0]["phase_resources"]["full_activate"];
+        ensure_equal!(
+            observed["disk_sample_interval_ms"],
+            u64::try_from(PHASE_DISK_INTERVAL.as_millis())?
+        );
+        ensure_equal!(observed["disk"]["observation_mode"], "periodic");
+        ensure_equal!(observed["disk"]["sampled_high_water_status"], "observed");
+        ensure_equal!(observed["disk"]["sampled_max_allocated_root_bytes"], 150);
+        Ok(())
     }
 }

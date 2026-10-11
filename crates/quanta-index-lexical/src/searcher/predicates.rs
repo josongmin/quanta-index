@@ -21,12 +21,13 @@ use crate::predicate_registry::{
     parse_repo_file_matchers, parse_repo_meta_arg, parse_repo_topic_arg, parse_timeref_scalar_arg,
     unimplemented_predicate,
 };
+use crate::searcher::authorities::NativeQueryScope;
 use crate::searcher::query_rewrite::content_leaf_from_scalar;
 use crate::{TEXT_DOC_KIND, TantivySearcher};
 use quanta_index_contract::{LqLeaf, LqOptions, LqPredicateArg};
 use quanta_index_core::{CoreError, RequestBudgetV1, timeref::parse_search_timeref_ms};
 use quanta_index_lq_regex::RegexExecutor;
-use roaring::RoaringBitmap;
+use roaring::RoaringTreemap;
 use std::collections::BTreeSet;
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query};
 use tantivy::schema::TantivyDocument;
@@ -37,6 +38,7 @@ impl TantivySearcher {
         constraint: &RepoFileConstraint,
         options: &LqOptions,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<Box<dyn Query>, CoreError> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> =
             Vec::with_capacity(constraint.matchers.len());
@@ -55,7 +57,7 @@ impl TantivySearcher {
                     // Lower through content_leaf_from_scalar so `/regex/` content
                     // stays a regex; compile_leaf builds the chunk_text query.
                     let leaf = content_leaf_from_scalar(&ContentScalarArg::Keyword(value.clone()));
-                    self.compile_leaf(&leaf, options, false, budget)?
+                    self.compile_leaf(&leaf, options, false, budget, native)?
                 }
                 RepoFileMatcher::Language(value) => {
                     // normalize_language case-folds the value for the exact
@@ -83,8 +85,9 @@ impl TantivySearcher {
         constraint: &RepoFileConstraint,
         options: &LqOptions,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<BTreeSet<String>, CoreError> {
-        let compiled = self.repo_has_file_path_query(constraint, options, budget)?;
+        let compiled = self.repo_has_file_path_query(constraint, options, budget, native)?;
         let searcher = self.reader.searcher();
         let rows =
             self.collect_whole_set(&searcher, &*compiled, 1.0, "repo.has.file scope", budget)?;
@@ -186,9 +189,10 @@ impl TantivySearcher {
         leaf: &LqLeaf,
         options: &LqOptions,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<Box<dyn Query>, CoreError> {
         Ok(self.with_doc_kind(
-            self.compile_leaf(leaf, options, false, budget)?,
+            self.compile_leaf(leaf, options, false, budget, native)?,
             TEXT_DOC_KIND,
         ))
     }
@@ -198,8 +202,9 @@ impl TantivySearcher {
         leaf: &LqLeaf,
         options: &LqOptions,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<BTreeSet<String>, CoreError> {
-        let compiled = self.repo_has_content_query(leaf, options, budget)?;
+        let compiled = self.repo_has_content_query(leaf, options, budget, native)?;
         let searcher = self.reader.searcher();
         let rows =
             self.collect_whole_set(&searcher, &*compiled, 1.0, "repo.has.content scope", budget)?;
@@ -444,11 +449,11 @@ impl TantivySearcher {
         &self,
         arg: &FileOwnerArg,
         budget: &RequestBudgetV1,
-    ) -> Result<RoaringBitmap, CoreError> {
+    ) -> Result<RoaringTreemap, CoreError> {
         let authority = self.file_ownership_authority()?;
         let searcher = self.reader.searcher();
         let compiled = self.with_doc_kind(Box::new(AllQuery), TEXT_DOC_KIND);
-        let mut out = RoaringBitmap::new();
+        let mut out = RoaringTreemap::new();
         let rows = self.collect_whole_set(
             &searcher,
             &*compiled,
@@ -529,11 +534,11 @@ impl TantivySearcher {
         &self,
         arg: &FileContributorArg,
         budget: &RequestBudgetV1,
-    ) -> Result<RoaringBitmap, CoreError> {
+    ) -> Result<RoaringTreemap, CoreError> {
         let authority = self.file_contributor_authority()?;
         let searcher = self.reader.searcher();
         let compiled = self.with_doc_kind(Box::new(AllQuery), TEXT_DOC_KIND);
-        let mut out = RoaringBitmap::new();
+        let mut out = RoaringTreemap::new();
         let contributor_regex = match &arg.contributor {
             ContributorPattern::Regex(source) => Some(RegexExecutor::compile(source).map_err(
                 |err| CoreError::Typed {
@@ -664,8 +669,8 @@ impl TantivySearcher {
         &self,
         files: &BTreeSet<quanta_index_contract::SourceFileKey>,
         budget: &RequestBudgetV1,
-    ) -> Result<RoaringBitmap, CoreError> {
-        let mut out = RoaringBitmap::new();
+    ) -> Result<RoaringTreemap, CoreError> {
+        let mut out = RoaringTreemap::new();
         if files.is_empty() {
             return Ok(out);
         }
@@ -696,9 +701,10 @@ impl TantivySearcher {
         &self,
         constraint: &ContentPredicateConstraint,
         budget: &RequestBudgetV1,
+        native: &NativeQueryScope,
     ) -> Result<BTreeSet<quanta_index_contract::SourceFileKey>, CoreError> {
         let content_leaf = self.predicate_content_leaf_from_constraint(constraint);
-        let content_files = self.collect_matching_files_for_leaf(&content_leaf, budget)?;
+        let content_files = self.collect_matching_files_for_leaf(&content_leaf, budget, native)?;
         let Some(scope_files) =
             self.collect_matching_files_for_content_scope(constraint, budget)?
         else {
@@ -713,8 +719,9 @@ impl TantivySearcher {
         &self,
         constraint: &ContentPredicateConstraint,
         budget: &RequestBudgetV1,
-    ) -> Result<RoaringBitmap, CoreError> {
-        let allowed_files = self.allowed_files_for_content_predicate(constraint, budget)?;
+        native: &NativeQueryScope,
+    ) -> Result<RoaringTreemap, CoreError> {
+        let allowed_files = self.allowed_files_for_content_predicate(constraint, budget, native)?;
         self.source_file_match_set(&allowed_files, budget)
     }
 

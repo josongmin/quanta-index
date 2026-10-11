@@ -39,7 +39,9 @@ pub use source_coverage::{
 /// External producer/query callers should use typed DTOs under `ipc`, `query`,
 /// `repomap`, and `results` instead of importing channel ops from this module.
 pub mod channel;
+pub mod index;
 pub mod ipc;
+pub mod native_protocol;
 pub mod query;
 pub mod repomap;
 pub mod results;
@@ -98,4 +100,7 @@ pub use quanta_index_contract_base::{
     NativeNormalizationErrorV1, NativeNormalizationOutcomeV1, NativeNormalizationScratchDemandV1,
     NativeNormalizationScratchOwnerV1, try_for_each_nfc_into_with_native_admission_v1,
     try_is_nfc_into_with_native_admission_v1, try_is_nfc_with_native_admission_v1,
+};
+pub use quanta_index_contract_base::{
+    native_serde_enum, native_serde_newtype, native_serde_struct,
 };

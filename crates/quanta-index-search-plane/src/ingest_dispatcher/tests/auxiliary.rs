@@ -59,7 +59,7 @@ fn a_mutation_whose_rows_never_became_durable_is_never_visible() -> TestRes {
 
     catalog.fail_next_apply();
     let refused = materializer
-        .publish_batch(&batch)
+        .publish_batch(&batch, None)
         .expect_err("a catalog that cannot commit refuses the publish");
     if !matches!(refused, CoreError::Storage(_)) {
         return Err(format!("expected the catalog's failure, got {refused:?}").into());
@@ -79,7 +79,7 @@ fn a_mutation_whose_rows_never_became_durable_is_never_visible() -> TestRes {
         return Err("nothing was applied".into());
     }
 
-    let receipt = materializer.publish_batch(&batch)?;
+    let receipt = materializer.publish_batch(&batch, None)?;
     if receipt.accepted_replace_scopes != 1 || catalog.applies() != 1 {
         return Err(format!("the retry must apply once: {receipt:?}").into());
     }
@@ -105,7 +105,7 @@ fn a_batch_that_fails_validation_never_reaches_the_catalog() -> TestRes {
     let materializer = DirectHistoryMaterializer::new(parts);
     // A child whose parent is neither in the state nor earlier in the batch.
     let orphan = fixture_history_batch(9, vec![fixture_commit(2, &[1])]);
-    match materializer.publish_batch(&orphan) {
+    match materializer.publish_batch(&orphan, None) {
         Err(CoreError::Typed {
             code:
                 quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
@@ -120,7 +120,7 @@ fn a_batch_that_fails_validation_never_reaches_the_catalog() -> TestRes {
     }
     // The parent earlier in the same batch is enough.
     let ordered = fixture_history_batch(9, vec![fixture_commit(1, &[]), fixture_commit(2, &[1])]);
-    let _receipt = materializer.publish_batch(&ordered)?;
+    let _receipt = materializer.publish_batch(&ordered, None)?;
     if catalog.applies() != 1 {
         return Err("an ordered batch applies once".into());
     }
@@ -197,7 +197,7 @@ fn a_reader_holding_a_snapshot_neither_blocks_nor_sees_a_mutation() -> TestRes {
     let (parts, _catalog) = aux_parts(Arc::clone(&ledger));
     let materializer = Arc::new(DirectHistoryMaterializer::new(parts));
     let first = fixture_history_batch(9, vec![fixture_commit(1, &[])]);
-    let _receipt = materializer.publish_batch(&first)?;
+    let _receipt = materializer.publish_batch(&first, None)?;
     let snapshot = ledger
         .read()
         .map_err(|err| format!("ledger poisoned: {err}"))?
@@ -215,7 +215,7 @@ fn a_reader_holding_a_snapshot_neither_blocks_nor_sees_a_mutation() -> TestRes {
     let second = fixture_history_batch(9, vec![fixture_commit(2, &[1])]);
     let writer = {
         let materializer = Arc::clone(&materializer);
-        std::thread::spawn(move || materializer.publish_batch(&second))
+        std::thread::spawn(move || materializer.publish_batch(&second, None))
     };
     let _receipt = writer
         .join()
@@ -282,10 +282,10 @@ fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> Test
     let (aux, catalog) = aux_parts(Arc::clone(&ledger));
     let history = DirectHistoryMaterializer::new(aux.clone());
     for generation in [3, 4] {
-        let _receipt = history.publish_batch(&fixture_history_batch(
-            generation,
-            vec![fixture_commit(1, &[])],
-        ))?;
+        let _receipt = history.publish_batch(
+            &fixture_history_batch(generation, vec![fixture_commit(1, &[])]),
+            None,
+        )?;
     }
     let materializer = sealing_materializer(&ledger, &aux);
     let mut batch = fixture_search_corpus_batch()?;
@@ -295,7 +295,7 @@ fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> Test
         &batch.revision_id,
         [ManifestGeneration::new(4), ManifestGeneration::new(5)],
     );
-    materializer.finalize_generation_v1(&batch, Some(&receipt))?;
+    materializer.finalize_generation_v1(&batch, Some(&receipt), None)?;
 
     let guard = ledger
         .read()
@@ -357,10 +357,10 @@ fn a_seal_whose_reap_transaction_fails_changes_neither_catalog_nor_ledger() -> T
     let (aux, catalog) = aux_parts(Arc::clone(&ledger));
     let history = DirectHistoryMaterializer::new(aux.clone());
     for generation in [3, 4] {
-        let _receipt = history.publish_batch(&fixture_history_batch(
-            generation,
-            vec![fixture_commit(1, &[])],
-        ))?;
+        let _receipt = history.publish_batch(
+            &fixture_history_batch(generation, vec![fixture_commit(1, &[])]),
+            None,
+        )?;
     }
     let materializer = sealing_materializer(&ledger, &aux);
     let mut batch = fixture_search_corpus_batch()?;
@@ -393,7 +393,7 @@ fn a_seal_whose_reap_transaction_fails_changes_neither_catalog_nor_ledger() -> T
     };
 
     catalog.fail_next_apply();
-    let refused = materializer.finalize_generation_v1(&batch, Some(&receipt));
+    let refused = materializer.finalize_generation_v1(&batch, Some(&receipt), None);
     if !matches!(refused, Err(CoreError::Storage(_))) {
         return Err(format!("the failed transaction refuses the seal, got {refused:?}").into());
     }
@@ -403,7 +403,7 @@ fn a_seal_whose_reap_transaction_fails_changes_neither_catalog_nor_ledger() -> T
     }
 
     let applies = catalog.applies();
-    materializer.finalize_generation_v1(&batch, Some(&receipt))?;
+    materializer.finalize_generation_v1(&batch, Some(&receipt), None)?;
     let after_retry = observed()?;
     let transactions = catalog.applies().saturating_sub(applies);
     if after_retry != (BTreeSet::from([4, 5]), false, Some(1)) || transactions != 1 {
@@ -450,10 +450,10 @@ fn forgotten_generations_text_indexes_are_swept_and_a_failed_discard_is_retried(
     let history =
         DirectHistoryMaterializer::new(aux.clone()).with_history_text(history_text.clone());
     for generation in [3, 4] {
-        let _receipt = history.publish_batch(&fixture_history_batch(
-            generation,
-            vec![fixture_commit(1, &[])],
-        ))?;
+        let _receipt = history.publish_batch(
+            &fixture_history_batch(generation, vec![fixture_commit(1, &[])]),
+            None,
+        )?;
     }
     let mut batch = fixture_search_corpus_batch()?;
     let key = |generation: u64| AuxiliaryGenerationKeyV1 {
@@ -465,6 +465,7 @@ fn forgotten_generations_text_indexes_are_swept_and_a_failed_discard_is_retried(
         &key(2),
         AuxEpochV1::new(1),
         HistoryTextBuildV1::Full { docs: Vec::new() },
+        None,
     )?;
     let materializer = sealing_materializer(&ledger, &aux).with_history_text(history_text.clone());
     let durable = |generation: u64| -> Result<bool, Box<dyn std::error::Error>> {
@@ -478,7 +479,7 @@ fn forgotten_generations_text_indexes_are_swept_and_a_failed_discard_is_retried(
         &batch.revision_id,
         [ManifestGeneration::new(4), ManifestGeneration::new(5)],
     );
-    materializer.finalize_generation_v1(&batch, Some(&receipt))?;
+    materializer.finalize_generation_v1(&batch, Some(&receipt), None)?;
     if catalog.generations() != BTreeSet::from([4, 5]) {
         return Err(format!("generation 3 is forgotten: {:?}", catalog.generations()).into());
     }
@@ -499,7 +500,7 @@ fn forgotten_generations_text_indexes_are_swept_and_a_failed_discard_is_retried(
         &batch.revision_id,
         [ManifestGeneration::new(5), ManifestGeneration::new(6)],
     );
-    materializer.finalize_generation_v1(&batch, Some(&receipt))?;
+    materializer.finalize_generation_v1(&batch, Some(&receipt), None)?;
     if gc_failures(&history_text)? != 1 || durable(2)? || durable(3)? || durable(4)? {
         return Err(format!(
             "the sweep removes every index the ledger no longer knows: failures={} 2={} 3={} 4={}",
@@ -529,10 +530,10 @@ fn a_refused_history_text_listing_fails_the_seal_closed() -> TestRes {
     let history =
         DirectHistoryMaterializer::new(aux.clone()).with_history_text(history_text.clone());
     for generation in [3, 4] {
-        let _receipt = history.publish_batch(&fixture_history_batch(
-            generation,
-            vec![fixture_commit(1, &[])],
-        ))?;
+        let _receipt = history.publish_batch(
+            &fixture_history_batch(generation, vec![fixture_commit(1, &[])]),
+            None,
+        )?;
     }
     let materializer = sealing_materializer(&ledger, &aux).with_history_text(history_text.clone());
     let mut batch = fixture_search_corpus_batch()?;
@@ -544,7 +545,7 @@ fn a_refused_history_text_listing_fails_the_seal_closed() -> TestRes {
     );
 
     index.refuse_next_listing();
-    let refused = materializer.finalize_generation_v1(&batch, Some(&receipt));
+    let refused = materializer.finalize_generation_v1(&batch, Some(&receipt), None);
     if !matches!(&refused, Err(CoreError::Typed { code, .. })
         if *code == quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexForeignEntry)
     {

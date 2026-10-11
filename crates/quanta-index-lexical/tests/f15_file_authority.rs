@@ -15,6 +15,10 @@ mod current_source_fixture;
 #[path = "support/source_fixture.rs"]
 mod source_fixture;
 
+#[path = "support/publication_fixture.rs"]
+mod publication_fixture;
+use publication_fixture::FixtureBatchBuildPort;
+
 use std::error::Error;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -27,8 +31,8 @@ use quanta_index_contract::{
     SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
 };
 use quanta_index_core::{
-    CoreError, GenerationStorageKeyV1, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher,
-    RequestBudgetV1, SearchCorpusBatchBuildPort,
+    CoreError, IntegrityScrubBudgetV1, IntegrityScrubOutcomeV1, IntegrityScrubPort,
+    LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
 };
 use quanta_index_lexical::LexicalAdapter;
 use sha2::{Digest as _, Sha256};
@@ -221,11 +225,32 @@ fn rows(
     Ok(result)
 }
 
-fn generation_dir(root: &Path, generation: u64) -> Result<std::path::PathBuf, Box<dyn Error>> {
-    Ok(
-        GenerationStorageKeyV1::for_repo_revision(&repo()?, &revision()?)
-            .generation_dir(root, ManifestGeneration::new(generation)),
-    )
+fn file_body_object(root: &Path, witness: &[u8]) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let objects = root.join("lexical-object-pool/objects");
+    let mut matching = Vec::new();
+    for shard in std::fs::read_dir(objects)? {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(shard.path())? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let bytes = std::fs::read(entry.path())?;
+            if bytes.get(..8) == Some(b"QLSTOR01".as_slice())
+                && bytes.get(10) == Some(&1)
+                && bytes.windows(witness.len()).any(|window| window == witness)
+            {
+                matching.push(entry.path());
+            }
+        }
+    }
+    let [path] = matching.as_slice() else {
+        return Err(format!("expected one FileBody carrying witness, got {matching:?}").into());
+    };
+    Ok(path.clone())
 }
 
 #[test]
@@ -234,7 +259,7 @@ fn delta_delete_noop_and_cold_open_match_independent_full_build() -> TestResult 
     let incremental = LexicalAdapter::with_state_root(incremental_root.path().to_path_buf());
     assert!(
         incremental
-            .build_batch(&batch(1, None, base_scopes()?, &[])?)?
+            .build_fixture_batch(&batch(1, None, base_scopes()?, &[])?)?
             .is_some()
     );
 
@@ -283,12 +308,12 @@ fn delta_delete_noop_and_cold_open_match_independent_full_build() -> TestResult 
     ];
     assert!(
         incremental
-            .build_batch(&batch(2, Some(1), changes, &[("source-a", RETIRED_PATH)])?)?
+            .build_fixture_batch(&batch(2, Some(1), changes, &[("source-a", RETIRED_PATH)])?)?
             .is_some()
     );
     assert!(
         incremental
-            .build_batch(&batch(3, Some(2), Vec::new(), &[])?)?
+            .build_fixture_batch(&batch(3, Some(2), Vec::new(), &[])?)?
             .is_some()
     );
 
@@ -296,7 +321,7 @@ fn delta_delete_noop_and_cold_open_match_independent_full_build() -> TestResult 
     let rebuilt = LexicalAdapter::with_state_root(rebuilt_root.path().to_path_buf());
     assert!(
         rebuilt
-            .build_batch(&batch(2, None, final_scopes()?, &[])?)?
+            .build_fixture_batch(&batch(2, None, final_scopes()?, &[])?)?
             .is_some()
     );
 
@@ -368,21 +393,17 @@ fn delta_delete_noop_and_cold_open_match_independent_full_build() -> TestResult 
 }
 
 #[test]
-fn sealed_object_corruption_missing_and_symlink_refuse_cold_open() -> TestResult {
+fn selected_file_body_refuses_corruption_and_scrub_quarantines() -> TestResult {
     for fault in ["corrupt", "missing", "symlink"] {
         let root = tempfile::tempdir()?;
         let adapter = LexicalAdapter::with_state_root(root.path().to_path_buf());
         assert!(
             adapter
-                .build_batch(&batch(1, None, base_scopes()?, &[])?)?
+                .build_fixture_batch(&batch(1, None, base_scopes()?, &[])?)?
                 .is_some()
         );
         drop(adapter);
-        let objects = generation_dir(root.path(), 1)?.join("file-authority/objects");
-        let object = std::fs::read_dir(&objects)?
-            .next()
-            .ok_or("no sealed authority object")??
-            .path();
+        let object = file_body_object(root.path(), b"retiretoken")?;
         let mut original = std::fs::read(&object)?;
         assert!(!original.is_empty());
         match fault {
@@ -401,20 +422,34 @@ fn sealed_object_corruption_missing_and_symlink_refuse_cold_open() -> TestResult
             _ => return Err("unknown fixed fault".into()),
         }
         let cold = LexicalAdapter::with_state_root(root.path().to_path_buf());
+        let view = open(&cold, 1)?;
         assert!(
             matches!(
-                cold.open(
-                    &repo()?,
-                    &revision()?,
-                    ManifestGeneration::new(1),
-                    &RequestBudgetV1::unbounded()
-                ),
+                page(view.as_ref(), &query("retiretoken"), 5, None),
                 Err(CoreError::Typed {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
                     ..
                 })
             ),
-            "cold open admitted {fault} committed object"
+            "selected FileBody admitted {fault} object"
+        );
+        drop(view);
+        let report = cold.scrub(
+            &quanta_index_contract::GenerationSnapshot {
+                repo_id: repo()?,
+                revision_id: revision()?,
+                track: quanta_index_contract::SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(1),
+                manifest_digest: "f15-manifest-1".into(),
+            },
+            None,
+            IntegrityScrubBudgetV1 {
+                max_bytes: u64::MAX,
+            },
+        )?;
+        assert!(
+            matches!(report.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }),
+            "scrub accepted damaged FileBody {fault}: {report:?}"
         );
     }
     Ok(())
@@ -448,7 +483,7 @@ fn nontext_source_stays_path_only_across_cold_delta_noop_and_delete() -> TestRes
         ],
     )?;
     current_source_fixture::finish_batch(&mut initial)?;
-    assert!(adapter.build_batch(&initial)?.is_some());
+    assert!(adapter.build_fixture_batch(&initial)?.is_some());
     let cold = LexicalAdapter::with_state_root(root.path().to_path_buf());
     let retained = open(&cold, 1)?;
     for term in ["binarystable", "utf8stable"] {
@@ -469,7 +504,7 @@ fn nontext_source_stays_path_only_across_cold_delta_noop_and_delete() -> TestRes
 
     assert!(
         adapter
-            .build_batch(&batch(
+            .build_fixture_batch(&batch(
                 2,
                 Some(1),
                 vec![scope("source-a", BINARY_PATH, "visiblebodytoken", true)?],
@@ -479,7 +514,7 @@ fn nontext_source_stays_path_only_across_cold_delta_noop_and_delete() -> TestRes
     );
     assert!(
         adapter
-            .build_batch(&batch(3, Some(2), Vec::new(), &[])?)?
+            .build_fixture_batch(&batch(3, Some(2), Vec::new(), &[])?)?
             .is_some()
     );
     for generation in [2, 3] {
@@ -492,7 +527,7 @@ fn nontext_source_stays_path_only_across_cold_delta_noop_and_delete() -> TestRes
     }
     assert!(
         adapter
-            .build_batch(&batch(
+            .build_fixture_batch(&batch(
                 4,
                 Some(3),
                 Vec::new(),

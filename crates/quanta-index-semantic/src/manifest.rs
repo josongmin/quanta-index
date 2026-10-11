@@ -54,7 +54,8 @@ fn is_canonical_sha256_v1(value: &str) -> bool {
 /// chunk-text fallback rows and is not admitted as a new-generation base.
 /// `12` = generation-wide `record_id` and `embedding_id` uniqueness at seal.
 /// Older artifacts cannot prove those identities and must be rebuilt.
-pub(crate) const FORMAT_VERSION: u32 = 12;
+/// `13` = complete embedding policy and view policy identity in the seal.
+pub(crate) const FORMAT_VERSION: u32 = 13;
 
 /// The dense lane's index contract, sealed with the generation (QI-BB-027).
 ///
@@ -418,6 +419,8 @@ pub(crate) struct SemanticManifest {
     pub(crate) dimension: u32,
     pub(crate) distance_metric: String,
     pub(crate) normalization: String,
+    pub(crate) policy_digest: String,
+    pub(crate) view_policy_digest: Option<String>,
     pub(crate) row_count: u64,
     pub(crate) semantic_row_root_digest: String,
     pub(crate) built_at_unix_nanos: u64,
@@ -443,6 +446,8 @@ cbor_serde!(SemanticManifest {
     dimension: u32,
     distance_metric: String,
     normalization: String,
+    policy_digest: String,
+    view_policy_digest: Option<String>,
     row_count: u64,
     semantic_row_root_digest: String,
     built_at_unix_nanos: u64,
@@ -517,6 +522,18 @@ impl SemanticManifest {
         );
         ensure_field_eq!(
             CoreError::Storage,
+            self.policy_digest,
+            contract.policy_digest,
+            "semantic: manifest policy_digest `{}` does not match sealed build contract `{}`"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            self.view_policy_digest,
+            contract.view_policy_digest,
+            "semantic: manifest view_policy_digest {:?} does not match sealed build contract {:?}"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
             self.required_corpora,
             contract.required_corpora,
             "semantic: manifest required_corpora {:?} does not match sealed build contract {:?}"
@@ -557,6 +574,8 @@ impl SemanticManifest {
             dimension: generation_contract.dimension,
             distance_metric: generation_contract.distance_metric.clone(),
             normalization: generation_contract.normalization.clone(),
+            policy_digest: generation_contract.policy_digest.clone(),
+            view_policy_digest: generation_contract.view_policy_digest.clone(),
             row_count: rows.row_count,
             semantic_row_root_digest: rows.root_digest,
             built_at_unix_nanos: rows.built_at_unix_nanos,
@@ -850,6 +869,8 @@ mod tests {
             dimension: 3,
             distance_metric: "cosine".to_string(),
             normalization: "l2_unit".to_string(),
+            policy_digest: "policy:v1".to_string(),
+            view_policy_digest: None,
             row_count,
             semantic_row_root_digest: format!("sha256:{}", "2".repeat(64)),
             built_at_unix_nanos: 0,
@@ -932,6 +953,28 @@ mod tests {
         validate(&decoded).expect("consistent seal");
     }
 
+    #[test]
+    fn current_manifest_missing_optional_value_key_is_corrupt() {
+        let current = manifest(0, exact_seal());
+        let bytes = current.encode().expect("encode current manifest");
+        assert!(SemanticManifest::decode(&bytes).is_ok());
+        let mut value: ciborium::value::Value =
+            crate::codec::decode(&bytes, "current manifest fixture").expect("decode value");
+        if let ciborium::value::Value::Map(fields) = &mut value {
+            let count = fields.len();
+            fields.retain(|(key, _)| {
+                key != &ciborium::value::Value::Text("view_policy_digest".to_string())
+            });
+            assert_eq!(fields.len() + 1, count);
+        }
+        let bytes = crate::codec::encode(&value, "missing-key manifest fixture")
+            .expect("encode missing key");
+        assert!(matches!(
+            SemanticManifest::decode(&bytes),
+            Err(CoreError::Storage(_))
+        ));
+    }
+
     /// Every other format — older, newer, or a shape that names the
     /// current format but is not it — is refused typed, never decoded
     /// through an older shape.
@@ -950,6 +993,7 @@ mod tests {
             9,
             10,
             11,
+            12,
             FORMAT_VERSION.saturating_add(1),
         ] {
             // A map that only names the format: what an older or newer

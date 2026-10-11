@@ -26,7 +26,8 @@ impl<'a> ObservabilityNamespace<'a> {
                 ))?;
         match response {
             SearchPlaneControlIpcResponse::MetricsSnapshot(snapshot) => Ok(snapshot),
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
@@ -60,7 +61,8 @@ impl<'a> ObservabilityNamespace<'a> {
                 })?;
                 Ok(report)
             }
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
@@ -97,7 +99,8 @@ impl<'a> ObservabilityNamespace<'a> {
                 request,
             ))? {
             SearchPlaneControlIpcResponse::ProcessRequestEventsV1(events) => Ok(events),
-            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)

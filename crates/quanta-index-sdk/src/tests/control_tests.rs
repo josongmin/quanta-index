@@ -1,5 +1,129 @@
 use super::*;
 
+fn reservation_request() -> quanta_index_contract::SearchCorpusGenerationReservationRequestV1 {
+    quanta_index_contract::SearchCorpusGenerationReservationRequestV1 {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        source_event: sample_source_event(),
+    }
+}
+
+fn reservation_response() -> quanta_index_contract::SearchCorpusGenerationReservationV1 {
+    let request = reservation_request();
+    quanta_index_contract::SearchCorpusGenerationReservationV1 {
+        repo_id: request.repo_id,
+        revision_id: request.revision_id,
+        source_event: request.source_event,
+        generation: ManifestGeneration::new(12),
+        root_incarnation: [7; 16],
+    }
+}
+
+#[test]
+fn search_corpus_reservation_dispatches_and_binds_original_identity_v1() {
+    use quanta_index_contract::{SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse};
+    let request = reservation_request();
+    let response = reservation_response();
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(response.clone()),
+    ));
+    let ingest = unused_ingest();
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest.clone());
+    let observed = ok_or_fail!(client.search_corpus().reserve_generation(&request));
+    assert_eq!(observed, response);
+    assert!(ok_or_fail!(ingest.requests.lock()).is_empty());
+    let captured = ok_or_fail!(only_control_request(control.as_ref()));
+    assert_eq!(
+        captured.payload,
+        SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(request)
+    );
+}
+
+#[test]
+fn search_corpus_reservation_rejects_invalid_request_before_io_v1() {
+    let mut request = reservation_request();
+    request.source_event.event_id = "bad event".to_string();
+    let control = unused_control();
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
+    let error = client
+        .search_corpus()
+        .reserve_generation(&request)
+        .expect_err("invalid source event");
+    assert!(matches!(error, crate::SdkError::Protocol(_)));
+    assert!(ok_or_fail!(control.requests.lock()).is_empty());
+}
+
+#[test]
+fn search_corpus_reservation_rejects_identity_mismatch_and_malformed_response_v1() {
+    use quanta_index_contract::SearchPlaneControlIpcResponse;
+    let request = reservation_request();
+    let mut foreign_repo = reservation_response();
+    foreign_repo.repo_id = RepoId::new("other-repo").expect("valid fixture repo");
+    let mut foreign_revision = reservation_response();
+    foreign_revision.revision_id =
+        RevisionId::new("other-revision").expect("valid fixture revision");
+    let mut foreign_event = reservation_response();
+    foreign_event.source_event.event_id = "other-event".to_string();
+    let mut foreign_payload = reservation_response();
+    foreign_payload.source_event.payload_sha256 = [9; 32];
+    for response in [
+        foreign_repo,
+        foreign_revision,
+        foreign_event,
+        foreign_payload,
+    ] {
+        let control = Arc::new(StubControlTransport::new(
+            SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(response),
+        ));
+        let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+        assert!(matches!(
+            client.search_corpus().reserve_generation(&request),
+            Err(crate::SdkError::Binding {
+                axis: crate::ResponseBindingAxis::TargetIdentity,
+                ..
+            })
+        ));
+    }
+    let mut zero_generation = reservation_response();
+    zero_generation.generation = ManifestGeneration::new(0);
+    let mut zero_root = reservation_response();
+    zero_root.root_incarnation = [0; 16];
+    let mut invalid_event = reservation_response();
+    invalid_event.source_event.event_id = "bad event".to_string();
+    for response in [zero_generation, zero_root, invalid_event] {
+        let control = Arc::new(StubControlTransport::new(
+            SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(response),
+        ));
+        let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+        assert!(matches!(
+            client.search_corpus().reserve_generation(&request),
+            Err(crate::SdkError::Protocol(_))
+        ));
+    }
+}
+
+#[test]
+fn search_corpus_reservation_preserves_typed_remote_refusal_v1() {
+    use quanta_index_contract::SearchPlaneControlIpcResponse;
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
+            code: SearchPlaneErrorCodeV2::Internal,
+            message: "reservation refused".to_string(),
+            repair: None,
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+    assert!(matches!(
+        client
+            .search_corpus()
+            .reserve_generation(&reservation_request()),
+        Err(crate::SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::Internal,
+            ..
+        })
+    ));
+}
+
 #[test]
 fn generations_rollback_emits_and_accepts_only_exact_composite_ack_v1() {
     let expected_active = search_corpus_head(11, "manifest:11", 2);

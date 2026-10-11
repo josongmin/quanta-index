@@ -356,9 +356,7 @@ def test_observer_cannot_be_the_action_producer(evidence):
         ("state_root", "/opt/quanta/bin/searchd"),
     ),
 )
-def test_operational_target_refuses_broad_aliasing_or_overlapping_paths(
-    evidence, field, path
-):
+def test_operational_target_refuses_broad_aliasing_or_overlapping_paths(evidence, field, path):
     root, proof, _, result, _ = evidence
     contract = json.loads((root / result["contract"]).read_text())
     contract["target"][field] = path

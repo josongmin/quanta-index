@@ -6,6 +6,13 @@
 )]
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use quanta_index_core::{
+    DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1,
+    DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1,
+    DiagnosticStageV1, DiagnosticTerminalV1,
+};
 
 use tantivy::collector::TopDocs;
 use tantivy::indexer::NoMergePolicy;
@@ -16,6 +23,133 @@ use tantivy::{Index, Term};
 use super::codec::Wire;
 use super::{LiveBm25Provider, LiveBm25Statistics};
 use crate::SchemaFields;
+
+#[derive(Debug)]
+struct FixedClock;
+
+impl DiagnosticClockV1 for FixedClock {
+    fn now_ns(&self) -> u64 {
+        100
+    }
+}
+
+#[derive(Debug, Default)]
+struct RecordingSink(Mutex<Vec<DiagnosticEmitV1>>);
+
+impl DiagnosticEventSinkV1 for RecordingSink {
+    fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+        self.0.lock().expect("recording sink lock").push(event);
+        true
+    }
+}
+
+#[test]
+fn failed_build_flushes_completed_document_work_without_counting_bad_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fields = SchemaFields::build();
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let index = crate::index_store::open_or_create_index(&fields, &root)?;
+    let mut writer = index.writer_with_num_threads(1, 50_000_000)?;
+    writer.set_merge_policy(Box::new(NoMergePolicy));
+    add_doc(&writer, &fields, "valid", "needle", "symbol", 1)?;
+    let mut bad_doc = TantivyDocument::new();
+    bad_doc.add_text(fields.candidate_id, "missing-census");
+    bad_doc.add_text(fields.chunk_text, "needle");
+    let _op = writer.add_document(bad_doc)?;
+    let _commit = writer.commit()?;
+    writer.wait_merging_threads()?;
+
+    let reader = index.reader()?;
+    let searcher = reader.searcher();
+    let [segment] = searcher.segment_readers() else {
+        return Err("fixture must have exactly one segment".into());
+    };
+    assert_eq!(segment.max_doc(), 2);
+    let first: TantivyDocument = searcher.doc(tantivy::DocAddress::new(0, 0))?;
+    let completed_bytes = first
+        .get_first(fields.live_bm25_doc_census)
+        .and_then(|value| value.as_bytes())
+        .ok_or("first document census missing")?
+        .len();
+
+    let sink = Arc::new(RecordingSink::default());
+    let context = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([8; 16]),
+        Arc::new(FixedClock),
+        sink.clone(),
+    );
+    let root_span = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+    let child = context.child_context(&root_span);
+    let error = LiveBm25Statistics::build_observed(
+        &index,
+        &fields,
+        [4; 32],
+        &root,
+        None,
+        &[],
+        Some(&child),
+    )
+    .err()
+    .ok_or("missing-census build must fail")?;
+    assert!(error.to_string().contains("mandatory census is missing"));
+    root_span.finish(DiagnosticTerminalV1::Error { code: 1 })?;
+
+    let events = sink.0.lock().expect("recording sink lock");
+    let build_span_id = events
+        .iter()
+        .find_map(|event| {
+            if let DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                stage: DiagnosticStageV1::Bm25LiveBuild,
+                ..
+            } = event.kind
+            {
+                Some(span_id)
+            } else {
+                None
+            }
+        })
+        .ok_or("BM25 build span missing")?;
+    let aggregates: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            if let DiagnosticEventKindV1::Bm25LiveBuildAggregate {
+                span_id,
+                new_census_docs,
+                logical_census_bytes,
+                new_segments,
+                segment_fanout,
+                retained_estimate_bytes,
+                ..
+            } = event.kind
+            {
+                (span_id == build_span_id).then_some((
+                    new_census_docs,
+                    logical_census_bytes,
+                    new_segments,
+                    segment_fanout,
+                    retained_estimate_bytes,
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        aggregates,
+        vec![(1, u64::try_from(completed_bytes)?, 0, 0, 0)]
+    );
+    assert!(events.iter().any(|event| matches!(
+        event.kind,
+        DiagnosticEventKindV1::SpanEnd {
+            span_id,
+            outcome: DiagnosticTerminalV1::Error { code: 1 },
+        } if span_id == build_span_id
+    )));
+    drop(events);
+    Ok(())
+}
 
 fn add_doc(
     writer: &tantivy::IndexWriter,

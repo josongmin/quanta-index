@@ -526,6 +526,7 @@ fn linux_real_uid_client_helper() -> TestResult {
                 Path::new(&control),
                 &SearchPlaneControlIpcRequestEnvelope {
                     request_id: 0xe305,
+                    diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
                     payload: SearchPlaneControlIpcRequest::ProcessRequestEventsV1(
                         ProcessRequestEventsRequestV1 {
                             plane: ProcessRequestEventPlaneV1::Query,
@@ -551,6 +552,7 @@ fn linux_real_uid_client_helper() -> TestResult {
                 Path::new(&query),
                 &SearchPlaneQueryIpcRequestEnvelope {
                     request_id: 0xe306,
+                    diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
                     payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
                         syntax: TextQuerySyntax::Native,
                         query_text: "needle".to_owned(),

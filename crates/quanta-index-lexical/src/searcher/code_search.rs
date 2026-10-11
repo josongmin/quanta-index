@@ -13,27 +13,34 @@ use std::time::Instant;
 
 use quanta_index_contract::{
     CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, HighlightSpan,
-    LexicalCandidate, LqExpr, LqFilter, LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
-    MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, PreviewByteRange, PreviewKind,
-    PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1, SymbolCoverage,
-    SymbolNameSourcePolicyV1, valid_code_search_typo_identifier,
+    LexicalCandidate, LexicalCursor, LexicalRowOrderKey, LqExpr, LqFilter, LqLeaf, LqPatternType,
+    LqPredicateArg, LqQuery, LqSelect, MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS,
+    PreviewByteRange, PreviewKind, PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1,
+    SourceFileKey, SymbolCoverage, SymbolNameSourcePolicyV1, valid_code_search_typo_identifier,
 };
 use quanta_index_core::{
     CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CodeSearchScoreComponentsV1,
     LexicalCandidateExplanationV1, LexicalScoreEngineV1, LexicalScoreTraceV1,
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
+use quanta_index_core::{
+    DiagnosticContextV1, DiagnosticCounterV1, DiagnosticSpanGuardV1, DiagnosticStageV1,
+    DiagnosticTerminalV1,
+};
 use quanta_index_lq_regex::RegexExecutor;
 #[cfg(test)]
 use quanta_index_lq_trigram::TrigramIndex;
-use quanta_index_lq_trigram::{MAX_CANDIDATE_PRE_VERIFY, Trigram, trigrams_of};
+use quanta_index_lq_trigram::{MAX_CANDIDATE_PRE_VERIFY, NecessaryGramExpr, Trigram, trigrams_of};
 use sha2::{Digest as _, Sha256};
 use tantivy::Term;
 use tantivy::query::{BooleanQuery, Occur, TermQuery};
 use tantivy::schema::{IndexRecordOption, TantivyDocument, Value as _};
 
 use crate::TantivySearcher;
-use crate::file_authority::{FileAuthority, QueryWork, SourceFile};
+use crate::file_authority::paged::{
+    FileMetadata as SourceFileMetadata, PagedFileAuthority as FileAuthority,
+};
+use crate::file_authority::{QueryWork, SourceFile};
 use crate::regex::RegexPolicy;
 use crate::searcher::planner_errors::map_regex_plan_error;
 use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText, MappingError};
@@ -68,6 +75,26 @@ fn add_observed_ns(total: &mut u64, started: Instant, stage: &str) -> Result<(),
     Ok(())
 }
 
+/// Emit the work completed before a verifier returns, including a partial
+/// match set when a later candidate or budget check fails.
+fn finish_verify_observation(
+    diagnostic: Option<&DiagnosticContextV1>,
+    span: Option<DiagnosticSpanGuardV1>,
+    attempted: u64,
+    matched: u64,
+    succeeded: bool,
+) {
+    if let (Some(context), Some(span)) = (diagnostic, span) {
+        context.counter(&span, DiagnosticCounterV1::CandidatesVerified, attempted);
+        context.counter(&span, DiagnosticCounterV1::Matches, matched);
+        let _finished = span.finish(if succeeded {
+            DiagnosticTerminalV1::Ok
+        } else {
+            DiagnosticTerminalV1::Error { code: 1 }
+        });
+    }
+}
+
 // Request-local bounded memoization; this is neither persisted nor externally
 // ordered, so hashing keeps repeated-token distance lookup inexpensive.
 #[expect(
@@ -88,6 +115,7 @@ pub(crate) struct CodeSearchTerm {
     needle: String,
     scope: Scope,
     regex: Option<RegexExecutor>,
+    necessary_grams: Option<NecessaryGramExpr>,
 }
 
 /// Validated executor plan derived from the canonical `LqQuery`, not a wire IR.
@@ -105,12 +133,38 @@ fn unsupported(reason: &str) -> CoreError {
     }
 }
 
-fn file_id_at(authority: &FileAuthority, index: usize) -> Result<u64, CoreError> {
-    let key = authority
-        .ordered_keys
-        .get(index)
-        .ok_or_else(|| CoreError::Storage("lexical: file index outside authority".into()))?;
-    authority.id_for_key(key)
+fn is_query_guard_refusal(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded
+                | quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded
+                | quanta_index_contract::SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
+            ..
+        }
+    )
+}
+
+fn metadata_for_id(
+    authority: &FileAuthority,
+    id: u64,
+    budget: &RequestBudgetV1,
+) -> Result<SourceFileMetadata, CoreError> {
+    authority.metadata_for_id(id, Some(budget))?.ok_or_else(|| {
+        CoreError::Storage("lexical: candidate ID is absent from file authority".into())
+    })
+}
+
+fn metadata_for_key(
+    authority: &FileAuthority,
+    key: &SourceFileKey,
+    budget: &RequestBudgetV1,
+) -> Result<SourceFileMetadata, CoreError> {
+    authority
+        .metadata_for_key(key, Some(budget))?
+        .ok_or_else(|| {
+            CoreError::Storage("lexical: candidate key is absent from file authority".into())
+        })
 }
 
 fn byte_offset(value: usize) -> Result<u64, CoreError> {
@@ -284,7 +338,7 @@ impl CodeSearchPlan {
                 ));
             }
             let source = normalize::nfc(text).into_owned();
-            let compiled = if regex {
+            let (compiled, necessary_grams) = if regex {
                 // The normalizer owns an unscoped leading (?i) flag. Scoped
                 // predicates do not have a regex-typed argument. Admit an
                 // equivalent leading flag under case:no and refuse all other
@@ -301,9 +355,10 @@ impl CodeSearchPlan {
                     return Err(unsupported("regex inline case overrides are unsupported"));
                 }
                 let effective = TantivySearcher::regex_source_for_options(body, &query.options);
-                let (_plan, prepared) =
+                let (plan, prepared) =
                     crate::regex::plan_regex_prepared(&effective, &query.options, regex_policy)
                         .map_err(map_regex_plan_error)?;
+                let necessary_grams = plan.necessary_gram_expr().clone();
                 let executor = RegexExecutor::compile_prepared(prepared).map_err(|error| {
                     CoreError::Typed {
                         code: crate::query_errors::regex_wire_code(error.code),
@@ -313,15 +368,16 @@ impl CodeSearchPlan {
                 if executor.hir().properties().minimum_len() == Some(0) {
                     return Err(unsupported("zero-width regex matches are unsupported"));
                 }
-                Some(executor)
+                (Some(executor), Some(necessary_grams))
             } else {
-                None
+                (None, None)
             };
             terms.push(CodeSearchTerm {
                 needle: normalize::apply_case(&source, case).into_owned(),
                 text: source,
                 scope,
                 regex: compiled,
+                necessary_grams,
             });
         }
         Ok(Self {
@@ -342,6 +398,59 @@ impl CodeSearchPlan {
             && valid_code_search_typo_identifier(&term.text))
         .then_some(term.text.as_str())
     }
+
+    /// Bounded structural counts from the already admitted regex plan. They
+    /// describe syntax and necessary prefilter leaves, not match cardinality.
+    fn diagnostic_regex_shape(&self) -> (u64, u64, u64) {
+        let mut literals = 0_u64;
+        let mut alternatives = 0_u64;
+        let mut grams = 0_u64;
+        for term in &self.terms {
+            if let Some(regex) = &term.regex {
+                count_hir_shape(regex.hir(), &mut literals, &mut alternatives);
+            }
+            if let Some(expr) = &term.necessary_grams {
+                count_necessary_grams(expr, &mut grams);
+            }
+        }
+        (literals, alternatives, grams)
+    }
+}
+
+fn count_hir_shape(hir: &regex_syntax::hir::Hir, literals: &mut u64, alternatives: &mut u64) {
+    use regex_syntax::hir::HirKind;
+
+    match hir.kind() {
+        HirKind::Literal(_) => *literals = literals.saturating_add(1),
+        HirKind::Alternation(children) => {
+            for child in children {
+                *alternatives = alternatives.saturating_add(1);
+                count_hir_shape(child, literals, alternatives);
+            }
+        }
+        HirKind::Concat(children) => {
+            for child in children {
+                count_hir_shape(child, literals, alternatives);
+            }
+        }
+        HirKind::Capture(capture) => count_hir_shape(&capture.sub, literals, alternatives),
+        HirKind::Repetition(repetition) => {
+            count_hir_shape(&repetition.sub, literals, alternatives);
+        }
+        HirKind::Empty | HirKind::Class(_) | HirKind::Look(_) => {}
+    }
+}
+
+fn count_necessary_grams(expr: &NecessaryGramExpr, grams: &mut u64) {
+    match expr {
+        NecessaryGramExpr::Gram(_) => *grams = grams.saturating_add(1),
+        NecessaryGramExpr::And(children) | NecessaryGramExpr::Or(children) => {
+            for child in children {
+                count_necessary_grams(child, grams);
+            }
+        }
+        NecessaryGramExpr::AllDocs => {}
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -356,6 +465,139 @@ struct Witness {
     score: u32,
     occurrences: u8,
     mapping_case: CaseMode,
+}
+
+/// File rows have fixed line columns (zero) until selected-page preview
+/// projection. Keep only the best page keys and their exact-match witnesses.
+struct FilePageRow {
+    source: SourceFileKey,
+    candidate_id: String,
+    score: f32,
+    witness: Option<Witness>,
+    component_name: Option<String>,
+}
+
+impl FilePageRow {
+    fn order_key(&self) -> LexicalRowOrderKey<'_> {
+        LexicalRowOrderKey {
+            source_repo_id: self.source.source_repo_id.as_str(),
+            score: self.score,
+            repo_relative_path: self.source.repo_relative_path.as_str(),
+            start_line: 0,
+            end_line: 0,
+            candidate_id: &self.candidate_id,
+        }
+    }
+}
+
+struct LatestFileRow(FilePageRow);
+
+impl PartialEq for LatestFileRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for LatestFileRow {}
+
+impl PartialOrd for LatestFileRow {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for LatestFileRow {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.order_key().order(&other.0.order_key())
+    }
+}
+
+struct FilePageCollector<'a> {
+    limit: usize,
+    after: Option<&'a LexicalCursor>,
+    cursor_eligible: u64,
+    rows: BinaryHeap<LatestFileRow>,
+}
+
+impl<'a> FilePageCollector<'a> {
+    fn new(limit: usize, after: Option<&'a LexicalCursor>) -> Self {
+        Self {
+            limit,
+            after,
+            cursor_eligible: 0,
+            rows: BinaryHeap::new(),
+        }
+    }
+
+    fn consider(
+        &mut self,
+        source: &SourceFileKey,
+        score: f32,
+        witness: Option<Witness>,
+        component_name: Option<String>,
+    ) -> Result<(), CoreError> {
+        let candidate_id = file_candidate_id(
+            source.source_repo_id.as_str(),
+            source.repo_relative_path.as_str(),
+        )?;
+        let key = LexicalRowOrderKey {
+            source_repo_id: source.source_repo_id.as_str(),
+            score,
+            repo_relative_path: source.repo_relative_path.as_str(),
+            start_line: 0,
+            end_line: 0,
+            candidate_id: &candidate_id,
+        };
+        if self.after.is_some_and(|after| !after.admits(&key)) {
+            return Ok(());
+        }
+        self.cursor_eligible = self.cursor_eligible.checked_add(1).ok_or_else(|| {
+            CoreError::Storage("lexical: cursor eligible file count overflow".into())
+        })?;
+        if self.limit == 0
+            || (self.rows.len() == self.limit
+                && self.rows.peek().is_some_and(|worst| {
+                    key.order(&worst.0.order_key()) != std::cmp::Ordering::Less
+                }))
+        {
+            return Ok(());
+        }
+        let row = LatestFileRow(FilePageRow {
+            source: source.clone(),
+            candidate_id,
+            score,
+            witness,
+            component_name,
+        });
+        if self.rows.len() == self.limit {
+            let mut worst = self.rows.peek_mut().ok_or_else(|| {
+                CoreError::Storage("lexical: full file page heap has no boundary".into())
+            })?;
+            *worst = row;
+        } else {
+            self.rows.try_reserve(1).map_err(|error| {
+                CoreError::Storage(format!("lexical: file page allocation failed: {error}"))
+            })?;
+            self.rows.push(row);
+        }
+        Ok(())
+    }
+
+    fn into_sorted(self) -> (u64, Vec<LatestFileRow>) {
+        // BinaryHeap sorts in ascending Ord order in place. Our Ord is the
+        // canonical page order, so this needs no second page-sized allocation.
+        (self.cursor_eligible, self.rows.into_sorted_vec())
+    }
+}
+
+fn selected_candidate_buffer(len: usize) -> Result<Vec<LexicalCandidate>, CoreError> {
+    let mut candidates = Vec::new();
+    candidates.try_reserve_exact(len).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: selected file page allocation failed: {error}"
+        ))
+    })?;
+    Ok(candidates)
 }
 
 struct ScoredMatch {
@@ -377,11 +619,13 @@ struct CodeSearchTypoRequest<'a> {
     constraints: &'a QueryConstraintSetV1,
     page: &'a LexicalPageSpec,
     budget: &'a RequestBudgetV1,
+    diagnostic: Option<&'a DiagnosticContextV1>,
 }
 
 fn add_witness_score(
     scored: &mut Option<ScoredMatch>,
-    file: &SourceFile,
+    indexed_text: Option<&str>,
+    indexed_path: &str,
     term: &CodeSearchTerm,
     case: CaseMode,
     term_index: usize,
@@ -391,11 +635,8 @@ fn add_witness_score(
         false
     } else {
         match witness.surface {
-            HitSurface::Content => file
-                .indexed_text
-                .as_ref()
-                .is_some_and(|text| text.contains(&term.text)),
-            HitSurface::Path => file.indexed_path.contains(&term.text),
+            HitSurface::Content => indexed_text.is_some_and(|text| text.contains(&term.text)),
+            HitSurface::Path => indexed_path.contains(&term.text),
         }
     };
     let components = CodeSearchScoreComponentsV1 {
@@ -477,9 +718,88 @@ fn score_terms_observed(
         let Some(witness) = choose_witness(file, term, case, budget)? else {
             return Ok(None);
         };
-        add_witness_score(&mut scored, file, term, case, index, witness);
+        add_witness_score(
+            &mut scored,
+            file.indexed_text.as_deref(),
+            &file.indexed_path,
+            term,
+            case,
+            index,
+            witness,
+        );
     }
     Ok(scored)
+}
+
+fn score_path_terms_observed(
+    file: &SourceFileMetadata,
+    terms: &[CodeSearchTerm],
+    case: CaseMode,
+    mut scored: Option<ScoredMatch>,
+    selection: TermsToScore,
+    budget: &RequestBudgetV1,
+    stats: &mut CodeSearchExecutionStatsV1,
+) -> Result<Option<ScoredMatch>, CoreError> {
+    for (index, term) in terms.iter().enumerate() {
+        if !matches!(term.scope, Scope::Path) {
+            return Err(CoreError::Storage(
+                "lexical: path-only scorer received content scope".into(),
+            ));
+        }
+        if (matches!(selection, TermsToScore::Literals) && term.regex.is_some())
+            || (matches!(selection, TermsToScore::Regex) && term.regex.is_none())
+        {
+            continue;
+        }
+        let text = if term.regex.is_some() || case == CaseMode::Sensitive {
+            file.indexed_path.as_str()
+        } else {
+            file.folded_path.as_str()
+        };
+        stats.source_surface_bytes_considered = stats
+            .source_surface_bytes_considered
+            .saturating_add(checked_count_u64(text.len(), "source surface bytes")?);
+        let witness = match &term.regex {
+            Some(regex) => best_regex_in(text, regex, HitSurface::Path, budget)?,
+            None => best_in(text, &term.needle, HitSurface::Path, case, budget)?,
+        };
+        let Some(witness) = witness else {
+            return Ok(None);
+        };
+        add_witness_score(
+            &mut scored,
+            None,
+            &file.indexed_path,
+            term,
+            case,
+            index,
+            witness,
+        );
+    }
+    Ok(scored)
+}
+
+fn finish_path_score(
+    file: &SourceFileMetadata,
+    terms: &[CodeSearchTerm],
+    case: CaseMode,
+    scored: &mut ScoredMatch,
+    budget: &RequestBudgetV1,
+) -> Result<f32, CoreError> {
+    let path = match case {
+        CaseMode::Sensitive => file.indexed_path.as_str(),
+        CaseMode::Folded => file.folded_path.as_str(),
+    };
+    scored.components.proximity = match min_cover_gap(path, terms, HitSurface::Path, budget)? {
+        Some(gap) if gap < 32 => 32_u32.saturating_sub(u32::try_from(gap).map_err(|error| {
+            CoreError::Storage(format!("lexical: path proximity gap overflow: {error}"))
+        })?),
+        _ => 0,
+    };
+    let total = u16::try_from(scored.components.total()).map_err(|error| {
+        CoreError::Storage(format!("lexical: code search score overflow: {error}"))
+    })?;
+    Ok(f32::from(total))
 }
 
 fn finish_score(
@@ -1120,45 +1440,6 @@ fn proximity_bonus(
     Ok(32_u32.saturating_sub(gap))
 }
 
-struct LiteralPrefilter<'index> {
-    // Query-owned posting references point into bounded lists loaded once
-    // across all terms and both requested surfaces.
-    postings: [Option<Vec<&'index [u64]>>; 2],
-}
-
-impl LiteralPrefilter<'_> {
-    fn possible_in(&self, id: u64) -> bool {
-        self.postings
-            .iter()
-            .flatten()
-            .any(|lists| lists.iter().all(|list| list.binary_search(&id).is_ok()))
-    }
-
-    fn seed_size(&self) -> usize {
-        self.postings
-            .iter()
-            .flatten()
-            .map(|lists| lists.first().map_or(0, |list| list.len()))
-            .sum()
-    }
-}
-
-fn file_for_id(authority: &FileAuthority, id: u64) -> Result<&SourceFile, CoreError> {
-    authority.file_for_id(id)
-}
-
-fn posting_term_lists<'a>(
-    index: &'a BTreeMap<Trigram, Vec<u64>>,
-    grams: &[Trigram],
-) -> Vec<&'a [u64]> {
-    let mut lists: Vec<_> = grams
-        .iter()
-        .map(|gram| index.get(gram).map_or(&[][..], Vec::as_slice))
-        .collect();
-    lists.sort_by_key(|list| list.len());
-    lists
-}
-
 /// Generate one file-level AND set. A broad individual posting is never
 /// charged as a completed candidate before the remaining terms filter it.
 #[cfg(test)]
@@ -1182,6 +1463,7 @@ fn candidate_ids(
     )
 }
 
+#[cfg(test)]
 fn candidate_ids_observed(
     authority: &FileAuthority,
     terms: &[CodeSearchTerm],
@@ -1192,11 +1474,49 @@ fn candidate_ids_observed(
     stats: &mut CodeSearchExecutionStatsV1,
     candidate_cap: usize,
 ) -> Result<BTreeMap<u64, ScoredMatch>, CoreError> {
+    let mut hits = BTreeMap::new();
+    for_each_candidate_observed(
+        authority,
+        terms,
+        case,
+        eligible,
+        budget,
+        work,
+        stats,
+        candidate_cap,
+        |id, scored, _file, _stats| {
+            let _previous = hits.insert(id, scored);
+            Ok(())
+        },
+    )?;
+    Ok(hits)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one literal source-verification pass with caller-owned exact-match consumption"
+)]
+fn for_each_candidate_observed<F>(
+    authority: &FileAuthority,
+    terms: &[CodeSearchTerm],
+    case: CaseMode,
+    eligible: Option<&BTreeSet<u64>>,
+    budget: &RequestBudgetV1,
+    work: &mut QueryWork,
+    stats: &mut CodeSearchExecutionStatsV1,
+    candidate_cap: usize,
+    mut on_match: F,
+) -> Result<(), CoreError>
+where
+    F: FnMut(
+        u64,
+        ScoredMatch,
+        Option<&SourceFile>,
+        &mut CodeSearchExecutionStatsV1,
+    ) -> Result<(), CoreError>,
+{
     let literals: Vec<_> = terms.iter().filter(|term| term.regex.is_none()).collect();
     let mut prepared = Vec::new();
-    let mut all_grams = Vec::new();
-    let mut need_content = false;
-    let mut need_path = false;
     for term in &literals {
         // Per-character fold preserves every sensitive substring. The
         // original NFC text remains the final matching authority.
@@ -1210,107 +1530,90 @@ fn candidate_ids_observed(
         let mut grams: Vec<_> = trigrams_of(needle.as_bytes()).collect();
         grams.sort_unstable();
         grams.dedup();
-        match term.scope {
-            Scope::Both => {
-                need_content = true;
-                need_path = true;
-            }
-            Scope::Content => need_content = true,
-            Scope::Path => need_path = true,
-        }
-        all_grams.extend_from_slice(&grams);
         prepared.push((*term, grams));
     }
-    all_grams.sort_unstable();
-    all_grams.dedup();
-    let content_lists = if need_content {
-        Some(authority.posting_lists(
-            crate::file_authority::PostingSurface::Content,
-            &all_grams,
-            work,
-            budget,
-        )?)
-    } else {
-        None
-    };
-    let path_lists = if need_path {
-        Some(authority.posting_lists(
-            crate::file_authority::PostingSurface::Path,
-            &all_grams,
-            work,
-            budget,
-        )?)
-    } else {
-        None
-    };
-    let mut indexed = Vec::new();
-    for (term, grams) in &prepared {
-        let postings = match term.scope {
-            Scope::Both => [
-                content_lists
-                    .as_ref()
-                    .map(|index| posting_term_lists(index, grams)),
-                path_lists
-                    .as_ref()
-                    .map(|index| posting_term_lists(index, grams)),
-            ],
-            Scope::Content => [
-                content_lists
-                    .as_ref()
-                    .map(|index| posting_term_lists(index, grams)),
-                None,
-            ],
-            Scope::Path => [
-                path_lists
-                    .as_ref()
-                    .map(|index| posting_term_lists(index, grams)),
-                None,
-            ],
-        };
-        indexed.push(LiteralPrefilter { postings });
-    }
-    let mut hits = BTreeMap::new();
-    if let Some((seed_position, seed)) = indexed
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, term)| term.seed_size())
-    {
-        for lists in seed.postings.iter().flatten() {
-            budget.checkpoint("lexical:code-search-trigram")?;
-            let shortest = lists.first().map_or(&[][..], |list| *list);
-            stats.posting_probes = stats.posting_probes.saturating_add(checked_count_u64(
-                shortest.len(),
-                "shortest trigram posting",
-            )?);
-            for &id in shortest {
+    let mut verified_count = 0_usize;
+    if !prepared.is_empty() {
+        let mut possible: Option<Vec<u64>> = None;
+        for (term, grams) in prepared {
+            budget.checkpoint("lexical:code-search-literal-postings")?;
+            let posting_before = work.posting_memberships();
+            let mut conjuncts = Vec::new();
+            conjuncts.try_reserve(grams.len()).map_err(|error| {
+                CoreError::Storage(format!("lexical: reserve literal gram plan: {error}"))
+            })?;
+            conjuncts.extend(grams.into_iter().map(NecessaryGramExpr::Gram));
+            let expression = NecessaryGramExpr::And(conjuncts);
+            let content = if matches!(term.scope, Scope::Both | Scope::Content) {
+                authority.necessary_candidates(
+                    crate::file_authority::PostingSurface::Content,
+                    &expression,
+                    work,
+                    budget,
+                )?
+            } else {
+                Some(Vec::new())
+            };
+            let path = if matches!(term.scope, Scope::Both | Scope::Path) {
+                authority.necessary_candidates(
+                    crate::file_authority::PostingSurface::Path,
+                    &expression,
+                    work,
+                    budget,
+                )?
+            } else {
+                Some(Vec::new())
+            };
+            let (Some(content), Some(path)) = (content, path) else {
+                return Err(CoreError::Storage(
+                    "lexical: nonempty literal gram conjunction became universal".into(),
+                ));
+            };
+            let posting_visits = work
+                .posting_memberships()
+                .checked_sub(posting_before)
+                .ok_or_else(|| CoreError::Storage("lexical: posting work regressed".into()))?;
+            stats.posting_probes = stats.posting_probes.saturating_add(posting_visits);
+            let term_possible = union_sorted_ids(content, path, budget)?;
+            possible = Some(match possible {
+                None => term_possible,
+                Some(prior) => intersect_sorted_ids(&prior, &term_possible, budget)?,
+            });
+            if possible.as_ref().is_some_and(Vec::is_empty) {
+                break;
+            }
+        }
+        for (visits, id) in possible.into_iter().flatten().enumerate() {
+            if visits.is_multiple_of(256) {
                 budget.checkpoint("lexical:code-search-trigram-posting")?;
-                if hits.contains_key(&id) || eligible.is_some_and(|ids| !ids.contains(&id)) {
-                    continue;
-                }
-                if !lists.iter().all(|list| list.binary_search(&id).is_ok()) {
-                    continue;
-                }
-                let mut rejected = false;
-                for (position, term) in indexed.iter().enumerate() {
-                    if position != seed_position {
-                        budget.checkpoint("lexical:code-search-term-postings")?;
-                        if !term.possible_in(id) {
-                            rejected = true;
-                            break;
-                        }
-                    }
-                }
-                if rejected {
-                    continue;
-                }
-                let file = file_for_id(authority, id)?;
-                stats.literal_source_verification_attempts = stats
-                    .literal_source_verification_attempts
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        CoreError::Storage("lexical: verification work count overflow".into())
-                    })?;
-                let Some(scored) = score_terms_observed(
+            }
+            if eligible.is_some_and(|ids| !ids.contains(&id)) {
+                continue;
+            }
+            stats.literal_source_verification_attempts = stats
+                .literal_source_verification_attempts
+                .checked_add(1)
+                .ok_or_else(|| {
+                    CoreError::Storage("lexical: verification work count overflow".into())
+                })?;
+            let path_only = terms.iter().all(|term| matches!(term.scope, Scope::Path));
+            let mut full = None;
+            let scored = if path_only {
+                score_path_terms_observed(
+                    &metadata_for_id(authority, id, budget)?,
+                    terms,
+                    case,
+                    None,
+                    TermsToScore::Literals,
+                    budget,
+                    stats,
+                )?
+            } else {
+                full = Some(authority.load_file_for_id(id, budget)?);
+                let file = full.as_ref().ok_or_else(|| {
+                    CoreError::Storage("lexical: literal source load disappeared".into())
+                })?;
+                score_terms_observed(
                     file,
                     terms,
                     case,
@@ -1319,25 +1622,29 @@ fn candidate_ids_observed(
                     budget,
                     Some(stats),
                 )?
-                else {
-                    continue;
-                };
-                if hits.len() >= candidate_cap {
-                    return Err(CoreError::Typed {
-                        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
-                        message: "lexical code search: verified file candidate set exceeds cap".into(),
-                    });
-                }
-                let _previous = hits.insert(id, scored);
+            };
+            let Some(scored) = scored else {
+                continue;
+            };
+            if verified_count >= candidate_cap {
+                return Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                    message: "lexical code search: verified file candidate set exceeds cap".into(),
+                });
             }
+            verified_count = verified_count.saturating_add(1);
+            on_match(id, scored, full.as_ref(), stats)?;
         }
-        return Ok(hits);
+        return Ok(());
     }
 
     let scope = scope_union(literals.iter().map(|term| term.scope))
         .ok_or_else(|| CoreError::Storage("lexical: no literal candidate seed".into()))?;
     let source_bytes = source_bytes_checked(authority, scope, case, eligible, budget)?;
-    if eligible.map_or(authority.ordered_keys.len(), BTreeSet::len) > MAX_SHORT_SCAN_FILES
+    let all_files = usize::try_from(authority.len())
+        .map_err(|error| CoreError::Storage(format!("lexical: file count width: {error}")))?;
+    if eligible.map_or(all_files, BTreeSet::len) > MAX_SHORT_SCAN_FILES
         || source_bytes > MAX_SHORT_SCAN_SOURCE_BYTES
     {
         return Err(CoreError::Typed {
@@ -1347,35 +1654,57 @@ fn candidate_ids_observed(
             ),
         });
     }
-    for (position, key) in authority.ordered_keys.iter().enumerate() {
-        budget.checkpoint("lexical:code-search-short-verify")?;
-        let id = file_id_at(authority, position)?;
+    authority.scan_sources(budget, &mut |metadata| {
+        let id = metadata.logical_id;
         if eligible.is_some_and(|ids| !ids.contains(&id)) {
-            continue;
+            return Ok(());
         }
-        let file = authority
-            .files
-            .get(key)
-            .ok_or_else(|| CoreError::Storage("lexical: file authority id has no source".into()))?;
         stats.literal_source_verification_attempts = stats
             .literal_source_verification_attempts
             .checked_add(1)
             .ok_or_else(|| {
                 CoreError::Storage("lexical: verification work count overflow".into())
             })?;
-        if let Some(scored) = score_terms_observed(
-            file,
-            terms,
-            case,
-            None,
-            TermsToScore::Literals,
-            budget,
-            Some(stats),
-        )? {
-            let _previous = hits.insert(id, scored);
+        let mut full = None;
+        let scored = if terms.iter().all(|term| matches!(term.scope, Scope::Path)) {
+            score_path_terms_observed(
+                &metadata,
+                terms,
+                case,
+                None,
+                TermsToScore::Literals,
+                budget,
+                stats,
+            )?
+        } else {
+            full = Some(authority.load_file_for_key(&metadata.source.file, budget)?);
+            let file = full.as_ref().ok_or_else(|| {
+                CoreError::Storage("lexical: short literal source load disappeared".into())
+            })?;
+            score_terms_observed(
+                file,
+                terms,
+                case,
+                None,
+                TermsToScore::Literals,
+                budget,
+                Some(stats),
+            )?
+        };
+        if let Some(scored) = scored {
+            if verified_count >= candidate_cap {
+                return Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                    message: "lexical code search: verified file candidate set exceeds cap".into(),
+                });
+            }
+            verified_count = verified_count.saturating_add(1);
+            on_match(id, scored, full.as_ref(), stats)?;
         }
-    }
-    Ok(hits)
+        Ok(())
+    })?;
+    Ok(())
 }
 fn source_bytes_checked(
     authority: &FileAuthority,
@@ -1385,20 +1714,12 @@ fn source_bytes_checked(
     budget: &RequestBudgetV1,
 ) -> Result<usize, CoreError> {
     let mut total = 0_usize;
-    for (position, key) in authority.ordered_keys.iter().enumerate() {
-        if position % 256 == 0 {
-            budget.checkpoint("lexical:code-search-source-size")?;
+    authority.scan_sources(budget, &mut |file| {
+        if eligible.is_none_or(|ids| ids.contains(&file.logical_id)) {
+            total = total.saturating_add(metadata_scanned_bytes(&file, scope, case));
         }
-        let id = file_id_at(authority, position)?;
-        if eligible.is_some_and(|ids| !ids.contains(&id)) {
-            continue;
-        }
-        let file = authority
-            .files
-            .get(key)
-            .ok_or_else(|| CoreError::Storage("lexical: file authority id has no source".into()))?;
-        total = total.saturating_add(scanned_bytes(file, scope, case));
-    }
+        Ok(())
+    })?;
     budget.checkpoint("lexical:code-search-source-size-end")?;
     Ok(total)
 }
@@ -1409,6 +1730,22 @@ fn scanned_bytes(file: &SourceFile, scope: Scope, case: CaseMode) -> usize {
         CaseMode::Folded => file.folded_text.as_ref(),
     }
     .map_or(0, |text| text.len());
+    let path = match case {
+        CaseMode::Sensitive => file.indexed_path.len(),
+        CaseMode::Folded => file.folded_path.len(),
+    };
+    match scope {
+        Scope::Both => content.saturating_add(path),
+        Scope::Content => content,
+        Scope::Path => path,
+    }
+}
+
+fn metadata_scanned_bytes(file: &SourceFileMetadata, scope: Scope, case: CaseMode) -> usize {
+    let content = match case {
+        CaseMode::Sensitive => file.indexed_text_bytes,
+        CaseMode::Folded => file.folded_text_bytes,
+    };
     let path = match case {
         CaseMode::Sensitive => file.indexed_path.len(),
         CaseMode::Folded => file.folded_path.len(),
@@ -1450,6 +1787,157 @@ fn regex_scan_scope(terms: &[CodeSearchTerm]) -> Option<Scope> {
     )
 }
 
+/// Adapt a raw regex condition to F15's folded posting bytes.
+///
+/// ASCII bytes within a raw match survive the per-scalar fold as lowercase
+/// bytes. A raw gram containing non-ASCII bytes has no such byte-level
+/// guarantee, so it contributes no filter. Preserve AND/OR structure so the
+/// weakening remains sound for optional branches and alternations.
+fn folded_regex_grams(expr: &NecessaryGramExpr) -> NecessaryGramExpr {
+    match expr {
+        NecessaryGramExpr::Gram(gram) if gram.is_ascii() => {
+            NecessaryGramExpr::Gram(gram.map(|byte| byte.to_ascii_lowercase()))
+        }
+        NecessaryGramExpr::AllDocs | NecessaryGramExpr::Gram(_) => NecessaryGramExpr::AllDocs,
+        NecessaryGramExpr::And(parts) => {
+            NecessaryGramExpr::And(parts.iter().map(folded_regex_grams).collect())
+        }
+        NecessaryGramExpr::Or(parts) => {
+            NecessaryGramExpr::Or(parts.iter().map(folded_regex_grams).collect())
+        }
+    }
+}
+
+fn union_sorted_ids(
+    left: Vec<u64>,
+    right: Vec<u64>,
+    budget: &RequestBudgetV1,
+) -> Result<Vec<u64>, CoreError> {
+    if left.is_empty() {
+        return Ok(right);
+    }
+    if right.is_empty() {
+        return Ok(left);
+    }
+    let capacity = left
+        .len()
+        .checked_add(right.len())
+        .ok_or_else(|| CoreError::Storage("lexical: regex candidate union size overflow".into()))?;
+    let mut merged = Vec::new();
+    merged.try_reserve_exact(capacity).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: regex candidate union allocation failed: {error}"
+        ))
+    })?;
+    let (mut a, mut b) = (0_usize, 0_usize);
+    while a < left.len() || b < right.len() {
+        if merged.len().is_multiple_of(256) {
+            budget.checkpoint("lexical:code-search-regex-posting-union")?;
+        }
+        let next = match (left.get(a), right.get(b)) {
+            (Some(&x), Some(&y)) if x <= y => {
+                a = a.saturating_add(1);
+                x
+            }
+            (_, Some(&y)) => {
+                b = b.saturating_add(1);
+                y
+            }
+            (Some(&x), None) => {
+                a = a.saturating_add(1);
+                x
+            }
+            (None, None) => break,
+        };
+        if merged.last() != Some(&next) {
+            merged.push(next);
+        }
+    }
+    budget.checkpoint("lexical:code-search-regex-posting-union-end")?;
+    Ok(merged)
+}
+
+fn intersect_sorted_ids(
+    left: &[u64],
+    right: &[u64],
+    budget: &RequestBudgetV1,
+) -> Result<Vec<u64>, CoreError> {
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(left.len().min(right.len()))
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: regex candidate intersection allocation failed: {error}"
+            ))
+        })?;
+    let (mut a, mut b) = (0_usize, 0_usize);
+    while let (Some(&x), Some(&y)) = (left.get(a), right.get(b)) {
+        if (a.saturating_add(b)).is_multiple_of(256) {
+            budget.checkpoint("lexical:code-search-regex-posting-intersection")?;
+        }
+        match x.cmp(&y) {
+            std::cmp::Ordering::Less => a = a.saturating_add(1),
+            std::cmp::Ordering::Greater => b = b.saturating_add(1),
+            std::cmp::Ordering::Equal => {
+                result.push(x);
+                a = a.saturating_add(1);
+                b = b.saturating_add(1);
+            }
+        }
+    }
+    budget.checkpoint("lexical:code-search-regex-posting-intersection-end")?;
+    Ok(result)
+}
+
+fn regex_candidate_ids(
+    authority: &FileAuthority,
+    terms: &[CodeSearchTerm],
+    work: &mut QueryWork,
+    budget: &RequestBudgetV1,
+) -> Result<Option<Vec<u64>>, CoreError> {
+    let mut joined: Option<Vec<u64>> = None;
+    for term in terms.iter().filter(|term| term.regex.is_some()) {
+        budget.checkpoint("lexical:code-search-regex-postings")?;
+        let expr = term.necessary_grams.as_ref().ok_or_else(|| {
+            CoreError::Storage("lexical: compiled regex lacks necessary gram plan".into())
+        })?;
+        let folded = folded_regex_grams(expr);
+        let content = if matches!(term.scope, Scope::Both | Scope::Content) {
+            authority.necessary_candidates(
+                crate::file_authority::PostingSurface::Content,
+                &folded,
+                work,
+                budget,
+            )?
+        } else {
+            Some(Vec::new())
+        };
+        let path = if matches!(term.scope, Scope::Both | Scope::Path) {
+            authority.necessary_candidates(
+                crate::file_authority::PostingSurface::Path,
+                &folded,
+                work,
+                budget,
+            )?
+        } else {
+            Some(Vec::new())
+        };
+        let term_ids = match (content, path) {
+            (None, _) if matches!(term.scope, Scope::Both | Scope::Content) => None,
+            (_, None) if matches!(term.scope, Scope::Both | Scope::Path) => None,
+            (Some(left), Some(right)) => Some(union_sorted_ids(left, right, budget)?),
+            _ => None,
+        };
+        if let Some(term_ids) = term_ids {
+            joined = Some(match joined {
+                None => term_ids,
+                Some(current) => intersect_sorted_ids(&current, &term_ids, budget)?,
+            });
+        }
+    }
+    Ok(joined)
+}
+
 fn language_eligible_ids(
     authority: &FileAuthority,
     constraints: &QueryConstraintSetV1,
@@ -1459,19 +1947,12 @@ fn language_eligible_ids(
         return Ok(None);
     }
     let mut ids = BTreeSet::new();
-    for (index, key) in authority.ordered_keys.iter().enumerate() {
-        if index % 256 == 0 {
-            budget.checkpoint("lexical:code-search-language-filter")?;
-        }
-        let file = authority
-            .files
-            .get(key)
-            .ok_or_else(|| CoreError::Storage("lexical: file authority id has no source".into()))?;
+    authority.scan_sources(budget, &mut |file| {
         if constraints.language_any_of.contains(&file.language) {
-            let id = file_id_at(authority, index)?;
-            let _inserted = ids.insert(id);
+            let _inserted = ids.insert(file.logical_id);
         }
-    }
+        Ok(())
+    })?;
     budget.checkpoint("lexical:code-search-language-filter-end")?;
     Ok(Some(ids))
 }
@@ -1487,8 +1968,8 @@ fn admit_regex_scan(
         if position % 256 == 0 {
             budget.checkpoint("lexical:code-search-regex-admission")?;
         }
-        let file = authority.file_for_id(id)?;
-        bytes = bytes.saturating_add(scanned_bytes(file, scope, CaseMode::Sensitive));
+        let file = metadata_for_id(authority, id, budget)?;
+        bytes = bytes.saturating_add(metadata_scanned_bytes(&file, scope, CaseMode::Sensitive));
         if position >= MAX_REGEX_SCAN_FILES || bytes > MAX_REGEX_SCAN_SOURCE_BYTES {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
@@ -1519,15 +2000,15 @@ pub(crate) fn file_candidate_id(repo: &str, path: &str) -> Result<String, CoreEr
 }
 
 fn path_highlight(
-    file: &SourceFile,
+    raw: &str,
+    indexed_path: &str,
     witness: &Witness,
     budget: &RequestBudgetV1,
 ) -> Result<Option<HighlightSpan>, CoreError> {
     budget.checkpoint("lexical:code-search-path-preview")?;
-    let raw = file.source.file.repo_relative_path.as_str();
     let mapped = MappedText::new(
         raw,
-        &file.indexed_path,
+        indexed_path,
         witness.mapping_case,
         raw.len().saturating_mul(4).max(1),
         raw.len().saturating_mul(8).max(4),
@@ -1714,16 +2195,12 @@ fn content_witness_lines(
     ))
 }
 
-fn file_candidate(
+fn base_file_candidate(
     owner: &TantivySearcher,
-    file: &SourceFile,
+    source: &quanta_index_contract::SourceFileRevision,
     score: f32,
-    focus: Option<&Witness>,
-    materialize_preview: bool,
-    budget: &RequestBudgetV1,
 ) -> Result<LexicalCandidate, CoreError> {
-    let source = file.source.clone();
-    let mut candidate = LexicalCandidate {
+    Ok(LexicalCandidate {
         source_repo_id: source.file.source_repo_id.clone(),
         source: Some(source.clone()),
         preview: None,
@@ -1741,7 +2218,90 @@ fn file_candidate(
         snippet: String::new(),
         snippet_hit_offset: None,
         highlights: Vec::new(),
+    })
+}
+
+fn set_path_preview(
+    candidate: &mut LexicalCandidate,
+    source: &quanta_index_contract::SourceFileRevision,
+    indexed_path: &str,
+    witness: &Witness,
+    budget: &RequestBudgetV1,
+) -> Result<(), CoreError> {
+    let Some(highlight) = path_highlight(
+        source.file.repo_relative_path.as_str(),
+        indexed_path,
+        witness,
+        budget,
+    )?
+    else {
+        candidate.preview = Some(PreviewMetadata::unavailable(
+            PreviewKind::Path,
+            PreviewUnavailableReason::WorkBudget,
+            Some(source.clone()),
+        ));
+        return Ok(());
     };
+    candidate.snippet = source.file.repo_relative_path.as_str().to_string();
+    candidate.snippet_hit_offset = Some(highlight.start);
+    candidate.highlights.push(highlight);
+    candidate.preview = Some(PreviewMetadata {
+        kind: PreviewKind::Path,
+        source: Some(source.clone()),
+        chunk_start_byte: None,
+        original_focus: None,
+        original_context: None,
+        normalized_focus: None,
+        normalization_equivalent: false,
+        unavailable_reason: None,
+    });
+    candidate.validate_source_metadata().map_err(|error| {
+        CoreError::Storage(format!("lexical: path candidate invariant: {error}"))
+    })?;
+    Ok(())
+}
+
+fn path_file_candidate(
+    owner: &TantivySearcher,
+    file: &SourceFileMetadata,
+    score: f32,
+    witness: Option<&Witness>,
+    budget: &RequestBudgetV1,
+) -> Result<LexicalCandidate, CoreError> {
+    let mut candidate = base_file_candidate(owner, &file.source, score)?;
+    let Some(witness) = witness else {
+        candidate.preview = Some(PreviewMetadata::unavailable(
+            PreviewKind::SourceFile,
+            PreviewUnavailableReason::NoPositiveWitness,
+            Some(file.source.clone()),
+        ));
+        return Ok(candidate);
+    };
+    if !matches!(witness.surface, HitSurface::Path) {
+        return Err(CoreError::Storage(
+            "lexical: path-only candidate has content witness".into(),
+        ));
+    }
+    set_path_preview(
+        &mut candidate,
+        &file.source,
+        &file.indexed_path,
+        witness,
+        budget,
+    )?;
+    Ok(candidate)
+}
+
+fn file_candidate(
+    owner: &TantivySearcher,
+    file: &SourceFile,
+    score: f32,
+    focus: Option<&Witness>,
+    materialize_preview: bool,
+    budget: &RequestBudgetV1,
+) -> Result<LexicalCandidate, CoreError> {
+    let source = file.source.clone();
+    let mut candidate = base_file_candidate(owner, &source, score)?;
     if !materialize_preview {
         return Ok(candidate);
     }
@@ -1760,30 +2320,7 @@ fn file_candidate(
         (candidate.start_line, candidate.end_line) = content_witness_lines(file, witness, budget)?;
     }
     if matches!(witness.surface, HitSurface::Path) {
-        let Some(highlight) = path_highlight(file, witness, budget)? else {
-            candidate.preview = Some(PreviewMetadata::unavailable(
-                PreviewKind::Path,
-                PreviewUnavailableReason::WorkBudget,
-                Some(source),
-            ));
-            return Ok(candidate);
-        };
-        candidate.snippet = source.file.repo_relative_path.as_str().to_string();
-        candidate.snippet_hit_offset = Some(highlight.start);
-        candidate.highlights.push(highlight);
-        candidate.preview = Some(PreviewMetadata {
-            kind: PreviewKind::Path,
-            source: Some(source),
-            chunk_start_byte: None,
-            original_focus: None,
-            original_context: None,
-            normalized_focus: None,
-            normalization_equivalent: false,
-            unavailable_reason: None,
-        });
-        candidate.validate_source_metadata().map_err(|error| {
-            CoreError::Storage(format!("lexical: path candidate invariant: {error}"))
-        })?;
+        set_path_preview(&mut candidate, &source, &file.indexed_path, witness, budget)?;
         return Ok(candidate);
     }
     let unavailable = |reason| {
@@ -1924,21 +2461,31 @@ impl TantivySearcher {
         &self,
         candidate_id: &str,
         budget: &RequestBudgetV1,
-    ) -> Result<Option<&SourceFile>, CoreError> {
+    ) -> Result<Option<SourceFileMetadata>, CoreError> {
         let Some(authority) = &self.file_authority else {
             return Ok(None);
         };
-        for file in authority.files.values() {
-            budget.checkpoint("lexical:code-search-file-presence")?;
+        let scoped = authority.query_scope();
+        Self::code_search_file_by_id_in(&scoped, candidate_id, budget)
+    }
+
+    fn code_search_file_by_id_in(
+        authority: &FileAuthority,
+        candidate_id: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<Option<SourceFileMetadata>, CoreError> {
+        let mut found = None;
+        authority.scan_sources(budget, &mut |file| {
             if file_candidate_id(
                 file.source.file.source_repo_id.as_str(),
                 file.source.file.repo_relative_path.as_str(),
             )? == candidate_id
             {
-                return Ok(Some(file));
+                found = Some(file);
             }
-        }
-        Ok(None)
+            Ok(())
+        })?;
+        Ok(found)
     }
 
     pub(crate) fn explain_code_file(
@@ -1950,11 +2497,13 @@ impl TantivySearcher {
     ) -> Result<LexicalCandidateExplanationV1, CoreError> {
         budget.checkpoint("lexical:code-search-explain-start")?;
         let parsed = CodeSearchPlan::parse(query, &self.regex_policy)?;
-        let authority = self.file_authority.as_ref().ok_or_else(|| CoreError::Typed {
+        let retained = self.file_authority.as_ref().ok_or_else(|| CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
             message: "lexical code search requires rebuilt full-file source authority".into(),
         })?;
-        let Some(file) = self.code_search_file_by_id(candidate_id, budget)? else {
+        let scoped = retained.query_scope();
+        let authority = &scoped;
+        let Some(file) = Self::code_search_file_by_id_in(authority, candidate_id, budget)? else {
             return Ok(LexicalCandidateExplanationV1::NotIndexed);
         };
         let not_matched = || LexicalCandidateExplanationV1::NotMatched {
@@ -1969,10 +2518,11 @@ impl TantivySearcher {
         {
             return Ok(not_matched());
         }
+        let file = authority.load_file_for_key(&file.source.file, budget)?;
         if parsed.typo.is_none()
             && parsed.components.is_none()
             && let Some(mut scored) = score_terms(
-                file,
+                &file,
                 &parsed.terms,
                 parsed.case,
                 None,
@@ -1981,10 +2531,10 @@ impl TantivySearcher {
             )?
         {
             let (score, components) =
-                finish_score(file, &parsed.terms, parsed.case, &mut scored, budget)?;
+                finish_score(&file, &parsed.terms, parsed.case, &mut scored, budget)?;
             let (study, study_refusal) = match ranking::study(
                 self,
-                file,
+                &file,
                 &parsed.terms,
                 parsed.case,
                 components,
@@ -2016,11 +2566,17 @@ impl TantivySearcher {
         // Auto-typo eligibility depends on the original scoped literal set.
         // Reuse that executor for recovery/components, without a top-k cap or
         // narrowing the scope to this file (which could create a false fallback).
-        let fetch = u32::try_from(authority.files.len().max(1)).map_err(|error| {
+        let fetch = u32::try_from(authority.len().max(1)).map_err(|error| {
             CoreError::Storage(format!("lexical: explain file cardinality: {error}"))
         })?;
-        let result =
-            self.search_code_files(query, constraints, &LexicalPageSpec::first(fetch), budget)?;
+        let result = self.search_code_files_plan(
+            authority,
+            &parsed,
+            query,
+            constraints,
+            &LexicalPageSpec::first(fetch),
+            budget,
+        )?;
         Ok(result
             .candidates
             .into_iter()
@@ -2041,6 +2597,10 @@ impl TantivySearcher {
     /// Match ordered components in one stored symbol name before projecting
     /// the result to its immutable source file. The posting conjunction is a
     /// bounded superset; only the stored name decides membership.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one component query and its optional request-local candidate observation"
+    )]
     fn search_code_files_components(
         &self,
         authority: &FileAuthority,
@@ -2049,6 +2609,8 @@ impl TantivySearcher {
         constraints: &QueryConstraintSetV1,
         page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+        attempted_candidates: Option<&mut u64>,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         let candidate_started = Instant::now();
         let mut stats = CodeSearchExecutionStatsV1 {
@@ -2059,38 +2621,41 @@ impl TantivySearcher {
         // does not infer symbol authority. An incomplete census may be
         // excluded only under an explicit raw-name producer attestation and
         // a source-byte proof for this exact query.
-        quanta_index_core::domains::lexical::require_complete_symbol_coverage(
-            self.source_coverage.as_ref(),
-            |entry| {
-                let path = entry.source.file.repo_relative_path.as_str();
-                if !Self::manual_exact_path_allows(path, constraints)
-                    || (!constraints.language_any_of.is_empty()
-                        && !constraints.language_any_of.contains(&entry.language))
-                {
-                    return Ok(false);
-                }
-                if matches!(entry.symbols, SymbolCoverage::Complete { .. }) {
-                    return Ok(true);
-                }
-                if entry.symbol_name_source_policy != SymbolNameSourcePolicyV1::RawAsciiLocalName {
-                    return Ok(true);
-                }
-                let file = authority.files.get(&entry.source.file).ok_or_else(|| {
-                    CoreError::Storage("lexical: component coverage source is absent".into())
-                })?;
-                if file.source != entry.source {
-                    return Err(CoreError::Storage(
-                        "lexical: component coverage source revision differs".into(),
-                    ));
-                }
-                Ok(!source_proves_component_absence(
-                    &file.bytes,
-                    components,
-                    budget,
-                )?)
-            },
-            budget,
-        )?;
+        crate::causal_profile::observe_result(diagnostic, DiagnosticStageV1::QueryVerify, |_| {
+            quanta_index_core::domains::lexical::require_complete_symbol_coverage(
+                self.source_coverage.as_ref(),
+                |entry| {
+                    let path = entry.source.file.repo_relative_path.as_str();
+                    if !Self::manual_exact_path_allows(path, constraints)
+                        || (!constraints.language_any_of.is_empty()
+                            && !constraints.language_any_of.contains(&entry.language))
+                    {
+                        return Ok(false);
+                    }
+                    if matches!(entry.symbols, SymbolCoverage::Complete { .. }) {
+                        return Ok(true);
+                    }
+                    if entry.symbol_name_source_policy
+                        != SymbolNameSourcePolicyV1::RawAsciiLocalName
+                    {
+                        return Ok(true);
+                    }
+                    let file = metadata_for_key(authority, &entry.source.file, budget)?;
+                    if file.source != entry.source {
+                        return Err(CoreError::Storage(
+                            "lexical: component coverage source revision differs".into(),
+                        ));
+                    }
+                    let body = authority.load_file_for_key(&entry.source.file, budget)?;
+                    Ok(!source_proves_component_absence(
+                        &body.bytes,
+                        components,
+                        budget,
+                    )?)
+                },
+                budget,
+            )
+        })?;
         let mut clauses = Vec::with_capacity(components.len());
         let mut unique_components = BTreeSet::new();
         unique_components.extend(components.iter());
@@ -2103,156 +2668,192 @@ impl TantivySearcher {
         let compiled =
             self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), crate::SYMBOL_DOC_KIND);
         let searcher = self.reader.searcher();
-        let rows = self.collect_whole_set(
+        let rows = self.collect_whole_set_observed(
             &searcher,
             &*compiled,
             1.0,
             "code search symbol components",
             budget,
+            attempted_candidates,
         )?;
         let mut files: BTreeMap<quanta_index_contract::SourceFileKey, (u16, String)> =
             BTreeMap::new();
-        for row in rows.iter() {
-            budget.checkpoint("lexical:code-search-symbol-component-verify")?;
-            stats.final_candidate_visits = stats.final_candidate_visits.saturating_add(1);
-            let doc = searcher
-                .doc::<TantivyDocument>(row.address)
-                .map_err(|error| {
-                    CoreError::Storage(format!("lexical: read component symbol: {error}"))
-                })?;
-            let mut names = doc.get_all(self.fields.symbol_local_name);
-            let name = names
-                .next()
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| {
-                    CoreError::Storage("lexical: component symbol lacks local name".into())
-                })?;
-            if names.next().is_some() {
-                return Err(CoreError::Storage(
-                    "lexical: component symbol has duplicate local names".into(),
-                ));
-            }
-            let have = crate::symbol_components::name_components(name);
-            if !crate::symbol_components::contains_ordered_components(&have, components) {
-                continue;
-            }
-            let symbol = self.document_to_symbol_candidate_identity(&doc, 0.0)?;
-            let source = symbol.source.ok_or_else(|| {
-                CoreError::Storage("lexical: component symbol lacks source identity".into())
-            })?;
-            let file = authority.files.get(&source.file).ok_or_else(|| {
-                CoreError::Storage(
-                    "lexical: component symbol file is absent from source authority".into(),
-                )
-            })?;
-            if file.source != source {
-                return Err(CoreError::Storage(
-                    "lexical: component symbol source revision differs from file authority".into(),
-                ));
-            }
-            if constraints
-                .repo_relative_path_exact
-                .as_ref()
-                .is_some_and(|path| path.as_str() != source.file.repo_relative_path.as_str())
-                || (!constraints.language_any_of.is_empty()
-                    && !constraints.language_any_of.contains(&file.language))
-            {
-                continue;
-            }
-            // An exact local-name component sequence precedes a subrun in a
-            // longer name. No body-frequency score enters this typed mode.
-            let score = if have == components { 200 } else { 100 };
-            match files.entry(source.file) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    let _inserted = entry.insert((score, name.to_owned()));
+        let verify_span = diagnostic.and_then(|context| {
+            crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryVerify)
+        });
+        let verify_result = (|| {
+            for row in rows.iter() {
+                budget.checkpoint("lexical:code-search-symbol-component-verify")?;
+                stats.final_candidate_visits = stats.final_candidate_visits.saturating_add(1);
+                let doc = searcher
+                    .doc::<TantivyDocument>(row.address)
+                    .map_err(|error| {
+                        CoreError::Storage(format!("lexical: read component symbol: {error}"))
+                    })?;
+                let mut names = doc.get_all(self.fields.symbol_local_name);
+                let name = names
+                    .next()
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        CoreError::Storage("lexical: component symbol lacks local name".into())
+                    })?;
+                if names.next().is_some() {
+                    return Err(CoreError::Storage(
+                        "lexical: component symbol has duplicate local names".into(),
+                    ));
                 }
-                std::collections::btree_map::Entry::Occupied(mut entry) => {
-                    let prior = entry.get();
-                    if score > prior.0 || (score == prior.0 && name < prior.1.as_str()) {
-                        let _replaced = entry.insert((score, name.to_owned()));
+                let have = crate::symbol_components::name_components(name);
+                if !crate::symbol_components::contains_ordered_components(&have, components) {
+                    continue;
+                }
+                let symbol = self.document_to_symbol_candidate_identity(&doc, 0.0)?;
+                let source = symbol.source.ok_or_else(|| {
+                    CoreError::Storage("lexical: component symbol lacks source identity".into())
+                })?;
+                let file = metadata_for_key(authority, &source.file, budget)?;
+                if file.source != source {
+                    return Err(CoreError::Storage(
+                        "lexical: component symbol source revision differs from file authority"
+                            .into(),
+                    ));
+                }
+                if constraints
+                    .repo_relative_path_exact
+                    .as_ref()
+                    .is_some_and(|path| path.as_str() != source.file.repo_relative_path.as_str())
+                    || (!constraints.language_any_of.is_empty()
+                        && !constraints.language_any_of.contains(&file.language))
+                {
+                    continue;
+                }
+                // An exact local-name component sequence precedes a subrun in a
+                // longer name. No body-frequency score enters this typed mode.
+                let score = if have == components { 200 } else { 100 };
+                match files.entry(source.file) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        let _inserted = entry.insert((score, name.to_owned()));
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        let prior = entry.get();
+                        if score > prior.0 || (score == prior.0 && name < prior.1.as_str()) {
+                            let _replaced = entry.insert((score, name.to_owned()));
+                        }
                     }
                 }
             }
-        }
-        let mut ranked = Vec::with_capacity(files.len());
-        for (key, (score, name)) in files {
-            budget.checkpoint("lexical:code-search-symbol-component-file")?;
-            let file = authority.files.get(&key).ok_or_else(|| {
-                CoreError::Storage("lexical: component result file disappeared".into())
-            })?;
-            let witness = file
-                .folded_text
-                .as_deref()
-                .map(|text| {
-                    best_in(
-                        text,
-                        &name.to_ascii_lowercase(),
-                        HitSurface::Content,
-                        CaseMode::Folded,
-                        budget,
-                    )
-                })
-                .transpose()?
-                .flatten();
-            if let Some(text) = file.folded_text.as_deref() {
-                stats.source_surface_bytes_considered = stats
-                    .source_surface_bytes_considered
-                    .saturating_add(checked_count_u64(text.len(), "source surface bytes")?);
-            }
-            ranked.push((
-                file_candidate(
-                    self,
-                    file,
-                    f32::from(score),
-                    witness.as_ref(),
-                    false,
-                    budget,
-                )?,
-                witness,
-            ));
-            stats.materialized_files = stats.materialized_files.saturating_add(1);
-        }
-        stats.verified_matching_files = stats.materialized_files;
-        stats.candidate_ns = observed_ns(candidate_started)?;
-        let sort_started = Instant::now();
-        ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
-        if let Some(after) = self.page_boundary(page)? {
-            ranked.retain(|(candidate, _)| after.admits(&candidate.order_key()));
-        }
-        let cursor_eligible = u64::try_from(ranked.len()).map_err(|error| {
-            CoreError::Storage(format!("lexical: component file count overflow: {error}"))
-        })?;
-        let exact_total = Some(cursor_eligible);
-        ranked.truncate(Self::page_limit(
+            Ok::<(), CoreError>(())
+        })();
+        finish_verify_observation(
+            diagnostic,
+            verify_span,
+            stats.final_candidate_visits,
+            checked_count_u64(files.len(), "component matching files")?,
+            verify_result.is_ok(),
+        );
+        verify_result?;
+        stats.verified_matching_files = checked_count_u64(files.len(), "component matching files")?;
+        let after = self.page_boundary(page)?;
+        let limit = Self::page_limit(
             query,
             usize::try_from(page.fetch).map_err(|error| {
                 CoreError::Storage(format!("lexical: component fetch overflow: {error}"))
             })?,
-        ));
-        stats.cursor_eligible_files = cursor_eligible;
-        stats.fetched_files = u64::try_from(ranked.len()).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: component fetched file count overflow: {error}"
-            ))
-        })?;
-        stats.sort_page_ns = observed_ns(sort_started)?;
-        let preview_started = Instant::now();
-        for (candidate, witness) in &mut ranked {
-            budget.checkpoint("lexical:code-search-symbol-component-preview")?;
-            let source = candidate.source.as_ref().ok_or_else(|| {
-                CoreError::Storage("lexical: component result lacks source".into())
+        );
+        let mut page_rows = FilePageCollector::new(limit, after.as_deref());
+        let rank_span = diagnostic.and_then(|context| {
+            crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryRank)
+        });
+        let mut rank_attempts = 0_u64;
+        let rank_result = (|| {
+            for (key, (score, name)) in files {
+                rank_attempts = rank_attempts.saturating_add(1);
+                budget.checkpoint("lexical:code-search-symbol-component-file")?;
+                let _file = metadata_for_key(authority, &key, budget)?;
+                page_rows.consider(&key, f32::from(score), None, Some(name))?;
+            }
+            stats.candidate_ns = observed_ns(candidate_started)?;
+            let sort_started = Instant::now();
+            let (cursor_eligible, page_rows) = page_rows.into_sorted();
+            let exact_total = Some(cursor_eligible);
+            stats.cursor_eligible_files = cursor_eligible;
+            stats.fetched_files = u64::try_from(page_rows.len()).map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: component fetched file count overflow: {error}"
+                ))
             })?;
-            let file = authority.files.get(&source.file).ok_or_else(|| {
-                CoreError::Storage("lexical: component preview file disappeared".into())
-            })?;
-            *candidate =
-                file_candidate(self, file, candidate.score, witness.as_ref(), true, budget)?;
-            stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
+            stats.sort_page_ns = observed_ns(sort_started)?;
+            Ok::<_, CoreError>((exact_total, page_rows))
+        })();
+        if let (Some(context), Some(span)) = (diagnostic, rank_span) {
+            context.counter(&span, DiagnosticCounterV1::Candidates, rank_attempts);
+            let _finished = span.finish(DiagnosticTerminalV1::from_result(&rank_result));
         }
-        stats.preview_ns = observed_ns(preview_started)?;
+        let (exact_total, page_rows) = rank_result?;
+        let preview_started = Instant::now();
+        let preview_span = diagnostic.and_then(|context| {
+            crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryProject)
+        });
+        let mut preview_attempts = 0_u64;
+        let mut preview_files_decoded = 0_u64;
+        let preview_result = (|| {
+            let mut candidates = selected_candidate_buffer(page_rows.len())?;
+            for LatestFileRow(row) in page_rows {
+                preview_attempts = preview_attempts.saturating_add(1);
+                budget.checkpoint("lexical:code-search-symbol-component-preview")?;
+                let file = authority.load_preview_file_for_key(
+                    &row.source,
+                    budget,
+                    &mut preview_files_decoded,
+                )?;
+                let witness = file
+                    .folded_text
+                    .as_deref()
+                    .map(|text| {
+                        let name = row.component_name.as_deref().ok_or_else(|| {
+                            CoreError::Storage("lexical: selected component name is absent".into())
+                        })?;
+                        best_in(
+                            text,
+                            &name.to_ascii_lowercase(),
+                            HitSurface::Content,
+                            CaseMode::Folded,
+                            budget,
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
+                if let Some(text) = file.folded_text.as_deref() {
+                    stats.source_surface_bytes_considered = stats
+                        .source_surface_bytes_considered
+                        .saturating_add(checked_count_u64(text.len(), "source surface bytes")?);
+                }
+                candidates.push(file_candidate(
+                    self,
+                    &file,
+                    row.score,
+                    witness.as_ref(),
+                    true,
+                    budget,
+                )?);
+                stats.materialized_files = stats.materialized_files.saturating_add(1);
+                stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
+            }
+            stats.preview_ns = observed_ns(preview_started)?;
+            Ok::<_, CoreError>(candidates)
+        })();
+        if let (Some(context), Some(span)) = (diagnostic, preview_span) {
+            context.counter(&span, DiagnosticCounterV1::Candidates, preview_attempts);
+            context.counter(
+                &span,
+                DiagnosticCounterV1::FilesDecoded,
+                preview_files_decoded,
+            );
+            let _finished = span.finish(DiagnosticTerminalV1::from_result(&preview_result));
+        }
+        let candidates = preview_result?;
         Ok(LexicalSearchPageV1 {
             code_search_stats: Some(stats),
-            candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
+            candidates,
             exact_total,
         })
     }
@@ -2272,6 +2873,7 @@ impl TantivySearcher {
             constraints,
             page,
             budget,
+            diagnostic,
         } = request;
         // Fallback keeps the original candidate clock across the failed
         // literal pass. The typo shortlist clock starts here so that prior
@@ -2309,11 +2911,9 @@ impl TantivySearcher {
         };
         let mut selected = Vec::new();
         let mut source_bytes = 0_usize;
-        for (position, key) in authority.ordered_keys.iter().enumerate() {
-            if position.is_multiple_of(256) {
-                budget.checkpoint("lexical:code-search-typo-admission")?;
-            }
-            let id = file_id_at(authority, position)?;
+        authority.scan_sources(budget, &mut |file| {
+            let id = file.logical_id;
+            let key = &file.source.file;
             if possible.as_ref().is_some_and(|ids| !ids.contains(&id))
                 || eligible.as_ref().is_some_and(|ids| !ids.contains(&id))
                 || constraints
@@ -2321,16 +2921,13 @@ impl TantivySearcher {
                     .as_ref()
                     .is_some_and(|path| key.repo_relative_path.as_str() != path.as_str())
             {
-                continue;
+                return Ok(());
             }
-            let file = authority.files.get(key).ok_or_else(|| {
-                CoreError::Storage("lexical: file authority id has no source".into())
-            })?;
-            let Some(content) = file.indexed_text.as_ref() else {
-                continue;
-            };
-            source_bytes = source_bytes.saturating_add(content.len());
-            selected.push(key);
+            if !file.text_admitted {
+                return Ok(());
+            }
+            source_bytes = source_bytes.saturating_add(file.indexed_text_bytes);
+            selected.push(key.clone());
             if selected.len() > MAX_SHORT_SCAN_FILES || source_bytes > MAX_SHORT_SCAN_SOURCE_BYTES {
                 return Err(CoreError::Typed {
                     code:
@@ -2339,11 +2936,18 @@ impl TantivySearcher {
                         .into(),
                 });
             }
-        }
+            Ok(())
+        })?;
         stats.typo_shortlist_admission_ns = observed_ns(typo_started)?;
         let declaration_started = Instant::now();
-        let declarations = ranking::typo_declaration_distances(
-            self, authority, &selected, identifier, case, budget,
+        let declarations = crate::causal_profile::observe_result(
+            diagnostic,
+            DiagnosticStageV1::QueryVerify,
+            |_| {
+                ranking::typo_declaration_distances(
+                    self, authority, &selected, identifier, case, budget,
+                )
+            },
         )?;
         // Source-bound symbol verification is part of candidate materialization.
         add_observed_ns(
@@ -2353,103 +2957,151 @@ impl TantivySearcher {
         )?;
         let mut comparisons = 0;
         let mut distance_cache = TypoDistanceCache::new();
-        let mut ranked = Vec::new();
-        for key in selected {
-            budget.checkpoint("lexical:code-search-typo-file")?;
-            stats.final_candidate_visits = stats.final_candidate_visits.saturating_add(1);
-            let file = authority.files.get(key).ok_or_else(|| {
-                CoreError::Storage("lexical: typo file disappeared from authority".into())
-            })?;
-            let content = file.indexed_text.as_deref().ok_or_else(|| {
-                CoreError::Storage("lexical: admitted typo file has no content".into())
-            })?;
-            stats.source_surface_bytes_considered = stats
-                .source_surface_bytes_considered
-                .saturating_add(checked_count_u64(content.len(), "source surface bytes")?);
-            let scan_started = Instant::now();
-            let witness = typo_witness(
-                content,
-                identifier,
-                case,
-                &mut comparisons,
-                &mut distance_cache,
-                budget,
-            )?;
-            add_observed_ns(
-                &mut stats.typo_source_token_scan_ns,
-                scan_started,
-                "typo source-token scan",
-            )?;
-            let Some((witness, distance)) = witness else {
-                continue;
-            };
-            let score = f32::from(
-                200_u16
-                    .saturating_sub(u16::from(distance).saturating_mul(100))
-                    // Lexicographic policy: edit distance, attested declaration,
-                    // occurrence. Eight dominates the bounded occurrence 0..6
-                    // while remaining strictly below the next distance tier.
-                    .saturating_add(if declarations.get(key) == Some(&distance) {
-                        8
-                    } else {
-                        0
-                    })
-                    .saturating_add(
-                        u16::from(witness.occurrences.saturating_sub(1)).saturating_mul(2),
-                    ),
-            );
-            let materialize_started = Instant::now();
-            let candidate = file_candidate(self, file, score, Some(&witness), false, budget)?;
-            add_observed_ns(
-                &mut stats.typo_materialize_ns,
-                materialize_started,
-                "typo candidate materialization",
-            )?;
-            ranked.push((candidate, witness));
-            stats.materialized_files = stats.materialized_files.saturating_add(1);
-        }
-        stats.typo_token_comparisons = checked_count_u64(comparisons, "typo token comparisons")?;
-        stats.verified_matching_files = stats.materialized_files;
-        stats.candidate_ns = observed_ns(candidate_started)?;
-        let sort_started = Instant::now();
-        ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         let after = self.page_boundary(page)?;
-        if let Some(after) = after {
-            ranked.retain(|(candidate, _)| after.admits(&candidate.order_key()));
-        }
-        let cursor_eligible = u64::try_from(ranked.len()).map_err(|error| {
-            CoreError::Storage(format!("lexical: typo file count overflow: {error}"))
-        })?;
-        let exact_total = Some(cursor_eligible);
-        ranked.truncate(Self::page_limit(
+        let limit = Self::page_limit(
             query,
             usize::try_from(page.fetch).map_err(|error| {
                 CoreError::Storage(format!("lexical: typo fetch overflow: {error}"))
             })?,
-        ));
-        stats.cursor_eligible_files = cursor_eligible;
-        stats.fetched_files = u64::try_from(ranked.len()).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: typo fetched file count overflow: {error}"
-            ))
-        })?;
-        stats.sort_page_ns = observed_ns(sort_started)?;
-        let preview_started = Instant::now();
-        for (candidate, witness) in &mut ranked {
-            budget.checkpoint("lexical:code-search-typo-preview")?;
-            let source = candidate.source.as_ref().ok_or_else(|| {
-                CoreError::Storage("lexical: typo candidate has no source".into())
+        );
+        let mut page_rows = FilePageCollector::new(limit, after.as_deref());
+        let prior_verified_visits = stats.final_candidate_visits;
+        let mut verified_matches = 0_u64;
+        let verify_span = diagnostic.and_then(|context| {
+            crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryVerify)
+        });
+        let verify_result = (|| {
+            for key in selected {
+                budget.checkpoint("lexical:code-search-typo-file")?;
+                stats.final_candidate_visits = stats.final_candidate_visits.saturating_add(1);
+                let file = authority.load_file_for_key(&key, budget)?;
+                let content = file.indexed_text.as_deref().ok_or_else(|| {
+                    CoreError::Storage("lexical: admitted typo file has no content".into())
+                })?;
+                stats.source_surface_bytes_considered = stats
+                    .source_surface_bytes_considered
+                    .saturating_add(checked_count_u64(content.len(), "source surface bytes")?);
+                let scan_started = Instant::now();
+                let witness = typo_witness(
+                    content,
+                    identifier,
+                    case,
+                    &mut comparisons,
+                    &mut distance_cache,
+                    budget,
+                )?;
+                add_observed_ns(
+                    &mut stats.typo_source_token_scan_ns,
+                    scan_started,
+                    "typo source-token scan",
+                )?;
+                let Some((witness, distance)) = witness else {
+                    continue;
+                };
+                let score = f32::from(
+                    200_u16
+                        .saturating_sub(u16::from(distance).saturating_mul(100))
+                        // Lexicographic policy: edit distance, attested declaration,
+                        // occurrence. Eight dominates the bounded occurrence 0..6
+                        // while remaining strictly below the next distance tier.
+                        .saturating_add(if declarations.get(&key) == Some(&distance) {
+                            8
+                        } else {
+                            0
+                        })
+                        .saturating_add(
+                            u16::from(witness.occurrences.saturating_sub(1)).saturating_mul(2),
+                        ),
+                );
+                verified_matches = verified_matches.saturating_add(1);
+                let materialize_started = Instant::now();
+                page_rows.consider(&key, score, Some(witness), None)?;
+                add_observed_ns(
+                    &mut stats.typo_materialize_ns,
+                    materialize_started,
+                    "typo candidate materialization",
+                )?;
+                stats.verified_matching_files = stats.verified_matching_files.saturating_add(1);
+            }
+            Ok::<(), CoreError>(())
+        })();
+        finish_verify_observation(
+            diagnostic,
+            verify_span,
+            stats
+                .final_candidate_visits
+                .saturating_sub(prior_verified_visits),
+            verified_matches,
+            verify_result.is_ok(),
+        );
+        verify_result?;
+        stats.typo_token_comparisons = checked_count_u64(comparisons, "typo token comparisons")?;
+        stats.candidate_ns = observed_ns(candidate_started)?;
+        let rank_span = diagnostic.and_then(|context| {
+            crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryRank)
+        });
+        let ranked_rows = checked_count_u64(page_rows.rows.len(), "ranked rows")?;
+        let rank_result = (|| {
+            let sort_started = Instant::now();
+            let (cursor_eligible, page_rows) = page_rows.into_sorted();
+            let exact_total = Some(cursor_eligible);
+            stats.cursor_eligible_files = cursor_eligible;
+            stats.fetched_files = u64::try_from(page_rows.len()).map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: typo fetched file count overflow: {error}"
+                ))
             })?;
-            let file = authority.files.get(&source.file).ok_or_else(|| {
-                CoreError::Storage("lexical: typo candidate source disappeared".into())
-            })?;
-            *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
-            stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
+            stats.sort_page_ns = observed_ns(sort_started)?;
+            Ok::<_, CoreError>((exact_total, page_rows))
+        })();
+        if let (Some(context), Some(span)) = (diagnostic, rank_span) {
+            context.counter(&span, DiagnosticCounterV1::Candidates, ranked_rows);
+            let _finished = span.finish(DiagnosticTerminalV1::from_result(&rank_result));
         }
-        stats.preview_ns = observed_ns(preview_started)?;
+        let (exact_total, page_rows) = rank_result?;
+        let preview_started = Instant::now();
+        let preview_span = diagnostic.and_then(|context| {
+            crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryProject)
+        });
+        let mut preview_attempts = 0_u64;
+        let mut preview_files_decoded = 0_u64;
+        let preview_result = (|| {
+            let mut candidates = selected_candidate_buffer(page_rows.len())?;
+            for LatestFileRow(row) in page_rows {
+                preview_attempts = preview_attempts.saturating_add(1);
+                budget.checkpoint("lexical:code-search-typo-preview")?;
+                let file = authority.load_preview_file_for_key(
+                    &row.source,
+                    budget,
+                    &mut preview_files_decoded,
+                )?;
+                candidates.push(file_candidate(
+                    self,
+                    &file,
+                    row.score,
+                    row.witness.as_ref(),
+                    true,
+                    budget,
+                )?);
+                stats.materialized_files = stats.materialized_files.saturating_add(1);
+                stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
+            }
+            stats.preview_ns = observed_ns(preview_started)?;
+            Ok::<_, CoreError>(candidates)
+        })();
+        if let (Some(context), Some(span)) = (diagnostic, preview_span) {
+            context.counter(&span, DiagnosticCounterV1::Candidates, preview_attempts);
+            context.counter(
+                &span,
+                DiagnosticCounterV1::FilesDecoded,
+                preview_files_decoded,
+            );
+            let _finished = span.finish(DiagnosticTerminalV1::from_result(&preview_result));
+        }
+        let candidates = preview_result?;
         Ok(LexicalSearchPageV1 {
             code_search_stats: Some(stats),
-            candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
+            candidates,
             exact_total,
         })
     }
@@ -2461,67 +3113,299 @@ impl TantivySearcher {
         page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
-        let parsed = CodeSearchPlan::parse(query, &self.regex_policy)?;
-        let authority = self.file_authority.as_ref().ok_or_else(|| CoreError::Typed {
+        let diagnostic = budget.diagnostic_context();
+        let parse_span = diagnostic.and_then(|context| {
+            crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryParse)
+        });
+        let parsed = CodeSearchPlan::parse(query, &self.regex_policy);
+        if let (Some(context), Some(span)) = (diagnostic, parse_span) {
+            if let Ok(plan) = &parsed {
+                let (literals, alternatives, grams) = plan.diagnostic_regex_shape();
+                context.counter(&span, DiagnosticCounterV1::RegexLiteralCount, literals);
+                context.counter(
+                    &span,
+                    DiagnosticCounterV1::RegexAlternativeCount,
+                    alternatives,
+                );
+                context.counter(&span, DiagnosticCounterV1::RegexNecessaryGramCount, grams);
+            }
+            if parsed.as_ref().is_err_and(is_query_guard_refusal) {
+                context.counter(&span, DiagnosticCounterV1::RejectedAtGuard, 1);
+            }
+            let outcome = DiagnosticTerminalV1::from_result(&parsed);
+            let _finished = span.finish(outcome);
+        }
+        let parsed = parsed?;
+        let retained = self.file_authority.as_ref().ok_or_else(|| CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
             message: "lexical code search requires rebuilt full-file source authority".into(),
         })?;
+        let scoped = retained.query_scope();
+        self.search_code_files_plan(&scoped, &parsed, query, constraints, page, budget)
+    }
+
+    fn search_code_files_plan(
+        &self,
+        authority: &FileAuthority,
+        parsed: &CodeSearchPlan,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        page: &LexicalPageSpec,
+        budget: &RequestBudgetV1,
+    ) -> Result<LexicalSearchPageV1, CoreError> {
         let mut posting_work = QueryWork::default();
-        if let Some(identifier) = parsed.typo.as_deref() {
-            let candidate_started = Instant::now();
-            return self.search_code_files_typo(
-                authority,
-                identifier,
-                parsed.case,
-                CodeSearchTypoRequest {
+        let mut component_attempts = 0_u64;
+        let diagnostic = budget.diagnostic_context();
+        let span = diagnostic.and_then(|context| {
+            crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryCandidate)
+        });
+        let candidate_child = diagnostic
+            .zip(span.as_ref())
+            .map(|(context, span)| context.child_context(span));
+        let phase_diagnostic = candidate_child.as_ref();
+        if let (Some(context), Some(span)) = (diagnostic, span.as_ref()) {
+            let policy = crate::file_authority::policy();
+            context.counter(
+                span,
+                DiagnosticCounterV1::QueryAdmittedLimit,
+                checked_count_u64(
+                    self.execution_budget.max_examined_candidates(),
+                    "query admitted limit",
+                )?,
+            );
+            let limit = crate::file_authority::query_physical_read_limit(policy)?;
+            context.counter(span, DiagnosticCounterV1::QueryReadLimit, limit);
+            context.counter(
+                span,
+                DiagnosticCounterV1::QueryByteLimit,
+                policy.query_decoded_bytes,
+            );
+        }
+        let result = (|| {
+            if let Some(identifier) = parsed.typo.as_deref() {
+                let candidate_started = Instant::now();
+                return self.search_code_files_typo(
+                    authority,
+                    identifier,
+                    parsed.case,
+                    CodeSearchTypoRequest {
+                        query,
+                        constraints,
+                        page,
+                        budget,
+                        diagnostic: phase_diagnostic,
+                    },
+                    CodeSearchExecutionStatsV1 {
+                        mode: CodeSearchExecutionModeV1::TypoExplicit,
+                        ..CodeSearchExecutionStatsV1::default()
+                    },
+                    &mut posting_work,
+                    candidate_started,
+                );
+            }
+            if let Some(components) = parsed.components.as_deref() {
+                return self.search_code_files_components(
+                    authority,
                     query,
+                    components,
                     constraints,
                     page,
                     budget,
-                },
-                CodeSearchExecutionStatsV1 {
-                    mode: CodeSearchExecutionModeV1::TypoExplicit,
-                    ..CodeSearchExecutionStatsV1::default()
-                },
-                &mut posting_work,
-                candidate_started,
-            );
-        }
-        if let Some(components) = parsed.components.as_deref() {
-            return self.search_code_files_components(
-                authority,
-                query,
-                components,
-                constraints,
-                page,
-                budget,
-            );
-        }
-        let candidate_started = Instant::now();
-        let eligible = language_eligible_ids(authority, constraints, budget)?;
-        let eligible = eligible.as_ref();
-        let mut stats = CodeSearchExecutionStatsV1::default();
-        let ids: Option<BTreeMap<u64, Option<ScoredMatch>>> =
-            if let Some(path) = &constraints.repo_relative_path_exact {
-                let mut matching = BTreeMap::new();
-                for (index, key) in authority.ordered_keys.iter().enumerate() {
-                    budget.checkpoint("lexical:code-search-exact-path")?;
-                    if key.repo_relative_path.as_str() == path.as_str() {
-                        let id = file_id_at(authority, index)?;
-                        if eligible.is_none_or(|ids| ids.contains(&id)) {
-                            let _previous = matching.insert(id, None);
+                    phase_diagnostic,
+                    phase_diagnostic.map(|_| &mut component_attempts),
+                );
+            }
+            let candidate_started = Instant::now();
+            let eligible = language_eligible_ids(authority, constraints, budget)?;
+            let eligible = eligible.as_ref();
+            let mut stats = CodeSearchExecutionStatsV1::default();
+            let literal_stream = constraints.repo_relative_path_exact.is_none()
+                && parsed.terms.iter().any(|term| term.regex.is_none());
+            stats.literal_prefilter_executed = literal_stream;
+            let ids: Option<BTreeMap<u64, Option<ScoredMatch>>> =
+                if let Some(path) = &constraints.repo_relative_path_exact {
+                    let mut matching = BTreeMap::new();
+                    authority.scan_sources(budget, &mut |file| {
+                        if file.source.file.repo_relative_path.as_str() == path.as_str()
+                            && eligible.is_none_or(|ids| ids.contains(&file.logical_id))
+                        {
+                            let _previous = matching.insert(file.logical_id, None);
                         }
+                        Ok(())
+                    })?;
+                    Some(matching)
+                } else {
+                    None
+                };
+            let regex_scope = regex_scan_scope(&parsed.terms);
+            // An existing literal/path proof or a small language-restricted set
+            // can go directly to the bounded exact verifier. Decide before any
+            // posting work is charged; a later posting refusal stays a failure.
+            let admitted_language_scan = if ids.is_none() && !literal_stream {
+                match (regex_scope, eligible) {
+                    (Some(_), Some(eligible)) if eligible.len() > MAX_REGEX_SCAN_FILES => false,
+                    (Some(scope), Some(eligible)) => {
+                        match admit_regex_scan(authority, eligible.iter().copied(), scope, budget) {
+                        Ok(()) => true,
+                        Err(CoreError::Typed {
+                            code:
+                                quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                            ..
+                        }) => false,
+                        Err(error) => return Err(error),
+                    }
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            let regex_possible = if regex_scope.is_some()
+                && ids.is_none()
+                && !literal_stream
+                && !admitted_language_scan
+            {
+                regex_candidate_ids(authority, &parsed.terms, &mut posting_work, budget)?
+            } else {
+                None
+            };
+            let all_files = usize::try_from(authority.len()).map_err(|error| {
+                CoreError::Storage(format!("lexical: file count width: {error}"))
+            })?;
+            let ids = match ids {
+                Some(ids) => ids,
+                None if literal_stream => BTreeMap::new(),
+                None if regex_scope.is_some() => {
+                    budget.checkpoint("lexical:code-search-regex-all-files")?;
+                    // Bound allocation before materializing all ids. The shared
+                    // regex admission below checks the source-byte budget once.
+                    if regex_possible.as_ref().map_or_else(
+                        || eligible.map_or(all_files, BTreeSet::len),
+                        |ids| {
+                            ids.iter()
+                                .filter(|id| eligible.is_none_or(|eligible| eligible.contains(id)))
+                                .take(MAX_REGEX_SCAN_FILES.saturating_add(1))
+                                .count()
+                        },
+                    ) > MAX_REGEX_SCAN_FILES
+                    {
+                        return Err(CoreError::Typed {
+                        code:
+                            quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                        message: "lexical code search regex requires a bounded file scan".into(),
+                    });
+                    }
+                    if let Some(possible) = regex_possible {
+                        possible
+                            .into_iter()
+                            .filter(|id| eligible.is_none_or(|ids| ids.contains(id)))
+                            .map(|id| (id, None))
+                            .collect()
+                    } else if let Some(ids) = eligible {
+                        ids.iter().copied().map(|id| (id, None)).collect()
+                    } else {
+                        let mut all = BTreeMap::new();
+                        authority.scan_sources(budget, &mut |file| {
+                            let _previous = all.insert(file.logical_id, None);
+                            Ok(())
+                        })?;
+                        all
                     }
                 }
-                Some(matching)
-            } else if parsed.terms.iter().any(|term| term.regex.is_none()) {
-                // A regex cannot safely supply a literal trigram unless its
-                // dialect proves that literal mandatory. Join all literal terms
-                // first, then verify regex over the admitted file set.
-                budget.checkpoint("lexical:code-search-terms")?;
-                stats.literal_prefilter_executed = true;
-                Some(
-                    candidate_ids_observed(
+                None => {
+                    return Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                    message: "lexical code search: no term provides a bounded candidate set".into(),
+                });
+                }
+            };
+            if let Some(scope) = regex_scope
+                && !admitted_language_scan
+                && !literal_stream
+            {
+                admit_regex_scan(authority, ids.keys().copied(), scope, budget)?;
+            }
+            let after = self.page_boundary(page)?;
+            let limit = Self::page_limit(
+                query,
+                usize::try_from(page.fetch).map_err(|error| {
+                    CoreError::Storage(format!("lexical: file fetch overflow: {error}"))
+                })?,
+            );
+            let mut page_rows = FilePageCollector::new(limit, after.as_deref());
+            let path_only = parsed
+                .terms
+                .iter()
+                .all(|term| matches!(term.scope, Scope::Path));
+            let mut verified_matches = 0_u64;
+            let mut consume = |id: u64,
+                               preverified: Option<ScoredMatch>,
+                               borrowed_full: Option<&SourceFile>,
+                               stats: &mut CodeSearchExecutionStatsV1|
+             -> Result<(), CoreError> {
+                budget.checkpoint("lexical:code-search-file")?;
+                stats.final_candidate_visits =
+                    stats.final_candidate_visits.checked_add(1).ok_or_else(|| {
+                        CoreError::Storage("lexical: final work count overflow".into())
+                    })?;
+                let metadata = metadata_for_id(authority, id, budget)?;
+                let selection = if preverified.is_some() {
+                    TermsToScore::Regex
+                } else {
+                    TermsToScore::All
+                };
+                let loaded_full = if path_only || borrowed_full.is_some() {
+                    None
+                } else {
+                    Some(authority.load_file_for_id(id, budget)?)
+                };
+                let full = borrowed_full.or(loaded_full.as_ref());
+                let scored = if let Some(file) = full {
+                    score_terms_observed(
+                        file,
+                        &parsed.terms,
+                        parsed.case,
+                        preverified,
+                        selection,
+                        budget,
+                        Some(stats),
+                    )?
+                } else {
+                    score_path_terms_observed(
+                        &metadata,
+                        &parsed.terms,
+                        parsed.case,
+                        preverified,
+                        selection,
+                        budget,
+                        stats,
+                    )?
+                };
+                let Some(mut scored) = scored else {
+                    return Ok(());
+                };
+                let score = if let Some(file) = full {
+                    finish_score(file, &parsed.terms, parsed.case, &mut scored, budget)?.0
+                } else {
+                    finish_path_score(&metadata, &parsed.terms, parsed.case, &mut scored, budget)?
+                };
+                verified_matches = verified_matches.saturating_add(1);
+                page_rows.consider(&metadata.source.file, score, Some(scored.primary), None)?;
+                stats.verified_matching_files = stats.verified_matching_files.saturating_add(1);
+                Ok(())
+            };
+            let verify_span = phase_diagnostic.and_then(|context| {
+                crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryVerify)
+            });
+            let verify_result = (|| {
+                if literal_stream {
+                    // The literal verifier yields each file once. Mixed regex plans
+                    // charge the exact verified literal set as they consume it; a
+                    // late admission refusal discards the private page heap.
+                    let mut regex_files = 0_usize;
+                    let mut regex_bytes = 0_usize;
+                    for_each_candidate_observed(
                         authority,
                         &parsed.terms,
                         parsed.case,
@@ -2530,154 +3414,191 @@ impl TantivySearcher {
                         &mut posting_work,
                         &mut stats,
                         MAX_CANDIDATE_PRE_VERIFY,
-                    )?
-                    .into_iter()
-                    .map(|(id, scored)| (id, Some(scored)))
-                    .collect(),
-                )
-            } else {
-                None
-            };
-        let regex_scope = regex_scan_scope(&parsed.terms);
-        let ids = match ids {
-            Some(ids) => ids,
-            None if regex_scope.is_some() => {
-                budget.checkpoint("lexical:code-search-regex-all-files")?;
-                // Bound allocation before materializing all ids. The shared
-                // regex admission below checks the source-byte budget once.
-                if eligible.map_or(authority.ordered_keys.len(), BTreeSet::len)
-                    > MAX_REGEX_SCAN_FILES
-                {
-                    return Err(CoreError::Typed {
-                        code:
-                            quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
-                        message: "lexical code search regex requires a bounded file scan".into(),
-                    });
-                }
-                if let Some(ids) = eligible {
-                    ids.iter().copied().map(|id| (id, None)).collect()
+                        |id, scored, file, stats| {
+                            stats.literal_verified_files =
+                                stats.literal_verified_files.checked_add(1).ok_or_else(|| {
+                                    CoreError::Storage(
+                                        "lexical: literal match count overflow".into(),
+                                    )
+                                })?;
+                            if let Some(scope) = regex_scope {
+                                budget.checkpoint("lexical:code-search-regex-admission")?;
+                                let file = metadata_for_id(authority, id, budget)?;
+                                regex_files = regex_files.saturating_add(1);
+                                regex_bytes = regex_bytes.saturating_add(metadata_scanned_bytes(
+                                    &file,
+                                    scope,
+                                    CaseMode::Sensitive,
+                                ));
+                                if regex_files > MAX_REGEX_SCAN_FILES
+                                    || regex_bytes > MAX_REGEX_SCAN_SOURCE_BYTES
+                                {
+                                    return Err(CoreError::Typed {
+                                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                                message: "lexical code search regex requires a bounded file scan"
+                                    .into(),
+                            });
+                                }
+                            }
+                            consume(id, Some(scored), file, stats)
+                        },
+                    )?;
                 } else {
-                    authority
-                        .ordered_keys
-                        .iter()
-                        .map(|key| authority.id_for_key(key).map(|id| (id, None)))
-                        .collect::<Result<BTreeMap<_, _>, _>>()?
+                    for (id, preverified) in ids {
+                        consume(id, preverified, None, &mut stats)?;
+                    }
                 }
-            }
-            None => {
-                return Err(CoreError::Typed {
-                    code:
-                        quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
-                    message: "lexical code search: no term provides a bounded candidate set".into(),
-                });
-            }
-        };
-        if let Some(scope) = regex_scope {
-            admit_regex_scan(authority, ids.keys().copied(), scope, budget)?;
-        }
-        // Exact-path and regex-only plans have no literal prefilter pass.
-        if stats.literal_prefilter_executed {
-            stats.literal_verified_files = u64::try_from(ids.len()).map_err(|error| {
-                CoreError::Storage(format!("lexical: literal match count overflow: {error}"))
-            })?;
-        }
-        let mut ranked = Vec::new();
-        for (id, preverified) in ids {
-            budget.checkpoint("lexical:code-search-file")?;
-            stats.final_candidate_visits = stats
-                .final_candidate_visits
-                .checked_add(1)
-                .ok_or_else(|| CoreError::Storage("lexical: final work count overflow".into()))?;
-            let file = authority.file_for_id(id)?;
-            let selection = if preverified.is_some() {
-                TermsToScore::Regex
-            } else {
-                TermsToScore::All
-            };
-            let Some(mut scored) = score_terms_observed(
-                file,
-                &parsed.terms,
-                parsed.case,
-                preverified,
-                selection,
-                budget,
-                Some(&mut stats),
-            )?
-            else {
-                continue;
-            };
-            let score = finish_score(file, &parsed.terms, parsed.case, &mut scored, budget)?.0;
-            let candidate =
-                file_candidate(self, file, score, Some(&scored.primary), false, budget)?;
-            ranked.push((candidate, scored.primary));
-            stats.materialized_files = stats.materialized_files.saturating_add(1);
-        }
-        // A bare identifier with no literal file match may be misspelled.
-        // Preserve every exact result and its cursor order; only an empty
-        // result takes the existing bounded, source-verified OSA1 route.
-        if ranked.is_empty()
-            && let Some(identifier) = parsed.auto_typo_on_empty()
-        {
-            stats.mode = CodeSearchExecutionModeV1::TypoFallback;
-            return self.search_code_files_typo(
-                authority,
-                identifier,
-                parsed.case,
-                CodeSearchTypoRequest {
-                    query,
-                    constraints,
-                    page,
-                    budget,
-                },
-                stats,
-                &mut posting_work,
-                candidate_started,
+                Ok::<(), CoreError>(())
+            })();
+            finish_verify_observation(
+                phase_diagnostic,
+                verify_span,
+                stats.final_candidate_visits,
+                verified_matches,
+                verify_result.is_ok(),
             );
+            verify_result?;
+            // A bare identifier with no literal file match may be misspelled.
+            // Preserve every exact result and its cursor order; only an empty
+            // result takes the existing bounded, source-verified OSA1 route.
+            if stats.verified_matching_files == 0
+                && let Some(identifier) = parsed.auto_typo_on_empty()
+            {
+                stats.mode = CodeSearchExecutionModeV1::TypoFallback;
+                return self.search_code_files_typo(
+                    authority,
+                    identifier,
+                    parsed.case,
+                    CodeSearchTypoRequest {
+                        query,
+                        constraints,
+                        page,
+                        budget,
+                        diagnostic: phase_diagnostic,
+                    },
+                    stats,
+                    &mut posting_work,
+                    candidate_started,
+                );
+            }
+            stats.candidate_ns = observed_ns(candidate_started)?;
+            let rank_span = phase_diagnostic.and_then(|context| {
+                crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryRank)
+            });
+            let ranked_rows = checked_count_u64(page_rows.rows.len(), "ranked rows")?;
+            let rank_result = (|| {
+                let sort_started = Instant::now();
+                let (cursor_eligible, page_rows) = page_rows.into_sorted();
+                let exact_total = Some(cursor_eligible);
+                stats.cursor_eligible_files = exact_total.ok_or_else(|| {
+                    CoreError::Storage("lexical: observed file total disappeared".into())
+                })?;
+                stats.fetched_files = u64::try_from(page_rows.len()).map_err(|error| {
+                    CoreError::Storage(format!("lexical: fetched file count overflow: {error}"))
+                })?;
+                stats.sort_page_ns = observed_ns(sort_started)?;
+                Ok::<_, CoreError>((exact_total, page_rows))
+            })();
+            if let (Some(context), Some(span)) = (phase_diagnostic, rank_span) {
+                context.counter(&span, DiagnosticCounterV1::Candidates, ranked_rows);
+                let _finished = span.finish(DiagnosticTerminalV1::from_result(&rank_result));
+            }
+            let (exact_total, page_rows) = rank_result?;
+            let preview_started = Instant::now();
+            let preview_span = phase_diagnostic.and_then(|context| {
+                crate::causal_profile::enter_span(context, DiagnosticStageV1::QueryProject)
+            });
+            let mut preview_attempts = 0_u64;
+            let mut preview_files_decoded = 0_u64;
+            let preview_result = (|| {
+                let mut candidates = selected_candidate_buffer(page_rows.len())?;
+                for LatestFileRow(row) in page_rows {
+                    preview_attempts = preview_attempts.saturating_add(1);
+                    budget.checkpoint("lexical:code-search-selected-preview")?;
+                    if path_only {
+                        let file = metadata_for_key(authority, &row.source, budget)?;
+                        candidates.push(path_file_candidate(
+                            self,
+                            &file,
+                            row.score,
+                            row.witness.as_ref(),
+                            budget,
+                        )?);
+                    } else {
+                        let file = authority.load_preview_file_for_key(
+                            &row.source,
+                            budget,
+                            &mut preview_files_decoded,
+                        )?;
+                        candidates.push(file_candidate(
+                            self,
+                            &file,
+                            row.score,
+                            row.witness.as_ref(),
+                            true,
+                            budget,
+                        )?);
+                    }
+                    stats.materialized_files = stats.materialized_files.saturating_add(1);
+                    stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
+                }
+                stats.preview_ns = observed_ns(preview_started)?;
+                Ok::<_, CoreError>(candidates)
+            })();
+            if let (Some(context), Some(span)) = (phase_diagnostic, preview_span) {
+                context.counter(&span, DiagnosticCounterV1::Candidates, preview_attempts);
+                context.counter(
+                    &span,
+                    DiagnosticCounterV1::FilesDecoded,
+                    preview_files_decoded,
+                );
+                let _finished = span.finish(DiagnosticTerminalV1::from_result(&preview_result));
+            }
+            let candidates = preview_result?;
+            Ok(LexicalSearchPageV1 {
+                code_search_stats: Some(stats),
+                candidates,
+                exact_total,
+            })
+        })();
+        finish_query_candidate_observation(
+            diagnostic,
+            span,
+            &posting_work,
+            component_attempts,
+            authority.query_io_snapshot(),
+            &result,
+        );
+        result
+    }
+}
+
+fn finish_query_candidate_observation(
+    diagnostic: Option<&DiagnosticContextV1>,
+    span: Option<DiagnosticSpanGuardV1>,
+    posting_work: &QueryWork,
+    component_attempts: u64,
+    (physical_bytes, physical_reads): (u64, u64),
+    result: &Result<LexicalSearchPageV1, CoreError>,
+) {
+    if let (Some(context), Some(span)) = (diagnostic, span) {
+        let (probes, list_reads, posting_ids, decoded_bytes, _decoded_ids) =
+            posting_work.diagnostic_snapshot();
+        context.counter(&span, DiagnosticCounterV1::FilesVisited, probes);
+        context.counter(&span, DiagnosticCounterV1::FilesRead, physical_reads);
+        context.counter(&span, DiagnosticCounterV1::BytesRead, physical_bytes);
+        context.counter(
+            &span,
+            DiagnosticCounterV1::Candidates,
+            posting_ids.saturating_add(component_attempts),
+        );
+        context.counter(&span, DiagnosticCounterV1::FilesDecoded, list_reads);
+        context.counter(&span, DiagnosticCounterV1::BytesDecoded, decoded_bytes);
+        if result.as_ref().is_err_and(is_query_guard_refusal) {
+            context.counter(&span, DiagnosticCounterV1::RejectedAtGuard, 1);
         }
-        stats.verified_matching_files = u64::try_from(ranked.len()).map_err(|error| {
-            CoreError::Storage(format!("lexical: verified match count overflow: {error}"))
-        })?;
-        stats.candidate_ns = observed_ns(candidate_started)?;
-        let sort_started = Instant::now();
-        ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
-        let after = self.page_boundary(page)?;
-        if let Some(after) = after {
-            ranked.retain(|(candidate, _)| after.admits(&candidate.order_key()));
-        }
-        let exact_total = Some(u64::try_from(ranked.len()).map_err(|error| {
-            CoreError::Storage(format!("lexical: file count overflow: {error}"))
-        })?);
-        stats.cursor_eligible_files = exact_total
-            .ok_or_else(|| CoreError::Storage("lexical: observed file total disappeared".into()))?;
-        ranked.truncate(Self::page_limit(
-            query,
-            usize::try_from(page.fetch).map_err(|error| {
-                CoreError::Storage(format!("lexical: file fetch overflow: {error}"))
-            })?,
-        ));
-        stats.fetched_files = u64::try_from(ranked.len()).map_err(|error| {
-            CoreError::Storage(format!("lexical: fetched file count overflow: {error}"))
-        })?;
-        stats.sort_page_ns = observed_ns(sort_started)?;
-        let preview_started = Instant::now();
-        for (candidate, witness) in &mut ranked {
-            budget.checkpoint("lexical:code-search-selected-preview")?;
-            let source = candidate
-                .source
-                .as_ref()
-                .ok_or_else(|| CoreError::Storage("lexical: file candidate lost source".into()))?;
-            let file = authority.files.get(&source.file).ok_or_else(|| {
-                CoreError::Storage("lexical: selected file outside authority".into())
-            })?;
-            *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
-            stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
-        }
-        stats.preview_ns = observed_ns(preview_started)?;
-        Ok(LexicalSearchPageV1 {
-            code_search_stats: Some(stats),
-            candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
-            exact_total,
-        })
+        let outcome = DiagnosticTerminalV1::from_result(result);
+        let _finished = span.finish(outcome);
     }
 }
 
@@ -2692,27 +3613,968 @@ impl TantivySearcher {
     reason = "small exhaustive independent DP oracle and fixed ASCII fixtures use checked dimensions"
 )]
 mod tests {
+    use super::super::paging::observe_whole_set_collection;
     use super::{
-        CodeSearchTerm, HitSurface, MAX_TYPO_POSTING_VISITS, MAX_TYPO_TOKEN_COMPARISONS,
-        OverlappingMatches, Scope, TermsToScore, TypoDistanceCache, best_in, boundary_score,
-        candidate_ids, content_witness_lines, file_candidate_id, language_eligible_ids,
-        min_cover_gap, nfc_identity_focus, path_highlight, regex_scan_scope, scan_typo_token_spans,
+        CodeSearchPlan, CodeSearchTerm, FilePageCollector, HitSurface, MAX_TYPO_POSTING_VISITS,
+        MAX_TYPO_TOKEN_COMPARISONS, OverlappingMatches, Scope, TermsToScore, TypoDistanceCache,
+        best_in, boundary_score, candidate_ids, content_witness_lines, file_candidate_id,
+        finish_query_candidate_observation, finish_verify_observation, folded_regex_grams,
+        is_query_guard_refusal, language_eligible_ids, min_cover_gap, nfc_identity_focus,
+        path_highlight, regex_candidate_ids, regex_scan_scope, scan_typo_token_spans,
         scanned_bytes, score_terms, source_bytes_checked, typo_candidates, typo_distance,
         typo_text_is_ascii, typo_witness,
     };
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
-        QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2,
-        SourceFileKey, SourceFileRevision,
+        LQ_VERSION_TAG, LexicalCursor, LexicalRowOrderKey, LqExpr, LqFilter, LqLeaf, LqOptions,
+        LqPatternType, LqQuery, LqSelect, LqSpan, ManifestGeneration, QueryConstraintSetV1, RepoId,
+        RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2, SourceFileKey, SourceFileRevision,
     };
-    use quanta_index_core::{CoreError, RequestBudgetV1};
+    use quanta_index_core::{
+        CoreError, DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1,
+        DiagnosticCounterV1, DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1,
+        DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1, DiagnosticTerminalV1,
+        LexicalArtifactIdentityV1, LexicalExecutionBudgetV1, LexicalPageSpec, LexicalSearchPageV1,
+        RegexMatchCachePolicy, RepoMetadataAuthoritiesV1, RequestBudgetV1, TextNormalizerVersionV1,
+    };
     use quanta_index_lq_regex::RegexExecutor;
-    use quanta_index_lq_trigram::{DocId, TrigramIndexBuilder, TrigramIntersectionError};
+    use quanta_index_lq_trigram::{
+        DocId, NecessaryGramExpr, TrigramIndexBuilder, TrigramIntersectionError,
+    };
     use std::collections::BTreeSet;
     use std::ops::Range;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
 
-    use crate::file_authority::{SourceFile, from_test_files};
+    use crate::file_authority::paged::{FileAuthorityMutation, FileSourceEdit, PagedFileAuthority};
+    use crate::file_authority::{QueryWork, SourceFile};
+    use crate::lexical_allocation::DocVersionReservation;
+    use crate::lexical_store::{AttemptBinding, ObjectStore};
+    use crate::ranked_keys::RankedKeyTables;
+    use crate::regex::RegexPolicy;
+    use crate::regex_match_cache::RegexMatchCache;
+    use crate::{SchemaFields, TantivySearcher};
+    use quanta_index_contract::{SourceFileCoverage, SymbolCoverage, SymbolNameSourcePolicyV1};
     use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText};
+    use tantivy::{Index, ReloadPolicy};
+
+    #[derive(Debug)]
+    struct FixedClock;
+
+    impl DiagnosticClockV1 for FixedClock {
+        fn now_ns(&self) -> u64 {
+            1
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingSink(Mutex<Vec<DiagnosticEmitV1>>);
+
+    impl DiagnosticEventSinkV1 for RecordingSink {
+        fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+            self.0.lock().expect("recording sink lock").push(event);
+            true
+        }
+    }
+
+    fn preview_test_searcher(authority: PagedFileAuthority, state_root: &Path) -> TantivySearcher {
+        let fields = SchemaFields::build();
+        let index = Index::create_in_ram(fields.schema.clone());
+        let mut writer = index
+            .writer::<tantivy::TantivyDocument>(15_000_000)
+            .expect("empty test writer");
+        let _commit_id = writer.commit().expect("empty test commit");
+        drop(writer);
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .expect("empty test reader");
+        let live_bm25 = Arc::new(
+            crate::sealed_generation::live_bm25::LiveBm25Statistics::build(
+                &index,
+                &fields,
+                [0; 32],
+                state_root,
+                None,
+                &[],
+            )
+            .expect("empty test BM25"),
+        );
+        TantivySearcher {
+            source_coverage: None,
+            source_publication_event: None,
+            repo_id: RepoId::new("fixture").expect("repo"),
+            revision_id: RevisionId::new("revision").expect("revision"),
+            generation: ManifestGeneration::new(1),
+            fields,
+            reader,
+            ranked_keys: Arc::new(RankedKeyTables::bind(Vec::new(), &[]).expect("empty ranks")),
+            live_bm25,
+            repo_metadata: None,
+            regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new(
+                RegexMatchCachePolicy::DEFAULT,
+            ))),
+            regex_policy: RegexPolicy::defaults(),
+            execution_budget: LexicalExecutionBudgetV1::DEFAULT,
+            text_authority: None,
+            file_authority: Some(authority),
+            repo_commit_recency: None,
+            repo_meta: None,
+            repo_topic: None,
+            repo_description: None,
+            file_ownership: None,
+            file_contributor: None,
+            resident_bytes_estimate: 0,
+            artifact_identity: LexicalArtifactIdentityV1 {
+                manifest_digest: "preview-test-generation".into(),
+                normalizer: TextNormalizerVersionV1 {
+                    major: crate::normalize::TEXT_NORMALIZER_VERSION.major,
+                    minor: crate::normalize::TEXT_NORMALIZER_VERSION.minor,
+                },
+                repo_metadata: RepoMetadataAuthoritiesV1::NONE,
+            },
+        }
+    }
+
+    fn preview_query() -> LqQuery {
+        let mut options = LqOptions::defaults();
+        options.pattern_type = LqPatternType::CodeSearch;
+        LqQuery {
+            lq_version: LQ_VERSION_TAG,
+            expr: LqExpr::Leaf(LqLeaf::RawString("needle".into())),
+            filters: vec![LqFilter::Select {
+                dim: LqSelect::File,
+            }],
+            options,
+            directives: Vec::new(),
+            source_span: LqSpan::eof(0),
+        }
+    }
+
+    fn project_observation(
+        events: &[DiagnosticEmitV1],
+    ) -> (Vec<(DiagnosticCounterV1, u64)>, DiagnosticTerminalV1) {
+        let span_id = events
+            .iter()
+            .find_map(|event| {
+                if let DiagnosticEventKindV1::SpanBegin {
+                    span_id,
+                    stage: DiagnosticStageV1::QueryProject,
+                    ..
+                } = event.kind
+                {
+                    Some(span_id)
+                } else {
+                    None
+                }
+            })
+            .expect("query project span");
+        let counters = events
+            .iter()
+            .filter_map(|event| {
+                if let DiagnosticEventKindV1::Counter {
+                    span_id: owner,
+                    key,
+                    value,
+                } = event.kind
+                {
+                    (owner == span_id).then_some((key, value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let outcome = events
+            .iter()
+            .find_map(|event| {
+                if let DiagnosticEventKindV1::SpanEnd {
+                    span_id: owner,
+                    outcome,
+                } = event.kind
+                {
+                    (owner == span_id).then_some(outcome)
+                } else {
+                    None
+                }
+            })
+            .expect("query project end");
+        (counters, outcome)
+    }
+
+    fn preview_test_file(path: &str, body: &[u8]) -> SourceFile {
+        SourceFile {
+            source: SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: RepoId::new("fixture").expect("repo"),
+                    repo_relative_path: RepoRelativePath::new(path),
+                },
+                revision_id: RevisionId::new("revision").expect("revision"),
+                source_sha256: <sha2::Sha256 as sha2::Digest>::digest(body).into(),
+            },
+            bytes: body.to_vec().into(),
+            text_admitted: true,
+            language: LanguageCode::new("rust").expect("language"),
+            indexed_text: None,
+            folded_text: None,
+            indexed_path: String::new(),
+            folded_path: String::new(),
+        }
+    }
+
+    fn object_containing(state_root: &Path, payload: &[u8]) -> PathBuf {
+        let objects = state_root.join("lexical-object-pool/objects");
+        for shard in std::fs::read_dir(objects).expect("object shards") {
+            let shard = shard.expect("object shard");
+            if !shard.file_type().expect("object shard type").is_dir() {
+                continue;
+            }
+            for entry in std::fs::read_dir(shard.path()).expect("object files") {
+                let path = entry.expect("object entry").path();
+                let bytes = std::fs::read(&path).expect("object bytes");
+                if bytes.windows(payload.len()).any(|part| part == payload) {
+                    return path;
+                }
+            }
+        }
+        panic!("preview body object is absent")
+    }
+
+    #[derive(Debug)]
+    struct CorruptOnProjectSink {
+        events: Mutex<Vec<DiagnosticEmitV1>>,
+        object: PathBuf,
+        payload: &'static [u8],
+    }
+
+    impl DiagnosticEventSinkV1 for CorruptOnProjectSink {
+        fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+            if matches!(
+                event.kind,
+                DiagnosticEventKindV1::SpanBegin {
+                    stage: DiagnosticStageV1::QueryProject,
+                    ..
+                }
+            ) {
+                let mut bytes = std::fs::read(&self.object).expect("selected body before fault");
+                let offset = bytes
+                    .windows(self.payload.len())
+                    .position(|part| part == self.payload)
+                    .expect("unique selected body payload");
+                bytes[offset] ^= 1;
+                std::fs::write(&self.object, bytes).expect("mutate second preview body");
+            }
+            self.events.lock().expect("recording sink lock").push(event);
+            true
+        }
+    }
+
+    #[test]
+    fn query_project_counts_selected_bodies_and_preserves_partial_count_after_late_fault() {
+        let temp = tempfile::tempdir().expect("state root");
+        let bodies: [(&str, &'static [u8]); 2] =
+            [("src/a.rs", b"needle alpha"), ("src/z.rs", b"needle omega")];
+        let authority = from_test_files(
+            bodies
+                .iter()
+                .map(|(path, body)| preview_test_file(path, body))
+                .collect(),
+            temp.path(),
+        )
+        .expect("file authority");
+        let searcher = preview_test_searcher(authority, temp.path());
+        let query = preview_query();
+        let constraints = QueryConstraintSetV1::default();
+        let page = LexicalPageSpec::first(2);
+
+        let successful_sink = Arc::new(RecordingSink::default());
+        let successful_context = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([11; 16]),
+            Arc::new(FixedClock),
+            successful_sink.clone(),
+        );
+        let successful_root = successful_context
+            .enter_root(DiagnosticRootKindV1::Request, DiagnosticLaneV1(1))
+            .expect("successful request root");
+        let successful_budget = RequestBudgetV1::unbounded()
+            .with_diagnostic_context(successful_context.child_context(&successful_root));
+        let successful = searcher
+            .search_code_files(&query, &constraints, &page, &successful_budget)
+            .expect("two selected previews");
+        successful_root
+            .finish(DiagnosticTerminalV1::Ok)
+            .expect("successful request close");
+        assert_eq!(successful.candidates.len(), 2);
+        let successful_events = successful_sink.0.lock().expect("recording sink lock");
+        let (successful_counters, successful_outcome) = project_observation(&successful_events);
+        assert_eq!(successful_outcome, DiagnosticTerminalV1::Ok);
+        assert_eq!(
+            successful_counters,
+            vec![
+                (DiagnosticCounterV1::Candidates, 2),
+                (DiagnosticCounterV1::FilesDecoded, 2),
+            ],
+            "posting reads and verification reads must not inflate project body decodes"
+        );
+        drop(successful_events);
+
+        let second_path = successful.candidates[1].repo_relative_path.as_str();
+        let second_body = bodies
+            .iter()
+            .find_map(|(path, body)| (*path == second_path).then_some(*body))
+            .expect("second selected body");
+        let fault_sink = Arc::new(CorruptOnProjectSink {
+            events: Mutex::new(Vec::new()),
+            object: object_containing(temp.path(), second_body),
+            payload: second_body,
+        });
+        let fault_context = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([12; 16]),
+            Arc::new(FixedClock),
+            fault_sink.clone(),
+        );
+        let fault_root = fault_context
+            .enter_root(DiagnosticRootKindV1::Request, DiagnosticLaneV1(1))
+            .expect("fault request root");
+        let fault_budget = RequestBudgetV1::unbounded()
+            .with_diagnostic_context(fault_context.child_context(&fault_root));
+        assert!(
+            searcher
+                .search_code_files(&query, &constraints, &page, &fault_budget)
+                .is_err(),
+            "the second selected body was changed after verification"
+        );
+        fault_root
+            .finish(DiagnosticTerminalV1::Error { code: 1 })
+            .expect("fault request close");
+        let fault_events = fault_sink.events.lock().expect("recording sink lock");
+        let (fault_counters, fault_outcome) = project_observation(&fault_events);
+        assert_eq!(fault_outcome, DiagnosticTerminalV1::Error { code: 1 });
+        assert_eq!(
+            fault_counters,
+            vec![
+                (DiagnosticCounterV1::Candidates, 2),
+                (DiagnosticCounterV1::FilesDecoded, 1),
+            ],
+            "a later preview failure retains the first completed body decode"
+        );
+    }
+
+    #[test]
+    fn failed_verification_keeps_partial_match_and_attempt_counts() {
+        let sink = Arc::new(RecordingSink::default());
+        let context = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([1; 16]),
+            Arc::new(FixedClock),
+            sink.clone(),
+        );
+        let root = context
+            .enter_root(DiagnosticRootKindV1::Request, DiagnosticLaneV1(1))
+            .expect("request root");
+        let child = context.child_context(&root);
+        let verification = child
+            .enter(DiagnosticStageV1::QueryVerify, DiagnosticLaneV1(2))
+            .expect("verification span");
+        let verification_id = verification.span_id();
+        finish_verify_observation(Some(&child), Some(verification), 3, 1, false);
+        root.finish(DiagnosticTerminalV1::Error { code: 1 })
+            .expect("request error");
+
+        let events = sink.0.lock().expect("recording sink lock");
+        let observed: Vec<_> = events
+            .iter()
+            .filter_map(|event| {
+                if let DiagnosticEventKindV1::Counter {
+                    span_id,
+                    key,
+                    value,
+                } = event.kind
+                {
+                    (span_id == verification_id).then_some((key, value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            observed,
+            vec![
+                (DiagnosticCounterV1::CandidatesVerified, 3),
+                (DiagnosticCounterV1::Matches, 1),
+            ]
+        );
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            DiagnosticEventKindV1::SpanEnd {
+                span_id,
+                outcome: DiagnosticTerminalV1::Error { code: 1 },
+            } if span_id == verification_id
+        )));
+        drop(events);
+    }
+
+    #[test]
+    fn whole_set_rank_observation_keeps_attempts_on_success_and_refusal() {
+        for (attempted, succeeds) in [(2, true), (3, false)] {
+            let sink = Arc::new(RecordingSink::default());
+            let context = DiagnosticContextV1::new(
+                DiagnosticCaptureIdV1([attempted as u8; 16]),
+                Arc::new(FixedClock),
+                sink.clone(),
+            );
+            let root = context
+                .enter_root(DiagnosticRootKindV1::Request, DiagnosticLaneV1(1))
+                .expect("request root");
+            let child = context.child_context(&root);
+            let result = observe_whole_set_collection(Some(&child), |attempts| {
+                *attempts.expect("rank span provides its attempt counter") = attempted;
+                if succeeds {
+                    Ok(())
+                } else {
+                    Err(CoreError::InvalidContract("collector refused".into()))
+                }
+            });
+            assert_eq!(result.is_ok(), succeeds);
+            root.finish(DiagnosticTerminalV1::Ok)
+                .expect("request close");
+
+            let events = sink.0.lock().expect("recording sink lock");
+            let rank_span_id = events
+                .iter()
+                .find_map(|event| {
+                    if let DiagnosticEventKindV1::SpanBegin {
+                        span_id,
+                        stage: DiagnosticStageV1::QueryRank,
+                        ..
+                    } = event.kind
+                    {
+                        Some(span_id)
+                    } else {
+                        None
+                    }
+                })
+                .expect("whole-set query-rank span");
+            let candidate_attempts: Vec<_> = events
+                .iter()
+                .filter_map(|event| {
+                    if let DiagnosticEventKindV1::Counter {
+                        span_id,
+                        key: DiagnosticCounterV1::Candidates,
+                        value,
+                    } = event.kind
+                    {
+                        (span_id == rank_span_id).then_some(value)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(candidate_attempts, vec![attempted]);
+            assert!(events.iter().any(|event| matches!(
+                event.kind,
+                DiagnosticEventKindV1::SpanEnd { span_id, outcome }
+                    if span_id == rank_span_id
+                        && outcome == if succeeds {
+                            DiagnosticTerminalV1::Ok
+                        } else {
+                            DiagnosticTerminalV1::Error { code: 1 }
+                        }
+            )));
+            drop(events);
+        }
+    }
+
+    #[test]
+    fn candidate_parent_counts_postings_without_claiming_exact_verification() {
+        let sink = Arc::new(RecordingSink::default());
+        let context = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([4; 16]),
+            Arc::new(FixedClock),
+            sink.clone(),
+        );
+        let root = context
+            .enter_root(DiagnosticRootKindV1::Request, DiagnosticLaneV1(1))
+            .expect("request root");
+        let child = context.child_context(&root);
+        let span = child
+            .enter(DiagnosticStageV1::QueryCandidate, DiagnosticLaneV1(2))
+            .expect("candidate span");
+        let span_id = span.span_id();
+        let result: Result<LexicalSearchPageV1, CoreError> = Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+            message: "regex guard refusal".into(),
+        });
+        finish_query_candidate_observation(
+            Some(&child),
+            Some(span),
+            &QueryWork::default(),
+            5,
+            (0, 0),
+            &result,
+        );
+        root.finish(DiagnosticTerminalV1::Ok)
+            .expect("request close");
+
+        let events = sink.0.lock().expect("recording sink lock");
+        let counters: Vec<_> = events
+            .iter()
+            .filter_map(|event| {
+                if let DiagnosticEventKindV1::Counter {
+                    span_id: owner,
+                    key,
+                    value,
+                } = event.kind
+                {
+                    (owner == span_id).then_some((key, value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(counters.contains(&(DiagnosticCounterV1::Candidates, 5)));
+        assert!(counters.contains(&(DiagnosticCounterV1::RejectedAtGuard, 1)));
+        assert!(
+            !counters
+                .iter()
+                .any(|(key, _)| { *key == DiagnosticCounterV1::CandidatesVerified })
+        );
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            DiagnosticEventKindV1::SpanEnd {
+                span_id: owner,
+                outcome: DiagnosticTerminalV1::Error { code: 1 },
+            } if owner == span_id
+        )));
+        drop(events);
+    }
+
+    #[test]
+    fn query_guard_classification_excludes_unsupported_request_shape() {
+        let unsupported = CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::LexPlannerUnsupportedFilterCombo,
+            message: "unsupported test shape".into(),
+        };
+        let limit = CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+            message: "regex work refused".into(),
+        };
+        assert!(!is_query_guard_refusal(&unsupported));
+        assert!(is_query_guard_refusal(&limit));
+    }
+
+    #[test]
+    fn regex_shape_counts_syntax_and_necessary_prefilter_separately() {
+        let plan = CodeSearchPlan {
+            terms: vec![CodeSearchTerm {
+                text: "abc|def".into(),
+                needle: "abc|def".into(),
+                scope: Scope::Both,
+                regex: Some(RegexExecutor::compile("abc|def").expect("bounded regex")),
+                necessary_grams: Some(NecessaryGramExpr::Or(vec![
+                    NecessaryGramExpr::Gram(*b"abc"),
+                    NecessaryGramExpr::Gram(*b"def"),
+                ])),
+            }],
+            case: CaseMode::Sensitive,
+            typo: None,
+            components: None,
+        };
+        let (literals, alternatives, grams) = plan.diagnostic_regex_shape();
+        assert!(literals >= 2);
+        assert!(alternatives >= 2);
+        assert_eq!(grams, 2);
+    }
+
+    fn from_test_files(
+        mut files: Vec<SourceFile>,
+        state_root: &std::path::Path,
+    ) -> Result<PagedFileAuthority, CoreError> {
+        files.sort_by(|left, right| left.source.file.cmp(&right.source.file));
+        let store = ObjectStore::open(state_root)?;
+        let binding = AttemptBinding {
+            root_incarnation: [1; 16],
+            repository_sha256: [2; 32],
+            revision_sha256: [8; 32],
+            source_event_sha256: [3; 32],
+            target_generation: 1,
+            base_root_sha256: None,
+            operations_sha256: [4; 32],
+            format: 17,
+        };
+        let lease = store.begin_attempt(&binding, &[])?;
+        let reservation = DocVersionReservation {
+            first: 1,
+            count: files.len() as u64,
+            scope_sha256: [5; 32],
+        };
+        let edits = files
+            .into_iter()
+            .map(|file| FileSourceEdit::Upsert {
+                coverage: SourceFileCoverage {
+                    source: file.source,
+                    language: file.language,
+                    producer_policy_sha256: [6; 32],
+                    symbol_name_source_policy: SymbolNameSourcePolicyV1::Unspecified,
+                    unit_set_sha256: [7; 32],
+                    text_admitted: file.text_admitted,
+                    symbols: SymbolCoverage::NotRequested,
+                },
+                bytes: file.bytes.to_vec(),
+            })
+            .collect();
+        let mutation = FileAuthorityMutation {
+            edits,
+            clear_all: false,
+            operations_sha256: binding.operations_sha256,
+        };
+        let built = crate::file_authority::paged::build_for_seal(
+            &store,
+            &lease,
+            None,
+            &reservation,
+            &mutation,
+        )?;
+        PagedFileAuthority::open(&built.root_bytes, store)
+    }
+
+    #[test]
+    fn file_explain_locator_and_selected_body_share_one_io_meter() {
+        let body = b"selected-body";
+        let key = SourceFileKey {
+            source_repo_id: RepoId::new("fixture").expect("repo"),
+            repo_relative_path: RepoRelativePath::new("src/selected.rs"),
+        };
+        let file = SourceFile {
+            source: SourceFileRevision {
+                file: key.clone(),
+                revision_id: RevisionId::new("revision").expect("revision"),
+                source_sha256: <sha2::Sha256 as sha2::Digest>::digest(body).into(),
+            },
+            bytes: body.to_vec().into(),
+            text_admitted: true,
+            language: LanguageCode::new("rust").expect("language"),
+            indexed_text: None,
+            folded_text: None,
+            indexed_path: String::new(),
+            folded_path: String::new(),
+        };
+        let temp = tempfile::tempdir().expect("state root");
+        let retained = from_test_files(vec![file], temp.path()).expect("file authority");
+        let scoped = retained.query_scope();
+        let budget = RequestBudgetV1::unbounded();
+        let candidate_id = file_candidate_id("fixture", "src/selected.rs").expect("candidate id");
+        let located =
+            crate::TantivySearcher::code_search_file_by_id_in(&scoped, &candidate_id, &budget)
+                .expect("scoped locator")
+                .expect("selected source");
+        assert_eq!(located.source.file, key);
+        let after_locator = scoped.query_io_snapshot();
+        assert!(after_locator.0 > 0 && after_locator.1 > 0);
+        let mut preview_files_decoded = 0_u64;
+        let selected = scoped
+            .load_preview_file_for_key(&key, &budget, &mut preview_files_decoded)
+            .expect("selected body");
+        assert_eq!(&*selected.bytes, body);
+        assert_eq!(preview_files_decoded, 1);
+        let after_body = scoped.query_io_snapshot();
+        assert!(after_body.0 > after_locator.0 && after_body.1 > after_locator.1);
+        let _postings = scoped
+            .necessary_candidates(
+                crate::file_authority::PostingSurface::Content,
+                &NecessaryGramExpr::Gram(*b"sel"),
+                &mut QueryWork::default(),
+                &budget,
+            )
+            .expect("posting read");
+        assert_eq!(preview_files_decoded, 1);
+        let missing = SourceFileKey {
+            source_repo_id: RepoId::new("fixture").expect("repo"),
+            repo_relative_path: RepoRelativePath::new("src/missing.rs"),
+        };
+        assert!(
+            scoped
+                .load_preview_file_for_key(&missing, &budget, &mut preview_files_decoded)
+                .is_err()
+        );
+        assert_eq!(preview_files_decoded, 1);
+    }
+
+    #[test]
+    fn file_page_collector_keeps_exact_cursor_tail_with_bounded_rows() {
+        let repo = RepoId::new("repo").expect("repo");
+        let key = |path: &str| SourceFileKey {
+            source_repo_id: repo.clone(),
+            repo_relative_path: RepoRelativePath::new(path),
+        };
+        let boundary_id = file_candidate_id("repo", "b.rs").expect("candidate id");
+        let boundary = LexicalCursor::at(
+            ManifestGeneration::new(7),
+            LexicalRowOrderKey {
+                source_repo_id: "repo",
+                score: 100.0,
+                repo_relative_path: "b.rs",
+                start_line: 0,
+                end_line: 0,
+                candidate_id: &boundary_id,
+            },
+        );
+        let mut collector = FilePageCollector::new(2, Some(&boundary));
+        for path in ["e.rs", "a.rs", "d.rs", "b.rs", "c.rs"] {
+            collector
+                .consider(&key(path), 100.0, None, None)
+                .expect("row");
+            assert!(collector.rows.len() <= 2);
+        }
+        let (tail_count, rows) = collector.into_sorted();
+        assert_eq!(tail_count, 3);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.0.source.repo_relative_path.as_str())
+                .collect::<Vec<_>>(),
+            ["c.rs", "d.rs"]
+        );
+    }
+
+    #[test]
+    fn regex_gram_fold_weakens_only_unproved_bytes() {
+        assert_eq!(
+            folded_regex_grams(&NecessaryGramExpr::Gram(*b"AbC")),
+            NecessaryGramExpr::Gram(*b"abc")
+        );
+        assert_eq!(
+            folded_regex_grams(&NecessaryGramExpr::Or(vec![
+                NecessaryGramExpr::Gram(*b"AbC"),
+                NecessaryGramExpr::Gram([0xc3, 0xa9, b'x']),
+            ])),
+            NecessaryGramExpr::Or(vec![
+                NecessaryGramExpr::Gram(*b"abc"),
+                NecessaryGramExpr::AllDocs,
+            ])
+        );
+    }
+
+    #[test]
+    fn regex_necessary_gram_keeps_uppercase_source_through_folded_postings() {
+        let source = SourceFileRevision {
+            file: SourceFileKey {
+                source_repo_id: RepoId::new("repo").expect("repo"),
+                repo_relative_path: RepoRelativePath::new("src/answer.rs"),
+            },
+            revision_id: RevisionId::new("revision").expect("revision"),
+            source_sha256: <sha2::Sha256 as sha2::Digest>::digest(b"MUST match").into(),
+        };
+        let file = SourceFile {
+            source: source.clone(),
+            bytes: b"MUST match".to_vec().into(),
+            text_admitted: true,
+            language: LanguageCode::new("rust").expect("language"),
+            indexed_text: None,
+            folded_text: None,
+            indexed_path: String::new(),
+            folded_path: String::new(),
+        };
+        let temp = tempfile::tempdir().expect("generation directory");
+        let authority = from_test_files(vec![file], temp.path()).expect("authority");
+        let term = CodeSearchTerm {
+            text: "MUST".into(),
+            needle: "MUST".into(),
+            scope: Scope::Content,
+            regex: Some(RegexExecutor::compile("MUST").expect("regex")),
+            necessary_grams: Some(NecessaryGramExpr::Gram(*b"MUS")),
+        };
+        let ids = regex_candidate_ids(
+            &authority,
+            &[term],
+            &mut QueryWork::default(),
+            &RequestBudgetV1::unbounded(),
+        )
+        .expect("necessary candidates")
+        .expect("gram plan");
+        assert_eq!(
+            ids,
+            vec![
+                authority
+                    .id_for_key(&source.file, None)
+                    .expect("source id")
+                    .expect("source present")
+            ]
+        );
+    }
+
+    #[test]
+    fn sparse_literal_and_regex_avoid_common_gram_read_exhaustion() {
+        const FILES: usize = 2_048;
+        let query = "sharedlongprefixrareZ9";
+        let other = "sharedlongprefixotherQ7";
+        let grams: BTreeSet<_> = query.as_bytes().windows(3).collect();
+        let common_gram_memberships = grams
+            .iter()
+            .filter(|gram| other.as_bytes().windows(3).any(|window| window == **gram))
+            .count()
+            * (FILES - 1);
+        assert!(common_gram_memberships > 16_384);
+
+        let repo = RepoId::new("fixture").expect("repo");
+        let revision = RevisionId::new("revision").expect("revision");
+        let language = LanguageCode::new("rust").expect("language");
+        let target_language = LanguageCode::new("go").expect("target language");
+        let files = (0..FILES)
+            .map(|index| {
+                let body = if index == 0 { query } else { other };
+                let bytes = body.as_bytes().to_vec();
+                SourceFile {
+                    source: SourceFileRevision {
+                        file: SourceFileKey {
+                            source_repo_id: repo.clone(),
+                            repo_relative_path: RepoRelativePath::new(if index == 1 {
+                                format!("src/{query}.rs")
+                            } else {
+                                format!("src/{index:04}.rs")
+                            }),
+                        },
+                        revision_id: revision.clone(),
+                        source_sha256: <sha2::Sha256 as sha2::Digest>::digest(&bytes).into(),
+                    },
+                    bytes: bytes.into(),
+                    text_admitted: true,
+                    language: if index == 0 {
+                        target_language.clone()
+                    } else {
+                        language.clone()
+                    },
+                    indexed_text: None,
+                    folded_text: None,
+                    indexed_path: String::new(),
+                    folded_path: String::new(),
+                }
+            })
+            .collect();
+        let temp = tempfile::tempdir().expect("state root");
+        let authority = from_test_files(files, temp.path()).expect("file authority");
+        let expected_key = SourceFileKey {
+            source_repo_id: repo.clone(),
+            repo_relative_path: RepoRelativePath::new("src/0000.rs"),
+        };
+        let expected_id = authority
+            .id_for_key(&expected_key, None)
+            .expect("target locator")
+            .expect("target ID");
+        let path_key = SourceFileKey {
+            source_repo_id: repo,
+            repo_relative_path: RepoRelativePath::new(format!("src/{query}.rs")),
+        };
+        let path_id = authority
+            .id_for_key(&path_key, None)
+            .expect("path locator")
+            .expect("path ID");
+        let budget = RequestBudgetV1::unbounded();
+        let policy = crate::file_authority::policy();
+
+        let literal_scope = authority.query_scope();
+        let literal = CodeSearchTerm {
+            text: query.into(),
+            needle: query.into(),
+            scope: Scope::Content,
+            regex: None,
+            necessary_grams: None,
+        };
+        let literal_hits = super::candidate_ids_observed(
+            &literal_scope,
+            std::slice::from_ref(&literal),
+            CaseMode::Sensitive,
+            None,
+            &budget,
+            &mut QueryWork::default(),
+            &mut super::CodeSearchExecutionStatsV1::default(),
+            10,
+        )
+        .expect("literal candidates and exact verification");
+        assert_eq!(
+            literal_hits.into_keys().collect::<Vec<_>>(),
+            vec![expected_id]
+        );
+        let literal_io = literal_scope.query_io_snapshot();
+        assert!(literal_io.1 > 0 && literal_io.1 <= policy.query_list_reads);
+        assert!(literal_io.0 <= policy.query_decoded_bytes);
+
+        let both_scope = authority.query_scope();
+        let mut both = literal;
+        both.scope = Scope::Both;
+        let both_hits = candidate_ids(
+            &both_scope,
+            std::slice::from_ref(&both),
+            CaseMode::Sensitive,
+            None,
+            &budget,
+        )
+        .expect("content or path candidates");
+        assert_eq!(
+            both_hits.into_keys().collect::<BTreeSet<_>>(),
+            BTreeSet::from([expected_id, path_id])
+        );
+        assert!(both_scope.query_io_snapshot().1 <= policy.query_list_reads);
+
+        let language_scope = authority.query_scope();
+        let mut constraints = QueryConstraintSetV1::unconstrained();
+        let _inserted = constraints.language_any_of.insert(target_language);
+        let eligible = language_eligible_ids(&language_scope, &constraints, &budget)
+            .expect("language eligibility")
+            .expect("language filter");
+        let language_hits = candidate_ids(
+            &language_scope,
+            std::slice::from_ref(&both),
+            CaseMode::Sensitive,
+            Some(&eligible),
+            &budget,
+        )
+        .expect("language-scoped candidates");
+        assert_eq!(
+            language_hits.into_keys().collect::<Vec<_>>(),
+            vec![expected_id]
+        );
+        assert!(language_scope.query_io_snapshot().1 <= policy.query_list_reads);
+
+        let (plan, prepared) = crate::regex::plan_regex_prepared(
+            query,
+            &quanta_index_contract::LqOptions::defaults(),
+            &crate::regex::RegexPolicy::defaults(),
+        )
+        .expect("regex plan");
+        let regex = CodeSearchTerm {
+            text: query.into(),
+            needle: query.into(),
+            scope: Scope::Content,
+            regex: Some(RegexExecutor::compile_prepared(prepared).expect("regex executor")),
+            necessary_grams: Some(plan.necessary_gram_expr().clone()),
+        };
+        let regex_scope = authority.query_scope();
+        let regex_ids = regex_candidate_ids(
+            &regex_scope,
+            std::slice::from_ref(&regex),
+            &mut QueryWork::default(),
+            &budget,
+        )
+        .expect("regex candidates")
+        .expect("bounded regex gram plan");
+        let mut verified = Vec::new();
+        for id in regex_ids {
+            let file = regex_scope
+                .load_file_for_id(id, &budget)
+                .expect("regex source verification");
+            if regex
+                .regex
+                .as_ref()
+                .expect("compiled regex")
+                .verify(file.bytes.as_ref())
+            {
+                verified.push(id);
+            }
+        }
+        assert_eq!(verified, vec![expected_id]);
+        let regex_io = regex_scope.query_io_snapshot();
+        assert!(regex_io.1 > 0 && regex_io.1 <= policy.query_list_reads);
+        assert!(regex_io.0 <= policy.query_decoded_bytes);
+    }
 
     fn osa_oracle(left: &[u8], right: &[u8]) -> usize {
         let mut rows = vec![vec![0; right.len() + 1]; left.len() + 1];
@@ -3185,27 +5047,6 @@ mod tests {
         ));
     }
 
-    fn fixture_postings(path: &str, content: Option<&str>) -> u32 {
-        let path = normalize::nfc(path).into_owned();
-        let path_folded = normalize::fold(&path);
-        let content = content.map(|value| normalize::nfc(value).into_owned());
-        let content_folded = content.as_deref().map(normalize::fold);
-        let surfaces = [Some(path_folded.as_str()), content_folded.as_deref()];
-        let count: usize = surfaces
-            .into_iter()
-            .flatten()
-            .map(|surface| {
-                surface
-                    .as_bytes()
-                    .windows(3)
-                    .map(|window| <[u8; 3]>::try_from(window).expect("trigram"))
-                    .collect::<BTreeSet<_>>()
-                    .len()
-            })
-            .sum();
-        u32::try_from(count).expect("fixture count")
-    }
-
     #[test]
     fn shared_folded_prefilter_keeps_sensitive_unicode_hits_and_rejects_case_collisions() {
         let text = "ABC İΣß ẞ";
@@ -3227,7 +5068,6 @@ mod tests {
             folded_text: None,
             indexed_path: String::new(),
             folded_path: String::new(),
-            expected_postings: fixture_postings(path, Some(text)),
         };
         let temp = tempfile::tempdir().expect("generation directory");
         let authority = from_test_files(vec![file], temp.path()).expect("authority");
@@ -3246,6 +5086,7 @@ mod tests {
                 needle: needle.to_owned(),
                 scope,
                 regex: None,
+                necessary_grams: None,
             };
             let hits = candidate_ids(
                 &authority,
@@ -3363,7 +5204,6 @@ mod tests {
             folded_text: Some(folded.into()),
             indexed_path: "large.rs".into(),
             folded_path: "large.rs".into(),
-            expected_postings: 0,
         };
         assert!(file.bytes.len() > super::MAX_PREVIEW_SOURCE_BYTES);
         assert_eq!(
@@ -3410,7 +5250,6 @@ mod tests {
             folded_text: Some(text.into()),
             indexed_path: "file.rs".into(),
             folded_path: "file.rs".into(),
-            expected_postings: 0,
         };
         let terms = [
             CodeSearchTerm {
@@ -3418,12 +5257,14 @@ mod tests {
                 needle: "abc".into(),
                 scope: Scope::Content,
                 regex: Some(RegexExecutor::compile("abc").expect("regex")),
+                necessary_grams: None,
             },
             CodeSearchTerm {
                 text: "abc".into(),
                 needle: "abc".into(),
                 scope: Scope::Content,
                 regex: None,
+                necessary_grams: None,
             },
         ];
         let budget = RequestBudgetV1::unbounded();
@@ -3468,12 +5309,14 @@ mod tests {
                 needle: "missing".into(),
                 scope: Scope::Content,
                 regex: Some(RegexExecutor::compile("missing").expect("regex")),
+                necessary_grams: None,
             },
             CodeSearchTerm {
                 text: "abc".into(),
                 needle: "abc".into(),
                 scope: Scope::Content,
                 regex: None,
+                necessary_grams: None,
             },
         ];
         let cached = score_terms(
@@ -3508,6 +5351,7 @@ mod tests {
             needle: text.into(),
             scope: Scope::Content,
             regex: None,
+            necessary_grams: None,
         });
         assert_eq!(
             OverlappingMatches::new("aaaaab", "aaa").collect::<Vec<_>>(),
@@ -3573,7 +5417,6 @@ mod tests {
                     folded_text: None,
                     indexed_path: String::new(),
                     folded_path: String::new(),
-                    expected_postings: fixture_postings(&path, Some(value)),
                 }
             })
             .collect();
@@ -3584,6 +5427,7 @@ mod tests {
             needle: "x".into(),
             scope: Scope::Content,
             regex: None,
+            necessary_grams: None,
         };
         let budget = RequestBudgetV1::unbounded();
         assert!(matches!(
@@ -3650,7 +5494,6 @@ mod tests {
                 folded_text: None,
                 indexed_path: String::new(),
                 folded_path: String::new(),
-                expected_postings: fixture_postings(&format!("src/{position:06}.txt"), Some(text)),
             });
         }
         let temp = tempfile::tempdir().expect("generation directory");
@@ -3660,6 +5503,7 @@ mod tests {
             needle: text.into(),
             scope: Scope::Content,
             regex: None,
+            necessary_grams: None,
         });
         let budget = RequestBudgetV1::unbounded();
         let run = |terms: &[CodeSearchTerm]| {
@@ -3711,17 +5555,26 @@ mod tests {
                 folded_text: None,
                 indexed_path: String::new(),
                 folded_path: String::new(),
-                expected_postings: fixture_postings("src/İ.go", Some("İ")),
             }],
             temp.path(),
         )
         .expect("file authority");
-        let file = authority.files.values().next().expect("file");
+        let file = authority
+            .load_file_for_key(
+                &authority
+                    .metadata_for_id(1, None)
+                    .expect("file metadata")
+                    .expect("file present")
+                    .source
+                    .file,
+                &RequestBudgetV1::unbounded(),
+            )
+            .expect("file");
         assert_eq!(file.folded_text.as_deref(), Some("i\u{307}"));
         assert_eq!(file.folded_path, "src/i\u{307}.go");
-        assert_eq!(scanned_bytes(file, Scope::Content, CaseMode::Sensitive), 2);
-        assert_eq!(scanned_bytes(file, Scope::Content, CaseMode::Folded), 3);
-        assert_eq!(scanned_bytes(file, Scope::Both, CaseMode::Folded), 13);
+        assert_eq!(scanned_bytes(&file, Scope::Content, CaseMode::Sensitive), 2);
+        assert_eq!(scanned_bytes(&file, Scope::Content, CaseMode::Folded), 3);
+        assert_eq!(scanned_bytes(&file, Scope::Both, CaseMode::Folded), 13);
         let measured = source_bytes_checked(
             &authority,
             Scope::Both,
@@ -3740,6 +5593,7 @@ mod tests {
             needle: "needle".into(),
             scope,
             regex: Some(RegexExecutor::compile("needle").expect("regex")),
+            necessary_grams: None,
         };
         assert!(matches!(
             regex_scan_scope(&[term(Scope::Content)]),
@@ -3777,12 +5631,21 @@ mod tests {
                 folded_text: None,
                 indexed_path: String::new(),
                 folded_path: String::new(),
-                expected_postings: fixture_postings("src/İ.go", None),
             }],
             temp.path(),
         )
         .expect("file authority");
-        let file = authority.files.values().next().expect("file");
+        let file = authority
+            .load_file_for_key(
+                &authority
+                    .metadata_for_id(1, None)
+                    .expect("file metadata")
+                    .expect("file present")
+                    .source
+                    .file,
+                &RequestBudgetV1::unbounded(),
+            )
+            .expect("file");
         let budget = RequestBudgetV1::unbounded();
         let witness = best_in(
             &file.folded_path,
@@ -3793,9 +5656,14 @@ mod tests {
         )
         .expect("folded path scan")
         .expect("folded hit");
-        let highlight = path_highlight(file, &witness, &budget)
-            .expect("path mapping")
-            .expect("path highlight");
+        let highlight = path_highlight(
+            file.source.file.repo_relative_path.as_str(),
+            &file.indexed_path,
+            &witness,
+            &budget,
+        )
+        .expect("path mapping")
+        .expect("path highlight");
         assert_eq!(highlight.start, 4);
         assert_eq!(highlight.len, 2);
         assert_eq!(
@@ -3818,7 +5686,12 @@ mod tests {
             ..witness
         };
         assert!(matches!(
-            path_highlight(file, &invalid, &budget),
+            path_highlight(
+                file.source.file.repo_relative_path.as_str(),
+                &file.indexed_path,
+                &invalid,
+                &budget,
+            ),
             Err(CoreError::Storage(_))
         ));
     }

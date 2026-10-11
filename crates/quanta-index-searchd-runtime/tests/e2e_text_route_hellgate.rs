@@ -120,6 +120,7 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
     let now_ms = now_epoch_ms()?;
+    let _reserved_generation = rt.reserve_pending_source_generation_v1()?;
     rt.publish_repo_meta_batch(RepoMetaIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),

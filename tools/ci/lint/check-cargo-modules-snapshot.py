@@ -39,11 +39,12 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKSPACE_TOML = ROOT / "Cargo.toml"
 BASELINE_DIR = ROOT / "tools" / "ci" / "lint" / "baselines" / "cargo-modules"
 
-# Only the contract + core surfaces are structurally load-bearing; adapters can
-# evolve their module tree freely. Extend this list deliberately.
+# Contract, core and the publication kernel are structurally load-bearing;
+# adapters can evolve their module tree freely. Extend this list deliberately.
 GUARDED_CRATES: list[str] = [
     "quanta-index-contract",
     "quanta-index-core",
+    "quanta-index-kernel",
 ]
 
 

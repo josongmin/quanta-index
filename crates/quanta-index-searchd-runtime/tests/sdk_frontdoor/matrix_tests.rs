@@ -5,6 +5,8 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
     let fixture = SdkFrontdoorRuntime::start()?;
     let client = &fixture.client;
     let ingest_socket = &fixture.ingest_socket;
+    let corpus_batch = lexical_frontdoor_matrix_batch()?;
+    reserve_sdk_frontdoor_generation(client, &corpus_batch)?;
 
     // The repo-metadata overlays belong to the generation's sealed
     // contract, so they are published before the seal (QI-BB-030); a
@@ -23,7 +25,6 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
     let _file_contributor_receipt = client
         .history()
         .publish_file_contributor(&file_contributor_batch())?;
-    let corpus_batch = lexical_frontdoor_matrix_batch()?;
     let _corpus_active = publish_and_activate_sdk_search_corpus(client, &corpus_batch)?;
     let _history_receipt = client.history().publish(&history_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
