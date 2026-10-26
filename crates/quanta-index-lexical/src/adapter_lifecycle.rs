@@ -1,8 +1,6 @@
 //! A sealed generation's lifecycle ports: validation, scrub, quarantine, discard and reclaim.
 
-use crate::generation_dir::{
-    generation_tree_bytes_observed, is_writer_lock_entry, sync_generation_directory,
-};
+use crate::generation_dir::{generation_tree_bytes_observed, sync_generation_directory};
 use crate::index_store::{
     read_lexical_sealed_identity, sealed_identity_entry_present, validate_lexical_sealed_identity,
 };
@@ -14,12 +12,13 @@ use crate::sealed_generation::{
 };
 use crate::{GenKey, LexicalAdapter};
 use quanta_index_contract::{
-    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchCorpusIngestBatch,
+    SearchPlaneTrackKind,
 };
 use quanta_index_core::domains::generation::{
     GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
-    QuarantinedGenerationV1, SealedGenerationBytesV1, SealedGenerationInventoryV1,
-    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
+    QuarantinedGenerationV1, SealedGenerationByteSession, SealedGenerationBytesV1,
+    SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
 };
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, DiagnosticStageV1, DoorFindingOutcome,
@@ -27,8 +26,7 @@ use quanta_index_core::{
     GenerationNamespaceReadPort, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
     IntegrityScrubCursorV1, IntegrityScrubPort, IntegrityScrubReportV1, QuarantineDiscardOutcomeV1,
     QuarantinedGenerationDiscardPort, SealedGenerationIdentityProbePort, SealedGenerationScanPort,
-    reclaim_directory, unique_inode_tree_bytes_for_roots_below_track,
-    unique_inode_tree_bytes_in_track,
+    reclaim_directory,
 };
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
@@ -89,7 +87,7 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
             &observed,
             &mut DiscardingVisitor,
             None,
-            &crate::lexical_store::ObjectStore::open_existing(&self.state_root)?,
+            &self.open_existing_store()?,
         )?;
         sync_generation_directory(&generation_dir)
     }
@@ -112,7 +110,7 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
             proofs,
             None,
             None,
-            &crate::lexical_store::ObjectStore::open_existing(&self.state_root)?,
+            &self.open_existing_store()?,
         )?;
         sync_generation_directory(&generation_dir)
     }
@@ -167,7 +165,7 @@ impl SealedGenerationIdentityProbePort for LexicalAdapter {
         }
         match quarantined_by_scrub(&dir) {
             Ok(None) => Ok(true),
-            Err(CoreError::Storage(error)) => Err(CoreError::Storage(error)),
+            Err(error @ (CoreError::Storage(_) | CoreError::StorageIo { .. })) => Err(error),
             Ok(Some(_)) | Err(_) => Ok(false),
         }
     }
@@ -202,6 +200,7 @@ impl LexicalAdapter {
             &observed,
             start,
             budget,
+            self.object_lifetime.as_ref(),
             before_quarantine,
             &mut shared,
         );
@@ -262,7 +261,7 @@ impl LexicalAdapter {
         origin: &GenerationSnapshot,
         before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
     ) -> Result<Option<QuarantinedGenerationV1>, CoreError> {
-        let store = crate::lexical_store::ObjectStore::open_existing(&self.state_root)?;
+        let store = self.open_existing_store()?;
         let inventory = inventory_sealed_generations(&self.state_root)?;
         let mut referencing = Vec::new();
         let mut reachability_error = None;
@@ -367,7 +366,7 @@ impl LexicalAdapter {
         let (file, native) = crate::lexical_publication::read_committed_roots(&directory)?;
         let mut roots = file.object_roots();
         roots.extend(native.root_objects());
-        let store = crate::lexical_store::ObjectStore::open_existing(&self.state_root)?;
+        let store = self.open_existing_store()?;
         let _settled = store.finish_target_attempts(
             Sha256::digest(identity.repo_id.as_str().as_bytes()).into(),
             Sha256::digest(identity.revision_id.as_str().as_bytes()).into(),
@@ -393,11 +392,91 @@ impl LexicalAdapter {
             }
             Ok(_) => {}
         }
-        let store = crate::lexical_store::ObjectStore::open_existing(&self.state_root)?;
+        let store = self.open_existing_store()?;
         let _retired = store.discard_target_attempts(
             Sha256::digest(key.repo_id.as_str().as_bytes()).into(),
             Sha256::digest(key.revision_id.as_str().as_bytes()).into(),
             key.generation.get(),
+        )?;
+        Ok(())
+    }
+
+    /// The caller has proved this exact source event is still Pending. Keep
+    /// its pool attempt while discarding only incomplete target-generation
+    /// bytes; the retry must resume its durable hard-scan transcript.
+    fn preserve_pending_target_adoptions(
+        &self,
+        key: &GenKey,
+        candidate: &GenerationSnapshot,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<(), CoreError> {
+        batch.validate_v1().map_err(|error| {
+            CoreError::InvalidContract(format!("pending lexical discard batch: {error}"))
+        })?;
+        if candidate.track != SearchPlaneTrackKind::Lexical
+            || candidate.repo_id != batch.repo_id
+            || candidate.revision_id != batch.revision_id
+            || candidate.manifest_generation != batch.generation
+            || candidate.manifest_digest != batch.manifest_digest
+        {
+            return Err(CoreError::InvalidContract(
+                "pending lexical discard target differs from original batch".into(),
+            ));
+        }
+        let (base_root_sha256, inherited_roots) = if let Some(generation) = batch.base_generation {
+            let base_key = GenKey {
+                repo_id: key.repo_id.clone(),
+                revision_id: key.revision_id.clone(),
+                generation,
+            };
+            let (file, native) =
+                crate::lexical_publication::read_committed_roots(&self.index_path(&base_key))?;
+            let mut hash = Sha256::new();
+            hash.update(b"lexical-publication-base-roots-v1\0");
+            hash.update(file.encode()?);
+            hash.update(crate::channel_payloads::encode_cbor(
+                &native,
+                "Native base root",
+            )?);
+            let mut inherited = file.object_roots();
+            inherited.extend(native.root_objects());
+            (Some(hash.finalize().into()), inherited)
+        } else {
+            (None, Vec::new())
+        };
+        let pool = self.state_root.join("lexical-object-pool");
+        match std::fs::symlink_metadata(&pool) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical: inspect pending adoption pool: {error}"
+                )));
+            }
+            Ok(_) => {}
+        }
+        let store = self.open_existing_store()?;
+        let event_sha256: [u8; 32] = Sha256::digest(crate::channel_payloads::encode_cbor(
+            &batch.source_event,
+            "lexical source event",
+        )?)
+        .into();
+        let operations_sha256 =
+            quanta_index_contract::source_event_payload_sha256(batch).map_err(|error| {
+                CoreError::InvalidContract(format!("pending lexical discard body: {error}"))
+            })?;
+        let format =
+            u16::try_from(crate::lexical_root_names::LEXICAL_SEALED_MANIFEST_FORMAT_VERSION)
+                .map_err(|_width| {
+                    CoreError::InvalidContract("lexical format exceeds u16".into())
+                })?;
+        let _preserved = store.preserve_target_attempt_for_pending_batch(
+            (
+                Sha256::digest(key.repo_id.as_str().as_bytes()).into(),
+                Sha256::digest(key.revision_id.as_str().as_bytes()).into(),
+                key.generation.get(),
+            ),
+            (event_sha256, base_root_sha256, operations_sha256, format),
+            &inherited_roots,
         )?;
         Ok(())
     }
@@ -430,8 +509,7 @@ impl IntegrityScrubPort for LexicalAdapter {
                             "lexical: inspect recovery pool: {error}"
                         )));
                     }
-                    Ok(_) => crate::lexical_store::ObjectStore::open_existing(&self.state_root)?
-                        .pending_target_scopes()?,
+                    Ok(_) => self.open_existing_store()?.pending_target_scopes()?,
                 };
             if !pending.is_empty() {
                 let candidates = {
@@ -476,7 +554,7 @@ impl IntegrityScrubPort for LexicalAdapter {
                 }
                 Ok(_) => {}
             }
-            let store = crate::lexical_store::ObjectStore::open_existing(&self.state_root)?;
+            let store = self.open_existing_store()?;
             let epoch = store.gc_epoch()?;
             let inventory = inventory_sealed_generations(&self.state_root)?;
             let retained = inventory
@@ -487,9 +565,7 @@ impl IntegrityScrubPort for LexicalAdapter {
                 .collect();
             drop(lifecycle);
             *collector = Some(crate::lexical_gc::SharedGcProgress::start(
-                &self.state_root,
-                retained,
-                epoch,
+                store, retained, epoch,
             )?);
         }
         let result = collector
@@ -512,7 +588,12 @@ impl IntegrityScrubPort for LexicalAdapter {
                 Ok(SharedObjectCollectionStepV1::Stale)
             }
             Err(error) => {
-                drop(collector.take());
+                if !collector
+                    .as_ref()
+                    .is_some_and(crate::lexical_gc::SharedGcProgress::has_pending_delete)
+                {
+                    drop(collector.take());
+                }
                 Err(error)
             }
         };
@@ -590,8 +671,7 @@ impl DoorFindingQuarantinePort for LexicalAdapter {
             before_quarantine(&observed)?;
             return Ok(DoorFindingOutcome::Quarantined { quarantined });
         }
-        let store =
-            crate::lexical_store::ObjectStore::open_existing(&self.state_root)?.metered_clone();
+        let store = self.open_existing_store()?.metered_clone();
         match walk_sealed_generation_at(
             &root,
             &generation_dir,
@@ -708,6 +788,7 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
     fn discard_incomplete_generation(
         &self,
         candidate: &GenerationSnapshot,
+        pending_batch: Option<&SearchCorpusIngestBatch>,
     ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
         if candidate.track != SearchPlaneTrackKind::Lexical {
             return Err(CoreError::InvalidContract(format!(
@@ -720,8 +801,12 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
             revision_id: candidate.revision_id.clone(),
             generation: candidate.manifest_generation,
         };
-        let _mutation = self.generation_mutation_guard(&key)?;
+        let _mutation = self
+            .generation_build_guards(&key, pending_batch.and_then(|batch| batch.base_generation))?;
         let _lifecycle = self.directory_lifecycle_guard()?;
+        if let Some(batch) = pending_batch {
+            self.preserve_pending_target_adoptions(&key, candidate, batch)?;
+        }
         let generation_dir = self.index_path(&key);
         let mut writers = self
             .writers
@@ -737,9 +822,11 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
             Ok(_) => false,
         };
         if absent {
-            let _stale_writer = writers.remove(&key);
+            let _discarded = writers.discard(&key)?;
             drop(writers);
-            self.discard_target_adoptions(&key)?;
+            if pending_batch.is_none() {
+                self.discard_target_adoptions(&key)?;
+            }
             return Ok(IncompleteGenerationDiscardOutcomeV1::Absent);
         }
         if sealed_identity_entry_present(&generation_dir)? {
@@ -753,15 +840,7 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
                 ),
             });
         }
-        let writer = writers.remove(&key);
-        let writer_guard = writer
-            .as_ref()
-            .map(|handle| {
-                handle.lock().map_err(|err| {
-                    CoreError::Storage(format!("lexical writer poisoned during discard: {err}"))
-                })
-            })
-            .transpose()?;
+        let _discarded = writers.discard(&key)?;
         reclaim_directory(
             &self.state_root,
             &generation_dir,
@@ -771,16 +850,34 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
                     .reclaim_entry_name(key.generation)
             ),
         )?;
-        drop(writer_guard);
-        drop(writer);
         drop(writers);
-        self.discard_target_adoptions(&key)?;
+        if pending_batch.is_none() {
+            self.discard_target_adoptions(&key)?;
+        }
         self.invalidate_regex_match_cache_generation(&key)?;
         Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
     }
 }
 
 impl SealedGenerationReclaimPort for LexicalAdapter {
+    fn begin_pair_measurement(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        budget: quanta_index_core::RequestBudgetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<Box<dyn SealedGenerationByteSession + '_>, CoreError> {
+        Ok(Box::new(
+            crate::retention_measurement::LexicalRetentionSession::begin(
+                self,
+                repo_id,
+                revision_id,
+                budget,
+                diagnostic,
+            )?,
+        ))
+    }
+
     fn reclaim_sealed_generation_with_settlement(
         &self,
         retired: &GenerationSnapshot,
@@ -839,7 +936,7 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
                     let mut writers = self.writers.lock().map_err(|err| {
                         CoreError::Storage(format!("lexical writers poisoned: {err}"))
                     })?;
-                    let _stale_writer = writers.remove(&key);
+                    let _discarded = writers.discard(&key)?;
                 }
                 self.scrub_progress
                     .lock()
@@ -957,97 +1054,35 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
         generations: &BTreeSet<ManifestGeneration>,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
-        crate::causal_profile::observe_result(
+        self.begin_pair_measurement(
+            repo_id,
+            revision_id,
+            self.retention_measurement_policy.physical_scan_budget()?,
             diagnostic,
-            DiagnosticStageV1::RetentionMeasure,
-            |diagnostic| {
-                let _namespace = self.directory_lifecycle_read_guard()?;
-                let roots: Vec<_> = generations
-                    .iter()
-                    .map(|generation| {
-                        self.index_path(&GenKey {
-                            repo_id: repo_id.clone(),
-                            revision_id: revision_id.clone(),
-                            generation: *generation,
-                        })
-                    })
-                    .collect();
-                let (bytes, present) = unique_inode_tree_bytes_for_roots_below_track(
-                    &self.state_root,
-                    &roots,
-                    &is_writer_lock_entry,
-                    diagnostic,
-                )
-                .map_err(|err| {
-                    CoreError::Storage(format!(
-                        "lexical: measure sealed generations of repo={} revision={}: {err}",
-                        repo_id.as_str(),
-                        revision_id.as_str()
-                    ))
-                })?;
-                let mut absent = BTreeSet::new();
-                let mut object_roots = Vec::new();
-                for ((generation, directory), present) in
-                    generations.iter().zip(&roots).zip(present)
-                {
-                    if !present {
-                        let _inserted = absent.insert(*generation);
-                        continue;
-                    }
-                    let sealed_roots = crate::lexical_gc::protected_roots(directory)?;
-                    object_roots
-                        .try_reserve(sealed_roots.len())
-                        .map_err(|error| {
-                            CoreError::Storage(format!("lexical retention root reserve: {error}"))
-                        })?;
-                    object_roots.extend(sealed_roots);
-                }
-                let object_bytes = if object_roots.is_empty() {
-                    0
-                } else {
-                    let store = crate::lexical_store::ObjectStore::open_existing(&self.state_root)?;
-                    crate::lexical_gc::measure_unique_closure_bytes(
-                        &store,
-                        object_roots,
-                        diagnostic,
-                    )?
-                };
-                let bytes = bytes.checked_add(object_bytes).ok_or_else(|| {
-                    CoreError::InvalidContract("lexical retention pair byte total overflow".into())
-                })?;
-                Ok(SealedGenerationBytesV1 { bytes, absent })
-            },
-        )
+        )?
+        .measure(generations)
     }
 
     /// Physical lexical track bytes, including shared pool, quarantine,
     /// unsealed attempts and reclaim-area files until they are actually gone.
+    fn begin_track_physical_measurement(
+        &self,
+    ) -> Result<
+        Box<dyn quanta_index_core::domains::generation::TrackPhysicalByteSession + '_>,
+        CoreError,
+    > {
+        Ok(Box::new(
+            crate::physical_measurement::LexicalPhysicalSession::begin(self)?,
+        ))
+    }
+
     fn measure_track_physical_bytes(
         &self,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<u64, CoreError> {
-        crate::causal_profile::observe_result(
-            diagnostic,
-            DiagnosticStageV1::PhysicalInodeCensus,
-            |diagnostic| {
-                match std::fs::symlink_metadata(&self.state_root) {
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-                    Err(error) => {
-                        return Err(CoreError::Storage(format!(
-                            "lexical: inspect physical track {}: {error}",
-                            self.state_root.display()
-                        )));
-                    }
-                    Ok(_) => {}
-                }
-                unique_inode_tree_bytes_in_track(
-                    &self.state_root,
-                    &is_writer_lock_entry,
-                    &quanta_index_core::RequestBudgetV1::unbounded(),
-                    diagnostic,
-                )
-            },
-        )
+        let budget = self.retention_measurement_policy.physical_scan_budget()?;
+        self.begin_track_physical_measurement()?
+            .measure(&budget, diagnostic)
     }
 }
 
@@ -1083,5 +1118,209 @@ mod generation_namespace_tests {
             assert!(!lexical.generation_namespace_is_empty(&repo, &revision)?);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pending_discard_tests {
+    use super::*;
+    use crate::lexical_store::{
+        AttemptBinding, Authority, CheckpointPayload, IndependentWindowOracle, ObjectStore,
+        WindowWitness,
+    };
+    use quanta_index_contract::{
+        BatchIngestMode, SourcePublicationEvent, source_event_payload_sha256,
+    };
+    use quanta_index_core::RequestBudgetV1;
+
+    fn batch() -> SearchCorpusIngestBatch {
+        let mut batch = SearchCorpusIngestBatch {
+            source_event: SourcePublicationEvent {
+                stream_id: "pending-discard-stream".into(),
+                event_id: "pending-discard-event".into(),
+                expected_base_event_id: None,
+                payload_sha256: [0; 32],
+            },
+            repo_id: RepoId::new("repo").expect("repo"),
+            revision_id: RevisionId::new("revision").expect("revision"),
+            generation: ManifestGeneration::new(7),
+            base_generation: None,
+            manifest_digest: "manifest-7".into(),
+            batch_digest: "0".repeat(64),
+            mode: BatchIngestMode::ReplaceGeneration,
+            bundle_payload: None,
+            clear_surfaces: Vec::new(),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
+            seal: true,
+        };
+        batch.source_event.payload_sha256 =
+            source_event_payload_sha256(&batch).expect("source event digest");
+        batch
+    }
+
+    fn binding(batch: &SearchCorpusIngestBatch) -> AttemptBinding {
+        AttemptBinding {
+            root_incarnation: [7; 16],
+            repository_sha256: Sha256::digest(batch.repo_id.as_str().as_bytes()).into(),
+            revision_sha256: Sha256::digest(batch.revision_id.as_str().as_bytes()).into(),
+            source_event_sha256: Sha256::digest(
+                crate::channel_payloads::encode_cbor(&batch.source_event, "source event")
+                    .expect("event encoding"),
+            )
+            .into(),
+            target_generation: batch.generation.get(),
+            base_root_sha256: None,
+            operations_sha256: source_event_payload_sha256(batch).expect("body digest"),
+            format: u16::try_from(
+                crate::lexical_root_names::LEXICAL_SEALED_MANIFEST_FORMAT_VERSION,
+            )
+            .expect("format width"),
+        }
+    }
+
+    fn fixed_window() -> WindowWitness {
+        WindowWitness {
+            ordinal: 0,
+            prior_chain_sha256: [0; 32],
+            start_run_id: 1,
+            next_run_id: 1,
+            frozen_high_water_run_id: 1,
+            round_complete: true,
+            candidates: Vec::new(),
+        }
+    }
+
+    struct FixedOldRoot;
+
+    impl IndependentWindowOracle for FixedOldRoot {
+        fn replay(
+            &mut self,
+            lane: Authority,
+            base: [u8; 32],
+            start: u64,
+            high: u64,
+            _budget: Option<&RequestBudgetV1>,
+        ) -> Result<WindowWitness, CoreError> {
+            macro_rules! check_eq {
+                ($actual:expr, $expected:expr $(,)?) => {{
+                    let (left, right) = (&$actual, &$expected);
+                    if *left != *right { return Err(CoreError::Storage(format!("test oracle failed at {}:{}: actual={left:?}, expected={right:?}", file!(), line!())).into()); }
+                }};
+                ($actual:expr, $expected:expr, $($message:tt)+) => {{
+                    let (left, right) = (&$actual, &$expected);
+                    if *left != *right { return Err(CoreError::Storage(format!("{}; actual={left:?}, expected={right:?}", format!($($message)+))).into()); }
+                }};
+            }
+
+            check_eq!((lane, base, start, high), (Authority::File, [8; 32], 1, 1));
+            Ok(fixed_window())
+        }
+    }
+
+    #[test]
+    fn pending_incomplete_discard_preserves_attempt_and_scan_but_explicit_discard_retires_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+        let batch = batch();
+        let candidate = GenerationSnapshot {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: batch.generation,
+            manifest_digest: batch.manifest_digest.clone(),
+        };
+        let key = GenKey {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        };
+        let target = adapter.index_path(&key);
+        std::fs::create_dir_all(&target).expect("incomplete target");
+        std::fs::write(target.join("partial"), b"partial").expect("partial target bytes");
+        let store = ObjectStore::open(dir.path()).expect("pool");
+        let binding = binding(&batch);
+        let lease = store
+            .begin_attempt(&binding, &[])
+            .expect("original attempt");
+        let prior = CheckpointPayload::empty(binding.clone(), [9; 32]);
+        let witness = prior
+            .decorate_next_window((Authority::File, [8; 32], 1), fixed_window())
+            .expect("decorated fixed window");
+        let (saved, _digest) = lease
+            .append_hard_scan_window(
+                prior.clone(),
+                prior.digest().expect("prior digest"),
+                (Authority::File, [8; 32], 1),
+                witness,
+                &mut FixedOldRoot,
+                None,
+            )
+            .expect("durable scan window");
+        let attempt_dir = dir.path().join("lexical-object-pool/attempts");
+        let sidecar = std::fs::read_dir(&attempt_dir)
+            .expect("attempt entries")
+            .map(|entry| entry.expect("attempt entry").path())
+            .find(|path| path.to_string_lossy().ends_with(".cbor.scan"))
+            .expect("scan sidecar");
+        let original_bytes = std::fs::read(&sidecar).expect("saved sidecar bytes");
+
+        let mut wrong = batch.clone();
+        wrong.source_event.event_id = "different-event".into();
+        assert!(
+            adapter
+                .discard_incomplete_generation(&candidate, Some(&wrong))
+                .is_err()
+        );
+        assert!(target.exists());
+        assert_eq!(
+            std::fs::read(&sidecar).expect("unmodified sidecar"),
+            original_bytes
+        );
+
+        assert_eq!(
+            adapter
+                .discard_incomplete_generation(&candidate, Some(&batch))
+                .expect("pending retry discard"),
+            IncompleteGenerationDiscardOutcomeV1::Discarded
+        );
+        assert!(!target.exists());
+        assert_eq!(
+            std::fs::read(&sidecar).expect("preserved sidecar"),
+            original_bytes
+        );
+        let retry = store
+            .begin_attempt(&binding, &[])
+            .expect("same attempt retry");
+        assert_eq!(
+            retry
+                .load_hard_scan(
+                    [9; 32],
+                    &[(Authority::File, [8; 32], 1)],
+                    &mut FixedOldRoot,
+                    None,
+                )
+                .expect("replay original checkpoint")
+                .expect("checkpoint retained"),
+            saved
+        );
+        assert_eq!(
+            adapter
+                .discard_incomplete_generation(&candidate, Some(&batch))
+                .expect("pending absent retry"),
+            IncompleteGenerationDiscardOutcomeV1::Absent
+        );
+        assert!(sidecar.exists());
+        assert_eq!(
+            adapter
+                .discard_incomplete_generation(&candidate, None)
+                .expect("explicit absent discard"),
+            IncompleteGenerationDiscardOutcomeV1::Absent
+        );
+        assert!(!sidecar.exists());
+        drop(retry);
+        drop(lease);
     }
 }

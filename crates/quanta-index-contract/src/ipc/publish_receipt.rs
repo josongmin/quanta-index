@@ -255,6 +255,18 @@ impl<'de> Deserialize<'de> for BatchPublishReceipt {
     }
 }
 
+/// Decode the same receipt wire while retaining every text allocation in the
+/// caller's admitted decode owner, including optional semantic content roots.
+pub fn admitted_auxiliary_receipt_seed_v1<'a, A: crate::DecodeBackingAdmissionV1 + ?Sized>(
+    admission: &'a A,
+    max_text_bytes: usize,
+) -> impl for<'de> serde::de::DeserializeSeed<'de, Value = BatchPublishReceipt> + 'a {
+    admitted::AuxiliaryReceiptSeedV1::new(admission, max_text_bytes)
+}
+
+#[path = "publish_receipt/admitted.rs"]
+mod admitted;
+
 impl BatchPublishReceipt {
     /// An empty receipt for `generation` under `batch_digest`, before any
     /// scope is counted. It reads as applied with no durable sequence yet;

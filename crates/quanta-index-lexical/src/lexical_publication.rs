@@ -7,6 +7,10 @@ use std::sync::Arc;
 use rustix::fs::{Mode, OFlags, mkdirat, open, openat};
 
 use quanta_index_contract::{BatchIngestMode, SearchCorpusIngestBatch};
+use quanta_index_core::publication_admission::{
+    PublicationControlOutputAdmission, PublicationObjectLifetimePort,
+    PublicationWorkOutputAdmission, validate_control_object_lifetime, validate_object_lifetime,
+};
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, DiagnosticStageV1, LexicalDocumentVersionReservationV1,
 };
@@ -147,6 +151,19 @@ pub(crate) struct PublicationContext {
     pub(crate) native_root: Option<NativeRoot>,
     pub(crate) native_mutation: Option<NativeMutation>,
     pub(crate) operations_sha256: [u8; 32],
+    pub(crate) maintenance_policy:
+        Option<quanta_index_core::lexical_maintenance::LexicalMaintenancePolicy>,
+    pub(crate) hard_scan: Option<crate::lexical_store::CheckpointPayload>,
+}
+
+pub(crate) struct PublicationAdmission {
+    pub(crate) maintenance_policy:
+        Option<quanta_index_core::lexical_maintenance::LexicalMaintenancePolicy>,
+    pub(crate) pool_write:
+        Option<Arc<dyn quanta_index_core::pool_write_admission::PoolWriteAdmissionPort>>,
+    pub(crate) object_lifetime: Option<Arc<dyn PublicationObjectLifetimePort>>,
+    pub(crate) control_output: Option<PublicationControlOutputAdmission>,
+    pub(crate) work_output: Option<PublicationWorkOutputAdmission>,
 }
 
 pub(crate) struct NativeMutation {
@@ -154,6 +171,75 @@ pub(crate) struct NativeMutation {
     pub(crate) retired: Vec<u64>,
     pub(crate) added: Vec<AddedTextDoc>,
     pub(crate) clear_all: bool,
+}
+
+/// Admit both authorities together. The cursor exception is available only
+/// to a source no-op with identical serving roots and counters.
+///
+/// The seal still
+/// independently derives the permitted cursor transition before publication.
+pub(crate) fn admit_maintenance_roots(
+    store: &ObjectStore,
+    policy: &quanta_index_core::lexical_maintenance::LexicalMaintenancePolicy,
+    file: (Option<&AuthorityRoot>, &AuthorityRoot),
+    native: (Option<&NativeRoot>, &NativeRoot),
+    source_no_op: bool,
+) -> Result<(), CoreError> {
+    use quanta_index_core::lexical_maintenance::TargetCounters;
+
+    let empty = TargetCounters::new(0, 0, 0)?;
+    let file_before = file
+        .0
+        .map(|root| root.maintenance_snapshot(store))
+        .transpose()?
+        .unwrap_or(empty);
+    let file_after = file.1.maintenance_snapshot(store)?;
+    let native_before = native
+        .0
+        .map(|root| root.run_registry.snapshot())
+        .transpose()?
+        .unwrap_or(empty);
+    let native_after = native.1.run_registry.snapshot()?;
+    let ordinary = policy
+        .admit_target(file_before, file_after)
+        .and_then(|()| policy.admit_target(native_before, native_after));
+    if ordinary.is_ok() || !source_no_op {
+        return ordinary;
+    }
+    if policy.hard_pressure(file_before) || policy.hard_pressure(native_before) {
+        return ordinary;
+    }
+    let (Some(file_base), Some(native_base)) = (file.0, native.0) else {
+        return ordinary;
+    };
+    let file_progressed =
+        file.1.run_registry.selection_progress() != file_base.run_registry.selection_progress();
+    let native_progressed =
+        native.1.run_registry.selection_progress() != native_base.run_registry.selection_progress();
+    if !file_progressed && !native_progressed {
+        return ordinary;
+    }
+    // A merge's inherited proof witness may be discarded on the next no-op;
+    // it is not a serving root. A cursor-only target cannot add a new witness.
+    if file.1.premerge_run_registry.is_some()
+        || !file
+            .1
+            .run_registry
+            .same_authority_as(&file_base.run_registry)
+    {
+        return ordinary;
+    }
+    let mut projected_file = file.1.clone();
+    projected_file.run_registry = file_base.run_registry.clone();
+    let mut projected_base = file_base.clone();
+    projected_base.premerge_run_registry = None;
+    if projected_file != projected_base
+        || (native.1 != native_base && !native.1.is_cursor_only_successor_of(native_base)?)
+    {
+        return ordinary;
+    }
+    policy.admit_cursor_only_target(file_before, file_after)?;
+    policy.admit_cursor_only_target(native_before, native_after)
 }
 
 pub(crate) fn read_root_bytes(directory: &Path, name: &str) -> Result<Vec<u8>, CoreError> {
@@ -243,6 +329,82 @@ pub(crate) fn write_root_observed(
 }
 
 impl PublicationContext {
+    pub(crate) fn prepare_or_load_hard_scan(
+        &mut self,
+        mutation: &FileAuthorityMutation,
+        native_plan: &crate::TextAuthorityPlan,
+        budget: Option<&quanta_index_core::RequestBudgetV1>,
+        stage: crate::lexical_hard_scan::HardScanStage,
+    ) -> Result<(), CoreError> {
+        let Some(policy) = self.maintenance_policy.as_ref() else {
+            return Ok(());
+        };
+        let (clear_all, retired) = match &native_plan.write {
+            crate::TextAuthorityWrite::None => (false, &[][..]),
+            crate::TextAuthorityWrite::Delta {
+                clear_all, retired, ..
+            } => (*clear_all, retired.as_slice()),
+        };
+        let inputs = crate::lexical_hard_scan::HardScanInputs {
+            file: self.file_base.as_ref().map(|base| (base, mutation)),
+            native: self
+                .native_base
+                .as_ref()
+                .filter(|_base| !clear_all)
+                .map(|base| (base, retired)),
+        };
+        let lease = self.lease.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("hard scan has no publication adoption lease".into())
+        })?;
+        self.hard_scan = crate::lexical_hard_scan::prepare_or_load(
+            &self.store,
+            lease,
+            &inputs,
+            policy,
+            budget,
+            stage,
+        )?;
+        Ok(())
+    }
+
+    /// Reauthenticate persisted progress and costs before accepting a seal.
+    pub(crate) fn verify_hard_scan_for_seal(&self) -> Result<(), CoreError> {
+        let Some(policy) = self.maintenance_policy.as_ref() else {
+            return Ok(());
+        };
+        let file = self.file_mutation.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("hard scan seal File mutation is absent".into())
+        })?;
+        let native = self.native_mutation.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("hard scan seal Native mutation is absent".into())
+        })?;
+        let inputs = crate::lexical_hard_scan::HardScanInputs {
+            file: self.file_base.as_ref().map(|base| (base, file)),
+            native: self
+                .native_base
+                .as_ref()
+                .filter(|_base| !native.clear_all)
+                .map(|base| (base, native.retired.as_slice())),
+        };
+        let lease = self.lease.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("hard scan seal adoption lease is absent".into())
+        })?;
+        let current = crate::lexical_hard_scan::prepare_or_load(
+            &self.store,
+            lease,
+            &inputs,
+            policy,
+            None,
+            crate::lexical_hard_scan::HardScanStage::VerifyForSeal,
+        )?;
+        if current != self.hard_scan {
+            return Err(CoreError::InvalidContract(
+                "hard scan checkpoint differs from its pre-mutation custody".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn begin(
         state_root: &Path,
         batch: &SearchCorpusIngestBatch,
@@ -250,6 +412,7 @@ impl PublicationContext {
         base_directory: Option<&Path>,
         sync_totals: Option<Arc<crate::causal_profile::SyncTotalsV1>>,
         diagnostic: Option<&DiagnosticContextV1>,
+        admission: PublicationAdmission,
     ) -> Result<Self, CoreError> {
         reservation.validate()?;
         if reservation.allocation.request.repo_id != batch.repo_id
@@ -315,8 +478,26 @@ impl PublicationContext {
             diagnostic,
             DiagnosticStageV1::Operation,
             |_diagnostic| {
+                validate_object_lifetime(
+                    admission.work_output.as_ref(),
+                    admission.object_lifetime.as_ref(),
+                )?;
+                validate_control_object_lifetime(
+                    admission.control_output.as_ref(),
+                    admission.object_lifetime.as_ref(),
+                )?;
+                if let Some(lifetime) = &admission.object_lifetime {
+                    lifetime.validate_state_root(state_root)?;
+                }
                 ensure_publication_store_root(state_root, sync_totals.as_deref())?;
-                let store = ObjectStore::open_observed(state_root, sync_totals)?;
+                let store = ObjectStore::open_observed_with_control(
+                    state_root,
+                    sync_totals,
+                    admission.control_output,
+                    admission.object_lifetime,
+                )?
+                .with_pool_write_admission(admission.pool_write)
+                .with_work_output_admission(admission.work_output);
                 let mut inherited = file_base
                     .as_ref()
                     .map_or_else(Vec::new, AuthorityRoot::object_roots);
@@ -340,10 +521,93 @@ impl PublicationContext {
             native_root: None,
             native_mutation: None,
             operations_sha256,
+            maintenance_policy: admission.maintenance_policy,
+            hard_scan: None,
         })
     }
 
-    pub(crate) fn finish(mut self) -> Result<(), CoreError> {
+    pub(crate) fn write_cost_snapshot(
+        &self,
+    ) -> Result<crate::lexical_store::AttemptWriteCost, CoreError> {
+        self.lease
+            .as_ref()
+            .ok_or_else(|| {
+                CoreError::InvalidContract("lexical publication has no adoption lease".into())
+            })?
+            .write_cost_snapshot()
+    }
+
+    /// Capture bounded root summaries without enumerating the object closure.
+    /// The caller publishes this observation only after the independent seal
+    /// and durable identity succeed.
+    pub(crate) fn maintenance_observation(
+        &self,
+        file_merge: crate::FileRunMergeFacts,
+        native_merge: crate::NativeRunMergeFacts,
+    ) -> Result<crate::LexicalMaintenanceObservation, CoreError> {
+        use quanta_index_core::lexical_maintenance::TargetCounters;
+
+        let file = self.file_root.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("lexical observation has no File target".into())
+        })?;
+        let native = self.native_root.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("lexical observation has no Native target".into())
+        })?;
+        let empty = TargetCounters::new(0, 0, 0)?;
+        Ok(crate::LexicalMaintenanceObservation {
+            file_before: self
+                .file_base
+                .as_ref()
+                .map(|root| root.maintenance_snapshot(&self.store))
+                .transpose()?
+                .unwrap_or(empty),
+            file_after: file.maintenance_snapshot(&self.store)?,
+            native_before: self
+                .native_base
+                .as_ref()
+                .map(|root| root.run_registry.snapshot())
+                .transpose()?
+                .unwrap_or(empty),
+            native_after: native.run_registry.snapshot()?,
+            file_debt_entries: file.compaction_debt.entries,
+            native_debt_entries: native.compaction_due.entries,
+            file_merge,
+            native_merge,
+        })
+    }
+
+    /// Enforce logical target limits after prepared compaction has been
+    /// consumed, before a sealed identity can make the target servable.
+    pub(crate) fn admit_maintenance_target(
+        &self,
+        policy: &quanta_index_core::lexical_maintenance::LexicalMaintenancePolicy,
+    ) -> Result<(), CoreError> {
+        let file = self.file_root.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("lexical publication has no File target".into())
+        })?;
+        let native = self.native_root.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("lexical publication has no Native target".into())
+        })?;
+        let source_no_op = self
+            .file_mutation
+            .as_ref()
+            .is_some_and(|mutation| !mutation.clear_all && mutation.edits.is_empty())
+            && self.native_mutation.as_ref().is_some_and(|mutation| {
+                !mutation.clear_all
+                    && mutation.sources.is_empty()
+                    && mutation.retired.is_empty()
+                    && mutation.added.is_empty()
+            });
+        admit_maintenance_roots(
+            &self.store,
+            policy,
+            (self.file_base.as_ref(), file),
+            (self.native_base.as_ref(), native),
+            source_no_op,
+        )
+    }
+
+    pub(crate) fn finish(mut self) -> Result<crate::lexical_store::AttemptWriteCost, CoreError> {
         let file = self.file_root.as_ref().ok_or_else(|| {
             CoreError::InvalidContract("lexical publication has no File root".into())
         })?;
@@ -352,12 +616,14 @@ impl PublicationContext {
         })?;
         let mut roots = file.object_roots();
         roots.extend(native.root_objects());
+        let cost = self.write_cost_snapshot()?;
         self.lease
             .take()
             .ok_or_else(|| {
                 CoreError::InvalidContract("lexical publication has no adoption lease".into())
             })?
-            .finish_published(&roots)
+            .finish_published(&roots)?;
+        Ok(cost)
     }
 }
 

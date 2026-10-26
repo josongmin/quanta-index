@@ -24,12 +24,16 @@ use std::error::Error;
 use std::fmt::Write as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     GenerationPin, ManifestGeneration, QuarantineDiscardOutcomeDtoV1, QuarantineTargetV1,
     TextQuerySyntax,
 };
-use quanta_index_core::{GenerationQuarantineReasonV1, GenerationStorageKeyV1};
+use quanta_index_core::pool_write_admission::PoolWriteLimits;
+use quanta_index_core::{
+    GenerationQuarantineReasonV1, GenerationStorageKeyV1, IntegrityScrubPolicyV1,
+};
 use quanta_index_searchd_harness as e2e_harness;
 use sha2::{Digest, Sha256};
 
@@ -229,6 +233,178 @@ fn inode_set_bytes(roots: &[PathBuf]) -> Result<u64, Box<dyn Error>> {
     inode_set_bytes_with_seen(roots, &mut BTreeSet::new())
 }
 
+/// Inspect physical canonical pool files without consulting the quota ledger.
+fn physical_pool_inventory(rt: &E2eRuntime) -> Result<BTreeMap<String, u64>, Box<dyn Error>> {
+    let pool =
+        std::fs::canonicalize(rt.state_root())?.join("indexes/lexical/lexical-object-pool/objects");
+    let mut files = BTreeMap::new();
+    for shard in std::fs::read_dir(pool)? {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            return Err("pool inventory contains a non-directory shard".into());
+        }
+        for entry in std::fs::read_dir(shard.path())? {
+            let entry = entry?;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if !file_type.is_file() {
+                return Err("pool inventory contains a non-regular object".into());
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|name| format!("non-UTF8 object name: {}", name.display()))?;
+            if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(format!("unexpected pool object name {name}").into());
+            }
+            // GC may retire an object after the directory entry was observed.
+            // Only absence is transient; malformed or unreadable files fail.
+            let encoded = match std::fs::read(entry.path()) {
+                Ok(encoded) => encoded,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let digest = Sha256::digest(&encoded);
+            let mut expected_name = String::with_capacity(64);
+            for byte in digest {
+                write!(&mut expected_name, "{byte:02x}")?;
+            }
+            if name != expected_name {
+                return Err(format!("pool object {name} differs from its digest").into());
+            }
+            let width = u64::try_from(encoded.len())?;
+            if files.insert(name, width).is_some() {
+                return Err("duplicate physical pool digest".into());
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn assert_pool_quota_matches_disk(rt: &mut E2eRuntime) -> TestResult {
+    let inventory = physical_pool_inventory(rt)?;
+    let bytes = inventory.values().try_fold(0_u64, |sum, width| {
+        sum.checked_add(*width).ok_or("physical pool byte overflow")
+    })?;
+    let scrape = Scrape::take(rt)?;
+    for (name, expected) in [
+        ("lexical_pool_quota_enabled", 1.0),
+        (
+            "lexical_pool_quota_charged_files",
+            f64::from(u32::try_from(inventory.len())?),
+        ),
+        (
+            "lexical_pool_quota_charged_bytes",
+            f64::from(u32::try_from(bytes)?),
+        ),
+        (
+            "lexical_pool_quota_canonical_bytes",
+            f64::from(u32::try_from(bytes)?),
+        ),
+        ("lexical_pool_quota_orphan_bytes", 0.0),
+        ("lexical_pool_quota_in_flight_bytes", 0.0),
+    ] {
+        let actual = scrape.gauge(name)?;
+        if actual.to_bits() != expected.to_bits() {
+            return Err(format!("{name}: quota reports {actual}, disk expects {expected}").into());
+        }
+    }
+    Ok(())
+}
+
+fn wait_for_pool_quota_to_match_disk(rt: &mut E2eRuntime) -> TestResult {
+    // The collector can unlink between a filesystem walk and the control
+    // scrape. Require eventual agreement after its durable callback settles.
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(30))
+        .ok_or("quota observation deadline overflow")?;
+    loop {
+        match assert_pool_quota_matches_disk(rt) {
+            Ok(()) => return Ok(()),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_transient) => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+}
+
+fn file_body_digest(content: &str) -> Result<String, Box<dyn Error>> {
+    // QLSTOR01/v1, FileBody kind 1, zero dependencies, inline blob tag 0,
+    // then the harness's one-chunk source bytes (text plus one newline).
+    // This fixed-format witness is independent of the producer's object ref.
+    let source = format!("{content}\n");
+    let mut encoded = Vec::from(b"QLSTOR01".as_slice());
+    encoded.extend_from_slice(&1_u16.to_be_bytes());
+    encoded.push(1);
+    encoded.extend_from_slice(&0_u16.to_be_bytes());
+    let payload_len = source
+        .len()
+        .checked_add(1)
+        .ok_or("payload length overflow")?;
+    encoded.extend_from_slice(&u64::try_from(payload_len)?.to_be_bytes());
+    encoded.push(0);
+    encoded.extend_from_slice(source.as_bytes());
+    let mut name = String::with_capacity(64);
+    for byte in Sha256::digest(encoded) {
+        write!(&mut name, "{byte:02x}")?;
+    }
+    Ok(name)
+}
+
+/// Production quota accounting follows actual GC unlink and exact-digest recreation.
+#[test]
+fn lexical_pool_quota_matches_physical_gc_and_same_digest_recreation() -> TestResult {
+    const FIRST: &str = "fn reusable_body() { unique_first_content() }";
+    const SECOND: &str = "fn replacement_body() { unique_second_content() }";
+    const THIRD: &str = "fn replacement_body() { unique_third_content() }";
+    let limits = PoolWriteLimits::new(134_217_728, 100_000)?;
+    // Shared-pool collection is driven by scrub ticks, unlike generation
+    // directory retention. Override the harness's dormant 24-hour pacing.
+    let scrub =
+        IntegrityScrubPolicyV1::new(100, IntegrityScrubPolicyV1::DEFAULT.max_bytes_per_step)?;
+    let mut rt = E2eRuntime::boot_with_history_and_lexical_pool_write_limits(KEEP, limits)?
+        .with_integrity_scrub_policy(scrub);
+    let first_digest = file_body_digest(FIRST)?;
+
+    for content in [FIRST, SECOND] {
+        rt.ingest_text("repo", "src/reused.rs", content)?;
+        let _generation = rt.seal()?;
+        rt.activate_last_sealed_generation()?;
+        wait_for_pool_quota_to_match_disk(&mut rt)?;
+    }
+    if !physical_pool_inventory(&rt)?.contains_key(&first_digest) {
+        return Err("first FileBody was not installed under its content digest".into());
+    }
+
+    rt.ingest_text("repo", "src/reused.rs", THIRD)?;
+    let _generation = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(30))
+        .ok_or("GC deadline overflow")?;
+    loop {
+        let inventory = physical_pool_inventory(&rt)?;
+        if !inventory.contains_key(&first_digest) {
+            wait_for_pool_quota_to_match_disk(&mut rt)?;
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err("retired first FileBody was not physically collected".into());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    rt.ingest_text("repo", "src/reused.rs", FIRST)?;
+    let _generation = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    if !physical_pool_inventory(&rt)?.contains_key(&first_digest) {
+        return Err("same FileBody digest was not recreated after GC".into());
+    }
+    wait_for_pool_quota_to_match_disk(&mut rt)
+}
+
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 struct DiskObjectRef {
     kind: u8,
@@ -280,8 +456,41 @@ fn cbor_object_ref(value: &ciborium::Value) -> Result<DiskObjectRef, Box<dyn Err
     })
 }
 
-/// These fixed positions are the independent F18 File/F6 Native root wires:
-/// version at 0, seven map roots at 3..10, each map holding one optional page.
+fn disk_map_root(
+    value: &ciborium::Value,
+    roots: &mut Vec<DiskObjectRef>,
+) -> Result<(), Box<dyn Error>> {
+    let map = cbor_array(value, 2)?;
+    let page = map.first().ok_or("missing map page")?;
+    if matches!(page, ciborium::Value::Null) {
+        if cbor_u64(map.get(1).ok_or("missing map count")?)? != 0 {
+            return Err("empty map page has nonzero count".into());
+        }
+    } else {
+        let page = cbor_array(page, 6)?;
+        let object = cbor_object_ref(page.first().ok_or("missing page object")?)?;
+        if object.kind != 8 {
+            return Err("map root does not reference a map page".into());
+        }
+        roots.push(object);
+    }
+    Ok(())
+}
+
+fn disk_run_registry_roots(
+    value: &ciborium::Value,
+    roots: &mut Vec<DiskObjectRef>,
+) -> Result<(), Box<dyn Error>> {
+    let registry = cbor_array(value, 8)?;
+    if cbor_u64(registry.first().ok_or("missing registry format")?)? != 2 {
+        return Err("unexpected run registry format".into());
+    }
+    disk_map_root(registry.get(1).ok_or("missing runs map")?, roots)?;
+    disk_map_root(registry.get(2).ok_or("missing run owners map")?, roots)
+}
+
+/// Independently parse the fixed File v20 and Native v8 disk contracts,
+/// including run ownership, run postings and optional premerge custody.
 fn disk_root_objects(
     path: &Path,
     format: u64,
@@ -294,21 +503,26 @@ fn disk_root_objects(
         return Err(format!("unexpected root format in {}", path.display()).into());
     }
     let mut roots = Vec::new();
-    for offset in 3..10 {
-        let map = cbor_array(row.get(offset).ok_or("missing root map")?, 2)?;
-        let page = map.first().ok_or("missing map page")?;
-        if matches!(page, ciborium::Value::Null) {
-            if cbor_u64(map.get(1).ok_or("missing map count")?)? != 0 {
-                return Err("empty map page has nonzero count".into());
+    match (format, width) {
+        (20, 16) => {
+            for offset in [3, 4, 5, 6, 9, 10, 11] {
+                disk_map_root(row.get(offset).ok_or("missing File map")?, &mut roots)?;
             }
-        } else {
-            let page = cbor_array(page, 5)?;
-            let object = cbor_object_ref(page.first().ok_or("missing page object")?)?;
-            if object.kind != 8 {
-                return Err("map root does not reference a map page".into());
+            disk_run_registry_roots(row.get(7).ok_or("missing File registry")?, &mut roots)?;
+            let bundle = cbor_array(row.get(8).ok_or("missing run postings bundle")?, 3)?;
+            let premerge = bundle.first().ok_or("missing premerge registry")?;
+            if !matches!(premerge, ciborium::Value::Null) {
+                disk_run_registry_roots(premerge, &mut roots)?;
             }
-            roots.push(object);
+            disk_map_root(bundle.get(1).ok_or("missing run postings map")?, &mut roots)?;
         }
+        (8, 13) => {
+            for offset in 3..10 {
+                disk_map_root(row.get(offset).ok_or("missing Native map")?, &mut roots)?;
+            }
+            disk_run_registry_roots(row.get(10).ok_or("missing Native registry")?, &mut roots)?;
+        }
+        _ => return Err("unsupported root wire contract".into()),
     }
     Ok(roots)
 }
@@ -345,13 +559,13 @@ fn retained_pool_bytes(
         let directory = lexical_pair.join(format!("g{generation}"));
         pending.extend(disk_root_objects(
             &directory.join("file-authority/root.cbor"),
-            18,
-            14,
+            20,
+            16,
         )?);
         pending.extend(disk_root_objects(
             &directory.join("text-authority/manifest.cbor"),
-            6,
-            12,
+            8,
+            13,
         )?);
     }
     let mut seen_refs = BTreeMap::<[u8; 32], (u8, u64)>::new();

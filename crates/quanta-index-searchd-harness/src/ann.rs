@@ -138,7 +138,7 @@ fn cosine(left: &[f32], right: &[f32]) -> f32 {
 
 /// Query `seed`: an even seed sits near a row (the row plus 0.35 of a
 /// fresh direction, renormalized), an odd one is a fresh direction.
-fn query_direction(seed: u64, config: &AnnRailConfig) -> AnyResult<Vec<f32>> {
+pub fn query_direction(seed: u64, config: &AnnRailConfig) -> AnyResult<Vec<f32>> {
     if seed.is_multiple_of(2) {
         let row = seed
             .wrapping_mul(61)
@@ -161,7 +161,8 @@ fn query_direction(seed: u64, config: &AnnRailConfig) -> AnyResult<Vec<f32>> {
 }
 
 /// Exact top-k by cosine over `rows`, ties broken by id: the oracle.
-fn exact_top_k(rows: &[(String, Vec<f32>)], query: &[f32], k: usize) -> Vec<String> {
+#[must_use]
+pub fn exact_top_k(rows: &[(String, Vec<f32>)], query: &[f32], k: usize) -> Vec<String> {
     let mut scored: Vec<(&str, f32)> = rows
         .iter()
         .map(|(id, vector)| (id.as_str(), cosine(vector, query)))

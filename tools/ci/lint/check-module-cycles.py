@@ -325,7 +325,13 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
     test_modules: set[str] = set()
     for path, code in raw.items():
         for start, end in top_level_cfg_test_spans(code):
-            for decl in MOD_DECL_RE.finditer(code[start:end]):
+            span = code[start:end]
+            for decl in MOD_DECL_RE.finditer(span):
+                # Children inside an inline test module belong to that module,
+                # not to its production parent. Do not hide a same-named peer.
+                prefix = span[: decl.start()]
+                if prefix.count("{") != prefix.count("}"):
+                    continue
                 child = f"{path}::{decl.group(1)}" if path else decl.group(1)
                 test_modules.add(child)
 

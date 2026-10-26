@@ -14,7 +14,7 @@ pub trait HistoryIngestPort: Send + Sync {
     fn publish_batch(
         &self,
         batch: &HistoryIngestBatch,
-        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+        budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<BatchPublishReceipt, CoreError>;
 }
 

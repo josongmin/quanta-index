@@ -38,6 +38,7 @@ impl WriterCache {
             lru_releases: 0,
             idle_releases: 0,
             seal_releases: 0,
+            quiescence_failed: false,
         }
     }
 
@@ -52,70 +53,144 @@ impl WriterCache {
         }
     }
 
-    pub(crate) fn remove(&mut self, key: &GenKey) -> Option<Arc<Mutex<GenerationWriter>>> {
+    fn remove(&mut self, key: &GenKey) -> Option<Arc<Mutex<GenerationWriter>>> {
         self.order.retain(|candidate| candidate != key);
         self.entries.remove(key).map(|cached| cached.handle)
     }
 
-    /// Commit and drop one writer, counting why.
-    ///
-    /// A seal release also waits for the writer's background merges: a
-    /// merge that finished after the seal measured the directory would
-    /// rewrite `meta.json` behind the manifest, so the seal's commit is
-    /// only final once no merge is in flight. That needs the writer by
-    /// value, which is only possible when no in-flight build still holds
-    /// it — for a seal, a structural guarantee the batch order gives.
+    /// Discard an abandoned generation without publishing uncommitted rows.
+    /// All indexing and merge workers must stop before its namespace is deleted.
+    pub(crate) fn discard(&mut self, key: &GenKey) -> Result<bool, CoreError> {
+        let Some(cached) = self.entries.get(key) else {
+            return Ok(false);
+        };
+        if Arc::strong_count(&cached.handle) != 1 {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                message: format!(
+                    "lexical: generation {} writer is still in use; retry discard",
+                    key.generation.get()
+                ),
+            });
+        }
+        let victim = self.remove(key).ok_or_else(|| {
+            CoreError::Storage("lexical writer cache: entry disappeared during discard".into())
+        })?;
+        let Ok(owned) = Arc::try_unwrap(victim) else {
+            self.quiescence_failed = true;
+            return Err(CoreError::Storage(
+                "lexical: writer ownership changed during discard".into(),
+            ));
+        };
+        let (owned, poisoned) = match owned.into_inner() {
+            Ok(writer) => (writer, false),
+            Err(error) => (error.into_inner(), true),
+        };
+        let GenerationWriter {
+            index: _index,
+            writer,
+        } = owned;
+        let joined = writer.wait_merging_threads();
+        if let Err(error) = joined {
+            self.quiescence_failed = true;
+            return Err(CoreError::Storage(format!(
+                "lexical: discard generation {} wait for merges: {error}",
+                key.generation.get()
+            )));
+        }
+        if poisoned {
+            return Err(CoreError::Storage(format!(
+                "lexical: discard generation {} writer mutex was poisoned",
+                key.generation.get()
+            )));
+        }
+        Ok(true)
+    }
+
+    /// Commit and join all background merges before the cache loses a writer.
     pub(crate) fn release(
         &mut self,
         key: &GenKey,
         why: WriterRelease,
     ) -> Result<WriterSealTimings, CoreError> {
-        let Some(victim) = self.remove(key) else {
+        let Some(cached) = self.entries.get(key) else {
             return Err(CoreError::Storage(
                 "lexical writer cache: order references missing entry".to_string(),
             ));
         };
-        let mut timings = WriterSealTimings::default();
-        match why {
-            WriterRelease::Seal => {
-                let Ok(owned) = Arc::try_unwrap(victim) else {
-                    return Err(CoreError::Storage(format!(
-                        "lexical: seal of generation {} while a build still holds its writer",
+        if Arc::strong_count(&cached.handle) != 1 {
+            return match why {
+                WriterRelease::Seal => Err(CoreError::Storage(format!(
+                    "lexical: seal of generation {} while a build still holds its writer",
+                    key.generation.get()
+                ))),
+                WriterRelease::Lru | WriterRelease::Idle => Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                    message: format!(
+                        "lexical: generation {} writer is still in use; retry writer release",
                         key.generation.get()
-                    )));
-                };
-                let GenerationWriter {
-                    index: _index,
-                    mut writer,
-                } = owned.into_inner().map_err(|err| {
-                    CoreError::Storage(format!("lexical: release lock poisoned: {err}"))
-                })?;
-                let commit_started = Instant::now();
-                let _opstamp = writer
-                    .commit()
-                    .map_err(|err| CoreError::Storage(format!("lexical: seal commit: {err}")))?;
-                timings.commit_ns = crate::stage_timing::elapsed_stage_ns(commit_started)?;
-                let merge_started = Instant::now();
-                writer.wait_merging_threads().map_err(|err| {
-                    CoreError::Storage(format!("lexical: seal wait for merges: {err}"))
-                })?;
-                timings.merge_wait_ns = crate::stage_timing::elapsed_stage_ns(merge_started)?;
-            }
-            WriterRelease::Lru | WriterRelease::Idle => {
-                // If a concurrent build still holds the Arc this lock contends;
-                // that is acceptable because the cap is small and contention
-                // only happens on release, not on the hot path.
-                let mut guarded = victim.lock().map_err(|err| {
-                    CoreError::Storage(format!("lexical: release lock poisoned: {err}"))
-                })?;
-                let _opstamp = guarded
-                    .writer
-                    .commit()
-                    .map_err(|err| CoreError::Storage(format!("lexical: release commit: {err}")))?;
-                drop(guarded);
-                drop(victim);
-            }
+                    ),
+                }),
+            };
         }
+        let victim = self.remove(key).ok_or_else(|| {
+            CoreError::Storage("lexical writer cache: entry disappeared during release".into())
+        })?;
+        let mut timings = WriterSealTimings::default();
+        let Ok(owned) = Arc::try_unwrap(victim) else {
+            self.quiescence_failed = true;
+            return Err(CoreError::Storage(
+                "lexical: writer ownership changed during release".into(),
+            ));
+        };
+        let (owned, poisoned) = match owned.into_inner() {
+            Ok(writer) => (writer, false),
+            Err(error) => (error.into_inner(), true),
+        };
+        let GenerationWriter {
+            index: _index,
+            mut writer,
+        } = owned;
+        let commit_started = Instant::now();
+        let committed = writer.commit();
+        let commit_elapsed = crate::stage_timing::elapsed_stage_ns(commit_started);
+        let merge_started = Instant::now();
+        let merged = writer.wait_merging_threads();
+        let merge_elapsed = crate::stage_timing::elapsed_stage_ns(merge_started);
+        if merged.is_err() {
+            self.quiescence_failed = true;
+        }
+        let label = match why {
+            WriterRelease::Seal => "seal",
+            WriterRelease::Lru => "LRU",
+            WriterRelease::Idle => "idle",
+        };
+        match (committed, merged) {
+            (Err(commit), Err(merge)) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical: {label} commit failed ({commit}); merge join failed ({merge})"
+                )));
+            }
+            (Err(commit), Ok(())) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical: {label} commit: {commit}"
+                )));
+            }
+            (Ok(_opstamp), Err(merge)) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical: {label} wait for merges: {merge}"
+                )));
+            }
+            (Ok(_opstamp), Ok(())) => {}
+        }
+        if poisoned {
+            return Err(CoreError::Storage(format!(
+                "lexical: {label} writer mutex was poisoned"
+            )));
+        }
+        timings.commit_ns = commit_elapsed?;
+        timings.merge_wait_ns = merge_elapsed?;
         match why {
             WriterRelease::Lru => self.lru_releases = self.lru_releases.saturating_add(1),
             WriterRelease::Idle => self.idle_releases = self.idle_releases.saturating_add(1),
@@ -129,12 +204,29 @@ impl WriterCache {
     pub(crate) fn release_until_room(&mut self) -> Result<(), CoreError> {
         let max_writers = self.policy.max_writers();
         while self.entries.len() >= max_writers {
-            let Some(victim_key) = self.order.front().cloned() else {
+            let Some(victim_key) = self
+                .order
+                .iter()
+                .find(|key| {
+                    self.entries
+                        .get(*key)
+                        .is_some_and(|cached| Arc::strong_count(&cached.handle) == 1)
+                })
+                .cloned()
+            else {
                 // entries and order are kept in lock-step; an empty order with
-                // non-empty entries would be a structural bug.
-                return Err(CoreError::Storage(
-                    "lexical writer cache: order/entries desync during release".to_string(),
-                ));
+                // non-empty entries would be a structural bug. All-held entries
+                // instead require the caller to retry after their builds finish.
+                if self.order.is_empty() {
+                    return Err(CoreError::Storage(
+                        "lexical writer cache: order/entries desync during release".into(),
+                    ));
+                }
+                return Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                    message: "lexical: all cached writers are held by active builds".into(),
+                });
             };
             let _timings = self.release(&victim_key, WriterRelease::Lru)?;
         }
@@ -148,7 +240,10 @@ impl WriterCache {
         let idle: Vec<GenKey> = self
             .entries
             .iter()
-            .filter(|(_, cached)| now.saturating_duration_since(cached.last_used) >= idle_after)
+            .filter(|(_, cached)| {
+                now.saturating_duration_since(cached.last_used) >= idle_after
+                    && Arc::strong_count(&cached.handle) == 1
+            })
             .map(|(key, _)| key.clone())
             .collect();
         let released = count_from_usize(idle.len());
@@ -156,6 +251,24 @@ impl WriterCache {
             let _timings = self.release(&key, WriterRelease::Idle)?;
         }
         Ok(released)
+    }
+
+    /// A physical track census may proceed only after every cached writer has
+    /// been joined and no failed join has left its background work uncertain.
+    pub(crate) fn assert_physical_quiescent(&self) -> Result<(), CoreError> {
+        if self.quiescence_failed {
+            return Err(CoreError::Storage(
+                "lexical: a writer merge join failed; physical track is not proved quiescent"
+                    .into(),
+            ));
+        }
+        if !self.entries.is_empty() {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                message: "lexical: cached unsealed writers prevent a physical track census".into(),
+            });
+        }
+        Ok(())
     }
 
     /// Returns the cached handle for `key`, opening and inserting a new one if
@@ -403,6 +516,186 @@ mod tests {
                 format!("open-time idle sweep did not commit generation 3: {stats:?}").into(),
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn held_writer_is_neither_idled_nor_evicted_and_blocks_physical_census() -> TestResult {
+        macro_rules! check {
+            ($condition:expr $(,)?) => {{
+                if !$condition { return Err(CoreError::Storage(format!("test oracle failed at {}:{}: {}", file!(), line!(), stringify!($condition))).into()); }
+            }};
+            ($condition:expr, $($message:tt)+) => {{
+                if !$condition { return Err(CoreError::Storage(format!($($message)+)).into()); }
+            }};
+        }
+        macro_rules! check_eq {
+            ($actual:expr, $expected:expr $(,)?) => {{
+                let (left, right) = (&$actual, &$expected);
+                if *left != *right { return Err(CoreError::Storage(format!("test oracle failed at {}:{}: actual={left:?}, expected={right:?}", file!(), line!())).into()); }
+            }};
+            ($actual:expr, $expected:expr, $($message:tt)+) => {{
+                let (left, right) = (&$actual, &$expected);
+                if *left != *right { return Err(CoreError::Storage(format!("{}; actual={left:?}, expected={right:?}", format!($($message)+))).into()); }
+            }};
+        }
+
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let fields = SchemaFields::build();
+        let idle = Duration::from_millis(1);
+        let policy = LexicalWriterPolicy::new(
+            2 * LEXICAL_WRITER_HEAP_BYTES_MIN,
+            LEXICAL_WRITER_HEAP_BYTES_MIN,
+            idle,
+        )?;
+        let mut cache = WriterCache::new(policy);
+        let start = Instant::now();
+        let held = cache.get_or_open(&key(1)?, &fields, &path(&root, 1), start)?;
+        add_row(&mut cache, &fields, &root, 2, start)?;
+        check!(matches!(
+            cache.assert_physical_quiescent(),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                ..
+            })
+        ));
+        check_eq!(cache.release_idle(start + idle + idle)?, 1);
+        check_eq!(cache.stats().open_writers, 1);
+        check!(cache.entries.contains_key(&key(1)?));
+        check_eq!(committed_rows(&fields, &root, 2)?, 1);
+        drop(held);
+        check_eq!(cache.release_idle(start + idle + idle)?, 1);
+        cache.assert_physical_quiescent()?;
+        Ok(())
+    }
+
+    #[test]
+    fn lru_skips_held_writer_and_refuses_when_all_slots_are_held() -> TestResult {
+        macro_rules! check {
+            ($condition:expr $(,)?) => {{
+                if !$condition { return Err(CoreError::Storage(format!("test oracle failed at {}:{}: {}", file!(), line!(), stringify!($condition))).into()); }
+            }};
+            ($condition:expr, $($message:tt)+) => {{
+                if !$condition { return Err(CoreError::Storage(format!($($message)+)).into()); }
+            }};
+        }
+        macro_rules! check_eq {
+            ($actual:expr, $expected:expr $(,)?) => {{
+                let (left, right) = (&$actual, &$expected);
+                if *left != *right { return Err(CoreError::Storage(format!("test oracle failed at {}:{}: actual={left:?}, expected={right:?}", file!(), line!())).into()); }
+            }};
+            ($actual:expr, $expected:expr, $($message:tt)+) => {{
+                let (left, right) = (&$actual, &$expected);
+                if *left != *right { return Err(CoreError::Storage(format!("{}; actual={left:?}, expected={right:?}", format!($($message)+))).into()); }
+            }};
+        }
+
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let fields = SchemaFields::build();
+        let policy = LexicalWriterPolicy::new(
+            2 * LEXICAL_WRITER_HEAP_BYTES_MIN,
+            LEXICAL_WRITER_HEAP_BYTES_MIN,
+            Duration::from_secs(3600),
+        )?;
+        let mut cache = WriterCache::new(policy);
+        let start = Instant::now();
+        let first = cache.get_or_open(&key(1)?, &fields, &path(&root, 1), start)?;
+        let _opstamp = first
+            .lock()
+            .map_err(|error| format!("test writer lock poisoned: {error}"))?
+            .writer
+            .add_document(tantivy::doc!(fields.candidate_id => "held-first"))?;
+        add_row(&mut cache, &fields, &root, 2, start)?;
+        add_row(&mut cache, &fields, &root, 3, start)?;
+        check!(cache.entries.contains_key(&key(1)?));
+        check!(!cache.entries.contains_key(&key(2)?));
+        check_eq!(committed_rows(&fields, &root, 2)?, 1);
+        let third = cache.get_or_open(&key(3)?, &fields, &path(&root, 3), start)?;
+        let _opstamp = third
+            .lock()
+            .map_err(|error| format!("test writer lock poisoned: {error}"))?
+            .writer
+            .add_document(tantivy::doc!(fields.candidate_id => "held-third"))?;
+        let refused = cache.get_or_open(&key(4)?, &fields, &path(&root, 4), start);
+        check!(matches!(
+            refused,
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                ..
+            })
+        ));
+        check_eq!(cache.stats().open_writers, 2);
+        check!(!path(&root, 4).exists());
+        drop(first);
+        drop(third);
+        let _timings = cache.release(&key(1)?, WriterRelease::Seal)?;
+        let _timings = cache.release(&key(3)?, WriterRelease::Seal)?;
+        cache.assert_physical_quiescent()?;
+        check_eq!(committed_rows(&fields, &root, 1)?, 1);
+        check_eq!(committed_rows(&fields, &root, 3)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn discard_waits_for_writer_workers_without_committing_abandoned_rows() -> TestResult {
+        macro_rules! check {
+            ($condition:expr $(,)?) => {{
+                if !$condition { return Err(CoreError::Storage(format!("test oracle failed at {}:{}: {}", file!(), line!(), stringify!($condition))).into()); }
+            }};
+            ($condition:expr, $($message:tt)+) => {{
+                if !$condition { return Err(CoreError::Storage(format!($($message)+)).into()); }
+            }};
+        }
+        macro_rules! check_eq {
+            ($actual:expr, $expected:expr $(,)?) => {{
+                let (left, right) = (&$actual, &$expected);
+                if *left != *right { return Err(CoreError::Storage(format!("test oracle failed at {}:{}: actual={left:?}, expected={right:?}", file!(), line!())).into()); }
+            }};
+            ($actual:expr, $expected:expr, $($message:tt)+) => {{
+                let (left, right) = (&$actual, &$expected);
+                if *left != *right { return Err(CoreError::Storage(format!("{}; actual={left:?}, expected={right:?}", format!($($message)+))).into()); }
+            }};
+        }
+
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let fields = SchemaFields::build();
+        let policy = LexicalWriterPolicy::new(
+            LEXICAL_WRITER_HEAP_BYTES_MIN,
+            LEXICAL_WRITER_HEAP_BYTES_MIN,
+            Duration::from_secs(3600),
+        )?;
+        let mut cache = WriterCache::new(policy);
+        let generation = key(1)?;
+        let held = cache.get_or_open(&generation, &fields, &path(&root, 1), Instant::now())?;
+        {
+            let mut writer = held
+                .lock()
+                .map_err(|error| format!("test writer lock poisoned: {error}"))?;
+            let _opstamp = writer
+                .writer
+                .add_document(tantivy::doc!(fields.candidate_id => "committed"))?;
+            let _committed = writer.writer.commit()?;
+            let _opstamp = writer
+                .writer
+                .add_document(tantivy::doc!(fields.candidate_id => "abandoned"))?;
+            drop(writer);
+        }
+        check!(matches!(
+            cache.discard(&generation),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                ..
+            })
+        ));
+        check_eq!(cache.stats().open_writers, 1);
+        drop(held);
+        check!(cache.discard(&generation)?);
+        check!(!cache.discard(&generation)?);
+        cache.assert_physical_quiescent()?;
+        check_eq!(committed_rows(&fields, &root, 1)?, 1);
         Ok(())
     }
 }

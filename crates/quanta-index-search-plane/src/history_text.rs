@@ -463,7 +463,7 @@ mod tests {
                 &generation(),
                 AuxEpochV1::new(*epoch),
                 HistoryTextBuildV1::Full { docs: Vec::new() },
-                None,
+                &quanta_index_core::RequestBudgetV1::unbounded(),
             )?;
         }
         Ok(index)

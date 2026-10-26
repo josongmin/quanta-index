@@ -1,0 +1,103 @@
+
+crate quanta_index_catalog
+├── mod auxiliary: pub(crate)
+│   └── struct RawRow: pub(self)
+├── mod backup: pub(crate)
+│   ├── struct CatalogSnapshotReceiptV1: pub
+│   └── mod admitted: pub(self)
+│       └── struct CatalogSnapshotSessionV1: pub
+├── mod candidate: pub(crate)
+│   ├── struct ActivationOutcomeV1: pub
+│   ├── type ActivationRawRow: pub(self)
+│   ├── type QuarantineRawRow: pub(self)
+│   ├── struct RepoMapActivationRowV1: pub
+│   ├── struct RepoMapCandidateRowV1: pub
+│   ├── enum RepoMapCandidateStateV1: pub
+│   ├── struct RepoMapQuarantineIncidentRowV1: pub
+│   └── struct SealOutcomeV1: pub
+├── mod connection: pub(crate)
+│   ├── trait CatalogClockPort: pub
+│   ├── struct SqliteCatalog: pub
+│   ├── struct SystemCatalogClock: pub
+│   └── mod diagnostic: pub(self)
+│       ├── struct Binding: pub(self)
+│       └── struct Scope: pub(self)
+├── mod idempotency: pub(crate)
+│   ├── type StoredKeyRaw: pub(self)
+│   ├── struct StoredRow: pub(self)
+│   ├── struct StoredRowWitness: pub(self)
+│   └── enum TerminalReceiptPayload: pub(self)
+├── mod integrity: pub(crate)
+├── mod io_admission: pub(crate)
+│   ├── struct CatalogConnectionGuard: pub(crate)
+│   ├── struct CatalogConnectionOwner: pub(crate)
+│   ├── trait CatalogIoAdmission: pub
+│   ├── trait CatalogIoScope: pub
+│   ├── trait CatalogReadOnlyIoAdmission: pub
+│   ├── struct ScopeLease: pub(crate)
+│   └── mod close_connection: pub(self)
+├── mod native: pub(crate)
+│   └── mod authority: pub(self)
+│       ├── struct EventClaim: pub(self)
+│       ├── enum EventClaimState: pub(self)
+│       ├── struct IngressRow: pub(self)
+│       ├── struct IngressSqlRow: pub(self)
+│       ├── struct OperationRow: pub(self)
+│       ├── type OperationSqlRow: pub(self)
+│       ├── struct RegisteredBatchInTransaction: pub(self)
+│       ├── enum WorkOwnership: pub(self)
+│       ├── struct WorkRow: pub(self)
+│       ├── type WorkSqlRow: pub(self)
+│       ├── mod boot_manifest: pub(self)
+│       │   └── struct NativeBootManifest: pub
+│       ├── mod bootstrap: pub(self)
+│       │   └── struct StageRow: pub(self)
+│       ├── mod capture_format: pub(self)
+│       ├── mod fence_counter: pub(self)
+│       │   ├── struct FenceRow: pub(self)
+│       │   └── struct ReservationSequence: pub(super)
+│       ├── mod lifetime: pub(self)
+│       │   ├── struct CatalogSessionLease: pub(super)
+│       │   ├── enum LockFile: pub(super)
+│       │   ├── type OptionalRetiredRow: pub(self)
+│       │   ├── type OptionalSessionIdentity: pub(self)
+│       │   ├── type PinRow: pub(super)
+│       │   ├── type RetiredRow: pub(self)
+│       │   ├── type SessionRow: pub(super)
+│       │   └── mod creation: pub(super)
+│       │       └── type OpenRow: pub(self)
+│       ├── mod managed_install: pub(self)
+│       │   ├── struct AdoptedChildrenInTransaction: pub(self)
+│       │   ├── struct ChildWindow: pub(self)
+│       │   ├── struct PreflightedRegistrationChildren: pub(super)
+│       │   └── struct ReservedInTransaction: pub(self)
+│       ├── mod object_install: pub(self)
+│       │   ├── enum ConfirmationState: pub(super)
+│       │   ├── enum EdgeLedger: pub(super)
+│       │   ├── enum EdgeProblem: pub(self)
+│       │   └── enum MetadataLedger: pub(super)
+│       ├── mod owned_work: pub(self)
+│       │   └── type OwnedSqlRow: pub(self)
+│       ├── mod read_only: pub(self)
+│       │   ├── struct FileIdentity: pub(self)
+│       │   ├── struct NativeBootCatalogCandidate: pub
+│       │   └── struct NativeBootCatalogSnapshot: pub
+│       ├── mod read_settlement: pub(self)
+│       ├── mod reclaim: pub(self)
+│       │   ├── struct Row: pub(self)
+│       │   ├── enum RowReadAccess: pub(self)
+│       │   ├── type StoredLifecycleRow: pub(self)
+│       │   └── struct StoredTarget: pub(self)
+│       ├── mod retention: pub(self)
+│       ├── mod source_authority: pub(self)
+│       ├── mod terminal_custody: pub(self)
+│       │   ├── enum CustodyKind: pub(self)
+│       │   └── struct CustodyRow: pub(self)
+│       └── mod terminal_work: pub(self)
+│           ├── struct Candidate: pub(self)
+│           └── enum ManagedDisposition: pub(self)
+├── mod open: pub(crate)
+└── mod sequence: pub(crate)
+    ├── struct AllocatorRow: pub(self)
+    ├── type EventRawRow: pub(crate)
+    └── enum SequenceEventKindV1: pub(crate)

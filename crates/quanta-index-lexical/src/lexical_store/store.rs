@@ -4,21 +4,42 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
+use quanta_index_core::publication_admission::{
+    PublicationControlFileMutation, PublicationControlOutputAdmission,
+    PublicationObjectLifetimePort, PublicationOutputClass, PublicationOutputPermit,
+    PublicationOutputReservation, PublicationWorkOutputAdmission, validate_control_object_lifetime,
+    validate_object_lifetime,
+};
 use quanta_index_core::{
     CoreError, DiagnosticAdoptionFlushReasonV1, DiagnosticObjectKindV1, RequestBudgetV1,
 };
-use rustix::fs::{
-    AtFlags, FlockOperation, Mode, OFlags, flock, fsync, mkdirat, open, openat, renameat, unlinkat,
-};
+use rustix::fs::{AtFlags, Mode, OFlags, fsync, mkdirat, open, openat, renameat, unlinkat};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest as _, Sha256};
 
 use super::codec::{BlobRef, ObjectKind, ObjectRef, PageRef};
+
+mod control_reader;
+mod gc_lifetime;
+mod hard_scan_checkpoint;
+mod object_reader;
+mod pool_accounting;
+
+use control_reader::ControlReader;
+pub(crate) use gc_lifetime::GcDeleteCustody;
+#[cfg(test)]
+pub(crate) use gc_lifetime::tests::fake_gc_delete_ticket;
+use object_reader::ObjectReader;
+
+pub(crate) use hard_scan_checkpoint::{
+    Authority, CandidateWitness, CheckpointPayload, EligibilityWitness, IndependentWindowOracle,
+    IneligibleReason, ScanLane, WindowWitness,
+};
 
 const POOL_DIR: &str = "lexical-object-pool";
 const OBJECTS_DIR: &str = "objects";
@@ -43,10 +64,9 @@ const MAX_ATTEMPT_BYTES: usize = 8 * 1024 * 1024;
 const JOURNAL_ENTRY_BYTES: u64 = 73;
 const MAX_ATTEMPTS: usize = 4096;
 const MAX_ATTEMPT_CONTROL_ENTRIES: usize = MAX_ATTEMPTS
-    .saturating_mul(4)
+    .saturating_mul(5)
     .saturating_add(MAX_TEMP_CLEANUP_BATCH);
-#[cfg(test)]
-const MAX_CLOSURE_REFS: usize = 4_000_000;
+pub(crate) const MAX_CLOSURE_REFS: usize = 4_000_000;
 const MAX_GC_BATCH: usize = 64;
 const MAX_TEMP_CLEANUP_BATCH: usize = 64;
 // A group uses one AttemptBatch object's dependency list. Keep both writer
@@ -68,11 +88,1149 @@ fn diagnostic_object_kind(kind: ObjectKind) -> DiagnosticObjectKindV1 {
         ObjectKind::NativeTrigrams => DiagnosticObjectKindV1::NativeTrigrams,
         ObjectKind::NativePositions => DiagnosticObjectKindV1::NativePositions,
         ObjectKind::Segment => DiagnosticObjectKindV1::Segment,
-        ObjectKind::Record => DiagnosticObjectKindV1::Record,
+        ObjectKind::Record | ObjectKind::HardScanAnchor => DiagnosticObjectKindV1::Record,
         ObjectKind::MapPage => DiagnosticObjectKindV1::MapPage,
         ObjectKind::BlobBlock => DiagnosticObjectKindV1::BlobBlock,
         ObjectKind::BlobNode => DiagnosticObjectKindV1::BlobNode,
         ObjectKind::AttemptBatch => DiagnosticObjectKindV1::AttemptBatch,
+    }
+}
+
+#[cfg(test)]
+mod admitted_pool_output_tests {
+    use std::fs::{File, OpenOptions};
+    use std::os::fd::{AsRawFd as _, RawFd};
+    use std::os::unix::fs::MetadataExt as _;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    use quanta_index_contract::{
+        BatchIngestMode, ManifestGeneration, RepoId, RevisionId, SearchCorpusIngestBatch,
+        SourcePublicationEvent,
+    };
+    use quanta_index_core::publication_admission::{
+        PublicationAdmissionRequest, PublicationBuildWork, PublicationControlFileMutation,
+        PublicationControlFileUpdatePort, PublicationControlOpenTicket,
+        PublicationControlOutputAdmission, PublicationOutputClass, PublicationOutputPermit,
+        PublicationOutputReservation, PublicationResourceAdmissionPort, PublicationResourcePermit,
+        PublicationWorkOutputAdmission,
+    };
+    use quanta_index_core::publication_capacity::PublicationAllowance;
+    use quanta_index_core::{
+        CoreError, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestBatchFootprint,
+        PublicationValidationOwner, RequestBudgetV1,
+    };
+
+    use super::{
+        AttemptBinding, EPOCH_FILE, GATE_FILE, OBJECTS_DIR, ObjectKind, ObjectStore, POOL_DIR,
+        hex_digest,
+    };
+
+    const GOLD: &[u8; 24] = b"QLSTOR01\x00\x01\x07\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03abc";
+
+    #[derive(Default)]
+    struct Calls {
+        available: u64,
+        events: Vec<&'static str>,
+        race_gate: bool,
+        winner_inode: Option<u64>,
+    }
+
+    struct Admission(Arc<Mutex<Calls>>);
+    struct Work(Arc<Mutex<Calls>>);
+    struct ControlAdmission {
+        calls: Arc<Mutex<Calls>>,
+        updates: Option<Arc<dyn PublicationControlFileUpdatePort>>,
+    }
+    struct Control {
+        calls: Arc<Mutex<Calls>>,
+        updates: Option<Arc<dyn PublicationControlFileUpdatePort>>,
+    }
+    struct Output {
+        calls: Arc<Mutex<Calls>>,
+        staging: Option<PathBuf>,
+        target: Option<PathBuf>,
+        original_fd: Option<RawFd>,
+    }
+
+    struct ControlOutput {
+        calls: Arc<Mutex<Calls>>,
+        maximum: u64,
+        staging: Option<PathBuf>,
+        target: Option<PathBuf>,
+        original_fd: Option<RawFd>,
+        staged_bytes: Option<Vec<u8>>,
+    }
+
+    fn unexpected() -> CoreError {
+        CoreError::InvalidContract("unexpected test output transition".into())
+    }
+
+    fn check(condition: bool, reason: &str) -> Result<(), CoreError> {
+        if condition {
+            Ok(())
+        } else {
+            Err(CoreError::InvalidContract(format!(
+                "test output witness differs: {reason}"
+            )))
+        }
+    }
+
+    fn fixture_io(context: &str, error: impl std::fmt::Display) -> CoreError {
+        CoreError::Storage(format!("test output {context}: {error}"))
+    }
+
+    fn absent(path: &Path) -> Result<bool, CoreError> {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Ok(_) => Ok(false),
+            Err(error) => Err(fixture_io("inspect pathname", error)),
+        }
+    }
+
+    impl Output {
+        fn staging(&self) -> Result<&Path, CoreError> {
+            self.staging.as_deref().ok_or_else(unexpected)
+        }
+
+        fn target(&self) -> Result<&Path, CoreError> {
+            self.target.as_deref().ok_or_else(unexpected)
+        }
+
+        fn record(&self, event: &'static str) -> Result<(), CoreError> {
+            self.calls
+                .lock()
+                .map_err(|error| fixture_io("lock calls", error))?
+                .events
+                .push(event);
+            Ok(())
+        }
+    }
+
+    impl PublicationResourceAdmissionPort for Admission {
+        fn try_acquire_control(
+            &self,
+            _batch: &SearchCorpusIngestBatch,
+            _budget: &RequestBudgetV1,
+        ) -> Result<Box<dyn PublicationResourcePermit>, CoreError> {
+            Err(unexpected())
+        }
+
+        fn try_acquire(
+            &self,
+            _request: &PublicationAdmissionRequest<'_>,
+            _budget: &RequestBudgetV1,
+        ) -> Result<Box<dyn PublicationResourcePermit>, CoreError> {
+            Ok(Box::new(Work(Arc::clone(&self.0))))
+        }
+    }
+
+    impl PublicationResourceAdmissionPort for ControlAdmission {
+        fn try_acquire_control(
+            &self,
+            _batch: &SearchCorpusIngestBatch,
+            _budget: &RequestBudgetV1,
+        ) -> Result<Box<dyn PublicationResourcePermit>, CoreError> {
+            Ok(Box::new(Control {
+                calls: Arc::clone(&self.calls),
+                updates: self.updates.clone(),
+            }))
+        }
+
+        fn try_acquire(
+            &self,
+            _request: &PublicationAdmissionRequest<'_>,
+            _budget: &RequestBudgetV1,
+        ) -> Result<Box<dyn PublicationResourcePermit>, CoreError> {
+            Err(unexpected())
+        }
+    }
+
+    impl PublicationResourcePermit for Control {
+        fn held_file_allowance(&self) -> Result<Option<Arc<PublicationAllowance>>, CoreError> {
+            Ok(None) // Unqualified transition fixture; Runtime proves the physical ledger.
+        }
+
+        fn reserve_output(
+            &self,
+            request: PublicationOutputReservation,
+        ) -> Result<Box<dyn PublicationOutputPermit>, CoreError> {
+            check(
+                request.class() == PublicationOutputClass::Control,
+                "Control class",
+            )?;
+            check(request.max_files() == 1, "one Control file")?;
+            let mut calls = self
+                .calls
+                .lock()
+                .map_err(|error| fixture_io("lock Control calls", error))?;
+            if calls.available < request.max_encoded_bytes() {
+                calls.events.push("control refused");
+                return Err(CoreError::Typed {
+                    code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                    message: "fixed Control output allowance exhausted".into(),
+                });
+            }
+            calls.available = calls
+                .available
+                .checked_sub(request.max_encoded_bytes())
+                .ok_or_else(unexpected)?;
+            calls.events.push("control reserved");
+            drop(calls);
+            Ok(Box::new(ControlOutput {
+                calls: Arc::clone(&self.calls),
+                maximum: request.max_encoded_bytes(),
+                staging: None,
+                target: None,
+                original_fd: None,
+                staged_bytes: None,
+            }))
+        }
+
+        fn control_file_updates(&self) -> Option<Arc<dyn PublicationControlFileUpdatePort>> {
+            self.updates.clone()
+        }
+    }
+
+    impl PublicationResourcePermit for Work {
+        fn held_file_allowance(&self) -> Result<Option<Arc<PublicationAllowance>>, CoreError> {
+            Ok(None) // Test-only event recorder; real ledger is covered by Runtime.
+        }
+
+        fn reserve_output(
+            &self,
+            request: PublicationOutputReservation,
+        ) -> Result<Box<dyn PublicationOutputPermit>, CoreError> {
+            check(request.class() == PublicationOutputClass::Lexical, "class")?;
+            check(request.max_encoded_bytes() == 24, "encoded bound")?;
+            check(request.max_files() == 1, "file bound")?;
+            let mut calls = self
+                .0
+                .lock()
+                .map_err(|error| fixture_io("lock calls", error))?;
+            if calls.available < 24 {
+                calls.events.push("refused");
+                return Err(CoreError::Typed {
+                    code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                    message: "fixed lexical output allowance exhausted".into(),
+                });
+            }
+            calls.available = calls.available.checked_sub(24).ok_or_else(unexpected)?;
+            calls.events.push("reserved");
+            drop(calls);
+            Ok(Box::new(Output {
+                calls: Arc::clone(&self.0),
+                staging: None,
+                target: None,
+                original_fd: None,
+            }))
+        }
+    }
+
+    impl PublicationOutputPermit for Output {
+        fn cancel_rejected_created(&mut self, writer: std::fs::File) -> Result<(), CoreError> {
+            self.retire_writer_preserving_pending(writer)?;
+            Err(CoreError::InvalidContract(
+                "unqualified fixture cannot prove rejected birth cancellation".into(),
+            ))
+        }
+        fn bind_output(&mut self, staging: &Path, target: &Path) -> Result<(), CoreError> {
+            check(
+                staging
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(".tmp-")),
+                "staging name",
+            )?;
+            check(target.parent() == staging.parent(), "shared parent")?;
+            self.staging = Some(staging.to_owned());
+            self.target = Some(target.to_owned());
+            self.record("bound")
+        }
+
+        fn creation_started(&mut self) -> Result<(), CoreError> {
+            check(absent(self.staging()?)?, "staging absent before start")?;
+            self.record("started")
+        }
+
+        fn created(&mut self, writer: &File, staging: &Path) -> Result<(), CoreError> {
+            check(self.staging()? == staging, "created staging identity")?;
+            let width = writer
+                .metadata()
+                .map_err(|error| fixture_io("stat created writer", error))?
+                .len();
+            check(width == 0, "created writer starts empty")?;
+            self.original_fd = Some(writer.as_raw_fd());
+            self.record("created")
+        }
+
+        fn before_replace(&mut self) -> Result<(), CoreError> {
+            let bytes = std::fs::read(self.staging()?)
+                .map_err(|error| fixture_io("read staged bytes", error))?;
+            check(bytes.as_slice() == GOLD, "staged fixed bytes")?;
+            check(absent(self.target()?)?, "target absent before rename")?;
+            self.record("before")
+        }
+
+        fn committed(&mut self, writer: File, actual_encoded_bytes: u64) -> Result<(), CoreError> {
+            check(
+                self.original_fd == Some(writer.as_raw_fd()),
+                "original writer FD",
+            )?;
+            check(actual_encoded_bytes == 24, "committed encoded width")?;
+            let width = writer
+                .metadata()
+                .map_err(|error| fixture_io("stat committed writer", error))?
+                .len();
+            check(width == 24, "committed writer width")?;
+            let bytes = std::fs::read(self.target()?)
+                .map_err(|error| fixture_io("read canonical bytes", error))?;
+            check(bytes.as_slice() == GOLD, "canonical fixed bytes")?;
+            check(absent(self.staging()?)?, "staging absent after rename")?;
+            drop(writer);
+            self.record("committed")
+        }
+
+        fn retire_writer_preserving_pending(&mut self, writer: File) -> Result<(), CoreError> {
+            check(
+                self.original_fd == Some(writer.as_raw_fd()),
+                "retired original FD",
+            )?;
+            drop(writer);
+            self.record("retired pending")
+        }
+
+        fn rename_started(&mut self, _target: &Path) -> Result<(), CoreError> {
+            Err(unexpected())
+        }
+
+        fn renamed_and_synced(&mut self) -> Result<(), CoreError> {
+            Err(unexpected())
+        }
+
+        fn delete_file_and_sync(&mut self) -> Result<(), CoreError> {
+            let target = self.target()?.to_path_buf();
+            std::fs::remove_file(&target)
+                .map_err(|error| fixture_io("unlink committed output", error))?;
+            let parent = target.parent().ok_or_else(unexpected)?;
+            File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| fixture_io("sync output parent", error))?;
+            self.record("deleted")
+        }
+
+        fn confirmed_uncreated_absent_and_synced(&mut self) -> Result<(), CoreError> {
+            Err(unexpected())
+        }
+
+        fn confirmed_safe_absent_after_writer_close(
+            &mut self,
+            writer: File,
+        ) -> Result<(), CoreError> {
+            check(
+                self.original_fd == Some(writer.as_raw_fd()),
+                "absent original FD",
+            )?;
+            drop(writer);
+            self.record("absent")
+        }
+    }
+
+    impl ControlOutput {
+        fn staging(&self) -> Result<&Path, CoreError> {
+            self.staging.as_deref().ok_or_else(unexpected)
+        }
+
+        fn target(&self) -> Result<&Path, CoreError> {
+            self.target.as_deref().ok_or_else(unexpected)
+        }
+
+        fn record(&self, event: &'static str) -> Result<(), CoreError> {
+            self.calls
+                .lock()
+                .map_err(|error| fixture_io("lock Control calls", error))?
+                .events
+                .push(event);
+            Ok(())
+        }
+    }
+
+    impl PublicationOutputPermit for ControlOutput {
+        fn cancel_rejected_created(&mut self, writer: std::fs::File) -> Result<(), CoreError> {
+            self.retire_writer_preserving_pending(writer)?;
+            Err(CoreError::InvalidContract(
+                "unqualified fixture cannot prove rejected birth cancellation".into(),
+            ))
+        }
+        fn bind_output(&mut self, staging: &Path, target: &Path) -> Result<(), CoreError> {
+            check(staging.parent() == target.parent(), "Control output parent")?;
+            match target.file_name().and_then(|name| name.to_str()) {
+                Some(GATE_FILE) => check(self.maximum == 1, "gate reservation width")?,
+                Some(EPOCH_FILE) => check(self.maximum == 48, "epoch reservation width")?,
+                _ => return Err(unexpected()),
+            }
+            self.staging = Some(staging.to_owned());
+            self.target = Some(target.to_owned());
+            self.record("control bound")
+        }
+
+        fn creation_started(&mut self) -> Result<(), CoreError> {
+            check(absent(self.staging()?)?, "Control staging absent")?;
+            self.record("control started")
+        }
+
+        fn created(&mut self, writer: &File, staging: &Path) -> Result<(), CoreError> {
+            check(self.staging()? == staging, "Control staging identity")?;
+            check(
+                writer
+                    .metadata()
+                    .map_err(|error| fixture_io("stat Control writer", error))?
+                    .len()
+                    == 0,
+                "Control writer starts empty",
+            )?;
+            self.original_fd = Some(writer.as_raw_fd());
+            self.record("control created")
+        }
+
+        fn before_replace(&mut self) -> Result<(), CoreError> {
+            let bytes = std::fs::read(self.staging()?)
+                .map_err(|error| fixture_io("read staged Control", error))?;
+            check(
+                u64::try_from(bytes.len()).map_err(|error| fixture_io("Control width", error))?
+                    <= self.maximum,
+                "Control bound",
+            )?;
+            self.staged_bytes = Some(bytes);
+            let target = self.target()?.to_path_buf();
+            let inject_gate = {
+                let mut calls = self
+                    .calls
+                    .lock()
+                    .map_err(|error| fixture_io("lock Control calls", error))?;
+                let inject =
+                    calls.race_gate && target.file_name().is_some_and(|name| name == GATE_FILE);
+                calls.race_gate = false;
+                inject
+            };
+            if inject_gate {
+                let winner = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&target)
+                    .map_err(|error| fixture_io("create competing lifecycle gate", error))?;
+                winner
+                    .sync_all()
+                    .map_err(|error| fixture_io("sync competing lifecycle gate", error))?;
+                let inode = winner
+                    .metadata()
+                    .map_err(|error| fixture_io("stat competing lifecycle gate", error))?
+                    .ino();
+                File::open(target.parent().ok_or_else(unexpected)?)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(|error| fixture_io("sync competing gate parent", error))?;
+                self.calls
+                    .lock()
+                    .map_err(|error| fixture_io("lock Control calls", error))?
+                    .winner_inode = Some(inode);
+            }
+            self.record("control before")
+        }
+
+        fn committed(&mut self, writer: File, actual_encoded_bytes: u64) -> Result<(), CoreError> {
+            check(
+                self.original_fd == Some(writer.as_raw_fd()),
+                "Control original writer FD",
+            )?;
+            let bytes = std::fs::read(self.target()?)
+                .map_err(|error| fixture_io("read committed Control", error))?;
+            check(
+                self.staged_bytes.as_deref() == Some(bytes.as_slice()),
+                "Control committed bytes",
+            )?;
+            check(
+                actual_encoded_bytes
+                    == u64::try_from(bytes.len())
+                        .map_err(|error| fixture_io("committed Control width", error))?,
+                "Control committed width",
+            )?;
+            check(absent(self.staging()?)?, "Control temporary retired")?;
+            drop(writer);
+            self.record("control committed")
+        }
+
+        fn retire_writer_preserving_pending(&mut self, writer: File) -> Result<(), CoreError> {
+            check(
+                self.original_fd == Some(writer.as_raw_fd()),
+                "Control pending original FD",
+            )?;
+            drop(writer);
+            self.record("control pending")
+        }
+
+        fn rename_started(&mut self, _target: &Path) -> Result<(), CoreError> {
+            Err(unexpected())
+        }
+
+        fn renamed_and_synced(&mut self) -> Result<(), CoreError> {
+            Err(unexpected())
+        }
+
+        fn delete_file_and_sync(&mut self) -> Result<(), CoreError> {
+            let target = self.target()?.to_path_buf();
+            std::fs::remove_file(&target)
+                .map_err(|error| fixture_io("unlink committed Control", error))?;
+            File::open(target.parent().ok_or_else(unexpected)?)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| fixture_io("sync Control parent", error))?;
+            self.record("control deleted")
+        }
+
+        fn confirmed_uncreated_absent_and_synced(&mut self) -> Result<(), CoreError> {
+            check(absent(self.staging()?)?, "uncreated Control absent")?;
+            self.record("control uncreated")
+        }
+
+        fn confirmed_safe_absent_after_writer_close(
+            &mut self,
+            writer: File,
+        ) -> Result<(), CoreError> {
+            check(
+                self.original_fd == Some(writer.as_raw_fd()),
+                "Control failed original FD",
+            )?;
+            check(absent(self.staging()?)?, "failed Control temporary absent")?;
+            drop(writer);
+            let mut calls = self
+                .calls
+                .lock()
+                .map_err(|error| fixture_io("lock Control calls", error))?;
+            calls.available = calls
+                .available
+                .checked_add(self.maximum)
+                .ok_or_else(unexpected)?;
+            drop(calls);
+            self.record("control absent")
+        }
+    }
+
+    const FIXED_ATTEMPT: &str =
+        "5855ae566586b5b763e0499337a26c8ff96b88572eebc7343f1971392d528b9b.cbor";
+
+    #[derive(Default)]
+    struct DeleteCalls {
+        events: Vec<String>,
+        refuse: Option<String>,
+        require_marker: bool,
+        fail_after_marker_unlink: bool,
+        pending_marker: Option<PathBuf>,
+    }
+
+    struct DeletePort(Arc<Mutex<DeleteCalls>>);
+
+    impl PublicationControlFileUpdatePort for DeletePort {
+        fn begin_reader_open(
+            &self,
+            _path: &Path,
+            _control: PublicationControlOutputAdmission,
+        ) -> Result<Box<dyn PublicationControlOpenTicket>, CoreError> {
+            Err(unexpected())
+        }
+
+        fn begin_update(
+            &self,
+            _path: &Path,
+            _writer: File,
+            _expected_length: u64,
+            _target_end: u64,
+            _control: PublicationControlOutputAdmission,
+        ) -> Result<Box<dyn PublicationControlFileMutation>, CoreError> {
+            Err(unexpected())
+        }
+
+        fn reconcile_deletions(&self) -> Result<(), CoreError> {
+            let pending = {
+                let mut calls = self
+                    .0
+                    .lock()
+                    .map_err(|error| fixture_io("lock deletion calls", error))?;
+                calls.events.push("reconcile".into());
+                calls.pending_marker.clone()
+            };
+            if let Some(marker) = pending {
+                check(absent(&marker)?, "reconcile absent marker")?;
+                File::open(marker.parent().ok_or_else(unexpected)?)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(|error| fixture_io("sync reconciled marker parent", error))?;
+                self.0
+                    .lock()
+                    .map_err(|error| fixture_io("lock deletion calls", error))?
+                    .pending_marker = None;
+            }
+            Ok(())
+        }
+
+        fn remove_file_and_sync(
+            &self,
+            path: &Path,
+            _control: PublicationControlOutputAdmission,
+        ) -> Result<(), CoreError> {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(unexpected)?;
+            let marker = path
+                .parent()
+                .ok_or_else(unexpected)?
+                .join(format!("{FIXED_ATTEMPT}.retired"));
+            let is_marker = name == format!("{FIXED_ATTEMPT}.retired");
+            let require_marker = self
+                .0
+                .lock()
+                .map_err(|error| fixture_io("lock deletion calls", error))?
+                .require_marker;
+            if require_marker && !is_marker {
+                check(
+                    !absent(&marker)?,
+                    "retirement marker precedes each deletion",
+                )?;
+            }
+            let (refuse, fail_after) = {
+                let mut calls = self
+                    .0
+                    .lock()
+                    .map_err(|error| fixture_io("lock deletion calls", error))?;
+                calls.events.push(format!("remove:{name}"));
+                let refuse = calls.refuse.as_deref() == Some(name);
+                let fail_after = is_marker && calls.fail_after_marker_unlink;
+                if fail_after {
+                    calls.fail_after_marker_unlink = false;
+                }
+                drop(calls);
+                (refuse, fail_after)
+            };
+            if refuse {
+                return Err(CoreError::Typed {
+                    code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                    message: "fixed qualified Control deletion refusal".into(),
+                });
+            }
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(fixture_io("remove qualified Control", error)),
+            }
+            File::open(path.parent().ok_or_else(unexpected)?)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| fixture_io("sync qualified Control parent", error))?;
+            if fail_after {
+                self.0
+                    .lock()
+                    .map_err(|error| fixture_io("lock deletion calls", error))?
+                    .pending_marker = Some(path.to_owned());
+                return Err(CoreError::Storage(
+                    "fixed ambiguous marker deletion after unlink".into(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    fn fixed_attempt_binding() -> AttemptBinding {
+        AttemptBinding {
+            root_incarnation: [7; 16],
+            repository_sha256: [8; 32],
+            revision_sha256: [11; 32],
+            source_event_sha256: [9; 32],
+            target_generation: 1,
+            base_root_sha256: None,
+            operations_sha256: [10; 32],
+            format: 1,
+        }
+    }
+
+    fn qualified_deletion_store(
+        dir: &tempfile::TempDir,
+        deletion_calls: Arc<Mutex<DeleteCalls>>,
+    ) -> ObjectStore {
+        let mut store = ObjectStore::open(dir.path()).expect("unqualified fixture bootstrap");
+        deletion_calls
+            .lock()
+            .expect("deletion calls")
+            .require_marker = true;
+        let binding = fixed_attempt_binding();
+        assert_eq!(binding.identity_name(), FIXED_ATTEMPT);
+        let lease = store.begin_attempt(&binding, &[]).expect("fixed attempt");
+        let record = store
+            .read_attempt(FIXED_ATTEMPT)
+            .expect("fixed attempt read")
+            .expect("fixed attempt record");
+        store
+            .write_retirement_marker(FIXED_ATTEMPT, &record)
+            .expect("fixed retirement marker");
+        drop(lease);
+        let calls = Arc::new(Mutex::new(Calls {
+            available: 256,
+            ..Calls::default()
+        }));
+        store.control_output_admission = Some(control_admission_with_updates(
+            calls,
+            Some(Arc::new(DeletePort(deletion_calls))),
+        ));
+        store
+    }
+
+    fn fixture_batch() -> SearchCorpusIngestBatch {
+        SearchCorpusIngestBatch {
+            source_event: SourcePublicationEvent {
+                stream_id: "fixed-stream".into(),
+                event_id: "fixed-event".into(),
+                expected_base_event_id: None,
+                payload_sha256: [0; 32],
+            },
+            repo_id: RepoId::new("repo").expect("repo"),
+            revision_id: RevisionId::new("revision").expect("revision"),
+            generation: ManifestGeneration::new(1),
+            base_generation: None,
+            manifest_digest: "fixed-manifest".into(),
+            batch_digest: "0".repeat(64),
+            mode: BatchIngestMode::ReplaceGeneration,
+            bundle_payload: None,
+            clear_surfaces: Vec::new(),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
+            seal: true,
+        }
+    }
+
+    fn control_admission(calls: Arc<Mutex<Calls>>) -> PublicationControlOutputAdmission {
+        control_admission_with_updates(calls, None)
+    }
+
+    fn control_admission_with_updates(
+        calls: Arc<Mutex<Calls>>,
+        updates: Option<Arc<dyn PublicationControlFileUpdatePort>>,
+    ) -> PublicationControlOutputAdmission {
+        let batch = fixture_batch();
+        let mut owner = PublicationValidationOwner::default();
+        owner
+            .admit_publication_control(
+                &batch,
+                &RequestBudgetV1::unbounded(),
+                &ControlAdmission { calls, updates },
+            )
+            .expect("Control admission");
+        owner
+            .output_admission()
+            .owned_control_admission()
+            .expect("owned Control")
+            .expect("Control present")
+    }
+
+    fn work_admission(calls: Arc<Mutex<Calls>>) -> PublicationWorkOutputAdmission {
+        let batch = fixture_batch();
+        let mut owner = PublicationValidationOwner::default();
+        owner
+            .admit_publication_resources(
+                &PublicationAdmissionRequest {
+                    batch: &batch,
+                    footprint: IngestBatchFootprint {
+                        carried_records: 0,
+                        embedded_records: 0,
+                        source_bytes: 0,
+                        text_bytes: 0,
+                        vector_bytes: 0,
+                    },
+                    work: PublicationBuildWork::Materialize {
+                        lexical: true,
+                        semantic: false,
+                    },
+                },
+                &RequestBudgetV1::unbounded(),
+                &Admission(calls),
+            )
+            .expect("work admission");
+        owner
+            .output_admission()
+            .owned_work_admission()
+            .expect("owned work")
+            .expect("work present")
+    }
+
+    #[test]
+    fn admitted_io_boundary_keeps_typed_cause_and_rejects_lookalike_strings() {
+        let primary = CoreError::Typed {
+            code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+            message: "fixed Control writer refusal".into(),
+        };
+        let mapped = super::admitted_io_error("append", &std::io::Error::other(primary));
+        assert!(matches!(mapped, CoreError::Typed { code, message }
+            if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE && message == "fixed Control writer refusal"));
+        let nested = super::admitted_io_error(
+            "append",
+            &std::io::Error::other(std::io::Error::other(CoreError::Typed {
+                code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                message: "nested Control writer refusal".into(),
+            })),
+        );
+        assert!(matches!(nested, CoreError::Typed { code, message }
+            if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE && message == "nested Control writer refusal"));
+        let lookalike = super::admitted_io_error(
+            "append",
+            &std::io::Error::other("IngestResourceBudgetExceeded fixed Control writer refusal"),
+        );
+        assert!(matches!(
+            lookalike,
+            CoreError::StorageIo {
+                kind: std::io::ErrorKind::Other,
+                raw_os_error: None,
+                ..
+            }
+        ));
+        let enospc = super::admitted_io_error(
+            "append",
+            &std::io::Error::from_raw_os_error(rustix::io::Errno::NOSPC.raw_os_error()),
+        );
+        assert!(
+            matches!(enospc, CoreError::StorageIo { raw_os_error: Some(code), .. }
+            if code == rustix::io::Errno::NOSPC.raw_os_error())
+        );
+    }
+
+    #[test]
+    fn control_gate_and_epoch_are_reserved_before_create_and_replacement() {
+        let dir = tempfile::tempdir().expect("state root");
+        let calls = Arc::new(Mutex::new(Calls {
+            available: 49,
+            events: Vec::new(),
+            race_gate: false,
+            winner_inode: None,
+        }));
+        let store = ObjectStore::open_observed_with_control(
+            dir.path(),
+            None,
+            Some(control_admission(Arc::clone(&calls))),
+            None,
+        )
+        .expect("admitted bootstrap controls");
+        assert_eq!(store.read_epoch().expect("initial epoch"), 0);
+        assert_eq!(calls.lock().expect("Control calls").available, 0);
+
+        assert!(matches!(
+            store.write_epoch(1),
+            Err(CoreError::Typed {
+                code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                ..
+            })
+        ));
+        assert_eq!(store.read_epoch().expect("unchanged epoch"), 0);
+        let pool = dir.path().join(POOL_DIR);
+        let temporaries = std::fs::read_dir(&pool)
+            .expect("pool inventory")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("pool entries")
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.contains(".tmp-"))
+            })
+            .count();
+        assert_eq!(temporaries, 0);
+        {
+            let mut held = calls.lock().expect("Control calls");
+            assert_eq!(held.events.last(), Some(&"control refused"));
+            held.available = 48;
+        }
+        store.write_epoch(1).expect("admitted epoch replacement");
+        assert_eq!(store.read_epoch().expect("new epoch"), 1);
+        assert_eq!(calls.lock().expect("Control calls").available, 0);
+    }
+
+    #[test]
+    fn competing_gate_keeps_winner_inode_after_loser_cleans_original_writer() {
+        let dir = tempfile::tempdir().expect("state root");
+        let calls = Arc::new(Mutex::new(Calls {
+            available: 49,
+            events: Vec::new(),
+            race_gate: true,
+            winner_inode: None,
+        }));
+        let store = ObjectStore::open_observed_with_control(
+            dir.path(),
+            None,
+            Some(control_admission(Arc::clone(&calls))),
+            None,
+        )
+        .expect("competing gate admits existing regular inode");
+        let winner_inode = calls.lock().expect("Control calls").winner_inode;
+        let gate = dir.path().join(POOL_DIR).join(GATE_FILE);
+        assert_eq!(
+            gate.metadata().expect("published gate metadata").ino(),
+            winner_inode.expect("competitor published gate")
+        );
+        assert_eq!(store.read_epoch().expect("epoch after gate race"), 0);
+        let recorded = calls.lock().expect("Control calls");
+        assert_eq!(recorded.available, 1);
+        assert!(recorded.events.contains(&"control absent"));
+        assert_eq!(recorded.events.last(), Some(&"control committed"));
+        drop(recorded);
+        let temporaries = std::fs::read_dir(dir.path().join(POOL_DIR))
+            .expect("pool entries")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("pool inventory")
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.contains(".tmp-"))
+            })
+            .count();
+        assert_eq!(temporaries, 0);
+    }
+
+    #[test]
+    fn qualified_retirement_refusal_keeps_marker_and_retry_removes_it_last() {
+        let dir = tempfile::tempdir().expect("state root");
+        let deletion_calls = Arc::new(Mutex::new(DeleteCalls {
+            refuse: Some(FIXED_ATTEMPT.into()),
+            ..DeleteCalls::default()
+        }));
+        let store = qualified_deletion_store(&dir, Arc::clone(&deletion_calls));
+        let attempts = dir.path().join(POOL_DIR).join("attempts");
+        let marker = attempts.join(format!("{FIXED_ATTEMPT}.retired"));
+        assert!(matches!(
+            store.recover_retirement_locked(FIXED_ATTEMPT),
+            Err(CoreError::Typed {
+                code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                ..
+            })
+        ));
+        for name in [
+            FIXED_ATTEMPT.to_owned(),
+            format!("{FIXED_ATTEMPT}.log"),
+            format!("{FIXED_ATTEMPT}.head"),
+            format!("{FIXED_ATTEMPT}.retired"),
+        ] {
+            assert!(attempts.join(name).is_file());
+        }
+        assert_eq!(
+            deletion_calls.lock().expect("deletion calls").events,
+            ["reconcile".to_owned(), format!("remove:{FIXED_ATTEMPT}")]
+        );
+        {
+            let mut calls = deletion_calls.lock().expect("deletion calls");
+            calls.refuse = None;
+            calls.events.clear();
+        }
+        store
+            .recover_retirement_locked(FIXED_ATTEMPT)
+            .expect("qualified retry");
+        assert_eq!(
+            deletion_calls.lock().expect("deletion calls").events,
+            [
+                "reconcile".to_owned(),
+                format!("remove:{FIXED_ATTEMPT}"),
+                format!("remove:{FIXED_ATTEMPT}.log"),
+                format!("remove:{FIXED_ATTEMPT}.head"),
+                format!("remove:{FIXED_ATTEMPT}.scan"),
+                format!("remove:{FIXED_ATTEMPT}.retired"),
+            ]
+        );
+        assert!(absent(&marker).expect("marker absence"));
+        for suffix in ["", ".log", ".head", ".scan"] {
+            assert!(absent(&attempts.join(format!("{FIXED_ATTEMPT}{suffix}"))).expect("absence"));
+        }
+    }
+
+    #[test]
+    fn qualified_retirement_reconciles_unlinked_marker_before_absent_probe() {
+        let dir = tempfile::tempdir().expect("state root");
+        let deletion_calls = Arc::new(Mutex::new(DeleteCalls {
+            fail_after_marker_unlink: true,
+            ..DeleteCalls::default()
+        }));
+        let store = qualified_deletion_store(&dir, Arc::clone(&deletion_calls));
+        let marker = dir
+            .path()
+            .join(POOL_DIR)
+            .join("attempts")
+            .join(format!("{FIXED_ATTEMPT}.retired"));
+        assert!(store.recover_retirement_locked(FIXED_ATTEMPT).is_err());
+        assert!(absent(&marker).expect("marker removed before error"));
+        {
+            let mut calls = deletion_calls.lock().expect("deletion calls");
+            assert_eq!(calls.pending_marker.as_deref(), Some(marker.as_path()));
+            calls.events.clear();
+        }
+        store
+            .recover_retirement_locked(FIXED_ATTEMPT)
+            .expect("reconcile absent marker");
+        let calls = deletion_calls.lock().expect("deletion calls");
+        assert!(calls.pending_marker.is_none());
+        assert_eq!(calls.events, ["reconcile"]);
+        drop(calls);
+    }
+
+    #[test]
+    fn unowned_cleanup_requires_absent_header_and_qualified_refusal_keeps_journal() {
+        let dir = tempfile::tempdir().expect("state root");
+        let mut store = ObjectStore::open(dir.path()).expect("unqualified bootstrap");
+        let binding = fixed_attempt_binding();
+        assert_eq!(binding.identity_name(), FIXED_ATTEMPT);
+        let lease = store.begin_attempt(&binding, &[]).expect("fixed attempt");
+        drop(lease);
+        let deletion_calls = Arc::new(Mutex::new(DeleteCalls {
+            refuse: Some(format!("{FIXED_ATTEMPT}.log")),
+            ..DeleteCalls::default()
+        }));
+        let calls = Arc::new(Mutex::new(Calls {
+            available: 256,
+            ..Calls::default()
+        }));
+        store.control_output_admission = Some(control_admission_with_updates(
+            calls,
+            Some(Arc::new(DeletePort(Arc::clone(&deletion_calls)))),
+        ));
+        let attempts = dir.path().join(POOL_DIR).join("attempts");
+        let header = attempts.join(FIXED_ATTEMPT);
+        let journal = attempts.join(format!("{FIXED_ATTEMPT}.log"));
+        assert!(
+            !store
+                .cleanup_unowned_attempt_locked(FIXED_ATTEMPT)
+                .expect("owned attempt remains")
+        );
+        assert!(header.is_file());
+        assert!(journal.is_file());
+        assert_eq!(
+            deletion_calls.lock().expect("deletion calls").events,
+            ["reconcile"]
+        );
+        std::fs::remove_file(&header).expect("simulate missing incomplete header");
+        File::open(&attempts)
+            .and_then(|directory| directory.sync_all())
+            .expect("sync missing header");
+        deletion_calls
+            .lock()
+            .expect("deletion calls")
+            .events
+            .clear();
+        assert!(matches!(
+            store.cleanup_unowned_attempt_locked(FIXED_ATTEMPT),
+            Err(CoreError::Typed {
+                code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                ..
+            })
+        ));
+        assert!(journal.is_file());
+        assert_eq!(
+            deletion_calls.lock().expect("deletion calls").events,
+            [
+                "reconcile".to_owned(),
+                format!("remove:{FIXED_ATTEMPT}.log"),
+            ]
+        );
+        {
+            let mut calls = deletion_calls.lock().expect("deletion calls");
+            calls.refuse = None;
+            calls.events.clear();
+        }
+        assert!(
+            store
+                .cleanup_unowned_attempt_locked(FIXED_ATTEMPT)
+                .expect("qualified orphan retry")
+        );
+        assert_eq!(
+            deletion_calls.lock().expect("deletion calls").events,
+            [
+                "reconcile".to_owned(),
+                format!("remove:{FIXED_ATTEMPT}.log"),
+                format!("remove:{FIXED_ATTEMPT}.head"),
+                format!("remove:{FIXED_ATTEMPT}.scan"),
+            ]
+        );
+        assert!(absent(&journal).expect("journal absent"));
+        assert!(absent(&attempts.join(format!("{FIXED_ATTEMPT}.head"))).expect("head absent"));
+    }
+
+    #[test]
+    fn exhausted_work_refuses_before_object_temporary_creation() {
+        let dir = tempfile::tempdir().expect("state root");
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let store = ObjectStore::open(dir.path())
+            .expect("pool")
+            .with_work_output_admission(Some(work_admission(Arc::clone(&calls))));
+        let _gate = store.lock_gate().expect("pool gate");
+        assert!(matches!(
+            store.put_object_locked(ObjectKind::Record, &[], b"abc"),
+            Err(CoreError::Typed {
+                code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                ..
+            })
+        ));
+        assert_eq!(calls.lock().expect("output calls").events, ["refused"]);
+        let objects = dir.path().join(POOL_DIR).join(OBJECTS_DIR);
+        let shards = std::fs::read_dir(objects)
+            .expect("object shards")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("shard entries");
+        assert_eq!(shards.len(), 1);
+        assert_eq!(
+            std::fs::read_dir(shards.first().expect("shard").path())
+                .expect("shard entries")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn verified_digest_reuse_spends_no_second_child_and_keeps_original_fd_order() {
+        let dir = tempfile::tempdir().expect("state root");
+        let calls = Arc::new(Mutex::new(Calls {
+            available: 24,
+            events: Vec::new(),
+            race_gate: false,
+            winner_inode: None,
+        }));
+        let store = ObjectStore::open(dir.path())
+            .expect("pool")
+            .with_work_output_admission(Some(work_admission(Arc::clone(&calls))));
+        let _gate = store.lock_gate().expect("pool gate");
+        let first = store
+            .put_object_locked(ObjectKind::Record, &[], b"abc")
+            .expect("first object");
+        let second = store
+            .put_object_locked(ObjectKind::Record, &[], b"abc")
+            .expect("verified reuse");
+        assert_eq!(first, second);
+        assert_eq!(first.bytes, 24);
+        let digest = hex_digest(&first.sha256);
+        let shard = digest.get(..2).expect("digest shard");
+        let canonical = dir
+            .path()
+            .join(POOL_DIR)
+            .join(OBJECTS_DIR)
+            .join(shard)
+            .join(digest);
+        assert_eq!(std::fs::read(canonical).expect("canonical bytes"), GOLD);
+        let calls = calls.lock().expect("output calls");
+        assert_eq!(calls.available, 0);
+        assert_eq!(
+            calls.events,
+            [
+                "reserved",
+                "bound",
+                "started",
+                "created",
+                "before",
+                "committed"
+            ]
+        );
+        drop(calls);
     }
 }
 
@@ -81,12 +1239,19 @@ enum AtomicPurpose {
     Other,
     PoolObject,
     AttemptJournal,
+    HardScanCheckpoint,
 }
 
 #[derive(Clone, Copy)]
 enum AtomicSync {
     Full,
     BatchedPoolData,
+}
+
+#[derive(Default)]
+struct AtomicWriteAdmission {
+    pool: Option<Box<dyn quanta_index_core::pool_write_admission::PoolWritePermit>>,
+    output: Option<Box<dyn PublicationOutputPermit>>,
 }
 
 #[cfg(test)]
@@ -105,6 +1270,10 @@ fn reach_atomic_cut(
         (AtomicPurpose::AttemptJournal, 1) => Some(Cut::AttemptJournalFileSync),
         (AtomicPurpose::AttemptJournal, 2) => Some(Cut::AttemptJournalRename),
         (AtomicPurpose::AttemptJournal, 3) => Some(Cut::AttemptJournalDirectorySync),
+        (AtomicPurpose::HardScanCheckpoint, 0) => Some(Cut::HardScanCheckpointWrite),
+        (AtomicPurpose::HardScanCheckpoint, 1) => Some(Cut::HardScanCheckpointFileSync),
+        (AtomicPurpose::HardScanCheckpoint, 2) => Some(Cut::HardScanCheckpointRename),
+        (AtomicPurpose::HardScanCheckpoint, 3) => Some(Cut::HardScanCheckpointDirectorySync),
         (AtomicPurpose::Other, _) => None,
         _ => return Err(invalid("unknown atomic publication cut")),
     };
@@ -116,6 +1285,21 @@ fn reach_atomic_cut(
 
 pub(super) fn storage(context: &str, error: impl std::fmt::Display) -> CoreError {
     CoreError::Storage(format!("lexical object store {context}: {error}"))
+}
+
+fn with_custody_context(mut primary: CoreError, context: impl std::fmt::Display) -> CoreError {
+    let suffix = format!("; physical custody cleanup failed: {context}");
+    let message = match &mut primary {
+        CoreError::InvalidContract(message)
+        | CoreError::Typed { message, .. }
+        | CoreError::NotReady(message)
+        | CoreError::NotImplemented(message)
+        | CoreError::NotFound(message)
+        | CoreError::Storage(message)
+        | CoreError::StorageIo { message, .. } => message,
+    };
+    message.push_str(&suffix);
+    primary
 }
 
 pub(super) fn corrupt(reason: &str) -> CoreError {
@@ -188,13 +1372,18 @@ fn decode_hex_digit(byte: u8) -> Result<u8, CoreError> {
 }
 
 fn atomic_temporary_base(name: &str) -> Option<&str> {
+    if name.len() > 128 {
+        return None;
+    }
     let rest = name.strip_prefix('.')?;
     let (digest, sequence) = rest.split_once(".tmp-")?;
     let (pid, counter) = sequence.split_once('-')?;
     if !pid.is_empty()
         && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && pid.parse::<u32>().is_ok()
         && !counter.is_empty()
         && counter.bytes().all(|byte| byte.is_ascii_digit())
+        && counter.parse::<u64>().is_ok()
     {
         Some(digest)
     } else {
@@ -227,6 +1416,7 @@ fn is_attempt_temporary_name(name: &str) -> bool {
     let Some(stem) = base.strip_suffix(".cbor.retired").or_else(|| {
         base.strip_suffix(".cbor.head")
             .or_else(|| base.strip_suffix(".cbor.log"))
+            .or_else(|| base.strip_suffix(".cbor.scan"))
             .or_else(|| base.strip_suffix(".cbor"))
     }) else {
         return false;
@@ -235,7 +1425,7 @@ fn is_attempt_temporary_name(name: &str) -> bool {
 }
 
 fn is_pool_temporary_name(name: &str) -> bool {
-    atomic_temporary_base(name) == Some(EPOCH_FILE)
+    atomic_temporary_base(name).is_some_and(|base| base == EPOCH_FILE || base == GATE_FILE)
 }
 
 fn journal_name(header_name: &str) -> String {
@@ -390,18 +1580,26 @@ impl JournalHead {
 
 #[derive(Clone)]
 pub(crate) struct ObjectStore {
+    state_root: PathBuf,
     pool: Arc<File>,
     objects: Arc<File>,
     objects_device: u64,
+    objects_inode: u64,
     attempts: Arc<File>,
     read_meter: Option<Arc<ObjectReadMeter>>,
     adoption_batch: Option<Arc<Mutex<BatchState>>>,
     sync_totals: Option<Arc<crate::causal_profile::SyncTotalsV1>>,
+    pool_write_admission:
+        Option<Arc<dyn quanta_index_core::pool_write_admission::PoolWriteAdmissionPort>>,
+    control_output_admission: Option<PublicationControlOutputAdmission>,
+    work_output_admission: Option<PublicationWorkOutputAdmission>,
+    object_lifetime: Option<Arc<dyn PublicationObjectLifetimePort>>,
 }
 
 struct BatchState {
     lease_name: String,
     binding: AttemptBinding,
+    write_cost: Arc<Mutex<AttemptWriteCost>>,
     gate: Option<Gate>,
     references: Vec<ObjectRef>,
     encoded_new_bytes: u64,
@@ -708,6 +1906,41 @@ pub(crate) struct AttemptLease {
     store: ObjectStore,
     name: String,
     binding: AttemptBinding,
+    write_cost: Arc<Mutex<AttemptWriteCost>>,
+}
+
+/// Authenticated pool write outcomes observed by one attempt invocation.
+///
+/// This is not retained disk usage or a capacity reservation: a retry starts
+/// a new meter, while physical objects can survive either attempt.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AttemptWriteCost {
+    pub(crate) new_objects: u64,
+    pub(crate) new_encoded_bytes: u64,
+    pub(crate) reused_objects: u64,
+    pub(crate) reused_encoded_bytes: u64,
+}
+
+struct PreparedObject {
+    reference: ObjectRef,
+    encoded: Vec<u8>,
+}
+
+impl PreparedObject {
+    fn new(
+        kind: ObjectKind,
+        dependencies: &[ObjectRef],
+        payload: &[u8],
+    ) -> Result<Self, CoreError> {
+        let encoded = encode_object(kind, dependencies, payload)?;
+        let reference = ObjectRef {
+            kind,
+            bytes: u64::try_from(encoded.len())
+                .map_err(|error| storage("object byte width", error))?,
+            sha256: Sha256::digest(&encoded).into(),
+        };
+        Ok(Self { reference, encoded })
+    }
 }
 
 type TargetScope = ([u8; 32], [u8; 32], u64);
@@ -719,7 +1952,7 @@ pub(crate) enum AdoptedRootAdvance {
 }
 
 struct AdoptedJournal {
-    file: File,
+    file: ControlReader,
     remaining: u64,
     previous: [u8; 32],
     expected_chain: [u8; 32],
@@ -898,11 +2131,148 @@ impl BlobCursor {
     }
 }
 
-pub(super) struct Gate {
-    _file: File,
+pub(crate) struct Gate {
+    reader: ControlReader,
+}
+
+impl Gate {
+    fn retire(self) -> Result<(), CoreError> {
+        self.reader.retire()
+    }
+}
+
+fn finish_gate<T>(gate: Gate, result: Result<T, CoreError>) -> Result<T, CoreError> {
+    match (result, gate.retire()) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(retirement)) => Err(retirement),
+        (Err(primary), Err(retirement)) => Err(with_custody_context(primary, retirement)),
+    }
+}
+
+fn finish_control_read<T>(
+    reader: ControlReader,
+    result: Result<T, CoreError>,
+) -> Result<T, CoreError> {
+    match (result, reader.retire()) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(retirement)) => Err(retirement),
+        (Err(primary), Err(retirement)) => Err(with_custody_context(primary, retirement)),
+    }
+}
+
+enum JournalWriter {
+    Unqualified(File),
+    Admitted(Box<dyn PublicationControlFileMutation>),
+}
+
+impl Read for JournalWriter {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Unqualified(file) => file.read(bytes),
+            Self::Admitted(mutation) => mutation.read(bytes),
+        }
+    }
+}
+
+impl Write for JournalWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Unqualified(file) => file.write(bytes),
+            Self::Admitted(mutation) => mutation.write(bytes),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Unqualified(file) => file.flush(),
+            Self::Admitted(mutation) => mutation.flush(),
+        }
+    }
+}
+
+impl Seek for JournalWriter {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::Unqualified(file) => file.seek(position),
+            Self::Admitted(mutation) => mutation.seek(position),
+        }
+    }
+}
+
+impl JournalWriter {
+    fn set_len(&mut self, length: u64) -> Result<(), CoreError> {
+        match self {
+            Self::Unqualified(file) => file
+                .set_len(length)
+                .map_err(|error| storage("truncate pending journal", error)),
+            Self::Admitted(mutation) => mutation.set_len(length),
+        }
+    }
+
+    fn retire_preserving_pending(self) -> Result<(), CoreError> {
+        match self {
+            Self::Unqualified(file) => {
+                drop(file);
+                Ok(())
+            }
+            Self::Admitted(mutation) => mutation.retire_preserving_pending(),
+        }
+    }
+}
+
+fn admitted_io_error(context: &str, error: &std::io::Error) -> CoreError {
+    let context = format!("lexical object store {context}");
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(cause) = source {
+        if let Some(primary) = cause.downcast_ref::<CoreError>() {
+            return primary.clone();
+        }
+        if let Some(io) = cause.downcast_ref::<std::io::Error>()
+            && io.raw_os_error().is_some()
+        {
+            return CoreError::storage_io(&context, io);
+        }
+        source = cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .map(|inner| -> &(dyn std::error::Error + 'static) { inner })
+            .or_else(|| cause.source());
+    }
+    CoreError::storage_io(&context, error)
+}
+
+fn retire_failed_journal(journal: JournalWriter, primary: CoreError) -> CoreError {
+    match journal.retire_preserving_pending() {
+        Ok(()) => primary,
+        Err(retirement) => with_custody_context(primary, retirement),
+    }
 }
 
 impl ObjectStore {
+    /// Fixture-only late binding. Production constructors install lifetime
+    /// custody before opening Control readers.
+    #[cfg(test)]
+    pub(crate) fn with_object_lifetime(
+        mut self,
+        object_lifetime: Option<Arc<dyn PublicationObjectLifetimePort>>,
+    ) -> Result<Self, CoreError> {
+        if let Some(lifetime) = &object_lifetime {
+            lifetime.validate_state_root(&self.state_root)?;
+        }
+        self.object_lifetime = object_lifetime;
+        Ok(self)
+    }
+
+    pub(crate) fn with_work_output_admission(
+        mut self,
+        admission: Option<PublicationWorkOutputAdmission>,
+    ) -> Self {
+        self.work_output_admission = admission;
+        self
+    }
+
     pub(crate) fn sync_totals(&self) -> Option<&crate::causal_profile::SyncTotalsV1> {
         self.sync_totals.as_deref()
     }
@@ -935,6 +2305,7 @@ impl ObjectStore {
         scoped.adoption_batch = Some(Arc::new(Mutex::new(BatchState {
             lease_name: lease.name.clone(),
             binding: lease.binding.clone(),
+            write_cost: Arc::clone(&lease.write_cost),
             gate: None,
             references: Vec::new(),
             encoded_new_bytes: 0,
@@ -993,6 +2364,7 @@ impl ObjectStore {
                     store: self.clone(),
                     name: state.lease_name.clone(),
                     binding: state.binding.clone(),
+                    write_cost: Arc::clone(&state.write_cost),
                 };
                 lease.adopt_batch_locked(&state.references)
             })();
@@ -1043,7 +2415,7 @@ impl ObjectStore {
             if record.0 != state.binding {
                 return Err(corrupt("batched attempt binding changed"));
             }
-            let _journal = self.open_attempt_log(&state.lease_name)?;
+            self.open_attempt_log(&state.lease_name)?.retire()?;
             let _epoch = self.bump_epoch_locked()?;
             state.gate = Some(gate);
         }
@@ -1087,10 +2459,29 @@ impl ObjectStore {
         Self::open_observed(state_root, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn open_observed(
         state_root: &Path,
         sync_totals: Option<Arc<crate::causal_profile::SyncTotalsV1>>,
     ) -> Result<Self, CoreError> {
+        Self::open_observed_with_control(state_root, sync_totals, None, None)
+    }
+
+    /// Install the physical Control parent before creating the first pool
+    /// regular file. The unqualified constructor remains for local fixtures.
+    pub(crate) fn open_observed_with_control(
+        state_root: &Path,
+        sync_totals: Option<Arc<crate::causal_profile::SyncTotalsV1>>,
+        control_output_admission: Option<PublicationControlOutputAdmission>,
+        object_lifetime: Option<Arc<dyn PublicationObjectLifetimePort>>,
+    ) -> Result<Self, CoreError> {
+        validate_control_object_lifetime(
+            control_output_admission.as_ref(),
+            object_lifetime.as_ref(),
+        )?;
+        if let Some(lifetime) = &object_lifetime {
+            lifetime.validate_state_root(state_root)?;
+        }
         let state = File::from(
             open(state_root, dir_flags(), Mode::empty())
                 .map_err(|error| storage("open state root", error))?,
@@ -1098,15 +2489,6 @@ impl ObjectStore {
         let pool = ensure_dir(&state, POOL_DIR, sync_totals.as_deref())?;
         let objects = ensure_dir(&pool, OBJECTS_DIR, sync_totals.as_deref())?;
         let attempts = ensure_dir(&pool, ATTEMPTS_DIR, sync_totals.as_deref())?;
-        let _gate = File::from(
-            openat(
-                &pool,
-                GATE_FILE,
-                OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::CREATE,
-                Mode::RUSR | Mode::WUSR,
-            )
-            .map_err(|error| storage("open lifecycle gate", error))?,
-        );
         crate::causal_profile::observed_sync(
             sync_totals.as_deref(),
             quanta_index_core::DiagnosticSyncLabelV1::PoolSyncAll,
@@ -1119,36 +2501,78 @@ impl ObjectStore {
             || state.sync_all(),
         )
         .map_err(|error| storage("sync state root", error))?;
-        let objects_device = objects
+        let objects_metadata = objects
             .metadata()
-            .map_err(|error| storage("stat object pool device", error))?
-            .dev();
+            .map_err(|error| storage("stat object pool identity", error))?;
         let store = Self {
+            state_root: state_root.to_owned(),
             pool: Arc::new(pool),
             objects: Arc::new(objects),
-            objects_device,
+            objects_device: objects_metadata.dev(),
+            objects_inode: objects_metadata.ino(),
             attempts: Arc::new(attempts),
             read_meter: None,
             adoption_batch: None,
             sync_totals,
+            pool_write_admission: None,
+            control_output_admission,
+            work_output_admission: None,
+            object_lifetime,
         };
-        let _gate = store.lock_gate()?;
-        match openat(
-            store.pool.as_ref(),
-            EPOCH_FILE,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-        ) {
-            Ok(_) => {}
-            Err(rustix::io::Errno::NOENT) => store.write_epoch(0)?,
-            Err(error) => return Err(storage("probe lifecycle epoch", error)),
+        if store.control_output_admission.is_some() {
+            if !store.existing_regular_gate(store.pool.as_ref())? {
+                store.write_atomic_at(store.pool.as_ref(), GATE_FILE, &[], AtomicPurpose::Other)?;
+            }
+        } else {
+            // Preserve the original shared-inode bootstrap for unqualified fixtures.
+            let gate = File::from(
+                openat(
+                    store.pool.as_ref(),
+                    GATE_FILE,
+                    OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::CREATE,
+                    Mode::RUSR | Mode::WUSR,
+                )
+                .map_err(|error| storage("open lifecycle gate", error))?,
+            );
+            drop(gate);
+            store
+                .pool
+                .sync_all()
+                .map_err(|error| storage("sync lifecycle gate parent", error))?;
         }
-        let _epoch = store.read_epoch()?;
+        let gate = store.lock_gate()?;
+        let result = (|| {
+            if let Some(reader) = store.open_control_reader(
+                store.pool.as_ref(),
+                EPOCH_FILE,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                true,
+                "probe lifecycle epoch",
+            )? {
+                reader.retire()?;
+            } else {
+                store.write_epoch(0)?;
+            }
+            let _epoch = store.read_epoch()?;
+            Ok(())
+        })();
+        finish_gate(gate, result)?;
         Ok(store)
     }
 
     /// Opens an existing pool without creating directories or control files.
     pub(crate) fn open_existing(state_root: &Path) -> Result<Self, CoreError> {
+        Self::open_existing_with_lifetime(state_root, None)
+    }
+
+    /// Install read-only physical lifetime custody before opening Control FDs.
+    pub(crate) fn open_existing_with_lifetime(
+        state_root: &Path,
+        object_lifetime: Option<Arc<dyn PublicationObjectLifetimePort>>,
+    ) -> Result<Self, CoreError> {
+        if let Some(lifetime) = &object_lifetime {
+            lifetime.validate_state_root(state_root)?;
+        }
         let state = File::from(
             open(state_root, dir_flags(), Mode::empty())
                 .map_err(|error| storage("open existing state root", error))?,
@@ -1165,35 +2589,41 @@ impl ObjectStore {
             openat(&pool, ATTEMPTS_DIR, dir_flags(), Mode::empty())
                 .map_err(|error| corrupt(&format!("existing attempt directory absent: {error}")))?,
         );
-        let gate = File::from(
-            openat(
-                &pool,
-                GATE_FILE,
-                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::empty(),
-            )
-            .map_err(|error| corrupt(&format!("existing lifecycle gate absent: {error}")))?,
-        );
-        if !gate
+        let objects_metadata = objects
             .metadata()
-            .map_err(|error| storage("stat existing lifecycle gate", error))?
-            .is_file()
-        {
-            return Err(corrupt("existing lifecycle gate is not a regular file"));
-        }
-        let objects_device = objects
-            .metadata()
-            .map_err(|error| storage("stat existing object pool device", error))?
-            .dev();
+            .map_err(|error| storage("stat existing object pool identity", error))?;
         let store = Self {
+            state_root: state_root.to_owned(),
             pool: Arc::new(pool),
             objects: Arc::new(objects),
-            objects_device,
+            objects_device: objects_metadata.dev(),
+            objects_inode: objects_metadata.ino(),
             attempts: Arc::new(attempts),
             read_meter: None,
             adoption_batch: None,
             sync_totals: None,
+            pool_write_admission: None,
+            control_output_admission: None,
+            work_output_admission: None,
+            object_lifetime,
         };
+        let gate = store
+            .open_control_reader(
+                store.pool.as_ref(),
+                GATE_FILE,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                false,
+                "open existing lifecycle gate",
+            )?
+            .ok_or_else(|| corrupt("existing lifecycle gate absent"))?;
+        let gate_check = gate.metadata().and_then(|metadata| {
+            if metadata.is_file() {
+                Ok(())
+            } else {
+                Err(corrupt("existing lifecycle gate is not a regular file"))
+            }
+        });
+        finish_control_read(gate, gate_check)?;
         let _epoch = store.read_epoch()?;
         Ok(store)
     }
@@ -1211,39 +2641,40 @@ impl ObjectStore {
     }
 
     fn read_epoch(&self) -> Result<u64, CoreError> {
-        let mut file = File::from(
-            openat(
+        let mut file = self
+            .open_control_reader(
                 self.pool.as_ref(),
                 EPOCH_FILE,
                 OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-                Mode::empty(),
-            )
-            .map_err(|error| corrupt(&format!("lifecycle epoch absent: {error}")))?,
-        );
-        let metadata = file
-            .metadata()
-            .map_err(|error| storage("stat lifecycle epoch", error))?;
-        if !metadata.is_file() || metadata.len() != 48 {
-            return Err(corrupt("lifecycle epoch is not a fixed regular file"));
-        }
-        let mut bytes = [0_u8; 48];
-        file.read_exact(&mut bytes)
-            .map_err(|error| storage("read lifecycle epoch", error))?;
-        let header = bytes
-            .get(..16)
-            .ok_or_else(|| corrupt("epoch header truncated"))?;
-        let expected: [u8; 32] = Sha256::digest(header).into();
-        if header.get(..8) != Some(EPOCH_MAGIC.as_slice())
-            || bytes.get(16..) != Some(expected.as_slice())
-        {
-            return Err(corrupt("lifecycle epoch digest or magic differs"));
-        }
-        let raw: [u8; 8] = header
-            .get(8..16)
-            .ok_or_else(|| corrupt("epoch counter truncated"))?
-            .try_into()
-            .map_err(|_conversion_error| corrupt("epoch counter width"))?;
-        Ok(u64::from_be_bytes(raw))
+                false,
+                "open lifecycle epoch",
+            )?
+            .ok_or_else(|| corrupt("lifecycle epoch absent"))?;
+        let result = (|| {
+            let metadata = file.metadata()?;
+            if !metadata.is_file() || metadata.len() != 48 {
+                return Err(corrupt("lifecycle epoch is not a fixed regular file"));
+            }
+            let mut bytes = [0_u8; 48];
+            file.read_exact(&mut bytes)
+                .map_err(|error| admitted_io_error("read lifecycle epoch", &error))?;
+            let header = bytes
+                .get(..16)
+                .ok_or_else(|| corrupt("epoch header truncated"))?;
+            let expected: [u8; 32] = Sha256::digest(header).into();
+            if header.get(..8) != Some(EPOCH_MAGIC.as_slice())
+                || bytes.get(16..) != Some(expected.as_slice())
+            {
+                return Err(corrupt("lifecycle epoch digest or magic differs"));
+            }
+            let raw: [u8; 8] = header
+                .get(8..16)
+                .ok_or_else(|| corrupt("epoch counter truncated"))?
+                .try_into()
+                .map_err(|_conversion_error| corrupt("epoch counter width"))?;
+            Ok(u64::from_be_bytes(raw))
+        })();
+        finish_control_read(file, result)
     }
 
     fn bump_epoch_locked(&self) -> Result<u64, CoreError> {
@@ -1256,18 +2687,49 @@ impl ObjectStore {
     }
 
     pub(super) fn lock_gate(&self) -> Result<Gate, CoreError> {
-        let file = File::from(
-            openat(
+        let reader = self
+            .open_control_reader(
                 self.pool.as_ref(),
                 GATE_FILE,
                 OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::empty(),
-            )
-            .map_err(|error| storage("open lifecycle gate", error))?,
-        );
-        flock(&file, FlockOperation::LockExclusive)
-            .map_err(|error| storage("lock lifecycle gate", error))?;
-        Ok(Gate { _file: file })
+                false,
+                "open lifecycle gate",
+            )?
+            .ok_or_else(|| corrupt("lifecycle gate absent"))?;
+        if let Err(error) = reader.lock_exclusive() {
+            return finish_control_read(reader, Err(error));
+        }
+        Ok(Gate { reader })
+    }
+
+    /// Freeze all pool namespace writes, including GC, without waiting on a
+    /// writer that may need the adapter's lifecycle boundary held by a scan.
+    pub(crate) fn try_physical_snapshot_gate(&self) -> Result<Gate, CoreError> {
+        let reader = self
+            .open_control_reader(
+                self.pool.as_ref(),
+                GATE_FILE,
+                OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                false,
+                "open physical snapshot gate",
+            )?
+            .ok_or_else(|| corrupt("physical snapshot gate absent"))?;
+        let result = (|| {
+            if !reader.metadata()?.is_file() {
+                return Err(corrupt("physical snapshot gate is not a regular file"));
+            }
+            if !reader.try_lock_exclusive()? {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                    message: "lexical physical snapshot: object pool is being mutated; retry measurement".into(),
+                });
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            return finish_control_read(reader, Err(error));
+        }
+        Ok(Gate { reader })
     }
 
     /// A handle with counters private to this clone and any clones derived
@@ -1343,6 +2805,7 @@ impl ObjectStore {
             store: self.clone(),
             name,
             binding: binding.clone(),
+            write_cost: Arc::new(Mutex::new(AttemptWriteCost::default())),
         })
     }
 
@@ -1371,6 +2834,7 @@ impl ObjectStore {
             store: self.clone(),
             name,
             binding: binding.clone(),
+            write_cost: Arc::new(Mutex::new(AttemptWriteCost::default())),
         }
         .discard_unsealed()?;
         Ok(true)
@@ -1397,6 +2861,62 @@ impl ObjectStore {
             }
         }
         Ok(retired)
+    }
+
+    /// Preserve the one original pending publication while its incomplete
+    /// target directory is removed for an asymmetric retry. The catalog owns
+    /// the Pending proof; this store independently checks every durable
+    /// target attempt against the immutable event, body and sealed base.
+    /// A different incarnation cannot be selected without the catalog's
+    /// allocation, so multiple target attempts are refused rather than
+    /// guessing which one to keep.
+    pub(crate) fn preserve_target_attempt_for_pending_batch(
+        &self,
+        target: ([u8; 32], [u8; 32], u64),
+        original: ([u8; 32], Option<[u8; 32]>, [u8; 32], u16),
+        inherited_roots: &[ObjectRef],
+    ) -> Result<bool, CoreError> {
+        let (repository_sha256, revision_sha256, target_generation) = target;
+        let (source_event_sha256, base_root_sha256, operations_sha256, format) = original;
+        let matching =
+            self.target_attempt_bindings(repository_sha256, revision_sha256, target_generation)?;
+        if matching.len() > 1 {
+            return Err(invalid(
+                "pending target has multiple attempt incarnations; catalog allocation is required",
+            ));
+        }
+        let Some(binding) = matching.first() else {
+            return Ok(false);
+        };
+        if binding.source_event_sha256 != source_event_sha256
+            || binding.base_root_sha256 != base_root_sha256
+            || binding.operations_sha256 != operations_sha256
+            || binding.format != format
+        {
+            return Err(invalid(
+                "pending target attempt differs from original batch",
+            ));
+        }
+        let name = binding.identity_name();
+        let _gate = self.lock_gate()?;
+        self.recover_retirement_locked(&name)?;
+        let record = self
+            .read_attempt_header(&name)?
+            .ok_or_else(|| corrupt("pending target attempt disappeared during custody check"))?;
+        let mut expected_inherited = inherited_roots.to_vec();
+        expected_inherited.sort();
+        expected_inherited.dedup();
+        if record.0 != *binding || record.1 != expected_inherited {
+            return Err(invalid(
+                "pending target attempt inherited roots differ from sealed base",
+            ));
+        }
+        for root in &expected_inherited {
+            let _verified = self.read_object(root, None)?;
+        }
+        self.recover_attempt_log(&name)?;
+        self.visit_attempt_log(&name, |_root| Ok(()))?;
+        Ok(true)
     }
 
     /// Settle abandoned attempts after their immutable sealed target was
@@ -1501,6 +3021,7 @@ impl ObjectStore {
             store: self.clone(),
             name,
             binding: binding.clone(),
+            write_cost: Arc::new(Mutex::new(AttemptWriteCost::default())),
         }))
     }
 
@@ -1555,25 +3076,26 @@ impl ObjectStore {
     fn read_attempt(&self, name: &str) -> Result<Option<AttemptRecord>, CoreError> {
         let record = self.read_attempt_header(name)?;
         if record.is_some() {
-            let _journal = self.open_attempt_log(name)?;
+            self.open_attempt_log(name)?.retire()?;
         }
         Ok(record)
     }
 
-    /// Only a missing header authorizes removal of an incomplete initial
-    /// journal/head. The caller holds the physical gate; GC rechecks under
+    /// Only a missing header authorizes removal of incomplete attempt control.
+    /// The caller holds the physical gate; GC rechecks under
     /// that gate because the header may have appeared since readdir.
     fn cleanup_unowned_attempt_locked(&self, name: &str) -> Result<bool, CoreError> {
+        self.reconcile_control_deletions()?;
         if self.read_attempt_header(name)?.is_some() {
             return Ok(false);
         }
         let mut removed = false;
-        for component in [journal_name(name), journal_head_name(name)] {
-            match unlinkat(self.attempts.as_ref(), component.as_str(), AtFlags::empty()) {
-                Ok(()) => removed = true,
-                Err(rustix::io::Errno::NOENT) => {}
-                Err(error) => return Err(storage("remove incomplete attempt control", error)),
-            }
+        for component in [
+            journal_name(name),
+            journal_head_name(name),
+            hard_scan_checkpoint::sidecar_name(name),
+        ] {
+            removed |= self.remove_attempt_control_locked(&component, true)?;
         }
         if removed {
             self.attempts
@@ -1583,89 +3105,341 @@ impl ObjectStore {
         Ok(true)
     }
 
+    fn reconcile_control_deletions(&self) -> Result<(), CoreError> {
+        let Some(control) = &self.control_output_admission else {
+            return Ok(());
+        };
+        validate_control_object_lifetime(Some(control), self.object_lifetime.as_ref())?;
+        if let Some(lifetime) = &self.object_lifetime {
+            lifetime.validate_state_root(&self.state_root)?;
+        }
+        if let Some(port) = control.file_updates()? {
+            port.reconcile_deletions()?;
+        }
+        Ok(())
+    }
+
+    fn require_current_control_parent(parent: &File, directory: &Path) -> Result<(), CoreError> {
+        let current = File::from(
+            open(directory, dir_flags(), Mode::empty())
+                .map_err(|error| storage("open current Control parent", error))?,
+        );
+        let current = current
+            .metadata()
+            .map_err(|error| storage("stat current Control parent", error))?;
+        let held = parent
+            .metadata()
+            .map_err(|error| storage("stat held Control parent", error))?;
+        if current.dev() != held.dev() || current.ino() != held.ino() {
+            return Err(invalid("Control parent incarnation changed"));
+        }
+        Ok(())
+    }
+
+    /// Claim physical Control reader custody before opening the anchored FD.
+    /// Legacy fixtures without a held physical parent retain their raw path.
+    fn open_control_reader(
+        &self,
+        parent: &File,
+        name: &str,
+        flags: OFlags,
+        optional: bool,
+        context: &str,
+    ) -> Result<Option<ControlReader>, CoreError> {
+        let qualified_updates = if let Some(control) = &self.control_output_admission {
+            validate_control_object_lifetime(Some(control), self.object_lifetime.as_ref())?;
+            if let Some(lifetime) = &self.object_lifetime {
+                lifetime.validate_state_root(&self.state_root)?;
+            }
+            if control.held_file_allowance()?.is_some() {
+                let updates = control.file_updates()?.ok_or_else(|| {
+                    invalid("physical Control reader lacks its file update authority")
+                })?;
+                let directory = if std::ptr::eq(parent, self.pool.as_ref()) {
+                    self.state_root.join(POOL_DIR)
+                } else if std::ptr::eq(parent, self.attempts.as_ref()) {
+                    self.state_root.join(POOL_DIR).join(ATTEMPTS_DIR)
+                } else {
+                    return Err(invalid("Control reader parent differs from pool"));
+                };
+                if optional {
+                    Self::require_current_control_parent(parent, &directory)?;
+                }
+                Some((updates, directory))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let lifetime_only_path = if qualified_updates.is_none() {
+            if let Some(lifetime) = &self.object_lifetime {
+                lifetime.validate_state_root(&self.state_root)?;
+                let directory = if std::ptr::eq(parent, self.pool.as_ref()) {
+                    self.state_root.join(POOL_DIR)
+                } else if std::ptr::eq(parent, self.attempts.as_ref()) {
+                    self.state_root.join(POOL_DIR).join(ATTEMPTS_DIR)
+                } else {
+                    return Err(invalid("Control reader parent differs from pool"));
+                };
+                Self::require_current_control_parent(parent, &directory)?;
+                Some(directory.join(name))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if optional && qualified_updates.is_none() && lifetime_only_path.is_none() {
+            match rustix::fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Err(rustix::io::Errno::NOENT) => return Ok(None),
+                Ok(_) => {}
+                Err(error) => return Err(storage(context, error)),
+            }
+        }
+        let ticket = if let Some((updates, directory)) = qualified_updates {
+            if let Some(control) = &self.control_output_admission {
+                match updates.begin_reader_open(&directory.join(name), control.clone()) {
+                    Ok(ticket) => Some(ticket),
+                    Err(CoreError::NotFound(_)) if optional => return Ok(None),
+                    Err(error) => return Err(error),
+                }
+            } else {
+                return Err(invalid("Control reader admission missing"));
+            }
+        } else if let Some(path) = lifetime_only_path {
+            let lifetime = self
+                .object_lifetime
+                .as_ref()
+                .ok_or_else(|| invalid("Control reader lifetime authority missing"))?;
+            match lifetime.begin_control_reader_open(&path) {
+                Ok(ticket) => Some(ticket),
+                Err(CoreError::NotFound(_)) if optional => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        let opened = match openat(parent, name, flags, Mode::empty()) {
+            Ok(file) => File::from(file),
+            Err(rustix::io::Errno::NOENT) if optional => return Ok(None),
+            Err(error) => return Err(storage(context, error)),
+        };
+        match ticket {
+            Some(ticket) => ticket.opened_owned(opened).map(ControlReader::admitted),
+            None => Ok(ControlReader::unqualified(opened)),
+        }
+        .map(Some)
+    }
+
+    fn existing_regular_gate(&self, parent: &File) -> Result<bool, CoreError> {
+        let Some(reader) = self.open_control_reader(
+            parent,
+            GATE_FILE,
+            OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            true,
+            "open existing lifecycle gate",
+        )?
+        else {
+            return Ok(false);
+        };
+        let result = reader.metadata().and_then(|metadata| {
+            if metadata.is_file() {
+                Ok(true)
+            } else {
+                Err(corrupt("existing lifecycle gate is not a regular file"))
+            }
+        });
+        finish_control_read(reader, result)
+    }
+
+    /// Canonical attempt files use the same retained deletion owner as their
+    /// Control writers. Uncommitted temporaries require create reconciliation
+    /// and must never enter this path.
+    fn remove_attempt_control_locked(
+        &self,
+        name: &str,
+        allow_absent_unqualified: bool,
+    ) -> Result<bool, CoreError> {
+        if let Some(control) = &self.control_output_admission {
+            validate_control_object_lifetime(Some(control), self.object_lifetime.as_ref())?;
+            if let Some(port) = control.file_updates()? {
+                let path = self.state_root.join(POOL_DIR).join(ATTEMPTS_DIR).join(name);
+                port.remove_file_and_sync(&path, control.clone())?;
+                // The port also accepts an already absent canonical file. The
+                // following shared barrier is harmless in that retry case.
+                return Ok(true);
+            }
+        }
+        match unlinkat(self.attempts.as_ref(), name, AtFlags::empty()) {
+            Ok(()) => Ok(true),
+            Err(rustix::io::Errno::NOENT) if allow_absent_unqualified => Ok(false),
+            Err(error) => Err(storage("remove attempt control", error)),
+        }
+    }
+
     fn read_attempt_header(&self, name: &str) -> Result<Option<AttemptRecord>, CoreError> {
-        let file = match openat(
+        let Some(mut file) = self.open_control_reader(
             self.attempts.as_ref(),
             name,
             OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-            Mode::empty(),
-        ) {
-            Ok(file) => File::from(file),
-            Err(rustix::io::Errno::NOENT) => return Ok(None),
-            Err(error) => return Err(storage("open attempt", error)),
+            true,
+            "open attempt",
+        )?
+        else {
+            return Ok(None);
         };
-        let metadata = file
-            .metadata()
-            .map_err(|error| storage("stat attempt", error))?;
-        let attempt_bound = u64::try_from(MAX_ATTEMPT_BYTES)
-            .map_err(|error| storage("attempt bound width", error))?;
-        if !metadata.is_file() || metadata.len() > attempt_bound {
-            return Err(corrupt("attempt record is not a bounded regular file"));
-        }
-        let expected = usize::try_from(metadata.len())
-            .map_err(|_conversion_error| corrupt("attempt byte width"))?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(
-                expected
-                    .checked_add(1)
-                    .ok_or_else(|| corrupt("attempt length overflow"))?,
-            )
-            .map_err(|error| storage("reserve attempt bytes", error))?;
-        let _read = file
-            .take(
-                attempt_bound
-                    .checked_add(1)
-                    .ok_or_else(|| corrupt("attempt bound overflow"))?,
-            )
-            .read_to_end(&mut bytes)
-            .map_err(|error| storage("read attempt", error))?;
-        if bytes.len() != expected {
-            return Err(corrupt("attempt record changed during read"));
-        }
-        let record: AttemptRecord = crate::channel_payloads::decode_cbor_exact(&bytes)
-            .map_err(|error| corrupt(&format!("decode attempt record: {error}")))?;
-        let canonical = crate::channel_payloads::encode_cbor(&record, "lexical attempt")?;
-        if canonical != bytes {
-            return Err(corrupt("attempt record CBOR is not canonical"));
-        }
-        if !strictly_sorted(&record.1) {
-            return Err(corrupt(
-                "attempt root inventory is not canonical or bounded",
-            ));
-        }
-        if record.0.identity_name() != name {
-            return Err(corrupt("attempt identity does not match its file name"));
-        }
-        Ok(Some(record))
+        let result = (|| {
+            let metadata = file.metadata()?;
+            let attempt_bound = u64::try_from(MAX_ATTEMPT_BYTES)
+                .map_err(|error| storage("attempt bound width", error))?;
+            if !metadata.is_file() || metadata.len() > attempt_bound {
+                return Err(corrupt("attempt record is not a bounded regular file"));
+            }
+            let expected = usize::try_from(metadata.len())
+                .map_err(|_conversion_error| corrupt("attempt byte width"))?;
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(
+                    expected
+                        .checked_add(1)
+                        .ok_or_else(|| corrupt("attempt length overflow"))?,
+                )
+                .map_err(|error| storage("reserve attempt bytes", error))?;
+            let _read = (&mut file)
+                .take(
+                    attempt_bound
+                        .checked_add(1)
+                        .ok_or_else(|| corrupt("attempt bound overflow"))?,
+                )
+                .read_to_end(&mut bytes)
+                .map_err(|error| admitted_io_error("read attempt", &error))?;
+            if bytes.len() != expected {
+                return Err(corrupt("attempt record changed during read"));
+            }
+            let record: AttemptRecord = crate::channel_payloads::decode_cbor_exact(&bytes)
+                .map_err(|error| corrupt(&format!("decode attempt record: {error}")))?;
+            let canonical = crate::channel_payloads::encode_cbor(&record, "lexical attempt")?;
+            if canonical != bytes {
+                return Err(corrupt("attempt record CBOR is not canonical"));
+            }
+            if !strictly_sorted(&record.1) {
+                return Err(corrupt(
+                    "attempt root inventory is not canonical or bounded",
+                ));
+            }
+            if record.0.identity_name() != name {
+                return Err(corrupt("attempt identity does not match its file name"));
+            }
+            Ok(Some(record))
+        })();
+        finish_control_read(file, result)
     }
 
-    fn open_attempt_log(&self, name: &str) -> Result<File, CoreError> {
+    fn open_attempt_log(&self, name: &str) -> Result<ControlReader, CoreError> {
         let head = self.read_journal_head(name)?;
         if head.pending.is_some() {
             return Err(corrupt(
                 "attempt journal has an unrecovered pending adoption",
             ));
         }
+        let file = self
+            .open_control_reader(
+                self.attempts.as_ref(),
+                &journal_name(name),
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                false,
+                "open attempt journal",
+            )?
+            .ok_or_else(|| corrupt("attempt journal is missing"))?;
+        let result = file.metadata().and_then(|metadata| {
+            if metadata.is_file()
+                && metadata.len() % JOURNAL_ENTRY_BYTES == 0
+                && metadata.len() == head.committed_length
+            {
+                Ok(())
+            } else {
+                Err(corrupt("attempt journal is not a complete regular file"))
+            }
+        });
+        if let Err(primary) = result {
+            return finish_control_read(file, Err(primary));
+        }
+        Ok(file)
+    }
+
+    fn begin_journal_update(
+        &self,
+        name: &str,
+        expected_length: u64,
+        target_end: u64,
+    ) -> Result<JournalWriter, CoreError> {
+        validate_control_object_lifetime(
+            self.control_output_admission.as_ref(),
+            self.object_lifetime.as_ref(),
+        )?;
+        // A physical Control parent without an update port refuses before
+        // opening a writable FD. A test-only unqualified parent may fall back.
+        let updates = self
+            .control_output_admission
+            .as_ref()
+            .map(PublicationControlOutputAdmission::file_updates)
+            .transpose()?
+            .flatten();
+        let journal_name = journal_name(name);
         let file = File::from(
             openat(
                 self.attempts.as_ref(),
-                journal_name(name).as_str(),
+                journal_name.as_str(),
                 OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
                 Mode::empty(),
             )
-            .map_err(|_conversion_error| corrupt("attempt journal is missing or inaccessible"))?,
+            .map_err(|error| storage("open pending attempt journal for update", error))?,
         );
+        if let (Some(updates), Some(control)) = (updates, &self.control_output_admission) {
+            let path = self
+                .state_root
+                .join(POOL_DIR)
+                .join(ATTEMPTS_DIR)
+                .join(journal_name);
+            return updates
+                .begin_update(&path, file, expected_length, target_end, control.clone())
+                .map(JournalWriter::Admitted);
+        }
         let metadata = file
             .metadata()
-            .map_err(|error| storage("stat attempt journal", error))?;
-        if !metadata.is_file()
-            || metadata.len() % JOURNAL_ENTRY_BYTES != 0
-            || metadata.len() != head.committed_length
-        {
-            return Err(corrupt("attempt journal is not a complete regular file"));
+            .map_err(|error| storage("stat pending attempt journal for update", error))?;
+        if !metadata.is_file() || metadata.len() != expected_length {
+            return Err(corrupt("pending attempt journal changed before update"));
         }
-        Ok(file)
+        Ok(JournalWriter::Unqualified(file))
+    }
+
+    fn sync_and_settle_journal(
+        &self,
+        journal: JournalWriter,
+        label: quanta_index_core::DiagnosticSyncLabelV1,
+        context: &str,
+    ) -> Result<(), CoreError> {
+        match journal {
+            JournalWriter::Unqualified(file) => crate::causal_profile::observed_sync_legacy(
+                self.sync_totals.as_deref(),
+                label,
+                || file.sync_all(),
+            )
+            .map_err(|error| storage(context, error)),
+            JournalWriter::Admitted(mutation) => {
+                let started = self.sync_totals.as_ref().map(|_| Instant::now());
+                let result = mutation.sync_and_settle();
+                if let (Some(totals), Some(started)) = (self.sync_totals.as_ref(), started) {
+                    match u64::try_from(started.elapsed().as_nanos()) {
+                        Ok(elapsed_ns) => totals.record(label, Some(elapsed_ns), result.is_ok()),
+                        Err(_overflow) => totals.record(label, None, result.is_ok()),
+                    }
+                }
+                result
+            }
+        }
     }
 
     fn write_journal_head(&self, name: &str, head: &JournalHead) -> Result<(), CoreError> {
@@ -1695,87 +3469,88 @@ impl ObjectStore {
     }
 
     fn read_journal_head(&self, name: &str) -> Result<JournalHead, CoreError> {
-        let mut file = File::from(
-            openat(
+        let mut file = self
+            .open_control_reader(
                 self.attempts.as_ref(),
-                journal_head_name(name).as_str(),
+                &journal_head_name(name),
                 OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-                Mode::empty(),
-            )
-            .map_err(|error| corrupt(&format!("attempt journal head absent: {error}")))?,
-        );
-        let metadata = file
-            .metadata()
-            .map_err(|error| storage("stat attempt journal head", error))?;
-        if !metadata.is_file() || metadata.len() != 154 {
-            return Err(corrupt("attempt journal head is not a fixed regular file"));
-        }
-        let mut bytes = [0_u8; 154];
-        file.read_exact(&mut bytes)
-            .map_err(|error| storage("read attempt journal head", error))?;
-        let committed = bytes
-            .get(..122)
-            .ok_or_else(|| corrupt("journal head truncated"))?;
-        let expected: [u8; 32] = Sha256::digest(committed).into();
-        if committed.get(..8) != Some(JOURNAL_HEAD_MAGIC.as_slice())
-            || bytes.get(122..) != Some(expected.as_slice())
-        {
-            return Err(corrupt("attempt journal head digest or magic differs"));
-        }
-        let length = u64::from_be_bytes(
-            committed
-                .get(8..16)
-                .ok_or_else(|| corrupt("journal head length truncated"))?
+                false,
+                "open attempt journal head",
+            )?
+            .ok_or_else(|| corrupt("attempt journal head absent"))?;
+        let result = (|| {
+            let metadata = file.metadata()?;
+            if !metadata.is_file() || metadata.len() != 154 {
+                return Err(corrupt("attempt journal head is not a fixed regular file"));
+            }
+            let mut bytes = [0_u8; 154];
+            file.read_exact(&mut bytes)
+                .map_err(|error| admitted_io_error("read attempt journal head", &error))?;
+            let committed = bytes
+                .get(..122)
+                .ok_or_else(|| corrupt("journal head truncated"))?;
+            let expected: [u8; 32] = Sha256::digest(committed).into();
+            if committed.get(..8) != Some(JOURNAL_HEAD_MAGIC.as_slice())
+                || bytes.get(122..) != Some(expected.as_slice())
+            {
+                return Err(corrupt("attempt journal head digest or magic differs"));
+            }
+            let length = u64::from_be_bytes(
+                committed
+                    .get(8..16)
+                    .ok_or_else(|| corrupt("journal head length truncated"))?
+                    .try_into()
+                    .map_err(|_conversion_error| corrupt("journal head length width"))?,
+            );
+            let committed_chain: [u8; 32] = committed
+                .get(16..48)
+                .ok_or_else(|| corrupt("journal chain truncated"))?
                 .try_into()
-                .map_err(|_conversion_error| corrupt("journal head length width"))?,
-        );
-        let committed_chain: [u8; 32] = committed
-            .get(16..48)
-            .ok_or_else(|| corrupt("journal chain truncated"))?
-            .try_into()
-            .map_err(|_conversion_error| corrupt("journal chain width"))?;
-        if length % JOURNAL_ENTRY_BYTES != 0 {
-            return Err(corrupt("attempt journal head length is not aligned"));
-        }
-        let pending = match committed
-            .get(48)
-            .copied()
-            .ok_or_else(|| corrupt("journal pending tag absent"))?
-        {
-            0 => {
-                if committed
-                    .get(49..90)
-                    .is_none_or(|bytes| bytes.iter().any(|byte| *byte != 0))
-                {
-                    return Err(corrupt("clean journal head has nonzero pending bytes"));
-                }
-                None
+                .map_err(|_conversion_error| corrupt("journal chain width"))?;
+            if length % JOURNAL_ENTRY_BYTES != 0 {
+                return Err(corrupt("attempt journal head length is not aligned"));
             }
-            1 => {
-                let mut offset = 0;
-                Some(decode_ref(
-                    committed
+            let pending = match committed
+                .get(48)
+                .copied()
+                .ok_or_else(|| corrupt("journal pending tag absent"))?
+            {
+                0 => {
+                    if committed
                         .get(49..90)
-                        .ok_or_else(|| corrupt("pending reference truncated"))?,
-                    &mut offset,
-                )?)
+                        .is_none_or(|bytes| bytes.iter().any(|byte| *byte != 0))
+                    {
+                        return Err(corrupt("clean journal head has nonzero pending bytes"));
+                    }
+                    None
+                }
+                1 => {
+                    let mut offset = 0;
+                    Some(decode_ref(
+                        committed
+                            .get(49..90)
+                            .ok_or_else(|| corrupt("pending reference truncated"))?,
+                        &mut offset,
+                    )?)
+                }
+                _ => return Err(corrupt("unknown journal pending tag")),
+            };
+            let expected_chain: [u8; 32] = committed
+                .get(90..122)
+                .ok_or_else(|| corrupt("expected journal chain truncated"))?
+                .try_into()
+                .map_err(|_conversion_error| corrupt("expected journal chain width"))?;
+            if pending.is_none() && expected_chain != committed_chain {
+                return Err(corrupt("clean journal head chains differ"));
             }
-            _ => return Err(corrupt("unknown journal pending tag")),
-        };
-        let expected_chain: [u8; 32] = committed
-            .get(90..122)
-            .ok_or_else(|| corrupt("expected journal chain truncated"))?
-            .try_into()
-            .map_err(|_conversion_error| corrupt("expected journal chain width"))?;
-        if pending.is_none() && expected_chain != committed_chain {
-            return Err(corrupt("clean journal head chains differ"));
-        }
-        Ok(JournalHead {
-            committed_length: length,
-            committed_chain,
-            pending,
-            expected_chain,
-        })
+            Ok(JournalHead {
+                committed_length: length,
+                committed_chain,
+                pending,
+                expected_chain,
+            })
+        })();
+        finish_control_read(file, result)
     }
 
     fn visit_attempt_log(
@@ -1784,175 +3559,185 @@ impl ObjectStore {
         mut visitor: impl FnMut(&ObjectRef) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
         let mut file = self.open_attempt_log(name)?;
-        let length = file
-            .metadata()
-            .map_err(|error| storage("stat attempt journal", error))?
-            .len();
-        let mut previous = journal_seed(name);
-        let mut entry = [0_u8; 73];
-        let entries = length
-            .checked_div(JOURNAL_ENTRY_BYTES)
-            .ok_or_else(|| corrupt("attempt journal entry width"))?;
-        for _ in 0..entries {
-            file.read_exact(&mut entry)
-                .map_err(|error| storage("read attempt journal", error))?;
-            let mut hasher = Sha256::new();
-            hasher.update(b"lexical-attempt-adoption-v1");
-            hasher.update(previous);
-            let reference_bytes = entry
-                .get(..41)
-                .ok_or_else(|| corrupt("attempt journal reference truncated"))?;
-            hasher.update(reference_bytes);
-            let expected: [u8; 32] = hasher.finalize().into();
-            if entry
-                .get(41..)
-                .ok_or_else(|| corrupt("attempt journal chain absent"))?
-                != expected
-            {
-                return Err(corrupt("attempt journal chain differs"));
+        let result = (|| {
+            let length = file.metadata()?.len();
+            let mut previous = journal_seed(name);
+            let mut entry = [0_u8; 73];
+            let entries = length
+                .checked_div(JOURNAL_ENTRY_BYTES)
+                .ok_or_else(|| corrupt("attempt journal entry width"))?;
+            for _ in 0..entries {
+                file.read_exact(&mut entry)
+                    .map_err(|error| admitted_io_error("read attempt journal", &error))?;
+                let mut hasher = Sha256::new();
+                hasher.update(b"lexical-attempt-adoption-v1");
+                hasher.update(previous);
+                let reference_bytes = entry
+                    .get(..41)
+                    .ok_or_else(|| corrupt("attempt journal reference truncated"))?;
+                hasher.update(reference_bytes);
+                let expected: [u8; 32] = hasher.finalize().into();
+                if entry
+                    .get(41..)
+                    .ok_or_else(|| corrupt("attempt journal chain absent"))?
+                    != expected
+                {
+                    return Err(corrupt("attempt journal chain differs"));
+                }
+                previous = expected;
+                let mut offset = 0;
+                visitor(&decode_ref(reference_bytes, &mut offset)?)?;
             }
-            previous = expected;
-            let mut offset = 0;
-            visitor(&decode_ref(reference_bytes, &mut offset)?)?;
-        }
-        let head = self.read_journal_head(name)?;
-        if previous != head.committed_chain {
-            return Err(corrupt("attempt journal final chain differs from head"));
-        }
-        Ok(())
+            let head = self.read_journal_head(name)?;
+            if previous != head.committed_chain {
+                return Err(corrupt("attempt journal final chain differs from head"));
+            }
+            Ok(())
+        })();
+        finish_control_read(file, result)
     }
 
     /// Recover only adoptions explicitly recorded by a pending head. Missing
     /// bytes from an earlier completed entry remain corruption.
     fn recover_attempt_log(&self, name: &str) -> Result<(), CoreError> {
-        let header = match openat(
+        let Some(header) = self.open_control_reader(
             self.attempts.as_ref(),
             name,
             OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-        ) {
-            Ok(header) => File::from(header),
-            Err(rustix::io::Errno::NOENT) => return Ok(()),
-            Err(error) => return Err(storage("probe attempt recovery header", error)),
-        };
-        if !header
-            .metadata()
-            .map_err(|error| storage("stat recovery header", error))?
-            .is_file()
-        {
-            return Err(corrupt("attempt recovery header is not regular"));
-        }
-        let head = self.read_journal_head(name)?;
-        let Some(pending) = head.pending.as_ref() else {
-            let _complete = self.open_attempt_log(name)?;
+            true,
+            "probe attempt recovery header",
+        )?
+        else {
             return Ok(());
         };
-        let mut journal = File::from(
-            openat(
-                self.attempts.as_ref(),
-                journal_name(name).as_str(),
-                OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-                Mode::empty(),
-            )
-            .map_err(|error| corrupt(&format!("pending attempt journal absent: {error}")))?,
-        );
-        let length = journal
-            .metadata()
-            .map_err(|error| storage("stat pending journal", error))?
-            .len();
-        let pending_references = if pending.kind == ObjectKind::AttemptBatch {
-            let (references, payload) = self.read_object(pending, None)?;
-            if references.is_empty() || references.len() > MAX_ADOPTION_BATCH_REFS {
-                return Err(corrupt("pending batch reference count differs"));
+        let result = header.metadata().and_then(|metadata| {
+            if metadata.is_file() {
+                Ok(())
+            } else {
+                Err(corrupt("attempt recovery header is not regular"))
             }
-            let expected_payload = batch_manifest_payload(name, &head, references.len())?;
-            if payload != expected_payload {
-                return Err(corrupt("pending batch manifest binding differs"));
-            }
-            for reference in &references {
-                let _verified = self.read_object(reference, None)?;
-            }
-            references
-        } else {
-            vec![pending.clone()]
+        });
+        finish_control_read(header, result)?;
+        let head = self.read_journal_head(name)?;
+        let Some(pending) = head.pending.as_ref() else {
+            self.open_attempt_log(name)?.retire()?;
+            return Ok(());
         };
-        let (expected_entry, expected_chain) =
-            adoption_entries(head.committed_chain, &pending_references)?;
-        if expected_chain != head.expected_chain {
-            return Err(corrupt("pending journal head chain is invalid"));
-        }
-        let expected_length = head
-            .committed_length
-            .checked_add(
-                u64::try_from(expected_entry.len())
-                    .map_err(|error| storage("pending entry width", error))?,
-            )
-            .ok_or_else(|| corrupt("pending journal length overflow"))?;
-        if length < head.committed_length || length > expected_length {
-            return Err(corrupt("journal lost a completed entry or has extra bytes"));
-        }
-        let _offset = journal
-            .seek(SeekFrom::Start(0))
-            .map_err(|error| storage("seek journal prefix", error))?;
-        let mut previous = journal_seed(name);
-        let mut entry = [0_u8; 73];
-        let prefix_entries = head
-            .committed_length
-            .checked_div(JOURNAL_ENTRY_BYTES)
-            .ok_or_else(|| corrupt("journal prefix entry width"))?;
-        for _ in 0..prefix_entries {
-            journal
-                .read_exact(&mut entry)
-                .map_err(|error| storage("read journal prefix", error))?;
-            let mut hasher = Sha256::new();
-            hasher.update(b"lexical-attempt-adoption-v1");
-            hasher.update(previous);
-            hasher.update(
-                entry
-                    .get(..41)
-                    .ok_or_else(|| corrupt("prefix entry truncated"))?,
-            );
-            let expected: [u8; 32] = hasher.finalize().into();
-            if entry.get(41..) != Some(expected.as_slice()) {
-                return Err(corrupt("completed journal prefix chain differs"));
+        let mut journal = self
+            .open_control_reader(
+                self.attempts.as_ref(),
+                &journal_name(name),
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                false,
+                "open pending attempt journal",
+            )?
+            .ok_or_else(|| corrupt("pending attempt journal absent"))?;
+        let result = (|| {
+            let length = journal.metadata()?.len();
+            let pending_references = if pending.kind == ObjectKind::AttemptBatch {
+                let (references, payload) = self.read_object(pending, None)?;
+                if references.is_empty() || references.len() > MAX_ADOPTION_BATCH_REFS {
+                    return Err(corrupt("pending batch reference count differs"));
+                }
+                let expected_payload = batch_manifest_payload(name, &head, references.len())?;
+                if payload != expected_payload {
+                    return Err(corrupt("pending batch manifest binding differs"));
+                }
+                for reference in &references {
+                    let _verified = self.read_object(reference, None)?;
+                }
+                references
+            } else {
+                vec![pending.clone()]
+            };
+            let (expected_entry, expected_chain) =
+                adoption_entries(head.committed_chain, &pending_references)?;
+            if expected_chain != head.expected_chain {
+                return Err(corrupt("pending journal head chain is invalid"));
             }
-            previous = expected;
-        }
-        if previous != head.committed_chain {
-            return Err(corrupt("completed journal prefix differs from head"));
-        }
-        let tail_len = usize::try_from(length.saturating_sub(head.committed_length))
-            .map_err(|_conversion_error| corrupt("pending journal tail width"))?;
-        let mut observed_tail = Vec::new();
-        observed_tail
-            .try_reserve_exact(tail_len)
-            .map_err(|error| storage("reserve journal tail", error))?;
-        let _read = journal
-            .read_to_end(&mut observed_tail)
-            .map_err(|error| storage("read pending journal tail", error))?;
-        if observed_tail
-            != expected_entry
-                .get(..tail_len)
-                .ok_or_else(|| corrupt("pending tail exceeds entry"))?
-        {
-            return Err(corrupt("pending journal tail differs from head"));
-        }
-        if length != expected_length {
-            journal
-                .set_len(head.committed_length)
-                .map_err(|error| storage("truncate incomplete pending entry", error))?;
+            let expected_length = head
+                .committed_length
+                .checked_add(
+                    u64::try_from(expected_entry.len())
+                        .map_err(|error| storage("pending entry width", error))?,
+                )
+                .ok_or_else(|| corrupt("pending journal length overflow"))?;
+            if length < head.committed_length || length > expected_length {
+                return Err(corrupt("journal lost a completed entry or has extra bytes"));
+            }
             let _offset = journal
-                .seek(SeekFrom::End(0))
-                .map_err(|error| storage("seek repaired journal end", error))?;
-            journal
-                .write_all(&expected_entry)
-                .map_err(|error| storage("restore pending adoption", error))?;
+                .seek(SeekFrom::Start(0))
+                .map_err(|error| admitted_io_error("seek journal prefix", &error))?;
+            let mut previous = journal_seed(name);
+            let mut entry = [0_u8; 73];
+            let prefix_entries = head
+                .committed_length
+                .checked_div(JOURNAL_ENTRY_BYTES)
+                .ok_or_else(|| corrupt("journal prefix entry width"))?;
+            for _ in 0..prefix_entries {
+                journal
+                    .read_exact(&mut entry)
+                    .map_err(|error| admitted_io_error("read journal prefix", &error))?;
+                let mut hasher = Sha256::new();
+                hasher.update(b"lexical-attempt-adoption-v1");
+                hasher.update(previous);
+                hasher.update(
+                    entry
+                        .get(..41)
+                        .ok_or_else(|| corrupt("prefix entry truncated"))?,
+                );
+                let expected: [u8; 32] = hasher.finalize().into();
+                if entry.get(41..) != Some(expected.as_slice()) {
+                    return Err(corrupt("completed journal prefix chain differs"));
+                }
+                previous = expected;
+            }
+            if previous != head.committed_chain {
+                return Err(corrupt("completed journal prefix differs from head"));
+            }
+            let tail_len = usize::try_from(length.saturating_sub(head.committed_length))
+                .map_err(|_conversion_error| corrupt("pending journal tail width"))?;
+            let mut observed_tail = Vec::new();
+            observed_tail
+                .try_reserve_exact(tail_len)
+                .map_err(|error| storage("reserve journal tail", error))?;
+            let _read = journal
+                .read_to_end(&mut observed_tail)
+                .map_err(|error| admitted_io_error("read pending journal tail", &error))?;
+            if observed_tail
+                != expected_entry
+                    .get(..tail_len)
+                    .ok_or_else(|| corrupt("pending tail exceeds entry"))?
+            {
+                return Err(corrupt("pending journal tail differs from head"));
+            }
+            Ok((length, expected_length, expected_entry, expected_chain))
+        })();
+        let (length, expected_length, expected_entry, expected_chain) =
+            finish_control_read(journal, result)?;
+        let mut journal = self.begin_journal_update(name, length, expected_length)?;
+        let repair = (|| {
+            if length != expected_length {
+                journal.set_len(head.committed_length)?;
+                let _offset = journal
+                    .seek(SeekFrom::End(0))
+                    .map_err(|error| admitted_io_error("seek repaired journal end", &error))?;
+                journal
+                    .write_all(&expected_entry)
+                    .map_err(|error| admitted_io_error("restore pending adoption", &error))?;
+            }
+            Ok::<(), CoreError>(())
+        })();
+        if let Err(primary) = repair {
+            return Err(retire_failed_journal(journal, primary));
         }
         // A complete pending entry may have been written before a crash but
         // never synced. Make the log durable before clearing the pending head.
-        journal
-            .sync_all()
-            .map_err(|error| storage("sync restored adoption", error))?;
+        self.sync_and_settle_journal(
+            journal,
+            quanta_index_core::DiagnosticSyncLabelV1::PoolAdoptionJournalFull,
+            "sync restored adoption",
+        )?;
         self.write_journal_head(name, &JournalHead::clean(expected_length, expected_chain))
     }
 
@@ -1982,45 +3767,49 @@ impl ObjectStore {
     }
 
     fn read_retirement_marker(&self, name: &str) -> Result<Option<[u8; 32]>, CoreError> {
-        let mut file = match openat(
+        let Some(mut file) = self.open_control_reader(
             self.attempts.as_ref(),
-            retirement_name(name).as_str(),
+            &retirement_name(name),
             OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-            Mode::empty(),
-        ) {
-            Ok(file) => File::from(file),
-            Err(rustix::io::Errno::NOENT) => return Ok(None),
-            Err(error) => return Err(storage("open retirement marker", error)),
+            true,
+            "open retirement marker",
+        )?
+        else {
+            return Ok(None);
         };
-        let metadata = file
-            .metadata()
-            .map_err(|error| storage("stat retirement marker", error))?;
-        if !metadata.is_file() || metadata.len() != 72 {
-            return Err(corrupt("retirement marker is not a fixed regular file"));
-        }
-        let mut bytes = [0_u8; 72];
-        file.read_exact(&mut bytes)
-            .map_err(|error| storage("read retirement marker", error))?;
-        let body = bytes
-            .get(..40)
-            .ok_or_else(|| corrupt("retirement marker truncated"))?;
-        let digest: [u8; 32] = Sha256::digest(body).into();
-        if body.get(..8) != Some(RETIREMENT_MAGIC.as_slice())
-            || bytes.get(40..) != Some(digest.as_slice())
-        {
-            return Err(corrupt("retirement marker digest or magic differs"));
-        }
-        Ok(Some(
-            body.get(8..40)
-                .ok_or_else(|| corrupt("retirement header digest absent"))?
-                .try_into()
-                .map_err(|_conversion_error| corrupt("retirement header digest width"))?,
-        ))
+        let result = (|| {
+            let metadata = file.metadata()?;
+            if !metadata.is_file() || metadata.len() != 72 {
+                return Err(corrupt("retirement marker is not a fixed regular file"));
+            }
+            let mut bytes = [0_u8; 72];
+            file.read_exact(&mut bytes)
+                .map_err(|error| admitted_io_error("read retirement marker", &error))?;
+            let body = bytes
+                .get(..40)
+                .ok_or_else(|| corrupt("retirement marker truncated"))?;
+            let digest: [u8; 32] = Sha256::digest(body).into();
+            if body.get(..8) != Some(RETIREMENT_MAGIC.as_slice())
+                || bytes.get(40..) != Some(digest.as_slice())
+            {
+                return Err(corrupt("retirement marker digest or magic differs"));
+            }
+            Ok(Some(
+                body.get(8..40)
+                    .ok_or_else(|| corrupt("retirement header digest absent"))?
+                    .try_into()
+                    .map_err(|_conversion_error| corrupt("retirement header digest width"))?,
+            ))
+        })();
+        finish_control_read(file, result)
     }
 
     /// Complete a previously authorized retirement. The marker is durable
-    /// before any of the three mutable attempt files are unlinked.
+    /// before any of the mutable attempt files are unlinked.
     fn recover_retirement_locked(&self, name: &str) -> Result<(), CoreError> {
+        // A previous unlink may have removed even the marker before its
+        // deletion ticket settled, so drain before probing any pathname.
+        self.reconcile_control_deletions()?;
         let Some(expected_header) = self.read_retirement_marker(name)? else {
             return Ok(());
         };
@@ -2031,21 +3820,18 @@ impl ObjectStore {
             }
         }
         let _epoch = self.bump_epoch_locked()?;
-        for component in [name.to_owned(), journal_name(name), journal_head_name(name)] {
-            match unlinkat(self.attempts.as_ref(), component.as_str(), AtFlags::empty()) {
-                Ok(()) | Err(rustix::io::Errno::NOENT) => {}
-                Err(error) => return Err(storage("recover attempt retirement", error)),
-            }
+        for component in [
+            name.to_owned(),
+            journal_name(name),
+            journal_head_name(name),
+            hard_scan_checkpoint::sidecar_name(name),
+        ] {
+            let _removed = self.remove_attempt_control_locked(&component, true)?;
         }
         self.attempts
             .sync_all()
             .map_err(|error| storage("sync recovered attempt retirement", error))?;
-        unlinkat(
-            self.attempts.as_ref(),
-            retirement_name(name).as_str(),
-            AtFlags::empty(),
-        )
-        .map_err(|error| storage("remove retirement marker", error))?;
+        let _removed = self.remove_attempt_control_locked(&retirement_name(name), false)?;
         self.attempts
             .sync_all()
             .map_err(|error| storage("sync retirement marker removal", error))
@@ -2058,7 +3844,31 @@ impl ObjectStore {
         bytes: &[u8],
         purpose: AtomicPurpose,
     ) -> Result<(), CoreError> {
-        self.write_atomic_at_inner(parent, name, bytes, purpose, AtomicSync::Full)
+        validate_control_object_lifetime(
+            self.control_output_admission.as_ref(),
+            self.object_lifetime.as_ref(),
+        )?;
+        let output = self
+            .control_output_admission
+            .as_ref()
+            .map(|admission| {
+                admission.reserve(PublicationOutputReservation::new(
+                    PublicationOutputClass::Control,
+                    u64::try_from(bytes.len())
+                        .map_err(|error| storage("control output width", error))?
+                        .max(1),
+                    1,
+                )?)
+            })
+            .transpose()?;
+        self.write_atomic_at_inner(
+            parent,
+            name,
+            bytes,
+            purpose,
+            AtomicSync::Full,
+            AtomicWriteAdmission { pool: None, output },
+        )
     }
 
     fn write_atomic_at_inner(
@@ -2068,88 +3878,306 @@ impl ObjectStore {
         bytes: &[u8],
         purpose: AtomicPurpose,
         sync: AtomicSync,
+        admission: AtomicWriteAdmission,
     ) -> Result<(), CoreError> {
-        use std::sync::atomic::{AtomicU64, Ordering};
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let AtomicWriteAdmission {
+            pool: mut permit,
+            mut output,
+        } = admission;
+        if output.is_some() && !matches!(sync, AtomicSync::Full) {
+            return Err(invalid("admitted output requires full object sync"));
+        }
         let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let temp = format!(".{name}.tmp-{}-{sequence}", std::process::id());
-        let mut file = File::from(
-            openat(
-                parent,
-                temp.as_str(),
-                OFlags::WRONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::CREATE | OFlags::EXCL,
-                Mode::RUSR | Mode::WUSR,
-            )
-            .map_err(|error| storage("create object temporary", error))?,
+        let encoded_width = u64::try_from(bytes.len())
+            .map_err(|_error| invalid("encoded object width exceeds u64"))?;
+        if let Some(permit) = &permit {
+            permit.check_new_file_admitted()?;
+        }
+        let output_paths = if output.is_some() {
+            let directory = match purpose {
+                AtomicPurpose::PoolObject => {
+                    let prefix = name
+                        .get(..2)
+                        .ok_or_else(|| invalid("object digest prefix"))?;
+                    self.state_root
+                        .join(POOL_DIR)
+                        .join(OBJECTS_DIR)
+                        .join(prefix)
+                }
+                AtomicPurpose::Other
+                | AtomicPurpose::AttemptJournal
+                | AtomicPurpose::HardScanCheckpoint => {
+                    if std::ptr::eq(parent, self.pool.as_ref()) {
+                        self.state_root.join(POOL_DIR)
+                    } else if std::ptr::eq(parent, self.attempts.as_ref()) {
+                        self.state_root.join(POOL_DIR).join(ATTEMPTS_DIR)
+                    } else {
+                        return Err(invalid("admitted control parent differs from pool"));
+                    }
+                }
+            };
+            Some((directory.join(&temp), directory.join(name)))
+        } else {
+            None
+        };
+        if let Some(output) = &mut output {
+            let (staging, target) = output_paths
+                .as_ref()
+                .ok_or_else(|| invalid("admitted object paths missing"))?;
+            output.bind_output(staging, target)?;
+            output.creation_started()?;
+        }
+        let opened = openat(
+            parent,
+            temp.as_str(),
+            OFlags::WRONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::CREATE | OFlags::EXCL,
+            Mode::RUSR | Mode::WUSR,
         );
-        #[cfg(test)]
-        reach_atomic_cut(purpose, 0, crate::publication_faults::Side::Before)?;
-        file.write_all(bytes)
-            .map_err(|error| storage("write object temporary", error))?;
-        #[cfg(test)]
-        reach_atomic_cut(purpose, 0, crate::publication_faults::Side::After)?;
-        #[cfg(test)]
-        reach_atomic_cut(purpose, 1, crate::publication_faults::Side::Before)?;
-        let batched_data = cfg!(target_vendor = "apple")
-            && matches!(purpose, AtomicPurpose::PoolObject)
-            && matches!(sync, AtomicSync::BatchedPoolData);
-        if batched_data {
-            crate::causal_profile::observed_sync_legacy(
-                self.sync_totals.as_deref(),
-                quanta_index_core::DiagnosticSyncLabelV1::PoolDataFilePosix,
-                || fsync(&file).map_err(std::io::Error::from),
-            )
-            .map_err(|error| storage("sync batched object temporary", error))?;
-        } else {
-            let label = match purpose {
-                AtomicPurpose::PoolObject => {
-                    quanta_index_core::DiagnosticSyncLabelV1::PoolObjectFileFull
+        let mut file = match opened {
+            Ok(file) => File::from(file),
+            Err(error) => {
+                let mut primary = storage("create object temporary", error);
+                if let Some(output) = &mut output {
+                    let absence = (|| {
+                        match rustix::fs::statat(parent, temp.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+                            Err(rustix::io::Errno::NOENT) => {}
+                            Ok(_) => return Err(invalid("failed-create temporary is occupied")),
+                            Err(inspect) => {
+                                return Err(storage("inspect failed-create temporary", inspect));
+                            }
+                        }
+                        parent
+                            .sync_all()
+                            .map_err(|sync| storage("sync failed-create parent", sync))?;
+                        output.confirmed_uncreated_absent_and_synced()
+                    })();
+                    if let Err(cleanup) = absence {
+                        primary = with_custody_context(primary, cleanup);
+                    }
                 }
-                AtomicPurpose::AttemptJournal | AtomicPurpose::Other => {
-                    quanta_index_core::DiagnosticSyncLabelV1::PoolControlFileFull
-                }
+                return Err(primary);
+            }
+        };
+        let mut published = false;
+        let mut created_confirmed = false;
+        let mut gate_conflict = false;
+        let operation = (|| {
+            if let Some(output) = &mut output {
+                let (staging, _target) = output_paths
+                    .as_ref()
+                    .ok_or_else(|| invalid("admitted object paths missing"))?;
+                output.created(&file, staging)?;
+                created_confirmed = true;
+            }
+            if let Some(permit) = &mut permit {
+                permit.temp_created(self.pool_temp_identity(&temp))?;
+            }
+            #[cfg(test)]
+            reach_atomic_cut(purpose, 0, crate::publication_faults::Side::Before)?;
+            #[cfg(test)]
+            let write = if matches!(purpose, AtomicPurpose::PoolObject) {
+                crate::publication_faults::write_pool_object(&mut file, bytes)
+            } else {
+                file.write_all(bytes)
             };
-            crate::causal_profile::observed_sync_legacy(self.sync_totals.as_deref(), label, || {
-                file.sync_all()
-            })
-            .map_err(|error| storage("sync object temporary", error))?;
-        }
-        #[cfg(test)]
-        reach_atomic_cut(purpose, 1, crate::publication_faults::Side::After)?;
-        #[cfg(test)]
-        reach_atomic_cut(purpose, 2, crate::publication_faults::Side::Before)?;
-        renameat(parent, temp.as_str(), parent, name)
-            .map_err(|error| storage("publish object", error))?;
-        #[cfg(test)]
-        reach_atomic_cut(purpose, 2, crate::publication_faults::Side::After)?;
-        #[cfg(test)]
-        reach_atomic_cut(purpose, 3, crate::publication_faults::Side::Before)?;
-        if batched_data {
-            crate::causal_profile::observed_sync_legacy(
-                self.sync_totals.as_deref(),
-                quanta_index_core::DiagnosticSyncLabelV1::PoolDataShardPosix,
-                || fsync(parent).map_err(std::io::Error::from),
-            )
-            .map_err(|error| storage("sync batched object directory", error))?;
-        } else {
-            let label = match purpose {
-                AtomicPurpose::PoolObject => {
-                    quanta_index_core::DiagnosticSyncLabelV1::PoolObjectShardFull
+            #[cfg(not(test))]
+            let write = file.write_all(bytes);
+            write.map_err(|error| storage("write object temporary", error))?;
+            #[cfg(test)]
+            reach_atomic_cut(purpose, 0, crate::publication_faults::Side::After)?;
+            #[cfg(test)]
+            reach_atomic_cut(purpose, 1, crate::publication_faults::Side::Before)?;
+            let batched_data = cfg!(target_vendor = "apple")
+                && matches!(purpose, AtomicPurpose::PoolObject)
+                && matches!(sync, AtomicSync::BatchedPoolData);
+            if batched_data {
+                crate::causal_profile::observed_sync_legacy(
+                    self.sync_totals.as_deref(),
+                    quanta_index_core::DiagnosticSyncLabelV1::PoolDataFilePosix,
+                    || {
+                        #[cfg(test)]
+                        crate::publication_faults::reach(
+                            crate::publication_faults::Cut::PoolObjectFileSyncCall,
+                            crate::publication_faults::Side::Before,
+                        )?;
+                        fsync(&file).map_err(std::io::Error::from)
+                    },
+                )
+                .map_err(|error| storage("sync batched object temporary", error))?;
+            } else {
+                let label = match purpose {
+                    AtomicPurpose::PoolObject => {
+                        quanta_index_core::DiagnosticSyncLabelV1::PoolObjectFileFull
+                    }
+                    AtomicPurpose::AttemptJournal
+                    | AtomicPurpose::HardScanCheckpoint
+                    | AtomicPurpose::Other => {
+                        quanta_index_core::DiagnosticSyncLabelV1::PoolControlFileFull
+                    }
+                };
+                crate::causal_profile::observed_sync_legacy(
+                    self.sync_totals.as_deref(),
+                    label,
+                    || {
+                        #[cfg(test)]
+                        if matches!(purpose, AtomicPurpose::PoolObject) {
+                            crate::publication_faults::reach(
+                                crate::publication_faults::Cut::PoolObjectFileSyncCall,
+                                crate::publication_faults::Side::Before,
+                            )?;
+                        }
+                        file.sync_all()
+                    },
+                )
+                .map_err(|error| storage("sync object temporary", error))?;
+            }
+            #[cfg(test)]
+            reach_atomic_cut(purpose, 1, crate::publication_faults::Side::After)?;
+            #[cfg(test)]
+            reach_atomic_cut(purpose, 2, crate::publication_faults::Side::Before)?;
+            if let Some(output) = &mut output {
+                output.before_replace()?;
+                if matches!(purpose, AtomicPurpose::PoolObject) || name == GATE_FILE {
+                    let rename = rustix::fs::renameat_with(
+                        parent,
+                        temp.as_str(),
+                        parent,
+                        name,
+                        rustix::fs::RenameFlags::NOREPLACE,
+                    );
+                    if name == GATE_FILE && matches!(rename, Err(rustix::io::Errno::EXIST)) {
+                        gate_conflict = true;
+                    }
+                    rename.map_err(|error| {
+                        storage(
+                            if name == GATE_FILE {
+                                "publish lifecycle gate"
+                            } else {
+                                "publish object"
+                            },
+                            error,
+                        )
+                    })?;
+                } else {
+                    renameat(parent, temp.as_str(), parent, name)
+                        .map_err(|error| storage("publish control", error))?;
                 }
-                AtomicPurpose::AttemptJournal | AtomicPurpose::Other => {
-                    quanta_index_core::DiagnosticSyncLabelV1::PoolControlParentFull
+            } else {
+                renameat(parent, temp.as_str(), parent, name)
+                    .map_err(|error| storage("publish object", error))?;
+            }
+            published = true;
+            if let Some(permit) = &mut permit {
+                permit.canonical_renamed()?;
+            }
+            #[cfg(test)]
+            reach_atomic_cut(purpose, 2, crate::publication_faults::Side::After)?;
+            #[cfg(test)]
+            reach_atomic_cut(purpose, 3, crate::publication_faults::Side::Before)?;
+            if batched_data {
+                crate::causal_profile::observed_sync_legacy(
+                    self.sync_totals.as_deref(),
+                    quanta_index_core::DiagnosticSyncLabelV1::PoolDataShardPosix,
+                    || fsync(parent).map_err(std::io::Error::from),
+                )
+                .map_err(|error| storage("sync batched object directory", error))?;
+            } else {
+                let label = match purpose {
+                    AtomicPurpose::PoolObject => {
+                        quanta_index_core::DiagnosticSyncLabelV1::PoolObjectShardFull
+                    }
+                    AtomicPurpose::AttemptJournal
+                    | AtomicPurpose::HardScanCheckpoint
+                    | AtomicPurpose::Other => {
+                        quanta_index_core::DiagnosticSyncLabelV1::PoolControlParentFull
+                    }
+                };
+                crate::causal_profile::observed_sync_legacy(
+                    self.sync_totals.as_deref(),
+                    label,
+                    || parent.sync_all(),
+                )
+                .map_err(|error| storage("sync object directory", error))?;
+            }
+            #[cfg(test)]
+            reach_atomic_cut(purpose, 3, crate::publication_faults::Side::After)?;
+            #[cfg(not(test))]
+            let _: AtomicPurpose = purpose;
+            Ok::<(), CoreError>(())
+        })();
+        match operation {
+            Ok(()) => {
+                if let Some(admitted) = &mut output {
+                    admitted.committed(file, encoded_width)?;
                 }
-            };
-            crate::causal_profile::observed_sync_legacy(self.sync_totals.as_deref(), label, || {
-                parent.sync_all()
-            })
-            .map_err(|error| storage("sync object directory", error))?;
+                Ok(())
+            }
+            Err(error) => {
+                let mut primary = error;
+                if let Some(admitted) = &mut output {
+                    let absence = if published {
+                        None
+                    } else {
+                        Some((|| {
+                            match unlinkat(parent, temp.as_str(), AtFlags::empty()) {
+                                Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+                                Err(unlink) => {
+                                    return Err(storage("unlink failed object temporary", unlink));
+                                }
+                            }
+                            parent
+                                .sync_all()
+                                .map_err(|sync| storage("sync failed object cleanup", sync))
+                        })())
+                    };
+                    let absent_and_synced = match absence {
+                        Some(Ok(())) => true,
+                        Some(Err(cleanup)) => {
+                            primary = with_custody_context(primary, cleanup);
+                            false
+                        }
+                        None => false,
+                    };
+                    let retirement = if absent_and_synced && created_confirmed {
+                        admitted.confirmed_safe_absent_after_writer_close(file)
+                    } else {
+                        admitted.retire_writer_preserving_pending(file)
+                    };
+                    let retired = retirement.is_ok();
+                    if let Err(retirement) = retirement {
+                        primary = with_custody_context(primary, retirement);
+                    }
+                    let mut cleanup_complete = absent_and_synced && created_confirmed && retired;
+                    if cleanup_complete
+                        && let Some(permit) = &mut permit
+                        && let Err(cleanup) = permit.temp_unlinked_and_synced()
+                    {
+                        primary = with_custody_context(primary, cleanup);
+                        cleanup_complete = false;
+                    }
+                    if gate_conflict && cleanup_complete {
+                        // Release the settled creation's target claim before
+                        // admitting a reader for the competing canonical gate.
+                        drop(output.take());
+                        match self.existing_regular_gate(parent) {
+                            Ok(true) => return Ok(()),
+                            Ok(false) => {
+                                primary = with_custody_context(
+                                    primary,
+                                    corrupt("competing lifecycle gate disappeared"),
+                                );
+                            }
+                            Err(inspection) => {
+                                primary = with_custody_context(primary, inspection);
+                            }
+                        }
+                    }
+                }
+                Err(primary)
+            }
         }
-        #[cfg(test)]
-        reach_atomic_cut(purpose, 3, crate::publication_faults::Side::After)?;
-        #[cfg(not(test))]
-        let _: AtomicPurpose = purpose;
-        Ok(())
     }
 
     fn object_dir(&self, digest: &[u8; 32], create: bool) -> Result<File, CoreError> {
@@ -2177,6 +4205,60 @@ impl ObjectStore {
         Ok(directory)
     }
 
+    fn open_object_reader(
+        &self,
+        directory: &File,
+        digest: &[u8; 32],
+    ) -> Result<ObjectReader, CoreError> {
+        let name = hex_digest(digest);
+        let opening = self
+            .object_lifetime
+            .as_ref()
+            .map(|lifetime| {
+                let prefix = name
+                    .get(..2)
+                    .ok_or_else(|| invalid("object digest prefix"))?;
+                let path = self
+                    .state_root
+                    .join(POOL_DIR)
+                    .join(OBJECTS_DIR)
+                    .join(prefix)
+                    .join(&name);
+                lifetime
+                    .begin_reader_open(&path)
+                    .map_err(|error| match error {
+                        CoreError::NotFound(_) => {
+                            corrupt("referenced object is missing or not a real file")
+                        }
+                        other @ (CoreError::InvalidContract(_)
+                        | CoreError::Typed { .. }
+                        | CoreError::NotReady(_)
+                        | CoreError::NotImplemented(_)
+                        | CoreError::Storage(_)
+                        | CoreError::StorageIo { .. }) => other,
+                    })
+            })
+            .transpose()?;
+        let actual = File::from(
+            openat(
+                directory,
+                name.as_str(),
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map_err(|error| match error {
+                rustix::io::Errno::NOENT | rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR => {
+                    corrupt("referenced object is missing or not a real file")
+                }
+                _ => storage("open referenced object", error),
+            })?,
+        );
+        match opening {
+            Some(opening) => opening.opened_owned(actual).map(ObjectReader::Admitted),
+            None => Ok(ObjectReader::Unqualified(actual)),
+        }
+    }
+
     fn check_object_shard_device(&self, directory: &File) -> Result<(), CoreError> {
         let observed_device = directory
             .metadata()
@@ -2192,6 +4274,7 @@ impl ObjectStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn put_object_locked(
         &self,
         kind: ObjectKind,
@@ -2208,46 +4291,85 @@ impl ObjectStore {
         dependencies: &[ObjectRef],
         payload: &[u8],
     ) -> Result<(ObjectRef, bool), CoreError> {
-        let bytes = encode_object(kind, dependencies, payload)?;
-        let digest: [u8; 32] = Sha256::digest(&bytes).into();
-        let reference = ObjectRef {
-            kind,
-            bytes: u64::try_from(bytes.len())
-                .map_err(|error| storage("object byte width", error))?,
-            sha256: digest,
-        };
-        let directory = self.object_dir(&digest, true)?;
-        let name = hex_digest(&digest);
-        match openat(
-            &directory,
-            name.as_str(),
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-            Mode::empty(),
-        ) {
+        let prepared = PreparedObject::new(kind, dependencies, payload)?;
+        self.put_prepared_object_locked_with_status(&prepared, dependencies)
+    }
+
+    fn put_prepared_object_locked_with_status(
+        &self,
+        prepared: &PreparedObject,
+        dependencies: &[ObjectRef],
+    ) -> Result<(ObjectRef, bool), CoreError> {
+        let reference = &prepared.reference;
+        validate_object_lifetime(
+            self.work_output_admission.as_ref(),
+            self.object_lifetime.as_ref(),
+        )?;
+        if let Some(lifetime) = &self.object_lifetime {
+            lifetime.validate_state_root(&self.state_root)?;
+        }
+        self.reconcile_pending_pool_unlinks_locked()?;
+        let mut permit = self
+            .pool_write_admission
+            .as_ref()
+            .map(|admission| admission.try_reserve(reference.sha256, reference.bytes))
+            .transpose()?;
+        let directory = self.object_dir(&reference.sha256, true)?;
+        let name = hex_digest(&reference.sha256);
+        match rustix::fs::statat(&directory, name.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
             Ok(_present) => {
-                let (existing, _) = self.read_object_for_adoption(&reference)?;
+                let (existing, _) = self.read_object_for_adoption(reference)?;
                 if existing != canonical_deps(dependencies)? {
                     return Err(corrupt("existing digest object has different dependencies"));
                 }
                 if let Some(totals) = self.sync_totals.as_deref() {
-                    totals.record_reused_object(diagnostic_object_kind(kind));
+                    totals.record_reused_object(diagnostic_object_kind(reference.kind));
                 }
-                return Ok((reference, false));
+                if let Some(permit) = &mut permit {
+                    permit.reused_verified()?;
+                }
+                return Ok((reference.clone(), false));
             }
             Err(rustix::io::Errno::NOENT) => {}
             Err(error) => return Err(storage("probe referenced object", error)),
         }
-        let sync = if self.adoption_batch.is_some() && kind != ObjectKind::AttemptBatch {
+        let output = self
+            .work_output_admission
+            .as_ref()
+            .map(|admission| {
+                admission.reserve(PublicationOutputReservation::new(
+                    PublicationOutputClass::Lexical,
+                    reference.bytes,
+                    1,
+                )?)
+            })
+            .transpose()?;
+        // A child may settle only after the shard's full durability barrier;
+        // the unqualified pool keeps its existing batched data-sync path.
+        let sync = if output.is_none()
+            && self.adoption_batch.is_some()
+            && reference.kind != ObjectKind::AttemptBatch
+        {
             AtomicSync::BatchedPoolData
         } else {
             AtomicSync::Full
         };
-        self.write_atomic_at_inner(&directory, &name, &bytes, AtomicPurpose::PoolObject, sync)?;
-        let _verified = self.read_object(&reference, None)?;
+        self.write_atomic_at_inner(
+            &directory,
+            &name,
+            &prepared.encoded,
+            AtomicPurpose::PoolObject,
+            sync,
+            AtomicWriteAdmission {
+                pool: permit,
+                output,
+            },
+        )?;
+        let _verified = self.read_object(reference, None)?;
         if let Some(totals) = self.sync_totals.as_deref() {
-            totals.record_new_object(diagnostic_object_kind(kind));
+            totals.record_new_object(diagnostic_object_kind(reference.kind));
         }
-        Ok((reference, true))
+        Ok((reference.clone(), true))
     }
 
     pub(super) fn record_map_page_mutation(&self) {
@@ -2270,8 +4392,8 @@ impl ObjectStore {
             self.check_batch_lease(&state, lease)?;
             // Flush before crossing either physical bound. Existing digest
             // objects conservatively trigger a flush near the byte bound.
-            let encoded_bytes = u64::try_from(encode_object(kind, dependencies, payload)?.len())
-                .map_err(|error| storage("adoption batch object width", error))?;
+            let prepared = PreparedObject::new(kind, dependencies, payload)?;
+            let encoded_bytes = prepared.reference.bytes;
             if state.references.len() == MAX_ADOPTION_BATCH_REFS
                 || state.encoded_new_bytes.saturating_add(encoded_bytes)
                     > MAX_ADOPTION_BATCH_DATA_BYTES
@@ -2285,7 +4407,8 @@ impl ObjectStore {
             }
             self.start_batch_locked(&mut state)?;
             let (reference, newly_written) =
-                self.put_object_locked_with_status(kind, dependencies, payload)?;
+                self.put_prepared_object_locked_with_status(&prepared, dependencies)?;
+            lease.record_write_cost(&reference, newly_written)?;
             self.queue_batch_reference(
                 &mut state,
                 &reference,
@@ -2296,7 +4419,9 @@ impl ObjectStore {
             return Ok(reference);
         }
         let _gate = self.lock_gate()?;
-        let reference = self.put_object_locked(kind, dependencies, payload)?;
+        let (reference, newly_written) =
+            self.put_object_locked_with_status(kind, dependencies, payload)?;
+        lease.record_write_cost(&reference, newly_written)?;
         lease.adopt_locked(&reference)?;
         self.record_posting_mutation(kind);
         Ok(reference)
@@ -2436,164 +4561,156 @@ impl ObjectStore {
             return Err(corrupt("object reference exceeds encoded byte bound"));
         }
         let directory = self.object_dir(&reference.sha256, false)?;
-        let name = hex_digest(&reference.sha256);
-        let file = File::from(
-            openat(
-                &directory,
-                name.as_str(),
-                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-                Mode::empty(),
-            )
-            .map_err(|error| match error {
-                rustix::io::Errno::NOENT | rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR => {
-                    corrupt("referenced object is missing or not a real file")
-                }
-                _ => storage("open referenced object", error),
-            })?,
-        );
-        let metadata = file
-            .metadata()
-            .map_err(|error| storage("stat referenced object", error))?;
-        if !metadata.is_file()
-            || metadata.len() != reference.bytes
-            || metadata.dev() != self.objects_device
-        {
-            return Err(corrupt(
-                "referenced object is missing its committed regular-file length",
-            ));
-        }
-        let mut bytes = Vec::new();
-        let expected_len = usize::try_from(reference.bytes)
-            .map_err(|_conversion_error| corrupt("object byte width"))?;
-        bytes
-            .try_reserve_exact(
-                expected_len
-                    .checked_add(1)
-                    .ok_or_else(|| corrupt("object byte bound overflow"))?,
-            )
-            .map_err(|error| storage("reserve object bytes", error))?;
-        let read_started = closure_totals.as_ref().map(|_| Instant::now());
-        let read = (&file)
-            .take(
-                reference
+        let mut file = self.open_object_reader(&directory, &reference.sha256)?;
+        let result = (|| {
+            let metadata = file.metadata()?;
+            if !metadata.is_file()
+                || metadata.len() != reference.bytes
+                || metadata.dev() != self.objects_device
+            {
+                return Err(corrupt(
+                    "referenced object is missing its committed regular-file length",
+                ));
+            }
+            let mut bytes = Vec::new();
+            let expected_len = usize::try_from(reference.bytes)
+                .map_err(|_conversion_error| corrupt("object byte width"))?;
+            bytes
+                .try_reserve_exact(
+                    expected_len
+                        .checked_add(1)
+                        .ok_or_else(|| corrupt("object byte bound overflow"))?,
+                )
+                .map_err(|error| storage("reserve object bytes", error))?;
+            let read_started = closure_totals.as_ref().map(|_| Instant::now());
+            let read = (&mut file)
+                .take(
+                    reference
+                        .bytes
+                        .checked_add(1)
+                        .ok_or_else(|| corrupt("object byte bound overflow"))?,
+                )
+                .read_to_end(&mut bytes);
+            if let Some(totals) = closure_totals.as_deref_mut() {
+                crate::causal_profile::ClosureReadTotalsV1::accumulate(
+                    &mut totals.objects_read,
+                    Some(1),
+                    &mut totals.overflowed,
+                    crate::causal_profile::ClosureReadTotalsV1::OBJECTS_READ,
+                );
+                crate::causal_profile::ClosureReadTotalsV1::accumulate_width(
+                    &mut totals.bytes_read,
+                    bytes.len(),
+                    &mut totals.overflowed,
+                    crate::causal_profile::ClosureReadTotalsV1::BYTES_READ,
+                );
+                crate::causal_profile::ClosureReadTotalsV1::accumulate_elapsed(
+                    &mut totals.read_elapsed_ns,
+                    read_started,
+                    &mut totals.overflowed,
+                    crate::causal_profile::ClosureReadTotalsV1::READ_ELAPSED,
+                );
+            }
+            let _read = read.map_err(|error| storage("read referenced object", error))?;
+            if let Some(meter) = &self.read_meter {
+                let charged = u64::try_from(bytes.len())
+                    .map_err(|_conversion_error| invalid("scrub read byte width overflow"))?;
+                let _old = meter
                     .bytes
-                    .checked_add(1)
-                    .ok_or_else(|| corrupt("object byte bound overflow"))?,
-            )
-            .read_to_end(&mut bytes);
-        if let Some(totals) = closure_totals.as_deref_mut() {
-            crate::causal_profile::ClosureReadTotalsV1::accumulate(
-                &mut totals.objects_read,
-                Some(1),
-                &mut totals.overflowed,
-                crate::causal_profile::ClosureReadTotalsV1::OBJECTS_READ,
-            );
-            crate::causal_profile::ClosureReadTotalsV1::accumulate_width(
-                &mut totals.bytes_read,
-                bytes.len(),
-                &mut totals.overflowed,
-                crate::causal_profile::ClosureReadTotalsV1::BYTES_READ,
-            );
-            crate::causal_profile::ClosureReadTotalsV1::accumulate_elapsed(
-                &mut totals.read_elapsed_ns,
-                read_started,
-                &mut totals.overflowed,
-                crate::causal_profile::ClosureReadTotalsV1::READ_ELAPSED,
-            );
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                        value.checked_add(charged)
+                    })
+                    .map_err(|_conversion_error| invalid("scrub object byte meter overflow"))?;
+                let _old = meter
+                    .objects
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                        value.checked_add(1)
+                    })
+                    .map_err(|_conversion_error| invalid("scrub object read meter overflow"))?;
+            }
+            if bytes.len() != expected_len {
+                return Err(corrupt(
+                    "referenced object differs from committed digest or length",
+                ));
+            }
+            let hash_started = closure_totals.as_ref().map(|_| Instant::now());
+            let digest: [u8; 32] = Sha256::digest(&bytes).into();
+            if let Some(totals) = closure_totals.as_deref_mut() {
+                crate::causal_profile::ClosureReadTotalsV1::accumulate(
+                    &mut totals.objects_hashed,
+                    Some(1),
+                    &mut totals.overflowed,
+                    crate::causal_profile::ClosureReadTotalsV1::OBJECTS_HASHED,
+                );
+                crate::causal_profile::ClosureReadTotalsV1::accumulate_width(
+                    &mut totals.bytes_hashed,
+                    bytes.len(),
+                    &mut totals.overflowed,
+                    crate::causal_profile::ClosureReadTotalsV1::BYTES_HASHED,
+                );
+                crate::causal_profile::ClosureReadTotalsV1::accumulate_elapsed(
+                    &mut totals.hash_elapsed_ns,
+                    hash_started,
+                    &mut totals.overflowed,
+                    crate::causal_profile::ClosureReadTotalsV1::HASH_ELAPSED,
+                );
+            }
+            if digest != reference.sha256 {
+                return Err(corrupt(
+                    "referenced object differs from committed digest or length",
+                ));
+            }
+            let decode_started = closure_totals.as_ref().map(|_| Instant::now());
+            let result = decode_object(&bytes);
+            if let Some(totals) = closure_totals {
+                crate::causal_profile::ClosureReadTotalsV1::accumulate(
+                    &mut totals.objects_decoded,
+                    Some(1),
+                    &mut totals.overflowed,
+                    crate::causal_profile::ClosureReadTotalsV1::OBJECTS_DECODED,
+                );
+                crate::causal_profile::ClosureReadTotalsV1::accumulate_width(
+                    &mut totals.bytes_decoded,
+                    bytes.len(),
+                    &mut totals.overflowed,
+                    crate::causal_profile::ClosureReadTotalsV1::BYTES_DECODED,
+                );
+                crate::causal_profile::ClosureReadTotalsV1::accumulate_elapsed(
+                    &mut totals.decode_elapsed_ns,
+                    decode_started,
+                    &mut totals.overflowed,
+                    crate::causal_profile::ClosureReadTotalsV1::DECODE_ELAPSED,
+                );
+            }
+            let result = result?;
+            if result.0 != reference.kind {
+                return Err(corrupt("referenced object kind differs"));
+            }
+            if repair_for_adoption {
+                // A prior attempt may have failed after rename and before syncing
+                // the shard. Repair that host-side state on the authenticated FD.
+                crate::causal_profile::observed_sync_legacy(
+                    self.sync_totals.as_deref(),
+                    quanta_index_core::DiagnosticSyncLabelV1::PoolReusedFilePosix,
+                    || file.sync_posix().map_err(std::io::Error::other),
+                )
+                .map_err(|error| storage("sync adopted object", error))?;
+                crate::causal_profile::observed_sync_legacy(
+                    self.sync_totals.as_deref(),
+                    quanta_index_core::DiagnosticSyncLabelV1::PoolReusedShardPosix,
+                    || fsync(&directory).map_err(std::io::Error::from),
+                )
+                .map_err(|error| storage("sync adopted object shard", error))?;
+            }
+            checkpoint(budget, "lexical:object:read")?;
+            Ok((result.1, result.2))
+        })();
+        match (result, file.retire()) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(primary), Ok(())) => Err(primary),
+            (Ok(_), Err(retirement)) => Err(retirement),
+            (Err(primary), Err(retirement)) => Err(with_custody_context(primary, retirement)),
         }
-        let _read = read.map_err(|error| storage("read referenced object", error))?;
-        if let Some(meter) = &self.read_meter {
-            let charged = u64::try_from(bytes.len())
-                .map_err(|_conversion_error| invalid("scrub read byte width overflow"))?;
-            let _old = meter
-                .bytes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    value.checked_add(charged)
-                })
-                .map_err(|_conversion_error| invalid("scrub object byte meter overflow"))?;
-            let _old = meter
-                .objects
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    value.checked_add(1)
-                })
-                .map_err(|_conversion_error| invalid("scrub object read meter overflow"))?;
-        }
-        if bytes.len() != expected_len {
-            return Err(corrupt(
-                "referenced object differs from committed digest or length",
-            ));
-        }
-        let hash_started = closure_totals.as_ref().map(|_| Instant::now());
-        let digest: [u8; 32] = Sha256::digest(&bytes).into();
-        if let Some(totals) = closure_totals.as_deref_mut() {
-            crate::causal_profile::ClosureReadTotalsV1::accumulate(
-                &mut totals.objects_hashed,
-                Some(1),
-                &mut totals.overflowed,
-                crate::causal_profile::ClosureReadTotalsV1::OBJECTS_HASHED,
-            );
-            crate::causal_profile::ClosureReadTotalsV1::accumulate_width(
-                &mut totals.bytes_hashed,
-                bytes.len(),
-                &mut totals.overflowed,
-                crate::causal_profile::ClosureReadTotalsV1::BYTES_HASHED,
-            );
-            crate::causal_profile::ClosureReadTotalsV1::accumulate_elapsed(
-                &mut totals.hash_elapsed_ns,
-                hash_started,
-                &mut totals.overflowed,
-                crate::causal_profile::ClosureReadTotalsV1::HASH_ELAPSED,
-            );
-        }
-        if digest != reference.sha256 {
-            return Err(corrupt(
-                "referenced object differs from committed digest or length",
-            ));
-        }
-        let decode_started = closure_totals.as_ref().map(|_| Instant::now());
-        let result = decode_object(&bytes);
-        if let Some(totals) = closure_totals {
-            crate::causal_profile::ClosureReadTotalsV1::accumulate(
-                &mut totals.objects_decoded,
-                Some(1),
-                &mut totals.overflowed,
-                crate::causal_profile::ClosureReadTotalsV1::OBJECTS_DECODED,
-            );
-            crate::causal_profile::ClosureReadTotalsV1::accumulate_width(
-                &mut totals.bytes_decoded,
-                bytes.len(),
-                &mut totals.overflowed,
-                crate::causal_profile::ClosureReadTotalsV1::BYTES_DECODED,
-            );
-            crate::causal_profile::ClosureReadTotalsV1::accumulate_elapsed(
-                &mut totals.decode_elapsed_ns,
-                decode_started,
-                &mut totals.overflowed,
-                crate::causal_profile::ClosureReadTotalsV1::DECODE_ELAPSED,
-            );
-        }
-        let result = result?;
-        if result.0 != reference.kind {
-            return Err(corrupt("referenced object kind differs"));
-        }
-        if repair_for_adoption {
-            // A prior attempt may have failed after rename and before syncing
-            // the shard. Repair that host-side state on the authenticated FD.
-            crate::causal_profile::observed_sync_legacy(
-                self.sync_totals.as_deref(),
-                quanta_index_core::DiagnosticSyncLabelV1::PoolReusedFilePosix,
-                || fsync(&file).map_err(std::io::Error::from),
-            )
-            .map_err(|error| storage("sync adopted object", error))?;
-            crate::causal_profile::observed_sync_legacy(
-                self.sync_totals.as_deref(),
-                quanta_index_core::DiagnosticSyncLabelV1::PoolReusedShardPosix,
-                || fsync(&directory).map_err(std::io::Error::from),
-            )
-            .map_err(|error| storage("sync adopted object shard", error))?;
-        }
-        checkpoint(budget, "lexical:object:read")?;
-        Ok((result.1, result.2))
     }
 
     /// Returns the authenticated dependency inventory of one object.
@@ -2909,6 +5026,49 @@ impl AttemptLease {
         &self.binding
     }
 
+    pub(crate) fn write_cost_snapshot(&self) -> Result<AttemptWriteCost, CoreError> {
+        self.write_cost
+            .lock()
+            .map(|cost| *cost)
+            .map_err(|error| storage("read attempt write cost", error))
+    }
+
+    fn record_write_cost(
+        &self,
+        reference: &ObjectRef,
+        newly_written: bool,
+    ) -> Result<(), CoreError> {
+        let mut cost = self
+            .write_cost
+            .lock()
+            .map_err(|error| storage("record attempt write cost", error))?;
+        if newly_written {
+            let objects = cost
+                .new_objects
+                .checked_add(1)
+                .ok_or_else(|| invalid("attempt write object count overflow"))?;
+            let bytes = cost
+                .new_encoded_bytes
+                .checked_add(reference.bytes)
+                .ok_or_else(|| invalid("attempt write encoded byte count overflow"))?;
+            cost.new_objects = objects;
+            cost.new_encoded_bytes = bytes;
+        } else {
+            let objects = cost
+                .reused_objects
+                .checked_add(1)
+                .ok_or_else(|| invalid("attempt reuse object count overflow"))?;
+            let bytes = cost
+                .reused_encoded_bytes
+                .checked_add(reference.bytes)
+                .ok_or_else(|| invalid("attempt reuse encoded byte count overflow"))?;
+            cost.reused_objects = objects;
+            cost.reused_encoded_bytes = bytes;
+        }
+        drop(cost);
+        Ok(())
+    }
+
     fn adopt_batch_locked(&self, references: &[ObjectRef]) -> Result<(), CoreError> {
         if references.is_empty() || references.len() > MAX_ADOPTION_BATCH_REFS {
             return Err(invalid("batched adoption count exceeds bound"));
@@ -2921,78 +5081,92 @@ impl AttemptLease {
             return Err(corrupt("batched attempt binding changed"));
         }
         let mut journal = self.store.open_attempt_log(&self.name)?;
-        let head = self.store.read_journal_head(&self.name)?;
-        if head.committed_length > 0 {
-            let _offset = journal
-                .seek(SeekFrom::End(-32))
-                .map_err(|error| storage("seek batched attempt journal", error))?;
-            let mut chain = [0_u8; 32];
-            journal
-                .read_exact(&mut chain)
-                .map_err(|error| storage("read batched attempt chain", error))?;
-            if chain != head.committed_chain {
-                return Err(corrupt("batched attempt chain differs from head"));
+        let read_result = (|| {
+            let head = self.store.read_journal_head(&self.name)?;
+            if head.committed_length > 0 {
+                let _offset = journal
+                    .seek(SeekFrom::End(-32))
+                    .map_err(|error| admitted_io_error("seek batched attempt journal", &error))?;
+                let mut chain = [0_u8; 32];
+                journal
+                    .read_exact(&mut chain)
+                    .map_err(|error| admitted_io_error("read batched attempt chain", &error))?;
+                if chain != head.committed_chain {
+                    return Err(corrupt("batched attempt chain differs from head"));
+                }
             }
+            let sorted = canonical_deps(references)?;
+            if sorted.len() != references.len() {
+                return Err(invalid("batched adoption has repeated references"));
+            }
+            let manifest_payload = batch_manifest_payload(&self.name, &head, sorted.len())?;
+            let (manifest, manifest_new) = self.store.put_object_locked_with_status(
+                ObjectKind::AttemptBatch,
+                &sorted,
+                &manifest_payload,
+            )?;
+            self.record_write_cost(&manifest, manifest_new)?;
+            if !manifest_new {
+                // A reused manifest can have survived a failed rename-to-shard
+                // sync. Its POSIX repair happened after the first batch barrier.
+                self.store.sync_pool_before_adoption()?;
+            }
+            let (entries, final_chain) = adoption_entries(head.committed_chain, &sorted)?;
+            let new_length = head
+                .committed_length
+                .checked_add(
+                    u64::try_from(entries.len())
+                        .map_err(|error| storage("batched entry width", error))?,
+                )
+                .ok_or_else(|| invalid("batched journal length overflow"))?;
+            Ok::<_, CoreError>((head, manifest, entries, final_chain, new_length))
+        })();
+        let (head, manifest, entries, final_chain, new_length) =
+            finish_control_read(journal, read_result)?;
+        let mut journal =
+            self.store
+                .begin_journal_update(&self.name, head.committed_length, new_length)?;
+        let before_sync = (|| {
+            self.store.write_journal_head(
+                &self.name,
+                &JournalHead {
+                    committed_length: head.committed_length,
+                    committed_chain: head.committed_chain,
+                    pending: Some(manifest),
+                    expected_chain: final_chain,
+                },
+            )?;
+            let _offset = journal
+                .seek(SeekFrom::End(0))
+                .map_err(|error| admitted_io_error("seek batched journal end", &error))?;
+            #[cfg(test)]
+            crate::publication_faults::reach_core(
+                crate::publication_faults::Cut::AttemptJournalAppendWrite,
+                crate::publication_faults::Side::Before,
+            )?;
+            journal
+                .write_all(&entries)
+                .map_err(|error| admitted_io_error("append batched journal", &error))?;
+            #[cfg(test)]
+            crate::publication_faults::reach_core(
+                crate::publication_faults::Cut::AttemptJournalAppendWrite,
+                crate::publication_faults::Side::After,
+            )?;
+            #[cfg(test)]
+            crate::publication_faults::reach_core(
+                crate::publication_faults::Cut::AttemptJournalAppendFileSync,
+                crate::publication_faults::Side::Before,
+            )?;
+            Ok::<(), CoreError>(())
+        })();
+        if let Err(primary) = before_sync {
+            return Err(retire_failed_journal(journal, primary));
         }
-        let sorted = canonical_deps(references)?;
-        if sorted.len() != references.len() {
-            return Err(invalid("batched adoption has repeated references"));
-        }
-        let manifest_payload = batch_manifest_payload(&self.name, &head, sorted.len())?;
-        let (manifest, manifest_new) = self.store.put_object_locked_with_status(
-            ObjectKind::AttemptBatch,
-            &sorted,
-            &manifest_payload,
-        )?;
-        if !manifest_new {
-            // A reused manifest can have survived a failed rename-to-shard
-            // sync. Its POSIX repair happened after the first batch barrier.
-            self.store.sync_pool_before_adoption()?;
-        }
-        let (entries, final_chain) = adoption_entries(head.committed_chain, &sorted)?;
-        let new_length = head
-            .committed_length
-            .checked_add(
-                u64::try_from(entries.len())
-                    .map_err(|error| storage("batched entry width", error))?,
-            )
-            .ok_or_else(|| invalid("batched journal length overflow"))?;
-        self.store.write_journal_head(
-            &self.name,
-            &JournalHead {
-                committed_length: head.committed_length,
-                committed_chain: head.committed_chain,
-                pending: Some(manifest),
-                expected_chain: final_chain,
-            },
-        )?;
-        let _offset = journal
-            .seek(SeekFrom::End(0))
-            .map_err(|error| storage("seek batched journal end", error))?;
-        #[cfg(test)]
-        crate::publication_faults::reach_core(
-            crate::publication_faults::Cut::AttemptJournalAppendWrite,
-            crate::publication_faults::Side::Before,
-        )?;
-        journal
-            .write_all(&entries)
-            .map_err(|error| storage("append batched journal", error))?;
-        #[cfg(test)]
-        crate::publication_faults::reach_core(
-            crate::publication_faults::Cut::AttemptJournalAppendWrite,
-            crate::publication_faults::Side::After,
-        )?;
-        #[cfg(test)]
-        crate::publication_faults::reach_core(
-            crate::publication_faults::Cut::AttemptJournalAppendFileSync,
-            crate::publication_faults::Side::Before,
-        )?;
-        crate::causal_profile::observed_sync_legacy(
-            self.store.sync_totals.as_deref(),
+        self.store.sync_and_settle_journal(
+            journal,
             quanta_index_core::DiagnosticSyncLabelV1::PoolAdoptionJournalFull,
-            || journal.sync_all(),
-        )
-        .map_err(|error| storage("sync batched journal", error))?;
+            "sync batched journal",
+        )?;
         #[cfg(test)]
         crate::publication_faults::reach_core(
             crate::publication_faults::Cut::AttemptJournalAppendFileSync,
@@ -3012,83 +5186,92 @@ impl AttemptLease {
         }
         let _epoch = self.store.bump_epoch_locked()?;
         let mut journal = self.store.open_attempt_log(&self.name)?;
-        let head = self.store.read_journal_head(&self.name)?;
-        if head.committed_length > 0 {
-            let _offset = journal
-                .seek(SeekFrom::End(-32))
-                .map_err(|error| storage("seek attempt journal", error))?;
-            let mut chain = [0_u8; 32];
-            journal
-                .read_exact(&mut chain)
-                .map_err(|error| storage("read attempt journal chain", error))?;
-            if chain != head.committed_chain {
-                return Err(corrupt("attempt journal tail chain differs from head"));
+        let read_result = (|| {
+            let head = self.store.read_journal_head(&self.name)?;
+            if head.committed_length > 0 {
+                let _offset = journal
+                    .seek(SeekFrom::End(-32))
+                    .map_err(|error| admitted_io_error("seek attempt journal", &error))?;
+                let mut chain = [0_u8; 32];
+                journal
+                    .read_exact(&mut chain)
+                    .map_err(|error| admitted_io_error("read attempt journal chain", &error))?;
+                if chain != head.committed_chain {
+                    return Err(corrupt("attempt journal tail chain differs from head"));
+                }
             }
+            let mut entry = Vec::new();
+            entry
+                .try_reserve_exact(73)
+                .map_err(|error| storage("reserve attempt journal entry", error))?;
+            encode_ref(&mut entry, root);
+            let mut hasher = Sha256::new();
+            hasher.update(b"lexical-attempt-adoption-v1");
+            hasher.update(head.committed_chain);
+            hasher.update(&entry);
+            let next: [u8; 32] = hasher.finalize().into();
+            entry.extend_from_slice(&next);
+            let new_length = head
+                .committed_length
+                .checked_add(JOURNAL_ENTRY_BYTES)
+                .ok_or_else(|| invalid("attempt journal length overflow"))?;
+            // An inherited root may be a verified orphan from an aborted batch.
+            // Complete its physical barrier before the first durable head names it.
+            self.store.sync_pool_before_adoption()?;
+            Ok::<_, CoreError>((head, entry, next, new_length))
+        })();
+        let (head, entry, next, new_length) = finish_control_read(journal, read_result)?;
+        let mut journal =
+            self.store
+                .begin_journal_update(&self.name, head.committed_length, new_length)?;
+        let before_sync = (|| {
+            self.store.write_journal_head(
+                &self.name,
+                &JournalHead {
+                    committed_length: head.committed_length,
+                    committed_chain: head.committed_chain,
+                    pending: Some(root.clone()),
+                    expected_chain: next,
+                },
+            )?;
+            let _offset = journal
+                .seek(SeekFrom::End(0))
+                .map_err(|error| admitted_io_error("seek attempt journal end", &error))?;
+            #[cfg(test)]
+            crate::publication_faults::reach_core(
+                crate::publication_faults::Cut::AttemptJournalAppendWrite,
+                crate::publication_faults::Side::Before,
+            )?;
+            journal
+                .write_all(&entry)
+                .map_err(|error| admitted_io_error("append attempt journal", &error))?;
+            #[cfg(test)]
+            crate::publication_faults::reach_core(
+                crate::publication_faults::Cut::AttemptJournalAppendWrite,
+                crate::publication_faults::Side::After,
+            )?;
+            #[cfg(test)]
+            crate::publication_faults::reach_core(
+                crate::publication_faults::Cut::AttemptJournalAppendFileSync,
+                crate::publication_faults::Side::Before,
+            )?;
+            Ok::<(), CoreError>(())
+        })();
+        if let Err(primary) = before_sync {
+            return Err(retire_failed_journal(journal, primary));
         }
-        let mut entry = Vec::new();
-        entry
-            .try_reserve_exact(73)
-            .map_err(|error| storage("reserve attempt journal entry", error))?;
-        encode_ref(&mut entry, root);
-        let mut hasher = Sha256::new();
-        hasher.update(b"lexical-attempt-adoption-v1");
-        hasher.update(head.committed_chain);
-        hasher.update(&entry);
-        let next: [u8; 32] = hasher.finalize().into();
-        entry.extend_from_slice(&next);
-        // An inherited root may be a verified orphan from an aborted batch.
-        // Complete its physical barrier before the first durable head names it.
-        self.store.sync_pool_before_adoption()?;
-        self.store.write_journal_head(
-            &self.name,
-            &JournalHead {
-                committed_length: head.committed_length,
-                committed_chain: head.committed_chain,
-                pending: Some(root.clone()),
-                expected_chain: next,
-            },
-        )?;
-        let _offset = journal
-            .seek(SeekFrom::End(0))
-            .map_err(|error| storage("seek attempt journal end", error))?;
-        #[cfg(test)]
-        crate::publication_faults::reach_core(
-            crate::publication_faults::Cut::AttemptJournalAppendWrite,
-            crate::publication_faults::Side::Before,
-        )?;
-        journal
-            .write_all(&entry)
-            .map_err(|error| storage("append attempt journal", error))?;
-        #[cfg(test)]
-        crate::publication_faults::reach_core(
-            crate::publication_faults::Cut::AttemptJournalAppendWrite,
-            crate::publication_faults::Side::After,
-        )?;
-        #[cfg(test)]
-        crate::publication_faults::reach_core(
-            crate::publication_faults::Cut::AttemptJournalAppendFileSync,
-            crate::publication_faults::Side::Before,
-        )?;
-        crate::causal_profile::observed_sync_legacy(
-            self.store.sync_totals.as_deref(),
+        self.store.sync_and_settle_journal(
+            journal,
             quanta_index_core::DiagnosticSyncLabelV1::PoolAdoptionJournalFull,
-            || journal.sync_all(),
-        )
-        .map_err(|error| storage("sync attempt journal", error))?;
+            "sync attempt journal",
+        )?;
         #[cfg(test)]
         crate::publication_faults::reach_core(
             crate::publication_faults::Cut::AttemptJournalAppendFileSync,
             crate::publication_faults::Side::After,
         )?;
-        self.store.write_journal_head(
-            &self.name,
-            &JournalHead::clean(
-                head.committed_length
-                    .checked_add(JOURNAL_ENTRY_BYTES)
-                    .ok_or_else(|| invalid("attempt journal length overflow"))?,
-                next,
-            ),
-        )
+        self.store
+            .write_journal_head(&self.name, &JournalHead::clean(new_length, next))
     }
 
     /// Caller must have durably published a sealed root which owns these
@@ -3161,6 +5344,10 @@ impl ObjectStore {
     }
 
     pub(crate) fn object_inventory_cursor(&self) -> Result<ObjectInventoryCursor, CoreError> {
+        {
+            let _gate = self.lock_gate()?;
+            self.reconcile_pending_pool_unlinks_locked()?;
+        }
         self.cleanup_control_temporaries(self.pool.as_ref(), is_pool_temporary_name)?;
         Ok(ObjectInventoryCursor {
             next_prefix: 0,
@@ -3176,6 +5363,10 @@ impl ObjectStore {
         &self,
         visitor: &mut dyn FnMut(&[u8; 32]) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
+        {
+            let _gate = self.lock_gate()?;
+            self.reconcile_pending_pool_unlinks_locked()?;
+        }
         self.cleanup_control_temporaries(self.pool.as_ref(), is_pool_temporary_name)?;
         for prefix in 0_u16..=u16::from(u8::MAX) {
             self.visit_object_shard(
@@ -3220,13 +5411,7 @@ impl ObjectStore {
             }
             if is_object_temporary_name(name, prefix) {
                 let _gate = self.lock_gate()?;
-                match unlinkat(&directory, name, AtFlags::empty()) {
-                    Ok(()) => directory
-                        .sync_all()
-                        .map_err(|error| storage("sync temporary object cleanup", error))?,
-                    Err(rustix::io::Errno::NOENT) => {}
-                    Err(error) => return Err(storage("remove temporary object", error)),
-                }
+                self.cleanup_pool_temporary(&directory, name)?;
                 continue;
             }
             if name.len() != 64
@@ -3299,6 +5484,17 @@ impl ObjectStore {
                 }
                 continue;
             }
+            if let Some(header_name) = name.strip_suffix(".cbor.scan") {
+                if !is_lower_digest_name(header_name) {
+                    return Err(corrupt("hard-scan checkpoint name differs"));
+                }
+                let canonical_header = format!("{header_name}.cbor");
+                if self.read_attempt_header(&canonical_header)?.is_none() {
+                    let _gate = self.lock_gate()?;
+                    let _cleared = self.cleanup_unowned_attempt_locked(&canonical_header)?;
+                }
+                continue;
+            }
             if name.strip_suffix(".cbor").is_none() {
                 return Err(corrupt("unexpected attempt entry"));
             }
@@ -3323,6 +5519,7 @@ impl ObjectStore {
         use std::os::unix::ffi::OsStringExt as _;
         self.cleanup_control_temporaries(self.attempts.as_ref(), is_attempt_temporary_name)?;
         let mut retirement_names = Vec::new();
+        let mut scan_names = Vec::new();
         let mut retirement_directory = rustix::fs::Dir::read_from(self.attempts.as_ref())
             .map_err(|error| storage("enumerate attempt retirements", error))?;
         let mut inspected = 0_usize;
@@ -3346,10 +5543,23 @@ impl ObjectStore {
                 }
                 retirement_names.push(format!("{header}.cbor"));
             }
+            if let Some(header) = name.strip_suffix(".cbor.scan") {
+                if !is_lower_digest_name(header) || scan_names.len() >= MAX_ATTEMPTS {
+                    return Err(corrupt("hard-scan checkpoint inventory differs"));
+                }
+                scan_names.push(format!("{header}.cbor"));
+            }
         }
+        drop(retirement_directory);
         for name in retirement_names {
             let _gate = self.lock_gate()?;
             self.recover_retirement_locked(&name)?;
+        }
+        for name in scan_names {
+            let _gate = self.lock_gate()?;
+            if self.read_attempt_header(&name)?.is_none() {
+                let _cleared = self.cleanup_unowned_attempt_locked(&name)?;
+            }
         }
         Ok(())
     }
@@ -3363,6 +5573,29 @@ impl ObjectStore {
         is_ours: fn(&str) -> bool,
     ) -> Result<(), CoreError> {
         use std::os::unix::ffi::OsStringExt as _;
+        // Reconcile a retired create or prior unlink before a pathname scan:
+        // its last path may already be absent from this directory snapshot.
+        self.reconcile_control_deletions()?;
+        let qualified_updates = if let Some(control) = &self.control_output_admission {
+            if control.held_file_allowance()?.is_some() {
+                let updates = control.file_updates()?.ok_or_else(|| {
+                    invalid("physical Control temporary lacks its file update authority")
+                })?;
+                let directory = if std::ptr::eq(parent, self.pool.as_ref()) {
+                    self.state_root.join(POOL_DIR)
+                } else if std::ptr::eq(parent, self.attempts.as_ref()) {
+                    self.state_root.join(POOL_DIR).join(ATTEMPTS_DIR)
+                } else {
+                    return Err(invalid("Control temporary parent differs from pool"));
+                };
+                Self::require_current_control_parent(parent, &directory)?;
+                Some((updates, directory))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let mut entries = rustix::fs::Dir::read_from(parent)
             .map_err(|error| storage("enumerate control temporaries", error))?;
         let mut names = Vec::new();
@@ -3394,8 +5627,20 @@ impl ObjectStore {
             return Ok(());
         }
         let _gate = self.lock_gate()?;
+        self.reconcile_control_deletions()?;
+        if let Some((_, directory)) = &qualified_updates {
+            Self::require_current_control_parent(parent, directory)?;
+        }
         let mut removed = false;
         for name in names {
+            if let Some((updates, directory)) = &qualified_updates {
+                let control = self
+                    .control_output_admission
+                    .as_ref()
+                    .ok_or_else(|| invalid("Control temporary admission missing"))?;
+                updates.remove_file_and_sync(&directory.join(name), control.clone())?;
+                continue;
+            }
             match unlinkat(parent, name.as_str(), AtFlags::empty()) {
                 Ok(()) => removed = true,
                 Err(rustix::io::Errno::NOENT) => {}
@@ -3430,9 +5675,48 @@ impl ObjectStore {
         candidate_digests: &[[u8; 32]],
         live_digests: &BTreeSet<[u8; 32]>,
     ) -> Result<bool, CoreError> {
-        self.gc_sweep_checked_batch(expected_epoch, candidate_digests, &mut |digest| {
-            Ok(live_digests.contains(digest))
-        })
+        if self.object_lifetime.is_some() {
+            return Err(invalid("qualified GC requires retained progress custody"));
+        }
+        self.gc_sweep_checked_batch(
+            expected_epoch,
+            candidate_digests,
+            &mut |digest| Ok(live_digests.contains(digest)),
+            &mut None,
+        )
+    }
+
+    pub(crate) fn settle_pending_gc_delete(
+        &self,
+        pending: &mut Option<GcDeleteCustody>,
+    ) -> Result<(), CoreError> {
+        let _gate = self.lock_gate()?;
+        self.settle_pending_gc_delete_locked(pending)
+    }
+
+    fn settle_pending_gc_delete_locked(
+        &self,
+        pending: &mut Option<GcDeleteCustody>,
+    ) -> Result<(), CoreError> {
+        let Some(custody) = pending.as_mut() else {
+            return Ok(());
+        };
+        match custody.delete_and_settle(self.pool_write_admission.as_deref()) {
+            Ok(()) => {
+                drop(pending.take());
+                Ok(())
+            }
+            Err(error) => {
+                // Only qualified deletion tickets own a physical path claim.
+                // The unqualified pool's existing quota reconciliation may
+                // settle the old unlink before another writer recreates the
+                // digest; retaining that old slot would later refund new data.
+                if !custody.is_qualified() || !custody.must_retain_after_error() {
+                    drop(pending.take());
+                }
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn gc_sweep_checked_batch(
@@ -3440,14 +5724,17 @@ impl ObjectStore {
         expected_epoch: u64,
         candidate_digests: &[[u8; 32]],
         is_live: &mut dyn FnMut(&[u8; 32]) -> Result<bool, CoreError>,
+        pending: &mut Option<GcDeleteCustody>,
     ) -> Result<bool, CoreError> {
         if candidate_digests.len() > MAX_GC_BATCH {
             return Err(invalid("GC batch exceeds bounded gate policy"));
         }
         let _gate = self.lock_gate()?;
+        self.settle_pending_gc_delete_locked(pending)?;
         if self.read_epoch()? != expected_epoch {
             return Ok(false);
         }
+        self.reconcile_pending_pool_unlinks_locked()?;
         for digest in candidate_digests {
             if is_live(digest)? {
                 continue;
@@ -3461,19 +5748,53 @@ impl ObjectStore {
                 Err(error) => return Err(storage("open GC object shard", error)),
             };
             self.check_object_shard_device(&directory)?;
-            let object = match openat(
-                &directory,
-                hex.as_str(),
-                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-                Mode::empty(),
-            ) {
-                Ok(object) => File::from(object),
-                Err(rustix::io::Errno::NOENT) => continue,
-                Err(error) => return Err(storage("open GC candidate", error)),
+            let (metadata, ticket) = if let Some(lifetime) = &self.object_lifetime {
+                // A prior item in this batch may already have settled before
+                // a later item failed. Replaying the unadvanced cursor must
+                // skip that absent entry before the binder opens a source FD.
+                match rustix::fs::statat(&directory, hex.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+                    Ok(_present) => {}
+                    Err(rustix::io::Errno::NOENT) => continue,
+                    Err(error) => return Err(storage("probe qualified GC candidate", error)),
+                }
+                let path = self
+                    .state_root
+                    .join(POOL_DIR)
+                    .join(OBJECTS_DIR)
+                    .join(prefix)
+                    .join(&hex);
+                let ticket = match lifetime.begin_delete(&path) {
+                    Ok(ticket) => ticket,
+                    Err(CoreError::NotFound(_)) => continue,
+                    Err(error) => return Err(error),
+                };
+                let (source, anchored_parent) = ticket.source_metadata()?;
+                let held_parent = directory
+                    .metadata()
+                    .map_err(|error| storage("stat GC shard", error))?;
+                if held_parent.dev() != anchored_parent.dev()
+                    || held_parent.ino() != anchored_parent.ino()
+                {
+                    return Err(corrupt("GC deletion ticket differs from the held shard"));
+                }
+                (source, Some(ticket))
+            } else {
+                let object = match openat(
+                    &directory,
+                    hex.as_str(),
+                    OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                    Mode::empty(),
+                ) {
+                    Ok(object) => File::from(object),
+                    Err(rustix::io::Errno::NOENT) => continue,
+                    Err(error) => return Err(storage("open GC candidate", error)),
+                };
+                let metadata = object
+                    .metadata()
+                    .map_err(|error| storage("stat GC candidate", error))?;
+                drop(object);
+                (metadata, None)
             };
-            let metadata = object
-                .metadata()
-                .map_err(|error| storage("stat GC candidate", error))?;
             if !metadata.is_file()
                 || metadata.dev() != self.objects_device
                 || metadata.len()
@@ -3482,11 +5803,13 @@ impl ObjectStore {
             {
                 return Err(corrupt("GC candidate is not a bounded regular object"));
             }
-            unlinkat(&directory, hex.as_str(), AtFlags::empty())
-                .map_err(|error| storage("delete unmarked object", error))?;
-            directory
-                .sync_all()
-                .map_err(|error| storage("sync object deletion", error))?;
+            *pending = Some(GcDeleteCustody::new(
+                *digest,
+                metadata.len(),
+                directory,
+                ticket,
+            ));
+            self.settle_pending_gc_delete_locked(pending)?;
         }
         Ok(true)
     }
@@ -3509,7 +5832,11 @@ impl AdoptedRootCursor {
                 if journal.previous != journal.expected_chain {
                     return Err(corrupt("attempt journal final chain differs from head"));
                 }
-                self.journal = None;
+                self.journal
+                    .take()
+                    .ok_or_else(|| corrupt("attempt journal cursor missing"))?
+                    .file
+                    .retire()?;
                 return Ok(AdoptedRootAdvance::Advanced);
             }
             let mut entry = [0_u8; 73];
@@ -3566,6 +5893,17 @@ impl AdoptedRootCursor {
             }
             return Ok(AdoptedRootAdvance::Advanced);
         }
+        if let Some(header_name) = name.strip_suffix(".cbor.scan") {
+            if !is_lower_digest_name(header_name) {
+                return Err(corrupt("hard-scan checkpoint name differs"));
+            }
+            let canonical_header = format!("{header_name}.cbor");
+            if store.read_attempt_header(&canonical_header)?.is_none() {
+                let _gate = store.lock_gate()?;
+                let _cleared = store.cleanup_unowned_attempt_locked(&canonical_header)?;
+            }
+            return Ok(AdoptedRootAdvance::Advanced);
+        }
         if name.strip_suffix(".cbor").is_none() {
             return Err(corrupt("unexpected attempt entry"));
         }
@@ -3580,19 +5918,24 @@ impl AdoptedRootCursor {
             .read_attempt(name)?
             .ok_or_else(|| corrupt("listed attempt disappeared"))?;
         let journal = store.open_attempt_log(name)?;
-        let length = journal
-            .metadata()
-            .map_err(|error| storage("stat adopted attempt journal", error))?
-            .len();
-        let head = store.read_journal_head(name)?;
+        let result = (|| {
+            let length = journal.metadata()?.len();
+            let head = store.read_journal_head(name)?;
+            let remaining = length
+                .checked_div(JOURNAL_ENTRY_BYTES)
+                .ok_or_else(|| corrupt("attempt journal entry width"))?;
+            Ok((remaining, head.committed_chain))
+        })();
+        let (remaining, expected_chain) = match result {
+            Ok(value) => value,
+            Err(primary) => return finish_control_read(journal, Err(primary)),
+        };
         self.header_roots = record.1.into_iter();
         self.journal = Some(AdoptedJournal {
             file: journal,
-            remaining: length
-                .checked_div(JOURNAL_ENTRY_BYTES)
-                .ok_or_else(|| corrupt("attempt journal entry width"))?,
+            remaining,
             previous: journal_seed(name),
-            expected_chain: head.committed_chain,
+            expected_chain,
         });
         Ok(AdoptedRootAdvance::Advanced)
     }
@@ -3652,13 +5995,7 @@ impl ObjectInventoryCursor {
         }
         if is_object_temporary_name(name, *prefix) {
             let _gate = store.lock_gate()?;
-            match unlinkat(&*directory, name, AtFlags::empty()) {
-                Ok(()) => directory
-                    .sync_all()
-                    .map_err(|error| storage("sync temporary object cleanup", error))?,
-                Err(rustix::io::Errno::NOENT) => {}
-                Err(error) => return Err(storage("remove temporary object", error)),
-            }
+            store.cleanup_pool_temporary(directory, name)?;
             return Ok(ObjectInventoryAdvance::Advanced);
         }
         if name.len() != 64
@@ -4002,6 +6339,105 @@ fn decode_blob_node(bytes: &[u8]) -> Result<Vec<(ObjectRef, u64)>, CoreError> {
 mod journal_tests {
     use super::*;
     use crate::lexical_store::{MapEdit, MapRoot};
+
+    fn physical_pool_inventory(store: &ObjectStore) -> (u64, u64) {
+        let mut objects = 0_u64;
+        let mut bytes = 0_u64;
+        store
+            .visit_object_digests(&mut |digest| {
+                let directory = store.object_dir(digest, false)?;
+                let name = hex_digest(digest);
+                let object = File::from(
+                    openat(
+                        &directory,
+                        name.as_str(),
+                        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                        Mode::empty(),
+                    )
+                    .map_err(|error| storage("open inventoried object", error))?,
+                );
+                objects = objects
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("physical inventory count overflow"))?;
+                bytes = bytes
+                    .checked_add(
+                        object
+                            .metadata()
+                            .map_err(|error| storage("stat inventoried object", error))?
+                            .len(),
+                    )
+                    .ok_or_else(|| invalid("physical inventory byte overflow"))?;
+                Ok(())
+            })
+            .expect("physical pool inventory");
+        (objects, bytes)
+    }
+
+    #[test]
+    fn attempt_write_cost_matches_pool_inventory_across_nonbatch_and_batch_flushes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ObjectStore::open(dir.path()).expect("store");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        assert_eq!(physical_pool_inventory(&store), (0, 0));
+
+        let nonbatch = store
+            .put_adopted_object(&lease, ObjectKind::Record, &[], b"nonbatch")
+            .expect("new nonbatched object");
+        assert_eq!(
+            store
+                .put_adopted_object(&lease, ObjectKind::Record, &[], b"nonbatch")
+                .expect("reused nonbatched object"),
+            nonbatch
+        );
+        let cost = lease.write_cost_snapshot().expect("nonbatch cost");
+        assert_eq!(cost.new_objects, 1);
+        assert_eq!(cost.new_encoded_bytes, nonbatch.bytes);
+        assert_eq!(cost.reused_objects, 1);
+        assert_eq!(cost.reused_encoded_bytes, nonbatch.bytes);
+        assert_eq!(physical_pool_inventory(&store), (1, nonbatch.bytes));
+
+        let mut batched_reference = None;
+        store
+            .with_adoption_batch(&lease, |scoped| {
+                let first = scoped.put_adopted_object(
+                    &lease,
+                    ObjectKind::Record,
+                    &[],
+                    b"explicit batch",
+                )?;
+                batched_reference = Some(first.clone());
+                scoped.flush_adoption_batch()?;
+                let repeated = scoped.put_adopted_object(
+                    &lease,
+                    ObjectKind::Record,
+                    &[],
+                    b"explicit batch",
+                )?;
+                assert_eq!(first, repeated);
+                scoped.flush_adoption_batch()?;
+                for number in 0..129_u16 {
+                    let _reference = scoped.put_adopted_object(
+                        &lease,
+                        ObjectKind::Record,
+                        &[],
+                        &number.to_be_bytes(),
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("explicit and automatic batch flushes");
+        let cost = lease.write_cost_snapshot().expect("whole attempt cost");
+        let physical = physical_pool_inventory(&store);
+        assert_eq!((cost.new_objects, cost.new_encoded_bytes), physical);
+        assert_eq!(cost.reused_objects, 2);
+        assert_eq!(
+            cost.reused_encoded_bytes,
+            nonbatch.bytes + batched_reference.expect("batched reference").bytes
+        );
+        // 129 references force one automatic flush; four batch manifests
+        // (two explicit, two automatic/final) are included in the inventory.
+        assert_eq!(cost.new_objects, 1 + 1 + 129 + 4);
+    }
 
     #[test]
     fn closure_object_counter_overflow_keeps_product_result() {
@@ -4641,6 +7077,15 @@ mod journal_tests {
             .expect("durable manifest retry");
         assert_eq!(recovered.root, expected);
         assert!(store.adopted_roots().expect("roots").contains(&expected));
+        let cost = lease.write_cost_snapshot().expect("retry write cost");
+        let (physical_objects, physical_bytes) = physical_pool_inventory(&store);
+        assert_eq!(physical_objects, 2);
+        // The first manifest survived rename but failed before verification;
+        // both later invocations authenticate and reuse both physical objects.
+        assert_eq!(cost.new_objects, 1);
+        assert_eq!(cost.new_encoded_bytes, expected.bytes);
+        assert_eq!(cost.reused_objects, 4);
+        assert_eq!(cost.reused_encoded_bytes, physical_bytes * 2);
     }
 
     #[test]

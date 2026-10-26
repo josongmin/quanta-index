@@ -10,9 +10,10 @@
 
 use core::fmt;
 
+use quanta_index_contract_base::DecodeBackingAdmissionV1;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, MapAccess, Visitor},
+    de::{self, DeserializeSeed, MapAccess, Visitor},
     ser::SerializeStruct,
 };
 
@@ -51,9 +52,119 @@ impl Serialize for DirtyRecord {
     }
 }
 
-struct DirtyRecordVisitor;
+struct DirtyRecordVisitor<P>(P);
 
-impl<'de> Visitor<'de> for DirtyRecordVisitor {
+trait DirtyRecordDecodePolicy<'de> {
+    fn next_field<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Option<&'static str>, M::Error>;
+    fn next_doc_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<ChunkId, M::Error>;
+}
+
+struct OrdinaryDirtyRecord;
+
+struct DirtyRecordFieldSeed;
+
+impl<'de> DeserializeSeed<'de> for DirtyRecordFieldSeed {
+    type Value = &'static str;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        decoder.deserialize_identifier(self)
+    }
+}
+
+impl Visitor<'_> for DirtyRecordFieldSeed {
+    type Value = &'static str;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a borrowed DirtyRecord field")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        DIRTY_RECORD_FIELDS
+            .iter()
+            .copied()
+            .find(|field| *field == value)
+            .ok_or_else(|| E::unknown_field(value, DIRTY_RECORD_FIELDS))
+    }
+
+    fn visit_string<E: de::Error>(self, _value: String) -> Result<Self::Value, E> {
+        Err(E::custom("admitted DirtyRecord field must be borrowed"))
+    }
+}
+
+impl<'de> DirtyRecordDecodePolicy<'de> for OrdinaryDirtyRecord {
+    fn next_field<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Option<&'static str>, M::Error> {
+        map.next_key::<String>()?
+            .map(|key| {
+                DIRTY_RECORD_FIELDS
+                    .iter()
+                    .copied()
+                    .find(|field| *field == key)
+                    .ok_or_else(|| de::Error::unknown_field(key.as_str(), DIRTY_RECORD_FIELDS))
+            })
+            .transpose()
+    }
+
+    fn next_doc_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<ChunkId, M::Error> {
+        map.next_value()
+    }
+}
+
+struct AdmittedDirtyRecord<'a, A: ?Sized> {
+    admission: &'a A,
+    max_text_bytes: usize,
+}
+
+impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> DirtyRecordDecodePolicy<'de>
+    for AdmittedDirtyRecord<'_, A>
+{
+    fn next_field<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Option<&'static str>, M::Error> {
+        map.next_key_seed(DirtyRecordFieldSeed)
+    }
+
+    fn next_doc_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<ChunkId, M::Error> {
+        map.next_value_seed(ChunkId::deserialize_seed_with_admission_v1(
+            self.admission,
+            self.max_text_bytes,
+        ))
+    }
+}
+
+impl DirtyRecord {
+    /// The caller retains `admission` and its parser backing with the result.
+    pub fn deserialize_seed_with_admission_v1<'a, A>(
+        admission: &'a A,
+        max_text_bytes: usize,
+    ) -> impl for<'de> DeserializeSeed<'de, Value = Self> + 'a
+    where
+        A: DecodeBackingAdmissionV1 + ?Sized,
+    {
+        AdmittedDirtyRecord {
+            admission,
+            max_text_bytes,
+        }
+    }
+}
+
+impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> DeserializeSeed<'de>
+    for AdmittedDirtyRecord<'_, A>
+{
+    type Value = DirtyRecord;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        let admission = self.admission;
+        let result = decoder.deserialize_struct(
+            "DirtyRecord",
+            DIRTY_RECORD_FIELDS,
+            DirtyRecordVisitor(self),
+        );
+        if result.is_err() {
+            admission.abort_decode();
+        }
+        result
+    }
+}
+
+impl<'de, P: DirtyRecordDecodePolicy<'de>> Visitor<'de> for DirtyRecordVisitor<P> {
     type Value = DirtyRecord;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -68,8 +179,8 @@ impl<'de> Visitor<'de> for DirtyRecordVisitor {
         let mut doc_id: Option<ChunkId> = None;
         let mut applied_at_ms: Option<u64> = None;
         let mut payload_hash: Option<[u8; 32]> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self.0.next_field(&mut map)? {
+            match key {
                 "wire_version" => {
                     if wire_version.is_some() {
                         return Err(de::Error::duplicate_field("wire_version"));
@@ -80,7 +191,7 @@ impl<'de> Visitor<'de> for DirtyRecordVisitor {
                     if doc_id.is_some() {
                         return Err(de::Error::duplicate_field("doc_id"));
                     }
-                    doc_id = Some(map.next_value()?);
+                    doc_id = Some(self.0.next_doc_id(&mut map)?);
                 }
                 "applied_at_ms" => {
                     if applied_at_ms.is_some() {
@@ -116,6 +227,10 @@ impl<'de> Deserialize<'de> for DirtyRecord {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_struct("DirtyRecord", DIRTY_RECORD_FIELDS, DirtyRecordVisitor)
+        deserializer.deserialize_struct(
+            "DirtyRecord",
+            DIRTY_RECORD_FIELDS,
+            DirtyRecordVisitor(OrdinaryDirtyRecord),
+        )
     }
 }

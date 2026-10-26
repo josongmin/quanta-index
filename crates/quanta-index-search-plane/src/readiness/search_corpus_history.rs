@@ -5,12 +5,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
+use std::time::Duration;
 use std::{fmt, fs};
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneErrorCodeV2};
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticLaneV1, DiagnosticStageV1,
-    DiagnosticTerminalV1,
+    DiagnosticTerminalV1, RequestBudgetV1,
 };
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::de::{MapAccess, Visitor};
@@ -20,7 +21,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use crate::SnapshotKey;
 use crate::readiness::auxiliary_store::AuxiliaryAuthorityStore;
 use crate::readiness::durable_fs::{
-    AtomicFileWriteOutcomeV1, atomic_replace_file_from_staging_v1, ensure_durable_directory_v1,
+    AtomicFileWriteOutcomeV1, atomic_replace_file_from_staging_admitted_v1,
+    atomic_replace_file_from_staging_v1, ensure_durable_directory_v1,
     read_regular_file_nofollow_v1, sync_existing_file_parent_v1,
 };
 use crate::readiness::ledger::Ledger;
@@ -29,7 +31,7 @@ use crate::readiness::retention_receipt::SearchCorpusHistoryRetentionReceiptV1;
 use crate::readiness::search_corpus_generation::SearchCorpusGenerationV1;
 use crate::readiness::serde_support::impl_struct_serde;
 use crate::search_corpus_retention::{
-    SearchCorpusHistoryRetentionItemV1, SearchCorpusHistoryRetentionPlanV1,
+    SearchCorpusHistoryRetentionItemV1, SearchCorpusHistoryRetentionPlanV1, pair_checkpoint,
 };
 
 fn observe_retention_result<T>(
@@ -226,10 +228,6 @@ impl AuxiliaryAuthorityStore {
         )
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the pair and root guards must remain held through active-pin validation, durable record admission, and retention GC"
-    )]
     pub(crate) fn record_sealed_search_corpus_observed(
         &self,
         repo_id: &RepoId,
@@ -238,6 +236,57 @@ impl AuxiliaryAuthorityStore {
         manifest_digest: &str,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
+        // Construct one service-owned deadline for the entire logical record.
+        // Transport cancellation is scoped to optional preparation, not an
+        // already admitted durable publication.
+        let budget = self
+            .index_bytes
+            .measurement_policy()
+            .physical_scan_budget()?;
+        let mut backoff = Duration::from_millis(1);
+        loop {
+            pair_checkpoint(&budget, "retention-record:attempt")?;
+            match self.record_sealed_search_corpus_once_v1(
+                repo_id,
+                revision_id,
+                generation,
+                manifest_digest,
+                &budget,
+                diagnostic,
+            ) {
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                    ..
+                }) => {
+                    // All pair/root/measurement guards have left the one-shot
+                    // call before this wait. The next call reloads both roots
+                    // and the active pin; no plan is reused across attempts.
+                    pair_checkpoint(&budget, "retention-record:busy")?;
+                    let wait = budget.remaining().min(backoff);
+                    if !wait.is_zero() {
+                        std::thread::sleep(wait);
+                    }
+                    backoff = backoff.saturating_mul(2).min(Duration::from_millis(16));
+                }
+                result => return result,
+            }
+        }
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the pair and root guards must remain held through active-pin validation, durable record admission, and retention GC"
+    )]
+    fn record_sealed_search_corpus_once_v1(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+        budget: &RequestBudgetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
+        pair_checkpoint(budget, "retention-record:before-locks")?;
         let pair_guard =
             self.lifecycle_coordinator
                 .lock_pair_observed(repo_id, revision_id, diagnostic)?;
@@ -280,6 +329,7 @@ impl AuxiliaryAuthorityStore {
                     active.as_ref(),
                     &root_snapshot,
                     pair_records,
+                    budget,
                     diagnostic,
                 );
             }
@@ -305,6 +355,7 @@ impl AuxiliaryAuthorityStore {
             active.as_ref(),
             &root_snapshot,
             pair_records,
+            budget,
             diagnostic,
         )
     }
@@ -323,6 +374,7 @@ impl AuxiliaryAuthorityStore {
         active: Option<&SearchCorpusGenerationV1>,
         root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
         pair_records: Vec<SearchCorpusAuthorityFileV1>,
+        budget: &RequestBudgetV1,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
         observe_retention_result(
@@ -348,9 +400,17 @@ impl AuxiliaryAuthorityStore {
             &pair_records,
             Some(generation),
             active,
+            budget,
             diagnostic,
         )?;
-        self.validate_search_corpus_state_root_projection_v1(root_without_pair, &plan, diagnostic)?;
+        self.validate_search_corpus_state_root_projection_v1(
+            root_without_pair,
+            &plan,
+            budget,
+            diagnostic,
+        )?;
+        // Last interruption boundary: GC below can durably remove records.
+        pair_checkpoint(budget, "retention-record:before-reconcile-gc")?;
         let enforced = self.enforce_search_corpus_history_retention_snapshot_v1(
             repo_id,
             revision_id,
@@ -393,6 +453,7 @@ impl AuxiliaryAuthorityStore {
         active: Option<&SearchCorpusGenerationV1>,
         root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
         mut pair_records: Vec<SearchCorpusAuthorityFileV1>,
+        budget: &RequestBudgetV1,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
         // The retention plan requires this candidate and checks its physical
@@ -422,9 +483,17 @@ impl AuxiliaryAuthorityStore {
             &pair_records,
             Some(generation),
             active,
+            budget,
             diagnostic,
         )?;
-        self.validate_search_corpus_state_root_projection_v1(root_without_pair, &plan, diagnostic)?;
+        self.validate_search_corpus_state_root_projection_v1(
+            root_without_pair,
+            &plan,
+            budget,
+            diagnostic,
+        )?;
+        // Last interruption boundary: the authority file write below is durable.
+        pair_checkpoint(budget, "retention-record:before-new-write")?;
         observe_retention_result(
             diagnostic,
             DiagnosticStageV1::RetentionWrite,
@@ -434,15 +503,30 @@ impl AuxiliaryAuthorityStore {
                     "search-corpus authority",
                     self.parent_sync.as_ref(),
                 )?;
-                match atomic_replace_file_from_staging_v1(
-                    path,
-                    &bytes,
-                    &self.search_corpus_staging_dir,
-                    "search-corpus authority",
-                    self.parent_sync.as_ref(),
-                )? {
+                let outcome = if let Some(admission) = &self.durable_control_admission {
+                    atomic_replace_file_from_staging_admitted_v1(
+                        path,
+                        &bytes,
+                        &self.search_corpus_staging_dir,
+                        "search-corpus authority",
+                        self.parent_sync.as_ref(),
+                        admission.0.as_ref(),
+                    )?
+                } else {
+                    atomic_replace_file_from_staging_v1(
+                        path,
+                        &bytes,
+                        &self.search_corpus_staging_dir,
+                        "search-corpus authority",
+                        self.parent_sync.as_ref(),
+                    )?
+                };
+                match outcome {
                     AtomicFileWriteOutcomeV1::Durable => Ok(()),
-                    AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => Err(error),
+                    AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error)
+                    | AtomicFileWriteOutcomeV1::RenamedButAdmissionCommitFailed(error) => {
+                        Err(error)
+                    }
                 }
             },
         )?;
@@ -701,6 +785,7 @@ impl AuxiliaryAuthorityStore {
         records: &[SearchCorpusAuthorityFileV1],
         required_generation: Option<ManifestGeneration>,
         active: Option<&SearchCorpusGenerationV1>,
+        budget: &RequestBudgetV1,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionPlanV1, CoreError> {
         let span = diagnostic.and_then(|context| {
@@ -739,16 +824,19 @@ impl AuxiliaryAuthorityStore {
                 required_generation,
                 active,
             )?;
+            let mut session = self.index_bytes.begin_pair_measurement(
+                repo_id,
+                revision_id,
+                budget,
+                child.as_ref(),
+            )?;
             let mut measure = |generations: &BTreeSet<ManifestGeneration>| {
                 if child.is_some() {
                     measure_calls = measure_calls.saturating_add(1);
                 }
-                let measured = self.index_bytes.measure_index_bytes(
-                    repo_id,
-                    revision_id,
-                    generations,
-                    child.as_ref(),
-                )?;
+                pair_checkpoint(budget, "retention-plan:probe")?;
+                let measured = session.measure(generations)?;
+                pair_checkpoint(budget, "retention-plan:probe-complete")?;
                 if let Some(first_absent) = measured.absent.iter().next() {
                     return Err(CoreError::Typed {
                         code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
@@ -794,6 +882,7 @@ impl AuxiliaryAuthorityStore {
     fn other_pairs_index_bytes_v1(
         &self,
         root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
+        budget: &RequestBudgetV1,
         diagnostic: Option<&DiagnosticContextV1>,
         measure_calls: &mut u64,
     ) -> Result<u64, CoreError> {
@@ -815,6 +904,7 @@ impl AuxiliaryAuthorityStore {
                     &first.record.repo_id,
                     &first.record.revision_id,
                     &generations,
+                    budget,
                     diagnostic,
                 )?
                 .bytes;
@@ -834,6 +924,7 @@ impl AuxiliaryAuthorityStore {
         &self,
         root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
         plan: &SearchCorpusHistoryRetentionPlanV1,
+        budget: &RequestBudgetV1,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
         let span = diagnostic.and_then(|context| {
@@ -890,12 +981,13 @@ impl AuxiliaryAuthorityStore {
             }
             let projected_total_bytes = match self
                 .index_bytes
-                .measure_state_root_index_bytes(child.as_ref())?
+                .measure_state_root_index_bytes(budget, child.as_ref())?
             {
                 Some(physical) => physical,
                 None => self
                     .other_pairs_index_bytes_v1(
                         root_without_pair,
+                        budget,
                         child.as_ref(),
                         &mut measure_calls,
                     )?
@@ -1069,6 +1161,10 @@ impl AuxiliaryAuthorityStore {
         let mut projected_total_bytes = 0_u64;
         let mut physical_bound_for_unverified_pair = None;
         for (pair_path, observed) in snapshot.pairs {
+            let pair_budget = self
+                .index_bytes
+                .measurement_policy()
+                .physical_scan_budget()?;
             let first = observed.first().ok_or_else(|| {
                 CoreError::Storage(format!(
                     "search-corpus history retention: non-empty root snapshot lost pair records for {}",
@@ -1091,9 +1187,13 @@ impl AuxiliaryAuthorityStore {
                     revision_id.as_str(),
                 )));
             }
-            let measured =
-                self.index_bytes
-                    .measure_index_bytes(&repo_id, &revision_id, &generations, None);
+            let measured = self.index_bytes.measure_index_bytes(
+                &repo_id,
+                &revision_id,
+                &generations,
+                &pair_budget,
+                None,
+            );
             let plan = match measured {
                 Ok(measured) if measured.absent.is_empty() => {
                     if let Some(plan) = self
@@ -1115,6 +1215,7 @@ impl AuxiliaryAuthorityStore {
                             &observed,
                             None,
                             active,
+                            &pair_budget,
                             None,
                         )?
                     }
@@ -1148,7 +1249,10 @@ impl AuxiliaryAuthorityStore {
                     // pair; it may reject a damaged pair in a multi-pair root.
                     let physical = match physical_bound_for_unverified_pair {
                         Some(physical) => physical,
-                        None => match self.index_bytes.measure_state_root_index_bytes(None)? {
+                        None => match self
+                            .index_bytes
+                            .measure_state_root_index_bytes(&pair_budget, None)?
+                        {
                             Some(physical) => {
                                 physical_bound_for_unverified_pair = Some(physical);
                                 physical
@@ -1177,7 +1281,13 @@ impl AuxiliaryAuthorityStore {
             Some(physical) => physical,
             None => self
                 .index_bytes
-                .measure_state_root_index_bytes(None)?
+                .measure_state_root_index_bytes(
+                    &self
+                        .index_bytes
+                        .measurement_policy()
+                        .physical_scan_budget()?,
+                    None,
+                )?
                 .unwrap_or(projected_total_bytes),
         };
         if projected_total_bytes > self.search_corpus_history_retention.max_total_bytes() {

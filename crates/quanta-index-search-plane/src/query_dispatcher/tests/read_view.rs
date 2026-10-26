@@ -202,7 +202,8 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected UNKNOWN_GENERATION, got {other:?}").into());
         }
     }

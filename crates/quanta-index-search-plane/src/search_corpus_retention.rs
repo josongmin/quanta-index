@@ -15,10 +15,89 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
-use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
-use quanta_index_core::{
-    CoreError, DiagnosticContextV1, SealedGenerationBytesV1, SealedGenerationReclaimPort,
+use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneErrorCodeV2};
+use quanta_index_core::domains::generation::{
+    RetentionMeasurementPolicy, SealedGenerationByteSession,
 };
+use quanta_index_core::{
+    CoreError, DiagnosticContextV1, RequestBudgetV1, SealedGenerationBytesV1,
+    SealedGenerationReclaimPort,
+};
+
+/// One retention request's exact pair measurement. A failed probe must not
+/// change the answer to any later requested set.
+pub trait SearchCorpusIndexByteSession {
+    fn measure(
+        &mut self,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError>;
+}
+
+struct DirectSearchCorpusIndexByteSession<'a, T: SearchCorpusIndexBytesPort + ?Sized> {
+    owner: &'a T,
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    diagnostic: Option<DiagnosticContextV1>,
+    budget: RequestBudgetV1,
+}
+
+impl<T: SearchCorpusIndexBytesPort + ?Sized> SearchCorpusIndexByteSession
+    for DirectSearchCorpusIndexByteSession<'_, T>
+{
+    fn measure(
+        &mut self,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        pair_checkpoint(&self.budget, "retention-direct-pair:entry")?;
+        let result = self.owner.measure_index_bytes(
+            &self.repo_id,
+            &self.revision_id,
+            generations,
+            &self.budget,
+            self.diagnostic.as_ref(),
+        )?;
+        pair_checkpoint(&self.budget, "retention-direct-pair:complete")?;
+        Ok(result)
+    }
+}
+
+struct PairIndexByteSession<'a> {
+    lexical: Box<dyn SealedGenerationByteSession + 'a>,
+    semantic: Box<dyn SealedGenerationByteSession + 'a>,
+    budget: RequestBudgetV1,
+}
+
+impl SearchCorpusIndexByteSession for PairIndexByteSession<'_> {
+    fn measure(
+        &mut self,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        pair_checkpoint(&self.budget, "retention-pair:entry")?;
+        let lexical = self
+            .lexical
+            .measure(generations)
+            .map_err(|error| scan_error(&self.budget, error))?;
+        pair_checkpoint(&self.budget, "retention-pair:between-tracks")?;
+        let semantic = self
+            .semantic
+            .measure(generations)
+            .map_err(|error| scan_error(&self.budget, error))?;
+        pair_checkpoint(&self.budget, "retention-pair:complete")?;
+        combine_track_bytes(lexical, semantic)
+    }
+}
+
+fn combine_track_bytes(
+    lexical: SealedGenerationBytesV1,
+    semantic: SealedGenerationBytesV1,
+) -> Result<SealedGenerationBytesV1, CoreError> {
+    let bytes = lexical.bytes.checked_add(semantic.bytes).ok_or_else(|| {
+        CoreError::Storage("search-corpus history retention: index byte total overflow".into())
+    })?;
+    let mut absent = lexical.absent;
+    absent.extend(semantic.absent);
+    Ok(SealedGenerationBytesV1 { bytes, absent })
+}
 
 /// Measures the bytes a set of sealed generations of one pair occupies on
 /// disk across both tracks, including the unique shared-object closure.
@@ -26,11 +105,34 @@ use quanta_index_core::{
 /// Called at admission and at restore with the sets retention is deciding
 /// between; a generation whose directories are absent contributes nothing.
 pub trait SearchCorpusIndexBytesPort: fmt::Debug + Send + Sync {
+    /// One configured service policy for a complete authority admission attempt.
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy;
+
+    /// Begin one pair-local retention plan's sequence of measurements. The
+    /// default calls full-set measurement with the same budget for every probe.
+    fn begin_pair_measurement(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        budget: &RequestBudgetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<Box<dyn SearchCorpusIndexByteSession + '_>, CoreError> {
+        pair_checkpoint(budget, "retention-direct-pair:begin")?;
+        Ok(Box::new(DirectSearchCorpusIndexByteSession {
+            owner: self,
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            diagnostic: diagnostic.cloned(),
+            budget: budget.clone(),
+        }))
+    }
+
     fn measure_index_bytes(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        budget: &RequestBudgetV1,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError>;
 
@@ -40,8 +142,10 @@ pub trait SearchCorpusIndexBytesPort: fmt::Debug + Send + Sync {
     /// once and pending collection still counts.
     fn measure_state_root_index_bytes(
         &self,
+        budget: &RequestBudgetV1,
         _diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<u64>, CoreError> {
+        pair_checkpoint(budget, "retention-root:default")?;
         Ok(None)
     }
 }
@@ -51,6 +155,7 @@ pub trait SearchCorpusIndexBytesPort: fmt::Debug + Send + Sync {
 pub struct PairIndexBytesMeasurer {
     lexical: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     semantic: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
+    measurement_policy: RetentionMeasurementPolicy,
 }
 
 impl PairIndexBytesMeasurer {
@@ -59,8 +164,80 @@ impl PairIndexBytesMeasurer {
         lexical: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
         semantic: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     ) -> Self {
-        Self { lexical, semantic }
+        Self {
+            lexical,
+            semantic,
+            measurement_policy: RetentionMeasurementPolicy::DEFAULT,
+        }
     }
+
+    #[must_use]
+    pub fn with_retention_measurement_policy(mut self, policy: RetentionMeasurementPolicy) -> Self {
+        self.measurement_policy = policy;
+        self
+    }
+
+    fn measure_physical_with_budget(
+        &self,
+        budget: &RequestBudgetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<u64, CoreError> {
+        // Both custody guards remain held until the checked total is known.
+        scan_checkpoint(budget)?;
+        let lexical_session = self.lexical.begin_track_physical_measurement()?;
+        scan_checkpoint(budget)?;
+        let semantic_session = self.semantic.begin_track_physical_measurement()?;
+        scan_checkpoint(budget)?;
+        let lexical = lexical_session
+            .measure(budget, diagnostic)
+            .map_err(|error| scan_error(budget, error))?;
+        scan_checkpoint(budget)?;
+        let semantic = semantic_session
+            .measure(budget, diagnostic)
+            .map_err(|error| scan_error(budget, error))?;
+        scan_checkpoint(budget)?;
+        lexical.checked_add(semantic).ok_or_else(|| {
+            CoreError::Storage(
+                "search-corpus history retention: physical track total overflow".into(),
+            )
+        })
+    }
+}
+
+fn scan_error(budget: &RequestBudgetV1, error: CoreError) -> CoreError {
+    if budget.interruption().is_some()
+        && matches!(
+            &error,
+            CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::RequestDeadlineExceeded
+                    | SearchPlaneErrorCodeV2::RequestCancelled,
+                ..
+            }
+        )
+    {
+        return CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+            message: format!(
+                "search-corpus history retention: service retention scan budget exhausted; retry measurement: {error}"
+            ),
+        };
+    }
+    error
+}
+
+fn scan_checkpoint(budget: &RequestBudgetV1) -> Result<(), CoreError> {
+    budget
+        .checkpoint("search-corpus-history:physical-scan")
+        .map_err(|error| scan_error(budget, error))
+}
+
+pub(crate) fn pair_checkpoint(
+    budget: &RequestBudgetV1,
+    stage: &'static str,
+) -> Result<(), CoreError> {
+    budget
+        .checkpoint(stage)
+        .map_err(|error| scan_error(budget, error))
 }
 
 impl fmt::Debug for PairIndexBytesMeasurer {
@@ -70,17 +247,41 @@ impl fmt::Debug for PairIndexBytesMeasurer {
 }
 
 impl SearchCorpusIndexBytesPort for PairIndexBytesMeasurer {
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+        self.measurement_policy
+    }
+
+    fn begin_pair_measurement(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        budget: &RequestBudgetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<Box<dyn SearchCorpusIndexByteSession + '_>, CoreError> {
+        pair_checkpoint(budget, "retention-pair:begin")?;
+        let lexical = self
+            .lexical
+            .begin_pair_measurement(repo_id, revision_id, budget.clone(), diagnostic)
+            .map_err(|error| scan_error(budget, error))?;
+        let semantic = self
+            .semantic
+            .begin_pair_measurement(repo_id, revision_id, budget.clone(), diagnostic)
+            .map_err(|error| scan_error(budget, error))?;
+        pair_checkpoint(budget, "retention-pair:ready")?;
+        Ok(Box::new(PairIndexByteSession {
+            lexical,
+            semantic,
+            budget: budget.clone(),
+        }))
+    }
+
     fn measure_state_root_index_bytes(
         &self,
+        budget: &RequestBudgetV1,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<u64>, CoreError> {
-        let lexical = self.lexical.measure_track_physical_bytes(diagnostic)?;
-        let semantic = self.semantic.measure_track_physical_bytes(diagnostic)?;
-        lexical.checked_add(semantic).map(Some).ok_or_else(|| {
-            CoreError::Storage(
-                "search-corpus history retention: physical track total overflow".into(),
-            )
-        })
+        self.measure_physical_with_budget(budget, diagnostic)
+            .map(Some)
     }
 
     fn measure_index_bytes(
@@ -88,29 +289,11 @@ impl SearchCorpusIndexBytesPort for PairIndexBytesMeasurer {
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        budget: &RequestBudgetV1,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
-        let lexical = self.lexical.measure_sealed_generations(
-            repo_id,
-            revision_id,
-            generations,
-            diagnostic,
-        )?;
-        let semantic = self.semantic.measure_sealed_generations(
-            repo_id,
-            revision_id,
-            generations,
-            diagnostic,
-        )?;
-        let bytes = lexical.bytes.checked_add(semantic.bytes).ok_or_else(|| {
-            CoreError::Storage(
-                "search-corpus history retention: index byte total overflow".to_string(),
-            )
-        })?;
-        Ok(SealedGenerationBytesV1 {
-            bytes,
-            absent: lexical.absent.union(&semantic.absent).copied().collect(),
-        })
+        self.begin_pair_measurement(repo_id, revision_id, budget, diagnostic)?
+            .measure(generations)
     }
 }
 
@@ -354,12 +537,25 @@ mod tests {
         reason = "Result-returning retention tests use assertions as test-failure reporting"
     )]
 
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, VecDeque};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
-    use quanta_index_contract::ManifestGeneration;
-    use quanta_index_core::CoreError;
+    use quanta_index_contract::{GenerationSnapshot, ManifestGeneration, RepoId, RevisionId};
+    use quanta_index_core::domains::generation::{
+        FinishedReclaims, RetentionMeasurementPolicy, SealedGenerationByteSession,
+        TrackPhysicalByteSession,
+    };
+    use quanta_index_core::{
+        CoreError, DiagnosticContextV1, RequestBudgetV1, SealedGenerationBytesV1,
+    };
+    use quanta_index_core::{SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort};
 
-    use super::{SearchCorpusHistoryRetentionItemV1, SearchCorpusHistoryRetentionPolicyV1};
+    use super::{
+        PairIndexByteSession, PairIndexBytesMeasurer, SearchCorpusHistoryRetentionItemV1,
+        SearchCorpusHistoryRetentionPolicyV1, SearchCorpusIndexByteSession,
+        SearchCorpusIndexBytesPort,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -376,6 +572,546 @@ mod tests {
 
     fn g(value: u64) -> ManifestGeneration {
         ManifestGeneration::new(value)
+    }
+
+    #[derive(Debug, Default)]
+    struct ScriptedPairBytes {
+        calls: Mutex<Vec<BTreeSet<ManifestGeneration>>>,
+        fail_on_two: bool,
+    }
+
+    impl SearchCorpusIndexBytesPort for ScriptedPairBytes {
+        fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+            RetentionMeasurementPolicy::DEFAULT
+        }
+
+        fn measure_index_bytes(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+            generations: &BTreeSet<ManifestGeneration>,
+            _budget: &RequestBudgetV1,
+            _diagnostic: Option<&DiagnosticContextV1>,
+        ) -> Result<SealedGenerationBytesV1, CoreError> {
+            self.calls
+                .lock()
+                .map_err(|error| CoreError::Storage(format!("fixture lock: {error}")))?
+                .push(generations.clone());
+            if self.fail_on_two && generations.contains(&g(2)) {
+                return Err(CoreError::Storage("fixture failed probe".into()));
+            }
+            let shared = match (generations.contains(&g(4)), generations.contains(&g(3))) {
+                (true, true) => 12_u64,
+                (true, false) | (false, true) => 10_u64,
+                (false, false) => 0_u64,
+            };
+            let bytes = shared
+                .checked_add(if generations.contains(&g(2)) { 10 } else { 0 })
+                .ok_or_else(|| CoreError::InvalidContract("fixture bytes overflow".into()))?;
+            Ok(SealedGenerationBytesV1 {
+                bytes,
+                absent: BTreeSet::new(),
+            })
+        }
+    }
+
+    struct ScriptedTrackSession {
+        results: VecDeque<Result<SealedGenerationBytesV1, CoreError>>,
+    }
+
+    impl SealedGenerationByteSession for ScriptedTrackSession {
+        fn measure(
+            &mut self,
+            _generations: &BTreeSet<ManifestGeneration>,
+        ) -> Result<SealedGenerationBytesV1, CoreError> {
+            self.results
+                .pop_front()
+                .ok_or_else(|| CoreError::InvalidContract("track fixture exhausted".into()))?
+        }
+    }
+
+    fn scripted_track(
+        results: Vec<Result<SealedGenerationBytesV1, CoreError>>,
+    ) -> Box<dyn SealedGenerationByteSession> {
+        Box::new(ScriptedTrackSession {
+            results: VecDeque::from(results),
+        })
+    }
+
+    struct PhysicalSnapshotMock {
+        track: &'static str,
+        bytes: u64,
+        refuse_acquire: bool,
+        cancel_budget_on_measure: bool,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct PhysicalSnapshotMockSession {
+        track: &'static str,
+        bytes: u64,
+        cancel_budget_on_measure: bool,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct PairBudgetMockSession {
+        track: &'static str,
+        bytes: u64,
+        budget: RequestBudgetV1,
+        cancel_on_measure: bool,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Drop for PairBudgetMockSession {
+        fn drop(&mut self) {
+            if let Ok(mut events) = self.events.lock() {
+                events.push(format!("drop pair {}", self.track));
+            }
+        }
+    }
+
+    impl SealedGenerationByteSession for PairBudgetMockSession {
+        fn measure(
+            &mut self,
+            generations: &BTreeSet<ManifestGeneration>,
+        ) -> Result<SealedGenerationBytesV1, CoreError> {
+            self.budget.checkpoint("fixture-pair-measure")?;
+            self.events
+                .lock()
+                .map_err(|error| CoreError::Storage(format!("fixture lock: {error}")))?
+                .push(format!("measure pair {}", self.track));
+            if self.cancel_on_measure && generations.contains(&g(2)) {
+                self.budget.cancel_handle().cancel();
+            }
+            Ok(SealedGenerationBytesV1 {
+                bytes: self.bytes,
+                absent: BTreeSet::new(),
+            })
+        }
+    }
+
+    impl Drop for PhysicalSnapshotMockSession {
+        fn drop(&mut self) {
+            if let Ok(mut events) = self.events.lock() {
+                events.push(format!("drop {}", self.track));
+            }
+        }
+    }
+
+    impl TrackPhysicalByteSession for PhysicalSnapshotMockSession {
+        fn measure(
+            &self,
+            budget: &RequestBudgetV1,
+            _diagnostic: Option<&DiagnosticContextV1>,
+        ) -> Result<u64, CoreError> {
+            self.events
+                .lock()
+                .map_err(|error| CoreError::Storage(format!("fixture lock: {error}")))?
+                .push(format!("measure {}", self.track));
+            if self.cancel_budget_on_measure {
+                budget.cancel_handle().cancel();
+            }
+            Ok(self.bytes)
+        }
+    }
+
+    impl SealedGenerationReclaimPort for PhysicalSnapshotMock {
+        fn begin_pair_measurement(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+            budget: RequestBudgetV1,
+            _diagnostic: Option<&DiagnosticContextV1>,
+        ) -> Result<Box<dyn SealedGenerationByteSession + '_>, CoreError> {
+            self.events
+                .lock()
+                .map_err(|error| CoreError::Storage(format!("fixture lock: {error}")))?
+                .push(format!("acquire pair {}", self.track));
+            Ok(Box::new(PairBudgetMockSession {
+                track: self.track,
+                bytes: self.bytes,
+                budget,
+                cancel_on_measure: self.cancel_budget_on_measure,
+                events: Arc::clone(&self.events),
+            }))
+        }
+
+        fn begin_track_physical_measurement(
+            &self,
+        ) -> Result<Box<dyn TrackPhysicalByteSession + '_>, CoreError> {
+            self.events
+                .lock()
+                .map_err(|error| CoreError::Storage(format!("fixture lock: {error}")))?
+                .push(format!("acquire {}", self.track));
+            if self.refuse_acquire {
+                return Err(CoreError::Storage(format!(
+                    "{} snapshot unavailable",
+                    self.track
+                )));
+            }
+            Ok(Box::new(PhysicalSnapshotMockSession {
+                track: self.track,
+                bytes: self.bytes,
+                cancel_budget_on_measure: self.cancel_budget_on_measure,
+                events: Arc::clone(&self.events),
+            }))
+        }
+
+        fn reclaim_sealed_generation_with_settlement(
+            &self,
+            _retired: &GenerationSnapshot,
+            _on_absent: &dyn Fn() -> Result<(), CoreError>,
+            _diagnostic: Option<&DiagnosticContextV1>,
+        ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
+            Err(CoreError::InvalidContract("fixture reclaim unused".into()))
+        }
+
+        fn sealed_generations_for_pair(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+            _diagnostic: Option<&DiagnosticContextV1>,
+        ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+            Err(CoreError::InvalidContract(
+                "fixture inventory unused".into(),
+            ))
+        }
+
+        fn measure_sealed_generations(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+            _generations: &BTreeSet<ManifestGeneration>,
+            _diagnostic: Option<&DiagnosticContextV1>,
+        ) -> Result<SealedGenerationBytesV1, CoreError> {
+            Err(CoreError::InvalidContract(
+                "fixture pair measure unused".into(),
+            ))
+        }
+
+        fn finish_interrupted_reclaims(
+            &self,
+            _diagnostic: Option<&DiagnosticContextV1>,
+        ) -> Result<FinishedReclaims, CoreError> {
+            Err(CoreError::InvalidContract(
+                "fixture reclaim sweep unused".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn physical_pair_acquires_both_snapshots_before_measuring() -> TestResult {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mock = |track, bytes| PhysicalSnapshotMock {
+            track,
+            bytes,
+            refuse_acquire: false,
+            cancel_budget_on_measure: false,
+            events: Arc::clone(&events),
+        };
+        let pair = PairIndexBytesMeasurer::new(
+            Arc::new(mock("lexical", 7)),
+            Arc::new(mock("semantic", 11)),
+        );
+        assert_eq!(
+            pair.measure_state_root_index_bytes(
+                &pair.measurement_policy().physical_scan_budget()?,
+                None
+            )?,
+            Some(18)
+        );
+        assert_eq!(
+            *events
+                .lock()
+                .map_err(|error| format!("fixture lock: {error}"))?,
+            [
+                "acquire lexical",
+                "acquire semantic",
+                "measure lexical",
+                "measure semantic",
+                "drop semantic",
+                "drop lexical",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn physical_pair_releases_first_snapshot_on_second_refusal() -> TestResult {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let pair = PairIndexBytesMeasurer::new(
+            Arc::new(PhysicalSnapshotMock {
+                track: "lexical",
+                bytes: 7,
+                refuse_acquire: false,
+                cancel_budget_on_measure: false,
+                events: Arc::clone(&events),
+            }),
+            Arc::new(PhysicalSnapshotMock {
+                track: "semantic",
+                bytes: 11,
+                refuse_acquire: true,
+                cancel_budget_on_measure: false,
+                events: Arc::clone(&events),
+            }),
+        );
+        assert!(matches!(
+            pair.measure_state_root_index_bytes(&pair.measurement_policy().physical_scan_budget()?, None),
+            Err(CoreError::Storage(message)) if message == "semantic snapshot unavailable"
+        ));
+        assert_eq!(
+            *events
+                .lock()
+                .map_err(|error| format!("fixture lock: {error}"))?,
+            ["acquire lexical", "acquire semantic", "drop lexical"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn expired_service_budget_refuses_before_snapshot_acquisition() -> TestResult {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mock = |track| PhysicalSnapshotMock {
+            track,
+            bytes: 1,
+            refuse_acquire: false,
+            cancel_budget_on_measure: false,
+            events: Arc::clone(&events),
+        };
+        let pair =
+            PairIndexBytesMeasurer::new(Arc::new(mock("lexical")), Arc::new(mock("semantic")));
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .ok_or("fixture deadline underflow")?;
+        let budget = RequestBudgetV1::until(past);
+        assert!(matches!(
+            pair.measure_physical_with_budget(&budget, None),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                ..
+            })
+        ));
+        assert!(
+            events
+                .lock()
+                .map_err(|error| format!("fixture lock: {error}"))?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn one_service_budget_fences_both_tracks_and_releases_both_guards() -> TestResult {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let pair = PairIndexBytesMeasurer::new(
+            Arc::new(PhysicalSnapshotMock {
+                track: "lexical",
+                bytes: 7,
+                refuse_acquire: false,
+                cancel_budget_on_measure: true,
+                events: Arc::clone(&events),
+            }),
+            Arc::new(PhysicalSnapshotMock {
+                track: "semantic",
+                bytes: 11,
+                refuse_acquire: false,
+                cancel_budget_on_measure: false,
+                events: Arc::clone(&events),
+            }),
+        );
+        let budget = RequestBudgetV1::until(
+            Instant::now()
+                .checked_add(Duration::from_secs(60))
+                .ok_or("fixture deadline overflow")?,
+        );
+        assert!(matches!(
+            pair.measure_physical_with_budget(&budget, None),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                ..
+            })
+        ));
+        assert_eq!(
+            *events
+                .lock()
+                .map_err(|error| format!("fixture lock: {error}"))?,
+            [
+                "acquire lexical",
+                "acquire semantic",
+                "measure lexical",
+                "drop semantic",
+                "drop lexical",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pair_session_uses_one_budget_and_never_accepts_lexical_partial_success() -> TestResult {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let pair = PairIndexBytesMeasurer::new(
+            Arc::new(PhysicalSnapshotMock {
+                track: "lexical",
+                bytes: 7,
+                refuse_acquire: false,
+                cancel_budget_on_measure: true,
+                events: Arc::clone(&events),
+            }),
+            Arc::new(PhysicalSnapshotMock {
+                track: "semantic",
+                bytes: 11,
+                refuse_acquire: false,
+                cancel_budget_on_measure: false,
+                events: Arc::clone(&events),
+            }),
+        );
+        let repo = RepoId::new("pair-budget")?;
+        let revision = RevisionId::new("revision")?;
+        let budget = pair.measurement_policy().physical_scan_budget()?;
+        let mut session = pair.begin_pair_measurement(&repo, &revision, &budget, None)?;
+        assert_eq!(session.measure(&BTreeSet::from([g(1)]))?.bytes, 18);
+        assert!(matches!(
+            session.measure(&BTreeSet::from([g(2)])),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                ..
+            })
+        ));
+        drop(session);
+        assert!(budget.is_cancelled());
+        assert_eq!(
+            *events
+                .lock()
+                .map_err(|error| format!("fixture lock: {error}"))?,
+            [
+                "acquire pair lexical",
+                "acquire pair semantic",
+                "measure pair lexical",
+                "measure pair semantic",
+                "measure pair lexical",
+                "drop pair lexical",
+                "drop pair semantic"
+            ]
+        );
+        assert!(matches!(
+            pair.measure_index_bytes(&repo, &revision, &BTreeSet::from([g(2)]), &pair.measurement_policy().physical_scan_budget()?, None),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn pair_measurement_session_probes_exact_sets_and_recovers_after_error() -> TestResult {
+        let port = ScriptedPairBytes {
+            fail_on_two: true,
+            ..ScriptedPairBytes::default()
+        };
+        let repo = RepoId::new("retention-session")?;
+        let revision = RevisionId::new("revision")?;
+        let budget = port.measurement_policy().physical_scan_budget()?;
+        let mut session = port.begin_pair_measurement(&repo, &revision, &budget, None)?;
+        let required = BTreeSet::from([g(3), g(4)]);
+        assert_eq!(session.measure(&required)?.bytes, 12);
+        assert!(
+            session
+                .measure(&BTreeSet::from([g(2), g(3), g(4)]))
+                .is_err()
+        );
+        assert_eq!(session.measure(&required)?.bytes, 12);
+        drop(session);
+        assert_eq!(
+            *port
+                .calls
+                .lock()
+                .map_err(|error| format!("fixture lock: {error}"))?,
+            vec![
+                required.clone(),
+                BTreeSet::from([g(2), g(3), g(4)]),
+                required,
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retention_plan_uses_one_session_for_exact_subset_sequence() -> TestResult {
+        let port = ScriptedPairBytes::default();
+        let repo = RepoId::new("retention-plan-session")?;
+        let revision = RevisionId::new("revision")?;
+        let budget = port.measurement_policy().physical_scan_budget()?;
+        let mut session = port.begin_pair_measurement(&repo, &revision, &budget, None)?;
+        let policy = SearchCorpusHistoryRetentionPolicyV1::new(4, 15, 8, 200)?;
+        let plan = policy.plan(
+            vec![item(4, true), item(3, false), item(2, false)],
+            &mut |set| Ok(session.measure(set)?.bytes),
+        )?;
+        assert_eq!(plan.retained_bytes(), 12);
+        assert!(plan.retains(g(4)) && plan.retains(g(3)) && !plan.retains(g(2)));
+        drop(session);
+        assert_eq!(
+            *port
+                .calls
+                .lock()
+                .map_err(|error| format!("fixture lock: {error}"))?,
+            vec![
+                BTreeSet::from([g(3), g(4)]),
+                BTreeSet::from([g(2), g(3), g(4)]),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pair_track_sessions_preserve_absent_union_and_propagate_errors() -> TestResult {
+        let set = BTreeSet::from([g(1), g(2)]);
+        let mut session = PairIndexByteSession {
+            lexical: scripted_track(vec![
+                Ok(SealedGenerationBytesV1 {
+                    bytes: 7,
+                    absent: BTreeSet::from([g(1)]),
+                }),
+                Ok(SealedGenerationBytesV1 {
+                    bytes: u64::MAX,
+                    absent: BTreeSet::new(),
+                }),
+                Err(CoreError::Storage("lexical fixture failure".into())),
+            ]),
+            semantic: scripted_track(vec![
+                Ok(SealedGenerationBytesV1 {
+                    bytes: 5,
+                    absent: BTreeSet::from([g(2)]),
+                }),
+                Ok(SealedGenerationBytesV1 {
+                    bytes: 1,
+                    absent: BTreeSet::new(),
+                }),
+            ]),
+            budget: RetentionMeasurementPolicy::DEFAULT.physical_scan_budget()?,
+        };
+        assert_eq!(
+            session.measure(&set)?,
+            SealedGenerationBytesV1 {
+                bytes: 12,
+                absent: set.clone(),
+            }
+        );
+        assert!(
+            matches!(
+                session.measure(&set),
+                Err(CoreError::Storage(message)) if message.contains("index byte total overflow")
+            ),
+            "sum overflow must refuse with the pair-total error"
+        );
+        assert!(
+            matches!(
+                session.measure(&set),
+                Err(CoreError::Storage(message)) if message == "lexical fixture failure"
+            ),
+            "track failure must propagate unchanged"
+        );
+        Ok(())
     }
 
     #[test]

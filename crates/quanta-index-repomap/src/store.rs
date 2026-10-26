@@ -33,7 +33,7 @@ use quanta_index_contract::{
 use quanta_index_core::{
     CoreError, QuarantineDiscardOutcomeV1, QuarantinedRepoMapFileV1, RepoMapBundleIngestPort,
     RepoMapGenerationActivatePort, RepoMapMutationCommit, RepoMapOpenReportV1,
-    RepoMapQuarantinePort,
+    RepoMapPhysicalFilePort, RepoMapQuarantinePort,
 };
 use quanta_index_core::{
     PinnedRepoMapSnapshot, RepoMapSnapshotAcquirePort, RepoMapSnapshotAcquireV1,
@@ -48,7 +48,8 @@ use crate::materializer::{
 };
 use crate::model::RepoMapIndexedSnapshot;
 use crate::object_store::{
-    AFTER_CATALOG_COMMIT, LEGACY_V1_DIR_NAMES, RepoMapObjectStore, exit_at_crash_boundary,
+    AFTER_CATALOG_COMMIT, LEGACY_V1_DIR_NAMES, ObjectVerificationErrorV1, RepoMapObjectStore,
+    exit_at_crash_boundary,
 };
 use crate::pinned::{PinnedRepoMapSnapshotV1, RepoMapPinLease, RepoMapStoreKeyV1};
 
@@ -141,7 +142,25 @@ impl RepoMapGenerationStore {
         root: impl AsRef<Path>,
         catalog: Arc<SqliteCatalog>,
     ) -> Result<OpenedRepoMapStore, CoreError> {
-        let root = root.as_ref().to_path_buf();
+        Self::open_inner(root.as_ref(), catalog, None)
+    }
+
+    /// Install the shared physical authority before layout creation, UUID
+    /// binding, or catalog-to-object boot reconciliation.
+    pub fn open_with_file_admission(
+        root: impl AsRef<Path>,
+        catalog: Arc<SqliteCatalog>,
+        physical: Arc<dyn RepoMapPhysicalFilePort>,
+    ) -> Result<OpenedRepoMapStore, CoreError> {
+        Self::open_inner(root.as_ref(), catalog, Some(physical))
+    }
+
+    fn open_inner(
+        root: &Path,
+        catalog: Arc<SqliteCatalog>,
+        physical: Option<Arc<dyn RepoMapPhysicalFilePort>>,
+    ) -> Result<OpenedRepoMapStore, CoreError> {
+        let root = root.to_path_buf();
         let mut report = RepoMapOpenReportV1::default();
         let legacy = LEGACY_V1_DIR_NAMES
             .iter()
@@ -163,7 +182,10 @@ impl RepoMapGenerationStore {
                 report,
             });
         }
-        let objects = RepoMapObjectStore::open(&root)?;
+        let objects = match physical {
+            Some(physical) => RepoMapObjectStore::open_with_file_admission(&root, physical)?,
+            None => RepoMapObjectStore::open(&root)?,
+        };
         let store = Self {
             root,
             catalog,
@@ -238,7 +260,8 @@ impl RepoMapGenerationStore {
                         .insert(key, indexed);
                     report.snapshots_loaded = report.snapshots_loaded.saturating_add(1);
                 }
-                Err(failure) => {
+                Err(ObjectVerificationErrorV1::Operational(error)) => return Err(error),
+                Err(ObjectVerificationErrorV1::Corrupt(failure)) => {
                     // Durable quarantine: catalog incident (exact envelope
                     // bytes, digest, sequence), projections, then unlink.
                     self.quarantine_candidate_object(candidate, &failure, report)?;
@@ -674,13 +697,16 @@ impl RepoMapGenerationStore {
                 quanta_index_contract::CandidateObjectDigestV1::from_bytes(existing.object_address);
             let verified = objects
                 .verify(address, &existing.candidate_commitment)
-                .map_err(|failure| CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                    message: format!(
-                        "repomap V2 ingest: replay object failed verification: {}/{}",
-                        u64::from(failure.reason.code()),
-                        failure.detail,
-                    ),
+                .map_err(|failure| match failure {
+                    ObjectVerificationErrorV1::Operational(error) => error,
+                    ObjectVerificationErrorV1::Corrupt(failure) => CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                        message: format!(
+                            "repomap V2 ingest: replay object failed verification: {}/{}",
+                            u64::from(failure.reason.code()),
+                            failure.detail,
+                        ),
+                    },
                 })?;
             if verified.logical_identity()
                 != &logical_identity(
@@ -797,17 +823,20 @@ impl RepoMapGenerationStore {
         );
         let envelope = objects
             .verify(digest, &candidate_row.candidate_commitment)
-            .map_err(|failure| CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                message: format!(
-                    "repomap activate: sealed object for repo={} revision={} generation={} \
-                         failed verification: {}/{}",
-                    request.repo_id.as_str(),
-                    request.revision_id.as_str(),
-                    request.manifest_generation.get(),
-                    u64::from(failure.reason.code()),
-                    failure.detail
-                ),
+            .map_err(|failure| match failure {
+                ObjectVerificationErrorV1::Operational(error) => error,
+                ObjectVerificationErrorV1::Corrupt(failure) => CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message: format!(
+                        "repomap activate: sealed object for repo={} revision={} generation={} \
+                             failed verification: {}/{}",
+                        request.repo_id.as_str(),
+                        request.revision_id.as_str(),
+                        request.manifest_generation.get(),
+                        u64::from(failure.reason.code()),
+                        failure.detail
+                    ),
+                },
             })?;
         let commitment = envelope
             .commitment()
@@ -1107,11 +1136,7 @@ impl RepoMapGenerationStore {
                 quanta_index_contract::CandidateObjectDigestV1::from_bytes(row.object_address);
             // Already-reclaimed rows stay tombstoned in the catalog; a
             // pass that finds no bytes counts nothing.
-            if !self
-                .root
-                .join(crate::layout_v3::CandidateObjectAddressV1::new(digest).relative_path())
-                .exists()
-            {
+            if !objects.candidate_exists_owned(digest)? {
                 continue;
             }
             objects.unlink_object(digest)?;
@@ -1514,6 +1539,99 @@ mod lifecycle_gate_tests {
         assert_eq!(deferred.deferred_pinned, 1);
         drop(view);
         assert_eq!(store.gc_retired_objects()?.reclaimed, 1);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod physical_reconcile_tests {
+    use std::error::Error;
+    use std::fs;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use quanta_index_catalog::{RepoMapCandidateStateV1, SqliteCatalog};
+    use quanta_index_contract::{
+        CandidateObjectDigestV1, FileId, ManifestGeneration, RepoId, RepoMapExactnessSummary,
+        RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+        RepoMapItemIndexAvailability, RepoMapNode, RepoMapPublishBundleRequestV2,
+        RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
+        SearchPlaneErrorCodeV2,
+    };
+    use quanta_index_core::CoreError;
+
+    use super::RepoMapGenerationStore;
+    use crate::layout_v3::CandidateObjectAddressV1;
+    use crate::object_store::physical_tests::RecordingPhysical;
+
+    #[test]
+    fn qualified_reader_refusal_preserves_live_catalog_row_and_candidate_bytes()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().join("repo-map");
+        let catalog = Arc::new(SqliteCatalog::open(
+            directory.path(),
+            Duration::from_secs(5),
+        )?);
+        let bundle = RepoMapSourceBundle::new(
+            RepoId::new("repo-physical")?,
+            RevisionId::new("revision-physical")?,
+            ManifestGeneration::new(1),
+            "ab".repeat(32),
+            "snapshot-physical",
+            1,
+            "d".repeat(64),
+            RepoMapGraphCoverage {
+                item_index_availability: RepoMapItemIndexAvailability::Available,
+                graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+            },
+            RepoMapExactnessSummary::Exact,
+            RepoMapRedactionState::Unredacted,
+        )
+        .with_node(RepoMapNode::File(RepoMapFileNode {
+            file_id: FileId::new("file://src/lib.rs"),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            line_count: 10,
+        }));
+        let unqualified = RepoMapGenerationStore::open(&root, Arc::clone(&catalog))?.store;
+        let _receipt =
+            unqualified.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle)?)?;
+        let row = catalog
+            .repomap_candidate_row("repo-physical", "revision-physical", 1)?
+            .ok_or("fixture candidate row absent")?;
+        if row.state != RepoMapCandidateStateV1::Sealed {
+            return Err("fixture candidate was not sealed".into());
+        }
+        let candidate_path = root.join(
+            CandidateObjectAddressV1::new(CandidateObjectDigestV1::from_bytes(row.object_address))
+                .relative_path(),
+        );
+        let candidate_bytes = fs::read(&candidate_path)?;
+        let incident_count = catalog.repomap_quarantine_incidents()?.len();
+        drop(unqualified);
+
+        let physical = RecordingPhysical::new(root.clone());
+        physical.refuse_candidate_open();
+        let reopened =
+            RepoMapGenerationStore::open_with_file_admission(&root, Arc::clone(&catalog), physical);
+        if !matches!(
+            reopened,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogBusy,
+                ..
+            })
+        ) {
+            return Err("operational reader refusal was not propagated".into());
+        }
+        let after = catalog
+            .repomap_candidate_row("repo-physical", "revision-physical", 1)?
+            .ok_or("candidate row disappeared after refusal")?;
+        if after != row
+            || catalog.repomap_quarantine_incidents()?.len() != incident_count
+            || fs::read(&candidate_path)? != candidate_bytes
+        {
+            return Err("operational reader refusal mutated catalog or candidate bytes".into());
+        }
         Ok(())
     }
 }

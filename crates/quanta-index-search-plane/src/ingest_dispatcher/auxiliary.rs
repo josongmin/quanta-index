@@ -3,8 +3,8 @@
 //! writes.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, RwLock, TryLockError};
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     AuxEpochV1, BatchPublishReceipt, DirtyIngestBatch, DirtyMutation, HistoryIngestBatch,
@@ -102,6 +102,36 @@ impl AuxiliaryMutationCoordinator {
                 "auxiliary materialize: mutation coordinator poisoned: {err}"
             ))
         })?;
+        self.guard_with_lease(serial, owner)
+    }
+
+    fn lock_with_budget(
+        &self,
+        owner: &str,
+        budget: &quanta_index_core::RequestBudgetV1,
+    ) -> Result<CoordinatorGuard<'_>, CoreError> {
+        loop {
+            budget.checkpoint("history mutation coordinator wait")?;
+            match self.serial.try_lock() {
+                Ok(serial) => {
+                    budget.checkpoint("history mutation coordinator acquired")?;
+                    return self.guard_with_lease(serial, owner);
+                }
+                Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
+                Err(TryLockError::Poisoned(error)) => {
+                    return Err(CoreError::Storage(format!(
+                        "auxiliary materialize: mutation coordinator poisoned: {error}"
+                    )));
+                }
+            }
+        }
+    }
+
+    fn guard_with_lease<'a>(
+        &self,
+        serial: std::sync::MutexGuard<'a, ()>,
+        owner: &str,
+    ) -> Result<CoordinatorGuard<'a>, CoreError> {
         let lease = match &self.durable {
             None => None,
             Some(port) => {
@@ -189,24 +219,28 @@ fn plan_history_text_build(
     port: &dyn HistoryTextIndexPort,
     current: Option<(AuxEpochV1, &HistoryAuthorityState)>,
     delta: &HistoryDelta,
+    budget: &quanta_index_core::RequestBudgetV1,
 ) -> Result<HistoryTextBuildV1, CoreError> {
+    budget.checkpoint("history text planning admission")?;
     let Some((base, state)) = current else {
         return Ok(HistoryTextBuildV1::Full {
-            docs: history_text_docs_of_delta(delta, None)?,
+            docs: history_text_docs_of_delta(delta, None, budget)?,
         });
     };
     match port.epoch_status(&delta.generation, base)? {
         HistoryTextEpochStatusV1::Servable => Ok(HistoryTextBuildV1::Incremental {
             base,
-            upserts: history_text_docs_of_delta(delta, Some(state))?,
+            upserts: history_text_docs_of_delta(delta, Some(state), budget)?,
         }),
         HistoryTextEpochStatusV1::Absent | HistoryTextEpochStatusV1::Unsupported { .. } => {
             let mut docs: BTreeMap<HistoryTextDocKeyV1, HistoryTextDocV1> = BTreeMap::new();
             for record in state.commits().values() {
+                budget.checkpoint("history retained commit planning")?;
                 let doc = commit_text_doc(record);
                 let _replaced = docs.insert(doc.key.clone(), doc);
             }
             for (key, record) in state.diff_hunks() {
+                budget.checkpoint("history retained hunk planning")?;
                 let commit = state.commits().get(&key.commit_sha()).ok_or_else(|| {
                     CoreError::Storage(format!(
                         "history text index: diff hunk {}:{} names a commit absent from the state",
@@ -224,7 +258,7 @@ fn plan_history_text_build(
                 };
                 let _replaced = docs.insert(doc.key.clone(), doc);
             }
-            for doc in history_text_docs_of_delta(delta, Some(state))? {
+            for doc in history_text_docs_of_delta(delta, Some(state), budget)? {
                 let _replaced = docs.insert(doc.key.clone(), doc);
             }
             Ok(HistoryTextBuildV1::Full {
@@ -250,9 +284,15 @@ fn commit_text_doc(record: &quanta_index_contract::lex::CommitRecord) -> History
 fn history_text_docs_of_delta(
     delta: &HistoryDelta,
     state: Option<&HistoryAuthorityState>,
+    budget: &quanta_index_core::RequestBudgetV1,
 ) -> Result<Vec<HistoryTextDocV1>, CoreError> {
-    let mut docs: Vec<HistoryTextDocV1> = delta.commits.iter().map(commit_text_doc).collect();
+    let mut docs = Vec::new();
+    for commit in &delta.commits {
+        budget.checkpoint("history new commit planning")?;
+        docs.push(commit_text_doc(commit));
+    }
     for (key, record) in &delta.diff_hunks {
+        budget.checkpoint("history new hunk planning")?;
         let committer_time_ms = delta
             .commits
             .iter()
@@ -289,10 +329,15 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
     fn publish_batch(
         &self,
         batch: &HistoryIngestBatch,
-        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+        budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<BatchPublishReceipt, CoreError> {
         const WHAT: &str = "direct history materialize";
-        let _serial = self.parts.coordinator.lock(&coordinator_owner())?;
+        budget.checkpoint("history materializer admission")?;
+        let _serial = self
+            .parts
+            .coordinator
+            .lock_with_budget(&coordinator_owner(), budget)?;
+        budget.checkpoint("history materializer after coordinator")?;
         // The next epoch and the current snapshot are read under the
         // ledger lock; the transition and the index plan run on that
         // immutable snapshot after it, the coordinator lock keeping any
@@ -326,15 +371,18 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
                         .as_ref()
                         .map(|read| (read.epoch, read.state.as_ref())),
                     &delta,
+                    budget,
                 )
             })
             .transpose()?;
+        budget.checkpoint("history text build plan")?;
         if let (Some(parts), Some(build)) = (&self.history_text, text_build) {
             let _receipt =
                 parts
                     .port
-                    .publish_epoch(&delta.generation, delta.epoch, build, diagnostic)?;
+                    .publish_epoch(&delta.generation, delta.epoch, build, budget)?;
         }
+        budget.checkpoint("history Catalog publication")?;
         let _durable = self.parts.catalog.apply(&history_delta_rows(&delta)?)?;
         {
             let mut guard = self.parts.write_ledger(WHAT)?;
@@ -359,7 +407,11 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
             // held by a reader, and any discard the storage fails, are left
             // to the next mutation of the generation, which reconciles
             // again; a refusal fails closed.
-            parts.reconcile_after_durable(&delta.generation, &retained, diagnostic)?;
+            parts.reconcile_after_durable(
+                &delta.generation,
+                &retained,
+                budget.diagnostic_context(),
+            )?;
         }
         let mut receipt = BatchPublishReceipt::empty_for(
             batch.generation,

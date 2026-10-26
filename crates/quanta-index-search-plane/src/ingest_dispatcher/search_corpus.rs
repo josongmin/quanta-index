@@ -10,6 +10,9 @@ use quanta_index_contract::{
     BatchPublishReceipt, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
     SearchCorpusIngestBatch, SearchPlaneTrackKind,
 };
+use quanta_index_core::publication_admission::{
+    PublicationAdmissionRequest, PublicationBuildWork, PublicationResourceAdmissionPort,
+};
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, AuxiliaryGenerationKeyV1, AuxiliaryRowMutationV1, CoreError,
     DiagnosticContextV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1,
@@ -74,6 +77,9 @@ pub struct DirectSearchCorpusMaterializer {
     /// held (QI-BB-021), and what the measured batches added up to.
     resource_policy: IngestResourcePolicy,
     resource_stats: Mutex<IngestResourceStats>,
+    /// An optional service-owned aggregate reservation. Uninstalled legacy
+    /// compositions have no publication capacity guarantee.
+    publication_admission: Option<Arc<dyn PublicationResourceAdmissionPort>>,
     /// What physical GC reclaimed and deferred over the process lifetime
     /// (QI-BB-003): the receipt of every reclaim pass, kept.
     gc_stats: Mutex<SearchCorpusGcStats>,
@@ -296,6 +302,7 @@ impl DirectSearchCorpusMaterializer {
             source_publication,
             resource_policy,
             resource_stats: Mutex::new(IngestResourceStats::default()),
+            publication_admission: None,
             gc_stats: Mutex::new(SearchCorpusGcStats::default()),
             semantic_stream_policy,
             source_egress_policy,
@@ -311,6 +318,17 @@ impl DirectSearchCorpusMaterializer {
     #[must_use]
     pub fn with_history_text(mut self, history_text: HistoryTextIndexParts) -> Self {
         self.history_text = Some(history_text);
+        self
+    }
+
+    /// Install the service's aggregate publication admission before any
+    /// materialization. The owner retains its permit through publication.
+    #[must_use]
+    pub fn with_publication_resource_admission(
+        mut self,
+        admission: Arc<dyn PublicationResourceAdmissionPort>,
+    ) -> Self {
+        self.publication_admission = Some(admission);
         self
     }
 
@@ -539,6 +557,9 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         owner: &mut quanta_index_core::PublicationValidationOwner,
     ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
         owner.bind_batch(batch)?;
+        // Only optional preparation inherits external cancellation. The
+        // admitted publication retains the dispatcher's durable ownership.
+        owner.bind_prepare_request_budget(budget)?;
         observe_ingest_result(
             budget.diagnostic_context(),
             DiagnosticStageV1::Operation,
@@ -657,6 +678,31 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 } else {
                     None
                 };
+                if let Some(admission) = self.publication_admission.as_deref() {
+                    let footprint = self
+                        .resource_policy
+                        .admit_search_corpus_batch(batch, self.semantic_embedder.dimension())?;
+                    let work = if sealed_plan
+                        .as_ref()
+                        .is_some_and(SealedGenerationBuildPlanV1::is_finalize_only)
+                    {
+                        PublicationBuildWork::FinalizeOnly
+                    } else {
+                        PublicationBuildWork::Materialize {
+                            lexical: build_lexical,
+                            semantic: build_semantic,
+                        }
+                    };
+                    owner.admit_publication_resources(
+                        &PublicationAdmissionRequest {
+                            batch,
+                            footprint,
+                            work,
+                        },
+                        budget,
+                        admission,
+                    )?;
+                }
                 // Known admission refusals must not consume a stream slot. Once
                 // admitted, reserve before reclaim, discard, or any provider/build work.
                 let binding = Self::source_binding_v1(batch);
@@ -712,10 +758,6 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                     });
                 }
                 if let Some(plan) = sealed_plan.as_ref() {
-                    plan.discard_incomplete_v1(
-                        self.lexical_incomplete_discard.as_ref(),
-                        self.semantic_incomplete_discard.as_ref(),
-                    )?;
                     plan.repair_corrupt_v1(
                         batch.mode,
                         &self.snapshots,
@@ -727,6 +769,17 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
 
                 if !build_semantic || !build_lexical {
                     observation.status = IngestObservationStatus::PartialRecovery;
+                }
+                if build_lexical {
+                    self.builder
+                        .prepare_hard_recovery_scan_with_owner(batch, owner, budget, diagnostic)?;
+                }
+                if let Some(plan) = sealed_plan.as_ref() {
+                    plan.discard_incomplete_v1(
+                        self.lexical_incomplete_discard.as_ref(),
+                        self.semantic_incomplete_discard.as_ref(),
+                        batch,
+                    )?;
                 }
                 // Search-owned semantic derivation is mandatory work for every
                 // accepted search-corpus batch; there is no lexical-only downgrade
@@ -740,6 +793,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                     let (semantic_receipt, semantic_report) = self.semantic_ingest.publish_stream(
                         &derived.header,
                         &mut derived.source,
+                        Some(owner.output_admission()),
                         diagnostic,
                     )?;
                     observation.semantic = Some(Box::new(semantic_report));
@@ -1041,7 +1095,9 @@ impl DirectSearchCorpusMaterializer {
             );
             let retention = match retention {
                 Ok(receipt) => receipt,
-                Err(error @ CoreError::Storage(_)) => return Err(error),
+                Err(error @ (CoreError::Storage(_) | CoreError::StorageIo { .. })) => {
+                    return Err(error);
+                }
                 Err(error) => {
                     // Typed/contract rejections are pre-mutation outcomes of this
                     // port and therefore do not create durability ambiguity.

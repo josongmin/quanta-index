@@ -99,6 +99,13 @@ TEST_SUPPORT_CRATES = frozenset(
 # lexical adapter. This edge is forbidden in production dependencies and is
 # admitted only for that composition test.
 DEV_INTEGRATION_DEPS = {
+    # Native process tests exercise the real CLI against the daemon; this
+    # client dependency is test-only and forbidden in runtime production.
+    # Physical scratch tests open the actual adapter under the Runtime IO
+    # binding. Production remains on the Core scratch port and Storage owner.
+    "quanta-index-searchd-runtime": frozenset(
+        {"quanta-index-searchctl", "quanta-index-scratch-sqlite"}
+    ),
     "quanta-index-search-plane": frozenset({"quanta-index-lexical"}),
     "quanta-index-kernel": frozenset({"quanta-index-catalog", "quanta-index-storage", "quanta-index-lexical", "quanta-index-repomap", "quanta-index-semantic"}),
 }
@@ -108,20 +115,23 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # The contract re-exports the base DTOs it is split from.
     "quanta-index-contract": frozenset({"quanta-index-contract-base", "quanta-index-lq-norm"}),
     "quanta-index-core": frozenset({"quanta-index-contract"}),
-    "quanta-index-kernel": _ADAPTER_CRATE_DEPS,
-    "quanta-index-storage": _ADAPTER_CRATE_DEPS,
+    "quanta-index-kernel": _ADAPTER_CRATE_DEPS | frozenset({"quanta-index-scratch-sqlite"}),
+    "quanta-index-storage": _ADAPTER_CRATE_DEPS | frozenset({"quanta-index-scratch-sqlite"}),
     # The lexical adapter also uses the lq-* index primitives and the shared
     # text normalizer (one Unicode contract for index, sidecars and query).
     "quanta-index-lexical": _ADAPTER_CRATE_DEPS
     | frozenset(
         {
+            "quanta-index-scratch-sqlite",
             "quanta-index-lq-positions",
             "quanta-index-lq-regex",
             "quanta-index-lq-text-normalizer",
             "quanta-index-lq-trigram",
         }
     ),
-    "quanta-index-semantic": _ADAPTER_CRATE_DEPS,
+    # Shared disposable SQLite membership implements retention ports; no
+    # vendor handle or semantic authority crosses the Core boundary.
+    "quanta-index-semantic": _ADAPTER_CRATE_DEPS | frozenset({"quanta-index-scratch-sqlite"}),
     # Embedding adapter: implements core outbound ports from contract DTOs.
     "quanta-index-embed": _ADAPTER_CRATE_DEPS,
     "quanta-index-ipc": _ADAPTER_CRATE_DEPS,
@@ -169,6 +179,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
         {
             "quanta-index-contract",
             "quanta-index-core",
+            "quanta-index-scratch-sqlite",
             "quanta-index-lq-text-normalizer",
             # P03 (SEP-21 S21-01B/S21-02): the store's candidate/activation/
             # quarantine visibility authority is the durable catalog; the
@@ -186,6 +197,11 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-catalog": frozenset(
         {"quanta-index-contract", "quanta-index-core", "quanta-index-ipc"}
     ),
+    # Shared SQLite scratch admission utility. Concrete adapters and the
+    # kernel's existing spool use it; it depends inward only on core budget
+    # and allocation contracts, never on a composition root or another adapter.
+    # Retention membership uses canonical generation and error DTOs.
+    "quanta-index-scratch-sqlite": _ADAPTER_CRATE_DEPS,
     # Non-production benchmark driver. It composes the real lexical/semantic
     # namespace probes and catalog owner for durable lexical ID allocation,
     # then measures lexical lookup in-process. It uses the harness artifact
@@ -220,6 +236,8 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-search-plane",
         }
     ),
+    # Native product/provider construction and physical shutdown belong to this
+    # composition root. Core, Kernel and search-plane still cannot name embed.
     "quanta-index-searchd-runtime": frozenset(
         {
             "quanta-index-kernel",
@@ -227,6 +245,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-catalog",
             "quanta-index-contract",
             "quanta-index-core",
+            "quanta-index-embed",
             "quanta-index-ipc",
             "quanta-index-lexical",
             "quanta-index-lq-bridge",
@@ -237,8 +256,10 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
         }
     ),
     # Black-box runtime/quality harness. Its dependency fan-in is intentional:
-    # production crates must never depend back on this crate. The lexical
-    # adapter is a direct dependency so the scale rail can time the sealed
+    # product/composition crates must never depend back on this crate. Its
+    # SDK edge uses the public Native UDS client to exercise the configured
+    # daemon; the SDK remains independent of the harness and composition roots.
+    # The lexical adapter is a direct dependency so the scale rail can time the sealed
     # generation's adapter-only open/plan/execute beside the daemon's; the
     # semantic adapter so the ANN rail can seal and query a generation
     # through the production build, seal and open path (QI-BB-027).
@@ -252,6 +273,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-search-plane",
             "quanta-index-searchd",
             "quanta-index-searchd-runtime",
+            "quanta-index-sdk",
             "quanta-index-semantic",
         }
     ),

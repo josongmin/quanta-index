@@ -127,8 +127,9 @@ impl HistoryTextIndexPort for MemoryHistoryTextIndex {
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
         build: HistoryTextBuildV1,
-        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+        budget: &RequestBudgetV1,
     ) -> Result<HistoryTextEpochReceiptV1, CoreError> {
+        budget.checkpoint("memory history publication fixture")?;
         if self
             .fail_next_publish
             .swap(false, std::sync::atomic::Ordering::SeqCst)

@@ -26,7 +26,7 @@ imbl = { workspace = true }
 serde = { workspace = true }
 serde_json.workspace = true
 sha2.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }

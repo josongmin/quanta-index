@@ -414,3 +414,20 @@ def test_blank_line_definition_scan_has_a_bounded_runtime():
         [sys.executable, "-c", program], capture_output=True, text=True, timeout=8
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_inline_test_child_does_not_hide_same_named_production_module(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\nmod peer;\n",
+            "owner.rs": (
+                "pub(crate) mod shared;\n"
+                "#[cfg(test)]\nmod tests {\n    mod shared;\n}\n"
+            ),
+            "owner/shared.rs": "pub(crate) struct S; pub(crate) fn p() -> crate::peer::P { crate::peer::P }\n",
+            "owner/tests/shared.rs": "fn helper() {}\n",
+            "peer.rs": "pub(crate) struct P; pub(crate) fn s() -> crate::owner::shared::S { crate::owner::shared::S }\n",
+        },
+    )
+    assert keys(root) == ["demo: owner::shared, peer"]

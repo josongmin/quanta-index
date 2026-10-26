@@ -158,14 +158,14 @@ pub const GENERATION_QUARANTINED_CODE: quanta_index_contract::SearchPlaneErrorCo
 pub const GENERATION_SIDECAR_CORRUPT_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
     quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt;
 
-/// How the composition root paces the scrub as quota'd maintenance: one
-/// step every `interval_millis`, each reading at most `max_bytes_per_step`
-/// (plus the one file that crosses the budget).
+/// Pacing targets for integrity scrub maintenance.
 ///
-/// The default reads 64 MiB every five seconds: about 13 MB/s of
-/// background I/O, which walks a ten-million-row generation of 1536-wide
-/// vectors (roughly 61 GB) in about eighty minutes without contending
-/// with serving.
+/// Run one step every `interval_millis`, pausing after `max_bytes_per_step` except
+/// for one indivisible committed file or bounded shared semantic unit.
+///
+/// The default target is 64 MiB every five seconds (about 13 MB/s averaged
+/// over steps that do not overshoot). A large semantic unit can exceed that
+/// target, so this setting is not a hard I/O or latency limit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IntegrityScrubPolicyV1 {
     pub interval_millis: u64,

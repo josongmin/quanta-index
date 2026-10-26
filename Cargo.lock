@@ -682,12 +682,14 @@ dependencies = [
 [[package]]
 name = "ciborium"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42e69ffd6f0917f5c029256a24d0161db17cea3997d185db0d35926308770f0e"
 dependencies = [
  "ciborium-io",
  "ciborium-ll",
+ "hex",
+ "rand 0.8.6",
+ "rstest",
  "serde",
+ "serde_bytes",
 ]
 
 [[package]]
@@ -2279,6 +2281,18 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash 0.2.0",
+]
+
+[[package]]
+name = "hashlink"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
+dependencies = [
+ "hashbrown 0.17.1",
+]
 
 [[package]]
 name = "heck"
@@ -2796,8 +2810,6 @@ dependencies = [
 [[package]]
 name = "lance"
 version = "7.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3944aca86f4c78f4da04af1c2bf33e664a2826b7af72972ad200d6b9de59019f"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -3126,8 +3138,6 @@ dependencies = [
 [[package]]
 name = "lance-io"
 version = "7.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bab8c98ef1b870b20541d27f3ca4efdf7c9f5c25214233be07d231ba88900219"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3304,8 +3314,6 @@ dependencies = [
 [[package]]
 name = "lancedb"
 version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9db595d8da6c1fbf41ef6a547f27a73cc1105d83a837e8c76ce08743a3c09260"
 dependencies = [
  "ahash",
  "arrow",
@@ -3456,8 +3464,6 @@ dependencies = [
 [[package]]
 name = "libsqlite3-sys"
 version = "0.38.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
 dependencies = [
  "cc",
  "pkg-config",
@@ -3963,8 +3969,6 @@ dependencies = [
 [[package]]
 name = "object_store"
 version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "622acbc9100d3c10e2ee15804b0caa40e55c933d5aa53814cd520805b7958a49"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4390,6 +4394,7 @@ dependencies = [
  "quanta-index-core",
  "quanta-index-ipc",
  "rusqlite",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",
@@ -4470,6 +4475,7 @@ dependencies = [
  "serde",
  "sha2",
  "tempfile",
+ "thiserror 1.0.69",
  "zstd",
 ]
 
@@ -4479,9 +4485,11 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "quanta-index-catalog",
+ "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-lexical",
  "quanta-index-repomap",
+ "quanta-index-scratch-sqlite",
  "quanta-index-sdk",
  "quanta-index-semantic",
  "quanta-index-storage",
@@ -4490,6 +4498,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -4497,6 +4506,7 @@ name = "quanta-index-lexical"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "libsqlite3-sys",
  "memchr",
  "nix",
  "quanta-index-contract",
@@ -4505,6 +4515,7 @@ dependencies = [
  "quanta-index-lq-regex",
  "quanta-index-lq-text-normalizer",
  "quanta-index-lq-trigram",
+ "quanta-index-scratch-sqlite",
  "regex",
  "regex-syntax",
  "roaring",
@@ -4609,6 +4620,7 @@ dependencies = [
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-lq-text-normalizer",
+ "quanta-index-scratch-sqlite",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4654,6 +4666,16 @@ dependencies = [
  "quanta-index-semantic",
  "serde_json",
  "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "quanta-index-scratch-sqlite"
+version = "0.1.0"
+dependencies = [
+ "quanta-index-contract",
+ "quanta-index-core",
+ "rusqlite",
  "tempfile",
 ]
 
@@ -4737,6 +4759,7 @@ dependencies = [
  "quanta-index-embed",
  "quanta-index-ipc",
  "quanta-index-lexical",
+ "quanta-index-sdk",
  "quanta-index-search-plane",
  "quanta-index-searchd",
  "quanta-index-searchd-runtime",
@@ -4754,20 +4777,27 @@ dependencies = [
  "anyhow",
  "ciborium",
  "criterion",
+ "lance-io",
+ "libsqlite3-sys",
+ "object_store",
  "quanta-index-catalog",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-corpus-smoke",
+ "quanta-index-embed",
  "quanta-index-ipc",
  "quanta-index-kernel",
  "quanta-index-lexical",
  "quanta-index-repomap",
+ "quanta-index-scratch-sqlite",
  "quanta-index-sdk",
  "quanta-index-search-plane",
+ "quanta-index-searchctl",
  "quanta-index-searchd",
  "quanta-index-searchd-harness",
  "quanta-index-semantic",
  "quanta-index-storage",
+ "reqwest",
  "rusqlite",
  "rustix 1.1.4",
  "serde",
@@ -4784,26 +4814,36 @@ name = "quanta-index-semantic"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
+ "arrow-data",
  "arrow-schema",
+ "async-trait",
+ "bytes",
  "ciborium",
  "futures",
  "lance",
+ "lance-io",
  "lancedb",
+ "object_store",
  "quanta-index-contract",
  "quanta-index-core",
+ "quanta-index-scratch-sqlite",
  "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]
 name = "quanta-index-storage"
 version = "0.1.0"
 dependencies = [
+ "libsqlite3-sys",
  "quanta-index-core",
+ "quanta-index-scratch-sqlite",
  "rusqlite",
  "rustix 1.1.4",
  "sha2",
@@ -5240,6 +5280,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstest"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2288c66aeafe3b2ed227c981f364f9968fa952ef0b30e84ada4486e7ee24d00a"
+dependencies = [
+ "cfg-if",
+ "proc-macro2",
+ "quote",
+ "rustc_version",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.40.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5248,6 +5301,7 @@ dependencies = [
  "bitflags 2.13.0",
  "fallible-iterator",
  "fallible-streaming-iterator",
+ "hashlink",
  "libsqlite3-sys",
  "smallvec",
 ]
@@ -5496,6 +5550,16 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

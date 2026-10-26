@@ -909,7 +909,10 @@ mod tests {
             | CoreError::NotReady(_)
             | CoreError::NotImplemented(_)
             | CoreError::NotFound(_)
-            | CoreError::Storage(_)) => Err(format!("expected typed error, got {other:?}").into()),
+            | CoreError::Storage(_)
+            | CoreError::StorageIo { .. }) => {
+                Err(format!("expected typed error, got {other:?}").into())
+            }
         }
     }
 

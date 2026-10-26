@@ -4,6 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use quanta_index_core::HistoryTextFileIoPort;
 use quanta_index_core::{
     CoreError, HistoryTextAdmitFn, HistoryTextHitV1, HistoryTextKindV1, HistoryTextPageV1,
     HistoryTextQueryV1, HistoryTextSearcher, RequestBudgetV1,
@@ -13,7 +14,8 @@ use tantivy::{Index, IndexReader, ReloadPolicy};
 use crate::analyzer::register_analyzers;
 use crate::budgeted_search::budgeted_search;
 use crate::history_text_index::collector::RelevanceCollector;
-use crate::history_text_index::layout::{kind_dir, tree_bytes};
+use crate::history_text_index::layout::{kind_dir, tree_bytes, tree_bytes_admitted};
+use crate::history_text_index::physical_directory::{PhysicalDirectory, engine_error};
 use crate::history_text_index::query;
 use crate::history_text_index::schema::KindSchema;
 
@@ -50,6 +52,39 @@ impl KindHandle {
             reader,
         })
     }
+
+    fn open_admitted(
+        epoch_dir: &Path,
+        kind: HistoryTextKindV1,
+        io: Arc<dyn HistoryTextFileIoPort>,
+    ) -> Result<Self, CoreError> {
+        let dir = kind_dir(epoch_dir, kind);
+        let index = Index::open(PhysicalDirectory::new(&dir, io)).map_err(|error| {
+            engine_error(
+                &format!(
+                    "history text index: open admitted {} index {}",
+                    kind.as_str(),
+                    dir.display()
+                ),
+                &error,
+            )
+        })?;
+        register_analyzers(&index);
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .map_err(|error| {
+                engine_error(
+                    &format!("history text index: open admitted {} reader", kind.as_str()),
+                    &error,
+                )
+            })?;
+        Ok(Self {
+            schema: KindSchema::build(kind),
+            reader,
+        })
+    }
 }
 
 /// The opened index of one epoch.
@@ -66,6 +101,21 @@ impl EpochSearcher {
             commits: KindHandle::open(epoch_dir, HistoryTextKindV1::Commit)?,
             diffs: KindHandle::open(epoch_dir, HistoryTextKindV1::Diff)?,
             resident_bytes: tree_bytes(epoch_dir)?,
+        })
+    }
+
+    pub(super) fn open_admitted(
+        epoch_dir: &Path,
+        io: &Arc<dyn HistoryTextFileIoPort>,
+    ) -> Result<Self, CoreError> {
+        Ok(Self {
+            commits: KindHandle::open_admitted(
+                epoch_dir,
+                HistoryTextKindV1::Commit,
+                Arc::clone(io),
+            )?,
+            diffs: KindHandle::open_admitted(epoch_dir, HistoryTextKindV1::Diff, Arc::clone(io))?,
+            resident_bytes: tree_bytes_admitted(epoch_dir, io.as_ref())?,
         })
     }
 

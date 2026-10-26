@@ -158,7 +158,7 @@ def _output_streams(process: subprocess.Popen, sinks: tuple) -> tuple:
 
 
 def _wait_for_terminal(
-    process: subprocess.Popen, terminal: int, sinks: tuple, timeout: float
+    process: subprocess.Popen, terminal: int, interrupted_fd: int, sinks: tuple, timeout: float
 ) -> bytes:
     """Drain pipes without reaping the group leader before custody cleanup.
 
@@ -169,7 +169,7 @@ def _wait_for_terminal(
     deadline = time.monotonic() + timeout
     output = {stream.fileno(): (stream, sink) for stream, sink in _output_streams(process, sinks)}
     with selectors.DefaultSelector() as watch:
-        for fd in (terminal, *output):
+        for fd in (terminal, interrupted_fd, *output):
             watch.register(fd, selectors.EVENT_READ)
         while True:
             remaining = deadline - time.monotonic()
@@ -177,6 +177,13 @@ def _wait_for_terminal(
                 raise subprocess.TimeoutExpired("owned producer terminal", timeout)
             for key, _ in watch.select(remaining):
                 fd = key.fd
+                if fd == interrupted_fd:
+                    kind = os.read(interrupted_fd, 1)
+                    if kind == b"I":
+                        raise KeyboardInterrupt()
+                    if kind == b"T":
+                        raise ProducerExecutionError("benchmark producer interrupted by SIGTERM")
+                    raise ProducerExecutionError("invalid benchmark interruption notification")
                 block = os.read(fd, 5 if fd == terminal else 65536)
                 if fd == terminal:
                     return block
@@ -298,7 +305,7 @@ def _execute_owned(
         os.fstat(fd)
     started = time.monotonic_ns()
     deadline = time.monotonic() + timeout
-    process, interrupted, cleaning, communicated = None, False, False, False
+    process, interrupted, cleaning, communicated = None, None, False, False
     lifeline_read, lifeline_write = os.pipe()
     try:
         terminal_read, terminal_write = os.pipe()
@@ -306,18 +313,30 @@ def _execute_owned(
         os.close(lifeline_read)
         os.close(lifeline_write)
         raise
+    try:
+        interrupted_read, interrupted_write = os.pipe()
+    except BaseException:
+        for fd in (lifeline_read, lifeline_write, terminal_read, terminal_write):
+            os.close(fd)
+        raise
 
-    def on_terminate(_signum, _frame):
+    def on_interrupt(_signum, _frame):
         nonlocal interrupted
-        if interrupted:
+        if interrupted is not None:
             return
-        interrupted = True
+        interrupted = "SIGINT" if _signum == signal.SIGINT else "SIGTERM"
         if process is not None and not cleaning and not communicated:
-            raise ProducerExecutionError("benchmark producer interrupted by SIGTERM")
+            # A raising handler can consume a stdout block between read and
+            # sink.write. Wake the owner loop after the current block is saved.
+            try:
+                os.write(interrupted_write, b"I" if interrupted == "SIGINT" else b"T")
+            except BlockingIOError:
+                pass
 
-    previous = signal.signal(signal.SIGTERM, on_terminate)
+    previous = {sig: signal.signal(sig, on_interrupt) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         os.set_blocking(terminal_read, False)
+        os.set_blocking(interrupted_write, False)
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -341,12 +360,16 @@ def _execute_owned(
         lifeline_read = None
         os.close(terminal_write)
         terminal_write = None
-        if interrupted:
+        if interrupted == "SIGINT":
+            raise KeyboardInterrupt()
+        if interrupted == "SIGTERM":
             raise ProducerExecutionError("benchmark producer interrupted during spawn")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired(argv, timeout)
-        terminal_raw = _wait_for_terminal(process, terminal_read, sinks, remaining)
+        terminal_raw = _wait_for_terminal(
+            process, terminal_read, interrupted_read, sinks, remaining
+        )
         _child_result(terminal_raw)
         # Never reap/poll the leader before this kill. Its unreaped PID pins
         # group identity even if it was killed between reporting and cleanup.
@@ -370,15 +393,20 @@ def _execute_owned(
             raise ProducerExecutionError(primary) from exc
         raise
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
         if lifeline_read is not None:
             os.close(lifeline_read)
         os.close(lifeline_write)
         if terminal_write is not None:
             os.close(terminal_write)
         os.close(terminal_read)
+        os.close(interrupted_read)
+        os.close(interrupted_write)
     result = _terminal_result(process.returncode, terminal_raw)
-    if interrupted:
+    if interrupted == "SIGINT":
+        raise KeyboardInterrupt()
+    if interrupted == "SIGTERM":
         raise ProducerExecutionError("benchmark producer interrupted by SIGTERM")
     return {
         "argv": argv,

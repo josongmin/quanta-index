@@ -21,6 +21,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Read as _;
 use std::io::Write as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -32,6 +33,11 @@ use quanta_index_contract::{
     RepoMapCandidateEnvelopeV1, StateRootUuidCommitmentV1,
 };
 use quanta_index_core::CoreError;
+use quanta_index_core::publication_admission::PublicationObjectReader;
+use quanta_index_core::publication_capacity::InodeKey;
+use quanta_index_core::{
+    RepoMapImmutablePutOutcome, RepoMapPhysicalFileClass, RepoMapPhysicalFilePort,
+};
 
 use crate::layout_v3::{
     CandidateObjectAddressV1, ObservedFileKindV1, ObservedFileMetadataV1, SecureMetadataPairV1,
@@ -86,12 +92,98 @@ fn typed_refusal(
     CoreError::Typed { code, message }
 }
 
+fn admitted_io_error(context: &str, error: &std::io::Error) -> CoreError {
+    let mut cause: &(dyn std::error::Error + 'static) = error;
+    loop {
+        if let Some(core) = cause.downcast_ref::<CoreError>() {
+            return core.clone();
+        }
+        let next = cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .map(|inner| -> &(dyn std::error::Error + 'static) { inner })
+            .or_else(|| cause.source());
+        match next {
+            Some(inner) => cause = inner,
+            None => return CoreError::storage_io(context, error),
+        }
+    }
+}
+
+fn add_retirement(mut primary: CoreError, retirement: &CoreError) -> CoreError {
+    let message = match &mut primary {
+        CoreError::InvalidContract(message)
+        | CoreError::NotReady(message)
+        | CoreError::NotImplemented(message)
+        | CoreError::NotFound(message)
+        | CoreError::Storage(message)
+        | CoreError::StorageIo { message, .. }
+        | CoreError::Typed { message, .. } => message,
+    };
+    message.push_str("; original RepoMap reader retirement failed: ");
+    message.push_str(&retirement.to_string());
+    primary
+}
+
+fn finish_reader<T>(
+    reader: Box<dyn PublicationObjectReader>,
+    result: Result<T, CoreError>,
+) -> Result<T, CoreError> {
+    match (result, reader.retire()) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(retirement)) => Err(retirement),
+        (Err(primary), Err(retirement)) => Err(add_retirement(primary, &retirement)),
+    }
+}
+
+fn read_owned_bytes(
+    mut reader: Box<dyn PublicationObjectReader>,
+    path: &Path,
+) -> Result<(Vec<u8>, std::fs::Metadata), CoreError> {
+    let result = (|| {
+        let metadata = reader.metadata()?;
+        let limit = metadata.len().checked_add(1).ok_or_else(|| {
+            storage_error("bound opened projection", path, &"file length overflow")
+        })?;
+        let mut bytes = Vec::new();
+        let _read = (&mut *reader)
+            .take(limit)
+            .read_to_end(&mut bytes)
+            .map_err(|error| admitted_io_error("read original RepoMap FD", &error))?;
+        if u64::try_from(bytes.len())
+            .map_err(|error| storage_error("count opened projection", path, &error))?
+            != metadata.len()
+        {
+            return Err(storage_error(
+                "read opened projection",
+                path,
+                &"actual bytes differ from original FD width",
+            ));
+        }
+        Ok((bytes, metadata))
+    })();
+    finish_reader(reader, result)
+}
+
 /// The immutable object store under one layout-V3 root.
-#[derive(Debug)]
 pub(crate) struct RepoMapObjectStore {
     root: PathBuf,
     security: StateRootSecurityContextV1,
     uuid_commitment: StateRootUuidCommitmentV1,
+    physical: Option<Arc<dyn RepoMapPhysicalFilePort>>,
+}
+
+impl std::fmt::Debug for RepoMapObjectStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RepoMapObjectStore")
+            .field("root", &self.root)
+            .field("security", &self.security)
+            .field("uuid_commitment", &self.uuid_commitment)
+            .field("physical_admission", &self.physical.is_some())
+            .finish()
+    }
 }
 
 /// What a seal left durable: the address, the exact canonical bytes, and
@@ -113,16 +205,39 @@ pub(crate) struct ObjectVerificationFailureV1 {
     pub observed_byte_size: Option<u64>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum ObjectVerificationErrorV1 {
+    Corrupt(ObjectVerificationFailureV1),
+    Operational(CoreError),
+}
+
 impl RepoMapObjectStore {
     /// Open (creating if needed) the layout-V3 root and its security
     /// context. The effective uid is taken from the root directory itself
     /// (this process created or adopted it); the uuid commitment is bound
     /// once at first open and reused on every later open.
     pub(crate) fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
-        let root = root.as_ref();
+        Self::open_inner(root.as_ref(), None)
+    }
+
+    pub(crate) fn open_with_file_admission(
+        root: impl AsRef<Path>,
+        physical: Arc<dyn RepoMapPhysicalFilePort>,
+    ) -> Result<Self, CoreError> {
+        Self::open_inner(root.as_ref(), Some(physical))
+    }
+
+    fn open_inner(
+        root: &Path,
+        physical: Option<Arc<dyn RepoMapPhysicalFilePort>>,
+    ) -> Result<Self, CoreError> {
+        if let Some(admission) = &physical {
+            admission.validate_root_and_reconcile(root)?;
+            admission.ensure_private_directory(root)?;
+        }
         let root_metadata = match fs::symlink_metadata(root) {
             Ok(metadata) => metadata,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && physical.is_none() => {
                 fs::create_dir(root)
                     .map_err(|err| storage_error("create layout root", root, &err))?;
                 fs::symlink_metadata(root)
@@ -146,18 +261,21 @@ impl RepoMapObjectStore {
                 &"path exists and is not a directory",
             ));
         }
-        set_directory_mode(root)?;
+        if physical.is_none() {
+            set_directory_mode(root)?;
+        }
         let root_metadata = fs::symlink_metadata(root)
             .map_err(|err| storage_error("inspect layout root", root, &err))?;
         let expected_uid = observed_metadata(root, &root_metadata)
             .map_err(|detail| storage_error("observe layout root", root, &detail))?
             .uid;
-        let uuid_commitment = Self::load_or_bind_uuid(root)?;
+        let uuid_commitment = Self::load_or_bind_uuid(root, physical.as_ref())?;
         let security = StateRootSecurityContextV1::new(expected_uid, uuid_commitment);
         Ok(Self {
             root: root.to_path_buf(),
             security,
             uuid_commitment,
+            physical,
         })
     }
 
@@ -168,8 +286,36 @@ impl RepoMapObjectStore {
     /// Bind (first open) or load (every later open) the root uuid
     /// commitment. Created with create-new semantics: a concurrent creator
     /// wins and both read the same bytes.
-    fn load_or_bind_uuid(root: &Path) -> Result<StateRootUuidCommitmentV1, CoreError> {
+    fn load_or_bind_uuid(
+        root: &Path,
+        physical: Option<&Arc<dyn RepoMapPhysicalFilePort>>,
+    ) -> Result<StateRootUuidCommitmentV1, CoreError> {
         let path = root.join(ROOT_UUID_FILE_NAME);
+        if let Some(admission) = physical {
+            let (bytes, _metadata) = if let Some(reader) = admission.open_reader(&path)? {
+                read_owned_bytes(reader, &path)?
+            } else {
+                let uuid = derive_uuid_bytes(root);
+                let _created =
+                    admission.put_immutable(&path, &uuid, RepoMapPhysicalFileClass::RootUuid)?;
+                let reader = admission.open_reader(&path)?.ok_or_else(|| {
+                    storage_error("reopen published root uuid", &path, &"missing file")
+                })?;
+                read_owned_bytes(reader, &path)?
+            };
+            let uuid =
+                <[u8; ROOT_UUID_BYTES]>::try_from(bytes.as_slice()).map_err(|wrong_length| {
+                    storage_error(
+                        "read root uuid (wrong length)",
+                        &path,
+                        &format!(
+                            "{} bytes, expected {ROOT_UUID_BYTES}: {wrong_length}",
+                            bytes.len()
+                        ),
+                    )
+                })?;
+            return Ok(StateRootUuidCommitmentV1::for_uuid_bytes(uuid));
+        }
         match fs::symlink_metadata(&path) {
             Ok(metadata) => {
                 if !metadata.is_file() {
@@ -225,6 +371,23 @@ impl RepoMapObjectStore {
         let address = CandidateObjectAddressV1::new(digest);
         let relative = address.relative_path();
         let final_path = self.root.join(&relative);
+        if let Some(admission) = &self.physical {
+            admission.validate_root_and_reconcile(&self.root)?;
+            let _directories = self.ensure_fanout_directories(&relative)?;
+            let outcome = admission.put_immutable(
+                &final_path,
+                &bytes,
+                RepoMapPhysicalFileClass::Candidate,
+            )?;
+            if outcome == RepoMapImmutablePutOutcome::Created {
+                exit_at_crash_boundary(AFTER_OBJECT_SYNC);
+            }
+            return Ok(SealedObjectV1 {
+                address,
+                bytes: Arc::new(bytes),
+                replayed: outcome == RepoMapImmutablePutOutcome::ExactReplay,
+            });
+        }
         match fs::symlink_metadata(&final_path) {
             Ok(_) => {
                 let existing = self.read_raw_verified(&relative)?;
@@ -272,17 +435,44 @@ impl RepoMapObjectStore {
         &self,
         digest: CandidateObjectDigestV1,
         expected_commitment: &[u8; 32],
-    ) -> Result<RepoMapCandidateEnvelopeV1, ObjectVerificationFailureV1> {
+    ) -> Result<RepoMapCandidateEnvelopeV1, ObjectVerificationErrorV1> {
         let address = CandidateObjectAddressV1::new(digest);
         let relative = address.relative_path();
-        let raw = self
-            .read_raw_verified(&relative)
-            .map_err(|err| ObjectVerificationFailureV1 {
-                reason: QuarantineReasonCodeV1::SecureIoUnavailable,
-                detail: err.to_string(),
-                raw_bytes: None,
-                observed_byte_size: None,
-            })?;
+        let raw = match self.read_raw_verified_optional(&relative) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                return Err(ObjectVerificationErrorV1::Corrupt(
+                    ObjectVerificationFailureV1 {
+                        reason: QuarantineReasonCodeV1::SecureIoUnavailable,
+                        detail: "the catalog candidate object is confirmed absent".into(),
+                        raw_bytes: None,
+                        observed_byte_size: None,
+                    },
+                ));
+            }
+            Err(error) if self.physical.is_some() => {
+                return Err(ObjectVerificationErrorV1::Operational(error));
+            }
+            Err(error) => {
+                return Err(ObjectVerificationErrorV1::Corrupt(
+                    ObjectVerificationFailureV1 {
+                        reason: QuarantineReasonCodeV1::SecureIoUnavailable,
+                        detail: error.to_string(),
+                        raw_bytes: None,
+                        observed_byte_size: None,
+                    },
+                ));
+            }
+        };
+        Self::verify_raw(digest, expected_commitment, raw)
+            .map_err(ObjectVerificationErrorV1::Corrupt)
+    }
+
+    fn verify_raw(
+        digest: CandidateObjectDigestV1,
+        expected_commitment: &[u8; 32],
+        raw: Vec<u8>,
+    ) -> Result<RepoMapCandidateEnvelopeV1, ObjectVerificationFailureV1> {
         let raw_bytes = raw.clone();
         let observed_byte_size =
             Some(
@@ -391,6 +581,11 @@ impl RepoMapObjectStore {
     /// verification of every traversed directory and the leaf file.
     fn read_raw_verified(&self, relative: &Path) -> Result<Vec<u8>, CoreError> {
         let final_path = self.root.join(relative);
+        if self.physical.is_some() {
+            return self.read_raw_verified_optional(relative)?.ok_or_else(|| {
+                storage_error("open object", &final_path, &"sealed projection is absent")
+            });
+        }
         let traversed = traversed_directories(&self.root, relative)?;
         let mut directory_pairs = Vec::new();
         for directory in &traversed {
@@ -437,6 +632,86 @@ impl RepoMapObjectStore {
         Ok(bytes)
     }
 
+    fn read_raw_verified_optional(&self, relative: &Path) -> Result<Option<Vec<u8>>, CoreError> {
+        let final_path = self.root.join(relative);
+        if let Some(admission) = &self.physical {
+            admission.validate_root_and_reconcile(&self.root)?;
+            let Some(mut reader) = admission.open_reader(&final_path)? else {
+                return Ok(None);
+            };
+            let result = (|| {
+                let metadata = reader.metadata()?;
+                self.verify_opened_security(relative, &metadata)?;
+                let limit = metadata.len().checked_add(1).ok_or_else(|| {
+                    storage_error("bound object read", &final_path, &"file length overflow")
+                })?;
+                let mut bytes = Vec::new();
+                let _read = (&mut *reader)
+                    .take(limit)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| admitted_io_error("read original RepoMap object", &error))?;
+                if u64::try_from(bytes.len())
+                    .map_err(|error| storage_error("count object bytes", &final_path, &error))?
+                    != metadata.len()
+                {
+                    return Err(storage_error(
+                        "read object",
+                        &final_path,
+                        &"original FD length changed during read",
+                    ));
+                }
+                Ok(bytes)
+            })();
+            return finish_reader(reader, result).map(Some);
+        }
+        self.read_raw_verified(relative).map(Some)
+    }
+
+    fn verify_opened_security(
+        &self,
+        relative: &Path,
+        opened_metadata: &std::fs::Metadata,
+    ) -> Result<(), CoreError> {
+        let final_path = self.root.join(relative);
+        let traversed = traversed_directories(&self.root, relative)?;
+        let mut directory_pairs = Vec::new();
+        for directory in &traversed {
+            directory_pairs.push(observe_directory(directory)?);
+        }
+        let leaf_metadata = fs::symlink_metadata(&final_path)
+            .map_err(|error| storage_error("inspect object", &final_path, &error))?;
+        if leaf_metadata.is_symlink() {
+            return Err(typed_refusal(
+                quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
+                format!(
+                    "repomap object store refuses a symlinked object: {}",
+                    final_path.display()
+                ),
+            ));
+        }
+        let lstat = observed_metadata(&final_path, &leaf_metadata)
+            .map_err(|detail| storage_error("observe object", &final_path, &detail))?;
+        let fstat = observed_metadata(&final_path, opened_metadata)
+            .map_err(|detail| storage_error("fstat object", &final_path, &detail))?;
+        self.security
+            .verify_opened_file(
+                &directory_pairs,
+                SecureMetadataPairV1 {
+                    lstat,
+                    fstat: Some(fstat),
+                },
+            )
+            .map_err(|error| {
+                typed_refusal(
+                    quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInsecure,
+                    format!(
+                        "repomap object store refused {}: {error}",
+                        final_path.display()
+                    ),
+                )
+            })
+    }
+
     /// Create every fanout directory of a content address (0700, exact),
     /// returning them innermost-last for fsync.
     fn ensure_fanout_directories(&self, relative: &Path) -> Result<Vec<PathBuf>, CoreError> {
@@ -451,6 +726,11 @@ impl RepoMapObjectStore {
         for component in directory_components {
             let name = component.as_os_str();
             current.push(name);
+            if let Some(admission) = &self.physical {
+                admission.ensure_private_directory(&current)?;
+                created.push(current.clone());
+                continue;
+            }
             match fs::symlink_metadata(&current) {
                 Ok(metadata) if metadata.is_dir() => {}
                 Ok(_) => {
@@ -501,6 +781,8 @@ impl RepoMapObjectStore {
             &incident_address.relative_path(),
             envelope_bytes.as_slice(),
             "quarantine incident",
+            self.physical.as_ref(),
+            RepoMapPhysicalFileClass::Incident,
         )?;
         let payload_digest = payload_bytes.map(QuarantinePayloadDigestV1::for_payload);
         if let (Some(bytes), Some(digest)) = (payload_bytes, payload_digest) {
@@ -510,6 +792,8 @@ impl RepoMapObjectStore {
                 &address.relative_path(),
                 bytes,
                 "quarantine payload",
+                self.physical.as_ref(),
+                RepoMapPhysicalFileClass::Payload,
             )?;
         }
         Ok((incident_digest, payload_digest))
@@ -525,6 +809,10 @@ impl RepoMapObjectStore {
         let address = crate::layout_v3::QuarantinePayloadAddressV1::new(digest);
         let relative = address.relative_path();
         let path = self.root.join(&relative);
+        if self.physical.is_some() {
+            let _deleted = self.remove_owned_if_present(&path)?;
+            return Ok(digest);
+        }
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -547,6 +835,10 @@ impl RepoMapObjectStore {
         let address = CandidateObjectAddressV1::new(digest);
         let relative = address.relative_path();
         let path = self.root.join(&relative);
+        if self.physical.is_some() {
+            let _deleted = self.remove_owned_if_present(&path)?;
+            return Ok(());
+        }
         match fs::remove_file(&path) {
             Ok(()) => {}
             // Already gone: the durable incident row is the authority, so
@@ -570,11 +862,58 @@ impl RepoMapObjectStore {
     ) -> Result<Option<Vec<u8>>, CoreError> {
         let address = crate::layout_v3::QuarantinePayloadAddressV1::new(digest);
         let path = self.root.join(address.relative_path());
+        if let Some(admission) = &self.physical {
+            admission.validate_root_and_reconcile(&self.root)?;
+            return admission
+                .open_reader(&path)?
+                .map(|reader| read_owned_bytes(reader, &path).map(|(bytes, _metadata)| bytes))
+                .transpose();
+        }
         match fs::read(&path) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(storage_error("read quarantine payload", &path, &err)),
         }
+    }
+
+    pub(crate) fn candidate_exists_owned(
+        &self,
+        digest: CandidateObjectDigestV1,
+    ) -> Result<bool, CoreError> {
+        let path = self
+            .root
+            .join(CandidateObjectAddressV1::new(digest).relative_path());
+        let Some(admission) = &self.physical else {
+            return path
+                .try_exists()
+                .map_err(|error| storage_error("inspect candidate", &path, &error));
+        };
+        admission.validate_root_and_reconcile(&self.root)?;
+        admission
+            .open_reader(&path)?
+            .map_or(Ok(false), |reader| finish_reader(reader, Ok(true)))
+    }
+
+    fn remove_owned_if_present(&self, path: &Path) -> Result<bool, CoreError> {
+        let admission = self.physical.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("missing RepoMap physical admission".into())
+        })?;
+        admission.validate_root_and_reconcile(&self.root)?;
+        let Some(reader) = admission.open_reader(path)? else {
+            return Ok(false);
+        };
+        let deletion = reader.metadata().and_then(|metadata| {
+            admission.delete_file_and_sync(
+                path,
+                InodeKey {
+                    device: metadata.dev(),
+                    inode: metadata.ino(),
+                },
+                metadata.len(),
+            )
+        });
+        finish_reader(reader, deletion)?;
+        Ok(true)
     }
 }
 
@@ -584,8 +923,24 @@ fn write_content_addressed(
     relative: &Path,
     bytes: &[u8],
     label: &str,
+    physical: Option<&Arc<dyn RepoMapPhysicalFilePort>>,
+    class: RepoMapPhysicalFileClass,
 ) -> Result<(), CoreError> {
     let final_path = root.join(relative);
+    if let Some(admission) = physical {
+        admission.validate_root_and_reconcile(root)?;
+        let mut current = root.to_path_buf();
+        let components = relative.components().collect::<Vec<_>>();
+        let (_, directories) = components
+            .split_last()
+            .ok_or_else(|| storage_error("split projection path", &final_path, &"empty path"))?;
+        for component in directories {
+            current.push(component.as_os_str());
+            admission.ensure_private_directory(&current)?;
+        }
+        let _outcome = admission.put_immutable(&final_path, bytes, class)?;
+        return Ok(());
+    }
     match fs::symlink_metadata(&final_path) {
         Ok(_) => {
             let existing = fs::read(&final_path)
@@ -809,3 +1164,6 @@ fn derive_uuid_bytes(root: &Path) -> [u8; ROOT_UUID_BYTES] {
     uuid.copy_from_slice(head);
     uuid
 }
+
+#[cfg(test)]
+pub(crate) mod physical_tests;

@@ -1,12 +1,12 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{EmbeddingNormalization, PUBLIC_TOP_K_MAX};
 
 use crate::domains::observability::{MetricPointV1, MetricSourcePort};
-use crate::domains::semantic::outbound::TextEmbeddingProvider;
-use crate::error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
+use crate::domains::semantic::outbound::{TextEmbeddingBatch, TextEmbeddingProvider};
+use crate::error::{validate_internal_fetch_size, validate_query_top_k, CoreError};
 use crate::request_budget::RequestBudgetV1;
 
 /// How far from 1.0 a unit vector's L2 norm may be before it is not one.
@@ -19,6 +19,15 @@ pub const L2_UNIT_NORM_TOLERANCE: f64 = 1e-3;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SemanticPolicy;
+
+/// Allocation-free failure from the canonical L2 normalization calculation.
+/// Callers that own diagnostic allocation can render it after their admission gate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SemanticNormalizationFailureV1 {
+    NonFiniteComponent { index: usize, component: f32 },
+    NormOverflow,
+    ZeroNorm,
+}
 
 impl SemanticPolicy {
     /// The public result cap shared by every query route.
@@ -88,16 +97,40 @@ impl SemanticPolicy {
     /// vector with a non-finite component or zero norm cannot be normalized
     /// and is refused typed rather than turned into NaNs.
     pub fn normalize_l2_unit_v1(vector: &mut [f32]) -> Result<(), CoreError> {
-        let norm = l2_norm_v1(vector)?;
+        Self::normalize_l2_unit_checked_v1(vector).map_err(|cause| {
+            invalid_vector(match cause {
+                SemanticNormalizationFailureV1::ZeroNorm => {
+                    "semantic: cannot normalize a zero-norm embedding vector".to_string()
+                }
+                other => other.to_norm_message_v1(),
+            })
+        })
+    }
+
+    /// The same normalization, with scalar failure data and no diagnostic birth.
+    pub fn normalize_l2_unit_checked_v1(
+        vector: &mut [f32],
+    ) -> Result<(), SemanticNormalizationFailureV1> {
+        let norm = l2_norm_checked_v1(vector)?;
         if norm <= 0.0 {
-            return Err(invalid_vector(
-                "semantic: cannot normalize a zero-norm embedding vector".to_string(),
-            ));
+            return Err(SemanticNormalizationFailureV1::ZeroNorm);
         }
         for component in vector.iter_mut() {
             *component = narrow_unit_component(f64::from(*component) / norm);
         }
         Ok(())
+    }
+}
+
+impl SemanticNormalizationFailureV1 {
+    fn to_norm_message_v1(self) -> String {
+        match self {
+            Self::NonFiniteComponent { index, component } => {
+                format!("semantic: embedding vector component {index} is not finite ({component})")
+            }
+            Self::NormOverflow => "semantic: embedding vector norm overflowed".to_string(),
+            Self::ZeroNorm => "semantic: embedding vector has zero norm".to_string(),
+        }
     }
 }
 
@@ -117,20 +150,23 @@ fn narrow_unit_component(scaled: f64) -> f32 {
 
 /// L2 norm accumulated in `f64`; refuses non-finite components typed.
 fn l2_norm_v1(vector: &[f32]) -> Result<f64, CoreError> {
+    l2_norm_checked_v1(vector).map_err(|cause| invalid_vector(cause.to_norm_message_v1()))
+}
+
+fn l2_norm_checked_v1(vector: &[f32]) -> Result<f64, SemanticNormalizationFailureV1> {
     let mut norm_sq = 0.0_f64;
     for (index, component) in vector.iter().enumerate() {
         if !component.is_finite() {
-            return Err(invalid_vector(format!(
-                "semantic: embedding vector component {index} is not finite ({component})"
-            )));
+            return Err(SemanticNormalizationFailureV1::NonFiniteComponent {
+                index,
+                component: *component,
+            });
         }
         let value = f64::from(*component);
         norm_sq += value * value;
     }
     if !norm_sq.is_finite() {
-        return Err(invalid_vector(
-            "semantic: embedding vector norm overflowed".to_string(),
-        ));
+        return Err(SemanticNormalizationFailureV1::NormOverflow);
     }
     Ok(norm_sq.sqrt())
 }
@@ -226,8 +262,8 @@ impl<P: TextEmbeddingProvider> L2UnitEmbeddingProvider<P> {
     fn normalize_batch(
         &self,
         texts: &[&str],
-        mut vectors: Vec<Vec<f32>>,
-    ) -> Result<Vec<Vec<f32>>, CoreError> {
+        mut vectors: TextEmbeddingBatch,
+    ) -> Result<TextEmbeddingBatch, CoreError> {
         if vectors.len() != texts.len() {
             return Err(CoreError::Storage(format!(
                 "semantic: provider {} returned {} vectors for {} texts",
@@ -239,7 +275,7 @@ impl<P: TextEmbeddingProvider> L2UnitEmbeddingProvider<P> {
         let dimension = self.inner.dimension();
         let mut off_unit = 0_u64;
         let mut max_deviation = 0.0_f64;
-        for vector in &mut vectors {
+        for vector in vectors.values_mut() {
             SemanticPolicy::validate_embedding_vector_v1(
                 vector,
                 dimension,
@@ -266,7 +302,7 @@ impl<P: TextEmbeddingProvider> L2UnitEmbeddingProvider<P> {
 }
 
 impl<P: TextEmbeddingProvider> TextEmbeddingProvider for L2UnitEmbeddingProvider<P> {
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+    fn embed_batch(&self, texts: &[&str]) -> Result<TextEmbeddingBatch, CoreError> {
         let vectors = self.inner.embed_batch(texts)?;
         self.normalize_batch(texts, vectors)
     }
@@ -275,7 +311,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingProvider for L2UnitEmbeddingProvider
         &self,
         texts: &[&str],
         budget: &RequestBudgetV1,
-    ) -> Result<Vec<Vec<f32>>, CoreError> {
+    ) -> Result<TextEmbeddingBatch, CoreError> {
         let vectors = self.inner.embed_batch_within(texts, budget)?;
         self.normalize_batch(texts, vectors)
     }
@@ -321,25 +357,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn checked_normalization_shares_calculation_and_scalar_failures() {
+        let mut ordinary = [3.0_f32, 4.0];
+        let mut checked = ordinary;
+        SemanticPolicy::normalize_l2_unit_v1(&mut ordinary).expect("ordinary normalization");
+        SemanticPolicy::normalize_l2_unit_checked_v1(&mut checked).expect("checked normalization");
+        assert_eq!(ordinary, checked);
+
+        assert_eq!(
+            SemanticPolicy::normalize_l2_unit_checked_v1(&mut [0.0_f32, 0.0]),
+            Err(SemanticNormalizationFailureV1::ZeroNorm),
+        );
+        assert!(matches!(
+            SemanticPolicy::normalize_l2_unit_checked_v1(&mut [f32::NAN, 1.0]),
+            Err(SemanticNormalizationFailureV1::NonFiniteComponent { index: 0, .. }),
+        ));
+    }
+
+    #[test]
     fn the_norm_squares_its_components() {
         // Under `+`, `1 + (-1) = 0` → zero norm → refused; under `*` the
         // norm is sqrt(2) and a raw contract accepts it.
-        assert!(
-            SemanticPolicy::validate_embedding_vector_v1(
-                &[1.0, -1.0],
-                2,
-                quanta_index_contract::EmbeddingNormalization::None
-            )
-            .is_ok()
-        );
-        assert!(
-            SemanticPolicy::validate_embedding_vector_v1(
-                &[0.0, 0.0],
-                2,
-                quanta_index_contract::EmbeddingNormalization::None
-            )
-            .is_err()
-        );
+        assert!(SemanticPolicy::validate_embedding_vector_v1(
+            &[1.0, -1.0],
+            2,
+            quanta_index_contract::EmbeddingNormalization::None
+        )
+        .is_ok());
+        assert!(SemanticPolicy::validate_embedding_vector_v1(
+            &[0.0, 0.0],
+            2,
+            quanta_index_contract::EmbeddingNormalization::None
+        )
+        .is_err());
     }
 
     #[test]

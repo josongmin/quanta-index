@@ -68,7 +68,7 @@ def _isolation():
     }
 
 
-def _valid_qualified_v2(parent):
+def _valid_qualified_v3(parent):
     command_digest = "d" * 64
     child = {
         "nonce": "e" * 64,
@@ -79,10 +79,11 @@ def _valid_qualified_v2(parent):
         "proc_read_denied": True,
     }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "sampler": "linux-process-owner-v1",
         "capture_scope": "qualified",
         "owner_backend": "cgroup-v2",
+        "rss_method": "sampled_smaps_rollup_rss_sum_shared_pages_may_repeat",
         "sample_interval_ms": 50,
         "command_sha256": "f" * 64,
         "exec_command_sha256": command_digest,
@@ -123,14 +124,24 @@ def _valid_qualified_v2(parent):
     }
 
 
-def test_qualified_v2_closed_schema_rejects_adversarial_mutations(tmp_path):
+def test_qualified_v3_closed_schema_rejects_adversarial_mutations(tmp_path):
     parent = tmp_path / "delegated"
     parent.mkdir()
-    base = _valid_qualified_v2(parent)
+    base = _valid_qualified_v3(parent)
     assert base["peak_rss_bytes"] != base["peak_cgroup_memory_bytes"]
     pairrun._validate_resource_metrics(base, "base")
     mutations = [
         (lambda p: p.update(owner_backend="wrong"), "owner_backend"),
+        (lambda p: p.update(owner_backend=[]), "owner_backend"),
+        (lambda p: p.update(owner_backend={}), "owner_backend"),
+        (lambda p: p.pop("rss_method"), "exact"),
+        (lambda p: p.update(rss_method="wrong"), "rss_method"),
+        (
+            lambda p: p.update(rss_method="sampled_proc_stat_rss_sum_shared_pages_may_repeat"),
+            "rss_method",
+        ),
+        (lambda p: p.update(schema_version=2), "schema/sampler"),
+        (lambda p: p.update(schema_version=3.0), "schema/sampler"),
         (lambda p: p.pop("cgroup_cpu_usage_ns"), "exact"),
         (lambda p: p.update(cgroup_cpu_usage_ns=-1), "cgroup_cpu_usage_ns"),
         (lambda p: p.update(cgroup_cpu_usage_ns=None), "cgroup_cpu_usage_ns"),
@@ -140,9 +151,16 @@ def test_qualified_v2_closed_schema_rejects_adversarial_mutations(tmp_path):
         (lambda p: p.update(peak_cpu_percent=10.0), "exact"),
         (lambda p: p.update(escaped=[{"pid": 321, "start_ticks": 98765}]), "ownership_complete"),
         (lambda p: p.update(cleanup_complete=False), "cleanup"),
+        (lambda p: p.update(exit_code=False), "successful bounded process"),
+        (lambda p: p.update(exit_code=0.0), "successful bounded process"),
         (lambda p: p["processes"][0].update(pid=-1), "identity"),
         (lambda p: p["processes"][0].update(start_ticks=-1), "identity"),
         (lambda p: p["processes"].append(dict(p["processes"][0])), "identity"),
+        (lambda p: p.update(escaped=[{"pid": [], "start_ticks": 98765}]), "identity"),
+        (lambda p: p.update(escaped=[{"pid": 321, "start_ticks": {}}]), "identity"),
+        (lambda p: p.update(escaped=[{"pid": 321.0, "start_ticks": 98765}]), "identity"),
+        (lambda p: p["storage"].update(index_storage=[]), "storage measurement"),
+        (lambda p: p["storage"].update(index_storage={}), "storage measurement"),
         (lambda p: p["isolation"]["child_attestation"].update(nonce="0" * 63), "child"),
         (lambda p: p["isolation"]["child_attestation"].update(exec_sha256="0" * 64), "child"),
         (lambda p: p.update(capture_scope="exploratory"), "qualified Linux"),
@@ -162,7 +180,7 @@ def test_qualified_v2_closed_schema_rejects_adversarial_mutations(tmp_path):
 def test_resource_binding_rejects_v1_linux_scope_and_parent_substitution(tmp_path):
     parent = tmp_path / "delegated"
     parent.mkdir()
-    payload = _valid_qualified_v2(parent)
+    payload = _valid_qualified_v3(parent)
     identity = payload["delegated_cgroup_parent"]
     pairrun._validate_resource_capture_binding(
         payload,
@@ -265,6 +283,8 @@ def test_qualified_linux_owner_forwards_attestation_and_preserves_accounting(tmp
     with pytest.raises(OSError):
         os.fstat(passed["pass_fds"][0])
     assert resource["owner_backend"] == "cgroup-v2"
+    assert resource["schema_version"] == 3
+    assert resource["rss_method"] == "sampled_smaps_rollup_rss_sum_shared_pages_may_repeat"
     assert resource["ownership_complete"] is True
     assert resource["peak_rss_bytes"] == 4096
     assert resource["peak_cgroup_memory_bytes"] == 32768
@@ -302,10 +322,15 @@ def test_exploratory_group_is_diagnostic_and_cannot_upgrade(tmp_path, monkeypatc
     assert passed["pass_fds"] == ()
     assert resource["capture_scope"] == "exploratory"
     assert resource["owner_backend"] == "process-group"
+    assert resource["schema_version"] == 3
+    assert resource["rss_method"] == "sampled_proc_stat_rss_sum_shared_pages_may_repeat"
     assert resource["ownership_complete"] is False
     assert resource["peak_cgroup_memory_bytes"] is None
     bound = pairrun.bind_storage_metrics(paths["resource_path"], _storage())
     pairrun._validate_resource_metrics(bound, "diagnostic")
+    mislabeled = dict(bound, rss_method="sampled_smaps_rollup_rss_sum_shared_pages_may_repeat")
+    with pytest.raises(pairrun.RunError, match="rss_method"):
+        pairrun._validate_resource_metrics(mislabeled, "mislabeled")
     upgraded = dict(bound, capture_scope="qualified")
     with pytest.raises(pairrun.RunError, match="qualified Linux requires"):
         pairrun._validate_resource_metrics(upgraded, "upgraded")

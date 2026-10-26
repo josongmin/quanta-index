@@ -293,16 +293,18 @@ pub trait HistoryTextIndexPort: Send + Sync {
 
     /// Publish the index of `epoch`, durable on return.
     ///
-    /// A leftover under the same epoch from an attempt that never became
-    /// the generation's epoch (the rows failed to land, or the process
-    /// crashed before they did) is replaced: an epoch number is claimed
-    /// only when its rows are durable, so nothing can hold the leftover.
+    /// An already completed physical publication for the same build returns
+    /// its original receipt. An incomplete staging attempt is recovered and
+    /// retired before a fresh publication can reserve capacity. The caller
+    /// claims the epoch only after its corresponding rows become durable.
+    /// New work consumes the caller's original budget. Recovery of an already
+    /// started physical intent must still settle when that budget is cancelled.
     fn publish_epoch(
         &self,
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
         build: HistoryTextBuildV1,
-        diagnostic: Option<&crate::DiagnosticContextV1>,
+        budget: &crate::RequestBudgetV1,
     ) -> Result<HistoryTextEpochReceiptV1, CoreError>;
 
     /// Open the index of `epoch` for query.

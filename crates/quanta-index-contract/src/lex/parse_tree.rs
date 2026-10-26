@@ -22,6 +22,9 @@ use sha2::{Digest, Sha256};
 
 use super::LanguageCode;
 
+mod admitted;
+use admitted::{OrdinaryParseTree, ParseTreeDecodePolicy};
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ParseRoleTag {
     pub role: Box<str>,
@@ -44,9 +47,9 @@ impl Serialize for ParseRoleTag {
     }
 }
 
-struct ParseRoleTagVisitor;
+struct ParseRoleTagVisitor<P>(P);
 
-impl<'de> Visitor<'de> for ParseRoleTagVisitor {
+impl<'de, P: ParseTreeDecodePolicy<'de>> Visitor<'de> for ParseRoleTagVisitor<P> {
     type Value = ParseRoleTag;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -57,16 +60,16 @@ impl<'de> Visitor<'de> for ParseRoleTagVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut role: Option<String> = None;
+        let mut role: Option<Box<str>> = None;
         let mut byte_start: Option<u32> = None;
         let mut byte_end: Option<u32> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self.0.next_field(&mut map, PARSE_ROLE_TAG_FIELDS)? {
+            match key {
                 "role" => {
                     if role.is_some() {
                         return Err(de::Error::duplicate_field("role"));
                     }
-                    role = Some(map.next_value()?);
+                    role = Some(self.0.next_boxed(&mut map)?);
                 }
                 "byte_start" => {
                     if byte_start.is_some() {
@@ -84,9 +87,7 @@ impl<'de> Visitor<'de> for ParseRoleTagVisitor {
             }
         }
         Ok(ParseRoleTag {
-            role: role
-                .ok_or_else(|| de::Error::missing_field("role"))?
-                .into_boxed_str(),
+            role: role.ok_or_else(|| de::Error::missing_field("role"))?,
             byte_start: byte_start.ok_or_else(|| de::Error::missing_field("byte_start"))?,
             byte_end: byte_end.ok_or_else(|| de::Error::missing_field("byte_end"))?,
         })
@@ -98,7 +99,11 @@ impl<'de> Deserialize<'de> for ParseRoleTag {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_struct("ParseRoleTag", PARSE_ROLE_TAG_FIELDS, ParseRoleTagVisitor)
+        deserializer.deserialize_struct(
+            "ParseRoleTag",
+            PARSE_ROLE_TAG_FIELDS,
+            ParseRoleTagVisitor(OrdinaryParseTree),
+        )
     }
 }
 
@@ -131,9 +136,9 @@ impl Serialize for ParseNode {
     }
 }
 
-struct ParseNodeVisitor;
+struct ParseNodeVisitor<P>(P);
 
-impl<'de> Visitor<'de> for ParseNodeVisitor {
+impl<'de, P: ParseTreeDecodePolicy<'de>> Visitor<'de> for ParseNodeVisitor<P> {
     type Value = ParseNode;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -144,17 +149,17 @@ impl<'de> Visitor<'de> for ParseNodeVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut kind: Option<String> = None;
+        let mut kind: Option<Box<str>> = None;
         let mut byte_start: Option<u32> = None;
         let mut byte_end: Option<u32> = None;
         let mut children: Option<Vec<ParseNode>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self.0.next_field(&mut map, PARSE_NODE_FIELDS)? {
+            match key {
                 "kind" => {
                     if kind.is_some() {
                         return Err(de::Error::duplicate_field("kind"));
                     }
-                    kind = Some(map.next_value()?);
+                    kind = Some(self.0.next_boxed(&mut map)?);
                 }
                 "byte_start" => {
                     if byte_start.is_some() {
@@ -172,7 +177,7 @@ impl<'de> Visitor<'de> for ParseNodeVisitor {
                     if children.is_some() {
                         return Err(de::Error::duplicate_field("children"));
                     }
-                    children = Some(map.next_value()?);
+                    children = Some(self.0.next_children(&mut map)?);
                 }
                 other => return Err(de::Error::unknown_field(other, PARSE_NODE_FIELDS)),
             }
@@ -182,7 +187,7 @@ impl<'de> Visitor<'de> for ParseNodeVisitor {
         let byte_end = byte_end.ok_or_else(|| de::Error::missing_field("byte_end"))?;
         let children = children.ok_or_else(|| de::Error::missing_field("children"))?;
         Ok(ParseNode {
-            kind: kind.into_boxed_str(),
+            kind,
             byte_start,
             byte_end,
             children,
@@ -195,7 +200,11 @@ impl<'de> Deserialize<'de> for ParseNode {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_struct("ParseNode", PARSE_NODE_FIELDS, ParseNodeVisitor)
+        deserializer.deserialize_struct(
+            "ParseNode",
+            PARSE_NODE_FIELDS,
+            ParseNodeVisitor(OrdinaryParseTree),
+        )
     }
 }
 
@@ -242,9 +251,9 @@ impl Serialize for ParseTreeRecord {
     }
 }
 
-struct ParseTreeRecordVisitor;
+struct ParseTreeRecordVisitor<P>(P);
 
-impl<'de> Visitor<'de> for ParseTreeRecordVisitor {
+impl<'de, P: ParseTreeDecodePolicy<'de>> Visitor<'de> for ParseTreeRecordVisitor<P> {
     type Value = ParseTreeRecord;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -261,8 +270,8 @@ impl<'de> Visitor<'de> for ParseTreeRecordVisitor {
         let mut source_hash: Option<[u8; 32]> = None;
         let mut role_tag_schema_version: Option<u32> = None;
         let mut role_tags: Option<Vec<ParseRoleTag>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self.0.next_field(&mut map, PARSE_TREE_RECORD_FIELDS)? {
+            match key {
                 "wire_version" => {
                     if wire_version.is_some() {
                         return Err(de::Error::duplicate_field("wire_version"));
@@ -273,13 +282,13 @@ impl<'de> Visitor<'de> for ParseTreeRecordVisitor {
                     if lang.is_some() {
                         return Err(de::Error::duplicate_field("lang"));
                     }
-                    lang = Some(map.next_value()?);
+                    lang = Some(self.0.next_lang(&mut map)?);
                 }
                 "root" => {
                     if root.is_some() {
                         return Err(de::Error::duplicate_field("root"));
                     }
-                    root = Some(map.next_value()?);
+                    root = Some(self.0.next_root(&mut map)?);
                 }
                 "source_hash" => {
                     if source_hash.is_some() {
@@ -297,7 +306,7 @@ impl<'de> Visitor<'de> for ParseTreeRecordVisitor {
                     if role_tags.is_some() {
                         return Err(de::Error::duplicate_field("role_tags"));
                     }
-                    role_tags = Some(map.next_value()?);
+                    role_tags = Some(self.0.next_role_tags(&mut map)?);
                 }
                 other => return Err(de::Error::unknown_field(other, PARSE_TREE_RECORD_FIELDS)),
             }
@@ -326,7 +335,7 @@ impl<'de> Deserialize<'de> for ParseTreeRecord {
         deserializer.deserialize_struct(
             "ParseTreeRecord",
             PARSE_TREE_RECORD_FIELDS,
-            ParseTreeRecordVisitor,
+            ParseTreeRecordVisitor(OrdinaryParseTree),
         )
     }
 }

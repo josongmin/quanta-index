@@ -72,8 +72,8 @@ pub use query_embedder::{
 pub use readiness::{
     ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger,
     PairIndexBytesMeasurer, PreparedSearchCorpusGenerationV1, SealedSearchCorpusAuthorityStateV1,
-    SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1, SearchCorpusIndexBytesPort,
-    TrackLedger,
+    SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1, SearchCorpusIndexByteSession,
+    SearchCorpusIndexBytesPort, TrackLedger,
 };
 pub use search_corpus_lifecycle::{
     ActivationPromotionParts, SearchCorpusLifecycleOwner, SearchCorpusLifecycleParts,

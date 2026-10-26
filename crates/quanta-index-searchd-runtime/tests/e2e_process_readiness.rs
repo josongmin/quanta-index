@@ -7,11 +7,13 @@ use std::time::Duration;
 
 use quanta_index_contract::{
     GenerationPin, MetricsSnapshotV1, ProcessReadinessReasonV1, ProcessReadinessV1,
-    ProcessRequestEventPlaneV1, ProcessRequestEventStageV1, QueryConstraintSetV1,
-    SearchPlaneControlIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
-    SearchPlaneRollbackSearchCorpusGenerationCasRequest, SemanticQueryRequest, TextQueryRequest,
-    TextQuerySyntax,
+    ProcessRequestEventPlaneV1, ProcessRequestEventStageV1, ProcessRequestEventsRequestV1,
+    ProcessRequestEventsV1, QueryConstraintSetV1, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_searchd_harness::E2eRuntime;
@@ -35,6 +37,157 @@ fn counter(snapshot: &MetricsSnapshotV1, name: &str) -> Option<u64> {
         .iter()
         .find(|point| point.name == name)
         .map(|point| point.value)
+}
+
+fn ingest_failure_event_tail(
+    runtime: &E2eRuntime,
+) -> Result<ProcessRequestEventsV1, Box<dyn Error>> {
+    let (_, control_socket, _) = runtime
+        .socket_paths()
+        .ok_or("failed publication has no running control socket")?;
+    let request = SearchPlaneControlIpcRequestEnvelope {
+        request_id: u64::MAX,
+        diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
+        payload: SearchPlaneControlIpcRequest::ProcessRequestEventsV1(
+            ProcessRequestEventsRequestV1 {
+                plane: ProcessRequestEventPlaneV1::Ingest,
+                limit: 64,
+            },
+        ),
+    };
+    let policy = quanta_index_ipc::ClientIoPolicy::try_new(Duration::from_secs(5))?;
+    let response: SearchPlaneControlIpcResponseEnvelope =
+        quanta_index_ipc::send_request(control_socket, &request, policy)?;
+    require_eq(
+        &response.request_id,
+        &request.request_id,
+        "failure event request ID",
+    )?;
+    if let SearchPlaneControlIpcResponse::ProcessRequestEventsV1(events) = response.payload {
+        require_eq(
+            &events.plane,
+            &ProcessRequestEventPlaneV1::Ingest,
+            "failure event plane",
+        )?;
+        Ok(events)
+    } else {
+        Err(format!("failure event read returned {:?}", response.payload).into())
+    }
+}
+
+#[derive(Debug)]
+struct LargeFixtureCloseoutError {
+    primary: Box<dyn Error>,
+    detail: String,
+}
+
+impl std::fmt::Display for LargeFixtureCloseoutError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}; {}", self.primary, self.detail)
+    }
+}
+
+impl Error for LargeFixtureCloseoutError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.primary.as_ref())
+    }
+}
+
+fn large_fixture_closeout_error(primary: Box<dyn Error>, detail: String) -> Box<dyn Error> {
+    Box::new(LargeFixtureCloseoutError { primary, detail })
+}
+
+#[test]
+fn large_fixture_closeout_preserves_primary_source_and_secondary_detail() -> TestResult {
+    #[derive(Debug)]
+    struct PrimarySentinel;
+    impl std::fmt::Display for PrimarySentinel {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("primary sentinel")
+        }
+    }
+    impl Error for PrimarySentinel {}
+
+    let error = large_fixture_closeout_error(
+        Box::new(PrimarySentinel),
+        "daemon teardown also failed: secondary sentinel; diagnostic close: close sentinel".into(),
+    );
+    if error
+        .source()
+        .is_none_or(|source| source.downcast_ref::<PrimarySentinel>().is_none())
+    {
+        return Err("large fixture primary error source was lost".into());
+    }
+    let displayed = error.to_string();
+    for marker in ["primary sentinel", "secondary sentinel", "close sentinel"] {
+        if !displayed.contains(marker) {
+            return Err(format!("large fixture closeout lost {marker}").into());
+        }
+    }
+    Ok(())
+}
+
+fn large_fixture_capture(
+    output: Option<std::ffi::OsString>,
+) -> Result<Option<quanta_index_searchd::DiagnosticCaptureV1>, Box<dyn Error>> {
+    let Some(output) = output else {
+        return Ok(None);
+    };
+    let output = std::path::PathBuf::from(output);
+    if !output.is_absolute() || output.exists() {
+        return Err("Large fixture trace requires an absolute new output path".into());
+    }
+    let parent = output.parent().ok_or("Large fixture trace has no parent")?;
+    let parent = parent.canonicalize()?;
+    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()?;
+    if parent.starts_with(checkout) {
+        return Err("Large fixture trace must be outside the checkout".into());
+    }
+    Ok(Some(quanta_index_searchd::DiagnosticCaptureV1::start(
+        output,
+        quanta_index_searchd::DiagnosticCaptureLimitsV1::default(),
+    )?))
+}
+
+#[test]
+fn large_fixture_capture_records_internal_publication_stages() -> TestResult {
+    use std::io::BufRead as _;
+
+    let output = tempfile::tempdir()?;
+    let path = output.path().join("publication.jsonl");
+    let mut capture = large_fixture_capture(Some(path.clone().into_os_string()))?
+        .ok_or("explicit fixture capture was disabled")?;
+    let lease = capture.lease().ok_or("fixture capture has no lease")?;
+    let mut runtime = E2eRuntime::boot()?.with_diagnostic_capture(lease)?;
+    runtime.ingest_text("repo-capture", "src/capture.rs", "needle capture")?;
+    let _sealed = runtime.seal()?;
+    runtime.stop()?;
+    let closed = capture.close(Duration::from_secs(5))?;
+    require_eq(
+        &closed.status,
+        &quanta_index_searchd::DiagnosticCaptureStatusV1::Complete,
+        "fixture capture completion",
+    )?;
+    let mut stages = std::collections::BTreeSet::new();
+    for line in std::io::BufReader::new(std::fs::File::open(&path)?).lines() {
+        let row: serde_json::Value = serde_json::from_str(&line?)?;
+        let Some(kind) = row.get("kind") else {
+            continue;
+        };
+        if kind.get("type").and_then(serde_json::Value::as_str) == Some("span_begin")
+            && let Some(stage) = kind.get("stage").and_then(serde_json::Value::as_str)
+        {
+            let _inserted = stages.insert(stage.to_owned());
+        }
+    }
+    for stage in ["semantic_build", "native_publish", "file_publish"] {
+        if !stages.contains(stage) {
+            return Err(format!("fixture capture lacks {stage}: {stages:?}").into());
+        }
+    }
+    Ok(())
 }
 
 fn wait_until_ready(rt: &mut E2eRuntime) -> Result<ProcessReadinessV1, Box<dyn Error>> {
@@ -98,6 +251,20 @@ fn operator_ring_correlates_queue_backend_and_terminal_by_request_id() -> TestRe
     let _sealed = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     let before = rt.process_request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+    let ingest_tail = ingest_failure_event_tail(&rt)?;
+    require_eq(
+        &ingest_tail.process_instance,
+        &before.process_instance,
+        "failure diagnostic process instance",
+    )?;
+    if ingest_tail.events.len() > 64
+        || !ingest_tail
+            .events
+            .iter()
+            .any(|event| event.stage == ProcessRequestEventStageV1::ResponseWritten)
+    {
+        return Err("bounded failure diagnostic lacks an ingest terminal response".into());
+    }
     let served = rt.query_text(TextQuerySyntax::Native, "needle", 5);
     if let Some(error) = served.typed_error {
         return Err(format!("fixture query failed: {error:?}").into());
@@ -192,7 +359,7 @@ fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
     let pin = GenerationPin::new(prepared.repo(), prepared.revision(), sealed);
     prepared.stop()?;
 
-    let process = SearchdBinaryProcess::start(&state_root)?;
+    let process = SearchdBinaryProcess::start_with_history_max_generations(&state_root, 8)?;
     let outcome = (|| -> TestResult {
         let client = process.connect()?;
         let before = client
@@ -361,7 +528,7 @@ fn binary_restart_replaces_request_event_instance_and_discards_prior_window() ->
     let pin = GenerationPin::new(prepared.repo(), prepared.revision(), sealed);
     prepared.stop()?;
 
-    let first = SearchdBinaryProcess::start(&state_root)?;
+    let first = SearchdBinaryProcess::start_with_history_max_generations(&state_root, 8)?;
     let first_client = first.connect()?;
     let sockets = daemon_socket_paths(&state_root);
     let request_id = 0x5ee1_u64;
@@ -400,7 +567,7 @@ fn binary_restart_replaces_request_event_instance_and_discards_prior_window() ->
     drop(first_client);
     first.stop()?;
 
-    let second = SearchdBinaryProcess::start(&state_root)?;
+    let second = SearchdBinaryProcess::start_with_history_max_generations(&state_root, 8)?;
     let outcome = (|| -> TestResult {
         let client = second.connect()?;
         let after = client
@@ -436,7 +603,7 @@ fn binary_query_ring_reports_wrap_loss_and_retains_the_latest_request() -> TestR
     let pin = GenerationPin::new(prepared.repo(), prepared.revision(), sealed);
     prepared.stop()?;
 
-    let process = SearchdBinaryProcess::start(&state_root)?;
+    let process = SearchdBinaryProcess::start_with_history_max_generations(&state_root, 8)?;
     let outcome = (|| -> TestResult {
         let client = process.connect()?;
         let before = client
@@ -619,7 +786,7 @@ fn binary_daemon_detects_lost_active_backend_root() -> TestResult {
     prepared.activate_last_sealed_generation()?;
     prepared.stop()?;
 
-    let process = SearchdBinaryProcess::start(&state_root)?;
+    let process = SearchdBinaryProcess::start_with_history_max_generations(&state_root, 8)?;
     let outcome = (|| -> TestResult {
         let client = process.connect()?;
         let ready = wait_for(
@@ -688,7 +855,7 @@ fn binary_daemon_counts_inventory_read_failure_and_reopens_after_repair() -> Tes
     let identity = GenerationStorageKeyV1::for_repo_revision(&repo, &revision)
         .generation_dir(&canonical.join("indexes/lexical"), sealed)
         .join("search-corpus-generation-identity.cbor");
-    let process = SearchdBinaryProcess::start(&state_root)?;
+    let process = SearchdBinaryProcess::start_with_history_max_generations(&state_root, 8)?;
     let outcome = (|| -> TestResult {
         let client = process.connect()?;
         let sockets = daemon_socket_paths(&state_root);
@@ -848,7 +1015,7 @@ fn surviving_control_socket_reports_lost_or_replaced_plane_path_not_ready() -> T
     ] {
         let parent = quanta_index_searchd_harness::private_tempdir()?;
         let state_root = parent.path().join("state");
-        let process = SearchdBinaryProcess::start(&state_root)?;
+        let process = SearchdBinaryProcess::start_with_history_max_generations(&state_root, 8)?;
         let outcome = (|| -> TestResult {
             let client = process.connect()?;
             let ready = wait_for(
@@ -975,13 +1142,13 @@ fn binary_daemon_restart_preserves_active_source_and_ranked_rows() -> TestResult
             Ok((events.process_instance, page.results))
         };
 
-    let first = SearchdBinaryProcess::start(&state_root)?;
+    let first = SearchdBinaryProcess::start_with_history_max_generations(&state_root, 8)?;
     let first_observed = observe(&first, 0x005e_ed01);
     let first_stopped = first.stop();
     let (first_instance, first_rows) = first_observed?;
     first_stopped?;
 
-    let second = SearchdBinaryProcess::start(&state_root)?;
+    let second = SearchdBinaryProcess::start_with_history_max_generations(&state_root, 8)?;
     let second_observed = observe(&second, 0x005e_ed02);
     let second_stopped = second.stop();
     let (second_instance, second_rows) = second_observed?;
@@ -1087,11 +1254,37 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
         E2eRuntime::boot_in_with_client_request_timeout(&state_root, Duration::from_secs(300))?
             .with_history_max_generations(2)
             .with_history_max_bytes(HISTORY_MAX_BYTES);
+    let mut capture =
+        large_fixture_capture(std::env::var_os("QUANTA_INDEX_LARGE_FIXTURE_TRACE_OUT"))?;
+    if let Some(capture) = &capture {
+        let lease = capture
+            .lease()
+            .ok_or("Large fixture capture has no lease")?;
+        prepared = prepared.with_diagnostic_capture(lease)?;
+    }
     let preparation = (|| -> Result<GenerationPin, Box<dyn Error>> {
-        let chunk_ids = prepared.ingest_text_files_one_batch(&batch_files)?;
+        let chunk_ids = prepared
+            .ingest_text_files_one_batch(&batch_files)
+            .map_err(|error| {
+                let context = format!("large fixture staging failed: {error}");
+                error.context(context)
+            })?;
         require_eq(&chunk_ids.len(), &expected.len(), "staged chunk count")?;
-        let sealed = prepared.seal()?;
-        prepared.activate_last_sealed_generation()?;
+        let sealed = prepared.seal().map_err(|error| {
+            // Read the separate control plane before teardown removes the
+            // process-local ring. Preserve loss metadata and any read failure;
+            // this diagnostic never replaces the original publication error.
+            let events = ingest_failure_event_tail(&prepared);
+            let context =
+                format!("large fixture seal failed: {error}; ingest event tail: {events:?}");
+            error.context(context)
+        })?;
+        prepared
+            .activate_last_sealed_generation()
+            .map_err(|error| {
+                let context = format!("large fixture activation failed: {error}");
+                error.context(context)
+            })?;
         Ok(GenerationPin::new(
             prepared.repo(),
             prepared.revision(),
@@ -1099,15 +1292,46 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
         ))
     })();
     let teardown = prepared.stop();
+    // stop consumes the harness and drops its retained capture lease. A
+    // timeout may still leave producer leases alive; preserve that status.
+    let trace_close = capture
+        .as_mut()
+        .map(|capture| capture.close(Duration::from_secs(5)));
     let pin = match (preparation, teardown) {
-        (Ok(pin), Ok(())) => pin,
-        (Err(fixture_error), Ok(())) => return Err(fixture_error),
-        (Ok(_), Err(teardown_error)) => return Err(teardown_error.into()),
+        (Ok(pin), Ok(())) => {
+            match trace_close {
+                Some(Err(error)) => return Err(error.into()),
+                Some(Ok(closed))
+                    if closed.status
+                        != quanta_index_searchd::DiagnosticCaptureStatusV1::Complete =>
+                {
+                    return Err(
+                        format!("Large fixture diagnostic capture incomplete: {closed:?}").into(),
+                    );
+                }
+                Some(Ok(_)) | None => {}
+            }
+            pin
+        }
+        (Err(fixture_error), Ok(())) => {
+            return Err(large_fixture_closeout_error(
+                fixture_error,
+                format!("diagnostic close: {trace_close:?}"),
+            ));
+        }
+        (Ok(_), Err(teardown_error)) => {
+            return Err(large_fixture_closeout_error(
+                teardown_error.into(),
+                format!("diagnostic close: {trace_close:?}"),
+            ));
+        }
         (Err(fixture_error), Err(teardown_error)) => {
-            return Err(format!(
-                "large fixture failed: {fixture_error}; daemon teardown also failed: {teardown_error:#}"
-            )
-            .into());
+            return Err(large_fixture_closeout_error(
+                fixture_error,
+                format!(
+                    "daemon teardown also failed: {teardown_error:#}; diagnostic close: {trace_close:?}"
+                ),
+            ));
         }
     };
 

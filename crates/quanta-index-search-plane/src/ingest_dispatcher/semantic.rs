@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{BatchPublishReceipt, GenerationPin};
+use quanta_index_core::publication_admission::PublicationOutputAdmission;
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, MetricPointV1, MetricSourcePort, SemanticGenerationContractV1,
     SemanticIngestHeaderV1, SemanticIngestPort, SemanticScopeSource, SemanticScopeStreamBuildPort,
@@ -131,6 +132,7 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        publication: Option<PublicationOutputAdmission<'_>>,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<
         (
@@ -139,7 +141,9 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
         ),
         CoreError,
     > {
-        let (appended, mut report) = self.builder.build_stream(header, scopes, diagnostic)?;
+        let (appended, mut report) =
+            self.builder
+                .build_stream(header, scopes, publication, diagnostic)?;
         report.durations.embedding = scopes.embedding_elapsed_ns();
         let issued = scopes.tally();
         if appended != issued {

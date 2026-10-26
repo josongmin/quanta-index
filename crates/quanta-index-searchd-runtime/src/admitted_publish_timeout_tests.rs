@@ -13,15 +13,15 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use quanta_index_catalog::SqliteCatalog;
+use quanta_index_catalog::{CATALOG_FILE_NAME, SqliteCatalog, catalog_dir};
 use quanta_index_contract::{
     BatchIngestMode, IngestOperationKindV1, SearchCorpusIngestBatch, SearchPlaneErrorCodeV2,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope,
 };
 use quanta_index_core::{
-    CoreError, DiagnosticContextV1, IdempotencyCatalogPort as _, IdempotencyKeyV1,
-    OperationInspectV1, PublicationValidationOwner, SearchCorpusBatchBuildPort,
+    CoreError, DiagnosticContextV1, IdempotencyCatalogPort, IdempotencyKeyV1, OperationInspectV1,
+    OperationJournalStateV1, PublicationValidationOwner, SearchCorpusBatchBuildPort,
     SearchCorpusPreflightPhaseV1,
 };
 use quanta_index_ipc::{
@@ -30,8 +30,9 @@ use quanta_index_ipc::{
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 use quanta_index_searchd::app::KernelResidentMemoryProbe;
 use quanta_index_searchd_harness::{E2eRuntime, private_tempdir};
+use rusqlite::{OpenFlags, OptionalExtension, params};
 
-use super::{SearchdConfig, build_runtime_with_lexical_builder};
+use super::{SearchdConfig, build_runtime_with_lexical_builder, build_runtime_with_parts};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -84,6 +85,17 @@ struct ProcessPausedLexicalBuild {
 }
 
 impl SearchCorpusBatchBuildPort for ProcessPausedLexicalBuild {
+    fn prepare_hard_recovery_scan_with_owner(
+        &self,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+        budget: &quanta_index_core::RequestBudgetV1,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        self.inner
+            .prepare_hard_recovery_scan_with_owner(batch, owner, budget, diagnostic)
+    }
+
     fn preflight_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
@@ -171,6 +183,17 @@ struct PausedLexicalBuild {
 }
 
 impl SearchCorpusBatchBuildPort for PausedLexicalBuild {
+    fn prepare_hard_recovery_scan_with_owner(
+        &self,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+        budget: &quanta_index_core::RequestBudgetV1,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        self.inner
+            .prepare_hard_recovery_scan_with_owner(batch, owner, budget, diagnostic)
+    }
+
     fn preflight_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
@@ -229,6 +252,17 @@ struct CountingLexicalBuild {
 }
 
 impl SearchCorpusBatchBuildPort for CountingLexicalBuild {
+    fn prepare_hard_recovery_scan_with_owner(
+        &self,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+        budget: &quanta_index_core::RequestBudgetV1,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        self.inner
+            .prepare_hard_recovery_scan_with_owner(batch, owner, budget, diagnostic)
+    }
+
     fn preflight_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
@@ -368,7 +402,7 @@ fn wait_for_peer_hangup(client: &QuantaIndex) -> TestResult {
 }
 
 fn wait_for_committed(
-    catalog: &SqliteCatalog,
+    catalog: &dyn IdempotencyCatalogPort,
     key: &IdempotencyKeyV1,
 ) -> Result<quanta_index_contract::BatchPublishReceipt, Box<dyn Error>> {
     let started = Instant::now();
@@ -388,6 +422,74 @@ fn wait_for_committed(
         }
         if started.elapsed() >= WAIT {
             return Err("admitted publish did not settle before the journal wait bound".into());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+// The OS child owns the live admitted Catalog. This observer cannot initialize
+// its schema or deserialize a receipt; the original Catalog authenticates the
+// exact committed row after the child has stopped.
+fn open_child_journal_reader(root: &Path) -> Result<rusqlite::Connection, Box<dyn Error>> {
+    let path = catalog_dir(root).join(CATALOG_FILE_NAME);
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = path.with_file_name(format!("{CATALOG_FILE_NAME}{suffix}"));
+        if !sidecar.is_file() {
+            return Err(format!("live child catalog lacks existing {}", sidecar.display()).into());
+        }
+    }
+    let connection =
+        rusqlite::Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.pragma_update(None, "query_only", "ON")?;
+    Ok(connection)
+}
+
+fn child_journal_state(
+    connection: &rusqlite::Connection,
+    key: &IdempotencyKeyV1,
+) -> Result<Option<(i64, Option<i64>)>, Box<dyn Error>> {
+    let generation = i64::try_from(key.generation.get())?;
+    Ok(connection
+        .query_row(
+            "SELECT state,durable_sequence FROM idempotency_v2
+             WHERE kind=?1 AND repo_id=?2 AND revision_id=?3
+               AND generation=?4 AND batch_digest=?5",
+            params![
+                key.kind.as_code_str(),
+                key.repo_id.as_str(),
+                key.revision_id.as_str(),
+                generation,
+                key.batch_digest.as_str(),
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
+fn wait_for_child_committed_state(
+    connection: &rusqlite::Connection,
+    key: &IdempotencyKeyV1,
+) -> TestResult {
+    let started = Instant::now();
+    loop {
+        let observed = child_journal_state(connection, key)?;
+        match observed {
+            Some((state, Some(sequence)))
+                if state == OperationJournalStateV1::Committed.as_code() && sequence > 0 =>
+            {
+                return Ok(());
+            }
+            Some((state, _))
+                if [
+                    OperationJournalStateV1::Prepared.as_code(),
+                    OperationJournalStateV1::Claimed.as_code(),
+                    OperationJournalStateV1::Applying.as_code(),
+                ]
+                .contains(&state) => {}
+            other => return Err(format!("OS child journal did not commit: {other:?}").into()),
+        }
+        if started.elapsed() >= WAIT {
+            return Err("OS child journal did not settle before the original wait bound".into());
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -465,9 +567,30 @@ fn sdk_batch_for_wire(
     Ok(sdk)
 }
 
-fn wait_for_os_child_build_gate(
+fn completed_sdk_result<T: std::fmt::Debug>(
+    caller: &mut Option<JoinHandle<Result<T, SdkError>>>,
+) -> String {
+    if caller.as_ref().is_some_and(JoinHandle::is_finished) {
+        let Some(finished) = caller.take() else {
+            return "finished SDK caller handle disappeared".into();
+        };
+        match finished.join() {
+            Ok(result) => format!("{result:?}"),
+            Err(payload) => ThreadPanic {
+                worker: "default SDK caller",
+                payload,
+            }
+            .to_string(),
+        }
+    } else {
+        "pending".into()
+    }
+}
+
+fn wait_for_os_child_build_gate<T: std::fmt::Debug>(
     listener: &UnixListener,
     child: &mut OwnedTestChild,
+    caller: &mut Option<JoinHandle<Result<T, SdkError>>>,
 ) -> Result<UnixStream, Box<dyn Error>> {
     listener.set_nonblocking(true)?;
     let started = Instant::now();
@@ -495,10 +618,18 @@ fn wait_for_os_child_build_gate(
             .ok_or("OS child already reaped")?
             .try_wait()?
         {
-            return Err(format!("OS child exited before admitted build gate: {status}").into());
+            return Err(format!(
+                "OS child exited before admitted build gate: {status}; SDK caller: {}",
+                completed_sdk_result(caller)
+            )
+            .into());
         }
         if started.elapsed() >= WAIT {
-            return Err("OS child did not reach admitted build gate".into());
+            return Err(format!(
+                "OS child did not reach admitted build gate; SDK caller: {}",
+                completed_sdk_result(caller)
+            )
+            .into());
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -563,20 +694,30 @@ fn default_sdk_timeout_in_os_child_still_commits_and_replays_without_rebuild() -
         .spawn()?;
     let mut child = OwnedTestChild(Some(child));
     let initial_control = wait_for_control(&state_root)?;
-    let catalog = SqliteCatalog::open(&state_root, Duration::from_secs(2))?;
     let caller_root = state_root.clone();
-    let caller = thread::spawn(move || -> Result<_, SdkError> {
+    let mut caller = Some(thread::spawn(move || -> Result<_, SdkError> {
         let client = QuantaIndex::connect(ConnectOptions::from_state_root(caller_root))?;
         client.search_corpus().publish(&sdk_batch)
-    });
-    let mut gate = wait_for_os_child_build_gate(&listener, &mut child)?;
-    if !matches!(catalog.inspect(&key)?, OperationInspectV1::InFlight { .. }) {
+    }));
+    let mut gate = wait_for_os_child_build_gate(&listener, &mut child, &mut caller)?;
+    let journal = open_child_journal_reader(&state_root)?;
+    if !matches!(
+        child_journal_state(&journal, &key)?,
+        Some((state, _)) if [
+            OperationJournalStateV1::Prepared.as_code(),
+            OperationJournalStateV1::Claimed.as_code(),
+            OperationJournalStateV1::Applying.as_code(),
+        ].contains(&state)
+    ) {
         return Err("OS child build gate was not inside an admitted journal operation".into());
     }
-    let timed_out = caller.join().map_err(|payload| ThreadPanic {
-        worker: "default SDK caller",
-        payload,
-    })?;
+    let timed_out = caller
+        .ok_or("SDK caller finished before admitted build gate")?
+        .join()
+        .map_err(|payload| ThreadPanic {
+            worker: "default SDK caller",
+            payload,
+        })?;
     if !matches!(
         &timed_out,
         Err(SdkError::Transport(IpcError::Timeout {
@@ -593,19 +734,26 @@ fn default_sdk_timeout_in_os_child_still_commits_and_replays_without_rebuild() -
     wait_for_peer_hangup(&control)?;
     gate.write_all(&[1])
         .map_err(|error| format!("OS child parent gate release write: {error}"))?;
+    wait_for_child_committed_state(&journal, &key)?;
+    drop(journal);
+    drop(control);
+    drop(initial_control);
+    child.stop()?;
+    remove_dead_child_sockets(&state_root)?;
+
+    // The child no longer owns the live Catalog. Reopen through the original
+    // Catalog decoder and digest checks before runtime reassembly/replay.
+    let catalog = SqliteCatalog::open(&state_root, Duration::from_secs(2))?;
     let original = wait_for_committed(&catalog, &key)?;
     if !original.applied || original.durable_sequence == 0 {
         return Err(format!("timed-out OS child publish did not apply: {original:?}").into());
     }
-    drop(control);
-    drop(initial_control);
     drop(catalog);
-    child.stop()?;
-    remove_dead_child_sockets(&state_root)?;
 
     let reopened_builds = Arc::new(AtomicUsize::new(0));
     let counted_builds = Arc::clone(&reopened_builds);
-    let second_runtime = build_runtime_with_lexical_builder(
+    let mut reopened_catalog = None;
+    let second_runtime = build_runtime_with_parts(
         test_config(&state_root)?,
         Arc::new(KernelResidentMemoryProbe),
         move |inner| {
@@ -614,11 +762,12 @@ fn default_sdk_timeout_in_os_child_still_commits_and_replays_without_rebuild() -
                 builds: counted_builds,
             })
         },
+        |parts| reopened_catalog = Some(Arc::clone(&parts.idempotency)),
     )?;
+    let reopened_catalog = reopened_catalog.ok_or("runtime did not lend its replay journal")?;
     let second_driver = RunningRuntime::start(second_runtime);
     let replay_client = wait_for_control(&state_root)?;
-    let reopened_catalog = SqliteCatalog::open(&state_root, Duration::from_secs(2))?;
-    if wait_for_committed(&reopened_catalog, &key)? != original {
+    if wait_for_committed(reopened_catalog.as_ref(), &key)? != original {
         return Err("OS process termination changed the committed receipt".into());
     }
     let replay = replay_client
@@ -653,11 +802,13 @@ fn default_sdk_timeout_in_os_child_still_commits_and_replays_without_rebuild() -
     if !matches!(
         reopened_catalog.inspect(&conflict_key)?,
         OperationInspectV1::Absent
-    ) || wait_for_committed(&reopened_catalog, &key)? != original
+    ) || wait_for_committed(reopened_catalog.as_ref(), &key)? != original
         || reopened_builds.load(Ordering::SeqCst) != 0
     {
         return Err("conflicting source event mutated the durable journal or rebuilt".into());
     }
+    drop(reopened_catalog);
+    drop(replay_client);
     second_driver.stop()
 }
 
@@ -672,12 +823,12 @@ fn timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_r
     )?;
     let key = operation_key(&batch);
     let socket = root.path().join("search-plane/ingest.sock");
-    let catalog = SqliteCatalog::open(root.path(), Duration::from_secs(2))?;
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let builds = Arc::new(AtomicUsize::new(0));
     let gated_builds = Arc::clone(&builds);
-    let first_runtime = build_runtime_with_lexical_builder(
+    let mut catalog = None;
+    let first_runtime = build_runtime_with_parts(
         test_config(root.path())?,
         Arc::new(KernelResidentMemoryProbe),
         move |inner| {
@@ -688,7 +839,9 @@ fn timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_r
                 builds: gated_builds,
             })
         },
+        |parts| catalog = Some(Arc::clone(&parts.idempotency)),
     )?;
+    let catalog = catalog.ok_or("runtime did not lend its publish journal")?;
     let first_driver = RunningRuntime::start(first_runtime);
     let control = wait_for_control(root.path())?;
     let timed_out_socket = socket.clone();
@@ -715,17 +868,18 @@ fn timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_r
     }
     wait_for_peer_hangup(&control)?;
     release_tx.send(())?;
-    let original = wait_for_committed(&catalog, &key)?;
+    let original = wait_for_committed(catalog.as_ref(), &key)?;
     if !original.applied || original.durable_sequence == 0 || builds.load(Ordering::SeqCst) != 1 {
         return Err(format!("timed-out original did not apply exactly once: {original:?}").into());
     }
-    first_driver.stop()?;
     drop(control);
     drop(catalog);
+    first_driver.stop()?;
 
     let reopened_builds = Arc::new(AtomicUsize::new(0));
     let counted_builds = Arc::clone(&reopened_builds);
-    let second_runtime = build_runtime_with_lexical_builder(
+    let mut reopened_catalog = None;
+    let second_runtime = build_runtime_with_parts(
         test_config(root.path())?,
         Arc::new(KernelResidentMemoryProbe),
         move |inner| {
@@ -734,11 +888,12 @@ fn timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_r
                 builds: counted_builds,
             })
         },
+        |parts| reopened_catalog = Some(Arc::clone(&parts.idempotency)),
     )?;
+    let reopened_catalog = reopened_catalog.ok_or("runtime did not lend its replay journal")?;
     let second_driver = RunningRuntime::start(second_runtime);
     let _control = wait_for_control(root.path())?;
-    let reopened_catalog = SqliteCatalog::open(root.path(), Duration::from_secs(2))?;
-    if wait_for_committed(&reopened_catalog, &key)? != original {
+    if wait_for_committed(reopened_catalog.as_ref(), &key)? != original {
         return Err("runtime reassembly changed the committed operation receipt".into());
     }
     let replay = ingest(&socket, 102, batch.clone(), ClientIoPolicy::default())?;
@@ -778,11 +933,13 @@ fn timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_r
     if !matches!(
         reopened_catalog.inspect(&conflict_key)?,
         OperationInspectV1::Absent
-    ) || wait_for_committed(&reopened_catalog, &key)? != original
+    ) || wait_for_committed(reopened_catalog.as_ref(), &key)? != original
         || builds.load(Ordering::SeqCst) != 1
         || reopened_builds.load(Ordering::SeqCst) != 0
     {
         return Err("digest conflict mutated the journal or re-applied the original".into());
     }
+    drop(reopened_catalog);
+    drop(_control);
     second_driver.stop()
 }

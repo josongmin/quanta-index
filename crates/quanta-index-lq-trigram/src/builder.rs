@@ -194,11 +194,15 @@ impl TrigramIndexBuilder {
             .track_reverse
             .then(|| self.by_doc.entry(doc_id).or_default());
         for tri in trigrams_of(content) {
+            if let Some(reverse) = reverse.as_mut()
+                && !reverse.insert(tri)
+            {
+                // The private reverse map tracks exactly the forward
+                // memberships for this doc, including prior add_doc calls.
+                continue;
+            }
             if self.by_trigram.entry(tri).or_default().insert(doc_id) {
                 self.posting_memberships = self.posting_memberships.saturating_add(1);
-            }
-            if let Some(reverse) = reverse.as_mut() {
-                let _inserted = reverse.insert(tri);
             }
         }
     }
@@ -294,9 +298,12 @@ impl TrigramIndexBuilder {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use super::TrigramIndexBuilder;
     use crate::errors::TrigramErrorCode;
-    use crate::types::DocId;
+    use crate::index::TrigramIndex;
+    use crate::types::{DocId, TRIGRAM_LEN, Trigram};
 
     fn fatal(msg: &str) -> ! {
         assert!(false, "{msg}");
@@ -688,5 +695,131 @@ mod tests {
         let prior = builder.finish();
         let next = TrigramIndexBuilder::from_prior(&prior, 2).expect("next");
         assert_eq!(next.posting_memberships(), 1);
+    }
+
+    fn window_golden(generation: u64, docs: &[(DocId, &[u8])]) -> TrigramIndex {
+        let mut postings: BTreeMap<Trigram, BTreeSet<DocId>> = BTreeMap::new();
+        for (doc_id, content) in docs {
+            for window in content.windows(TRIGRAM_LEN) {
+                let tri: Trigram = window.try_into().expect("fixed-width byte window");
+                let _inserted = postings.entry(tri).or_default().insert(*doc_id);
+            }
+        }
+        TrigramIndex::from_parts(
+            generation,
+            postings
+                .into_iter()
+                .map(|(tri, docs)| (tri, docs.into_iter().collect()))
+                .collect(),
+        )
+    }
+
+    fn assert_window_golden(builder: TrigramIndexBuilder, docs: &[(DocId, &[u8])]) {
+        let generation = builder.generation();
+        let expected = window_golden(generation, docs);
+        let expected_memberships = expected.iter().map(|(_, docs)| docs.len()).sum();
+        assert_eq!(builder.posting_memberships(), expected_memberships);
+        let actual = builder.finish();
+        assert_eq!(actual, expected);
+        let mut actual_cbor = Vec::new();
+        let mut expected_cbor = Vec::new();
+        actual
+            .serialize_cbor(&mut actual_cbor)
+            .expect("actual CBOR");
+        expected
+            .serialize_cbor(&mut expected_cbor)
+            .expect("window-golden CBOR");
+        assert_eq!(actual_cbor, expected_cbor);
+    }
+
+    #[test]
+    fn reverse_membership_matches_byte_window_goldens_at_edges() {
+        for windows in [0_usize, 1, 2, 255, 256, 257, 512, 513] {
+            let mut state = 0x1234_5678_u32;
+            let content = (0..windows.saturating_add(2))
+                .map(|_| {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    u8::try_from(state >> 24).expect("top byte fits u8")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                window_golden(7, &[(DocId(1), &content)]).distinct_trigrams(),
+                windows
+            );
+            for forward_only in [false, true] {
+                let mut builder = if forward_only {
+                    TrigramIndexBuilder::new_forward_only(7).expect("forward-only builder")
+                } else {
+                    TrigramIndexBuilder::new(7).expect("reverse builder")
+                };
+                builder.add_doc(DocId(1), &content);
+                builder.add_doc(DocId(2), &content);
+                assert_window_golden(builder, &[(DocId(1), &content), (DocId(2), &content)]);
+            }
+        }
+    }
+
+    #[test]
+    fn reverse_membership_keeps_repeated_unicode_nul_and_append_union() {
+        let repeated = vec![0_u8; 1027];
+        let bytes = "한글💾".as_bytes();
+        let with_nul = [b"\0abc\0".as_slice(), bytes, b"\xff\0\xfe"].concat();
+        for forward_only in [false, true] {
+            let mut builder = if forward_only {
+                TrigramIndexBuilder::new_forward_only(1).expect("forward-only builder")
+            } else {
+                TrigramIndexBuilder::new(1).expect("reverse builder")
+            };
+            builder.add_doc(DocId(9), &repeated);
+            builder.add_doc(DocId(9), &with_nul);
+            builder.add_doc(DocId(9), &repeated);
+            assert_window_golden(
+                builder,
+                &[
+                    (DocId(9), &repeated),
+                    (DocId(9), &with_nul),
+                    (DocId(9), &repeated),
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn reverse_membership_keeps_upsert_delete_and_from_prior_semantics() {
+        let old = vec![b'x'; 259];
+        let replacement = "replaced\0문서".as_bytes();
+        let other = b"shared\0document";
+        let appended = b"additional\0grams";
+        for forward_only in [false, true] {
+            let mut first = if forward_only {
+                TrigramIndexBuilder::new_forward_only(1).expect("forward-only builder")
+            } else {
+                TrigramIndexBuilder::new(1).expect("reverse builder")
+            };
+            first.add_doc(DocId(1), &old);
+            first.add_doc(DocId(2), other);
+            first.upsert_doc(DocId(1), replacement).expect("upsert");
+            first.upsert_doc(DocId(1), replacement).expect("replay");
+            assert!(first.remove_doc(DocId(2)).expect("delete"));
+            assert!(!first.remove_doc(DocId(2)).expect("delete replay"));
+            assert_window_golden(first, &[(DocId(1), replacement)]);
+        }
+
+        let mut first = TrigramIndexBuilder::new(1).expect("first generation");
+        first.add_doc(DocId(1), &old);
+        first.add_doc(DocId(2), other);
+        let prior = first.finish();
+        let mut next = TrigramIndexBuilder::from_prior(&prior, 2).expect("next generation");
+        next.add_doc(DocId(1), appended);
+        next.upsert_doc(DocId(2), replacement)
+            .expect("upsert prior doc");
+        assert_window_golden(
+            next,
+            &[
+                (DocId(1), &old),
+                (DocId(1), appended),
+                (DocId(2), replacement),
+            ],
+        );
     }
 }

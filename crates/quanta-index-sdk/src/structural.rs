@@ -1,14 +1,20 @@
 use quanta_index_contract::lex::ParseTreeRecord;
 use quanta_index_contract::{
-    ChunkId, ContinuationTokenV2, GenerationPin, GenerationSelector, ManifestGeneration, RepoId,
-    RevisionId, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneStructuralQueryResponse,
-    SearchScopeKey, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
-    StructuralTombstoneScope, StructuralTreeRecord, TextQuerySyntax,
+    BorrowedAuxiliaryIngestIpcRequestV1, ChunkId, ContinuationTokenV2, GenerationPin,
+    GenerationSelector, ManifestGeneration, RepoId, RevisionId, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneStructuralQueryResponse, SearchScopeKey, StructuralIngestBatch,
+    StructuralQueryRequest, StructuralReplaceScope, StructuralTombstoneScope, StructuralTreeRecord,
+    TextQuerySyntax,
 };
 
+use crate::history::{
+    AdmittedAuxiliaryBatchReceiptV1, AdmittedAuxiliaryResponseOwnerV1,
+    AuxiliaryAdmittedPublishErrorV1, publish_borrowed_auxiliary_admitted_v1,
+};
 use crate::text_query_builder::TextQueryBuilderState;
 use crate::{BatchMode, BatchReceipt, QuantaIndexClientPayloadV1, SdkError, stamp_batch_digest_v1};
+use quanta_index_ipc::{MemoryScope, RequestBudgetV1};
 
 /// A structural publish under construction.
 ///
@@ -211,6 +217,35 @@ impl<'a> StructuralNamespace<'a> {
         batch: &StructuralBatch<SEALED>,
     ) -> Result<BatchReceipt, SdkError> {
         publish_structural_batch(self.client, batch)
+    }
+
+    /// Publishes the caller-owned canonical structural wire batch under
+    /// admitted transport and response decode custody.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the typed remote refusal retains decoded response, owner, and raw body inline under Original custody"
+    )]
+    pub fn publish_structural_borrowed_admitted_v1<E, F, O>(
+        &self,
+        batch: &StructuralIngestBatch,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+        owner: O,
+        work: &mut F,
+    ) -> Result<AdmittedAuxiliaryBatchReceiptV1<O>, AuxiliaryAdmittedPublishErrorV1<E, O>>
+    where
+        F: FnMut(usize) -> Result<(), E>,
+        E: std::fmt::Debug,
+        O: AdmittedAuxiliaryResponseOwnerV1,
+    {
+        publish_borrowed_auxiliary_admitted_v1(
+            self.client,
+            BorrowedAuxiliaryIngestIpcRequestV1::Structural(batch),
+            budget,
+            memory,
+            owner,
+            work,
+        )
     }
 
     /// Contract-exact query replay surface. Accepts the shared wire DTO

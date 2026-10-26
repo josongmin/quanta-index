@@ -36,18 +36,96 @@ use quanta_index_searchd::app::KernelResidentMemoryProbe;
 use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootAccessV1, StateRootLease};
 use quanta_index_searchd::app::state_format::refuse_legacy_state_root_v1;
 use quanta_index_searchd::{
-    DEFAULT_COOPERATIVE_DRAIN_DEADLINE, DiagnosticCaptureLeaseV1, DiagnosticCaptureLimitsV1,
-    DiagnosticCaptureV1, HARD_DRAIN_DEADLINE, SearchdCommand, SearchdConfig, SearchdRuntime,
-    supervise_runtime,
+    DEFAULT_COOPERATIVE_DRAIN_DEADLINE, DiagnosticCaptureLeaseV1, DiagnosticCaptureV1,
+    HARD_DRAIN_DEADLINE, SearchdCommand, SearchdConfig, SearchdRuntime, supervise_runtime,
 };
 use quanta_index_semantic::SemanticAdapter;
 
+#[cfg(unix)]
+pub mod canonical_publication_admission;
+#[cfg(unix)]
+pub mod durable_control_admission;
+#[cfg(unix)]
+pub mod history_text_file_io;
+#[cfg(unix)]
+mod legacy_physical_assembly;
+#[cfg(unix)]
+mod legacy_retirement;
 pub mod native;
+mod native_auto_signals;
+mod native_dispatch;
+pub mod native_effort;
+mod native_effort_ports;
+mod native_effort_transport;
+mod native_graph_transport;
+mod native_interaction;
+mod native_interaction_transport;
+mod native_lexical_scope;
+#[cfg(unix)]
+pub mod native_object_read_io;
+#[cfg(unix)]
+pub mod native_object_reclaim_io;
+#[cfg(unix)]
+pub mod native_object_write_io;
+mod native_overlay;
+mod native_overlay_query;
+mod native_overlay_transport;
+mod native_producer_source_lookup;
+pub mod native_product;
+mod native_projection_owner_lookup;
+mod native_projection_source_diff;
+mod native_provider_custody;
+mod native_provider_signals;
+mod native_pump;
+mod native_query_lowering;
+mod native_read_session_transport;
+mod native_read_sessions;
+mod native_reclaim_driver;
+mod native_reply;
+mod native_repomap_transport;
+mod native_resources;
+mod native_result;
+mod native_retention;
+#[cfg(unix)]
+pub mod native_scratch_io;
+mod native_semantic_result;
+mod native_semantic_scope;
+mod native_source_owner_lookup;
+mod native_stub_certificate_projection_v1;
+mod native_stub_transport;
+mod native_text_result;
+mod native_work_diagnostic;
 mod native_worker;
+mod offline_target_file_io;
+mod pool_write_admission;
+#[cfg(unix)]
+pub mod publication_control_files;
+#[cfg(unix)]
+pub mod publication_file_capacity;
+#[cfg(unix)]
+pub mod publication_file_deletions;
+/// Bounded boot inventory for the composition-owned publication authority.
+///
+/// This does not install whole-publication admission in the default runtime.
+#[cfg(unix)]
+pub mod publication_inventory;
+#[cfg(unix)]
+pub mod publication_lance_io;
+pub mod publication_lexical_lifetime;
+#[cfg(unix)]
+pub mod publication_sidecar;
+#[cfg(unix)]
+pub mod publication_sqlite_vfs;
+#[cfg(unix)]
+pub mod repomap_file_admission;
+#[cfg(unix)]
+pub mod semantic_file_factory;
 /// The process signal root.
 ///
 /// SIGINT/SIGTERM are latched into [`quanta_index_searchd::CancelRoot`].
 pub mod signal;
+#[cfg(unix)]
+pub mod source_upload_file_admission;
 
 /// Offline `backup-state` / `restore-state` /
 /// `verify-state` composition (SEP-21 P10 / S21-11).
@@ -225,6 +303,14 @@ fn build_runtime_with_assembly(
     wrap_parts: impl FnOnce(&mut SearchdRuntimeParts),
     assemble: impl FnOnce(SearchdConfig, SearchdRuntimeParts) -> Result<SearchdRuntime>,
 ) -> Result<SearchdRuntime> {
+    let physical_policy = config
+        .legacy_publication_physical_policy()
+        .ok_or_else(|| {
+            quanta_index_core::CoreError::InvalidContract(
+                "Legacy runtime requires an explicit complete physical publication policy".into(),
+            )
+        })?
+        .validate()?;
     let search_corpus_history_retention = config.search_corpus_history_retention_policy()?;
     // The one envelope (QI-BB-016) is validated before any adapter exists,
     // and its resident-memory ceiling becomes the lexical writer gate.
@@ -246,43 +332,105 @@ fn build_runtime_with_assembly(
     // lease, not from a path alias that can be retargeted during composition.
     let state_root = state_root_lease.state_root_identity_v1().to_path_buf();
     refuse_legacy_state_root_v1(&state_root)?;
+    let allowed_socket_entries = [
+        config.query_socket_path(),
+        config.control_socket_path(),
+        config.ingest_socket_path(),
+    ]
+    .into_iter()
+    .map(|path| {
+        path.strip_prefix(&configured_state_root)
+            .map_or_else(|_| path.to_path_buf(), |relative| state_root.join(relative))
+    })
+    .collect::<Vec<_>>();
+    let physical = legacy_physical_assembly::LegacyPhysicalAssembly::new(
+        state_root_lease,
+        physical_policy,
+        config.source_publication_max_bytes(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+        &allowed_socket_entries,
+    )?;
     let (writer_admission, gate_metric_source) =
         writer_gate_for(process_memory_envelope.rss_ceiling, &memory_probe);
+    let lex_adapter = LexicalAdapter::with_state_root_and_policies(
+        state_root.join("indexes/lexical"),
+        RegexPolicy::defaults(),
+        config.lexical_execution_budget(),
+        config.regex_match_cache_policy(),
+        config.lexical_writer_policy(),
+    );
+    let lex_adapter = lex_adapter
+        .with_object_lifetime(physical.publication.object_lifetime())
+        .with_retention_measurement_policy(config.retention_measurement_policy());
+    let lex_adapter = match config.lexical_maintenance_policy() {
+        Some(policy) => lex_adapter.with_maintenance_policy(policy),
+        None => lex_adapter,
+    };
+    let lex_adapter = match config.lexical_pool_write_limits() {
+        Some(limits) => {
+            use quanta_index_core::pool_write_admission::PoolInventoryEntry;
+            let mut quota = pool_write_admission::PoolWriteQuota::new_with_file_limit(
+                limits.max_encoded_bytes(),
+                limits.max_files(),
+                [],
+                [],
+            )?;
+            lex_adapter.visit_pool_write_inventory(
+                limits.max_files(),
+                &mut |entry| match entry {
+                    PoolInventoryEntry::Canonical {
+                        object_sha256,
+                        encoded_bytes,
+                    } => quota.record_boot_canonical(object_sha256, encoded_bytes),
+                    PoolInventoryEntry::Orphan {
+                        temp_identity,
+                        encoded_bytes,
+                    } => quota.record_boot_orphan(temp_identity, encoded_bytes),
+                },
+            )?;
+            lex_adapter.with_pool_write_admission(Arc::new(quota))
+        }
+        None => lex_adapter,
+    };
     let lex_adapter: Arc<LexicalAdapter> = Arc::new(
-        LexicalAdapter::with_state_root_and_policies(
-            state_root.join("indexes/lexical"),
-            RegexPolicy::defaults(),
-            config.lexical_execution_budget(),
-            config.regex_match_cache_policy(),
-            config.lexical_writer_policy(),
-        )
-        .with_writer_admission(writer_admission)
-        .map_err(anyhow::Error::from)?,
+        lex_adapter
+            .with_writer_admission(writer_admission)
+            .map_err(anyhow::Error::from)?,
     );
     // The semantic adapter admits every streamed window against the same
     // policy the search plane's derived source cuts them by (QI-BB-021).
-    let sem_adapter: Arc<SemanticAdapter> =
-        Arc::new(SemanticAdapter::with_state_root_and_window_policy(
+    let sem_adapter: Arc<SemanticAdapter> = Arc::new(
+        SemanticAdapter::with_state_root_and_window_policy(
             quanta_index_semantic::semantic_state_root(&state_root),
             config.semantic_stream_window_policy(),
-        )?);
+        )?
+        .with_qualified_file_admission(physical.semantic.read_only(), physical.semantic.clone())
+        .with_maintenance_file_admission(physical.semantic_maintenance.clone())
+        .with_retention_measurement_policy(config.retention_measurement_policy()),
+    );
     // The history text index lives beside the other authorities, one
     // immutable directory per published history epoch.
     let history_text_index: Arc<dyn HistoryTextIndexPort + Send + Sync> = Arc::new(
-        HistoryTextIndexAdapter::with_root(state_root.join("authorities/history-text"))
-            .map_err(anyhow::Error::from)?,
+        HistoryTextIndexAdapter::with_file_admission(
+            state_root.join("authorities/history-text"),
+            physical.history.clone(),
+        )
+        .map_err(anyhow::Error::from)?,
     );
     // Retention measures its byte limits over the index bytes the two
     // adapters know how to measure (QI-BB-003), never over record sizes.
-    let index_bytes: Arc<dyn SearchCorpusIndexBytesPort> = Arc::new(PairIndexBytesMeasurer::new(
-        lex_adapter.clone(),
-        sem_adapter.clone(),
-    ));
-    let search_corpus_lifecycle = Arc::new(SearchCorpusLifecycleOwner::open(
-        &state_root,
-        search_corpus_history_retention,
-        index_bytes,
-    )?);
+    let index_bytes: Arc<dyn SearchCorpusIndexBytesPort> = Arc::new(
+        PairIndexBytesMeasurer::new(lex_adapter.clone(), sem_adapter.clone())
+            .with_retention_measurement_policy(config.retention_measurement_policy()),
+    );
+    let search_corpus_lifecycle = Arc::new(
+        SearchCorpusLifecycleOwner::open_with_durable_file_admission(
+            &state_root,
+            search_corpus_history_retention,
+            index_bytes,
+            physical.durable_control.clone(),
+        )?,
+    );
     search_corpus_lifecycle
         .activation_catalog()
         .configure_generation_namespace_reads_v1(lex_adapter.clone(), sem_adapter.clone())?;
@@ -290,7 +438,12 @@ fn build_runtime_with_assembly(
     // matters against a foreign writer, which the state-root lease excludes;
     // it is bounded so a held lock is still a typed answer, never a hang.
     let catalog = Arc::new(
-        SqliteCatalog::open(&state_root, CATALOG_BUSY_BUDGET).map_err(anyhow::Error::from)?,
+        SqliteCatalog::open_with_io_admission(
+            &state_root,
+            CATALOG_BUSY_BUDGET,
+            physical.catalog_io.clone(),
+        )
+        .map_err(anyhow::Error::from)?,
     );
     let shared_catalog = Arc::clone(&catalog);
     let idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync> = shared_catalog.clone();
@@ -300,10 +453,13 @@ fn build_runtime_with_assembly(
     // activation, invalidation and quarantine rows are the sole visibility
     // authority, with the filesystem under `repo-map/` holding immutable
     // content-addressed object projections only (SEP-21 P03).
-    let opened_repo_map =
-        RepoMapGenerationStore::open(state_root.join("repo-map"), Arc::clone(&catalog))
-            .map_err(anyhow::Error::from)?;
-    let auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync> = catalog;
+    let opened_repo_map = RepoMapGenerationStore::open_with_file_admission(
+        state_root.join("repo-map"),
+        Arc::clone(&catalog),
+        physical.repomap.clone(),
+    )
+    .map_err(anyhow::Error::from)?;
+    let auxiliary_catalog: Arc<dyn AuxiliaryAuthorityCatalogPort + Send + Sync> = catalog.clone();
     let repo_map_store = Arc::new(opened_repo_map.store);
     let repo_map_open_report = opened_repo_map.report;
 
@@ -374,8 +530,17 @@ fn build_runtime_with_assembly(
 
     let mut parts = SearchdRuntimeParts {
         diagnostic_capture: None,
-        state_root_lease,
+        state_root_lease: physical.state_root_lease.clone(),
+        physical_retirement: Arc::new(legacy_retirement::LegacyRuntimeRetirement::new(
+            catalog,
+            physical.catalog_io.clone(),
+            physical.publication.file_deletions(),
+        )),
         search_corpus_build_port,
+        publication_admission: physical.publication.clone(),
+        durable_control_file_admission: physical.durable_control.clone(),
+        source_upload_file_admission: physical.source_upload.clone(),
+        catalog_publication_funding: physical.catalog_funding.clone(),
         lexical_generation_scanner,
         lexical_generation_validator,
         lexical_identity_probe,
@@ -488,9 +653,10 @@ pub fn run_supervised(command: SearchdCommand) -> Result<quanta_index_searchd::S
     let _signal_watch = signal::install(quanta_index_searchd::CancelRoot::clone(&root))
         .map_err(anyhow::Error::from)?;
     let trace_path = command.diagnostic_trace_path().cloned();
+    let trace_limits = command.diagnostic_trace_limits();
     let config = command.into_config()?;
     let mut capture = trace_path
-        .map(|path| DiagnosticCaptureV1::start(path, DiagnosticCaptureLimitsV1::default()))
+        .map(|path| DiagnosticCaptureV1::start(path, trace_limits))
         .transpose()?;
     let runtime_result = match capture.as_ref() {
         Some(capture) => capture.lease().map_or_else(
@@ -539,12 +705,23 @@ pub fn run_supervised(command: SearchdCommand) -> Result<quanta_index_searchd::S
     Ok(outcome)
 }
 
+// Share the real-service fixture with crate-private fault tests.
+#[cfg(test)]
+extern crate self as quanta_index_searchd_runtime;
+
+#[cfg(all(test, unix))]
+mod native_owned_pump_fault_tests;
+
 #[cfg(test)]
 mod admitted_publish_timeout_tests;
+#[cfg(test)]
+mod legacy_physical_tests;
 #[cfg(test)]
 mod process_slow_disk_tests;
 #[cfg(test)]
 mod public_cache_tests;
+#[cfg(test)]
+mod publication_admission_tests;
 
 #[cfg(test)]
 mod diagnostic_runtime_parent_tests {

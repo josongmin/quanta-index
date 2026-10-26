@@ -24,6 +24,8 @@ pub mod ann;
 pub mod artifact;
 pub mod bench_support;
 pub mod concurrency;
+/// Shared bounded arrival scheduler for harness load adapters.
+pub mod offered_load;
 pub mod ops;
 pub mod relevance;
 pub mod scale;

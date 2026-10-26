@@ -9,8 +9,11 @@ use serde::{
 
 mod sealed {
     pub trait Leaf {}
+    impl Leaf for bool {}
+    impl Leaf for u8 {}
     impl Leaf for u32 {}
     impl Leaf for u64 {}
+    impl Leaf for [u8; 16] {}
     impl Leaf for [u8; 32] {}
 }
 
@@ -21,8 +24,11 @@ mod sealed {
 /// accept multiple owned inputs and overwrite the private retained slots, so
 /// this trait is sealed rather than blanket-implemented for Deserialize.
 pub trait NativeRetainedScalarLeafV1: sealed::Leaf + DeserializeOwned + Copy {}
+impl NativeRetainedScalarLeafV1 for bool {}
+impl NativeRetainedScalarLeafV1 for u8 {}
 impl NativeRetainedScalarLeafV1 for u32 {}
 impl NativeRetainedScalarLeafV1 for u64 {}
+impl NativeRetainedScalarLeafV1 for [u8; 16] {}
 impl NativeRetainedScalarLeafV1 for [u8; 32] {}
 
 /// Source-free physical DATA for one closed leaf occurrence.

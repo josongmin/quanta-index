@@ -27,6 +27,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::connection::{CATALOG_FILE_NAME, catalog_dir, engine_error, storage};
 
+mod admitted;
+pub use admitted::CatalogSnapshotSessionV1;
+
 /// How many pages the backup step copies per engine call.
 const BACKUP_PAGES_PER_STEP: i32 = 256;
 
@@ -53,19 +56,23 @@ impl CatalogSnapshotReceiptV1 {
 
 /// The user tables of `connection` in schema order, excluding the engine's
 /// own `sqlite_*` bookkeeping.
-fn user_tables(connection: &Connection, path: &Path) -> Result<Vec<String>, CoreError> {
+fn user_tables_with_mapper(
+    connection: &Connection,
+    path: &Path,
+    map_error: &dyn Fn(&str, &Path, &rusqlite::Error) -> CoreError,
+) -> Result<Vec<String>, CoreError> {
     let mut statement = connection
         .prepare(
             "SELECT name FROM sqlite_master \
              WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
         )
-        .map_err(|error| engine_error("list snapshot tables", path, &error))?;
+        .map_err(|error| map_error("list snapshot tables", path, &error))?;
     let rows = statement
         .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|error| engine_error("list snapshot tables", path, &error))?;
+        .map_err(|error| map_error("list snapshot tables", path, &error))?;
     let mut tables = Vec::new();
     for row in rows {
-        tables.push(row.map_err(|error| engine_error("list snapshot tables", path, &error))?);
+        tables.push(row.map_err(|error| map_error("list snapshot tables", path, &error))?);
     }
     Ok(tables)
 }
@@ -100,6 +107,16 @@ pub fn catalog_content_digest(
     connection: &Connection,
     path: &Path,
 ) -> Result<(String, Vec<(String, u64)>), CoreError> {
+    catalog_content_digest_with_mapper(connection, path, &engine_error)
+}
+
+/// The same canonical digest with the native `SQLite` error still available to
+/// an admitted caller's exact interruption mapper.
+fn catalog_content_digest_with_mapper(
+    connection: &Connection,
+    path: &Path,
+    map_error: &dyn Fn(&str, &Path, &rusqlite::Error) -> CoreError,
+) -> Result<(String, Vec<(String, u64)>), CoreError> {
     let mut hasher = Sha256::new();
     hasher.update(b"quanta-index/catalog-content-digest/v1");
     let mut schema = connection
@@ -107,7 +124,7 @@ pub fn catalog_content_digest(
             "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master \
              WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
         )
-        .map_err(|error| engine_error("read snapshot schema", path, &error))?;
+        .map_err(|error| map_error("read snapshot schema", path, &error))?;
     let schema_rows = schema
         .query_map([], |row| {
             Ok((
@@ -117,10 +134,10 @@ pub fn catalog_content_digest(
                 row.get::<_, String>(3)?,
             ))
         })
-        .map_err(|error| engine_error("read snapshot schema", path, &error))?;
+        .map_err(|error| map_error("read snapshot schema", path, &error))?;
     for row in schema_rows {
         let (kind, name, table, sql) =
-            row.map_err(|error| engine_error("read snapshot schema", path, &error))?;
+            row.map_err(|error| map_error("read snapshot schema", path, &error))?;
         feed_length_prefixed(&mut hasher, kind.as_bytes());
         feed_length_prefixed(&mut hasher, name.as_bytes());
         feed_length_prefixed(&mut hasher, table.as_bytes());
@@ -129,7 +146,7 @@ pub fn catalog_content_digest(
     drop(schema);
 
     let mut table_rows = Vec::new();
-    for table in user_tables(connection, path)? {
+    for table in user_tables_with_mapper(connection, path, map_error)? {
         feed_length_prefixed(&mut hasher, table.as_bytes());
         // The table name is interpolated, never a caller string: it came out
         // of `sqlite_master` and is quoted so a name with a quote cannot
@@ -142,7 +159,7 @@ pub fn catalog_content_digest(
         let column_names: Vec<String> = {
             let probe = connection
                 .prepare(&format!("SELECT * FROM \"{quoted}\" LIMIT 0"))
-                .map_err(|error| engine_error("read snapshot table", path, &error))?;
+                .map_err(|error| map_error("read snapshot table", path, &error))?;
             probe
                 .column_names()
                 .iter()
@@ -156,20 +173,20 @@ pub fn catalog_content_digest(
             .join(", ");
         let mut statement = connection
             .prepare(&format!("SELECT * FROM \"{quoted}\" ORDER BY {order_by}"))
-            .map_err(|error| engine_error("read snapshot table", path, &error))?;
+            .map_err(|error| map_error("read snapshot table", path, &error))?;
         let column_count = statement.column_count();
         let mut rows = statement
             .query([])
-            .map_err(|error| engine_error("read snapshot table", path, &error))?;
+            .map_err(|error| map_error("read snapshot table", path, &error))?;
         let mut count: u64 = 0;
         while let Some(row) = rows
             .next()
-            .map_err(|error| engine_error("read snapshot table", path, &error))?
+            .map_err(|error| map_error("read snapshot table", path, &error))?
         {
             for index in 0..column_count {
                 let value = row
                     .get_ref(index)
-                    .map_err(|error| engine_error("read snapshot table", path, &error))?;
+                    .map_err(|error| map_error("read snapshot table", path, &error))?;
                 match value {
                     rusqlite::types::ValueRef::Null => feed_optional(&mut hasher, None),
                     rusqlite::types::ValueRef::Integer(number) => {

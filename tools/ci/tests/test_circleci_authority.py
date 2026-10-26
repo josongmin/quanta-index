@@ -297,7 +297,9 @@ def test_regular_ci_runs_the_pinned_public_api_ratchet():
     assert command.startswith("set -euo pipefail\nunset BASH_ENV ENV\n")
     assert "--update-baseline" not in command
     public_api = runpy.run_path(str(ROOT / "tools/ci/lint/check-public-api.py"))
-    assert public_api["GUARDED_CRATES"] == ["quanta-index-contract", "quanta-index-sdk"]
+    assert public_api["GUARDED_CRATES"] == [
+        "quanta-index-contract-base", "quanta-index-contract", "quanta-index-sdk"
+    ]
     toolchain = public_api["PUBLIC_API_TOOLCHAIN"]
     install = steps[tool_install_index]["run"]["command"]
     assert install.startswith("set -euo pipefail\nunset BASH_ENV ENV\n")

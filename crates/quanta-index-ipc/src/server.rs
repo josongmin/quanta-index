@@ -33,6 +33,7 @@ use quanta_index_core::{
     DiagnosticLaneV1, DiagnosticPlaneV1, DiagnosticRootKindV1, DiagnosticSpanGuardV1,
     DiagnosticSpanIdV1, DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceRefV1,
     RequestBudgetV1, RequestCorrelationV1, RequestProviderStageV1, RequestStageDiagnosticPortV1,
+    index::MemoryScope,
 };
 
 use crate::admission::{
@@ -64,12 +65,15 @@ use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, connect, sockopt::s
 #[cfg(target_os = "linux")]
 use rustix::net::{SocketFlags, socket_with};
 
-#[cfg(test)]
-use crate::codec::decode_request;
 use crate::codec::{
-    DIAGNOSTIC_ACK_BYTES, DIAGNOSTIC_PREFACE_MAGIC, decode_request_guarded, decode_response,
-    diagnostic_ack, diagnostic_ack_accepted, diagnostic_preface, encode_request, encode_response,
+    AdmittedClientRequestFrame, AdmittedClientResponseBody, DIAGNOSTIC_ACK_BYTES,
+    DIAGNOSTIC_PREFACE_MAGIC, decode_request_guarded, decode_response, diagnostic_ack,
+    diagnostic_ack_accepted, diagnostic_preface, encode_request,
+    encode_request_single_frame_admitted, read_response_body_admitted,
+    read_response_body_admitted_with_work_v1,
 };
+#[cfg(test)]
+use crate::codec::{decode_request, encode_response};
 use crate::counters::{IpcServerCounters, RequestEventSinkV1, RequestEventStageV1, RequestEventV1};
 use crate::error::{IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES};
 use crate::plane::IpcPlane;
@@ -379,10 +383,51 @@ pub trait IpcDispatcher<Request, Response>: Send + Sync {
         request: Request,
         budget: &RequestBudgetV1,
     ) -> Response;
+
+    /// Acquire data-only response backing from the composition's ledger.
+    /// Count, encode and write share one admitted phase budget. Ordinary replies
+    /// retain the dispatch budget; explicitly classified terminal replies use
+    /// a bounded transport phase without renewing backend execution.
+    /// Standalone dispatchers explicitly use the transport's bounded codec
+    /// without a service ledger; native production overrides this method.
+    fn reserve_response_memory(
+        &self,
+        _budget: &RequestBudgetV1,
+        _bytes: u64,
+    ) -> Result<Option<quanta_index_core::index::MemoryLease>, IpcError> {
+        Ok(None)
+    }
+
+    /// Only called when the request envelope explicitly selects streaming.
+    /// Each emitted payload is a nonterminal response frame. The returned
+    /// payload is the sole terminal frame. Unsupported is a typed refusal
+    /// supplied by the response envelope, never an accidental one-shot reply.
+    fn dispatch_stream(
+        &self,
+        _context: &DispatchContextV1,
+        _request: Request,
+        _budget: &RequestBudgetV1,
+        _emit: &mut dyn FnMut(Response) -> Result<(), IpcError>,
+    ) -> StreamDispatch<Response> {
+        StreamDispatch::Unsupported
+    }
+}
+
+pub enum StreamDispatch<Response> {
+    Terminal(Response),
+    /// The dispatcher wrote exactly one terminal through the retained emitter.
+    EmittedTerminal,
+    Unsupported,
 }
 
 pub trait RequestEnvelope<Request>: serde::de::DeserializeOwned + Send + Sync + 'static {
     fn into_parts(self) -> (u64, Request, DiagnosticAttemptFieldV1);
+
+    /// Stream routing is explicit per request variant; ordinary requests
+    /// always retain their single-response path.
+    fn streaming(_request: &Request) -> bool {
+        false
+    }
 
     /// Split the envelope and prove its request id is admissible
     /// (W10-R2): 0 is a malformed envelope refused with a typed error
@@ -403,6 +448,30 @@ pub trait RequestEnvelope<Request>: serde::de::DeserializeOwned + Send + Sync + 
 pub trait ResponseEnvelope<Response>: serde::Serialize + Send + Sync + 'static {
     fn from_parts(request_id: u64, payload: Response) -> Self;
 
+    /// A closed terminal result may need to cross the wire after dispatch
+    /// interruption: a typed interruption or an already durable corpus receipt.
+    /// This grants only a bounded reply phase, never more backend work. Other
+    /// replies retain their original execution deadline, including late success.
+    fn terminal_reply_phase(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    fn stream_unsupported(_request_id: u64) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
+    fn stream_stage(_payload: &Response) -> bool {
+        false
+    }
+
+    fn stream_terminal(_payload: &Response) -> bool {
+        false
+    }
+
     /// The envelope to send when the real response encoded to `encoded_bytes`
     /// and does not fit under `limit_bytes` (QI-BB-005). `None` means the
     /// envelope type has no typed error payload and the connection closes,
@@ -417,6 +486,15 @@ pub trait ResponseEnvelope<Response>: serde::Serialize + Send + Sync + 'static {
     fn overloaded(request_id: u64, refusal: &SlotRefusal) -> Option<Self>
     where
         Self: Sized;
+}
+
+/// Only typed interruption replies may leave an interrupted query/control lane.
+fn terminal_interruption(code: quanta_index_contract::SearchPlaneErrorCodeV2) -> bool {
+    matches!(
+        code,
+        quanta_index_contract::SearchPlaneErrorCodeV2::RequestDeadlineExceeded
+            | quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled
+    )
 }
 
 /// The repository a pinned or selected generation names.
@@ -529,6 +607,14 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneQueryIpcResponse>
         }
     }
 
+    fn terminal_reply_phase(&self) -> bool {
+        matches!(
+            &self.payload,
+            quanta_index_contract::SearchPlaneQueryIpcResponse::Error(error)
+                if terminal_interruption(error.code)
+        )
+    }
+
     fn result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> Option<Self> {
         Some(Self {
             request_id,
@@ -584,6 +670,14 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneControlIpcResponse>
         }
     }
 
+    fn terminal_reply_phase(&self) -> bool {
+        matches!(
+            &self.payload,
+            quanta_index_contract::SearchPlaneControlIpcResponse::Error(error)
+                if terminal_interruption(error.code)
+        )
+    }
+
     fn result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> Option<Self> {
         Some(Self {
             request_id,
@@ -637,6 +731,17 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneIngestIpcResponse>
             request_id,
             payload,
         }
+    }
+
+    fn terminal_reply_phase(&self) -> bool {
+        matches!(
+            &self.payload,
+            quanta_index_contract::SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+        ) || matches!(
+            &self.payload,
+            quanta_index_contract::SearchPlaneIngestIpcResponse::Error(error)
+                if terminal_interruption(error.code)
+        )
     }
 
     fn result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> Option<Self> {
@@ -1228,8 +1333,8 @@ impl UdsServer {
     /// being read and counted. Every admitted connection runs on its own
     /// thread, so reading one peer's request never waits on another's;
     /// dispatch concurrency is bounded separately by the policy's slots. The listener is
-    /// non-blocking, so an empty accept queue sleeps `accept_idle` before
-    /// retrying. On shutdown the loop stops accepting and joins the
+    /// non-blocking, so an empty accept queue waits up to `accept_idle` for
+    /// readability before retrying. On shutdown the loop stops accepting and joins the
     /// connection threads, each of which finishes its in-flight request
     /// (bounded by the dispatch budget and I/O timeouts) before exiting.
     pub fn run<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
@@ -1324,7 +1429,9 @@ impl UdsServer {
                     }
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    std::thread::sleep(accept_idle);
+                    if let Err(error) = wait_for_accept_ready(&self.listener, accept_idle) {
+                        break Err(error);
+                    }
                 }
                 Err(err) => break Err(IpcError::Io(err)),
             }
@@ -1345,6 +1452,31 @@ impl UdsServer {
             std::fs::remove_file(&self.socket_path)?;
         }
         Ok(())
+    }
+}
+
+/// Wait for a queued connection without extending the shutdown polling interval.
+/// EINTR and timeout return to the accept loop so it can recheck shutdown.
+fn wait_for_accept_ready(listener: &UnixListener, accept_idle: Duration) -> Result<(), IpcError> {
+    let timeout = Timespec::try_from(accept_idle)
+        .map_err(|reason| IpcError::Io(std::io::Error::new(ErrorKind::InvalidInput, reason)))?;
+    let mut poll_fd = [PollFd::new(listener, PollFlags::IN)];
+    match poll(&mut poll_fd, Some(&timeout)) {
+        Ok(0) | Err(Errno::INTR) => Ok(()),
+        Ok(_) => {
+            let [fd] = &poll_fd;
+            let ready = fd.revents();
+            if ready.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL)
+                || !ready.contains(PollFlags::IN)
+            {
+                Err(IpcError::Io(std::io::Error::other(
+                    "IPC listener poll reported a non-readable event",
+                )))
+            } else {
+                Ok(())
+            }
+        }
+        Err(reason) => Err(IpcError::Io(reason.into())),
     }
 }
 
@@ -1694,7 +1826,15 @@ where
                         waited: refusal.waited(),
                     };
                 };
-                match write_response(&mut stream, &response, counters, &event_scope) {
+                let refusal_budget = RequestBudgetV1::for_duration(policy.dispatch_budget());
+                match write_response(
+                    &mut stream,
+                    &response,
+                    counters,
+                    &event_scope,
+                    &refusal_budget,
+                    |bytes| dispatcher.reserve_response_memory(&refusal_budget, bytes),
+                ) {
                     Ok(()) => {
                         event_scope.finish_with_outcome(
                             RequestEventStageV1::ResponseWritten,
@@ -1757,10 +1897,162 @@ where
             diagnostic_context: event_scope.diagnostic_context().cloned(),
             diagnostic_backend_error: Arc::clone(&event_scope.backend_error),
         };
+        if RequestEnvelopeT::streaming(&request_payload) {
+            let _in_flight =
+                crate::counters::InFlightDispatchGuard::start(counters, permit.waited());
+            let watch = match PeerWatch::arm(&stream, budget.cancel_handle(), Arc::clone(counters))
+            {
+                Ok(watch) => watch,
+                Err(error) => {
+                    event_scope.finish(RequestEventStageV1::PeerWatchFailed);
+                    return ConnectionCloseReason::PeerWatchFailed(error.to_string());
+                }
+            };
+            event_scope.emit(RequestEventStageV1::DispatchStarted);
+            let backend_span = event_scope.enter(DiagnosticStageV1::Backend);
+            let mut stream_failure = None;
+            let mut terminal_written = false;
+            let terminal = {
+                let mut emit = |payload: Response| -> Result<(), IpcError> {
+                    if stream_failure.is_some() {
+                        return Err(IpcError::Io(std::io::Error::other(
+                            "progressive response stream already failed",
+                        )));
+                    }
+                    if terminal_written
+                        || !(ResponseEnvelopeT::stream_stage(&payload)
+                            || ResponseEnvelopeT::stream_terminal(&payload))
+                    {
+                        stream_failure = Some(ConnectionCloseReason::ResponseEncodeFailed(
+                            IpcError::Encode("invalid or post-terminal stream payload".into()),
+                        ));
+                        return Err(IpcError::Encode(
+                            "invalid or post-terminal stream payload".into(),
+                        ));
+                    }
+                    let is_terminal = ResponseEnvelopeT::stream_terminal(&payload);
+                    let response = ResponseEnvelopeT::from_parts(request_id.get(), payload);
+                    match write_response(
+                        &mut stream,
+                        &response,
+                        counters,
+                        &event_scope,
+                        &budget,
+                        |bytes| dispatcher.reserve_response_memory(&budget, bytes),
+                    ) {
+                        Ok(()) => {
+                            terminal_written = is_terminal;
+                            Ok(())
+                        }
+                        Err(reason) => {
+                            let message = reason.to_string();
+                            stream_failure = Some(reason);
+                            budget.cancel_handle().cancel();
+                            Err(IpcError::Io(std::io::Error::other(message)))
+                        }
+                    }
+                };
+                dispatcher.dispatch_stream(&context, request_payload, &budget, &mut emit)
+            };
+            if let Some(span) = backend_span {
+                let outcome = if event_scope.backend_error() {
+                    DiagnosticTerminalV1::Error { code: 4 }
+                } else {
+                    DiagnosticTerminalV1::Ok
+                };
+                let _diagnostic_result = span.finish(outcome);
+            }
+            event_scope.emit(RequestEventStageV1::DispatchReturned);
+            if let Some(reason) = stream_failure {
+                event_scope.finish(RequestEventStageV1::ResponseWriteFailed);
+                return reason;
+            }
+            if terminal_written {
+                if !matches!(terminal, StreamDispatch::EmittedTerminal) {
+                    event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
+                    return ConnectionCloseReason::ResponseEncodeFailed(IpcError::Encode(
+                        "stream dispatcher returned a second terminal".into(),
+                    ));
+                }
+                let peer_hung_up = match watch.disarm() {
+                    Ok(PeerWatchOutcome::HungUp) => true,
+                    Ok(PeerWatchOutcome::Stopped) => false,
+                    Err(error) => {
+                        event_scope.finish(RequestEventStageV1::PeerWatchFailed);
+                        return ConnectionCloseReason::PeerWatchFailed(error);
+                    }
+                };
+                drop(permit);
+                counters.request_dispatched(peer_hung_up);
+                if peer_hung_up {
+                    event_scope.finish(RequestEventStageV1::PeerCancelled);
+                    return ConnectionCloseReason::PeerClosed;
+                }
+                event_scope.finish(RequestEventStageV1::ResponseWritten);
+                continue;
+            }
+            let response = match terminal {
+                StreamDispatch::Terminal(payload)
+                    if ResponseEnvelopeT::stream_terminal(&payload) =>
+                {
+                    ResponseEnvelopeT::from_parts(request_id.get(), payload)
+                }
+                StreamDispatch::Terminal(_) => {
+                    event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
+                    return ConnectionCloseReason::ResponseEncodeFailed(IpcError::Encode(
+                        "stream returned a nonterminal payload".into(),
+                    ));
+                }
+                StreamDispatch::Unsupported => {
+                    let Some(refusal) = ResponseEnvelopeT::stream_unsupported(request_id.get())
+                    else {
+                        event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
+                        return ConnectionCloseReason::ResponseEncodeFailed(IpcError::Encode(
+                            "stream unsupported without typed refusal".into(),
+                        ));
+                    };
+                    refusal
+                }
+                StreamDispatch::EmittedTerminal => {
+                    event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
+                    return ConnectionCloseReason::ResponseEncodeFailed(IpcError::Encode(
+                        "stream dispatcher omitted terminal frame".into(),
+                    ));
+                }
+            };
+            let written = write_response(
+                &mut stream,
+                &response,
+                counters,
+                &event_scope,
+                &budget,
+                |bytes| dispatcher.reserve_response_memory(&budget, bytes),
+            );
+            let peer_hung_up = match watch.disarm() {
+                Ok(PeerWatchOutcome::HungUp) => true,
+                Ok(PeerWatchOutcome::Stopped) => false,
+                Err(error) => {
+                    event_scope.finish(RequestEventStageV1::PeerWatchFailed);
+                    return ConnectionCloseReason::PeerWatchFailed(error);
+                }
+            };
+            drop(permit);
+            counters.request_dispatched(peer_hung_up);
+            if let Err(reason) = written {
+                event_scope.finish(RequestEventStageV1::ResponseWriteFailed);
+                return reason;
+            }
+            if peer_hung_up {
+                event_scope.finish(RequestEventStageV1::PeerCancelled);
+                return ConnectionCloseReason::PeerClosed;
+            }
+            event_scope.finish(RequestEventStageV1::ResponseWritten);
+            continue;
+        }
         // The dispatch slot and the in-flight count are one RAII pair
         // (S21-09): a panicking dispatcher unwinds through both drops,
         // and the peer watch stops and joins its thread the same way.
-        let (response_payload, peer_hung_up) = {
+        let (response_payload, watch) = {
             let _in_flight =
                 crate::counters::InFlightDispatchGuard::start(counters, permit.waited());
             // A dispatch without a live watch would run with a cancellation
@@ -1786,75 +2078,94 @@ where
                 let _diagnostic_result = span.finish(outcome);
             }
             event_scope.emit(RequestEventStageV1::DispatchReturned);
-            let peer_hung_up = match watch.disarm() {
-                Ok(PeerWatchOutcome::HungUp) => true,
-                Ok(PeerWatchOutcome::Stopped) => false,
-                Err(error) => {
-                    event_scope.finish(RequestEventStageV1::PeerWatchFailed);
-                    return ConnectionCloseReason::PeerWatchFailed(error);
-                }
-            };
-            (response_payload, peer_hung_up)
+            (response_payload, watch)
         };
         drop(permit);
+        let peer_hung_up = watch.peer_hung_up();
         counters.request_dispatched(peer_hung_up);
         if peer_hung_up {
+            if let Err(error) = watch.disarm() {
+                event_scope.finish(RequestEventStageV1::PeerWatchFailed);
+                return ConnectionCloseReason::PeerWatchFailed(error);
+            }
             // Nothing to write to; the dispatcher already saw the
             // cancellation at its next checkpoint (or ran to completion).
             event_scope.finish(RequestEventStageV1::PeerCancelled);
             return ConnectionCloseReason::PeerClosed;
         }
         let response = ResponseEnvelopeT::from_parts(request_id.get(), response_payload);
+        let reply_budget = if response.terminal_reply_phase() {
+            let deadline = Instant::now()
+                .checked_add(policy.io_timeout())
+                .unwrap_or_else(Instant::now);
+            let mut reply =
+                RequestBudgetV1::until_with_external_cancellation(deadline, watch.hangup_flag());
+            if let Some(correlation) = budget.correlation() {
+                reply = reply.with_correlation(correlation);
+            }
+            if let Some(diagnostic) = budget.diagnostic_context() {
+                reply = reply.with_diagnostic_context(diagnostic.clone());
+            }
+            reply
+        } else {
+            budget.clone()
+        };
         let mut encode_span = event_scope.enter(DiagnosticStageV1::Encode);
         let mut response_too_large = false;
-        let frame = match encode_response(&response) {
-            Ok(frame) => frame,
-            // The answer was computed but cannot cross the wire. Tell the
-            // caller so with a typed refusal instead of dropping the
-            // connection, which would be indistinguishable from a crash.
-            Err(IpcError::Oversized(encoded_bytes)) => {
-                response_too_large = true;
-                let limit_bytes =
-                    u64::try_from(MAX_FRAME_BODY_BYTES).map_or(u64::MAX, |limit| limit);
-                let Some(refusal) = ResponseEnvelopeT::result_too_large(
-                    request_id.get(),
-                    encoded_bytes,
-                    limit_bytes,
-                ) else {
-                    if let Some(span) = encode_span.take() {
-                        let _diagnostic_result =
-                            span.finish(DiagnosticTerminalV1::Error { code: 5 });
-                    }
-                    event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
-                    return ConnectionCloseReason::ResponseEncodeFailed(IpcError::Oversized(
+        let frame =
+            match crate::codec::encode_response_admitted(&response, &reply_budget, |bytes| {
+                dispatcher.reserve_response_memory(&reply_budget, bytes)
+            }) {
+                Ok(frame) => frame,
+                // The answer was computed but cannot cross the wire. Tell the
+                // caller so with a typed refusal instead of dropping the
+                // connection, which would be indistinguishable from a crash.
+                Err(IpcError::Oversized(encoded_bytes)) => {
+                    response_too_large = true;
+                    let limit_bytes =
+                        u64::try_from(MAX_FRAME_BODY_BYTES).map_or(u64::MAX, |limit| limit);
+                    let Some(refusal) = ResponseEnvelopeT::result_too_large(
+                        request_id.get(),
                         encoded_bytes,
-                    ));
-                };
-                match encode_response(&refusal) {
-                    Ok(frame) => frame,
-                    Err(err) => {
+                        limit_bytes,
+                    ) else {
                         if let Some(span) = encode_span.take() {
                             let _diagnostic_result =
                                 span.finish(DiagnosticTerminalV1::Error { code: 5 });
                         }
                         event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
-                        return ConnectionCloseReason::ResponseEncodeFailed(err);
+                        return ConnectionCloseReason::ResponseEncodeFailed(IpcError::Oversized(
+                            encoded_bytes,
+                        ));
+                    };
+                    match crate::codec::encode_response_admitted(&refusal, &reply_budget, |bytes| {
+                        dispatcher.reserve_response_memory(&reply_budget, bytes)
+                    }) {
+                        Ok(frame) => frame,
+                        Err(err) => {
+                            if let Some(span) = encode_span.take() {
+                                let _diagnostic_result =
+                                    span.finish(DiagnosticTerminalV1::Error { code: 5 });
+                            }
+                            event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
+                            return ConnectionCloseReason::ResponseEncodeFailed(err);
+                        }
                     }
                 }
-            }
-            Err(err) => {
-                if let Some(span) = encode_span.take() {
-                    let _diagnostic_result = span.finish(DiagnosticTerminalV1::Error { code: 5 });
+                Err(err) => {
+                    if let Some(span) = encode_span.take() {
+                        let _diagnostic_result =
+                            span.finish(DiagnosticTerminalV1::Error { code: 5 });
+                    }
+                    event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
+                    return ConnectionCloseReason::ResponseEncodeFailed(err);
                 }
-                event_scope.finish(RequestEventStageV1::ResponseEncodeFailed);
-                return ConnectionCloseReason::ResponseEncodeFailed(err);
-            }
-        };
+            };
         if let Some(span) = encode_span.take() {
             let _diagnostic_result = span.finish(DiagnosticTerminalV1::Ok);
         }
         let write_span = event_scope.enter(DiagnosticStageV1::Write);
-        if let Err(err) = stream.write_all(&frame) {
+        if let Err(err) = write_all_before(&mut stream, &frame, &reply_budget) {
             if let Some(span) = write_span {
                 let _diagnostic_result = span.finish(DiagnosticTerminalV1::Error { code: 3 });
             }
@@ -1865,6 +2176,10 @@ where
             let _diagnostic_result = span.finish(DiagnosticTerminalV1::Ok);
         }
         counters.response_written(frame_bytes(&frame));
+        if let Err(error) = watch.disarm() {
+            event_scope.finish(RequestEventStageV1::PeerWatchFailed);
+            return ConnectionCloseReason::PeerWatchFailed(error);
+        }
         if response_too_large {
             event_scope.finish_with_outcome(
                 RequestEventStageV1::ResponseWritten,
@@ -1977,9 +2292,11 @@ fn write_response<ResponseEnvelopeT: serde::Serialize>(
     response: &ResponseEnvelopeT,
     counters: &IpcServerCounters,
     scope: &RequestEventScope<'_>,
+    budget: &RequestBudgetV1,
+    admit: impl FnOnce(u64) -> Result<Option<quanta_index_core::index::MemoryLease>, IpcError>,
 ) -> Result<(), ConnectionCloseReason> {
     let encode_span = scope.enter(DiagnosticStageV1::Encode);
-    let frame = match encode_response(response) {
+    let frame = match crate::codec::encode_response_admitted(response, budget, admit) {
         Ok(frame) => {
             if let Some(span) = encode_span {
                 let _diagnostic_result = span.finish(DiagnosticTerminalV1::Ok);
@@ -1994,7 +2311,7 @@ fn write_response<ResponseEnvelopeT: serde::Serialize>(
         }
     };
     let write_span = scope.enter(DiagnosticStageV1::Write);
-    if let Err(error) = stream.write_all(&frame) {
+    if let Err(error) = write_all_before(stream, &frame, budget) {
         if let Some(span) = write_span {
             let _diagnostic_result = span.finish(DiagnosticTerminalV1::Error { code: 3 });
         }
@@ -2007,6 +2324,55 @@ fn write_response<ResponseEnvelopeT: serde::Serialize>(
     }
     counters.response_written(frame_bytes(&frame));
     Ok(())
+}
+
+fn write_all_before(
+    stream: &mut UnixStream,
+    bytes: &[u8],
+    budget: &RequestBudgetV1,
+) -> std::io::Result<()> {
+    let deadline = budget.deadline();
+    let mut remaining_bytes = bytes;
+    while !remaining_bytes.is_empty() {
+        budget
+            .checkpoint("ipc_response_write")
+            .map_err(|error| std::io::Error::new(ErrorKind::Interrupted, error))?;
+        let remaining_time = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(deadline_elapsed_error)?;
+        // A blocked socket periodically observes cancellation, without changing
+        // the absolute deadline or retrying a partially written response frame.
+        stream.set_write_timeout(Some(remaining_time.min(Duration::from_millis(50))))?;
+        let written = match stream.write(remaining_bytes) {
+            Ok(written) => written,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if written == 0 {
+            return Err(std::io::Error::new(
+                ErrorKind::WriteZero,
+                "IPC response made no progress",
+            ));
+        }
+        remaining_bytes = remaining_bytes.get(written..).ok_or_else(|| {
+            std::io::Error::new(
+                ErrorKind::InvalidData,
+                "IPC write reported more bytes than supplied",
+            )
+        })?;
+    }
+    budget
+        .checkpoint("ipc_response_write")
+        .map_err(|error| std::io::Error::new(ErrorKind::Interrupted, error))?;
+    ensure_deadline_remaining(deadline)
 }
 
 mod peer_watch;
@@ -2049,6 +2415,78 @@ fn observed_ns(duration: Duration) -> Result<u64, IpcError> {
         .map_err(|error| IpcError::Decode(format!("client timing nanoseconds exceed u64: {error}")))
 }
 
+enum ClientRequestFrame {
+    Standalone(Vec<u8>),
+    Admitted(AdmittedClientRequestFrame),
+}
+
+impl ClientRequestFrame {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Standalone(bytes) => bytes,
+            Self::Admitted(frame) => frame,
+        }
+    }
+}
+
+fn encode_client_request_frame<T: serde::Serialize>(
+    request: &T,
+    budget: Option<&RequestBudgetV1>,
+    memory: Option<&MemoryScope>,
+) -> Result<ClientRequestFrame, IpcError> {
+    match (budget, memory) {
+        (Some(budget), Some(memory)) => {
+            encode_request_single_frame_admitted(request, budget, memory)
+                .map(ClientRequestFrame::Admitted)
+        }
+        (_, None) => encode_request(request).map(ClientRequestFrame::Standalone),
+        (None, Some(_)) => Err(IpcError::Encode(
+            "client memory scope requires the original request budget".into(),
+        )),
+    }
+}
+
+trait ClientResponseDecode {
+    type Output;
+
+    fn read<R: Read>(&self, reader: &mut R) -> Result<Self::Output, IpcError>;
+}
+
+struct TypedClientResponse<T>(std::marker::PhantomData<T>);
+
+impl<T: serde::de::DeserializeOwned> ClientResponseDecode for TypedClientResponse<T> {
+    type Output = T;
+
+    fn read<R: Read>(&self, reader: &mut R) -> Result<T, IpcError> {
+        decode_response(reader)
+    }
+}
+
+type AdmittedResponseWork<'a> =
+    std::cell::RefCell<&'a mut dyn FnMut(usize) -> Result<(), IpcError>>;
+
+struct AdmittedRawClientResponse<'a> {
+    budget: &'a RequestBudgetV1,
+    memory: &'a MemoryScope,
+    work: Option<AdmittedResponseWork<'a>>,
+}
+
+impl ClientResponseDecode for AdmittedRawClientResponse<'_> {
+    type Output = AdmittedClientResponseBody;
+
+    fn read<R: Read>(&self, reader: &mut R) -> Result<Self::Output, IpcError> {
+        match &self.work {
+            Some(work) => read_response_body_admitted_with_work_v1(
+                reader,
+                self.budget,
+                self.memory,
+                &mut **work.borrow_mut(),
+            ),
+            None => read_response_body_admitted(reader, self.budget, self.memory),
+        }
+    }
+}
+
 /// One-shot client: open a stream, send `request`, read one response.
 pub fn send_request<RequestEnvelopeT, ResponseEnvelopeT>(
     socket: &Path,
@@ -2059,9 +2497,211 @@ where
     RequestEnvelopeT: serde::Serialize,
     ResponseEnvelopeT: serde::de::DeserializeOwned,
 {
-    send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, ResponseEnvelopeT>(
-        socket, request, None, io_policy, None,
+    send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
+        socket,
+        request,
+        None,
+        io_policy,
+        None,
+        None,
+        None,
+        &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
     )
+}
+
+/// One-shot client with the original request's deadline and cancellation.
+///
+/// A cancelled in-flight write can have reached the peer; callers of durable
+/// operations must retain their operation key and reconcile an uncertain ACK.
+pub fn send_request_with_budget<RequestEnvelopeT, ResponseEnvelopeT>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+) -> Result<ResponseEnvelopeT, IpcError>
+where
+    RequestEnvelopeT: serde::Serialize,
+    ResponseEnvelopeT: serde::de::DeserializeOwned,
+{
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
+        socket,
+        request,
+        None,
+        io_policy,
+        None,
+        Some(budget),
+        None,
+        &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
+    )
+}
+
+/// Send one bounded request and read its raw response under the original budget.
+///
+/// The returned body retains its charge;
+/// parsing it into owned values requires a separate type-specific admission.
+pub fn send_request_body_with_budget_admitted<RequestEnvelopeT: serde::Serialize>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+) -> Result<AdmittedClientResponseBody, IpcError> {
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
+        socket,
+        request,
+        None,
+        io_policy,
+        None,
+        Some(budget),
+        Some(memory),
+        &AdmittedRawClientResponse {
+            budget,
+            memory,
+            work: None,
+        },
+    )
+}
+
+/// Admitted one-shot request whose response-body copy is charged to the
+/// caller's work owner before any response backing is allocated.
+pub fn send_request_body_with_budget_admitted_with_work_v1<RequestEnvelopeT: serde::Serialize>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+    work: &mut dyn FnMut(usize) -> Result<(), IpcError>,
+) -> Result<AdmittedClientResponseBody, IpcError> {
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
+        socket,
+        request,
+        None,
+        io_policy,
+        None,
+        Some(budget),
+        Some(memory),
+        &AdmittedRawClientResponse {
+            budget,
+            memory,
+            work: Some(std::cell::RefCell::new(work)),
+        },
+    )
+}
+
+/// Admitted auxiliary one-shot request with the existing diagnostic
+/// capability exchange. Both the plain and accepted linked frame use the
+/// same original request budget and retained memory scope.
+pub fn send_request_body_negotiated_with_budget_admitted<
+    RequestEnvelopeT: serde::Serialize,
+    LinkedEnvelopeT: serde::Serialize,
+>(
+    socket: &Path,
+    plain_request: &RequestEnvelopeT,
+    linked_request: &LinkedEnvelopeT,
+    capture_id: [u8; 16],
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+) -> Result<AdmittedClientResponseBody, IpcError> {
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    send_request_inner(
+        socket,
+        plain_request,
+        Some((linked_request, capture_id)),
+        io_policy,
+        None,
+        Some(budget),
+        Some(memory),
+        &AdmittedRawClientResponse {
+            budget,
+            memory,
+            work: None,
+        },
+    )
+}
+
+/// Negotiated admitted request with a pre-allocation response-copy work
+/// callback. Uses the same capability exchange and frame codec as the
+/// ordinary admitted request.
+pub fn send_request_body_negotiated_with_budget_admitted_with_work_v1<
+    RequestEnvelopeT: serde::Serialize,
+    LinkedEnvelopeT: serde::Serialize,
+>(
+    socket: &Path,
+    plain_request: &RequestEnvelopeT,
+    linked_request: &LinkedEnvelopeT,
+    capture_id: [u8; 16],
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+    work: &mut dyn FnMut(usize) -> Result<(), IpcError>,
+) -> Result<AdmittedClientResponseBody, IpcError> {
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    send_request_inner(
+        socket,
+        plain_request,
+        Some((linked_request, capture_id)),
+        io_policy,
+        None,
+        Some(budget),
+        Some(memory),
+        &AdmittedRawClientResponse {
+            budget,
+            memory,
+            work: Some(std::cell::RefCell::new(work)),
+        },
+    )
+}
+
+/// One connection and one absolute deadline for a progressive response.
+///
+/// Dropping the reader closes the connection and cancels server work via peer watch.
+pub struct ClientResponseStream {
+    stream: DeadlineStream,
+    policy: ClientIoPolicy,
+}
+
+impl ClientResponseStream {
+    pub fn next_response<ResponseEnvelopeT: serde::de::DeserializeOwned>(
+        &mut self,
+    ) -> Result<ResponseEnvelopeT, IpcError> {
+        let response =
+            decode_response::<ResponseEnvelopeT, _>(&mut self.stream).map_err(|error| {
+                classify_client_decode_error(error, IpcIoOperation::Read, self.policy)
+            })?;
+        let _remaining = self
+            .stream
+            .remaining()
+            .map_err(|error| classify_client_io_error(error, IpcIoOperation::Read, self.policy))?;
+        Ok(response)
+    }
+}
+
+pub fn send_stream_request<RequestEnvelopeT: serde::Serialize>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+) -> Result<ClientResponseStream, IpcError> {
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    let deadline = io_policy.request_deadline()?;
+    let frame = encode_request(request)?;
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    let stream = connect_stream_before_budget(socket, budget)
+        .map_err(|error| classify_client_io_error(error, IpcIoOperation::Connect, io_policy))?;
+    let mut stream = DeadlineStream::new(stream, deadline);
+    stream.budget = Some(budget.clone());
+    stream
+        .write_all(&frame)
+        .map_err(|error| classify_client_io_error(error, IpcIoOperation::Write, io_policy))?;
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    Ok(ClientResponseStream {
+        stream,
+        policy: io_policy,
+    })
 }
 
 /// Send a diagnostic token only after the peer acknowledges this capture.
@@ -2086,6 +2726,9 @@ where
         Some((linked_request, capture_id)),
         io_policy,
         None,
+        None,
+        None,
+        &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
     )
 }
 
@@ -2103,12 +2746,15 @@ where
     ResponseEnvelopeT: serde::de::DeserializeOwned,
 {
     let mut timing = ClientIpcTimingV1::default();
-    let response = send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, ResponseEnvelopeT>(
+    let response = send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
         socket,
         request,
         None,
         io_policy,
         Some(&mut timing),
+        None,
+        None,
+        &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
     )?;
     Ok((response, timing))
 }
@@ -2132,36 +2778,53 @@ where
         Some((linked_request, capture_id)),
         io_policy,
         Some(&mut timing),
+        None,
+        None,
+        &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
     )?;
     Ok((response, timing))
 }
 
-fn send_request_inner<RequestEnvelopeT, LinkedEnvelopeT, ResponseEnvelopeT>(
+fn send_request_inner<RequestEnvelopeT, LinkedEnvelopeT, Decode>(
     socket: &Path,
     request: &RequestEnvelopeT,
     linked_request: Option<(&LinkedEnvelopeT, [u8; 16])>,
     io_policy: ClientIoPolicy,
     mut timing: Option<&mut ClientIpcTimingV1>,
-) -> Result<ResponseEnvelopeT, IpcError>
+    budget: Option<&RequestBudgetV1>,
+    memory: Option<&MemoryScope>,
+    decoder: &Decode,
+) -> Result<Decode::Output, IpcError>
 where
     RequestEnvelopeT: serde::Serialize,
     LinkedEnvelopeT: serde::Serialize,
-    ResponseEnvelopeT: serde::de::DeserializeOwned,
+    Decode: ClientResponseDecode,
 {
+    if let Some(budget) = budget {
+        check_stream_budget(budget).map_err(IpcError::Io)?;
+    }
     let total_started = timing.as_ref().map(|_| Instant::now());
     let deadline = io_policy.request_deadline()?;
     let encode_started = timing.as_ref().map(|_| Instant::now());
-    let frame = encode_request(request)?;
+    let frame = encode_client_request_frame(request, budget, memory)?;
+    if let Some(budget) = budget {
+        check_stream_budget(budget).map_err(IpcError::Io)?;
+    }
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), encode_started) {
         timing.encode = observed_ns(started.elapsed())?;
     }
     let connect_started = timing.as_ref().map(|_| Instant::now());
-    let stream = connect_before_deadline(socket, deadline)
+    let stream = budget
+        .map_or_else(
+            || connect_before_deadline(socket, deadline),
+            |budget| connect_stream_before_budget(socket, budget),
+        )
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Connect, io_policy))?;
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), connect_started) {
         timing.connect = observed_ns(started.elapsed())?;
     }
     let mut stream = DeadlineStream::new(stream, deadline);
+    stream.budget = budget.cloned();
     let selected_request = if let Some((linked, capture_id)) = linked_request {
         // Keep 100 ms of the original request budget for a plain-envelope
         // fallback. The optional probe may use at most another 100 ms.
@@ -2195,10 +2858,16 @@ where
                     // The first stream contained transport control only. The
                     // original product envelope starts on a fresh stream.
                     drop(stream);
-                    let retry = connect_before_deadline(socket, deadline).map_err(|error| {
-                        classify_client_io_error(error, IpcIoOperation::Connect, io_policy)
-                    })?;
+                    let retry = budget
+                        .map_or_else(
+                            || connect_before_deadline(socket, deadline),
+                            |budget| connect_stream_before_budget(socket, budget),
+                        )
+                        .map_err(|error| {
+                            classify_client_io_error(error, IpcIoOperation::Connect, io_policy)
+                        })?;
                     stream = DeadlineStream::new(retry, deadline);
+                    stream.budget = budget.cloned();
                     None
                 }
             }
@@ -2209,14 +2878,17 @@ where
         None
     };
     let frame = if let Some(linked) = selected_request {
-        encode_request(linked)?
+        encode_client_request_frame(linked, budget, memory)?
     } else {
         frame
     };
     let write_started = timing.as_ref().map(|_| Instant::now());
     stream
-        .write_all(&frame)
+        .write_all(frame.as_slice())
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Write, io_policy))?;
+    if let Some(budget) = budget {
+        check_stream_budget(budget).map_err(IpcError::Io)?;
+    }
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), write_started) {
         timing.write = observed_ns(started.elapsed())?;
     }
@@ -2227,13 +2899,16 @@ where
             inner: &mut stream,
             read_io: Duration::ZERO,
         };
-        let result = decode_response::<ResponseEnvelopeT, _>(&mut reader);
+        let result = decoder.read(&mut reader);
         read_io = reader.read_io;
         result
     } else {
-        decode_response::<ResponseEnvelopeT, _>(&mut stream)
+        decoder.read(&mut stream)
     }
     .map_err(|error| classify_client_decode_error(error, IpcIoOperation::Read, io_policy))?;
+    if let Some(budget) = budget {
+        check_stream_budget(budget).map_err(IpcError::Io)?;
+    }
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), decode_started) {
         timing.decode_call = observed_ns(started.elapsed())?;
         timing.read_io = observed_ns(read_io)?;
@@ -2263,6 +2938,68 @@ fn connect_before_deadline(socket_path: &Path, deadline: Instant) -> std::io::Re
     stream.set_nonblocking(false)?;
     ensure_deadline_remaining(deadline)?;
     Ok(stream)
+}
+
+fn check_stream_budget(budget: &RequestBudgetV1) -> std::io::Result<()> {
+    if budget.is_cancelled() {
+        // `read_exact` retries Interrupted indefinitely. Other must escape
+        // the decoder so a cancelled original request ends this stream.
+        return Err(std::io::Error::other(
+            "IPC stream cancelled by original request",
+        ));
+    }
+    if budget.remaining().is_zero() {
+        return Err(deadline_elapsed_error());
+    }
+    Ok(())
+}
+
+fn connect_stream_before_budget(
+    socket_path: &Path,
+    budget: &RequestBudgetV1,
+) -> std::io::Result<UnixStream> {
+    check_stream_budget(budget)?;
+    let address = SocketAddrUnix::new(socket_path).map_err(std::io::Error::from)?;
+    let socket = create_connect_socket()?;
+    check_stream_budget(budget)?;
+    match connect(&socket, &address) {
+        Ok(()) => {}
+        Err(error) if connect_requires_completion_wait(error) => {
+            wait_for_stream_connect(&socket, budget)?;
+        }
+        Err(error) => {
+            check_stream_budget(budget)?;
+            return Err(error.into());
+        }
+    }
+    check_stream_budget(budget)?;
+    let stream = UnixStream::from(socket);
+    stream.set_nonblocking(false)?;
+    check_stream_budget(budget)?;
+    Ok(stream)
+}
+
+fn wait_for_stream_connect(socket: &OwnedFd, budget: &RequestBudgetV1) -> std::io::Result<()> {
+    let mut poll_fd = [PollFd::new(socket, PollFlags::OUT)];
+    loop {
+        check_stream_budget(budget)?;
+        let wait = budget.remaining().min(Duration::from_millis(1));
+        let timeout = Timespec::try_from(wait)
+            .map_err(|error| std::io::Error::new(ErrorKind::InvalidInput, error))?;
+        let result = poll(&mut poll_fd, Some(&timeout));
+        check_stream_budget(budget)?;
+        match result {
+            Ok(0) | Err(Errno::INTR) => {}
+            Ok(_) => {
+                let completion = socket_error(socket)
+                    .map_err(std::io::Error::from)?
+                    .map_err(std::io::Error::from);
+                check_stream_budget(budget)?;
+                return completion;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 fn connect_requires_completion_wait(error: Errno) -> bool {
@@ -2354,14 +3091,28 @@ fn deadline_elapsed_error() -> std::io::Error {
 struct DeadlineStream {
     stream: UnixStream,
     deadline: Instant,
+    budget: Option<RequestBudgetV1>,
 }
 
 impl DeadlineStream {
     const fn new(stream: UnixStream, deadline: Instant) -> Self {
-        Self { stream, deadline }
+        Self {
+            stream,
+            deadline,
+            budget: None,
+        }
     }
 
     fn remaining(&self) -> std::io::Result<Duration> {
+        if self
+            .budget
+            .as_ref()
+            .is_some_and(RequestBudgetV1::is_cancelled)
+        {
+            return Err(std::io::Error::other(
+                "IPC stream cancelled by original request",
+            ));
+        }
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             Err(std::io::Error::new(
@@ -2376,43 +3127,102 @@ impl DeadlineStream {
 
 impl Read for DeadlineStream {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        let remaining = self.remaining()?;
-        match self.stream.set_read_timeout(Some(remaining)) {
-            Ok(()) => {}
-            Err(error) if cfg!(target_os = "macos") && error.kind() == ErrorKind::InvalidInput => {
-                // Darwin can reject SO_RCVTIMEO after the peer has closed,
-                // even when a complete response is still buffered. Poll the
-                // same socket under the original absolute deadline and let
-                // read/decode distinguish buffered bytes from a truncated EOF.
-                let mut poll_fd = [PollFd::new(&self.stream, PollFlags::IN | PollFlags::HUP)];
-                loop {
-                    let timeout = Timespec::try_from(self.remaining()?)
-                        .map_err(|reason| std::io::Error::new(ErrorKind::InvalidInput, reason))?;
-                    match poll(&mut poll_fd, Some(&timeout)) {
-                        Ok(0) => return Err(deadline_elapsed_error()),
-                        Ok(_) => break,
-                        Err(Errno::INTR) => {}
-                        Err(reason) => return Err(reason.into()),
+        loop {
+            let remaining = self.remaining()?;
+            let wait = if self.budget.is_some() {
+                remaining.min(Duration::from_millis(100))
+            } else {
+                remaining
+            };
+            match self.stream.set_read_timeout(Some(wait)) {
+                Ok(()) => {}
+                Err(error)
+                    if cfg!(target_os = "macos") && error.kind() == ErrorKind::InvalidInput =>
+                {
+                    // Darwin can reject SO_RCVTIMEO after the peer has closed,
+                    // even when a complete response is still buffered. Poll the
+                    // same socket under the original absolute deadline and let
+                    // read/decode distinguish buffered bytes from a truncated EOF.
+                    let mut poll_fd = [PollFd::new(&self.stream, PollFlags::IN | PollFlags::HUP)];
+                    loop {
+                        let remaining = self.remaining()?;
+                        let wait = if self.budget.is_some() {
+                            remaining.min(Duration::from_millis(100))
+                        } else {
+                            remaining
+                        };
+                        let timeout = Timespec::try_from(wait).map_err(|reason| {
+                            std::io::Error::new(ErrorKind::InvalidInput, reason)
+                        })?;
+                        match poll(&mut poll_fd, Some(&timeout)) {
+                            Ok(0) if self.budget.is_some() => {}
+                            Ok(0) => return Err(deadline_elapsed_error()),
+                            Ok(_) => break,
+                            Err(Errno::INTR) => {}
+                            Err(reason) => return Err(reason.into()),
+                        }
                     }
                 }
+                Err(error) => return Err(error),
             }
-            Err(error) => return Err(error),
+            match self.stream.read(buffer) {
+                Err(error)
+                    if self.budget.is_some()
+                        && matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
+                outcome => {
+                    if self.budget.is_some() {
+                        let _remaining = self.remaining()?;
+                    }
+                    return outcome;
+                }
+            }
         }
-        self.stream.read(buffer)
     }
 }
 
 impl Write for DeadlineStream {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let remaining = self.remaining()?;
-        self.stream.set_write_timeout(Some(remaining))?;
-        self.stream.write(buffer)
+        if self.budget.is_none() {
+            let remaining = self.remaining()?;
+            self.stream.set_write_timeout(Some(remaining))?;
+            return self.stream.write(buffer);
+        }
+        loop {
+            let remaining = self.remaining()?;
+            let wait = remaining.min(Duration::from_millis(100));
+            self.stream.set_write_timeout(Some(wait))?;
+            match self.stream.write(buffer) {
+                Err(error)
+                    if self.budget.is_some()
+                        && matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
+                outcome => {
+                    let _remaining = self.remaining()?;
+                    return outcome;
+                }
+            }
+        }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        let remaining = self.remaining()?;
-        self.stream.set_write_timeout(Some(remaining))?;
-        self.stream.flush()
+        if self.budget.is_none() {
+            let remaining = self.remaining()?;
+            self.stream.set_write_timeout(Some(remaining))?;
+            return self.stream.flush();
+        }
+        loop {
+            let remaining = self.remaining()?;
+            let wait = remaining.min(Duration::from_millis(100));
+            self.stream.set_write_timeout(Some(wait))?;
+            match self.stream.flush() {
+                Err(error)
+                    if self.budget.is_some()
+                        && matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
+                outcome => {
+                    let _remaining = self.remaining()?;
+                    return outcome;
+                }
+            }
+        }
     }
 }
 
@@ -2426,6 +3236,7 @@ fn classify_client_decode_error(
         other @ (IpcError::Truncated
         | IpcError::Oversized(_)
         | IpcError::EmptyFrame
+        | IpcError::FrameMemoryLimited { .. }
         | IpcError::Encode(_)
         | IpcError::Decode(_)
         | IpcError::Timeout { .. }
@@ -2453,6 +3264,126 @@ fn classify_client_io_error(
         }
     } else {
         IpcError::Io(error)
+    }
+}
+
+#[cfg(test)]
+mod admitted_client_tests {
+    use super::{IpcError, send_request_body_with_budget_admitted};
+    use quanta_index_core::index::{
+        IndexError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
+    };
+    use std::{
+        io::Write,
+        os::unix::net::UnixListener,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::Duration,
+    };
+
+    struct Owner(Arc<AtomicU64>);
+
+    impl MemoryLeaseOwner for Owner {
+        fn release(&self, bytes: u64) {
+            let _previous = self.0.fetch_sub(bytes, Ordering::SeqCst);
+        }
+    }
+
+    struct Scope {
+        active: Arc<AtomicU64>,
+        deny: bool,
+    }
+
+    impl MemoryScopePort for Scope {
+        fn reserve(&self, bytes: u64, lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            if self.deny || lifetime != MemoryLifetime::Retained {
+                return Err(IndexError::ResourceLimited);
+            }
+            let _previous = self.active.fetch_add(bytes, Ordering::SeqCst);
+            Ok(MemoryLease::new(
+                bytes,
+                Arc::new(Owner(Arc::clone(&self.active))),
+            ))
+        }
+    }
+
+    fn scope(deny: bool) -> (MemoryScope, Arc<AtomicU64>) {
+        let active = Arc::new(AtomicU64::new(0));
+        (
+            MemoryScope::new(Arc::new(Scope {
+                active: Arc::clone(&active),
+                deny,
+            })),
+            active,
+        )
+    }
+
+    #[test]
+    fn response_copy_work_refusal_precedes_body_read_and_retained_birth() {
+        let budget = quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(2));
+        let (memory, active) = scope(false);
+        let mut frame = std::io::Cursor::new([3_u8, 0, 0, 0, 11, 12, 13]);
+        let mut charged = 0_usize;
+        let result = crate::codec::read_response_body_admitted_with_work_v1(
+            &mut frame,
+            &budget,
+            &memory,
+            &mut |bytes| {
+                charged = bytes;
+                Err(IpcError::Io(std::io::ErrorKind::Interrupted.into()))
+            },
+        );
+        assert!(
+            matches!(result, Err(IpcError::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted)
+        );
+        assert_eq!(charged, 3);
+        assert_eq!(frame.position(), 4);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn admitted_client_denial_precedes_connect() {
+        let budget = quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(2));
+        let (memory, active) = scope(true);
+        let result = send_request_body_with_budget_admitted(
+            std::path::Path::new("/nonexistent/quanta-ipc-funded-client"),
+            &7_u64,
+            &budget,
+            &memory,
+        );
+        assert!(matches!(result, Err(IpcError::FrameMemoryLimited { .. })));
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn admitted_client_real_uds_retains_body_after_request_frame_refund() {
+        let directory = tempfile::tempdir().expect("socket directory");
+        let socket = directory.path().join("admitted.sock");
+        let listener = UnixListener::bind(&socket).expect("bind native socket");
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept admitted client");
+            let request: u64 = crate::codec::decode_request(&mut stream).expect("decode request");
+            assert_eq!(request, 7);
+            let reply = crate::codec::encode_response(&11_u64).expect("encode response");
+            stream.write_all(&reply).expect("write response");
+        });
+        let budget = quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(2));
+        let (memory, active) = scope(false);
+        let body = send_request_body_with_budget_admitted(&socket, &7_u64, &budget, &memory)
+            .expect("admitted UDS reply");
+        peer.join().expect("scripted native peer");
+        assert_eq!(
+            crate::codec::decode_cbor_payload::<u64>(body.as_slice()).expect("scalar payload"),
+            11
+        );
+        assert_eq!(
+            active.load(Ordering::SeqCst),
+            u64::try_from(body.as_slice().len()).expect("body length")
+        );
+        drop(body);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
     }
 }
 

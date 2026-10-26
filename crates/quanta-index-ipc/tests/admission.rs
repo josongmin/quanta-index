@@ -94,7 +94,8 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse> 
                         | CoreError::NotReady(_)
                         | CoreError::NotImplemented(_)
                         | CoreError::NotFound(_)
-                        | CoreError::Storage(_)) => error_response(
+                        | CoreError::Storage(_)
+                        | CoreError::StorageIo { .. }) => error_response(
                             quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
                             other.to_string(),
                         ),

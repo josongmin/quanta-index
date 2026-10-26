@@ -1,8 +1,15 @@
 # RFC-QIDX-VNEXT-001 — Native Incremental Indexing and Qualified Performance
 
+> 실행 SSOT: [Wave2 잔여 작업](../plans/oct-22-finalizing/README.md). 이 RFC는 요구 ID·IR·계약·설계 의존성을 소유한다. 날짜별 구현 현황/진척률/담당/TODO는 당시 기록이며 현재 배정·작업 상태의 권위가 아니다. 실행 결과는 [VALIDATION](../plans/oct-22-finalizing/VALIDATION.md)에 기록한다.
+
+새 실행 현황·분업·체크포인트를 이 RFC에 추가하지 않는다. 현재 상태는 SSOT의 기존 행, 실행 판정은 VALIDATION의 해당 scope에만 반영한다. 이전 action register·진척률·배정 본문은 [보존 이력](../history/oct-10-index-closeout/RFC-DELIVERY-CHECKPOINTS.md)으로 이전했다.
+
 - Date: 2026-10-10
-- Index-construction and parallel-ownership follow-up: 2026-10-11, section 9.6.
-- Status: Native foundation slice implemented; product cutover and full qualification pending.
+- Document maintenance: 2026-10-21. Dated implementation checkpoints are
+  [historical records](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md),
+  not current task assignments. Dated implementation rechecks from sections
+  17.2.3–17.2.4 and 22 are [preserved separately](../history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md).
+  The SSOT owns all current status; technical requirements keep their original dates.
 - Decision: Replace coupled lifecycle/storage contracts inside the existing
   quanta-index workspace. Reuse suitable components; do not create a second product
   repository or permanent parallel internal IR.
@@ -14,10 +21,9 @@
   was read with HEAD `cace73b4d914`; the adaptive-IDE follow-up inspected
   recompute/cancellation, completion and rename owners at `7942f4012bdd`. These
   are static working-tree observations, not one qualified cross-repository executable snapshot.
-- Evidence: native focused compilation/tests and opt-in UDS composition are
-  recorded in section 22.4. Full suite, model checking, product migration and
-  performance qualification remain separate. Prior implementation acceptance
-  is recorded separately in section 2.1.
+- Evidence: the archived implementation and section 23 records contain historical
+  source-specific checkpoints, including failures and unverified repairs. Current results belong to
+  VALIDATION; no prior checkpoint qualifies the whole current tree.
 - Reference refresh: 2026-10-10. Section 19 reconciles the external review;
   section 14 is the implementation dependency authority. Research results are
   mechanism evidence, not Quanta performance qualification. Section 16 admits
@@ -63,11 +69,62 @@ correctness does not depend on a learned controller. Comparing
 bounded pack retention is permitted in the foundation experiment (section 8.3.1);
 it is not a requirement to build a general packing/auto-tuning framework.
 
+### 1.1 Reading order and decision boundaries
+
+Future Native execution dispatch and channel handoff are owned by
+[Oct-22 SSOT](../plans/oct-22-finalizing/README.md).
+Executed results remain in VALIDATION. The requirement contracts and IDs here
+remain canonical; existing dated implementation checkpoints are historical and
+must not be extended as a second live execution queue.
+
+This section reconciles terminology and document authority as of 2026-10-12.
+It changes neither the promised product scope nor the acceptance requirements.
+
+| Question | Authority | Boundary |
+|---|---|---|
+| Native target architecture and delivery dependencies | This RFC sections 1–21; section 14 owns dependencies, section 17 maps files/owners | A target contract is not an implemented or qualified capability |
+| Native remaining work and observed verification | [Oct-22 SSOT](../plans/oct-22-finalizing/README.md) owns current tasks; VALIDATION owns executed results. Sections 22/23 retain source-specific design/checkpoint history | Historical status and percentages do not create current assignments or qualify later source |
+| Existing A/D/C5, legacy lexical and trace work | [Oct-22 SSOT](../plans/oct-22-finalizing/README.md) owns residual work; [VALIDATION](../plans/oct-22-finalizing/VALIDATION.md) owns results; existing Accepted ADRs own legacy decisions | Legacy obligations survive until equivalent acceptance and explicit retirement; legacy results do not qualify the new NativeText backend |
+| Existing lexical format/admission decisions | [OCT-10-002](../adr/OCT-10-002-shared-paged-lexical-authorities.md); superseded details remain in OCT-10-001 | Legacy formats and their recorded tests do not describe native Catalog/object formats |
+
+Use these names consistently:
+
+- **Native incremental** is the Index-owned update/publication/recovery/lifetime
+  contract, independent of Runtime analysis. It does not mean Tantivy cannot
+  incrementally add/delete documents, nor that a backend has passed performance gates.
+- **Legacy Native authority** means the existing `text_authority/*` chunk/text
+  authority coupled to the legacy Tantivy generation. **NativeLiteral** and
+  **NativeTextIndex** mean the new `lexical/native/*` owner-key adapters. They are
+  different implementations, formats and verification scopes.
+
+The concrete implementation direction, rather than an unselected backend list, is:
+
+| Component | Selected implementation direction | Alternative / qualification boundary |
+|---|---|---|
+| Product publication/control | Existing SQLite Catalog, new native tables and short atomic view/receipt/root-protection transactions | One publication/lifetime authority; no adapter-local product head |
+| Native physical data and persistent maps | FileObjectStore immutable content-addressed files plus COW compressed radix maps, behind core object/map ports | Section 8.3.1 permits a focused pack/KV alternative only for a failed contract, material measured cost or explicit comparative claim; RocksDB is not a current dependency or required implementation |
+| Preparation scratch | Disposable SQLite sorting/staging under service-owned scratch allocation; one map edit with a key of at most 64 bytes may use bounded request-owned resident staging with the same radix codec and durable installer | Staging is not a search engine or publication authority; resident nodes/wires retain original memory admission, and relaxed disposable synchronization does not apply to the durable Catalog or immutable objects |
+| Native lexical | R14 NativeLiteral and R15 NativeTextIndex owner postings, live statistics and query semantics; reuse normalization/planner/oracle primitives | The current R15 direction implements BM25 itself. Tantivy remains an admissible component/alternative, not a mandatory new-path dependency or evidence that custom code is faster |
+| Existing product lexical | Legacy Tantivy plus paged Native/File authorities until replacement is qualified | R35/R36 replace the default path and retire competing legacy heads/lifetime owners; they do not require deleting every reusable Tantivy component or its Cargo dependency |
+
+Native correctness does not force a specific physical or lexical backend. Backend
+changes must record the selected implementation/owner seams and satisfy the same
+contracts. No alternative comparison is an unconditional W0/W1 prerequisite.
+The full promised IDE/Auto/large-Semantic product remains in scope; a narrower
+native experiment cannot close the full ledger. Default switch gates are in
+section 14.2. Historical measurements and checkpoints remain source-specific.
+Section 17.2.1 defines layer replacement units, compatibility and migration gates;
+having a trait alone does not establish independent backend replaceability.
+
 ## 2. Current evidence and before → after
 
-These are source-confirmed structures and costs, not fresh measurements of the
-historical 94-second update. Dirty status alone proves neither implementation
-completion nor failure; retain the scoped execution evidence in section 2.1.
+The before-column records the 2026-10-10 decision-time inspected source, not a
+live inventory of every later dirty edit. Costs are historical observations,
+not fresh measurements of the 94-second update. Section 2.1 reconciles later
+legacy follow-ups; [archived native checkpoints](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md)
+retain their original source and scope. Current status belongs to the
+[Oct-22 SSOT](../plans/oct-22-finalizing/README.md). Dirty status alone
+proves neither implementation completion nor failure.
 
 | ID | Current source / observation | Required change |
 |---|---|---|
@@ -111,12 +168,11 @@ flowchart TD
 
 ### 2.1 Accepted baseline and outstanding closeout
 
-The [closeout verdict](../plans/oct-10-index-closeout/VALIDATION.md#마감-판정)
-is the historical acceptance authority. The table below summarizes its scopes,
-not a fresh execution against the current dirty tree. This reconciliation made
-no production-code changes and did not re-establish source/binary equality with
-the prior run. New contracts must preserve these accepted behaviors; prior passes
-do not automatically qualify their replacement implementations.
+The [closeout validation](../plans/oct-22-finalizing/VALIDATION.md) is the legacy
+execution authority. Its original verdict and later dated checkpoints have
+different source bindings. The table reconciles both as of 2026-10-12; it is not
+a fresh execution against the current dirty tree. New contracts preserve accepted
+behaviors, but prior legacy passes do not qualify their native replacements.
 
 | Scope | Recorded evidence | Treatment in this plan |
 |---|---|---|
@@ -125,10 +181,10 @@ do not automatically qualify their replacement implementations.
 | C5: generation reservation | VERIFIED: durable nonreused numbers, final event binding, restart/ACK-loss recovery, control/SDK integration | Carry reservation/fence/replay obligations into the new identity axes; one allocator authority per namespace, no uncoordinated replacement counter |
 | Lexical storage/search | Shared paged store, Native/File authority, lazy body reads, map V2, segment intersection and request metadata cache implemented; major scoped regressions accepted | Reuse subject to conformance; whole-pipeline incrementality and operational acceptance remain open |
 | Scoped integration | Recorded check/Clippy/static checks, actual daemon SDK 6, GC 6 and doctests 4 passed | Preserve their scope and fixtures; these are not whole-suite or XL acceptance |
-| Large / XL lifecycle | Large VERIFIED; XL whole lifecycle FAILED twice under the same 900-second ceiling; pre-reopen publish/activation/search passed | Keep both failed runs. Reopen completion and post-reopen searches have no passing evidence; stop/join/start attribution is unresolved |
-| Full workspace suite | FAILED: 4,531 passed and one old-format GC fixture failed; after repair GC 6 passed, full rerun NOT_RUN | Do not combine separate runs into a synthetic green suite; require the final affected implementation's full closeout |
-| Operations and delivery | Sustained churn, long pins, space pressure, launcher switch and independent-process recovery NOT_RUN; recorded changes uncommitted/unpushed | Explicit W3/W4 gates and separate Git delivery status |
-| Waterfall | Contract and P00–P09 execution packets exist; packet status says implementation in progress, no integrated completion evidence; verification NOT_RUN | Reuse this diagnostic workstream through W0-D; do not count documentation as working instrumentation |
+| Large / XL lifecycle | Historical XL runs FAILED under 900 s. Later legacy source `07f0430…` completed XL in 777.167 s with reopen, post-reopen search, cleanup/artifact/footer VERIFIED | Preserve failed and passed source-specific runs. This closes that legacy functional lifecycle failure, not native XL, formal performance or current-tree acceptance |
+| Full workspace suite | Earlier batches FAILED (4,531/1 and later 4,604/2 passed/failed); affected fixtures/scopes were repaired and checked separately. Latest whole-current-tree rerun NOT_RUN | Do not combine partial reruns into a synthetic green suite; scoped passes remain valid for their recorded sources |
+| Operations and delivery | Legacy launcher/recovery and scoped process regressions have later passing evidence; actual operating switch, sustained churn/long pins/space pressure and formal release remain unqualified. Closeout records integration/push at `c32cd191…` | Earlier uncommitted checkpoints are history. Recorded legacy delivery does not establish delivery/qualification of later dirty native work; W3/W4 remain separate |
+| Waterfall | Later legacy trace checkpoints include runtime/capture tests, fresh Small capture and actual Perfetto import. Exact P00–P12 evidence is in VALIDATION.md; quiet-host Off/Record remains BLOCKED | Reuse the existing pipeline through W0-D. Small/viewer evidence is not a native/full-XL or observer-overhead qualification |
 | External qualification | External producer, remote CI, formal performance comparison and release qualification NOT_RUN and outside the original repair acceptance | Required where the selected VNext release promises them; not retroactive prerequisites for A/D/C5's original scoped verdicts |
 
 For C5, importing a reservation namespace preserves its durable high-water mark
@@ -139,7 +195,7 @@ these laws. Tests must exercise the new producer/consumer boundary together.
 
 ### 2.2 Known costs, unresolved attribution and repair ownership
 
-The [static RCA](../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md)
+The [static RCA](../history/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md)
 sections 10.29–10.31 own the detailed historical observations. These values are
 from the recorded XL captures, not measurements of this proposal and not promised
 savings. Each cost has a separate hypothesis and acceptance gate.
@@ -1305,12 +1361,13 @@ the normal editor UI.
 This subsection refines the existing ports; it adds no policy framework, service,
 generic rule language or new authority. The 2026-10-11 source check at Index
 `8f11cad9587a` plus the existing dirty work found
-[query planning](../../crates/quanta-index-search-plane/src/query_dispatcher/planning.rs:62)
-and [open-loop measurement](../../crates/quanta-index-searchd-harness/src/open_loop.rs:1)
-as reusable owners. A crates-wide search found no Rust definitions named
-EffortPolicy, StageCostEstimator or HysteresisPolicy: the RFC's interfaces remain
-planned. The existing harness separately records offered/served/dropped/error
-outcomes and its [saturation rule](../../crates/quanta-index-searchd-harness/src/open_loop.rs:581)
+[query planning:62](../../crates/quanta-index-search-plane/src/query_dispatcher/planning.rs)
+and [open-loop measurement:1](../../crates/quanta-index-searchd-harness/src/open_loop.rs)
+as reusable owners. At that inspection, a crates-wide search found no Rust
+definitions named EffortPolicy, StageCostEstimator or HysteresisPolicy: those
+interfaces were still planned. Later implementation checkpoints are in section 23;
+this audit-time observation is not their current code status. The existing harness separately records offered/served/dropped/error
+outcomes and its [saturation rule:581](../../crates/quanta-index-searchd-harness/src/open_loop.rs)
 uses a 0.95 delivery-ratio threshold alongside error/drop checks. That diagnostic
 threshold is not an Auto sensitivity parameter or the product acceptance oracle.
 
@@ -1627,10 +1684,11 @@ enum PlanDecision<P> {
     Reuse(ValidatedReuse), Incremental(P),
     MaintenanceRequired(MaintenancePlanRef), RebuildRequired(RebuildReason),
 }
-trait IndexReadPort {
-    type Reader;
-    fn open_exact(&self, member: &MemberBinding, ticket: &ReadTicket,
-                  budget: &ReadBudget) -> Result<Self::Reader, ReadError>;
+trait IndexQueryPort<Q, R> {
+    fn validate_instance(&self, instance: &InstanceSpec) -> Result<(), IndexError>;
+    fn reservation(&self, request: &Q) -> Result<ResourceNeed, IndexError>;
+    fn query(&self, request: &Q, context: &mut QueryReadContext)
+        -> Result<QueryOutcome<R>, IndexError>;
 }
 trait IndexRecoveryPort {
     fn recover(&self, attempt: AttemptRef) -> Result<RecoveredAttempt, IndexError>;
@@ -1652,7 +1710,8 @@ trait PhysicalReclaimPort {
 }
 ```
 
-The production implementation uses the repository's async/future convention.
+Build/owner execution uses the repository's async/future convention; synchronous
+query and physical calls execute through admitted bounded workers.
 These are separate capability ports, not one mandatory maintenance supertrait.
 Compaction and format-specific scrubbing are registered capabilities; mandatory
 recovery, exact-read, custody and physical-lifetime laws cannot be opted out of.
@@ -1683,6 +1742,14 @@ Adding an index requires its descriptor, schema/codec, implementation, typed que
 route and conformance tests. It must not add index-name branches to publication,
 CAS, replay, accounting, leases or GC. Test a fourth adapter and two instances of
 the same kind before accepting extension completeness. Query semantics stay typed.
+
+Exact member opening and query execution are distinct capabilities. Reuse the
+existing core/index/query `IndexQueryPort<Q, R>` and canonical query IR for execution;
+exact reader opening is internal to the selected query capability and format owner.
+Do not retain a second unused public read trait alongside that contract. Build-only
+registration does not advertise a query capability. Composition binds build, reader/query,
+codec and required maintenance capabilities for the same selected instance/format.
+Section 17.2.1 records the current dispatch gap and the replacement acceptance gates.
 
 Each adapter's existing descriptor/schema contract also specifies, for every
 consumer-visible output it actually owns, dependencies, equality, retraction,
@@ -1986,9 +2053,13 @@ new top-k hit. Overlay scoring derives matching masked/replacement statistics.
 Test append/delete/no-op with many segments and large old deletion segments,
 including seal/open/query work and independent full-state BM25 ranking/tie parity.
 
-Tantivy remains a candidate backend/component. If used by a required path, its
-commit/merge/deletion/statistics and wrapper costs are included in qualification.
-Native-path success cannot qualify a still-global required fallback.
+R15's current implementation target is NativeTextIndex, which owns postings,
+statistics and BM25 scoring; section 23 records its incomplete query-domain work.
+Tantivy remains an admissible backend/component under the same contracts, not a
+mandatory dependency of that target or a claim that it lacks incremental updates.
+If selected for a required path, its commit/merge/deletion/statistics and wrapper
+costs are included in qualification. Native-path success cannot qualify a
+still-global required fallback or justify unmeasured superiority.
 
 RC2/RC3 in section 2.2 are mandatory work items, not presumed solved by COW maps.
 Bound adoption groups by both references and bytes, including manifest overhead;
@@ -2075,6 +2146,7 @@ supports the contract, not an assumed winner or a mandatory production fallback.
 | [SPANN, NeurIPS 2021](https://proceedings.neurips.cc/paper/2021/hash/299dc35e747eb77177d9cea10a802da2-Abstract.html) | Memory-resident routing and disk postings | Partition/routing baseline; separately qualify dynamic repair, fanout and retention |
 | [SPFresh, SOSP 2023](https://www.microsoft.com/en-us/research/publication/spfresh-incremental-in-place-update-for-billion-scale-vector-search/) | Partition split and nearby reassignment under LIRE | Direct dynamic-update evidence; measure repair under distribution shift and skew. In-place repair does not establish immutable-history support |
 | [ACORN, PACMMOD / SIGMOD 2024](https://doi.org/10.1145/3654923) | Predicate-aware graph traversal for filtered ANN | Filter/query evidence; it does not establish our update, crash or historical-root contracts. Vary selectivity and vector/predicate correlation |
+| [IP-DiskANN, 2025 preprint](https://arxiv.org/abs/2502.13826) | In-place insert/delete and recall over long update streams | Rechecked 2026-10-15. In-place mutation does not establish immutable historical reads, admitted file custody or our aggregate maintenance bounds; qualify any adapter behind the same port |
 
 The distinct roles matter: static ANN, dynamic ANN and filtered ANN results do
 not establish each other's contracts. None establishes a universal winner as of
@@ -2090,10 +2162,11 @@ distance calculations. Recycled identifiers and finite generations must not
 permit ABA: use an explicit exhaustion/reuse policy and test wrap/restart.
 These are Quanta safety and accounting requirements, independent of any preprint.
 
-The first comparison implements the existing candidate plus one compatible
-external implementation, not every research algorithm. The others guide failure
-cases and rejection criteria. Prefer library reuse; no custom HNSW rewrite is
-required. In-place algorithms need exact retained-version support or a qualified
+The first feasibility gate exercises the pinned existing candidate. Add one
+compatible external comparator when a concrete contract gap, measured cost or
+comparative superiority claim requires it; implementing a second backend is not
+itself a correctness/release requirement. Other research guides failure cases
+and rejection criteria. Prefer library reuse; no custom HNSW rewrite is required. In-place algorithms need exact retained-version support or a qualified
 bounded COW/region adaptation. Such adaptation can change their measured costs.
 Select the concrete routing method, region/delta limits, deletion strategy,
 maintenance thresholds and filter/refill policy together. An implementation
@@ -2125,10 +2198,22 @@ Preserve query semantics during the representation change: current query.rs scor
 query terms by substring containment in folded search text, not whole-token equality.
 Candidate acceleration therefore uses sound substring/necessary-gram conditions
 plus exact verification, or an explicitly reviewed breaking query contract.
-Persistent subject/owner-path indexes still require fanout budgets: one owner may
-have many entries. Broad focus/no-focus ranking and token-budget prefix expansion
-are measured separately. Include infix, Unicode/case-fold, CJK and large owner
-fanout goldens against the independent string/ranking oracle.
+Persistent subject/owner-path indexes, when introduced, still require fanout
+budgets: one owner may have many entries. A budgeted complete paged scan may
+establish the first correct Native rank reader; it makes no sublinear-query
+claim. Add acceleration when the declared profile's measured cost requires it.
+Broad focus/no-focus ranking and token-budget prefix expansion are measured
+separately. Include infix, Unicode/case-fold, CJK and large owner fanout goldens
+against the independent string/ranking oracle.
+
+Native full-rank parity preserves candidate/focus, folded substring, score/tie,
+token-budget and drop/degraded semantics under one pinned view. Its typed response
+may bind ViewRef/instance/policy without fabricating legacy global metadata.
+Adjacency alone does not satisfy full-rank parity. Exact legacy response-envelope
+compatibility, if promised by a bridge, additionally requires certified selected
+metadata; it is not a prerequisite for Native ranking itself. Reuse the canonical
+compiled projection contract and one ranking policy/selector, not a second ranker
+or producer. W2-14 owns the concrete contract and implementation sequence.
 
 Future instances follow the same admission/seal/publish/read/reclaim protocol.
 Two embedding models and a fourth synthetic index exercise extension before
@@ -2172,7 +2257,7 @@ unavailable resolved facts return Unsupported/Pending. They do not infer semanti
 truth from names or silently use old Runtime outputs as current.
 
 The Runtime analysis/retraction SSOT remains
-[final-design-contracts.md, section 14](../../../semantica-codegraph-v2/docs/bugbash/oct-10-incremental-engine/final-design-contracts.md#oss-downstream-closure).
+[final-design-contracts.md, section 14](/Users/songmin/Documents/code-new/semantica-codegraph-v2/docs/bugbash/oct-10-incremental-engine/final-design-contracts.md#oss-downstream-closure).
 Section 21 below specifies only its handoff into the Index contracts above;
 PTA/callgraph/ModRef/MemorySSA/IFDS owners and their dependency graph are not
 reimplemented inside Index.
@@ -2365,12 +2450,12 @@ construction work by evidence; a confirmed call path is not a measured bottlenec
 
 | ID / priority | Confirmed evidence | Technique and decision boundary | Narrow decisive experiment / owner |
 |---|---|---|---|
-| IP1 / first repair design | Historical full publication: 4,019 adoption groups; six direct sync-wrapper categories accumulated 225.596 s. store.rs already batches, but group completion synchronizes pool/journal/control state | Bounded group commit / flush pipelining with the same durable acknowledgment and GC fences (R9). The accumulated call time is not independent wall time or guaranteed savings; record refs/bytes/explicit-flush causes before changing limits | W0-D + W1 storage: identical bounded object stream, current versus revised group protocol; count sync kinds and lock wait/hold, then crash each new durability boundary |
+| IP1 / first repair design | Historical full publication: 4,019 adoption groups; six direct sync-wrapper categories accumulated 225.596 s. store.rs already batches, but group completion synchronizes pool/journal/control state | Bounded group commit / flush pipelining with the same durable acknowledgment and GC fences (REF09). The accumulated call time is not independent wall time or guaranteed savings; record refs/bytes/explicit-flush causes before changing limits | W0-D + W1 storage: identical bounded object stream, current versus revised group protocol; count sync kinds and lock wait/hold, then crash each new durability boundary |
 | IP2 / downgraded layout hypothesis | Raw full-seal trace has 230,982 data-file syncs totaling 7.126 s and 230,982 parent syncs totaling 0.381 s. High call count alone does not establish dominant sync latency | Keep bounded page/pack comparison for the foundation's reclaim-granularity decision, not as the first proven performance repair. Object allocation/open/hash/retention costs may matter but need separate attribution; fewer adoption groups do not remove per-object files | Same objects/content/history/pins: quantify non-sync overhead before a layout rewrite; require total build/reopen benefit without random-read, retention or GC regression. A reduction in file count alone fails this gate |
 | IP3 / first repair design | Historical finalization 45.751–49.091 s including no-op/delta; retained closure and physical census remain full walks | Incrementally maintained closure/custody and physical accounting under section 8.3. Measure these separately; neither SHA nor SQLite is proved to own the entire residual | W1 with W0-D: fixed changed input and growing retained objects/history; independent physical/closure oracle including hardlinks, sharing, crash, pin and confirmed unlink |
-| IP4 / measured amplification, existing bounds | Historical one-file delta: 5,644 new object writes. Native already has a persistent debt map and pays at most two queued segments per publication; File compacts all touched segments plus at most one older debt | Change foreground work admission/debt service only if measured latency justifies it. This is not adding missing bounded compaction and does not prove corpus-wide rewriting. R3/R11 motivate sustained maintenance tests, not a drop-in LSM policy | W2-L: separate ordinary writes from compaction; Native/File publish took 5.400/3.430 s in the recorded delta, separately from 47.251 s finalization. Require no query/space regression and stable debt under single-owner and multi-segment churn |
+| IP4 / measured amplification, existing bounds | Historical one-file delta: 5,644 new object writes. Native already has a persistent debt map and pays at most two queued segments per publication; File compacts all touched segments plus at most one older debt | Change foreground work admission/debt service only if measured latency justifies it. This is not adding missing bounded compaction and does not prove corpus-wide rewriting. REF03/REF11 motivate sustained maintenance tests, not a drop-in LSM policy | W2-L: separate ordinary writes from compaction; Native/File publish took 5.400/3.430 s in the recorded delta, separately from 47.251 s finalization. Require no query/space regression and stable debt under single-owner and multi-segment churn |
 | IP5 / profile before algorithm change | Native BuiltSegment builds postings, independently verifies semantic relations, and derives term membership again for serialization; the segment loop builds/writes one cohort at a time. No exclusive CPU share measured | Separate builder, independent verifier, membership derivation and encoding. Consider a bounded immutable verified result carrying reusable verifier outputs, then admitted parallel private segment preparation. Never remove independent checking or use the writer as its own oracle | W2-L extraction/construction: 1 versus multiple workers at equal total caps; changed-segment corruption/gold oracles, deterministic IDs/order and CPU/allocation cost per byte. Retain serial publication/fences |
-| IP6 / replacement not justified yet | NativeBootstrapMaps uses private SQLite WITHOUT ROWID, 2 MiB configured page cache, file-backed temp work, per-surface cohort transactions and CBOR refs, then sorted map_bootstrap. It sorts key/reference rows after postings exist; its exclusive share is unmeasured | First measure the existing reference-sort path. Grouped cohorts or bounded external merge are conditional alternatives. R10 concerns token-to-posting inversion, not a direct substitute for this key/reference sort, and cannot justify replacing SQLite | W2-L bulk: identical keyed reference stream; measure insert/scan/decode/page-build CPU and scratch I/O at fixed total caps. A negligible measured share rejects this optimization; keep the existing builder unless full-build benefit is demonstrated |
+| IP6 / replacement not justified yet | NativeBootstrapMaps uses private SQLite WITHOUT ROWID, 2 MiB configured page cache, file-backed temp work, per-surface cohort transactions and CBOR refs, then sorted map_bootstrap. It sorts key/reference rows after postings exist; its exclusive share is unmeasured | First measure the existing reference-sort path. Grouped cohorts or bounded external merge are conditional alternatives. REF10 concerns token-to-posting inversion, not a direct substitute for this key/reference sort, and cannot justify replacing SQLite | W2-L bulk: identical keyed reference stream; measure insert/scan/decode/page-build CPU and scratch I/O at fixed total caps. A negligible measured share rejects this optimization; keep the existing builder unless full-build benefit is demonstrated |
 | IP7 / conditional pipeline opportunity | Semantic apply_scope_stream completes one window's table writes and drops its lease before next_window performs the next embedding batch. The issuer explicitly requires no outstanding window | Bounded producer/consumer overlap requires an explicit multi-slot lease/budget contract; it cannot be added as an unaccounted prefetch thread. Preserve compatibility before provider calls, ordered scopes, duplicate handling and admitted-operation recovery | W2-S-core: fixed fake provider for ordering/fault tests, then the actual selected provider/cache profile; split embedding/cache/table-write time, compare one slot with bounded overlap at the same total resource caps |
 | IP8 / remote-profile-only hypothesis | CachingEmbeddingProvider already deduplicates misses and batches the provider; enabled FileEmbeddingCache synchronizes each entry before returning. The scale factory uses Hash and its runtime branch has no FileEmbeddingCache; the matching Large artifact records Hash provenance | Exclude disk-cache writes from the explanation of this scale capture. In a separately demonstrated cache-enabled workload, compare actual grouped durability work; a put_batch API alone need not remove per-entry file sync. Write-behind is deferred pending measurements and an explicit cache durability/queue contract | Embed owner: qualify cold/hit/mixed cache-enabled profile first; if material, require fewer measured durability operations and full latency improvement with corruption/eviction/restart safety. Remote/cache performance remains unqualified by Hash scale results |
 | IP9 / measured seal-verification cost | Raw full seal: Native transition 10.797 s, Native changed-segment verification 47.894 s, File transition/segment verification 35.839 s; sequential sibling scopes total 94.530 s, nested in full publication | Prioritize read/hash/decode/rederivation attribution and bounded verifier optimization. These check persisted objects independently; in-memory builder verification is not the same obligation. Preserve changed-data validation and corruption detection; no writer-provided self-certification | W0-D + Lexical owner: separate object reads/bytes/hash, map reuse, expected-posting derivation and comparison. Test corrupted persisted body/posting/route/current data and stale proof binding. Promote only a same-integrity implementation with demonstrated complete-publication benefit |
@@ -2447,17 +2532,17 @@ it does not execute a new benchmark or authorize removal of correctness checks.
 
 **Evidence provenance.** The original artifacts remain outside the checkout:
 
-- [XL execution metadata](/private/tmp/qi-oct10-final-cache-xlarge/execution.json):
+- XL execution metadata (`/private/tmp/qi-oct10-final-cache-xlarge/execution.json`; historical artifact unavailable at Oct14 cleanup):
   FAILED, timed_out=true, exit_code=null, 900.078632 s; recorded source before/after
   `a15d994989f547a80d7b102a76429481503cc2d0`, binary before/after
   `ba1b69cdf692987546097bc4e748670abcece9e08d49dba074ce4f8fd5cf5929`,
   dirty_after=false. These are recorded run bindings, not this checkout's identity.
-- [XL raw stderr](/private/tmp/qi-oct10-final-cache-xlarge/stderr): 674,091 lines;
+- XL raw stderr (`/private/tmp/qi-oct10-final-cache-xlarge/stderr`; historical artifact unavailable at Oct14 cleanup): 674,091 lines;
   this audit recomputed SHA-256 and matched execution.stderr_sha256. It aggregated
   elapsed_ns by phase and exact label and confirmed the last marker is
   same_process_reopen start at line 674091. These artifact paths are temporary
   historical locations; if removed, their proof must be marked unavailable.
-- [Matching Large summary](/private/tmp/qi-oct10-final-cache-large/artifact/summary.json)
+- Matching Large summary (`/private/tmp/qi-oct10-final-cache-large/artifact/summary.json`; historical artifact unavailable at Oct14 cleanup)
   records model revision `search-owned-hash-text-v1@fnv1a64-slots-l2unit-v1:d64`.
   Large/XL execution records have identical source/binary bindings; tier differs.
   Current scale factory -> boot_with_client_request_timeout -> boot -> hash_dev,
@@ -2504,12 +2589,12 @@ a no-tracing production speedup by subtracting these numbers.
    creates a fresh metered verification store. A producer's cached success cannot
    substitute for these storage-bound obligations. IP5 and IP9 are distinct.
 4. `paged_bootstrap.rs:56–70,89–114,150–179` sorts key/BlobRef rows, not tokens.
-   R10's single-pass inversion mechanism is relevant earlier in postings
+   REF10's single-pass inversion mechanism is relevant earlier in postings
    construction. Withdraw the claim that it directly supports replacing this
    SQLite scratch stage. A reference-sort alternative needs its own experiment.
 5. `semantic_derive.rs:329–336` enforces one resident window and `build.rs:1968–1981`
    drops it after writes. Overlap intentionally changes a tested memory/custody
-   contract. R9/R10/R11 do not prove its benefit or safety. IP7 needs measured
+   contract. REF09/REF10/REF11 do not prove its benefit or safety. IP7 needs measured
    provider/storage overlap potential and a bounded replacement before adoption.
 6. `cache.rs:535–540,1396–1418,1465–1513` shows synchronous verified cache writes;
    runtime.rs:620–635 versus 699–723 confines the inspected disk-cache path to the
@@ -3081,7 +3166,7 @@ same stages; it does not add an implicit ANN prerequisite to the foundation.
 | W2-S-core: Semantic membership | W1 | Desired/covered membership, fingerprints, cache and sealed exact delta; small-scope exact oracle, late jobs/delete/restart; no large-ANN claim |
 | W2-S-ann: large Semantic | W2-S-core and W0-A | Concrete immutable ANN adaptation; sustained update/query/recall/retention gates |
 | W2-R: RepoMap | W1 | Provenance graph deltas, exact view/lifetime and query parity; may run in parallel, not a prerequisite to the first Lexical experiment |
-| W3-I / W3-P: integration | Actual participating W2 paths | Native SDK/daemon plus actual Runtime/editor workflows in section 6.7; transport/render/action safety; new-format cutover/backup/restore |
+| W3-I / W3-P: integration | Actual participating W2 paths | Native SDK/daemon plus actual Runtime/editor workflows in section 6.7; transport/render/action safety; isolated new-format cutover/backup/restore rehearsal. Default switch additionally requires section 14.2 |
 | W4: qualification | All features promised by the selected release profile | Full conformance plus section 12.5 matched IntelliJ/Auto mixed-load qualification; no integrated usability claim from a native-only pass |
 
 ```mermaid
@@ -3110,6 +3195,15 @@ is not permission to drop existing required functionality from final cutover.
 Keep SDK/transport test clients from the first real slice; W3 is full integration,
 not the first time the daemon gets called.
 
+A **foundation checkpoint** is not the full **W1 exit**. In particular, the
+reserve/install/CAS and pinned-read paths alone do not satisfy W1's GC requirement
+or R10. Physical queued reclaim and service-owned retirement composition now exist;
+sections 23.56–23.57 record their scoped acceptance. Sustained load, long pins and
+the complete operating fault matrix remain open. Independently owned W2 code
+and isolated tests may use frozen, tested W1 seams, but their existence does not
+close W1 or authorize a default product switch. Each stage's acceptance still
+requires its listed exits; checkpoint results are recorded separately in section 23.
+
 W0-A failure must not block W1/W2-L/W2-H/W2-S-core. It still blocks any large Semantic
 release claim and overall completion where that feature was promised. First
 prove one small source edit through the real query path before implementing all
@@ -3132,8 +3226,9 @@ external producer, remote CI and release qualification retain separate verdicts.
 
 Use the existing repository and add an independently testable kernel crate with
 the boundaries in section 17. A separate repository with selective code import
-is a viable alternative, but no measured LoE advantage has been established for
-either location. Do not equate a new repository with rewriting every primitive.
+was considered during planning; the decision in section 1 keeps this work in the
+existing workspace. No measured LoE comparison was established, and that earlier
+alternative is not a second active implementation plan.
 Keep reusable Lexical/LQ/embed/SDK primitives and independent tests.
 Replace pair identities, whole-state checkpoints, global proof paths and separate
 product heads together. Do not hide old semantics behind permanent adapters.
@@ -3190,6 +3285,30 @@ adaptive IDE work. Their corresponding stage/profile requirements remain. A
 disabled experimental mechanism can be NOT_APPLICABLE; a promised but unfinished
 capability is NOT_RUN/BLOCKED as appropriate, never silently excluded to pass.
 
+### 14.2 Default switch and legacy retirement gates
+
+R35/R36 **implementation and isolated migration rehearsal** may proceed before
+full qualification. Changing the default product path, retiring its legacy
+writer/lifetime owners and declaring full completion are separate decisions.
+The default switch requires executed evidence on the integrated candidate for:
+
+| Gate | Required ledger obligations |
+|---|---|
+| Durable source/publication/recovery and one safe lifetime authority | R01–R10, including real R10 retention/reclaim; reserved objects and pins alone do not qualify deletion |
+| Aggregate resource and sustainable upkeep | R11/R12/R17/R32 plus R39 pressure, churn, pin/history, debt and mixed-load cases; estimated permits alone do not establish physical limits |
+| Initial build/reopen and source-bound diagnostics | R13/R16 plus R39 construction/reopen/catch-up and observer-cost cases; legacy capture or a small bootstrap fixture is not native scale acceptance |
+| Required query and provider/producer parity | R14/R15 and every promised Semantic/RepoMap/IDE/Auto capability in R18–R30/R34/R37/R38; literal-only or manually claimed work cannot replace them |
+| Integrated service, migration and release acceptance | R31/R33/R35/R36/R39/R40; shutdown/reopen, backup/restore, selected CI and the promised product profile |
+
+These groups cross-reference the existing full ledger; they add no new feature
+or weaker release profile. Scoped tests and an isolated opt-in daemon can remain
+useful while a gate is open, but cannot authorize the full default switch.
+The original LQ5 maintenance/resource obligations remain active on the legacy
+path until equivalent native obligations are verified and that path is explicitly
+retired. An R15 implementation or a new format marker does not cancel them.
+No data root has two writable publication/lifetime authorities during rehearsal
+or cutover. Failed, missing or unexecuted gate evidence keeps the switch unaccepted.
+
 ## 15. Final adversarial resolution checklist
 
 | Challenge | Normative resolution | Decisive regression |
@@ -3222,21 +3341,24 @@ published paper is not rejected merely because it is also hosted on arXiv;
 the archival identity and the version supporting a particular claim must be clear.
 Publication is an evidence filter, not a correctness or performance certificate.
 
+REF01–REF11 identify research sources. R01–R40 in section 23 identify
+implementation requirements; these are separate namespaces.
+
 | ID | Published paper and verified identity | Supported mechanism | Limit for this RFC |
 |---|---|---|---|
-| R1 | **DBSP: Automatic Incremental View Maintenance for Rich Query Languages**, Budiu et al., PVLDB 16(7), 1601–1614, 2023; DOI `10.14778/3587136.3587137`; [official paper](https://www.vldb.org/pvldb/vol16/p1601-budiu.pdf) | Formal incremental view maintenance using stream differences and compositional operators | Quanta must define its own logical representation and adapter refinement; no theorem here makes arbitrary ANN, embedding or Rust code incremental |
-| R2 | **Differential dataflow**, McSherry et al., CIDR 2013; [official proceedings paper](https://www.cidrdb.org/cidr2013/Papers/CIDR13_Paper111.pdf) | Indexed changes over partially ordered versions and incremental iterative computation | Supports retained state/dependency design; no blanket small-input/small-output bound, durability guarantee or required Runtime replacement |
-| R3 | **The log-structured merge-tree (LSM-tree)**, O'Neil et al., Acta Informatica 33, 351–385, 1996; DOI `10.1007/s002360050048`; [publisher](https://link.springer.com/article/10.1007/s002360050048) | Deferred batched index maintenance across memory/disk components | Makes maintenance part of the storage cost model; does not select LSM over COW, prove tail latency or establish durable historical-root retention |
-| R4 | **DiskANN: Fast Accurate Billion-point Nearest Neighbor Search on a Single Node**, Subramanya et al., NeurIPS 2019; [official proceedings](https://proceedings.neurips.cc/paper/2019/hash/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Abstract.html) | Graph ANN with memory/SSD placement | Static query/build baseline in this publication; not dynamic-update qualification |
-| R5 | **SPANN**, Chen et al., NeurIPS 2021; [official proceedings](https://proceedings.neurips.cc/paper/2021/hash/299dc35e747eb77177d9cea10a802da2-Abstract.html) | Memory routing and disk posting-list search | Routing/storage reference; dynamic behavior is a separate question |
-| R6 | **SPFresh: Incremental In-Place Update for Billion-Scale Vector Search**, Xu et al., SOSP 2023, 545–561; DOI `10.1145/3600006.3613166`; [author publication record](https://www.microsoft.com/en-us/research/publication/spfresh-incremental-in-place-update-for-billion-scale-vector-search/) | LIRE local partition splitting and nearby vector reassignment | Direct incremental ANN mechanism; distribution assumptions and in-place mutation do not prove our arbitrary-workload or retained-root requirements |
-| R7 | **ACORN: Performant and Predicate-Agnostic Search Over Vector Embeddings and Structured Data**, Patel et al., PACMMOD 2(3), Article 120, 2024 / SIGMOD 2024; DOI `10.1145/3654923`; [publisher](https://doi.org/10.1145/3654923), [author implementation](https://github.com/guestrin-lab/ACORN) | Filtered graph search and predicate-subgraph traversal | Filter selectivity and correlation belong in the quality/cost envelope; no inherited deletion, snapshot or crash guarantee |
-| R8 | **The Tail at Scale**, Dean and Barroso, Communications of the ACM 56, 74–80, 2013; [author publication record](https://research.google/pubs/the-tail-at-scale/) | Tail latency and interference matter for interactive service composition | Motivates measuring tails under load; not a proof of Quanta's local scheduler, controller thresholds or IDE latency targets |
-| R9 | **Aether: A Scalable Approach to Logging**, Johnson et al., PVLDB 3(1), 681–692, 2010; [official proceedings paper](https://vldb.org/pvldb/vol3/R61.pdf) | Group commit, flush pipelining and separating I/O, lock and scheduler bottlenecks | Mechanism basis for IP1; not a license for early acknowledgment, removal of GC fences or transferring database speedups to Quanta's macOS object store |
-| R10 | **Efficient single-pass index construction for text databases**, Heinz and Zobel, JASIST 54(8), 713–729, 2003; DOI `10.1002/asi.10268`; [publisher record and abstract](https://onlinelibrary.wiley.com/doi/10.1002/asi.10268) | Resource-bounded single-pass token-to-posting inversion and segmented construction | Relevant to earlier lexical inversion, not direct evidence for replacing IP6's key/BlobRef sorting. Publisher abstract verified; full paper fetch was unavailable in the corrective audit, so its experiments are not claimed as reviewed |
-| R11 | **On Performance Stability in LSM-based Storage Systems**, Luo and Carey, PVLDB 13(4), 449–462, 2019; DOI `10.14778/3372716.3372719`; [official proceedings paper](https://www.vldb.org/pvldb/vol13/p449-luo.pdf) | Merge scheduling under I/O budgets and sustained-rate/latency evaluation | Supports IP4 debt/service tests; does not select an LSM backend or establish Quanta's workload capacity |
+| REF01 | **DBSP: Automatic Incremental View Maintenance for Rich Query Languages**, Budiu et al., PVLDB 16(7), 1601–1614, 2023; DOI `10.14778/3587136.3587137`; [official paper](https://www.vldb.org/pvldb/vol16/p1601-budiu.pdf) | Formal incremental view maintenance using stream differences and compositional operators | Quanta must define its own logical representation and adapter refinement; no theorem here makes arbitrary ANN, embedding or Rust code incremental |
+| REF02 | **Differential dataflow**, McSherry et al., CIDR 2013; [official proceedings paper](https://www.cidrdb.org/cidr2013/Papers/CIDR13_Paper111.pdf) | Indexed changes over partially ordered versions and incremental iterative computation | Supports retained state/dependency design; no blanket small-input/small-output bound, durability guarantee or required Runtime replacement |
+| REF03 | **The log-structured merge-tree (LSM-tree)**, O'Neil et al., Acta Informatica 33, 351–385, 1996; DOI `10.1007/s002360050048`; [publisher](https://link.springer.com/article/10.1007/s002360050048) | Deferred batched index maintenance across memory/disk components | Makes maintenance part of the storage cost model; does not select LSM over COW, prove tail latency or establish durable historical-root retention |
+| REF04 | **DiskANN: Fast Accurate Billion-point Nearest Neighbor Search on a Single Node**, Subramanya et al., NeurIPS 2019; [official proceedings](https://proceedings.neurips.cc/paper/2019/hash/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Abstract.html) | Graph ANN with memory/SSD placement | Static query/build baseline in this publication; not dynamic-update qualification |
+| REF05 | **SPANN**, Chen et al., NeurIPS 2021; [official proceedings](https://proceedings.neurips.cc/paper/2021/hash/299dc35e747eb77177d9cea10a802da2-Abstract.html) | Memory routing and disk posting-list search | Routing/storage reference; dynamic behavior is a separate question |
+| REF06 | **SPFresh: Incremental In-Place Update for Billion-Scale Vector Search**, Xu et al., SOSP 2023, 545–561; DOI `10.1145/3600006.3613166`; [author publication record](https://www.microsoft.com/en-us/research/publication/spfresh-incremental-in-place-update-for-billion-scale-vector-search/) | LIRE local partition splitting and nearby vector reassignment | Direct incremental ANN mechanism; distribution assumptions and in-place mutation do not prove our arbitrary-workload or retained-root requirements |
+| REF07 | **ACORN: Performant and Predicate-Agnostic Search Over Vector Embeddings and Structured Data**, Patel et al., PACMMOD 2(3), Article 120, 2024 / SIGMOD 2024; DOI `10.1145/3654923`; [publisher](https://doi.org/10.1145/3654923), [author implementation](https://github.com/guestrin-lab/ACORN) | Filtered graph search and predicate-subgraph traversal | Filter selectivity and correlation belong in the quality/cost envelope; no inherited deletion, snapshot or crash guarantee |
+| REF08 | **The Tail at Scale**, Dean and Barroso, Communications of the ACM 56, 74–80, 2013; [author publication record](https://research.google/pubs/the-tail-at-scale/) | Tail latency and interference matter for interactive service composition | Motivates measuring tails under load; not a proof of Quanta's local scheduler, controller thresholds or IDE latency targets |
+| REF09 | **Aether: A Scalable Approach to Logging**, Johnson et al., PVLDB 3(1), 681–692, 2010; [official proceedings paper](https://vldb.org/pvldb/vol3/R61.pdf) | Group commit, flush pipelining and separating I/O, lock and scheduler bottlenecks | Mechanism basis for IP1; not a license for early acknowledgment, removal of GC fences or transferring database speedups to Quanta's macOS object store |
+| REF10 | **Efficient single-pass index construction for text databases**, Heinz and Zobel, JASIST 54(8), 713–729, 2003; DOI `10.1002/asi.10268`; [publisher record and abstract](https://onlinelibrary.wiley.com/doi/10.1002/asi.10268) | Resource-bounded single-pass token-to-posting inversion and segmented construction | Relevant to earlier lexical inversion, not direct evidence for replacing IP6's key/BlobRef sorting. Publisher abstract verified; full paper fetch was unavailable in the corrective audit, so its experiments are not claimed as reviewed |
+| REF11 | **On Performance Stability in LSM-based Storage Systems**, Luo and Carey, PVLDB 13(4), 449–462, 2019; DOI `10.14778/3372716.3372719`; [official proceedings paper](https://www.vldb.org/pvldb/vol13/p449-luo.pdf) | Merge scheduling under I/O budgets and sustained-rate/latency evaluation | Supports IP4 debt/service tests; does not select an LSM backend or establish Quanta's workload capacity |
 
-Publication identities R1–R8 were checked on 2026-10-10 and R9–R11 on 2026-10-11
+Publication identities REF01–REF08 were checked on 2026-10-10 and REF09–REF11 on 2026-10-11
 against the primary sources above. This review uses mechanism-level results; it does not claim to reproduce
 any paper's experimental numbers or to have re-proved its theorems. Official
 publication records, author manuscripts and artifacts are distinct evidence;
@@ -3260,14 +3382,14 @@ and operators meet its assumptions. Citing it does not prove our implementation.
 
 | Quanta surface | Research/implementation basis | Independent proof or experiment still required |
 |---|---|---|
-| Source, Lexical membership/postings/statistics, RepoMap owner contributions | R1/R2 motivate exact delta semantics | Independent full-recompute oracle at the same source cut; replacement/delete/duplicate replay/shared-owner cases; exact lexical queries and ranking statistics |
+| Source, Lexical membership/postings/statistics, RepoMap owner contributions | REF01/REF02 motivate exact delta semantics | Independent full-recompute oracle at the same source cut; replacement/delete/duplicate replay/shared-owner cases; exact lexical queries and ranking statistics |
 | Semantic membership and embedding reuse | Exact delta law for membership; input/context-addressed computation is a Quanta contract | Freeze model/config/vector inputs for the oracle; affected-dependency closure, context changes and stable-owner progress. ANN result lists need not equal a rebuilt graph's approximate results |
-| Physical update cost | R3 motivates counting deferred maintenance; section 12 defines our work envelope | Fixed logical delta with growing corpus/history; count preparation, verification, publication, compaction, GC and necessary drain to stable debt |
-| Large ANN query/update/filter tradeoffs | R4/R5 baselines, R6 dynamic repair, R7 filtered queries | One pinned workload and exact vector gold; sustained mixed load, churn, skew, filters, retention and recall/latency gates in W0-A |
+| Physical update cost | REF03 motivates counting deferred maintenance; section 12 defines our work envelope | Fixed logical delta with growing corpus/history; count preparation, verification, publication, compaction, GC and necessary drain to stable debt |
+| Large ANN query/update/filter tradeoffs | REF04/REF05 baselines, REF06 dynamic repair, REF07 filtered queries | One pinned workload and exact vector gold; sustained mixed load, churn, skew, filters, retention and recall/latency gates in W0-A |
 | Publication, recovery and reader lifetime | Official SQLite/Iceberg/RocksDB mechanisms below plus Quanta's explicit contracts | Model/fault-cut tests and exact old-view reads across update, compaction, crash and GC; research citations do not prove their composition |
 
 Small input changes can have large dependency closures or output deltas. None of
-R1–R8 justifies unconditional O(changed files) work. Ordinary local-update bounds
+REF01–REF08 justifies unconditional O(changed files) work. Ordinary local-update bounds
 apply only under the declared fanout, record-size, region and admission envelope;
 actual necessary fanout must be counted, never dropped to meet a budget. Declared
 nonlocal work and overload keep their explicit outcome/coverage semantics.
@@ -3323,14 +3445,22 @@ behavior remain independently required Quanta contracts in section 9.2.1.
 
 ## 17. Final implementation architecture and file-level execution plan
 
+The source findings and open packaging choices in this section were recorded
+at the initial audit below. They define target ownership, not a live status
+inventory: the selected implementation direction is now summarized in section
+1.1. Dated checkpoints are preserved in the linked histories; current status
+belongs only to the Oct-17 SSOT. Section 14 alone owns stage dependencies;
+this file map cannot add extra prerequisites or declare a stage complete.
+
 This section is the reconciled result of three parallel, read-only audits:
 kernel/catalog/lifetime; native adapters/storage; and SDK/daemon/Semantica/testing.
 The inspected Index baseline is 8f11cad9587a plus the current working tree
 (223 pre-existing status entries). Existing paths below are source observations;
 NEW paths are proposed implementation locations, not files already implemented.
 The only edit made for that planning audit was this RFC. This paragraph records
-the planning snapshot; executable implementation and checkpoint status are in
-section 22 and supersede the proposed NEW-path wording where implemented.
+the planning snapshot. The archived sections 22/23 preserve later source-specific
+implementation observations; they do not make proposed NEW paths a current task
+list. Current source and the Oct-17 SSOT determine implementation and ownership.
 
 ### 17.1 Decisions and newly closed planning gaps
 
@@ -3345,13 +3475,13 @@ section 22 and supersede the proposed NEW-path wording where implemented.
    the executable slice now uses one immutable FileObjectStore/COW map behind
    core ports, with all publication/custody metadata owned by SqliteCatalog.
    A data-only extraction was a W0-C decision, not a proven prerequisite.
-   Compare reusing Lexical's generic COW data path with keeping physical maps
-   adapter-local and catalog-owned logical roots behind PersistentMapPort.
-   Both choices require bounded indexed updates and exact immutable views;
+   Planning compared reusing Lexical's generic COW data path with keeping physical
+   maps adapter-local and catalog-owned logical roots behind PersistentMapPort.
+   Both require bounded indexed updates and exact immutable views;
    mutable SQLite rows alone do not provide historical roots after a read
-   transaction closes. W0-C must select and record one implementation and file
-   layout before W1; workers cannot invent competing stores. If extracting,
-   move map/blob/page algorithms and physical I/O only, not Lexical's journals,
+   transaction closes. The selected storage-crate layout below is the W0-C
+   implementation decision; workers cannot invent competing stores. Move
+   map/blob/page algorithms and physical I/O only, not Lexical's journals,
    adopted roots, epoch or mark/sweep authority. The invariant is one catalog
    lifetime ledger, regardless of physical store packaging. Kernel never imports
    Lexical or another concrete store. ANN stores may remain adapter-owned.
@@ -3393,9 +3523,8 @@ flowchart TD
     C -. retained query values after lifecycle cleanup .-> W
     K[kernel: lifecycle engine] --> C
     Q[catalog: SQLite transaction adapter] --> C
-    S[physical storage ports implementation: extraction decided at W0-C] --> C
+    S[storage: selected physical and map implementations] --> C
     A[Lexical / Semantic / RepoMap adapters] --> C
-    A --> S
     P[search-plane: boundary mapping and query orchestration] --> C
     P --> W
     D[searchd-runtime: composition] --> K
@@ -3418,13 +3547,19 @@ flowchart TD
   parallel internal IRs. Contract never imports Kernel.
 - Kernel imports core ports; it does not import concrete catalog, storage,
   Lexical, Semantic, RepoMap, IPC, Tantivy or Lance. Production objects are
-  injected at the composition root. Kernel tests require none of those engines.
+  injected at the composition root. Kernel unit contract tests use port
+  substitutes; integrated conformance tests may compose the real engines.
 - Catalog and physical stores implement core ports; they do not import Kernel
   policy. Remove catalog's transport-codec dependency when replacing its journal
   encoding; persistence encoding belongs to catalog, wire encoding to IPC.
 - Adapters cannot update active heads, commit operation receipts, expire reader
   protection or independently collect shared objects. They return immutable
   artifacts and maintenance candidates.
+- Native algorithms using common object/map storage consume the core object,
+  map and scratch ports, not a concrete FileObjectStore or another adapter's
+  physical codec. A chosen vendor-backed adapter may contain private engine code;
+  that code does not escape into Kernel or query orchestration. Reusing pure
+  data algorithms does not grant a second physical namespace or lifetime owner.
 - Search-plane retains typed query lowering/fusion and wire-to-domain mapping.
   It cannot retain a second source of truth for publication or read selection.
 - Small synchronous filesystem/SQLite operations use admitted bounded workers;
@@ -3437,14 +3572,298 @@ flowchart TD
 | Single responsibility | Kernel decides lifecycle; catalog commits it atomically; storage handles bytes/pages; adapters implement index algorithms | One owner per state transition and manifest field |
 | Open/closed | New index adds descriptor, typed codec, adapter and query route | Fourth adapter and two same-kind instances require no publish/replay/GC branches |
 | Liskov substitution | Every admitted adapter preserves input binding, exact roots, historical reads, failed-prepare nonpublication and declared work semantics | Shared conformance suite, including a deliberately violating adapter |
-| Interface segregation | Separate build/read/recovery/compaction/scrub/physical-I/O capabilities | Read-only implementations do not fabricate no-op mutation support |
+| Interface segregation | Separate build/query/recovery/compaction/scrub/physical-I/O capabilities | Read-only implementations do not fabricate no-op mutation support |
 | Dependency inversion | Kernel consumes domain ports; composition supplies concrete engines | Cargo/module boundary guards reject concrete imports |
 
 Interface segregation does not permit splitting one atomic commit into independent
 update_view, record_receipt and transfer_roots calls. Conversely, one catalog
 transaction is not a reason to expose arbitrary SQL or a universal CRUD interface.
 
+### 17.2.1 Layer replacement units, compatibility and acceptance
+
+2026-10-12 static clarification. This refines existing architecture and R01–R40,
+not a new delivery stage, mandatory backend comparison or live plugin system.
+The selected FileObjectStore/radix implementation remains the reference. Backend
+replacement means controlled assembly and, when necessary, an explicit migration;
+hot swapping an active engine or preserving every artifact across codec changes
+is not an advertised capability.
+
+Observed seams at this inspection:
+
+These observations are dated checkpoints. Literal/Path routing is superseded by
+section 17.2.3; current-source corrections and next code boundaries are in section
+17.2.4. An earlier table's gap is not a second implementation task.
+
+| Source | What already exists | Remaining replacement boundary |
+|---|---|---|
+| [KernelServices](../../crates/quanta-index-kernel/src/update.rs) and [core ports](../../crates/quanta-index-core/src/index/ports.rs) | Object/map/scratch ports are injected; one Catalog implements the coupled control capabilities | Independent port arguments do not prove that their object namespace, map codec and custody owner are compatible |
+| [Typed query port](../../crates/quanta-index-core/src/index/query.rs), [query registry](../../crates/quanta-index-kernel/src/query.rs), [build registry](../../crates/quanta-index-kernel/src/registry.rs) and [native dispatcher](../../crates/quanta-index-searchd-runtime/src/native.rs) | Text/Semantic queries now execute registered typed readers through a retained Kernel query session; build registration validates descriptor/profile bindings | Literal/FileMap queries still use direct concrete readers and the dispatcher still holds FileObjectStore. Registered Text/Semantic execution does not complete every query or physical-backend replacement seam |
+| [StoredObject](../../crates/quanta-index-core/src/index/records.rs) and [FileObjectStore](../../crates/quanta-index-storage/src/object.rs) | Object reads return owned bytes; canonical identities and durable installation are explicit | Replacing the physical reader with mmap behind the same Vec-returning API does not establish zero-copy reads or protected mapping lifetime |
+
+These are source/contract observations, not reproduced runtime defects or completed
+refactors. Later source-specific checkpoints are preserved in history. Current
+work belongs to the Oct-17 SSOT; verification results belong to VALIDATION.
+
+| Replacement unit | Contract that stays stable | Coupled change boundary |
+|---|---|---|
+| SDK/IPC mapping | Canonical update/query IR, operation identity, exact view selection and typed outcomes | Wire decoding stays at the boundary; transport replacement cannot change publication or cancellation meaning |
+| Lexical algorithm/backend | Owner deltas, exact selected source, query semantics, live ranking statistics and ordering | Builder, reader/query, codec, statistics and required maintenance form one compatible adapter capability set; changing indexed normalization/statistics requires an explicit stored profile/recipe change; query-only ranking parameters require an explicit query/ranking-policy binding rather than a posting rebuild |
+| Logical map implementation | Immutable MapRoot, byte-key ordering, exact keyset pages, original-base preconditions and bounded complete edits | Radix/page codecs remain private. A different root codec requires the migration below; a volatile DB snapshot cannot stand in for a persisted MapRoot |
+| Physical object reader/writer | Canonical ObjectRef identity, authenticated direct edges, reserve-before-install and durable confirmation | File, bounded pack, mmap/pread or KV placement is private; returned refs are not paths, offsets or live engine handles |
+| Catalog implementation | Atomic view CAS + original receipt + work/frontiers + root protection, replay and read-custody laws | Publication, journal, read and custody ports are facets of the same authority; separate per-port Catalog instances are not a valid substitution |
+| Policy/scheduling | Existing policy proposals, fixed governor, shared reservations and cancellation/quiescence contracts | A policy or backend-private worker cannot invent permits, bypass resource accounting or release custody before work stops |
+
+**Composition and persisted binding.** The composition root validates one coherent
+object/map/scratch/custody bundle before serving a state root. This may be a small
+constructor invariant and compatibility descriptor; it does not require a new
+registry or generic backend framework. Bind the selected physical/map format and
+namespace through the existing state-format/config contract, and adapter codecs
+through existing instance/schema/format/recipe descriptors. Do not infer a backend
+from filenames or choose today's default to decode an older root. A profile may
+advertise only capabilities wired for its selected instance. Reuse the existing
+registration/composition mechanism for typed read/query dispatch; no new query AST,
+public Any payload or independently mutable capability catalog is introduced.
+Concrete constructors may import engines. Request mapping and query orchestration
+consume injected capabilities rather than constructing a hard-coded reader.
+
+**Scratch retirement request authority.** `ScratchIoBinding::retire_namespace`
+borrows `Option<&mut WorkBudget>` through Storage, the selected Native binding and
+Common cleanup. `Some` is the original caller budget, without a new deadline,
+cancel authority or work ledger; `None` is explicit lifecycle/Drop cleanup.
+The physical owner charges bounded retirement steps before mutation. Each retired
+pending file completes unlink, parent sync and checked-close settlement before
+another cancellation point. Refusal releases the execution namespace fence but
+retains remaining pending/path/inode custody; the next request reauthenticates it
+under the same Common authority. Directory scanning is interruptible per child.
+Recursive deletion admits the entire bounded plan before its first unlink and
+finishes the destructive transaction before observing cancellation. Completion
+followed by cancellation does not undo already settled physical effects. Logical
+step charges do not prove kernel syscall/allocated-block/RSS/FD accounting or an
+OS unlink/fsync/close latency bound. Destructive directory failure continuation
+and raw directory-handle admission remain separate physical-owner obligations.
+This is one producer/consumer contract, not an alternative GC or budget framework;
+execution results remain in VALIDATION and W2-07/08/19.
+
+**Object identity and physical ownership.** Layout-only changes preserve the
+canonical object envelope and ObjectRef identity, including child order/edges;
+they need not preserve the inode, compression or location. A digest is not physical
+incarnation or a deletion permit. Map/page and adapter payload decoding stay with
+their format owners. Physical/logical byte counts must remain distinguishable:
+pack padding/indexes, compressed bytes, dead retained bytes, KV WAL/compaction and
+mapping residency still consume the shared budget. Shared packs or backend files
+cannot be deleted because one logical object was retired. Catalog retains the
+single logical lifetime authority; physical owners execute only safe, revalidated
+reclaim/relocation operations under the section 8.3 protocol.
+
+**Read handles and mmap.** Keep the bounded owned-byte `get` path valid. If a real
+backend needs range or zero-copy reads, add only the used typed read capability or
+an adapter-private reader, without downcasting ports to concrete stores. Its byte
+handles/cursors retain the actual protected read guard for every possible access,
+including cancelled work awaiting quiescence. A copied TicketRecord is not that
+guard. Relocation/unlink cannot invalidate a live mapping. Hash/range integrity,
+resident memory, faults, open handles and cancellation work remain explicit; mmap
+does not bypass verification or resource accounting. Do not require this optional
+capability before a backend actually uses it.
+
+**Migration classes.** A layout-only migration preserves refs and complete custody,
+uses a durable bounded relocation/copy protocol and rechecks the old root after
+restart. Map/page or adapter codec changes instead use an explicit source-bound
+rebuild/export-import and new format/root bindings. Changed artifact roots may
+change ViewRef; they cannot be relabelled as the same old view. Include source,
+member/statistics, operation/work/replay roots and protected history, not only
+the latest lexical root. Preserve terminal receipts and already accepted outcomes;
+expire history only through its existing retention contract. Until old refs/pins
+can be retired, retain their compatible artifacts/executable or refuse cutover.
+Use separate state roots and one writable authority, with recovery/rollback and
+section 14.2 gates. This is not permission for permanent dual internal IRs,
+silent reader fallback, destructive startup conversion or an automatic global
+rebuild after an unsupported format is encountered.
+
+**Native deployment consumer.** Cross-root activation/rollback consumes a root
+rebuilt and Published by the existing authoritative producer; it does not copy
+indexes or collect a second source representation. The selected deployment is
+one durable selection. Its canonical SHA-256 is an explicit CAS input to
+`switch-native`, checked again immediately before rename under the same cooperative
+deployment lock. Current and candidate must have distinct non-nested physical
+roots, independent nonces and the same workspace; both use the existing
+Catalog/physical Verify, pinned config and binary contracts. A stale current
+install receipt requires offline re-selection. Rollback uses the same switch with
+a fresh target receipt and newly inspected CAS, without an automatic old-head
+fallback. Verify refusal preserves selection publication; post-rename interruption
+is persistence uncertainty and requires inspection. Native plain install cannot
+bypass the cross-root CAS. The producer's source/coverage/frontier parity is a
+separate acceptance obligation: independent root-bound SourceCut digests are not
+assumed equal. Actual Original FULL rebuild and W2-19 A acceptance precede the
+default route switch; B smoke/rollback follows it. The launcher lock does not
+replace root leases for writers operating outside that cooperative path.
+
+Acceptance stays attached to existing owners and requirements:
+
+| Scope | Decisive check | Existing obligations |
+|---|---|---|
+| Port/composition substitution | One minimal independent test substitute proves coherent binding and rejection of incompatible bundles; selected production paths pass the same laws. Query capability resolution uses the ticket's stored profile and refuses missing/mismatched readers; fourth adapter/two same-kind instances need no Kernel lifecycle branches | R02/R05/R14/R15/R23/R33/R34; interface drafting in W0-C, participating query integration in W2/W3 |
+| Read/map semantics | Fixed query/ranking/ordering gold, exact keyset pagination, corruption/late-error refusal and old-view reads across update/reopen; zero-copy lifetime tests only when enabled | R05/R08/R09/R14/R15/R39 |
+| Lifetime/resources | Reserve/install/adopt/reclaim crash cuts and races, shared children/packs, long pins, cancelled readers/providers, scratch and actual RAM/disk/WAL charges; same work envelope with mandatory upkeep counted | R06/R10/R11/R12/R17/R32/R39 |
+| Migration/release | Ref-preserving relocation or explicit new-root cutover, protected history and receipt continuity, interrupted migration/reopen, compatible rollback and default routing | R08/R35/R36/R39/R40 |
+
+Use existing conformance, module/dependency and native integration checks. A small
+test substitute is enough to test injection; no second production KV engine is
+required for architecture acceptance. Every actual replacement still passes its
+applicable physical, semantic and operational gates. A compile-only fake, trait
+declaration or focused local pass cannot qualify transparent migration or full
+product/performance acceptance. This clarification's runtime gates are NOT_RUN.
+
+### 17.2.2 Implemented-path architecture audit
+
+2026-10-12 source inspection of primary `c32cd191554031b9a7d04207ffa3410e8fc201ba`
+with its dirty native overlay. This is an audit of actual call paths, not an
+acceptance promotion of the whole tree or a measured backend comparison.
+
+**Existing boundaries that are used.** Kernel owns source/profile transitions and
+Catalog publication. Adapters consume the same SourceInputCursor for bootstrap
+and changed-owner patches. FileMap/Literal/Text own their private payloads; core
+ports contain no SQLite, Tantivy or FileObjectStore types. The Catalog facets
+share one authority, so publication/root custody/replay are not split across
+independent stores. Text/Semantic readers are selected from the pinned stored
+profile by QueryAdapterRegistry, validated against schema/format/policy, and
+executed under an exact declared reservation. PinnedQuerySession owns the real
+ReadTicket/session guard and the original cumulative WorkBudget across stages;
+it does not repin a later view for Deep. Kernel also checks returned view and
+stored async coverage rather than trusting adapter metadata alone.
+
+The following gaps require different fixes; none justifies a general plugin
+framework or a mandatory second production storage engine:
+
+| Area and source | Observed implementation / failure mode | Required bounded change and acceptance |
+|---|---|---|
+| Query cancellation: [Kernel execution/session](../../crates/quanta-index-kernel/src/update.rs), [ticket](../../crates/quanta-index-kernel/src/ticket.rs), [effort terminal](../../crates/quanta-index-searchd-runtime/src/native_effort.rs) | A pre-validation WorkBudget checkpoint does not cover cancellation during a later Catalog validation or release. Before the audit repair, final execution, optional resolution and renewal could return success after validation cancelled the original request | Recheck the original budget after each final blocking validation, and after one-shot cleanup or the final effort observer/cleanup before returning a result. Preserve cleanup even for cancelled requests; never replace the original deadline. Deterministic real-Catalog cancellation cases belong in the existing native_query_session rail; execution results are recorded below |
+| Reader routing: [dispatcher](../../crates/quanta-index-searchd-runtime/src/native.rs) | SearchText/SearchSemantic use registered readers. SearchLiteral/QueryPaths instantiate/call concrete readers and query_member only checks the member identity/edges; these routes do not resolve a reader against the stored profile's kind/schema/format/policy | Move each remaining used query through its typed capability in the existing registry/session path. Keep private root decoding in the adapter. A changed/unsupported kind or format must refuse before decoding with the wrong reader. No additional query AST or opaque dispatch payload |
+| Physical/map assembly: [KernelServices](../../crates/quanta-index-kernel/src/update.rs), [radix map](../../crates/quanta-index-storage/src/map.rs), [MapScratch](../../crates/quanta-index-storage/src/map/scratch.rs) | Kernel accepts independent object/map/scratch ports, but production radix map is implemented on FileObjectStore and calls private file-store preparation/install helpers. This is coherent for the selected backend; changing only the physical argument is not transparent reuse of this radix implementation | Keep the selected coherent bundle. Before introducing another physical implementation, use a typed/factory-validated namespace/format/custody bundle and either extract the used radix object-access seam or replace the coupled map implementation. Reject incompatible assembly before any state mutation; test with one minimal independent substitute |
+| Resource enforcement: [scheduler](../../crates/quanta-index-searchd-runtime/src/native_resources.rs), [WorkBudget](../../crates/quanta-index-core/src/index/budget.rs), [scratch](../../crates/quanta-index-core/src/index/scratch.rs) | ResourceNeed is a logical reservation, WorkUsage.bytes is cumulative charged work, and scratch has a separate growth reservation. These units are not one measured resident-memory cap. A reader's configured memory declaration is not checked against its actual simultaneous allocations or SQLite cache footprint | Define conservative peak demand for each enabled capability, including retained pages/hits, decode buffers, preparation DB caches and draining work; reject insufficient declarations or enforce the allocation envelope. Keep cumulative IO/work counters separate. Aggregate RSS and temporary/durable disk acceptance remain NOT_RUN here |
+| Query cost: [BM25 execution](../../crates/quanta-index-lexical/src/native/text_query.rs), [posting validation](../../crates/quanta-index-lexical/src/native/text.rs) | Exact BM25 keeps a bounded top-k heap but walks the union of all selected term postings, with owner/source/inventory validation per hit. Even an empty AND operand does not avoid the other scans. Bounded result memory does not establish bounded low latency for common terms | Measure logical reads, decoded bytes and posting visits at fixed query width/df before selecting a cache or block-max/WAND optimization. Any skipping path needs sealed statistics/bounds and fixed ranking/tie/corruption oracles; preserve typed budget refusal and exact snapshot semantics. The performance comparison is NOT_RUN |
+| Native maintenance: [custody/retention](../../crates/quanta-index-catalog/src/native/authority.rs), [owned-work pump](../../crates/quanta-index-searchd-runtime/src/native_pump.rs) | Confirmed/provisional custody, terminal-row release and bounded view retirement do not physically unlink immutable objects. The enrichment pump is not a physical-GC maintenance loop. Durable object/edge bytes can accumulate under churn | Deliver the already planned fenced physical reclaim protocol, bounded direct-child drain, reinstall protection and shared maintenance admission; then long-pin/restart/churn/disk-pressure acceptance. R10 remains PARTIAL and R17 remains MISSING at the section 23.52 checkpoint |
+
+**Ranking configuration boundary.** TextRecipe binds normalization, positions,
+caps and admission policy; the current NativeTextReader separately holds its
+server-configured Bm25Policy. The combined output/BM25 recipe proposed in the
+historical section 23.3 is not the current token-only builder contract. Indexed
+recipe changes and query-only ranking changes have the distinct boundaries
+specified in section 17.2.1. The current NativeTextResult carries view/instance/
+artifact, not a ranking-policy identity. A ViewRef alone therefore identifies
+the data snapshot, not every parameter of score reproduction after a service
+configuration change. Bind the existing ranking configuration in formal replay
+and comparison inputs. If stable cross-restart ranking identity becomes a public
+result/cache contract, carry a canonical ranking-policy binding through that
+existing request/result contract; do not duplicate the lexical IR or silently
+change scores under a cache keyed only by view/query.
+
+**Physical namespace boundary.** NamespaceLease validates and locks a root/lease
+inode on open. FileObjectStore subsequently addresses object files through paths
+and validates owner/mode/type, without rechecking those paths against the held
+root/lease inode. Private-directory permissions and a cooperative single owner
+are current assumptions. Before physical deletion or live relocation is enabled,
+use descriptor-relative verified IO and revalidate the held namespace/incarnation;
+an open-time lock check alone is not proof against later root/lease replacement.
+This is a static boundary risk here, not a reproduced deletion race or permission
+for a live migration.
+
+Audit priority is cancellation correctness, complete existing query routing,
+then the already planned reclaim/resource obligations. Extract map/physical
+seams when an actual backend uses them; select query optimizations from native
+measurements. No live engine switching, second Catalog authority or automatic
+format conversion is added by this audit.
+
+Query-cancellation verification: the pre-repair focused nextest command
+`./scripts/cargow nextest run --locked -p quanta-index-kernel --test native_query_session -E 'test(/^cancellation_inside_/)' --no-tests fail --test-threads 1`
+was **FAILED**: one case executed and returned a successful exhaustive outcome
+after the original request was cancelled inside final Catalog validation. The
+other two new cases were not executed because this RED run used fail-fast.
+After the repair,
+`./scripts/cargow nextest run --locked -p quanta-index-kernel --test native_query_session --test native_query_session_real --no-tests fail --no-fail-fast --test-threads 2`
+was **VERIFIED, 19/19 passed**, 8.425 seconds of test execution. The three new
+cases cover retained and one-shot result refusal, optional-resolution refusal
+and renewal refusal; existing pin cleanup, selected-view continuity, real
+Text/Semantic reads and original-budget behavior also passed. This does not
+measure SQL-wait latency or implement preemptive cancellation of in-flight IO.
+Runtime UDS verification:
+`./scripts/cargow nextest run --locked -p quanta-index-searchd-runtime --test native_index_uds -E 'test(=native_uds_source_lifecycle_status_old_view_and_reopen) | test(=native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold) | test(=native_uds_semantic_query_fixed_cosine_coverage_reopen_and_composed_pump)' --no-tests fail --no-fail-fast --test-threads 2`
+was **VERIFIED, 3/3 passed**, 11.300 seconds, twelve excluded cases. These cover
+Literal/FileMap lifecycle and old-view/reopen behavior, fixed BM25 query gold,
+and Semantic coverage/reopen with the owned pump through IPC. They do not
+independently inject cancellation inside a runtime Catalog release. The
+Kernel regression above exercises the final-validation cancellation boundary.
+Kernel static verification:
+`./scripts/cargow --lane shared clippy --locked -p quanta-index-kernel --lib --test native_query_session --test native_query_session_real -- -D warnings`
+was **VERIFIED**, exit 0. This selected the Kernel library and both query-session
+integration targets, not runtime-wide or workspace-wide strict Clippy.
+The pre-repair final-effort observer regression command was **BLOCKED** by
+shared resource admission: its 300-second wait expired before compilation or
+test execution, so no behavioral RED is claimed for those two cases. Static
+inspection found the same missing final cancellation check in five effort
+completion branches. They now recheck the original request after observer
+completion and explicit pin cleanup.
+`QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200 ./scripts/cargow nextest run --locked -p quanta-index-searchd-runtime --test native_effort --no-tests fail --no-fail-fast --test-threads 2`
+was **VERIFIED, 22/22 passed**, 20.697 seconds of test execution. Both new
+Fast/Deep terminal-callback cases refuse cancelled success and check pin and
+reservation release; existing observer failures, optional-reader/capacity paths,
+Auto decisions and progressive IPC delivery/abort also pass. Already emitted
+transport terminals retain the existing no-second-terminal rule; this repair
+cannot retract a frame whose delivery already completed.
+
+Scoped rustfmt, `git diff --check`, `just lint-doc-paths`,
+`python3 tools/prompt-manager/pm.py lint` and
+`python3 tools/ci/lint/lint-hexagonal-boundaries.py` are **VERIFIED**.
+These results cover the inspected cancellation changes and document integrity;
+physical-GC/resource/performance/replacement acceptance remains unqualified.
+Documentation/static checks do not qualify full-suite, performance or release
+gates.
+
+### 17.2.3 Bounded remediation plan from the implemented paths
+
+Historical implementation observations and dated repair/test records are preserved
+in [the implementation history](../history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md#1723-bounded-remediation-plan-from-the-implemented-paths).
+They are not current assignments. Use the [SSOT](../plans/oct-22-finalizing/README.md)
+for status and owners, and [VALIDATION](../plans/oct-22-finalizing/VALIDATION.md)
+for source-scoped results. The original technical details remain in that history;
+requirements and acceptance thresholds are unchanged.
+
+### 17.2.4 Current-source recheck and minimum remaining boundaries (2026-10-13)
+
+[Historical recheck](../history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md#1724-current-source-recheck-and-minimum-remaining-boundaries-2026-10-13).
+
+<details>
+<summary>Preserved historical fragment IDs</summary>
+
+
+<a id="architecture-and-integration-re-audit-2026-10-13"></a>
+<a id="architecture-and-remediation-scope-recheck-2026-10-13"></a>
+<a id="architecture-recheck-after-metadata-coupling-2026-10-13"></a>
+<a id="canonical-sourcerecord-allocation-custody-2026-10-13"></a>
+<a id="catalog-read-session-regular-file-io-coupling-2026-10-13"></a>
+<a id="literal-and-path-result-custody-implementation-checkpoint-2026-10-13"></a>
+<a id="managed-object-constructor-and-namespace-lifetime-2026-10-13"></a>
+<a id="native-object-read-io-coupling-2026-10-13"></a>
+<a id="native-object-reclaim-io-continuation-2026-10-13"></a>
+<a id="native-physical-profile-and-public-boot-installation-2026-10-13"></a>
+<a id="native-scalar-and-batch-object-write-io-coupling-2026-10-13"></a>
+<a id="native-scratch-io-binding-and-connection-custody-2026-10-13"></a>
+<a id="physical-sqlite-admission-minimum-production-contract-2026-10-13"></a>
+<a id="provider-output-custody-implementation-checkpoint-2026-10-13"></a>
+<a id="re-audit-concrete-remaining-owners-and-minimum-remediation-2026-10-13"></a>
+<a id="rechecked-result-to-wire-delivery-plan-2026-10-13"></a>
+<a id="remediation-plan-recheck-and-delivery-order-2026-10-13"></a>
+<a id="repomap-build-preparation-custody-2026-10-13"></a>
+<a id="response-frame-admission-implementation-checkpoint-2026-10-13"></a>
+<a id="semantic-candidate-json-admission-checkpoint-2026-10-13"></a>
+<a id="semantic-result-custody-implementation-checkpoint-2026-10-13"></a>
+<a id="semantic-sourceprojection-json-metadata-admission-2026-10-13"></a>
+<a id="source-recheck-minimal-remaining-integration-2026-10-13"></a>
+<a id="sqlite-engine-error-taxonomy-repair-2026-10-13"></a>
+
+</details>
+
 ### 17.3 Concrete control and adapter seams
+
 
 Schematic signatures below refine section 7. W0-C must compile the real interfaces
 and their composition tests; this document does not claim these snippets compile.
@@ -3549,7 +3968,7 @@ state-root lease fences foreign processes; it does not replace this worker-level
 protocol. Test adoption precisely between permit issuance and unlink, cancellation
 while still queued, duplicate confirmation, process restart and recreated bytes.
 
-The adapter-facing API remains typed (IndexBuildPort, IndexReadPort and separate
+The adapter-facing API remains typed (IndexBuildPort, IndexQueryPort and separate
 maintenance capabilities). A generic registration function constructs one private
 dyn-compatible bridge per concrete adapter. The bridge accepts only bounded,
 schema-bound immutable input refs and returns sealed references; it decodes to
@@ -3685,21 +4104,20 @@ crates/
   quanta-index-searchctl/src/{lib,parse,render}.rs CHANGE view/status/coverage/doctor
 ```
 
-If the extraction option is selected, the storage crate's neutral format uses
+The selected storage crate's neutral format uses
 namespaced object-format identifiers,
 bounded generic page/blob envelopes and authenticated child edges. Lexical payload
 format IDs stay owned by Lexical. Replace lexical-only error strings, hooks into
 publication_faults/causal_profile/channel_payloads and constructor visibility at
 the extraction boundary. Reuse algorithms and independent oracles; do not imply
 that moving store.rs preserves the new transaction or lifecycle contract.
-If the adapter-local option is selected, omit this crate and place physical
-implementations under the owning adapter and catalog. Freeze those module paths
-at W0-C, use the same core ports/conformance tests, and keep independent retention
-authority out of those modules. This packaging choice is not a performance claim.
+The adapter-local packaging alternative was considered at W0-C and is not the
+selected layout. Any later packaging change must record revised paths, preserve
+the same core ports/conformance tests and keep independent retention authority
+out of physical modules. Packaging alone is not a performance claim.
 
-W0-C chooses packaging from the actual dependency boundary and consumer needs;
-use a bounded compile spike only if that boundary is uncertain, not two complete
-implementations. Shared extraction must compile without Lexical payload enums or
+W0-C selected packaging from the dependency boundary and consumer needs.
+Shared extraction must compile without Lexical payload enums or
 AttemptLease and serve the real consumers without another journal/GC owner. The
 adapter-local option must supply indexed Kernel logical roots through the catalog.
 Record the selected paths and changed seams before W1; W1 tests only the selected
@@ -3712,7 +4130,7 @@ or maintenance problem; a directory move alone predicts no performance gain.
 Keep existing quanta-index-lq-* and embedding-provider implementations unless a
 new interface or correctness check requires changes. Do not create permanent
 adapter_vnext and adapter_legacy internal twins. During development, compare
-isolated builds/state roots; the shipped dependency graph has one current engine.
+isolated builds/state roots; the shipped path has one publication/lifetime authority.
 
 ### 17.5 Existing-file change and retirement map
 
@@ -3892,7 +4310,7 @@ The stage dependencies and exit gates are defined only in section 14.
 
 | Stage | Exclusive write set / owner |
 |---|---|
-| W0-C | Contract owner: core/index, contract-base, wire DTOs, Kernel registry/compose ports; storage owner selects the reuse/packaging boundary and isolates any justified compile spike |
+| W0-C | Contract owner: core/index, contract-base, wire DTOs, Kernel registry/compose ports; storage owner records the selected storage-crate reuse boundary and freezes its paths/ports |
 | W0-D | Existing waterfall P00–P09 owners and allowlists; hand off shared core/budget/IPC/lexical files before overlapping W0-C/W1/W2 edits; no duplicate recorder or competing diagnostic IR |
 | W0-A | Semantic feasibility owner: isolated semantic backend/retention experiments against frozen common constraints; no shared IR edits |
 | W1 | Kernel owner: kernel/* except assigned session subtree; catalog owner: catalog/*; storage owner: selected physical modules and approved Lexical extraction |
@@ -3959,7 +4377,7 @@ do not reproduce or quantitatively explain the historical 94-second result.
 |---|---|---|---|
 | F01 | [BM25 statistics](../../crates/quanta-index-lexical/src/sealed_generation/live_bm25.rs) scans changed segment document IDs and visits segment statistics; [verify](../../crates/quanta-index-lexical/src/sealed_generation/verify.rs) decodes the flat sidecar | Section 9.1: persistent census/live term statistics, touched deletion blocks, statistics-bound scoring/pruning; file map extended | One small delete across increasing segment size/count: seal, cold open and fixed query counters plus independent rank oracle |
 | F02 | [Semantic open/refill](../../crates/quanta-index-semantic/src/search.rs) retains full-base commitment and count/exact completion paths | Section 9.2: indexed historical open and explicit filtered-ANN/refill work semantics | Growing N, fixed query/filter, deletion churn and old pin; no hidden recount or false exhaustive result |
-| F03 | [Runtime capture](../../../semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/coordination/change_event_recompute_invalidator/change_event_aggregate_input_v3.rs) materializes workspace paths; [scoped issuance](../../../semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-source-authority-wire/src/serving_source_closure_issuance_v1.rs) still scans provider aliases | Section 9.4 / 17.6: sparse capture and indexed alias projection under existing canonical source custody; separate affected-set completeness | Fixed one-file delta/growing workspace and alias map; producer reads/allocations, unchanged-byte dependent B and delete-only/empty transitions |
+| F03 | [Runtime capture](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/coordination/change_event_recompute_invalidator/change_event_aggregate_input_v3.rs) materializes workspace paths; [scoped issuance](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-source-authority-wire/src/serving_source_closure_issuance_v1.rs) still scans provider aliases | Section 9.4 / 17.6: sparse capture and indexed alias projection under existing canonical source custody; separate affected-set completeness | Fixed one-file delta/growing workspace and alias map; producer reads/allocations, unchanged-byte dependent B and delete-only/empty transitions |
 | F04 | [RepoMap ranking](../../crates/quanta-index-repomap/src/query.rs) uses folded substring containment; token-equality indexing would lose infix hits | Section 9.3: sound substring candidates plus exact verification, fanout budget and explicit query classes | Infix/Unicode/CJK/focus fanout and prefix-budget parity |
 | C01 | Child C is Reclaiming while new parent P registers P->C | Section 8.3: atomic direct-child validation/reference acquisition, child-first DAG registration and ordered gates | Race parent registration with child permit/unlink; crash/retry and forward-edge rejection |
 | C02 | Coverage-only CAS conflict releases e42's operation; e43 or a changed e42 could incorrectly advance source | Section 8.2: immutable event identity and atomic claim release, exact predecessor rebind by a new operation | o7 Conflict, o8 same event, queued e43, lost ACK, original receipt replay |
@@ -4001,7 +4419,7 @@ NOT_RUN. No new implementation success, ANN winner or measured LoE is asserted.
 |---|---|---|
 | F01: CAS composition is underspecified | Accept algorithm-level gap. Section 5.3.1 adds assumptions/actions, current-owner diff, touched-path COW updates, slot/fence ordering and real write/sync costs; sealed exact delta avoids stale-region adoption starvation | Kernel + adapter composition; independent oracle, shared-key/phantom dependency and same-region stable-owner progress |
 | F02: large ANN remains unselected | Retain release blocker, separate W0-A from W0-C. Sections 9.2.1/16 distinguish verified published ANN research from implementation documentation and retain adaptation limits | Semantic owner; sustained recall/update/query/history experiment, not abstract or append-only throughput |
-| F03: fine-grained DAG GC may be too costly | Accept comparison requirement. Section 8.3.1 compares bounded objects, bounded packs and immutable-root KV storage under the same laws; no speculative simpler-winner claim | Storage/catalog owner; correctness first, then work/space/amplification and state-complexity inventory |
+| F03: fine-grained DAG GC may be too costly | Accept the cost/conformance gate, not an unconditional three-backend comparison. Section 8.3.1 starts with the reusable page/blob reference and investigates a focused alternative only for a violated contract, measured material cost or explicit comparative claim; no speculative simpler-winner claim | Storage/catalog owner; selected-reference correctness/work/space first, then a justified alternative and state-complexity inventory |
 | F04: Stub optional versus IDE promise | Make Stub required per advertised IDE language/profile, keep general search independent. Section 6.3 specifies NoUnnecessaryASTLoad and file-local ownership | Stub/query owner; 100K closed-file fixture with parser/body-open counters and independent declaration goldens |
 | F05: effort policy/progressive behavior is abstract | Section 6.4 maps strategy/knobs; section 6.5 binds one view and immutable result revisions. Standard LSP partials cannot replace/rerank | Existing planner owner; cross-preset semantics, cumulative budget and client capability tests |
 | F06: external frontier makes freshness too coarse | Keep safe Pending default; section 5.2 adds producer-issued complete impact certificate and indexed scoped reuse when available | Runtime dependency owner; unchanged-byte dependent B, config/context changes, absent certificate, missed-owner adversarial fixtures |
@@ -4068,7 +4486,7 @@ paper citation or lower-quality result can replace that evidence.
 
 2026-10-11 supplement to sections 4, 7, 9 and 13. The supplied audit's PTA and
 downstream-analysis work belongs to Semantica. Its
-[existing contract SSOT](../../../semantica-codegraph-v2/docs/bugbash/oct-10-incremental-engine/final-design-contracts.md#oss-downstream-closure)
+[existing contract SSOT](/Users/songmin/Documents/code-new/semantica-codegraph-v2/docs/bugbash/oct-10-incremental-engine/final-design-contracts.md#oss-downstream-closure)
 already includes the OSS retraction, failure, side-output and publication cases.
 Keep those owners and the file map in section 17.6. This supplement closes Index
 handoff and adapter conformance requirements; it does not introduce another
@@ -4080,15 +4498,19 @@ document. At the final recheck Semantica HEAD advanced to `0344f353b822`; the fi
 inspected Runtime source files and its contract document retained identical bytes.
 Five Index files and five Runtime source files were inspected directly
 for the boundaries below. The supplied
-[OSS review-v2](../../../../../Developer/work/oss/static-analysis/docs/analysis/review-v2/README.md)
+[OSS review-v2](/Users/songmin/Developer/work/oss/static-analysis/docs/analysis/review-v2/README.md)
 reports 19 projects, 20 engine documents and four cross-reviews at its pinned
 2026-10-10 sources. This follow-up checked six relevant checkout HEADs, nine source
 file hashes and one archived source-entry hash against its source-snapshots.json;
 this is not a fresh semantic audit of all 19 projects. Its verification.json PASS
 means structural/document/source-snapshot validation. Runtime reproduction,
 warm/cold equivalence and performance remain NOT_RUN in this follow-up. Prior
-Semantica QBC results retain only the scope in its
-[validation document](../../../semantica-codegraph-v2/docs/bugbash/oct-10-incremental-engine/pta-downstream-validation.md).
+Semantica QBC results cannot be re-qualified from the unavailable historical pointer
+`semantica-codegraph-v2/docs/bugbash/oct-10-incremental-engine/pta-downstream-validation.md`.
+The cited file was absent at the 2026-10-12 reconciliation; no replacement evidence
+or fresh QBC result is inferred. External workspace links in this section are
+local audit-source pointers, not files shipped in the Index checkout or proof of
+a qualified cross-repository executable.
 No historical A/D/C5 or XL acceptance result is promoted or revoked here.
 
 ### 21.1 Before → after, owner and acceptance boundary
@@ -4105,18 +4527,18 @@ observed code or an already stated RFC contract, not a reproduced product defect
 | PublicationValidationOwner binds the exact source event/body/base; K/terminal_receipt_v1.rs revalidates the complete prepared DTO and loaded receipt | Preserve those exact bindings across new source/projection/coverage receipts. Settled computation, valid output, Index publication and current UI acceptance are distinct predicates | Core validation + K/publish.rs + K/terminal_receipt_v1.rs → catalog read ticket and Runtime/editor consumers; **reuse receipt custody/CAS, migrate representation** | N+1 then N completion, lost ACK and restart, same source/different config or profile: exact operation outcome remains stable; current consumers do not adopt incompatible late results. Queue/receipt/revalidation costs remain |
 | Required input roots and policies already have exact bindings; adapter extension/recovery and total resource budgets already exist | Specify dependency/equality/retraction/serialization/absence per actual output. Missing required side output is pending/failure, not a successful empty value. Account retained metadata, failed candidates and queues as well as cached values | Existing adapter descriptor/schema, member/coverage and recovery contracts → typed consumers; **extend conformance, no extra registry or cache owner** | Primary unchanged/required side output changed or missing after restart: correct side output or explicit unavailable; all resources remain accounted. Revalidation/serialization and retained-reader costs cannot be claimed zero |
 
-Direct current-source anchors:
+Direct audit-time source anchors (line labels refer to that inspected checkpoint):
 
-- Index [scope-oriented SDK batch](../../crates/quanta-index-sdk/src/lexical.rs:52),
-  [exact publication binding](../../crates/quanta-index-core/src/publication_validation.rs:120),
-  [stream completion API](../../crates/quanta-index-core/src/domains/semantic/stream.rs:488),
-  [staging before promotion](../../crates/quanta-index-semantic/src/build.rs:2039),
-  [existing append-failure assertions](../../crates/quanta-index-semantic/tests/persisted_semantic.rs:1874).
-- Runtime [source/absence handling](../../../semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/coordination/change_event_recompute_invalidator/core_invalidator_source_refresh_v1.rs:93),
-  [aggregate dispositions](../../../semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/search_plane_handoff_dispatch/aggregate_prepare.rs:68),
-  [prepared DTO custody](../../../semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-retrieval-kernel/src/index_sdk_ingress/search_plane_prepare_v1.rs:1),
-  [frozen publication/activation](../../../semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-retrieval-kernel/src/index_sdk_ingress/publish.rs:884),
-  [receipt revalidation](../../../semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-retrieval-kernel/src/index_sdk_ingress/terminal_receipt_v1.rs:148).
+- Index [scope-oriented SDK batch:52](../../crates/quanta-index-sdk/src/lexical.rs),
+  [exact publication binding:120](../../crates/quanta-index-core/src/publication_validation.rs),
+  [stream completion API:488](../../crates/quanta-index-core/src/domains/semantic/stream.rs),
+  [staging before promotion:2039](../../crates/quanta-index-semantic/src/build.rs),
+  [existing append-failure assertions:1874](../../crates/quanta-index-semantic/tests/persisted_semantic.rs).
+- Runtime [source/absence handling:93](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/coordination/change_event_recompute_invalidator/core_invalidator_source_refresh_v1.rs),
+  [aggregate dispositions:68](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/source_bound_projection_assembly/authority_assembly/search_plane_handoff_dispatch/aggregate_prepare.rs),
+  [prepared DTO custody:1](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-retrieval-kernel/src/index_sdk_ingress/search_plane_prepare_v1.rs),
+  [frozen publication/activation:884](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-retrieval-kernel/src/index_sdk_ingress/publish.rs),
+  [receipt revalidation:148](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-retrieval-kernel/src/index_sdk_ingress/terminal_receipt_v1.rs).
 
 These are assets and seams to preserve, not evidence that new VNext coverage or
 the full producer-to-editor scenarios are already implemented. A source event's
@@ -4214,564 +4636,288 @@ operational-performance proof gaps.
 
 ## 22. Executable native slice: implementation and checkpoint boundary
 
-This section records the implementation begun on 2026-10-11. It does not promote
-historical A/D/C5, focused test results, or the earlier failed XL run into native
-release qualification. The repository HEAD is `8f11cad9587aec1668a9fb3f5f1f055337487071`
-with pre-existing and current uncommitted changes. No commit/push is performed.
-The executable types in the paths below are the current IR; earlier pseudocode
-is the target contract, not a second runtime IR or a shipped compatibility reader.
+Historical implementation observations and dated repair/test records are preserved
+in [the implementation history](../history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md#22-executable-native-slice-implementation-and-checkpoint-boundary).
+They are not current assignments. Use the [SSOT](../plans/oct-22-finalizing/README.md)
+for status and owners, and [VALIDATION](../plans/oct-22-finalizing/VALIDATION.md)
+for source-scoped results. The original technical details remain in that history;
+requirements and acceptance thresholds are unchanged.
 
-### 22.1 Implemented ownership and flow
+<details>
+<summary>Preserved historical fragment IDs</summary>
 
-```mermaid
-flowchart TD
-    P[File producer: complete owner replace/delete] --> S[SourceAdvance: expected SourceCut + event frontier]
-    R[Analysis producer: complete affected-domain certificate] --> D[ProjectionAdvance: expected projection + target SourceCut]
-    S --> K[Kernel: validate bindings / immutable admission / attempt fence]
-    D --> K
-    K --> L[Required adapters: native literal + file inventory]
-    K --> W[Async owner coverage and durable work intents]
-    W --> C[Explicit work caller: Catalog claim / lease / renewal / cached prepared result]
-    C --> A[Typed owner adapter: pinned source or projection input]
-    A --> M[Materialize: exact desired input + claim fence]
-    L --> V[One SQLite commit: head CAS + root custody + events + work + original receipt]
-    M --> V
-    V --> T[Exact immutable CatalogView / read ticket]
-    O[FileObjectStore: immutable objects + multi-root COW radix maps] --> L
-    O --> A
-    O --> T
-    U[Native SDK / bounded CBOR UDS control] --> E[Owned Tokio executor: independent Core and Enrichment slots]
-    E --> K
-```
 
-- Identity and IR: `contract-base/src/index_refs.rs`, `contract/src/index.rs`.
-  Identity is canonical at one owner; Kernel reuses core re-exports.
-- Domain ports, cumulative budget and policy seams: `core/src/index/`;
-  `records.rs` owns application records and `attempt.rs` owns custody-bound IO.
-- Lifecycle and typed registry: `kernel/src/`. The registry erases only its
-  private bridge; adapter candidates/deltas remain typed, without `Any` or
-  universal JSON object CRUD.
-- Single control authority: `catalog/src/native/authority.rs`, using the existing
-  SqliteCatalog. Native head, immutable views, operation journal, input/attempt
-  custody, root/edge metadata, read pins and work queue share this authority.
-- Data-only storage: `storage/src/`. It has no independent activation/GC owner.
-- Native adapters: `lexical/src/native/literal.rs`,
-  `semantic/src/native/embedding.rs`, `repomap/src/native/file_map.rs`.
-  The `native/mod.rs` files are facades preserving their public paths.
-- Manual closed JSON/CBOR codecs: `contract-base/src/native_serde.rs`; no new
-  Serde proc-macro derives. Nullable fields must be explicitly present; duplicate,
-  unknown and excess sequence fields are refused. Fixed-width identity arrays
-  use an exact-length visitor; the default Serde array visitor with Ciborium
-  otherwise accepts an array with trailing elements. Fixed JSON and CBOR wire
-  goldens are independent of the executable serializer.
-- Transport/composition: `contract/src/native_protocol.rs`,
-  `ipc/src/native_protocol.rs`, `sdk/src/native_index.rs`,
-  `sdk/src/native_uds.rs`, `searchd-runtime/src/native.rs`.
+<a id="221-implemented-ownership-and-flow"></a>
+<a id="222-concrete-ir-and-extension-contract"></a>
+<a id="223-incremental-cost-path-and-its-limits"></a>
+<a id="224-historical-pre-manifest-checkpoint-commands-and-acceptance-scopes"></a>
+<a id="225-explicit-remaining-coupled-work"></a>
+<a id="226-bounded-bulk-intake-implementation-checkpoint"></a>
+<a id="227-live-worker-observation-checkpoint"></a>
+<a id="batch-durability-boundary"></a>
+<a id="central-verification-for-this-checkpoint"></a>
+<a id="remaining-work-dependency-audit"></a>
 
-Paths in this subsection are relative to `crates/quanta-index-<crate>/`.
-The native service is an explicit Rust composition (`bind`/`bind_with_registry`),
-not the default daemon/CLI route. Submit/Resume use two bounded asynchronous
-execution classes: Core and Enrichment, each with a capacity-one channel and
-one consumer task. They share an owned Tokio runtime with two asynchronous
-worker threads and at most two blocking-pool threads on a dedicated manager
-thread. Materialize selects Enrichment; other requests select Core. Pending
-Resume reads and validates its retained original request to choose the same
-class, without rotating its attempt fence or replacing the original budget.
-Terminal/Unknown Resume returns the originally observed receipt/Unknown reply
-without entering an execution queue. Otherwise an Unknown key admitted as a
-Materialize before dequeue could accidentally execute on Core. Pending requests
-have an immutable kind and are the only Resume requests enqueued.
-This bounds that runtime's thread counts, not provider
-execution time, task fanout or total RSS. IPC waits for typed completion without
-polling Kernel futures. The manager joins before the state-root lease is released.
-The native service admits four simultaneous dispatches and 64 connections:
-one active and one waiting Enrichment request cannot consume all transport
-dispatch slots before Core reaches its own consumer. Legacy socket policies
-are unchanged. Catalog CAS and fences, rather than a serial socket, arbitrate
-concurrent publication. This reserves execution capacity, not disk/CPU
-bandwidth or a wall-clock latency guarantee under blocking I/O.
-The worker checks the same work budget again after queue waiting and before any
-recovery/admission mutation. Its distinct `.native-index-v1` state marker
-and exclusive StateRootLease prevent sharing a live state root or treating native
-state as the legacy format. No silent migration or dual-reader fallback is added. SDK mid-I/O cancellation
-currently relies on the original deadline/peer closure; it does not interrupt a
-blocking transport call through a live cancellation watcher.
-Nested sockets inside the state root are refused before native-format creation:
-the format admits top-level sockets and external sockets, not directories created
-as socket parents. Existing ancestors are resolved through aliases; unresolved
-parent traversal is refused rather than normalizing a path that would leave new
-directories behind. Deterministic Submit errors (including a changed payload under
-an existing OperationKey) propagate as their typed error; only ambiguous storage,
-interruption/resource and operation-fence failures enter original-key reconciliation.
+</details>
 
-### 22.2 Concrete IR and extension contract
+## 23. Fixed full-product implementation and acceptance ledger
 
-| Contract | Implemented rule |
-|---|---|
-| SourceTransition | Sorted complete owner mutations, exact old record preconditions, source/path reverse membership, producer stream predecessor and payload binding |
-| InputDomain | `SourceLocal` or `Projection { projection, producer }`; an index can be native incremental without Quanta Runtime |
-| ProjectionOwnerContribution | Explicit projection owner and optional **source_owner**: analysis producer IDs need not equal file producer IDs. Source owner/ref presence must agree; output `None` is certified empty, not derivation failure |
-| ProjectionCertificate | Target SourceCut, prior projection binding, schema, producer policy/context and complete affected owner digest/count. Index verifies binding/shape; the producer remains responsible for semantic completeness |
-| CoverageBinding / OwnerCoverage | Desired, covered and searchable are distinct. Pending carries previous missing membership across repeated source advances; empty affected sets do not erase unfinished work |
-| WorkIntent / WorkClaim | Stable input identity, catalog-generated fence and server lease; renewal keeps the fence. Source/projection materialization uses the same owner work rail |
-| PreparedPublication | Only Catalog commit can publish. CAS/fence, roots, events, enqueue/retire/complete work and original operation receipt commit atomically |
-| OwnerMemberBinding | Exact selected input, policy/schema/format, artifact and logical commitment; a cached prepared result may rebase only over unrelated publication changes |
-| OperationReply | Full original OperationKey accompanies Submit/Status/Resume, including refusal and unknown outcomes; SDK cannot bind a receipt to another operation |
-| IndexBuildPort / IndexOwnerBuildPort | Typed candidates and deltas. New native adapters register explicit kind/schema/format and declare input/activation; adapters cannot own head publication |
-| ImmutableObjectPort / PersistentMapPort | Pure `identify`; bounded `install_batch`, `apply_batch` and streamed original-base `apply_stream` with ordered root results. No production per-item fallback disguises unbounded metadata synchronization |
-| EffortPolicy / StageCostEstimator | Replaceable proposals and estimates. A fixed governor enforces permission, prerequisites, proof requirements and resource envelopes; policy cannot publish or bypass admission |
+The original R01–R40 requirement denominator remains fixed. The following inventory
+preserves the original exit conditions; it does not declare current implementation
+or verification status. Current tasks and owners belong only to the
+[Oct-22 SSOT](../plans/oct-22-finalizing/README.md), and source-scoped
+results belong to [VALIDATION](../plans/oct-22-finalizing/VALIDATION.md).
+Partial rows do not become complete by splitting ownership or adding tests.
 
-A schema or derivation-policy change is not a locality proof. Existing nonempty
-owner state cannot be rebound to a new recipe and marked Complete; the current
-slice returns explicit RebuildRequired where a new-domain rebuild is necessary.
-Projection-domain CoreRequired publication and whole-graph work are not supported
-by this slice and must not be represented as completed features.
+| ID | Requirement / exit condition |
+| --- | --- |
+| R01 | One canonical paged source/projection/request IR; complete EOF/count/digest rejection |
+| R02 | Typed extensible adapters; multiple instances and profile capability refusal |
+| R03 | Bounded native filesystem capture and child-first ingress batches beyond old direct-child limit |
+| R04 | Owner/path/frontier atomic transitions, cross-page rename cycles and original-base CAS |
+| R05 | Persistent COW maps, streamed complete validation, bounded scratch construction and root-only publication |
+| R06 | Reserved-before-write object custody and bounded durable batch barriers on supported OS |
+| R07 | Sole Catalog CAS publication of roots, event bindings, work and original terminal receipt |
+| R08 | Replay, ACK-loss reconciliation, resume and immutable old-view/reopen correctness |
+| R09 | Session-fenced renewable read custody; real guard validation, process-death recovery and safe expiry |
+| R10 | Retention floors, terminal custody release, bounded DAG reclaim and physical incarnation/adoption fencing |
+| R11 | Shared live RAM/disk/WAL/provider reservations, draining charges and enforced aggregate limits |
+| R12 | Service-owned scratch, crash cleanup under custody and enforcement including secondary spill |
+| R13 | Existing waterfall P00-P09 integration, failure-surviving reopen stages and observer-cost isolation |
+| R14 | Native incremental byte-literal indexing and exact current/old-view query |
+| R15 | Required token/BM25/regex domain parity with independent ranking/query gold |
+| R16 | Bounded cold bulk-build, reopen and catch-up; initial-index algorithm/parallel preparation experiments |
+| R17 | Sustainable lexical churn/maintenance and bounded write amplification/debt |
+| R18 | Semantic desired/covered/missing ownership, certified projection delta, stale job/delete fencing |
+| R19 | Model/recipe/input provenance and durable unchanged-owner/ABA artifact reuse |
+| R20 | Bounded small-scope exact vector materialization/search with exact coverage and cosine gold |
+| R21 | Concrete chunking/ANN feasibility and incremental searchable membership |
+| R22 | Sustained ANN recall/query/update/filter/history retention on pinned roots |
+| R23 | Native file inventory/path delta with one Catalog view and exact pagination |
+| R24 | Provenance graph RepoMap delta and full query parity |
+| R25 | Editor overlay/mask/isolation without durable publication per keystroke |
+| R26 | Save ACK and session-frontier handoff with exact source/action identity |
+| R27 | Required Stub index and language capability refusal |
+| R28 | Progressive query, exact coordinates/AST/action fencing and fixed intent budget |
+| R29 | Replaceable bounded Auto policy, estimator/governor separation, stale/unknown signal semantics |
+| R30 | Live same-intent Fast/Deep execution, scheduler permits and dispatch/completion rechecks |
+| R31 | Coherent live worker queue/active/lag snapshots, TTL, cancellation and shutdown cleanup |
+| R32 | Owned background work pump, fair Core/Enrichment/Maintenance service and provider-bounded execution |
+| R33 | Real opt-in native source/literal/path UDS, exact selection and SDK reply reconciliation |
+| R34 | Configured semantic provider/query transport with correct coverage/freshness |
+| R35 | Default daemon/CLI/launcher product routing and service shutdown/reopen |
+| R36 | Backup/restore, new-format cutover and retirement of competing legacy lifetime/head paths |
+| R37 | Real Semantica complete affected-domain generation, durable outbox and required side outputs |
+| R38 | P2I01-P2I08 through real producer/consumer calls and independent semantic outputs |
+| R39 | Full fault/operational matrix plus fixed-delta N/history/fanout, initial-build and mixed-load cost gates |
+| R40 | Full suite/new CI selection/release and UX01-UX12/AUTO01-AUTO10 matched IntelliJ acceptance |
 
-### 22.3 Incremental cost path and its limits
+### Historical checkpoints
 
-- Source updates touch changed owner/path/frontier keys. COW updates copy changed
-  radix paths and preserve historical subtrees. There is no ordinary whole-base
-  object/inode/SHA closure replay in this native path.
-- Catalog ticket acquisition validates at most seven distinct view roots and
-  each root's direct registered edges. `require_object` is nonrecursive; neither
-  ticket acquisition nor ordinary publication walks the transitive object DAG.
-  Profile/root fanout remains a cost parameter rather than a constant hidden in
-  an unqualified wall-clock claim.
-- Literal contributions reuse unchanged byte-derived grams. All affected posting
-  edits are grouped by gram, then COW map roots and wrapper/contribution objects
-  are installed in bounded batches. Batches stop at 64 objects/roots; contribution
-  staging also stops at 32MiB wire bytes. The storage aggregate cap is 64MiB.
-- Reservation precedes physical installation; metadata confirmation follows file
-  and referenced-shard durability, including existing/AlreadyExists objects.
-  Root transfer happens only in the publication transaction.
-- Scalar and batched object installation share same-shard atomic no-replace
-  rename after file synchronization. Canonical files have one link immediately:
-  the former hard-link-then-unlink path exposed two links to strict readers, and
-  a crash before unlink could preserve that invalid state. Existing winners are
-  byte-verified and their shard synchronized before installation confirmation.
-  The pinned rustix implementation uses macOS `RENAME_EXCL` or Linux
-  `RENAME_NOREPLACE`; unsupported syscall/filesystem errors fail closed rather
-  than falling back to an overwriting rename. The deterministic regression reads
-  through a separate store between rename and shard fsync and preserves the
-  winning inode on a competing publish. It is not a power-loss qualification.
-- COW final installation follows the deduplicated reachable-DAG postorder in
-  groups of at most 64 objects/64MiB. The internal object installer enforces the
-  same cap before custody reservation. A later group can reference children
-  registered in an earlier group; a late reservation failure returns no map root
-  and retains prior confirmed groups under attempt custody. This bounds each
-  installation group, not total staging, returned registration vectors or RSS.
-  Failure after physical fsync but before metadata confirmation still belongs to
-  allocation-intent recovery; online reclamation remains disabled.
-- Producer frontier sequence and operation journal sequence are distinct. A
-  Reconfigure operation can precede the first projection event; matching producer,
-  stream and epoch does not require matching their sequence numbers. A dedicated
-  same-producer regression covers operation 2 carrying event 1 and receipt replay.
-- Each new object still needs a file data sync and durable canonical directory
-  entry. On macOS, bounded installation batches now perform plain file/directory
-  `fsync` followed by one same-device `F_FULLFSYNC` before custody confirmation;
-  scalar writes and Linux retain their existing sync path. This preserves the
-  specified ordering and reduces repeated device flushes, but does not remove
-  object-per-file inode costs or qualify wall-clock throughput. Packs/compaction
-  remain separate work.
-- 64MiB staging means serialized wire bytes, **not an RSS guarantee**. Node count,
-  payload size, key length and cumulative WorkBudget are bounded separately.
-  Exhausted work returns ResourceLimited; it is not an empty complete result.
-- Lexical posting edits and top-map edits currently accumulate over the admitted
-  delta. A very large full ingest can exceed the COW edit/wire cap and return
-  ResourceLimited. Contribution batching alone does not prove bounded-memory XL
-  initial indexing. Prior/next sorted gram vectors now use an allocation-free
-  symmetric merge, including deletion; prior sorted/unique membership is checked.
-- Before COW, the current `SourceTransition`/`ProjectionTransition` still carries
-  one owner-mutation vector. Its durable request owns all distinct `next` records
-  directly; an immutable object permits 4,096 children and 16MiB payload. A single
-  atomic full-ingest request with 32,768 distinct new records is therefore refused
-  at request installation, independently of scratch capacity. Prestaging input
-  registrations, source changes/path edits and adapter posting edits also retain
-  delta-sized collections. A bounded paged mutation IR, streamed admission and
-  typed replayable source delta must join scratch COW/finalization before claiming
-  atomic XL ingest. Increasing limits or repeatedly publishing intermediate map
-  roots does not implement that contract. This does not mean a corpus must fit
-  memory: separately admitted small source updates can grow a larger corpus, but
-  that behavior is not proof of atomic bulk throughput or XL operational acceptance.
-- COW staging also retains superseded intermediate node versions until the
-  final reachable-DAG selection. Removing them during an edit can lose a split
-  child that has not yet been attached to its parent. Even edit-boundary cleanup
-  must protect retained roots and staged objects referenced by future edits.
-  A quota-triggered full mark/sweep is not an implemented performance repair;
-  scratch ownership and bounded finalization remain the required coupled work.
-- Large atomic ingest needs bounded owner/gram windows in attempt-local,
-  non-authoritative scratch COW, followed by child-first installation of only the
-  final reachable new DAG. Repeated canonical `apply_batch` calls across windows
-  would leave intermediate roots unreachable while online GC is disabled; that
-  shortcut is excluded. Scratch quota, abort cleanup and restart semantics must
-  be coupled with finalization. External gram sorting versus repeated hot-key COW
-  is an algorithm experiment, not a presumed throughput improvement.
-- Native literal is exact case-sensitive byte search. Native RepoMap is
-  FilePathInventoryV1. Native semantic is bounded exact cosine over selected UTF-8
-  source/projection payloads with pinned model/revision/dimension/normalization.
-  They do not claim existing BM25/token/regex, graph RepoMap or large ANN parity.
+The former section 23 status table, source observations, F01–F09 scopes, test
+results, repair proposals and dated sections 23.1–23.90 are preserved in
+[the checkpoint history](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md).
+Technical constraints in those records remain available under their original
+headings. Current acceptance must use the active tickets and actual source;
+a historical pending claim, failure or pass does not issue a new task or qualification.
+The earlier [delivery-register history](../history/oct-10-index-closeout/RFC-DELIVERY-CHECKPOINTS.md)
+retains the previously retired section bodies.
 
-### 22.4 Historical pre-manifest checkpoint commands and acceptance scopes
+<details>
+<summary>Preserved historical fragment IDs</summary>
 
-These results preceded the breaking paged mutation/custody IR in §22.6. They
-record the earlier behavior scope and must not qualify the current changed IR.
-Current coupled verification is recorded in §22.6.
+<a id="231-r15-native-text-migration-boundary-from-current-source-audit"></a>
+<a id="2310-next-owned-work-pump-contract-boundary"></a>
+<a id="2311-physical-reclaim-remains-disabled-pending-lifetime-authority"></a>
+<a id="2312-combined-query-immutable-reuse-and-class-floor-checkpoint"></a>
+<a id="2313-owned-enrichment-execution-contract-2026-10-12-in-progress"></a>
+<a id="2314-page-bounded-flat-boolean-native-bm25-2026-10-12"></a>
+<a id="2315-foreground-control-isolation-from-the-owned-pump-in-progress"></a>
+<a id="2316-owned-execution-checkpoint-and-authority-hardening"></a>
+<a id="2317-adapter-configuration-and-bounded-positive-boolean-follow-up"></a>
+<a id="2318-pump-dependency-direction-and-verification-boundaries"></a>
+<a id="2319-isolated-native-qualification-while-legacy-integration-moves"></a>
+<a id="232-sessionscratch-checkpoint-and-next-textrecovery-wave-2026-10-11"></a>
+<a id="2320-adversarial-shutdown-repair-keyset-cost-repair-and-final-native-checkpoint"></a>
+<a id="2321--native-scratch-growth-and-read-only-manual-discovery"></a>
+<a id="2322--typed-native-text-query-composition-and-empty-lexical-patches"></a>
+<a id="2323--empty-repomap-patches-and-lazy-kernel-work-storage"></a>
+<a id="2324--selected-reader-query-admission-contract"></a>
+<a id="2325--reader-ceiling-and-request-specific-sizing"></a>
+<a id="2326--configured-semantic-reader-first-path-in-progress"></a>
+<a id="2327--native-lexical-churn-audit-boundary"></a>
+<a id="2328--semantic-metadata-only-reuse-audit"></a>
+<a id="2329--effort-timecapacity-contract-repair"></a>
+<a id="233-next-implementation-seams-from-independent-source-audit"></a>
+<a id="2330--next-live-execution-and-reclaim-boundaries"></a>
+<a id="2331--retained-query-session-and-optional-refinement-admission"></a>
+<a id="2332--live-controller-adversarial-repairs-and-object-namespace-ownership"></a>
+<a id="2333--frontier-only-async-preparation-cost-repair"></a>
+<a id="2334--expanded-native-checkpoint-failures-and-source-composition"></a>
+<a id="2335--semantic-scan-receipt-red-and-next-implementation-boundary"></a>
+<a id="2336--observer-and-bounded-terminal-custody-implementation-checkpoint"></a>
+<a id="2337--changed-owner-corpushistory-walk-oracle"></a>
+<a id="2338--final-observercustody-lint-and-next-bounded-delivery-slices"></a>
+<a id="2339--exact-history-admission-floor-behavioral-red"></a>
+<a id="234-textrecovery-checkpoint-observed-results-2026-10-11"></a>
+<a id="2340--progressive-sdk-and-terminal-custody-behavioral-red"></a>
+<a id="2341--bounded-view-retirement-and-streamproduct-integration-repairs"></a>
+<a id="2342--nativetext-churn-cost-structure-static-audit"></a>
+<a id="2343--terminal-work-retirement-exact-json-scores-and-descriptor-safe-configuration"></a>
+<a id="2344--coupled-retention-stream-and-opt-in-product-checkpoint"></a>
+<a id="2345--managed-retention-red-and-pre-main-fifo-diagnosis"></a>
+<a id="2346--managed-terminal-retention-focused-green"></a>
+<a id="2347--expanded-native-regression-and-actual-owned-replay-after-restart"></a>
+<a id="2348--fixed-path-storage-cost-oracle-and-undispatched-work-retirement"></a>
+<a id="2349--configured-auto-green-and-source-backed-fifo-launch-rca"></a>
+<a id="235-token-member-and-shared-execution-reservations-code-checkpoint"></a>
+<a id="2350--current-primary-owned-recovery-redgreen-and-provisional-install-red"></a>
+<a id="2351--provisional-child-custody-and-explicit-v7-state-boundary"></a>
+<a id="2352--managed-genesis-custody-and-native-regression-checkpoint"></a>
+<a id="2353--paired-physical-reclaim-and-original-budget-audit-checkpoint"></a>
+<a id="2354--explicit-service-owned-queued-reclaim-and-resource-isolation"></a>
+<a id="2355--current-source-final-action-register-2026-10-12"></a>
+<a id="2356--service-owned-retention-code-checkpoint-2026-10-12"></a>
+<a id="2357-resume-checkpoint-retirement-refusal-fairness-and-provider-custody"></a>
+<a id="2358-native-product-and-physical-provider-execution-checkpoint-2026-10-13"></a>
+<a id="2359-f03-activity-ingress-provider-prediction-and-bounded-http-buffers-2026-10-13"></a>
+<a id="236-existing-corpus-bootstrap-and-profilework-lifecycle"></a>
+<a id="2360-f07-bounded-exact-view-source-owner-recovery-2026-10-13"></a>
+<a id="2361-f07-logical-capture-rebase-and-native-v11-format-gate-2026-10-13"></a>
+<a id="2362-f07-producer-wide-source-resync-and-native-v12-2026-10-13"></a>
+<a id="2363-f07-paged-producer-inventory-and-epoch-recovery-2026-10-13"></a>
+<a id="2364-f07-frozen-source-input-and-bounded-mutation-upload-2026-10-13"></a>
+<a id="2365-f07-durable-native-preparation-and-write-once-request-custody-2026-10-13"></a>
+<a id="2366-f07-explicit-endpoint-and-exact-native-terminal-custody-2026-10-13"></a>
+<a id="2367-f07-original-funded-client-transport-and-bounded-source-staging-2026-10-13"></a>
+<a id="2368-f07-exact-v9-dispatch-bounded-reconciliation-and-live-lease-limits-2026-10-13"></a>
+<a id="2369-f07-explicit-sdk-target-and-replay-downgrade-boundaries-2026-10-13"></a>
+<a id="237-native-posting-reads-and-canonical-single-content-ranking"></a>
+<a id="2370-f07-prospective-source-custody-and-interruptible-validation-2026-10-13"></a>
+<a id="2371-f07-python-feature-boundary-and-remaining-authority-gaps-2026-10-13"></a>
+<a id="2372-f07-canonical-v5-progress-and-exact-native-completion-2026-10-13"></a>
+<a id="2374-f07-native-recovery-read-and-refusal-audit-2026-10-13"></a>
+<a id="2375-current-source-progress-and-remaining-delivery-2026-10-13"></a>
+<a id="2376-original-scope-progress-accounting-and-remaining-work-2026-10-13"></a>
+<a id="2377-parallel-delivery-plan-and-exclusive-write-sets-2026-10-13"></a>
+<a id="2378-non-overlapping-implementation-checkpoint-2026-10-13"></a>
+<a id="2379-original-funded-native-member-readback-integration-2026-10-13"></a>
+<a id="238-class-bound-protected-execution-reservations"></a>
+<a id="2380-attempt-local-readback-reuse-and-adversarial-custody-repair-2026-10-13"></a>
+<a id="2381-searchplane-preparation-ownership-and-corpus-key-decode-2026-10-13"></a>
+<a id="2382-original-preparation-scope-passage-and-cooperative-refusal-2026-10-13"></a>
+<a id="2383-funded-output-mutable-bank-and-borrowed-writer-custody-2026-10-13"></a>
+<a id="2384-native-member-persistence-under-the-existing-original-2026-10-13"></a>
+<a id="2385-neutral-nested-decode-backing-and-original-adapter-2026-10-13"></a>
+<a id="2386-typed-text-and-cluster-decode-with-terminal-owner-custody-2026-10-13"></a>
+<a id="2387-quanta-owned-parser-and-admitted-structural-decode-2026-10-13"></a>
+<a id="2388-typed-source-identities-and-native-batch-connection-2026-10-13"></a>
+<a id="2389-complete-corpus-seed-and-coupled-native-recovery-boundary-2026-10-13"></a>
+<a id="239-reusing-proved-immutable-text-contributions"></a>
+<a id="2390-borrowed-hashing-and-retained-native-corpus-integration-2026-10-13"></a>
+<a id="actual-v9-producer-continuation-audit"></a>
+<a id="additional-source-defects-found-after-the-passing-checkpoint"></a>
+<a id="authority-omission-corruption-boundary"></a>
+<a id="basefuture-production-coupling-and-factorydrop-laws-2026-10-13"></a>
+<a id="batch-bytefailuremixedreopen-coverage-audit-2026-10-13"></a>
+<a id="borrowed-lexical-scratch-fields-and-cursor-advancement-follow-up-2026-10-12"></a>
+<a id="bounded-multi-owner-inventory-implementation-checkpoint-2026-10-13"></a>
+<a id="bounded-same-attempt-confirmed-occurrence-reuse-2026-10-13"></a>
+<a id="canonical-cursor-edit-ownership-continuation-2026-10-13"></a>
+<a id="canonical-map-output-and-internal-array-custody-coupling-2026-10-13"></a>
+<a id="canonical-registration-and-batch-output-custody-continuation-2026-10-13"></a>
+<a id="canonical-sourcerecord-decode-and-literal-output-transfer-2026-10-13"></a>
+<a id="catalog-installation-metadata-sql-preparation-2026-10-13"></a>
+<a id="catalog-statement-profile-diagnostic-seam-2026-10-13"></a>
+<a id="checkpoint-evidence"></a>
+<a id="checkpoints-and-delivery-discipline"></a>
+<a id="composition-and-bounded-scheduling"></a>
+<a id="concrete-producer-persistence-and-replay-changes"></a>
+<a id="confirmed-inventory-sql-batching-checkpoint-2026-10-13"></a>
+<a id="coordinator-base-and-erased-future-custody-candidate-2026-10-13"></a>
+<a id="core-fixed-metadata-decoder-and-actual-adapter-read-coupling-2026-10-13"></a>
+<a id="corpus-key-refusal-checkpoint--2026-10-13"></a>
+<a id="counted-projectionprofile-staging-and-scoped-lexical-acceptance-2026-10-13"></a>
+<a id="coupled-preparation-recovery-and-uds-runtime-acceptance-2026-10-13"></a>
+<a id="current-coupled-checkpoint-verdict-2026-10-12"></a>
+<a id="current-facts-and-important-corrections"></a>
+<a id="current-source-code-first-dispatch-revision"></a>
+<a id="current-source-residual-corrections"></a>
+<a id="durable-authority-and-format-ownership"></a>
+<a id="durable-request-decoding-and-retained-data-custody-2026-10-13"></a>
+<a id="evidence-reconciliation-and-the-next-checkpoints"></a>
+<a id="existing-structural-cost-regression-terminal-result-2026-10-13"></a>
+<a id="f06-integration-blockers-rechecked-during-the-recovery-checkpoint"></a>
+<a id="f07-actual-producer-mapping-recheck"></a>
+<a id="f07-continuation-explicit-source-admission-and-path-handoff"></a>
+<a id="file-bulk-staging-and-source-buffer-integration-follow-up-2026-10-12"></a>
+<a id="final-local-checkpoint-status-2026-10-12"></a>
+<a id="first-dispatch-a--b--c-in-parallel"></a>
+<a id="fixed-publication-binding-json-and-canonical-four-child-preparation-2026-10-13"></a>
+<a id="frozen-frontier-preparation-and-edit-cursor-custody-continuation-2026-10-13"></a>
+<a id="gram-page-terminal-acceptance-and-map-output-ownership-audit-2026-10-13"></a>
+<a id="gram-page-test-compilation-repair-2026-10-13"></a>
+<a id="gram-test-only-strict-repair-after-runtime-acceptance-2026-10-13"></a>
+<a id="gramprofiledecoderbatch-runtime-acceptance-checkpoint-2026-10-13"></a>
+<a id="implemented-contracts-and-producer-ownership"></a>
+<a id="implemented-seams-pending-coupled-verification"></a>
+<a id="inline-edge-runtime-and-api-acceptance-2026-10-13"></a>
+<a id="inline-edge-strict-repair-and-current-cost-rail-audit-2026-10-13"></a>
+<a id="inline-projection-physical-edges-2026-10-13"></a>
+<a id="ipckernel-preparation-runtime-checkpoint-2026-10-13"></a>
+<a id="kernel-mutation-staging-batch-continuation-2026-10-13"></a>
+<a id="kernel-source-preparation-allocation-continuation-2026-10-13"></a>
+<a id="lexical-strict-and-deferred-delta-decoder-checkpoint-2026-10-13"></a>
+<a id="literal-batch-acceptance-and-funded-gram-page-custody-2026-10-13"></a>
+<a id="literal-contribution-exact-preflight-and-source-reference-lookup-2026-10-13"></a>
+<a id="literal-gram-custody-and-coupled-batch-reference-rca-2026-10-13"></a>
+<a id="literal-objectsource-edge-read-contract-2026-10-13"></a>
+<a id="literal-posting-read-contract-coupling-2026-10-13"></a>
+<a id="live-ownership-correction-before-dispatch-2026-10-13"></a>
+<a id="managed-attempt-child-preflight-reuse-2026-10-13"></a>
+<a id="multi-owner-inventory-boundary-audit-and-implementation-seam-2026-10-13"></a>
+<a id="native-body-nfc-live-allocation-follow-up-2026-10-12"></a>
+<a id="native-initial-and-incremental-work-measurement-expansion-2026-10-13"></a>
+<a id="native-inventory-head-sharing-and-delta-row-custody-2026-10-13"></a>
+<a id="native-object-install-cost-observation-2026-10-13"></a>
+<a id="native-occurrence-preparation-allocation-follow-up-2026-10-13"></a>
+<a id="native-occurrence-write-array-sizing-follow-up-2026-10-13"></a>
+<a id="native-small-object-json-and-fixed-edge-preparation-2026-10-13"></a>
+<a id="native-sql-term-key-preparation-custody-follow-up-2026-10-13"></a>
+<a id="native-text-engine-scale-cost-law-extension-2026-10-13"></a>
+<a id="native-text-fixed-metadata-reader-admission-repair-2026-10-13"></a>
+<a id="native-token-key-and-batch-allocation-follow-up-2026-10-12"></a>
+<a id="native-token-packet-arena-follow-up-2026-10-12"></a>
+<a id="nativeliteral-funded-batches-and-borrowed-sql-keys-2026-10-13"></a>
+<a id="nativetext-inventory-cost-and-cursor-contract-follow-up-2026-10-12"></a>
+<a id="nativetext-pinned-member-read-custody-2026-10-13"></a>
+<a id="next-available-slots-d--e--f--g--h"></a>
+<a id="observed-ownership-and-permitted-parallelism"></a>
+<a id="profile-lookup-and-member-edit-preparation-candidate-2026-10-13"></a>
+<a id="profile-shape-validation-admission-repair-2026-10-13"></a>
+<a id="profilemember-coupling-and-scoped-scratch-caller-repair-2026-10-13"></a>
+<a id="projection-metadata-coupled-runtime-checkpoint-2026-10-13"></a>
+<a id="r19--r30-foundation-coupled-checkpoint-2026-10-12"></a>
+<a id="registered-metadata-readdecode-reuse-2026-10-13"></a>
+<a id="remaining-implementation-and-acceptance-slices"></a>
+<a id="remaining-promised-work-kept-with-original-owners"></a>
+<a id="remaining-work-audit-code-seams-versus-acceptance-gaps-2026-10-13"></a>
+<a id="request-json-and-publication-event-copy-preparation-2026-10-13"></a>
+<a id="required-next-coupled-slice"></a>
+<a id="resource-gap-and-required-repair"></a>
+<a id="runtime-scratch-test-dependency-coupling-2026-10-13"></a>
+<a id="shared-fixed-lexical-metadata-and-nativeliteral-readers-2026-10-13"></a>
+<a id="source-path-page-continuation-and-marker-preparation-custody-2026-10-13"></a>
+<a id="source-stage-returned-reference-custody-continuation-2026-10-13"></a>
+<a id="stage0-freeze-interfaces-and-real-write-ownership"></a>
+<a id="static-checks-and-pooled-execution-plan"></a>
+<a id="storage-commit-metadata-continuation-2026-10-13"></a>
+<a id="storage-internal-cursor-custody-continuation-2026-10-13"></a>
+<a id="storage-writer-preparation-continuation-2026-10-13"></a>
+<a id="synchronous-coordinator-edit-key-custody-2026-10-13"></a>
+<a id="text-scratch-hot-read-statement-preparation-2026-10-13"></a>
+<a id="typed-projection-metadata-readwrite-coupling-2026-10-13"></a>
+<a id="verification-ledger"></a>
+<a id="work-payload-and-coverage-preparation-custody-continuation-2026-10-13"></a>
 
-Cargo runs serially after module freezes and respects shared resource admission.
-`just rust-test-native-index` completed with 86 passed, zero failed after the
-Core/Enrichment split. Subsequent object-publication and COW installation repairs
-added four tests; storage (18), Kernel (21), and native worker/UDS (6 + 6) were
-rerun successfully on those changes. The combined focused scope has 90 distinct
-passing tests; this is not a claim that one workspace suite ran 90 tests.
-The integration binaries have executable authority in
-`tools/ci/test-authority.toml`. These are focused behavior and opt-in UDS composition
-results, not workspace, default daemon, release or performance qualification.
-
-| Command | Scope / current result |
-|---|---|
-| `./scripts/cargow test -p quanta-index-contract-base --lib --locked native_serde::tests` | VERIFIED: 7 passed. Independent JSON/CBOR goldens, explicit nullable fields, duplicate/unknown/missing/excess fields and exact fixed-array length |
-| `./scripts/cargow test -p quanta-index-kernel --tests --locked` | VERIFIED: 21 passed (unit 3, lifecycle 10, projection 7, native semantic projection 1). Required atomic views, historical queries, changed/delete/rename, replay, cold reopen, prepared-result rebase/ABA, independent producer event sequence and cancelled/expired Resume fence preservation |
-| `./scripts/cargow test -p quanta-index-storage --lib --locked` | VERIFIED: 18 passed. Independent ordered-map models, multi-root child-first installation, history/reopen, corrupt objects, oversized paths, single-link no-replace publication, pre-reservation limits and bounded DAG groups with late reservation failure |
-| `./scripts/cargow test -p quanta-index-repomap --lib --locked native::` | VERIFIED: 2 passed. FilePathInventoryV1 replace/delete/path swaps and exact prefix pagination |
-| `./scripts/cargow test -p quanta-index-catalog -p quanta-index-semantic --lib --locked native::` | VERIFIED: Catalog 12 and Semantic 6 passed. Admission/receipt/fence/lease/event identity/root alias/indexed queue; pinned recipe/provider binding, fixed exact vectors, acquired-ticket coverage and release |
-| `./scripts/cargow test -p quanta-index-core --lib --locked index::` | VERIFIED: 8 passed. Atomic cumulative budget charge, original cancellation/deadline, replaceable policy hysteresis, authority checks and independent resource reservations |
-| `./scripts/cargow test -p quanta-index-sdk --lib --locked native_uds::tests` | VERIFIED: 2 passed. Original receipt/request identity and pre-send cancellation |
-| `./scripts/cargow test -p quanta-index-ipc --lib --locked owned_connection_threads` | VERIFIED: 2 passed. Accept error and panic/unwind both wait for owned connection threads before the caller can release the state-root lease |
-| `./scripts/cargow test -p quanta-index-searchd-runtime --lib --locked native_worker::tests` | VERIFIED: 6 passed. Real Tokio timer, both-lane shutdown, cancelled/expired queues without admission/fence rotation, immediate Unknown Resume and real Core progress with a full Enrichment lane |
-| `./scripts/cargow test -p quanta-index-searchd-runtime --test native_index_uds --locked` | VERIFIED: 6 passed. Actual Tokio-backed adapter over UDS, lifecycle/status/replay/old view, cold Pending Resume, root/format refusal and Core publication while an owner provider is blocked |
-| `./scripts/cargow test -p quanta-index-searchd-runtime --lib --test native_index_uds --locked native_` | VERIFIED: after the storage repairs, both selected binaries passed 6 tests each. The filter covers the current `native_worker::tests` and every current native UDS test; the reusable rail above retains unfiltered integration execution |
-| `python3 tools/ci/lint/check-test-authority.py` | VERIFIED: native integration targets have executable CI authority |
-| `python3 tools/ci/lint/lint-hexagonal-boundaries.py` | VERIFIED: production/development dependency directions |
-| `python3 tools/ci/lint/check-module-discipline.py` | VERIFIED: 46 facade files |
-| `python3 tools/ci/lint/check-rust-derive-allowlist.py` | VERIFIED: all derive sites use the existing allowlist; no new Serde proc macros |
-| `python3 tools/ci/lint/check-cargo-toml-hygiene.py` | VERIFIED: 29 workspace crates |
-| `python3 tools/ci/lint/check-wire-inventory.py` | VERIFIED: native control request 14/response 10 variants are registered; their plane is the actual Control authority |
-| `just rust-public-api` | VERIFIED: Contract and SDK match their reviewed native API baselines |
-| `just rust-cargo-modules` | VERIFIED: Contract, Core and Kernel match their reviewed module baselines |
-| `just rust-profile test-daemon` | VERIFIED for executed assertions: 307 passed, 10 skipped, 3 slow, 1 leaky; test time 837.224s. The leaky test's handle cleanup remains unresolved; this is not a clean lifetime/release verdict |
-| `python3 tools/ci/lint/check-rust-fallbacks.py` | BLOCKED: existing `contract-base/src/ids.rs:671` contains governed syntax inside an opaque macro; this whole-workspace gate cannot issue a verdict |
-| `python3 -m pytest -q tools/ci/tests/test_lint_hexagonal_boundaries.py tools/ci/tests/test_check_test_authority.py tools/ci/tests/test_check_cargo_modules_snapshot.py tools/ci/tests/test_check_public_api.py tools/ci/tests/test_check_wire_inventory.py` | VERIFIED: 222 passed. Includes preserving prior baselines on producer failure and native inventory missing/duplicate/unknown/shape/plane refusal |
-
-The scoped native Rust syntax guard covers 34 production files, including the
-shared IPC server, with zero findings. It does not supersede the whole-workspace
-guard previously blocked by an opaque governed macro in existing identity code.
-Rendering API/module candidates or reviewing baseline additions alone is not a
-passing gate. The daemon escalation above exercises the unchanged legacy routes;
-its binaries were built before the subsequent native execution-class split.
-The native checkpoints above separately cover that split and the native UDS
-admission change; the legacy result is not promoted into native proof.
-
-The daemon run exited zero but reported `LEAK` for
-`dsl_scenario_truth::cold_matrix_shard_3_matches_golden_truth`.
-[Nextest documents](https://nexte.st/docs/features/leaky-tests/) that its default
-configuration counts a test with leaked standard-stream handles as successful.
-Static inspection found a thread-owned harness with shutdown/join, not a
-source-confirmed child-process spawn on this scenario path. The leaking handle's
-owner and cause are unknown; no timeout/configuration waiver is applied.
-
-The final integrated library Clippy checkpoint after the execution/storage
-changes passed for all 12 selected crates. The captured JSON contains no
-compiler-message warnings or errors for those selected targets; it separately
-contains eight pre-existing Tantivy dependency warnings:
-
-```bash
-./scripts/cargow clippy \
-  -p quanta-index-contract-base -p quanta-index-contract \
-  -p quanta-index-core -p quanta-index-kernel -p quanta-index-storage \
-  -p quanta-index-catalog -p quanta-index-lexical -p quanta-index-repomap \
-  -p quanta-index-semantic -p quanta-index-sdk -p quanta-index-ipc \
-  -p quanta-index-searchd-runtime --lib --locked --no-deps --message-format=json
-```
-
-This is library lint/compilation evidence; it does not qualify test-target Clippy,
-whole-workspace compilation or performance. Pre-existing vendor warnings emitted
-by focused Cargo tests are not silently counted as a warning-free dependency rail.
-
-Actual checkpoint failures were repaired before the corresponding passing rerun:
-
-- Multi-root COW installation could place a restaged durable child after its
-  newly staged parent. Reachable staged-DAG postorder repairs this ordering.
-- Runtime test roots were 0755; fixtures now use exact 0700. The production
-  private-root guard is unchanged.
-- Ciborium with the default Serde fixed-array visitor accepted trailing array
-  elements. Native identity decoding now uses an exact-length visitor; literal
-  malformed CBOR proves rejection independently of the serializer.
-- A low-write-budget fixture could produce a legitimate terminal refusal rather
-  than Pending. The Resume regression now uses the public durable admission
-  boundary, without a fabricated status or test-only production hook.
-- Two new DAG-group tests initially used 128 one-byte keys with one shared value.
-  Structural deduplication kept the physical DAG below 64 objects, so neither
-  crossed the intended group boundary. Fixed unique retained key suffixes now
-  force multiple groups; the original size, child-order and late-failure
-  assertions were retained. Storage then passed all 18 tests, followed by real
-  Catalog/Kernel and native UDS integration reruns.
-
-65 owners cross the 64-entry contribution/posting batch boundary. Independent
-owner inventories, one-owner delta and retained historical queries are checked.
-Projection tests cover unchanged-file dependents, producer mismatch, partial
-certificate refusal, recipe rebind refusal, repeated Pending source advances and
-certified empty output. Fixed semantic vectors prove binding/exact scoring, not
-embedding retrieval quality or producer dependency completeness. Descriptor
-checks before and after execution do not independently prove provider honesty
-or detect every transient model ABA.
-
-Multi-producer SourceAdvance now has a real Kernel/Catalog/storage regression:
-operation sequence 41 carries producer event sequence 2, preserves the other
-producer and old view, and refuses a predecessor gap without advancing head.
-Actual worker queue barriers also cover cancellation and expiry before Submit
-admission and before Pending Resume fence rotation. The real semantic integration
-test discards the materialization response, removes only its request object,
-reopens Catalog/Kernel/storage and checks the original receipt, exact view and
-unchanged provider-call count on Resume. This models a client missing an already
-committed response; it does not inject transport ACK loss at the commit boundary.
-
-### 22.5 Explicit remaining coupled work
-
-1. Lifetime/GC: online physical unlink is disabled. Historical roots, ingress,
-   pending operations, prepared owner artifacts and tickets are conservatively
-   retained. Scoped read/upload/attempt/work custody, process-death pin recovery,
-   retention floors, retirement/incarnation fencing and bounded reclaim must land
-   together before GC is enabled. The current slice makes no bounded-space claim.
-2. Scheduler/runtime: Auto interfaces and fixed governor are implemented; full
-   live signals, owner workers, executor/permit integration, adaptive telemetry and
-   editor acceptance are not connected. The opt-in service now reserves separate
-   Core/Enrichment execution capacity and enough transport slots to reach it.
-   A shared resource governor, provider fairness and measured interactive
-   deadlines still need live scheduler integration; fixed thread/queue caps
-   cannot certify total RSS, bounded provider time or device-level QoS.
-   Worker queue/active counts and timestamped dispatch-lag observations are
-   implemented in §22.7; they are measurements, not Auto admission authority.
-   The synchronous TextEmbeddingProvider
-   bridge requires provider-bounded I/O; cooperative checks do not preempt a
-   blocking call.
-3. Product cutover: default daemon/CLI/launcher, semantic search transport, backup/
-   restore and legacy lifecycle retirement remain a coupled integration lane.
-   Native byte-literal and file-path query transport is implemented in §22.6;
-   its exact pinned view does not qualify semantic retrieval or general query parity.
-   An opt-in control service is not a completed product migration.
-4. Full capabilities: token/BM25/regex semantics, chunking/ANN, semantic graph
-   RepoMap and whole-domain owner adapter/rebuild execution require their own
-   algorithms and contract tests. Do not hide them behind a success disposition.
-5. Semantica producer: real complete affected-domain generation, durable outbox,
-   required side outputs and P2I01–P2I08 producer/consumer conformance remain
-   independent work. Index cannot certify omitted dependencies from a digest.
-6. Performance/operations: fixed-delta cost across corpus scale/history/fanout,
-   storage amplification, initial indexing throughput, long pins/space pressure,
-   independent-process recovery and original XL reopen timeout qualification
-   remain NOT_RUN. Prior 94s delta/900s timeout results are not superseded by
-   focused native tests. Full suite, remote CI, release and Git publication remain
-   separate, unclaimed checkpoints.
-
-### 22.6 Bounded bulk intake implementation checkpoint
-
-The former owner vectors/closure collectors were replaced in the one current
-internal IR. `OwnerMutationSet { root, count, digest }` is shared by SourceAdvance,
-ProjectionAdvance, the projection certificate and SourceDelta. This checkpoint
-is implementation work; the earlier 90-test checkpoint does not qualify this
-breaking IR. Current execution results are recorded below after central checks.
-Native persisted v1 state is explicitly refused; the opt-in service writes the
-v2 artifact marker and the legacy daemon refuses either native marker. There is
-one executable IR, without a v1 decoder or an inline-versus-paged branch.
-
-| Seam | Implemented path | Remaining boundary |
-|---|---|---|
-| Input | Operation-scoped `IngressRef`; typed `SourceInput` capture batches of at most 32 files / 8 MiB, child-first body/record installation, mutation pages of at most 128, canonical manifest seal | Full capture preflight precedes installation; result count, order and content identities must match. Upload page arrival order/chain is not authority. Final immutable map order, count, canonical item encoding, edges and logical digest are authenticated through EOF. No total request-sized mutation vector |
-| Custody | Catalog reserve before install, confirmed child-first objects, fenced ingress and sealed request, bounded 256-row transfer and cleanup in the admission transaction; per-event claims and discard also use caller work/deadline/cancellation checks | Admission or discard exhaustion rolls back the whole transaction, retaining input and fence for a fresh-budget retry. Existing committed receipts remain readable. SQLite calls and mutex waits are cooperative interruption boundaries. Upload/attempt references are conservatively retained; physical GC is disabled |
-| Replay | Independent `OwnerMutationCursor` / `SourceChangeCursor` per consumer, at most 128 map entries per page, caller cancellation/deadline/work accounting | Adapters must exhaust/authenticate the stream; a successful prefix cannot certify a full transition |
-| Source / RepoMap | Private SQLite owner/path overlay, global release/acquire validation, fixed original-base CAS, atomic owner/path/frontier roots. Validate all source path and event preconditions before installing owner/frontier markers in batches of at most 64 | Changed records are read more than once; bounded residency does not imply zero I/O or constant delta cost across all dependency fanout |
-| Storage | Strict root/key edit cursor; validate complete original-base edit stream before installing map nodes; disk-backed scratch/marks, roots-only result, child-first batches. Empty-base sorted trie build and existing-base open-path replay share canonical node normalization. On macOS, each bounded object batch completes file/directory fsync and one same-device full-sync barrier before custody confirmation | Existing-base replay retains common ancestors and closes completed paths; original-base CAS lookup remains per edit. This reduces repeated ancestor writes, not all repeated reads. No whole-root scan, general read-once bulk merge, measured throughput or hardware power-loss qualification is implied |
-| Lexical | External gram/owner delta sort; 64-gram posting batches, bounded contribution installs, final gram/owner root group | Byte-literal semantics only. SQLite scratch quotas are per invocation; this is not a BM25/token/regex or measured throughput claim |
-| Work / coverage | Immutable sorted Retire/Create action manifest; action and changed async owner-coverage leaves install in batches of at most 64 / 8 MiB, with predicted identity/order validation; Catalog authenticates EOF/count/digest in the publication/fence/receipt transaction | No live owner scheduling or Auto executor is implied. A 65-owner pending/materialization regression crosses the installation boundary; a source-only scale test cannot qualify this path |
-
-```mermaid
-flowchart LR
-  P[Producer / SDK] --> I[Catalog fenced ingress]
-  I --> S[Reserve -> install -> confirm]
-  S --> M[Canonical immutable mutation root]
-  M --> A[Atomic operation admission]
-  A --> C[Independent bounded delta cursors]
-  C --> N[Source / Lexical / RepoMap / projection / work]
-  N --> T[Fixed-base streamed COW and final roots]
-  T --> V[Catalog CAS + work + view + receipt transaction]
-```
-
-The logical mutation digest is independent of upload page partition. Duplicate
-owners are rejected by absent-CAS; the final cursor requires strict sorted unique
-owner keys. Upload pages may be supplied in a different order or from another
-registered immutable base. Neither network sequence nor a mutable upload head is
-promised. Source/projection CAS and content binding are checked on the final
-sealed set before publication. SDK streaming uses bounded pages and verifies the
-returned ingress/reply identity.
-
-Scratch is disposable preparation state, never a publication authority. Normal
-completion/error/cancellation/unwind remove it through RAII; process death may
-leave named temporary files. Safe orphan cleanup must acquire the owning service
-lease before removing only its namespace. No age/PID heuristic or sweep during
-concurrent FileObjectStore::open was added. Per-file SQLite cache/max-page limits
-and work counters do not certify a shared live RAM/disk quota. Temporary sort
-files, decoded input, adapter working sets and IPC frames still need one admitted
-resource ledger. SQLite FULL/OOM fails preparation with ResourceLimited; no root
-is published. RSS/disk peaks and kill/restart cleanup are unqualified.
-
-Current targeted regressions include cross-page path cycles, duplicate/count/
-fence failures, complete cursor EOF rollback, original-base late conflict with
-zero installed map prefix, bounded shared-DAG installation, independent COW
-root equality, 64-gram external sort boundaries, and a real 4,097-owner source-only
-publication followed by a one-owner delta. These are correctness/work-count
-checks, not XL throughput or constant-time guarantees. Native lexical/path UDS
-search binds the selected pinned view; semantic query requires a configured
-provider and remains outside that transport slice.
-
-#### Batch durability boundary
-
-The macOS batch path uses this order, including matching objects installed by a
-concurrent writer:
-
-1. Catalog reserves the complete bounded, child-first batch.
-2. New object data is written and fsynced before no-replace canonical publication;
-   matching existing objects are verified and fsynced through private regular-file
-   descriptors. Root, shard and file device identities must agree.
-3. The objects parent and every referenced shard directory are fsynced.
-4. One retained regular-file descriptor issues `F_FULLFSYNC` on that device.
-5. Only a successful barrier and caller budget checkpoint permit Catalog
-   `installed_batch` confirmation. Any barrier error leaves reservations
-   unconfirmed; prepared roots cannot become a published view.
-
-The pinned Rust 1.92 Apple implementation maps `File::sync_all` and `sync_data`
-to `F_FULLFSYNC`; replacing repeated full barriers in this batch with plain fsync
-therefore changes the number of device barriers. The local macOS `fcntl(2)`
-contract states that a completed full barrier also covers earlier fsync calls
-on the same device. Apple's [fcntl documentation](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html)
-describes the stronger device-flush request; SQLite's
-[fullfsync documentation](https://www.sqlite.org/pragma.html#pragma_fullfsync)
-distinguishes it from ordinary synchronization. Catalog WAL still uses its
-existing verified `synchronous=FULL` and `fullfsync=ON` settings.
-
-This is a supported-filesystem/OS ordering argument, not independent proof that
-hardware obeys flush requests. Actual power-loss testing is NOT_RUN. Scalar
-object installation and the non-macOS batch path retain their prior sync path.
-Per-object writes, inode work and Catalog transactions remain; this change is
-not an object-pack implementation. Regressions inject a failed full barrier and
-check reserved-but-unconfirmed custody, verify a regular same-device descriptor
-on a matching-object replay, and refuse mismatched device identity.
-
-#### Remaining-work dependency audit
-
-| Lane | Required next coupled change | Why a local shortcut is insufficient |
-|---|---|---|
-| Lifetime / physical reclaim | Session-fenced renewable read custody, restart recovery, explicit history/replay retention floors, terminal operation/attempt/work custody release, bounded DAG accounting, retiring permit and physical incarnation fencing | `native_pin_v1` currently has ticket/view identity but no session lease. History is retained permanently. Registered object edges alone do not authorize deletion. Physical unlink remains disabled |
-| Scratch recovery / resource ownership | Inject an attempt/service scratch factory through Kernel and every adapter; use a service-owned namespace and clean prior sessions only while holding its state-root lease; admit shared live memory/disk independently of cumulative work counters | Only map scratch is currently under the object root. Kernel, Lexical and RepoMap use OS temporary paths. Sweeping from public `FileObjectStore::open` can delete another active standalone writer's scratch; age/PID tests do not grant deletion authority |
-| Auto / execution | Connect fresh signals, exact stage/ticket authority, shared reservations, owned provider execution, dispatch/completion rechecks and measured service deadlines | A pure policy and two bounded queues do not enforce a live resource ledger or preempt synchronous provider I/O. Telemetry cannot grant coverage/provider permission or fabricate a completed result |
-| Product / producer | Bind configured semantic query/provider and default daemon/launcher/restore paths; separately qualify the real producer's complete affected-domain/outbox/side-output contract | Literal/path UDS and consumer certificates cannot prove omitted producer dependencies or semantic retrieval parity |
-
-These lanes remain implementation work, not acceptance evidence. They require
-separate exclusive write sets and coupled integration checkpoints; no active
-scratch sweep, partial GC enabling or fabricated live Auto signal is introduced
-by this checkpoint.
-
-#### Central verification for this checkpoint
-
-The batched native rail completed on the paged-intake, streamed-COW, macOS batch
-durability and SDK reply-guard implementation: **123 passed, zero failed, one
-slow, 1,048 skipped across 16 binaries; test execution 204.285 seconds**. The
-4,097-owner source-only scenario completed in 174.263 seconds and checked the
-subsequent one-owner delta, independent map cardinality, unchanged path root,
-unchanged-owner identity and retained old view. Its delta mutation charge was
-less than one eighth of initial publication's charge. The wall time includes
-capture, manifests, publication and assertions; it is not an initial-index or
-incremental-latency measurement. No formal before/after performance comparison
-is inferred from this run or the earlier 119-test intermediate checkpoint.
-
-```bash
-QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200 just rust-test-native-index
-
-QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200 ./scripts/cargow clippy \
-  -p quanta-index-contract-base -p quanta-index-contract \
-  -p quanta-index-core -p quanta-index-storage -p quanta-index-catalog \
-  -p quanta-index-kernel -p quanta-index-lexical -p quanta-index-repomap \
-  -p quanta-index-semantic -p quanta-index-sdk -p quanta-index-ipc \
-  -p quanta-index-searchd-runtime --lib --locked -- -D warnings
-```
-
-| Verification scope | Result |
-|---|---|
-| Native correctness / integration checkpoint | VERIFIED: Contract-base 7; Core 8; Catalog 20; Kernel 29 (unit 5, lifecycle 15, projection 7, real semantic projection 1, capture batch 1); Storage 28; Lexical 3; RepoMap 4; Semantic 6; SDK 4; IPC 2; runtime worker 6 and actual native UDS 6 |
-| Strict library Clippy | VERIFIED for all 12 selected packages; dependency Tantivy emits eight existing warnings, outside the selected-package verdict |
-| Wire inventory / test authority | VERIFIED; native integration targets and request/response shapes are registered |
-| Rust syntax / allow attributes / derive allowlist | VERIFIED; latest whole Rust syntax gate scanned 660 scoped files and 218 parsed candidates, including §22.7. This current verdict supersedes the historical macro-related BLOCKED state for that gate, not unrelated historical tests |
-| Contract / SDK public API | VERIFIED against their current reviewed baselines; no stale pre-breaking-IR baseline verdict is reused |
-| Contract / Core / Kernel module tree | VERIFIED against their reviewed module baselines |
-| `./scripts/cargow --lane fmt-lane fmt --all -- --check` | VERIFIED, including the final worker/UDS observation edits |
-| `git diff --check` | VERIFIED for the inspected working tree |
-
-The first 119-test execution failed a negative assertion before the intended
-path-collision submission: a missing shard returned Storage while a missing file
-in an existing shard returned CorruptObject. The storage authority now gives
-both missing-object layouts the same CorruptObject classification, retains
-private-layout/other-I/O errors as Storage and classifies missing child references
-as InvalidInput. Independent layout regressions and the actual late path-collision
-test passed afterward. The final rail uses `--no-fail-fast`, so a failing case no
-longer prevents unrelated selected cases from producing a verdict.
-
-Additional live worker observations are a subsequent runtime-only change and
-must receive their own worker/UDS checkpoint; the 123-test result does not qualify
-edits made after that binary build. Full suite, benchmark, Semantica producer
-conformance, online GC, live Auto scheduling, product cutover, remote CI and
-release qualification remain separate scopes.
-
-### 22.7 Live worker observation checkpoint
-
-`NativeIndexService::worker_observation()` returns an owned observation handle
-before `run(self)` consumes the service. `observe(max_sample_age)` reads a
-coherent snapshot through one bounded state lock:
-
-- One worker-local monotonic timestamp and Running / Stopping / Stopped / Failed
-  state; the handle may outlive the service.
-- Core and Enrichment accepted-but-not-started counts, active counts and measured
-  dequeue lag. Channel capacity remains one waiting slot per serial lane. The
-  handoff between channel receive and execution activation can legitimately show
-  queued=2, active=0; accepted queued+active remains at most two per lane. Once the
-  first activates, the same state becomes queued=1, active=1.
-- Dispatch lag is Missing before the first dequeue, Known only while its actual
-  timestamp is fresh under the caller's positive TTL, and Dropped after expiry,
-  stopping or failure. A cleaned-up zero count is not a healthy scheduler signal.
-- Queue accounting follows command-owned RAII through admission failure,
-  cancellation/expiry, receiver/task panic and shutdown. Invariant failures and
-  poisoned locks produce typed errors; neither becomes a fabricated zero sample.
-
-The enqueue channel permit and counter update are coupled under that state lock;
-dequeue activation and release use the same state. Shutdown marks Stopping before
-closing senders or waiting for the owned manager. Completion marks Stopped;
-failure remains Failed. Required Core and Enrichment operation routing, budgets,
-publication fences and queue capacities are preserved.
-
-These are the only live measurements added here. Interactive pressure, memory
-headroom, index-wide backlog, quality confidence and provider availability are
-not measured by this API. A consumer must retain Unknown for those absent
-signals and bind same-intent Fast/Deep stages, exact ticket/coverage, shared
-resource permits and result proof before connecting the Auto governor. No
-background owner pump, global RAM/disk limit, provider preemption or interactive
-latency guarantee is claimed.
-
-Verification is a separate runtime checkpoint after the 123-test build in §22.6:
-actual barriers exercise queue saturation, cancelled/expired Submit/Resume,
-recv-before-activation interleaving, both-lane shutdown, TTL expiry and task panic.
-The real UDS test also acquires the public observation handle, observes one
-blocked Enrichment operation while Core publishes, and checks stopped/empty
-lanes after the service joins.
-
-```bash
-QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200 ./scripts/cargow nextest run \
-  -p quanta-index-searchd-runtime --lib --test native_index_uds --locked \
-  --test-threads 2 --no-tests fail --no-fail-fast \
-  -E 'test(/^native_worker::tests/) | binary(=native_index_uds)'
-```
-
-Final runtime checkpoint: **VERIFIED, 15 passed, zero failed, nine skipped;
-execution 6.663 seconds** (worker 9, actual UDS 6). The three observation-related
-source/test files were unchanged during that execution. The final library Clippy
-checkpoint covers the same 12 packages as §22.6 with `-D warnings`; final whole
-workspace formatting and diff checks passed. These are scoped current-code
-results; the overlapping 123-test and 15-test runs are not added together as a
-single suite result. Auto execution, power-loss, global resource limits, full
-suite, formal benchmarks and product cutover remain unqualified.
+</details>

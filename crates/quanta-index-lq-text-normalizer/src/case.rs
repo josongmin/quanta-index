@@ -253,6 +253,269 @@ impl<'a> NfcFoldPlan<'a> {
     }
 }
 
+/// Failure of bounded, cancellable NFC production.
+#[derive(Debug)]
+pub enum BoundedNfcError<E> {
+    Checkpoint(E),
+    Memory(E),
+    OutputExceeded,
+    Allocation(TryReserveError),
+    LengthChanged,
+    Native(NativeNormalizationErrorV1<BoundedNfcAdmissionError<E>>),
+}
+
+#[derive(Debug)]
+pub enum BoundedNfcAdmissionError<E> {
+    Checkpoint(E),
+    Memory(E),
+    Scratch(NfcAdmissionError),
+    OutputExceeded,
+    LengthOverflow,
+}
+
+impl<E: fmt::Display> fmt::Display for BoundedNfcAdmissionError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Checkpoint(error) | Self::Memory(error) => fmt::Display::fmt(error, formatter),
+            Self::Scratch(error) => fmt::Display::fmt(error, formatter),
+            Self::OutputExceeded => {
+                formatter.write_str("normalization output exceeds request limit")
+            }
+            Self::LengthOverflow => formatter.write_str("normalization output length overflow"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for BoundedNfcAdmissionError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Checkpoint(error) | Self::Memory(error) => Some(error),
+            Self::Scratch(error) => Some(error),
+            Self::OutputExceeded | Self::LengthOverflow => None,
+        }
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for BoundedNfcError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Checkpoint(error) | Self::Memory(error) => fmt::Display::fmt(error, formatter),
+            Self::OutputExceeded => {
+                formatter.write_str("normalization output exceeds request limit")
+            }
+            Self::Allocation(error) => write!(
+                formatter,
+                "normalization output allocation refused: {error}"
+            ),
+            Self::LengthChanged => formatter.write_str("normalization output length changed"),
+            Self::Native(error) => fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for BoundedNfcError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Checkpoint(error) | Self::Memory(error) => Some(error),
+            Self::Allocation(error) => Some(error),
+            Self::Native(error) => Some(error),
+            Self::OutputExceeded | Self::LengthChanged => None,
+        }
+    }
+}
+
+impl<E> BoundedNfcError<E> {
+    /// Recover the caller's exact work or memory admission refusal.
+    pub fn into_checkpoint(self) -> Result<E, Self> {
+        match self {
+            Self::Checkpoint(error)
+            | Self::Memory(error)
+            | Self::Native(NativeNormalizationErrorV1::Admission(
+                BoundedNfcAdmissionError::Checkpoint(error)
+                | BoundedNfcAdmissionError::Memory(error),
+            )) => Ok(error),
+            other @ (Self::OutputExceeded
+            | Self::Allocation(_)
+            | Self::LengthChanged
+            | Self::Native(_)) => Err(other),
+        }
+    }
+}
+
+struct BoundedNfcAdmission<'a, F, R, L> {
+    scratch: NfcScratchAdmission,
+    checkpoint: &'a mut F,
+    reserve: &'a mut R,
+    leases: NfcScratchLeases<L>,
+    pending_work: u64,
+}
+
+struct NfcScratchLeases<L> {
+    decomposition: Option<L>,
+    recomposition: Option<L>,
+    sort: Option<L>,
+}
+
+impl<L> NfcScratchLeases<L> {
+    fn new() -> Self {
+        Self {
+            decomposition: None,
+            recomposition: None,
+            sort: None,
+        }
+    }
+
+    fn get_mut(&mut self, owner: NativeNormalizationScratchOwnerV1) -> &mut Option<L> {
+        match owner {
+            NativeNormalizationScratchOwnerV1::Decomposition => &mut self.decomposition,
+            NativeNormalizationScratchOwnerV1::Recomposition => &mut self.recomposition,
+            NativeNormalizationScratchOwnerV1::Sort => &mut self.sort,
+        }
+    }
+}
+
+impl<F, R, L, E> NativeNormalizationAdmissionV1 for BoundedNfcAdmission<'_, F, R, L>
+where
+    F: FnMut(u64) -> Result<(), E>,
+    R: FnMut(usize) -> Result<L, E>,
+{
+    type Error = BoundedNfcAdmissionError<E>;
+
+    fn checkpoint_work_v1(&mut self, units_v1: u64) -> Result<(), Self::Error> {
+        self.pending_work = self
+            .pending_work
+            .checked_add(units_v1)
+            .ok_or(BoundedNfcAdmissionError::LengthOverflow)?;
+        if self.pending_work >= 1024 {
+            let units = std::mem::take(&mut self.pending_work);
+            (self.checkpoint)(units).map_err(BoundedNfcAdmissionError::Checkpoint)?;
+        }
+        Ok(())
+    }
+
+    fn native_birth_v1(
+        &mut self,
+        demand_v1: NativeNormalizationScratchDemandV1,
+        birth_v1: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, Self::Error> {
+        let mut refusal = None;
+        let mut replacement = None;
+        let result = self
+            .scratch
+            .native_birth_v1(
+                demand_v1,
+                &mut || match (self.reserve)(demand_v1.new_bytes_v1) {
+                    Ok(lease) => {
+                        if birth_v1() {
+                            replacement = Some(lease);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Err(error) => {
+                        refusal = Some(error);
+                        false
+                    }
+                },
+            )
+            .map_err(BoundedNfcAdmissionError::Scratch)?;
+        if let Some(error) = refusal {
+            return Err(BoundedNfcAdmissionError::Memory(error));
+        }
+        if result {
+            // Old and replacement grants coexist through native reallocation.
+            *self.leases.get_mut(demand_v1.owner_v1) = replacement;
+        }
+        Ok(result)
+    }
+
+    fn release_scratch_v1(&mut self, owner_v1: NativeNormalizationScratchOwnerV1) {
+        self.scratch.release_scratch_v1(owner_v1);
+        *self.leases.get_mut(owner_v1) = None;
+    }
+}
+
+/// Count exact NFC output without allocating it. Borrow canonical input.
+///
+/// `reserve` must return a grant covering the requested bytes until it drops.
+/// Scratch grants cover native birth/growth and end after backing is dropped.
+/// The returned output grant must remain with the owned text through its use.
+pub fn bounded_nfc_with_checkpoint<E, L>(
+    source: &str,
+    max_output_bytes: usize,
+    max_total_bytes: usize,
+    mut checkpoint: impl FnMut(u64) -> Result<(), E>,
+    mut reserve: impl FnMut(usize) -> Result<L, E>,
+) -> Result<(Cow<'_, str>, Option<L>), BoundedNfcError<E>> {
+    checkpoint(0).map_err(BoundedNfcError::Checkpoint)?;
+    let mut output_bytes = 0usize;
+    let mut original = source.chars();
+    let mut unchanged = true;
+    {
+        let mut admission = BoundedNfcAdmission {
+            scratch: NfcScratchAdmission::new(0, max_total_bytes)
+                .map_err(|_error| BoundedNfcError::OutputExceeded)?,
+            checkpoint: &mut checkpoint,
+            reserve: &mut reserve,
+            leases: NfcScratchLeases::new(),
+            pending_work: 0,
+        };
+        try_for_each_nfc_with_native_admission_v1(source, &mut admission, |scalar| {
+            output_bytes = output_bytes
+                .checked_add(scalar.len_utf8())
+                .ok_or(BoundedNfcAdmissionError::LengthOverflow)?;
+            if output_bytes > max_output_bytes {
+                return Err(BoundedNfcAdmissionError::OutputExceeded);
+            }
+            if original.next() != Some(scalar) {
+                unchanged = false;
+            }
+            Ok(())
+        })
+        .map_err(BoundedNfcError::Native)?;
+    }
+    checkpoint(0).map_err(BoundedNfcError::Checkpoint)?;
+    if unchanged && original.next().is_none() {
+        return Ok((Cow::Borrowed(source), None));
+    }
+    if output_bytes > max_total_bytes {
+        return Err(BoundedNfcError::OutputExceeded);
+    }
+    // Fund the requested output backing before its fallible allocation.
+    let _funded = NfcScratchAdmission::new(output_bytes, max_total_bytes)
+        .map_err(|_error| BoundedNfcError::OutputExceeded)?;
+    let output_memory = if output_bytes == 0 {
+        None
+    } else {
+        Some(reserve(output_bytes).map_err(BoundedNfcError::Memory)?)
+    };
+    let mut output = String::new();
+    output
+        .try_reserve_exact(output_bytes)
+        .map_err(BoundedNfcError::Allocation)?;
+    {
+        let mut admission = BoundedNfcAdmission {
+            scratch: NfcScratchAdmission::new(output.capacity(), max_total_bytes)
+                .map_err(|_error| BoundedNfcError::OutputExceeded)?,
+            checkpoint: &mut checkpoint,
+            reserve: &mut reserve,
+            leases: NfcScratchLeases::new(),
+            pending_work: 0,
+        };
+        try_for_each_nfc_with_native_admission_v1(source, &mut admission, |scalar| {
+            output.push(scalar);
+            Ok(())
+        })
+        .map_err(BoundedNfcError::Native)?;
+    }
+    checkpoint(0).map_err(BoundedNfcError::Checkpoint)?;
+    if output.len() != output_bytes {
+        return Err(BoundedNfcError::LengthChanged);
+    }
+    Ok((Cow::Owned(output), output_memory))
+}
+
 /// Whether a surface compares text after the case fold.
 ///
 /// The DSL's `case:` option selects it: `case:yes` is [`CaseMode::Sensitive`],
@@ -298,6 +561,30 @@ pub fn nfc(text: &str) -> Cow<'_, str> {
     }
 }
 
+enum CaseScalar {
+    Sensitive(std::iter::Once<char>),
+    Folded(std::char::ToLowercase),
+}
+
+impl Iterator for CaseScalar {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        match self {
+            Self::Sensitive(chars) => chars.next(),
+            Self::Folded(chars) => chars.next(),
+        }
+    }
+}
+
+/// Stream the canonical case surface without allocating an intermediate string.
+pub fn case_chars(text: &str, case: CaseMode) -> impl Iterator<Item = char> + '_ {
+    text.chars().flat_map(move |ch| match case {
+        CaseMode::Sensitive => CaseScalar::Sensitive(std::iter::once(ch)),
+        CaseMode::Folded => CaseScalar::Folded(ch.to_lowercase()),
+    })
+}
+
 /// The case fold: per-character [`char::to_lowercase`].
 #[must_use]
 pub fn fold(text: &str) -> String {
@@ -305,9 +592,7 @@ pub fn fold(text: &str) -> String {
         return text.to_ascii_lowercase();
     }
     let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        out.extend(ch.to_lowercase());
-    }
+    out.extend(case_chars(text, CaseMode::Folded));
     out
 }
 
@@ -322,7 +607,28 @@ pub fn apply_case(text: &str, case: CaseMode) -> Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CaseMode, NfcFoldBuildError, NfcFoldPlan, fold, nfc};
+    use super::{CaseMode, NfcFoldBuildError, NfcFoldPlan, case_chars, fold, nfc};
+
+    #[test]
+    fn streamed_case_surfaces_match_fixed_unicode_gold() {
+        for (input, folded) in [
+            ("", ""),
+            ("ASCII", "ascii"),
+            ("CAFÉ", "café"),
+            ("ΟΔΟΣ", "οδοσ"),
+            ("Straße", "straße"),
+            ("İ", "i\u{307}"),
+        ] {
+            assert_eq!(
+                case_chars(input, CaseMode::Sensitive).collect::<String>(),
+                input
+            );
+            assert_eq!(
+                case_chars(input, CaseMode::Folded).collect::<String>(),
+                folded
+            );
+        }
+    }
 
     #[test]
     fn fold_is_unicode_lowercase_per_char() {

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://quanta-index.invalid/schemas/causal-timeline-v2.json",
+  "$id": "https://quanta-index.invalid/schemas/causal-timeline-v4.json",
   "title": "Quanta Index causal timeline JSONL record",
   "description": "One bounded record per JSONL line. The first record is a header and the final record is a footer. Event sequence is writer order, not causal order.",
   "oneOf": [
@@ -14,6 +14,11 @@
       "pattern": "^[0-9a-f]{32}$",
       "maxLength": 32
     },
+    "id256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
     "spanId": {
       "type": "integer",
       "minimum": 1,
@@ -24,11 +29,15 @@
       "enum": [
         "files_visited", "files_read", "files_hashed", "files_decoded",
         "inodes_visited", "unique_inodes", "physical_bytes_measured", "bytes_read", "bytes_hashed",
-        "bytes_decoded", "sqlite_rows", "sqlite_batches", "sqlite_elapsed_ns", "candidates",
+        "bytes_decoded", "work_reads", "work_writes", "work_bytes", "work_mutations", "sqlite_rows", "sqlite_batches", "sqlite_elapsed_ns",
+        "sqlite_write_calls", "sqlite_write_requested_bytes", "sqlite_write_failures",
+        "sqlite_wal_write_calls", "sqlite_main_write_calls", "sqlite_other_write_calls",
+        "query_posting_calls", "query_posting_hits", "query_posting_elapsed_ns", "query_phrase_checks", "query_phrase_elapsed_ns",
+        "candidates",
         "candidates_verified", "matches", "rejected_at_guard", "sync_calls",
         "sync_failures", "sync_elapsed_ns", "new_objects", "reused_objects",
         "compacted_documents", "compacted_segments", "compacted_bytes", "posting_mutations",
-        "map_page_mutations", "invalid_attempt_tokens", "unique_closure_refs",
+        "map_page_mutations", "managed_object_inputs", "invalid_attempt_tokens", "unique_closure_refs",
         "closure_dependency_edges", "closure_authenticated_bytes", "closure_read_elapsed_ns",
         "closure_hash_elapsed_ns", "closure_decode_elapsed_ns", "queue_dropped", "queue_accepted",
         "output_written", "output_unwritten", "retained_pairs", "measure_calls",
@@ -36,7 +45,9 @@
         "semantic_delete_calls", "semantic_append_calls", "semantic_rows_appended",
         "semantic_rows_deleted", "semantic_vector_bytes", "query_admitted_limit",
         "query_read_limit", "query_byte_limit", "regex_literal_count",
-        "regex_alternative_count", "regex_necessary_gram_count"
+        "regex_alternative_count", "regex_necessary_gram_count",
+        "sqlite_sync_overwrite", "sqlite_sync_growth", "sqlite_sync_truncate",
+        "sqlite_sync_create", "sqlite_sync_no_mutation", "sqlite_sync_unclassified"
       ]
     },
     "header": {
@@ -49,7 +60,7 @@
       ],
       "properties": {
         "record_type": { "const": "header" },
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 4 },
         "capture_id": { "$ref": "#/$defs/id128" },
         "stream_id": { "$ref": "#/$defs/id128" },
         "clock_domain": { "$ref": "#/$defs/id128" },
@@ -82,6 +93,8 @@
             { "$ref": "#/$defs/requestIdentity" },
             { "$ref": "#/$defs/phaseIdentity" },
             { "$ref": "#/$defs/counter" },
+            { "$ref": "#/$defs/annRegionObservation" },
+            { "$ref": "#/$defs/sqliteSyncObservation" },
             { "$ref": "#/$defs/syncAggregate" },
             { "$ref": "#/$defs/objectKindAggregate" },
             { "$ref": "#/$defs/adoptionGroupAggregate" },
@@ -108,16 +121,24 @@
           "enum": [
             "request", "operation", "client_attempt", "ingress", "queue_wait",
             "dispatch", "backend", "encode", "write", "build_preflight",
-            "build_prepare", "semantic_build", "lexical_build", "finalize",
+            "build_prepare", "semantic_build", "lexical_build",
+            "native_text_postings", "native_text_root",
+            "native_coverage_scan", "native_coverage_map_apply",
+            "native_searchable_prepare", "native_coverage_save", "native_member_assemble", "finalize",
             "bm25_census_build", "bm25_live_build", "bm25_boundary",
-            "activate", "retention_pair_lock_wait", "retention_pair_lock_hold",
+            "activate", "catalog_lock_wait", "catalog_lock_hold",
+            "retention_pair_lock_wait", "retention_pair_lock_hold",
             "retention_root_lock_wait", "retention_root_lock_hold",
             "retention_root_snapshot", "source_transaction_one", "source_transaction_two",
+            "native_source_apply", "native_source_path_install", "native_source_map_apply",
             "retention_plan", "retention_measure",
             "closure_read", "closure_hash", "closure_decode", "sqlite_work",
-            "physical_inode_census", "native_publish", "file_publish", "lexical_seal",
+            "physical_inode_census", "managed_object_reserve", "managed_object_confirm",
+            "native_publish", "file_publish", "lexical_seal",
             "lexical_proof", "compaction",
-            "query_parse", "query_plan", "query_read_view", "query_candidate",
+            "query_parse", "query_plan", "query_read_view",
+            "query_overlay_snapshot", "query_fast", "query_deep", "query_lexical", "query_embedding", "query_overlay_embedding",
+            "query_candidate",
             "query_verify", "query_rank", "query_project", "harness_phase",
             "observer_setup", "observer_sample", "observer_teardown", "artifact_write", "runtime_boot",
             "boot_restore", "boot_reclaim", "boot_inventory", "boot_active_proof",
@@ -164,7 +185,16 @@
           "enum": [
             "full_ingest_seal", "full_ingest", "full_seal", "full_activate",
             "delta_ingest_seal", "delta_activate", "noop_seal", "noop_activate",
-            "delete_seal", "delete_activate", "same_process_reopen"
+            "delete_seal", "delete_activate", "same_process_reopen",
+            "native_corpus_generation", "native_config_setup", "native_startup",
+            "native_workspace_create", "native_profile_configure",
+            "native_full_begin_input", "native_full_stage_sources", "native_full_event_ack",
+            "native_first_search", "native_delta_stage_source", "native_delta_event_ack",
+            "native_delta_search", "native_noop_event_ack", "native_noop_stable_search",
+            "native_delete_event_ack", "native_deleted_search", "native_old_pin_search",
+            "native_churn_cycles", "native_churn_old_view_search", "native_drain",
+            "native_reopen", "native_reopen_read_head", "native_reopen_deleted_search",
+            "native_reopen_churn_search", "native_reopen_search", "native_final_drain"
           ]
         }
       }
@@ -178,6 +208,58 @@
         "span_id": { "$ref": "#/$defs/spanId" },
         "key": { "$ref": "#/$defs/counterKey" },
         "value": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "annRegionObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "phase", "fileset_ref", "descriptor_ref", "ordinal", "rows", "index_kind", "files", "chunks"],
+      "properties": {
+        "type": { "const": "ann_region_observation" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "phase": { "enum": ["installed", "selected_query"] },
+        "fileset_ref": { "$ref": "#/$defs/id256" },
+        "descriptor_ref": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/id256" }] },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "rows": { "type": "integer", "minimum": 1, "maximum": 8192 },
+        "index_kind": { "enum": ["flat", "ivf_hnsw_sq"] },
+        "files": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "chunks": { "type": "integer", "minimum": 1, "maximum": 288, "description": "Count of file-manifest chunk entries, not unique objects or allocated bytes." }
+      },
+      "allOf": [
+        { "if": { "properties": { "phase": { "const": "installed" } } },
+          "then": { "properties": { "descriptor_ref": { "type": "null" } } } },
+        { "if": { "properties": { "phase": { "const": "selected_query" } } },
+          "then": { "properties": { "descriptor_ref": { "$ref": "#/$defs/id256" } } } }
+      ]
+    },
+    "sqliteSyncObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "observation"],
+      "properties": {
+        "type": { "const": "sqlite_sync_observation" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "observation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "observed", "same_native_fd", "ambiguous", "full_requested",
+            "full_default_syscall", "full_result", "full_errno",
+            "posix_result", "posix_errno"
+          ],
+          "properties": {
+            "observed": { "type": "boolean" },
+            "same_native_fd": { "type": "boolean" },
+            "ambiguous": { "type": "boolean" },
+            "full_requested": { "type": "boolean" },
+            "full_default_syscall": { "type": "boolean" },
+            "full_result": { "type": ["integer", "null"], "minimum": -2147483648, "maximum": 2147483647 },
+            "full_errno": { "type": ["integer", "null"], "minimum": 0, "maximum": 2147483647 },
+            "posix_result": { "type": ["integer", "null"], "minimum": -2147483648, "maximum": 2147483647 },
+            "posix_errno": { "type": ["integer", "null"], "minimum": 0, "maximum": 2147483647 }
+          }
+        }
       }
     },
     "syncAggregate": {
@@ -332,7 +414,7 @@
       ],
       "properties": {
         "record_type": { "const": "footer" },
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 4 },
         "capture_id": { "$ref": "#/$defs/id128" },
         "closed_ns": { "type": "integer", "minimum": 0 },
         "status": { "enum": ["complete", "partial", "invalid"] },

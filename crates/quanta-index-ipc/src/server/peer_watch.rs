@@ -204,6 +204,16 @@ impl PeerWatch {
         })
     }
 
+    /// Terminal reply checkpoints observe the same monotonic peer-close bit
+    /// without inheriting the backend's expired deadline or cancellation.
+    pub(super) fn hangup_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.hung_up)
+    }
+
+    pub(super) fn peer_hung_up(&self) -> bool {
+        self.hung_up.load(Ordering::Acquire)
+    }
+
     /// Stop the watcher and join its thread — at most once, whether the
     /// owner disarms or unwinds past the watch.
     fn stop_and_join(&mut self) -> Result<(), String> {

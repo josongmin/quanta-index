@@ -28,6 +28,7 @@ use std::sync::Arc;
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array};
 use arrow_schema::DataType;
 use futures::TryStreamExt as _;
+use lance::session::Session;
 use lancedb::DistanceType;
 use lancedb::connect;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _, VectorQuery};
@@ -53,7 +54,7 @@ use crate::budget::{
 };
 use crate::errors::lancedb_err;
 use crate::generation_contract::GenerationContract;
-use crate::integrity::refuse_if_quarantined;
+use crate::integrity::refuse_if_quarantined_with_admission;
 use crate::layout::{
     self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CORPUS_KIND,
     COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_LANGUAGE, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST,
@@ -63,40 +64,39 @@ use crate::layout::{
     COLUMN_SNIPPET, COLUMN_START_LINE, TABLE_NAME, dataset_uri,
 };
 use crate::manifest::{SemanticManifest, VectorIndexSealV1};
-use crate::sealed_manifest::verify_sealed_manifest;
+use crate::sealed_manifest::verify_sealed_manifest_with_admission;
 use crate::semantic_row_integrity_v1::{SemanticRowFingerprintV1, semantic_row_commitment_v1};
 use crate::sql::build_id_in_filter;
 use crate::vector_index::{LoadedVectorIndexV1, verify_vector_index_v1};
+use lance_io::object_store::file_admission::FileAdmission;
 
 const COLUMN_DISTANCE: &str = "_distance";
 
-fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract, CoreError> {
+fn load_generation_contract(
+    generation_dir: &Path,
+    admission: Option<&dyn FileAdmission>,
+) -> Result<GenerationContract, CoreError> {
     let contract_path = layout::build_contract_path(generation_dir);
-    let bytes = crate::control_file::read_bounded(
+    let bytes = crate::control_file::read_bounded_with_admission(
         &contract_path,
         crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
+        admission,
     )
-    .map_err(|err| {
-        CoreError::Storage(format!(
-            "semantic: read generation contract {}: {err}",
-            contract_path.display()
-        ))
-    })?;
+    .map_err(|err| crate::errors::fs_err("read generation contract", &contract_path, &err))?;
     GenerationContract::decode(&bytes)
 }
 
-fn read_scope_manifest(generation_dir: &Path) -> Result<SemanticManifest, CoreError> {
+fn read_scope_manifest(
+    generation_dir: &Path,
+    admission: Option<&dyn FileAdmission>,
+) -> Result<SemanticManifest, CoreError> {
     let manifest_path = layout::manifest_path(generation_dir);
-    let manifest_bytes = crate::control_file::read_bounded(
+    let manifest_bytes = crate::control_file::read_bounded_with_admission(
         &manifest_path,
         crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
+        admission,
     )
-    .map_err(|err| {
-        CoreError::Storage(format!(
-            "semantic: read manifest {}: {err}",
-            manifest_path.display()
-        ))
-    })?;
+    .map_err(|err| crate::errors::fs_err("read manifest", &manifest_path, &err))?;
     SemanticManifest::decode(&manifest_bytes)
 }
 
@@ -225,9 +225,31 @@ pub(crate) async fn open_generation(
     repo: &RepoId,
     revision: &RevisionId,
     generation: ManifestGeneration,
+    session: Option<Arc<Session>>,
 ) -> Result<LoadedGeneration, CoreError> {
     let (loaded, _manifest) =
-        open_generation_with_manifest(semantic_root, repo, revision, generation).await?;
+        open_generation_with_manifest(semantic_root, repo, revision, generation, session, None)
+            .await?;
+    Ok(loaded)
+}
+
+pub(crate) async fn open_generation_admitted(
+    semantic_root: &Path,
+    repo: &RepoId,
+    revision: &RevisionId,
+    generation: ManifestGeneration,
+    session: Arc<Session>,
+    admission: Arc<dyn FileAdmission>,
+) -> Result<LoadedGeneration, CoreError> {
+    let (loaded, _manifest) = open_generation_with_manifest(
+        semantic_root,
+        repo,
+        revision,
+        generation,
+        Some(session),
+        Some(admission.as_ref()),
+    )
+    .await?;
     Ok(loaded)
 }
 
@@ -237,6 +259,8 @@ async fn open_generation_with_manifest(
     repo: &RepoId,
     revision: &RevisionId,
     generation: ManifestGeneration,
+    session: Option<Arc<Session>>,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<(LoadedGeneration, SemanticManifest), CoreError> {
     let generation_dir = layout::generation_dir(semantic_root, repo, revision, generation);
     let marker_path = layout::sealed_marker_path(&generation_dir);
@@ -253,24 +277,21 @@ async fn open_generation_with_manifest(
             revision.as_str()
         )));
     }
-    refuse_if_quarantined(&generation_dir)?;
+    refuse_if_quarantined_with_admission(&generation_dir, admission)?;
     // The marker carries the identity digest, which is all the sealed
     // manifest needs: every dataset file, the scope manifest and the build
     // contract are proven against the seal before the scope manifest is
     // even decoded, so a forged manifest is refused as a corrupt sidecar
     // rather than interpreted.
-    let sealed_digest = crate::control_file::read_string_bounded(
+    let sealed_digest = crate::control_file::read_string_bounded_with_admission(
         &marker_path,
         crate::control_file::MAX_SEALED_MARKER_BYTES,
+        admission,
     )
-    .map_err(|err| {
-        CoreError::Storage(format!(
-            "semantic: read sealed marker {}: {err}",
-            marker_path.display()
-        ))
-    })?;
-    let sealed_manifest = verify_sealed_manifest(&generation_dir, &sealed_digest)?;
-    let manifest = read_scope_manifest(&generation_dir)?;
+    .map_err(|err| crate::errors::fs_err("read sealed marker", &marker_path, &err))?;
+    let sealed_manifest =
+        verify_sealed_manifest_with_admission(&generation_dir, &sealed_digest, admission)?;
+    let manifest = read_scope_manifest(&generation_dir, admission)?;
     manifest.validate_scope(repo, revision, generation)?;
     if manifest.manifest_digest != sealed_digest {
         return Err(CoreError::Typed {
@@ -282,7 +303,7 @@ async fn open_generation_with_manifest(
             ),
         });
     }
-    manifest.validate_against(&load_generation_contract(&generation_dir)?)?;
+    manifest.validate_against(&load_generation_contract(&generation_dir, admission)?)?;
     let normalization = manifest.normalization_contract()?;
 
     let dimension = usize::try_from(manifest.dimension).map_err(|err| {
@@ -297,7 +318,11 @@ async fn open_generation_with_manifest(
     let expected_schema = layout::semantic_schema(manifest_dimension_i32);
 
     let uri = dataset_uri(&generation_dir)?;
-    let connection = connect(&uri)
+    let mut builder = connect(&uri);
+    if let Some(session) = session {
+        builder = builder.session(session);
+    }
+    let connection = builder
         .execute()
         .await
         .map_err(|err| lancedb_err(&format!("connect {uri}"), err))?;
@@ -431,9 +456,18 @@ pub(crate) async fn verified_base_vector_index_seal_v1(
     repo: &RepoId,
     revision: &RevisionId,
     generation: ManifestGeneration,
+    session: Option<Arc<Session>>,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<VerifiedInheritedVectorIndexV1, CoreError> {
-    let (loaded, manifest) =
-        open_generation_with_manifest(semantic_root, repo, revision, generation).await?;
+    let (loaded, manifest) = open_generation_with_manifest(
+        semantic_root,
+        repo,
+        revision,
+        generation,
+        session,
+        admission,
+    )
+    .await?;
     let actual = semantic_row_commitment_v1(&loaded.table).await?;
     let row_count_matches = actual.row_count == manifest.row_count;
     let row_root_matches = actual.root_digest == manifest.semantic_row_root_digest;
@@ -1541,6 +1575,7 @@ pub(crate) async fn proof_rows_v1(
         &batch.repo_id,
         &batch.revision_id,
         batch.generation,
+        None,
     )
     .await?;
     let mut tables = serde_json::Map::new();

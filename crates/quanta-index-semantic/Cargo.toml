@@ -26,19 +26,27 @@ required-features = ["proof"]
 proof = []
 
 [dependencies]
+async-trait = "0.1.89"
+bytes = "1.12.0"
+lance-io.workspace = true
 arrow-array = { workspace = true }
+arrow-buffer = "58"
+arrow-data = "58"
 arrow-schema = { workspace = true }
 ciborium = { workspace = true }
 futures = { workspace = true }
 lance = { workspace = true }
 lancedb = { workspace = true }
+object_store = { version = "=0.13.2", default-features = false }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
+quanta-index-scratch-sqlite = { version = "0.1.0", path = "../quanta-index-scratch-sqlite" }
 rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
+url = "2.5.8"
 
 [dev-dependencies]
 tempfile = { workspace = true }

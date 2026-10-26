@@ -101,7 +101,8 @@ pub fn structural_checkpoint(
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             StructuralError::ProducerExecution(format!("unexpected budget error: {other}"))
         }
     })

@@ -28,31 +28,29 @@
 //!   object is fsynced and the staging root has been deep-opened;
 //! * the switch is one `rename` plus a parent-directory fsync, so an
 //!   interruption leaves either the old root or the complete new one;
-//! * a stale staging directory from an interrupted run is removed only
-//!   after proving it advertises no manifest, which is exactly the state
-//!   "interrupted before the manifest" leaves.
+//! * a preexisting staging entry is never removed automatically, even if an
+//!   earlier interruption created it; explicit inspection and cleanup are
+//!   required before retry.
 //!
 //! Concrete adapters are named by the composition root only: this module
-//! talks to [`CatalogSnapshotPort`] and [`StateRootDeepOpenPort`].
+//! talks to [`CatalogSnapshotPort`] and [`OfflineTargetFactoryV1`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::SearchPlaneErrorCodeV2;
-use quanta_index_core::CoreError;
-use quanta_index_search_plane::readiness::ActivationCatalog;
+use quanta_index_core::{CoreError, RequestBudgetV1};
 
 use super::runtime::StateRootLease;
 use super::state_format::{
     OfflineRootRoleV1, STAGING_DIRECTORY_SUFFIX, STATE_BACKUP_CATALOG_FILE_NAME,
     STATE_BACKUP_MANIFEST_FILE_NAME, STATE_CATALOG_DIRECTORY, STATE_ROOT_MANIFEST_FILE_NAME,
     STATE_ROOT_MANIFEST_FORMAT_VERSION, StateMigrationFaultPointV1, StateMigrationFaultPort,
-    StateObjectEntryV1, StateRootFormatV1, StateRootManifestV1, atomic_cutover_v1,
-    detect_state_root_format_v1, fsync_directory_v1, fsync_file_v1, inventory_state_directories_v1,
-    inventory_state_root_v1, is_canonical_relative_path, is_sqlite_sidecar_v1,
-    read_root_manifest_v1, refuse_broad_offline_target_v1, refuse_legacy_state_root_v1,
-    refuse_non_empty_destination_v1, refuse_non_private_source_root_v1, sha256_file_hex,
-    staging_directory_for_v1, verify_root_against_manifest_v1, write_root_manifest_last_v1,
+    StateObjectEntryV1, StateRootFormatV1, StateRootManifestV1, detect_state_root_format_v1,
+    inventory_state_directories_v1, inventory_state_root_v1, is_canonical_relative_path,
+    is_sqlite_sidecar_v1, read_root_manifest_v1, refuse_broad_offline_target_v1,
+    refuse_existing_destination_v1, refuse_legacy_state_root_v1, refuse_non_private_source_root_v1,
+    sha256_file_hex, verify_root_against_manifest_v1,
 };
 
 /// The daemon's state-root lock file: never part of an inventory.
@@ -72,9 +70,10 @@ const LIVE_ROOT_EXCLUSIONS: [&str; 4] = [
 
 /// Exclusions for an inventory taken over a **produced** root.
 ///
-/// This includes staging and destination roots. Only the manifest files
-/// themselves are excluded.
-const PRODUCED_ROOT_EXCLUSIONS: [&str; 2] = [
+/// This includes staging and destination roots. The persistent lease is
+/// runtime custody, including when deep-open created it under staging.
+const PRODUCED_ROOT_EXCLUSIONS: [&str; 3] = [
+    STATE_ROOT_LOCK_FILE_NAME,
     STATE_ROOT_MANIFEST_FILE_NAME,
     STATE_BACKUP_MANIFEST_FILE_NAME,
 ];
@@ -84,11 +83,7 @@ const PRODUCED_ROOT_EXCLUSIONS: [&str; 2] = [
 /// The lock is runtime custody, not manifest payload;
 /// unlike a live-source backup, the produced catalog remains covered by the
 /// manifest and therefore must not be excluded here.
-const LEASED_PRODUCED_ROOT_EXCLUSIONS: [&str; 3] = [
-    STATE_ROOT_LOCK_FILE_NAME,
-    STATE_ROOT_MANIFEST_FILE_NAME,
-    STATE_BACKUP_MANIFEST_FILE_NAME,
-];
+const LEASED_PRODUCED_ROOT_EXCLUSIONS: [&str; 3] = PRODUCED_ROOT_EXCLUSIONS;
 
 fn typed(code: SearchPlaneErrorCodeV2, message: String) -> CoreError {
     CoreError::Typed { code, message }
@@ -138,17 +133,8 @@ impl CatalogFreezeV1 {
     }
 }
 
-/// Produce a consistent catalog snapshot through the storage engine's own
-/// backup API — never a byte copy of the database and its WAL.
+/// Verify an existing source snapshot independently of destination mutation.
 pub trait CatalogSnapshotPort: Send + Sync {
-    /// Snapshot the catalog under `live_root` into `destination_file` and
-    /// report both the live and the produced content receipts.
-    fn snapshot_into(
-        &self,
-        live_root: &Path,
-        destination_file: &Path,
-    ) -> Result<CatalogFreezeV1, CoreError>;
-
     /// Re-open and re-verify an existing snapshot file, without touching any
     /// other catalog.
     fn verify_snapshot_at(&self, snapshot_file: &Path) -> Result<CatalogSnapshotV1, CoreError>;
@@ -165,13 +151,36 @@ pub struct StateRootDeepOpenReceiptV1 {
     pub catalog_rows: u64,
 }
 
-/// Open a produced root the way the daemon would, before it is published.
+/// Begin one destination custody before its first staged object mutation.
+/// The returned owner retains the original source custody and request budget.
+pub trait OfflineTargetFactoryV1: Send + Sync {
+    fn begin_target(
+        &self,
+        source: &OfflineSourceSessionV1,
+        destination: &Path,
+        budget: &RequestBudgetV1,
+    ) -> Result<Box<dyn OfflineTargetSessionV1>, CoreError>;
+}
+
+/// All producing steps share one destination authority and its real FD owners.
 ///
-/// A partial staging root must not be openable as production-ready, so this
-/// is a required step of every producing operation and it runs while the
-/// root is still in staging.
-pub trait StateRootDeepOpenPort: Send + Sync {
-    fn deep_open(&self, root: &Path) -> Result<StateRootDeepOpenReceiptV1, CoreError>;
+/// Failed operations retain original close/pending custody; publication must
+/// retire mutable owners and prove quiescence before renaming the leased root.
+pub trait OfflineTargetSessionV1 {
+    fn staging_root(&self) -> &Path;
+    fn ensure_directory(&mut self, relative: &Path) -> Result<(), CoreError>;
+    fn copy_object(&mut self, object: &StateObjectEntryV1) -> Result<(), CoreError>;
+    fn snapshot_catalog(&mut self) -> Result<CatalogFreezeV1, CoreError>;
+    fn verify_catalog(&mut self) -> Result<CatalogSnapshotV1, CoreError>;
+    fn rotate_incarnation(&mut self) -> Result<(), CoreError>;
+    fn deep_open(&mut self) -> Result<StateRootDeepOpenReceiptV1, CoreError>;
+    fn write_manifest(
+        &mut self,
+        name: &str,
+        manifest: &StateRootManifestV1,
+        fault: &dyn StateMigrationFaultPort,
+    ) -> Result<(), CoreError>;
+    fn publish(&mut self) -> Result<(), CoreError>;
 }
 
 /// Which offline operation a request describes.
@@ -272,7 +281,7 @@ impl ReadOnlyRootLeaseV1 {
 }
 
 /// What proves an offline operation may read its source.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum OfflineSourceCustodyV1 {
     /// A current root: the daemon's own lease, handed in by the caller.
     /// Whoever holds it proves exclusive ownership.
@@ -641,7 +650,7 @@ fn plan_offline_destination_v1(
 ) -> Result<PathBuf, CoreError> {
     let destination =
         refuse_broad_offline_target_v1(destination_root, OfflineRootRoleV1::Destination)?;
-    refuse_non_empty_destination_v1(&destination, session.canonical_root())?;
+    refuse_existing_destination_v1(&destination, session.canonical_root())?;
     if destination == session.canonical_root() {
         return Err(typed(
             SearchPlaneErrorCodeV2::InvalidRequest,
@@ -701,9 +710,12 @@ fn canonicalize_through_existing_ancestor_v1(path: &Path) -> Result<PathBuf, Cor
     }
 }
 
-/// Recompute the source inventory and exact-compare it with the frozen
-/// receipt, immediately before publish. On ANY drift the staging directory
-/// is removed and no destination authority is created.
+/// Exact-compare the source inventory with its frozen receipt before publish.
+///
+/// On drift no destination authority is created. Leave staging for explicit
+/// inspection and cleanup: path-based
+/// recursive deletion cannot prove that the staging name still denotes the
+/// directory this attempt created.
 fn refuse_source_drift_v1(
     session: &OfflineSourceSessionV1,
     operation: OfflineStateOperationV1,
@@ -714,22 +726,17 @@ fn refuse_source_drift_v1(
         Ok(false) => typed(
             SearchPlaneErrorCodeV2::StateRootInsecure,
             format!(
-                "offline {} source {} changed during the operation; the frozen inventory no longer matches, so the staged root is discarded and nothing is published",
+                "offline {} source {} changed during the operation; the frozen inventory no longer matches, so nothing is published; inspect staging {} before an explicit cleanup",
                 operation.command_name(),
-                session.canonical_root().display()
+                session.canonical_root().display(),
+                staging.display()
             ),
         ),
-        // A missing, malformed or unreadable source authority is drift too:
-        // preserve its original error, but do not leave a sealed staging root.
+        // A missing, malformed or unreadable source authority is drift too;
+        // preserve its original error and leave staging for inspection.
         Err(error) => error,
     };
-    match remove_directory_tree_v1(staging) {
-        Ok(()) => Err(drift),
-        Err(cleanup) => Err(CoreError::Storage(format!(
-            "{drift}; staging cleanup {} also failed: {cleanup}",
-            staging.display()
-        ))),
-    }
+    Err(drift)
 }
 
 fn source_matches_freeze_v1(session: &OfflineSourceSessionV1) -> Result<bool, CoreError> {
@@ -818,129 +825,41 @@ fn require_format_v1(source: &Path, expected: StateRootFormatV1) -> Result<(), C
     ))
 }
 
-/// Create the staging directory, converging an interrupted run.
-///
-/// A staging directory left by an interruption is never an authority: the
-/// destination it was preparing does not exist (proven before this point),
-/// only the single cutover rename publishes it, and its name is derived from
-/// the destination, so removing it cannot touch anything else. Whatever it
-/// holds — including a manifest the interruption wrote before the rename —
-/// is preparation, not a root anyone can open.
-fn prepare_staging_v1(destination: &Path) -> Result<PathBuf, CoreError> {
-    let staging = staging_directory_for_v1(destination);
-    if staging.exists() {
-        remove_directory_tree_v1(&staging)?;
-    }
-    create_private_directory_v1(&staging)?;
-    let parent = destination.parent().unwrap_or_else(|| Path::new("/"));
-    fsync_directory_v1(parent)?;
-    Ok(staging)
-}
-
-fn create_private_directory_v1(directory: &Path) -> Result<(), CoreError> {
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        let _mode = builder.mode(0o700);
-    }
-    builder
-        .create(directory)
-        .map_err(|error| storage("create directory", directory, &error))
-}
-
-fn remove_directory_tree_v1(directory: &Path) -> Result<(), CoreError> {
-    let entries =
-        fs::read_dir(directory).map_err(|error| storage("read staging", directory, &error))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| storage("read staging entry", directory, &error))?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| storage("inspect staging entry", &path, &error))?;
-        if metadata.is_dir() {
-            remove_directory_tree_v1(&path)?;
-        } else {
-            fs::remove_file(&path)
-                .map_err(|error| storage("remove staging file", &path, &error))?;
-        }
-    }
-    fs::remove_dir(directory)
-        .map_err(|error| storage("remove staging directory", directory, &error))
-}
-
-/// Copy one root's data objects into `staging`, byte-for-byte, and prove the
-/// copy against the source inventory.
+/// Copy only the frozen inventory through the single destination authority.
 fn copy_data_objects_v1(
-    source: &Path,
-    staging: &Path,
+    target: &mut dyn OfflineTargetSessionV1,
     directories: &[String],
     objects: &[StateObjectEntryV1],
 ) -> Result<(), CoreError> {
-    // Directories first: an empty one is state a restore must reproduce, and
-    // the destination's mode is the source's private mode either way.
     for directory in directories {
-        create_directory_chain_v1(staging, &staging.join(directory))?;
+        target.ensure_directory(Path::new(directory))?;
     }
     for object in objects {
-        let from = source.join(&object.relative_path);
-        let to = staging.join(&object.relative_path);
         if !is_canonical_relative_path(&object.relative_path) {
             return Err(typed(
                 SearchPlaneErrorCodeV2::StateRootInsecure,
                 format!(
-                    "source inventory named the non-canonical path {}",
+                    "source inventory named non-canonical path {}",
                     object.relative_path
                 ),
             ));
         }
-        if let Some(parent) = to.parent() {
-            create_directory_chain_v1(staging, parent)?;
-        }
-        let _copied = fs::copy(&from, &to)
-            .map_err(|error| storage("copy object into staging", &from, &error))?;
-        fsync_file_v1(&to)?;
-        let observed =
-            fs::metadata(&to).map_err(|error| storage("stat staged object", &to, &error))?;
-        if observed.len() != object.byte_size {
-            return Err(typed(
-                SearchPlaneErrorCodeV2::SearchTrackManifestDigestMismatch,
-                format!(
-                    "staged object {} is {} bytes, the source inventory says {}",
-                    object.relative_path,
-                    observed.len(),
-                    object.byte_size
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn create_directory_chain_v1(staging: &Path, target: &Path) -> Result<(), CoreError> {
-    let relative = target
-        .strip_prefix(staging)
-        .map_err(|error| storage("relativize staging directory", target, &error))?;
-    let mut cursor = staging.to_path_buf();
-    for component in relative.components() {
-        cursor.push(component);
-        if cursor.is_dir() {
-            continue;
-        }
-        create_private_directory_v1(&cursor)?;
+        target.copy_object(object)?;
     }
     Ok(())
 }
 
 /// The one place a produced root's manifest is assembled and written last.
 fn publish_staging_manifest_v1(
-    staging: &Path,
+    target: &mut dyn OfflineTargetSessionV1,
     manifest_file_name: &str,
     catalog: &CatalogSnapshotV1,
     fault: &dyn StateMigrationFaultPort,
 ) -> Result<StateRootManifestV1, CoreError> {
     fault.reach(StateMigrationFaultPointV1::AfterDataSync)?;
-    let objects = inventory_state_root_v1(staging, &PRODUCED_ROOT_EXCLUSIONS)?;
-    let directories = inventory_state_directories_v1(staging, &PRODUCED_ROOT_EXCLUSIONS)?;
+    let staging = target.staging_root().to_path_buf();
+    let objects = inventory_state_root_v1(&staging, &PRODUCED_ROOT_EXCLUSIONS)?;
+    let directories = inventory_state_directories_v1(&staging, &PRODUCED_ROOT_EXCLUSIONS)?;
     let manifest = StateRootManifestV1 {
         format_version: STATE_ROOT_MANIFEST_FORMAT_VERSION,
         root_format: StateRootFormatV1::CurrentV1 { manifest: true },
@@ -949,19 +868,19 @@ fn publish_staging_manifest_v1(
         objects,
         directories,
     };
-    let _path = write_root_manifest_last_v1(staging, manifest_file_name, &manifest, fault)?;
+    target.write_manifest(manifest_file_name, &manifest, fault)?;
     Ok(manifest)
 }
 
 fn finish_offline_operation_v1(
     operation: OfflineStateOperationV1,
-    staging: &Path,
+    target: &mut dyn OfflineTargetSessionV1,
     destination: &Path,
     manifest_file_name: &str,
     deep_open: StateRootDeepOpenReceiptV1,
     fault: &dyn StateMigrationFaultPort,
 ) -> Result<OfflineStateOutcomeV1, CoreError> {
-    atomic_cutover_v1(staging, destination)?;
+    target.publish()?;
     fault.reach(StateMigrationFaultPointV1::AfterCutoverRename)?;
     let published = read_root_manifest_v1(&destination.join(manifest_file_name))?;
     verify_root_against_manifest_v1(
@@ -991,11 +910,12 @@ fn finish_offline_operation_v1(
 pub fn run_offline_backup_v1(
     session: &OfflineSourceSessionV1,
     destination_root: &Path,
-    catalog: &dyn CatalogSnapshotPort,
-    deep_open: &dyn StateRootDeepOpenPort,
+    targets: &dyn OfflineTargetFactoryV1,
     fault: &dyn StateMigrationFaultPort,
+    budget: &RequestBudgetV1,
 ) -> Result<OfflineStateOutcomeV1, CoreError> {
     const OPERATION: OfflineStateOperationV1 = OfflineStateOperationV1::Backup;
+    budget.checkpoint("offline backup admission")?;
     let _lease = session.require_current_lease(OPERATION)?;
     let source = session.canonical_root();
     let destination = plan_offline_destination_v1(session, OPERATION, destination_root)?;
@@ -1003,12 +923,12 @@ pub fn run_offline_backup_v1(
     require_format_v1(source, StateRootFormatV1::CurrentV1 { manifest: false })?;
     let objects = inventory_state_root_v1(source, &LIVE_ROOT_EXCLUSIONS)?;
     let directories = inventory_state_directories_v1(source, &LIVE_ROOT_EXCLUSIONS)?;
-    let staging = prepare_staging_v1(&destination)?;
-    copy_data_objects_v1(source, &staging, &directories, &objects)?;
-    let catalog_dir = staging.join(STATE_CATALOG_DIRECTORY);
-    create_private_directory_v1(&catalog_dir)?;
-    let freeze =
-        catalog.snapshot_into(source, &catalog_dir.join(STATE_BACKUP_CATALOG_FILE_NAME))?;
+    refuse_source_drift_v1(session, OPERATION, &destination)?;
+    let mut target = targets.begin_target(session, &destination, budget)?;
+    let staging = target.staging_root().to_path_buf();
+    copy_data_objects_v1(target.as_mut(), &directories, &objects)?;
+    target.ensure_directory(Path::new(STATE_CATALOG_DIRECTORY))?;
+    let freeze = target.snapshot_catalog()?;
     if !freeze.is_consistent() {
         return Err(typed(
             SearchPlaneErrorCodeV2::CatalogRowCorrupt,
@@ -1020,21 +940,27 @@ pub fn run_offline_backup_v1(
             ),
         ));
     }
-    fsync_directory_v1(&catalog_dir)?;
+
     // A backup root must be a root the daemon could open, so its staged copy
     // is deep-opened exactly as a restored one is: the freeze
-    // boundary then covers a reconciled root, and a later restore of it is
-    // a pure byte-for-byte reproduction. The catalog receipt is taken again
+    // boundary then covers a reconciled root. Restore preserves its logical
+    // Catalog identity; SQLite journal normalization may update only physical
+    // header counters. The catalog receipt is taken again
     // afterwards, because reconciliation is a real mutation and the manifest
     // must describe the root it actually publishes.
-    let deep = deep_open.deep_open(&staging)?;
-    let settled = catalog.verify_snapshot_at(&catalog_dir.join(STATE_BACKUP_CATALOG_FILE_NAME))?;
-    let _manifest =
-        publish_staging_manifest_v1(&staging, STATE_BACKUP_MANIFEST_FILE_NAME, &settled, fault)?;
+    let deep = target.deep_open()?;
+    let settled = target.verify_catalog()?;
+    let _manifest = publish_staging_manifest_v1(
+        target.as_mut(),
+        STATE_BACKUP_MANIFEST_FILE_NAME,
+        &settled,
+        fault,
+    )?;
     refuse_source_drift_v1(session, OPERATION, &staging)?;
+    budget.checkpoint("offline backup before cutover")?;
     finish_offline_operation_v1(
         OPERATION,
-        &staging,
+        target.as_mut(),
         &destination,
         STATE_BACKUP_MANIFEST_FILE_NAME,
         deep,
@@ -1052,45 +978,50 @@ pub fn run_offline_restore_v1(
     session: &OfflineSourceSessionV1,
     destination_root: &Path,
     catalog: &dyn CatalogSnapshotPort,
-    deep_open: &dyn StateRootDeepOpenPort,
+    targets: &dyn OfflineTargetFactoryV1,
     fault: &dyn StateMigrationFaultPort,
+    budget: &RequestBudgetV1,
 ) -> Result<OfflineStateOutcomeV1, CoreError> {
     const OPERATION: OfflineStateOperationV1 = OfflineStateOperationV1::Restore;
+    budget.checkpoint("offline restore admission")?;
     let lease = session.require_backup_lease(OPERATION)?;
-    let source = session.canonical_root();
     let destination = plan_offline_destination_v1(session, OPERATION, destination_root)?;
     // Admit the original authority before creating staging, using the same
     // inventory, catalog and custody contract as operator verification.
     let _verified = run_offline_verify_v1(session, catalog)?;
     let backup_manifest = &lease.manifest;
-    let staging = prepare_staging_v1(&destination)?;
+    refuse_source_drift_v1(session, OPERATION, &destination)?;
+    let mut target = targets.begin_target(session, &destination, budget)?;
+    let staging = target.staging_root().to_path_buf();
     copy_data_objects_v1(
-        source,
-        &staging,
+        target.as_mut(),
         &backup_manifest.directories,
         &backup_manifest.objects,
     )?;
     // Prove the copied bytes against the admitted authority before applying
-    // the one intentional restore mutation (activation incarnation rotation).
+    // activation rotation and the staged Catalog's journal normalization.
     verify_root_against_manifest_v1(
         &staging,
         STATE_BACKUP_MANIFEST_FILE_NAME,
         backup_manifest,
         &PRODUCED_ROOT_EXCLUSIONS,
     )?;
-    ActivationCatalog::rotate_root_incarnation_for_restore_v1(&staging.join("activations"))?;
-    let staged_catalog = staging
-        .join(STATE_CATALOG_DIRECTORY)
-        .join(STATE_BACKUP_CATALOG_FILE_NAME);
-    let receipt = catalog.verify_snapshot_at(&staged_catalog)?;
+    target.rotate_incarnation()?;
+    let receipt = target.verify_catalog()?;
     verify_manifest_catalog_v1(&staging, backup_manifest, &receipt)?;
-    let deep = deep_open.deep_open(&staging)?;
-    let _staged_manifest =
-        publish_staging_manifest_v1(&staging, STATE_ROOT_MANIFEST_FILE_NAME, &receipt, fault)?;
+    let deep = target.deep_open()?;
+    let settled = target.verify_catalog()?;
+    let _staged_manifest = publish_staging_manifest_v1(
+        target.as_mut(),
+        STATE_ROOT_MANIFEST_FILE_NAME,
+        &settled,
+        fault,
+    )?;
     refuse_source_drift_v1(session, OPERATION, &staging)?;
+    budget.checkpoint("offline restore before cutover")?;
     finish_offline_operation_v1(
         OPERATION,
-        &staging,
+        target.as_mut(),
         &destination,
         STATE_ROOT_MANIFEST_FILE_NAME,
         deep,

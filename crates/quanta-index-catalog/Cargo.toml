@@ -16,12 +16,13 @@ path = "src/lib.rs"
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
-rusqlite = { workspace = true }
+rusqlite = { workspace = true, features = ["cache", "trace", "hooks"] }
+rustix = { workspace = true, features = ["fs", "process"] }
 sha2 = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [dev-dependencies]
-rusqlite = { workspace = true }
+rusqlite = { workspace = true, features = ["limits"] }
 sha2 = { workspace = true }
 tempfile = { workspace = true }

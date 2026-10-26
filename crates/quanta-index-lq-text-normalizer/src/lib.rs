@@ -88,10 +88,11 @@ mod tokens;
 mod version;
 
 pub use case::{
-    CaseMode, NfcAdmissionError, NfcFoldBuildError, NfcFoldPlan, apply_case, fold, nfc,
+    BoundedNfcAdmissionError, BoundedNfcError, CaseMode, NfcAdmissionError, NfcFoldBuildError,
+    NfcFoldPlan, apply_case, bounded_nfc_with_checkpoint, case_chars, fold, nfc,
 };
 pub use tokens::{
-    MAX_TOKEN_BYTES, TextQueryError, Token, Tokenized, contains_phrase, contains_substring,
-    is_token_char, phrase_ranges, query_tokens, tokenize,
+    MAX_TOKEN_BYTES, TextQueryError, Token, TokenCursor, TokenRun, Tokenized, contains_phrase,
+    contains_substring, is_token_char, phrase_ranges, query_tokens, tokenize,
 };
 pub use version::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};

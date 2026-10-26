@@ -11,16 +11,21 @@ import argparse
 import copy
 import hashlib
 import heapq
+import io
 import json
+import os
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from jsonschema import Draft202012Validator, ValidationError
+
+from tools.benchmark.evidence import _consume_regular_file
 
 SCHEMA = Path(__file__).with_name("causal_timeline.schema.json")
 MAX_LINE_BYTES = 1_048_576
 MAX_CAPTURE_BYTES = 128 * 1024 * 1024
+MAX_CONFIGURED_CAPTURE_BYTES = 1_073_741_824
 JS_SAFE_INTEGER = (1 << 53) - 1
 U64_MAX = (1 << 64) - 1
 BM25_AGGREGATE_STAGES = {
@@ -28,6 +33,26 @@ BM25_AGGREGATE_STAGES = {
     "bm25_boundary_aggregate": "bm25_boundary",
     "bm25_live_build_aggregate": "bm25_live_build",
 }
+SQLITE_SYNC_MUTATION_COUNTERS = frozenset(
+    {
+        "sqlite_sync_overwrite",
+        "sqlite_sync_growth",
+        "sqlite_sync_truncate",
+        "sqlite_sync_create",
+        "sqlite_sync_no_mutation",
+        "sqlite_sync_unclassified",
+    }
+)
+SQLITE_WRITE_COUNTERS = frozenset(
+    {
+        "sqlite_write_calls",
+        "sqlite_write_requested_bytes",
+        "sqlite_write_failures",
+        "sqlite_wal_write_calls",
+        "sqlite_main_write_calls",
+        "sqlite_other_write_calls",
+    }
+)
 EXECUTION_BINDING_WIDTHS = {
     "source_revision": 40,
     "binary_sha256": 64,
@@ -43,6 +68,33 @@ class CausalSyntaxError(ValueError):
     """A final unterminated row may be an interrupted JSON write."""
 
 
+class _BoundedLines:
+    """Read and hash each exact binary row once, within both declared bounds."""
+
+    def __init__(self, stream: BinaryIO, max_capture_bytes: int) -> None:
+        self.stream = stream
+        self.max_capture_bytes = max_capture_bytes
+        self.bytes_read = 0
+        self.digest = hashlib.sha256()
+
+    def next(self, line_cap: int, label: str) -> tuple[bytes, bool] | None:
+        remaining = self.max_capture_bytes - self.bytes_read
+        raw = self.stream.readline(min(line_cap + 2, remaining + 1))
+        if not raw:
+            return None
+        if len(raw) > remaining:
+            raise ValueError("causal timeline exceeds offline replay byte bound")
+        self.bytes_read += len(raw)
+        self.digest.update(raw)
+        terminated = raw.endswith(b"\n")
+        line = raw[:-1] if terminated else raw
+        if len(line) > line_cap:
+            if label == "header":
+                raise ValueError("causal timeline header exceeds maximum line size")
+            raise ValueError(f"causal timeline {label} exceeds declared record cap")
+        return line, terminated
+
+
 def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -56,14 +108,115 @@ def _reject_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant: {value}")
 
 
-def _decode_record(raw: bytes, validator: Draft202012Validator, line_no: int) -> dict[str, Any]:
+def _dispatch_validators(
+    schema: dict[str, Any],
+) -> tuple[dict[str, Draft202012Validator], dict[str, Draft202012Validator]]:
+    """Select only schema branches proved disjoint by required string constants.
+
+    An altered schema shape falls back to the original complete validator. The
+    selected schemas retain the canonical definitions and every branch rule.
+    """
+    if set(schema) != {"$schema", "$id", "title", "description", "oneOf", "$defs"}:
+        return {}, {}
+    definitions = schema["$defs"]
+    record_refs = schema["oneOf"]
+    if not isinstance(record_refs, list) or len(record_refs) != 3:
+        return {}, {}
+    records: dict[str, Draft202012Validator] = {}
+    for reference in record_refs:
+        if not isinstance(reference, dict) or len(reference) != 1:
+            return {}, {}
+        ref = reference.get("$ref")
+        if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
+            return {}, {}
+        branch = definitions.get(ref.removeprefix("#/$defs/"))
+        if not isinstance(branch, dict) or branch.get("type") != "object":
+            return {}, {}
+        if branch.get("additionalProperties") is not False or "record_type" not in branch.get(
+            "required", []
+        ):
+            return {}, {}
+        key = branch.get("properties", {}).get("record_type", {}).get("const")
+        if not isinstance(key, str) or key in records:
+            return {}, {}
+        selected = dict(schema)
+        selected.pop("oneOf")
+        selected["$ref"] = ref
+        records[key] = Draft202012Validator(selected)
+    if set(records) != {"header", "event", "footer"}:
+        return {}, {}
+
+    event = definitions["event"]
+    kind_schema = event["properties"].get("kind")
+    if "kind" not in event["required"] or not isinstance(kind_schema, dict):
+        return {}, {}
+    kind_refs = kind_schema.get("oneOf")
+    if set(kind_schema) != {"oneOf"} or not isinstance(kind_refs, list):
+        return {}, {}
+    kinds: dict[str, Draft202012Validator] = {}
+    for reference in kind_refs:
+        if not isinstance(reference, dict) or len(reference) != 1:
+            return {}, {}
+        ref = reference.get("$ref")
+        if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
+            return {}, {}
+        branch = definitions.get(ref.removeprefix("#/$defs/"))
+        if not isinstance(branch, dict) or branch.get("type") != "object":
+            return {}, {}
+        if branch.get("additionalProperties") is not False or "type" not in branch.get(
+            "required", []
+        ):
+            return {}, {}
+        key = branch.get("properties", {}).get("type", {}).get("const")
+        if not isinstance(key, str) or key in kinds:
+            return {}, {}
+        selected = dict(schema)
+        selected.pop("oneOf")
+        selected["$ref"] = "#/$defs/event"
+        selected_defs = dict(definitions)
+        selected_event = dict(event)
+        selected_properties = dict(event["properties"])
+        selected_properties["kind"] = reference
+        selected_event["properties"] = selected_properties
+        selected_defs["event"] = selected_event
+        selected["$defs"] = selected_defs
+        kinds[key] = Draft202012Validator(selected)
+    if len(kinds) != len(kind_refs):
+        return {}, {}
+    return records, kinds
+
+
+def _selected_validator(
+    record: Any,
+    fallback: Draft202012Validator,
+    dispatch: tuple[dict[str, Draft202012Validator], dict[str, Draft202012Validator]],
+) -> Draft202012Validator:
+    if not isinstance(record, dict):
+        return fallback
+    record_type = record.get("record_type")
+    if record_type == "event":
+        kind = record.get("kind")
+        if isinstance(kind, dict) and isinstance(kind.get("type"), str):
+            return dispatch[1].get(kind["type"], fallback)
+        return fallback
+    if isinstance(record_type, str):
+        return dispatch[0].get(record_type, fallback)
+    return fallback
+
+
+def _decode_record(
+    raw: bytes,
+    validator: Draft202012Validator,
+    dispatch: tuple[dict[str, Draft202012Validator], dict[str, Draft202012Validator]],
+    line_no: int,
+) -> dict[str, Any]:
     try:
         record = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_unique_pairs,
             parse_constant=_reject_constant,
         )
-        validator.validate(record)
+        _selected_validator(record, validator, dispatch).validate(record)
     except (UnicodeError, json.JSONDecodeError) as error:
         raise CausalSyntaxError(f"invalid causal timeline row {line_no}: {error}") from error
     except (ValidationError, ValueError) as error:
@@ -77,6 +230,12 @@ def _schema_for_version(schema: dict[str, Any], version: int) -> dict[str, Any]:
     selected = copy.deepcopy(schema)
     for record_type in ("header", "footer"):
         selected["$defs"][record_type]["properties"]["schema_version"]["const"] = version
+    if version < 4:
+        selected["$defs"]["counterKey"]["enum"] = [
+            key
+            for key in selected["$defs"]["counterKey"]["enum"]
+            if key not in SQLITE_SYNC_MUTATION_COUNTERS | SQLITE_WRITE_COUNTERS
+        ]
     if version == 1:
         selected["$defs"]["counterKey"]["enum"].remove("compacted_segments")
         selected["$defs"]["event"]["properties"]["kind"]["oneOf"] = [
@@ -90,71 +249,105 @@ def _schema_for_version(schema: dict[str, Any], version: int) -> dict[str, Any]:
                 "#/$defs/bm25CensusAggregate",
                 "#/$defs/bm25BoundaryAggregate",
                 "#/$defs/bm25LiveBuildAggregate",
+                "#/$defs/annRegionObservation",
+                "#/$defs/sqliteSyncObservation",
+            )
+        ]
+    elif version == 2:
+        selected["$defs"]["event"]["properties"]["kind"]["oneOf"] = [
+            reference
+            for reference in selected["$defs"]["event"]["properties"]["kind"]["oneOf"]
+            if reference["$ref"]
+            not in (
+                "#/$defs/annRegionObservation",
+                "#/$defs/sqliteSyncObservation",
             )
         ]
     return selected
 
 
-def parse(raw: bytes) -> dict[str, Any]:
+def _validate_sqlite_sync_observation(observation: dict[str, Any]) -> None:
+    results = ("full_result", "posix_result")
+    errnos = ("full_errno", "posix_errno")
+    if not observation["observed"] and (
+        observation["same_native_fd"]
+        or observation["full_requested"]
+        or observation["full_default_syscall"]
+        or any(observation[key] is not None for key in (*results, *errnos))
+    ):
+        raise ValueError("unobserved SQLite sync has observed syscall evidence")
+    if not observation["full_requested"] and (
+        observation["full_result"] is not None or observation["full_errno"] is not None
+    ):
+        raise ValueError("SQLite full sync result without request")
+    if observation["full_default_syscall"] and observation["full_result"] is None:
+        raise ValueError("SQLite default full syscall without an attempt")
+    for result_key, errno_key in zip(results, errnos, strict=True):
+        result = observation[result_key]
+        errno = observation[errno_key]
+        if result not in (None, -1, 0):
+            raise ValueError("SQLite sync syscall result outside zero or minus one")
+        if (result is None) != (errno is None):
+            raise ValueError("SQLite sync result and errno presence disagree")
+        if result == 0 and errno != 0:
+            raise ValueError("SQLite sync successful syscall has nonzero errno")
+        if result == -1 and errno == 0:
+            raise ValueError("SQLite sync failed syscall has zero errno")
+    if observation["full_result"] == 0 and observation["posix_result"] is not None:
+        raise ValueError("SQLite full sync succeeded but POSIX fallback was attempted")
+    if observation["full_result"] == -1 and observation["posix_result"] is None:
+        raise ValueError("SQLite full sync failed without POSIX fallback")
+
+
+def parse(raw: bytes, *, max_capture_bytes: int = MAX_CAPTURE_BYTES) -> dict[str, Any]:
+    """Parse resident bytes through the canonical bounded stream parser."""
+    return parse_stream(io.BytesIO(raw), max_capture_bytes=max_capture_bytes)
+
+
+def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES) -> dict[str, Any]:
     """Return validated spans, links, counters, coverage and a precise status."""
-    if not raw:
+    if (
+        type(max_capture_bytes) is not int
+        or max_capture_bytes <= 0
+        or max_capture_bytes > MAX_CONFIGURED_CAPTURE_BYTES
+    ):
+        raise ValueError("causal capture byte bound must be a positive integer at most 1 GiB")
+    lines = _BoundedLines(stream, max_capture_bytes)
+    first = lines.next(MAX_LINE_BYTES, "header")
+    if first is None:
         raise ValueError("empty causal timeline")
-    if len(raw) > MAX_CAPTURE_BYTES:
-        raise ValueError("causal timeline exceeds offline replay byte bound")
-    schema = json.loads(SCHEMA.read_text())
-    lines = raw.split(b"\n")
-    terminated = lines[-1] == b""
-    if terminated:
-        lines.pop()
-    if not lines or not lines[0]:
+    header_line, _header_terminated = first
+    if not header_line:
         raise ValueError("causal timeline header missing")
-    if len(lines[0]) > MAX_LINE_BYTES:
-        raise ValueError("causal timeline header exceeds maximum line size")
+    schema = json.loads(SCHEMA.read_text())
     try:
         header_probe = json.loads(
-            lines[0].decode("utf-8"),
+            header_line.decode("utf-8"),
             object_pairs_hook=_unique_pairs,
             parse_constant=_reject_constant,
         )
     except (UnicodeError, json.JSONDecodeError, ValueError) as error:
         raise ValueError(f"invalid causal timeline header: {error}") from error
     version = header_probe.get("schema_version") if isinstance(header_probe, dict) else None
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is not int or version not in (1, 2, 3, 4):
         raise ValueError("unsupported causal timeline schema version")
     validator = Draft202012Validator(_schema_for_version(schema, version))
-    header = _decode_record(lines[0], validator, 1)
+    dispatch = _dispatch_validators(validator.schema)
+    header = _decode_record(header_line, validator, dispatch, 1)
     if header["record_type"] != "header":
         raise ValueError("causal timeline must start with header")
     cap = header["max_record_bytes"]
-    records: list[dict[str, Any]] = []
-    truncated_tail = False
-    for index, line in enumerate(lines[1:], 2):
-        if not line:
-            raise ValueError(f"blank causal timeline row {index}")
-        if len(line) > cap:
-            raise ValueError(f"causal timeline row {index} exceeds declared record cap")
-        try:
-            record = _decode_record(line, validator, index)
-        except CausalSyntaxError:
-            if index == len(lines) and not terminated:
-                if records and records[-1]["record_type"] == "footer":
-                    raise ValueError("causal data follows footer") from None
-                truncated_tail = True
-                break
-            raise
-        records.append(record)
-    if not terminated and not truncated_tail:
-        # A fully parseable last record without newline is still a partial write.
-        truncated_tail = True
-    footer = records[-1] if records and records[-1]["record_type"] == "footer" else None
-    events = records[:-1] if footer else records
-    if any(row["record_type"] != "event" for row in events):
-        raise ValueError("header/footer occurs inside causal event stream")
+    footer: dict[str, Any] | None = None
+    truncated_tail = not _header_terminated
+    event_count = 0
+    line_no = 1
     capture_id = header["capture_id"]
     spans: dict[int, dict[str, Any]] = {}
     pending_ends: dict[int, dict[str, Any]] = {}
     links: list[dict[str, Any]] = []
     counters: list[dict[str, Any]] = []
+    ann_region_observations: list[dict[str, Any]] = []
+    sqlite_sync_observations: list[dict[str, Any]] = []
     sync_aggregates: list[dict[str, Any]] = []
     object_kind_aggregates: list[dict[str, Any]] = []
     adoption_group_aggregates: list[dict[str, Any]] = []
@@ -168,7 +361,31 @@ def parse(raw: bytes) -> dict[str, Any]:
     phase_times: dict[int, int] = {}
     orphan_events = 0
     last_ts = header["started_ns"]
-    for seq, event in enumerate(events, 1):
+    while row := lines.next(cap, f"row {line_no + 1}"):
+        line_no += 1
+        line, terminated = row
+        if not line:
+            raise ValueError(f"blank causal timeline row {line_no}")
+        try:
+            record = _decode_record(line, validator, dispatch, line_no)
+        except CausalSyntaxError:
+            if not terminated:
+                if footer is not None:
+                    raise ValueError("causal data follows footer") from None
+                truncated_tail = True
+                break
+            raise
+        if not terminated:
+            truncated_tail = True
+        if footer is not None:
+            raise ValueError("causal data follows footer")
+        if record["record_type"] == "footer":
+            footer = record
+            continue
+        if record["record_type"] != "event":
+            raise ValueError("header/footer occurs inside causal event stream")
+        event_count += 1
+        seq, event = event_count, record
         if event["output_seq"] != seq:
             raise ValueError(f"causal output sequence gap at row {seq}")
         if event["capture_id"] != capture_id:
@@ -194,11 +411,19 @@ def parse(raw: bytes) -> dict[str, Any]:
                 "counters": {},
                 "bm25_aggregates": [],
             }
+            if span_id in pending_ends:
+                spans[span_id].update(pending_ends.pop(span_id))
         elif event_type == "span_end":
             span_id = kind["span_id"]
-            if span_id in pending_ends:
+            if span_id in pending_ends or (
+                span_id in spans and spans[span_id]["end_ns"] is not None
+            ):
                 raise ValueError(f"duplicate span end: {span_id}")
-            pending_ends[span_id] = {"end_ns": event["ts_ns"], "outcome": kind["outcome"]}
+            end = {"end_ns": event["ts_ns"], "outcome": kind["outcome"]}
+            if span_id in spans:
+                spans[span_id].update(end)
+            else:
+                pending_ends[span_id] = end
         elif event_type == "counter":
             counters.append(
                 {
@@ -210,6 +435,8 @@ def parse(raw: bytes) -> dict[str, Any]:
             )
             span = spans.get(kind["span_id"])
             if span is None:
+                if kind["key"] in SQLITE_SYNC_MUTATION_COUNTERS:
+                    raise ValueError("SQLite sync mutation counter has no existing owner span")
                 orphan_events += 1
                 continue
             key = kind["key"]
@@ -218,6 +445,36 @@ def parse(raw: bytes) -> dict[str, Any]:
             if total > (1 << 64) - 1:
                 raise ValueError("causal counter aggregate exceeds u64")
             span["counters"][key] = total
+        elif event_type == "ann_region_observation":
+            ann_region_observations.append(
+                {
+                    "span_id": kind["span_id"],
+                    "ts_ns": event["ts_ns"],
+                    **{
+                        key: kind[key]
+                        for key in (
+                            "phase",
+                            "fileset_ref",
+                            "descriptor_ref",
+                            "ordinal",
+                            "rows",
+                            "index_kind",
+                            "files",
+                            "chunks",
+                        )
+                    },
+                }
+            )
+        elif event_type == "sqlite_sync_observation":
+            observation = kind["observation"]
+            _validate_sqlite_sync_observation(observation)
+            sqlite_sync_observations.append(
+                {
+                    "span_id": kind["span_id"],
+                    "ts_ns": event["ts_ns"],
+                    "observation": observation.copy(),
+                }
+            )
         elif event_type == "sync_aggregate":
             if any(
                 kind[key] > (1 << 64) - 1
@@ -374,15 +631,12 @@ def parse(raw: bytes) -> dict[str, Any]:
             identity_times[span_id] = event["ts_ns"]
         elif event_type == "health":
             health.append({"ts_ns": event["ts_ns"], **kind})
-    for span_id, end in pending_ends.items():
-        span = spans.get(span_id)
-        if span is None:
-            if footer and footer["status"] == "complete":
-                raise ValueError(f"complete capture has end without begin: {span_id}")
-            continue
-        if end["end_ns"] < span["start_ns"]:
+    for span_id in pending_ends:
+        if footer and footer["status"] == "complete":
+            raise ValueError(f"complete capture has end without begin: {span_id}")
+    for span_id, span in spans.items():
+        if span["end_ns"] is not None and span["end_ns"] < span["start_ns"]:
             raise ValueError(f"span clock regressed: {span_id}")
-        span.update(end)
     for span_id, span in spans.items():
         parent = span["parent_span_id"]
         if parent is None:
@@ -402,6 +656,18 @@ def parse(raw: bytes) -> dict[str, Any]:
             if span["stage"] != "harness_phase":
                 raise ValueError("phase identity targets non-phase span")
             span["phase"] = phase_names[span_id]
+    classified_sync_spans: set[int] = set()
+    for counter in counters:
+        if counter["key"] not in SQLITE_SYNC_MUTATION_COUNTERS:
+            continue
+        owner = spans.get(counter["span_id"])
+        if owner is None or owner["stage"] != "sqlite_work" or owner["lane_id"] not in (11, 12, 13):
+            raise ValueError("SQLite sync mutation counter targets wrong owner stage or lane")
+        if counter["value"] != 1:
+            raise ValueError("SQLite sync mutation counter value must be one")
+        if counter["span_id"] in classified_sync_spans:
+            raise ValueError("duplicate SQLite sync mutation classification")
+        classified_sync_spans.add(counter["span_id"])
     # Missing parents can be a partial capture, but a cycle made entirely of
     # observed spans is contradictory even when the footer is absent.
     parent_state: dict[int, int] = {}
@@ -421,6 +687,8 @@ def parse(raw: bytes) -> dict[str, Any]:
             parent_state[visited] = 2
     for row in [
         *counters,
+        *ann_region_observations,
+        *sqlite_sync_observations,
         *sync_aggregates,
         *object_kind_aggregates,
         *adoption_group_aggregates,
@@ -449,8 +717,50 @@ def parse(raw: bytes) -> dict[str, Any]:
             *bm25_census_aggregates,
             *bm25_boundary_aggregates,
             *bm25_live_build_aggregates,
+            *ann_region_observations,
+            *sqlite_sync_observations,
         )
     )
+    observed_regions: dict[str, tuple[int, int, str, int, int]] = {}
+    seen_region_events: set[tuple[int, str, str, int]] = set()
+    seen_region_spans: set[int] = set()
+    for row in ann_region_observations:
+        owner = spans.get(row["span_id"])
+        if owner is None:
+            continue
+        required_stage = {
+            "installed": "semantic_seal",
+            "selected_query": "query_candidate",
+        }[row["phase"]]
+        if owner["stage"] != required_stage:
+            raise ValueError("ANN region observation targets wrong owner stage")
+        if owner["outcome"] not in (None, "ok"):
+            raise ValueError("ANN region observation targets failed owner")
+        if row["chunks"] < row["files"]:
+            raise ValueError("ANN region has fewer chunks than files")
+        identity = (row["span_id"], row["phase"], row["fileset_ref"], row["ordinal"])
+        if identity in seen_region_events:
+            raise ValueError("duplicate ANN region observation")
+        seen_region_events.add(identity)
+        if row["span_id"] in seen_region_spans:
+            raise ValueError("multiple ANN region observations in one owner span")
+        seen_region_spans.add(row["span_id"])
+        shape = (row["ordinal"], row["rows"], row["index_kind"], row["files"], row["chunks"])
+        prior = observed_regions.setdefault(row["fileset_ref"], shape)
+        if prior != shape:
+            raise ValueError("ANN fileset observations disagree")
+    seen_sqlite_sync_spans: set[int] = set()
+    for row in sqlite_sync_observations:
+        span_id = row["span_id"]
+        owner = spans.get(span_id)
+        if owner is None:
+            raise ValueError(f"SQLite sync observation targets foreign span: {span_id}")
+        if owner["stage"] != "sqlite_work" or owner["lane_id"] not in (11, 12, 13):
+            raise ValueError("SQLite sync observation targets wrong owner stage or lane")
+        if span_id in seen_sqlite_sync_spans:
+            raise ValueError("duplicate SQLite sync observation in one span")
+        seen_sqlite_sync_spans.add(span_id)
+        owner["sqlite_sync_observation"] = row["observation"].copy()
     for event_type, aggregates in (
         ("bm25_census_aggregate", bm25_census_aggregates),
         ("bm25_boundary_aggregate", bm25_boundary_aggregates),
@@ -477,9 +787,9 @@ def parse(raw: bytes) -> dict[str, Any]:
     if footer:
         if footer["status"] == "invalid":
             raise ValueError("producer declared causal capture invalid")
-        if footer["capture_id"] != capture_id or footer["last_output_seq"] != len(events):
+        if footer["capture_id"] != capture_id or footer["last_output_seq"] != event_count:
             raise ValueError("causal footer capture or sequence mismatch")
-        if footer["events_written"] != len(events):
+        if footer["events_written"] != event_count:
             raise ValueError("causal footer written count mismatch")
         if footer["events_attempted"] != footer["events_accepted"] + footer["events_dropped"]:
             raise ValueError("causal footer attempted accounting mismatch")
@@ -499,7 +809,7 @@ def parse(raw: bytes) -> dict[str, Any]:
             or footer["open_spans"]
         ):
             raise ValueError("complete causal footer claims loss or live producers")
-        if pending_ends.keys() != spans.keys():
+        if pending_ends or any(span["end_ns"] is None for span in spans.values()):
             raise ValueError("complete capture has unmatched span boundary")
         if orphan_events:
             raise ValueError("complete capture has orphan work events")
@@ -557,7 +867,7 @@ def parse(raw: bytes) -> dict[str, Any]:
         "capture_id": capture_id,
         "clock_domain": header["clock_domain"],
         "stream_id": header["stream_id"],
-        "sha256": hashlib.sha256(raw).hexdigest(),
+        "sha256": lines.digest.hexdigest(),
         "header": header,
         "footer": footer,
         "spans": spans,
@@ -565,6 +875,8 @@ def parse(raw: bytes) -> dict[str, Any]:
         "verified_flows": verified_flows,
         "ambiguous_links": len(candidate_links) - len(verified_flows),
         "counters": counters,
+        "ann_region_observations": ann_region_observations,
+        "sqlite_sync_observations": sqlite_sync_observations,
         "sync_aggregates": sync_aggregates,
         "object_kind_aggregates": object_kind_aggregates,
         "adoption_group_aggregates": adoption_group_aggregates,
@@ -573,7 +885,7 @@ def parse(raw: bytes) -> dict[str, Any]:
         "bm25_live_build_aggregates": bm25_live_build_aggregates,
         "health": health,
         "request_identities": identities,
-        "event_count": len(events),
+        "event_count": event_count,
         "last_observed_ns": last_ts,
         "truncated_tail": truncated_tail,
         "orphan_events": orphan_events,
@@ -631,6 +943,11 @@ def summarize(
                 "counters": span["counters"],
                 "bm25_aggregates": [aggregate.copy() for aggregate in span["bm25_aggregates"]],
                 "request_identity": span.get("request_identity", {}).copy() or None,
+                **(
+                    {"sqlite_sync_observation": span.get("sqlite_sync_observation")}
+                    if capture["schema_version"] >= 3
+                    else {}
+                ),
             }
         )
     summary = {
@@ -643,6 +960,11 @@ def summarize(
         "truncated_tail": capture["truncated_tail"],
         "orphan_events": capture["orphan_events"],
         "spans": rows,
+        "ann_region_observations": [row.copy() for row in capture["ann_region_observations"]],
+        "sqlite_sync_observations": [
+            {**row, "observation": row["observation"].copy()}
+            for row in capture["sqlite_sync_observations"]
+        ],
         "sync_aggregates": [row.copy() for row in capture["sync_aggregates"]],
         "object_kind_aggregates": [row.copy() for row in capture["object_kind_aggregates"]],
         "adoption_group_aggregates": [row.copy() for row in capture["adoption_group_aggregates"]],
@@ -690,6 +1012,59 @@ def _verify_legacy_binding(
         or legacy_profile.get("trace_sha256") != execution_binding["stderr_sha256"]
     ):
         raise ValueError("legacy reconciliation capture or stderr binding mismatch")
+
+
+def owner_phase(capture: dict[str, Any], span_id: int) -> str | None:
+    """Resolve actual ancestry plus an unambiguous request/client flow.
+
+    The request root may finish after the client reads its response because the
+    server closes it after write bookkeeping. Computation owners must complete
+    within the linked attempt; root completion is correlation, not nesting.
+    No phase is inferred from timestamp overlap or nearest-phase heuristics.
+    """
+    flows = {row["source_span_id"]: row["target_span_id"] for row in capture["verified_flows"]}
+    return _owner_phase(capture, span_id, flows)
+
+
+def phase_owners(capture: dict[str, Any]) -> dict[int, str | None]:
+    """Resolve a batch without rebuilding the complete flow index per span."""
+    flows = {row["source_span_id"]: row["target_span_id"] for row in capture["verified_flows"]}
+    return {span_id: _owner_phase(capture, span_id, flows) for span_id in capture["spans"]}
+
+
+def _owner_phase(capture: dict[str, Any], span_id: int, flows: dict[int, int]) -> str | None:
+    spans = capture["spans"]
+    origin = spans.get(span_id)
+    seen = set()
+    current = span_id
+    while current in spans and current not in seen:
+        seen.add(current)
+        span = spans[current]
+        if span["stage"] == "harness_phase":
+            return span.get("phase")
+        parent = span["parent_span_id"]
+        if parent is None and current in flows:
+            target = spans[flows[current]]
+            if (
+                span["end_ns"] is None
+                or target["end_ns"] is None
+                or span["start_ns"] < target["start_ns"]
+                or span["start_ns"] > target["end_ns"]
+                or (
+                    span_id != current
+                    and (
+                        origin["end_ns"] is None
+                        or origin["start_ns"] < target["start_ns"]
+                        or origin["end_ns"] > target["end_ns"]
+                    )
+                )
+            ):
+                return None
+            parent = flows[current]
+        if parent is None:
+            return None
+        current = parent
+    return None
 
 
 def reconcile_legacy(
@@ -742,20 +1117,9 @@ def reconcile_legacy(
     else:
         phase_parity = "verified"
 
-    def owner_phase(span_id: int) -> str | None:
-        current = span_id
-        while current in spans:
-            span = spans[current]
-            if span["stage"] == "harness_phase":
-                return span.get("phase")
-            current = span["parent_span_id"]
-            if current is None:
-                break
-        return None
-
     canonical_sync: dict[tuple[str, str], dict[str, int]] = {}
     for aggregate in capture["sync_aggregates"]:
-        phase = owner_phase(aggregate["span_id"])
+        phase = owner_phase(capture, aggregate["span_id"])
         if phase is None:
             continue
         key = (phase, aggregate["label"])
@@ -833,7 +1197,7 @@ def reconcile_legacy(
     canonical_bm25: dict[tuple[str, str, str | None], list[dict[str, Any]]] = {}
     for kind, aggregates in bm25_sources:
         for aggregate in aggregates:
-            phase = owner_phase(aggregate["span_id"])
+            phase = owner_phase(capture, aggregate["span_id"])
             if phase is None:
                 continue
             key = (phase, kind, aggregate["label"] if kind == "bm25_boundary" else None)
@@ -1060,6 +1424,8 @@ def chrome_export(
 ) -> dict[str, Any]:
     """Render only proven same-clock links as flows; preserve exact IDs as strings."""
     events: list[dict[str, Any]] = []
+    flow_starts: list[dict[str, Any]] = []
+    event_for_span: dict[int, dict[str, Any]] = {}
     process_id = int(capture["header"]["process_instance"][:8], 16)
     if capture["last_observed_ns"] > JS_SAFE_INTEGER or any(
         span["start_ns"] > JS_SAFE_INTEGER
@@ -1123,6 +1489,7 @@ def chrome_export(
                     "args": args,
                 }
             )
+            event_for_span[span["span_id"]] = events[-1]
         else:
             events.append(
                 {
@@ -1136,6 +1503,7 @@ def chrome_export(
                     "args": args,
                 }
             )
+            event_for_span[span["span_id"]] = events[-1]
             if span["outcome"] != "ok":
                 events.append(
                     {
@@ -1278,36 +1646,79 @@ def chrome_export(
                     },
                 }
             )
+    for observation in capture["ann_region_observations"]:
+        span_id = observation["span_id"]
+        if span_id not in track_for_span:
+            continue
+        if observation["ts_ns"] > JS_SAFE_INTEGER:
+            raise ValueError("causal timestamp exceeds exact Chrome JSON range")
+        events.append(
+            {
+                "name": f"ann_region:{observation['phase']}",
+                "cat": "ann_region_identity",
+                "ph": "i",
+                "s": "t",
+                "pid": process_id,
+                "tid": track_for_span[span_id],
+                "ts": observation["ts_ns"] / 1000,
+                "args": {
+                    key: str(value) if type(value) is int else value
+                    for key, value in observation.items()
+                    if key != "ts_ns"
+                },
+            }
+        )
+    for row in capture["sqlite_sync_observations"]:
+        span_id = row["span_id"]
+        if row["ts_ns"] > JS_SAFE_INTEGER:
+            raise ValueError("causal timestamp exceeds exact Chrome JSON range")
+        events.append(
+            {
+                "name": "sqlite_sync_observation",
+                "cat": "sqlite_sync",
+                "ph": "i",
+                "s": "t",
+                "pid": process_id,
+                "tid": track_for_span[span_id],
+                "ts": row["ts_ns"] / 1000,
+                "args": {"span_id": str(span_id), **row["observation"]},
+            }
+        )
     proven = {id(link) for link in capture["verified_flows"]}
-    for link in capture["links"]:
+    for flow_ordinal, link in enumerate(capture["links"], 1):
         source = capture["spans"].get(link["source_span_id"])
         if source is None:
             continue
         target = capture["spans"].get(link["target_span_id"])
         if id(link) in proven and target is not None:
-            flow_id = f"{link['source_span_id']}:{link['target_span_id']}:{link['ts_ns']}"
-            events.extend(
-                [
-                    {
-                        "name": "explicit_link",
-                        "cat": "causal",
-                        "ph": "s",
-                        "id": flow_id,
-                        "pid": process_id,
-                        "tid": track_for_span[target["span_id"]],
-                        "ts": target["start_ns"] / 1000,
-                    },
-                    {
-                        "name": "explicit_link",
-                        "cat": "causal",
-                        "ph": "f",
-                        "id": flow_id,
-                        "pid": process_id,
-                        "tid": track_for_span[source["span_id"]],
-                        "ts": source["start_ns"] / 1000,
-                    },
-                ]
+            # Perfetto parses string flow IDs as hex-u64, and draws outgoing
+            # flows from a slice's end. A zero-duration point at the observed
+            # client start avoids a backwards arrow from the reply boundary.
+            if flow_ordinal > U64_MAX:
+                raise ValueError("Chrome flow identifier exceeds u64")
+            flow_id = f"{flow_ordinal:016x}"
+            flow_args = {
+                "source_span_id": str(link["source_span_id"]),
+                "target_span_id": str(link["target_span_id"]),
+                "link_ts_ns": str(link["ts_ns"]),
+            }
+            flow_starts.append(
+                {
+                    "name": "client_attempt_start",
+                    "cat": "causal_flow_endpoint",
+                    "ph": "X",
+                    "dur": 0,
+                    "bind_id": flow_id,
+                    "flow_out": True,
+                    "pid": process_id,
+                    "tid": track_for_span[target["span_id"]],
+                    "ts": target["start_ns"] / 1000,
+                    "args": {**flow_args, "display_only_flow_endpoint": True},
+                }
             )
+            request_event = event_for_span[source["span_id"]]
+            request_event.update(bind_id=flow_id, flow_in=True)
+            request_event["args"]["explicit_link"] = flow_args.copy()
             continue
         events.append(
             {
@@ -1373,6 +1784,11 @@ def chrome_export(
         ):
             if key in row:
                 row[key] = str(row[key])
+    for row in summary["ann_region_observations"]:
+        for key in ("span_id", "ordinal", "rows", "files", "chunks"):
+            row[key] = str(row[key])
+    for row in summary["sqlite_sync_observations"]:
+        row["span_id"] = str(row["span_id"])
     for aggregates in (
         summary["bm25_census_aggregates"],
         summary["bm25_boundary_aggregates"],
@@ -1381,7 +1797,8 @@ def chrome_export(
         for row in aggregates:
             row.update({key: str(value) for key, value in row.items() if type(value) is int})
     return {
-        "traceEvents": events,
+        # An equal-time request must observe its outgoing endpoint first.
+        "traceEvents": [*flow_starts, *events],
         "displayTimeUnit": "ns",
         "quantaIndexSummary": summary,
     }
@@ -1391,8 +1808,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--max-capture-bytes", type=int, default=MAX_CAPTURE_BYTES)
     args = parser.parse_args()
-    result = chrome_export(parse(args.input.read_bytes()))
+
+    def bounded_parse(stream: BinaryIO) -> dict[str, Any]:
+        if os.fstat(stream.fileno()).st_size > args.max_capture_bytes:
+            raise ValueError("causal timeline exceeds offline replay byte limit")
+        return parse_stream(stream, max_capture_bytes=args.max_capture_bytes)
+
+    result = chrome_export(_consume_regular_file(args.input, bounded_parse))
     with args.out.open("xb") as stream:
         stream.write(
             json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()

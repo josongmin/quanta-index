@@ -1099,6 +1099,7 @@ pub(super) fn prefix_semantic_query_error(plane: &str, err: CoreError) -> CoreEr
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => other,
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => other,
     }
 }

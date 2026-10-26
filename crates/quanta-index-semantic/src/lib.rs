@@ -37,6 +37,7 @@ mod budget;
 mod build;
 mod codec;
 mod control_file;
+mod dataset_promotion;
 mod durable_write;
 mod errors;
 mod generation_contract;
@@ -45,8 +46,11 @@ mod layout;
 mod manifest;
 mod membership_integrity;
 pub mod native;
+mod physical_measurement;
 #[cfg(feature = "proof")]
 pub mod proof;
+mod qualified_fs;
+mod retention_measurement;
 mod sealed_manifest;
 mod search;
 mod semantic_ingest_fixtures_v1;
@@ -65,9 +69,13 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use lance_io::object_store::file_admission::FileAdmission;
+use quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE;
+use quanta_index_core::publication_capacity::PublicationAllowance;
+
 use quanta_index_contract::{
     GenerationPin, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneTrackKind, SemanticContentRootsV1,
+    SearchCorpusIngestBatch, SearchPlaneTrackKind, SemanticContentRootsV1,
 };
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1,
@@ -83,17 +91,17 @@ use quanta_index_core::{
         SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
     },
     domains::semantic::{SemanticContentRootsPort, SemanticSearcher},
-    reclaim_directory, unique_inode_tree_bytes_for_roots_below_track,
-    unique_inode_tree_bytes_in_track,
 };
 use sha2::{Digest as _, Sha256};
 
 use crate::budget::DenseLaneTalliesV1;
 use crate::codec::FORMAT_UNSUPPORTED_CODE;
-use crate::integrity::{SealTalliesV1, read_quarantine_receipt};
+use crate::integrity::{SealTalliesV1, read_quarantine_receipt_with_admission};
 use crate::manifest::SemanticManifest;
-use crate::sealed_manifest::inspect_sealed_manifest_identity;
-use crate::search::{LoadedGeneration, PersistedSemanticSearcher, open_generation};
+use crate::sealed_manifest::inspect_sealed_manifest_identity_with_admission;
+use crate::search::{
+    LoadedGeneration, PersistedSemanticSearcher, open_generation, open_generation_admitted,
+};
 
 fn observe_result<T>(
     diagnostic: Option<&DiagnosticContextV1>,
@@ -151,6 +159,36 @@ pub mod test_support {
     }
 }
 
+/// Build a private admitted Lance session from the held work allowance.
+///
+/// The composition root supplies one factory backed by
+/// its canonical file binder; this crate never creates a capacity ledger.
+pub trait SemanticFileAdmissionFactory: Send + Sync {
+    fn for_work(
+        &self,
+        held_work: Arc<PublicationAllowance>,
+    ) -> Result<Arc<dyn FileAdmission>, CoreError>;
+}
+
+/// Reserve maintenance writes under the global capacity authority.
+///
+/// A receipt written outside a publication obtains one independent parent.
+/// The returned child must be
+/// backed by the same canonical physical file binder as Lance writes.
+pub trait SemanticMaintenanceFileFactory: Send + Sync {
+    fn reserve_sidecar_output(
+        &self,
+        max_encoded_bytes: u64,
+    ) -> Result<Box<dyn quanta_index_core::publication_admission::PublicationOutputPermit>, CoreError>;
+
+    /// Reclaim existing files and directories under the same binder without
+    /// granting a new writer parent or file-creation authority.
+    fn retirement_admission(&self) -> Result<Arc<dyn FileAdmission>, CoreError>;
+
+    /// Prepare only the private reclaim-area parent for a named entry.
+    fn prepare_retirement_area(&self, entry: &Path) -> Result<(), CoreError>;
+}
+
 /// Persisted semantic adapter rooted at a semantic state directory.
 ///
 /// The state directory is typically `{state_root}/indexes/semantic` at the
@@ -161,8 +199,15 @@ pub mod test_support {
 /// seal it measures reports to (QI-BB-006 #4).
 pub struct SemanticAdapter {
     state_root: PathBuf,
+    /// Read-only authority for cold opens; every build receives a distinct
+    /// writer admission from the held work parent below.
+    lance_read_admission: Option<Arc<dyn FileAdmission>>,
+    lance_work_factory: Option<Arc<dyn SemanticFileAdmissionFactory>>,
+    maintenance_file_factory: Option<Arc<dyn SemanticMaintenanceFileFactory>>,
     runtime: Arc<tokio::runtime::Runtime>,
     window_policy: SemanticStreamWindowPolicy,
+    retention_measurement_policy:
+        quanta_index_core::domains::generation::RetentionMeasurementPolicy,
     query_tallies: Arc<DenseLaneTalliesV1>,
     seal_tallies: Arc<SealTalliesV1>,
     /// Serializes a target build or scrub with mutations of that generation;
@@ -196,7 +241,51 @@ pub(crate) fn run_blocking<F: core::future::Future>(
     runtime.block_on(future)
 }
 
+fn open_generation_with_read_admission(
+    runtime: &tokio::runtime::Runtime,
+    state_root: &Path,
+    repo: &RepoId,
+    revision: &RevisionId,
+    generation: ManifestGeneration,
+    admission: Option<&Arc<dyn FileAdmission>>,
+) -> Result<LoadedGeneration, CoreError> {
+    admission.map_or_else(
+        || {
+            run_blocking(
+                runtime,
+                open_generation(state_root, repo, revision, generation, None),
+            )
+        },
+        |admission| {
+            run_blocking(
+                runtime,
+                open_generation_admitted(
+                    state_root,
+                    repo,
+                    revision,
+                    generation,
+                    qualified_fs::lance_session(admission),
+                    Arc::clone(admission),
+                ),
+            )
+        },
+    )
+}
+
 impl SemanticAdapter {
+    fn retirement_file_factory(
+        &self,
+    ) -> Result<Option<&dyn SemanticMaintenanceFileFactory>, CoreError> {
+        match self.maintenance_file_factory.as_deref() {
+            Some(factory) => Ok(Some(factory)),
+            None if self.lance_read_admission.is_some() => Err(CoreError::Typed {
+                code: quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                message: "qualified semantic retirement lacks same-ledger file admission".into(),
+            }),
+            None => Ok(None),
+        }
+    }
+
     /// An adapter under the production window policy
     /// ([`SemanticStreamWindowPolicy::DEFAULT`]).
     ///
@@ -224,8 +313,13 @@ impl SemanticAdapter {
             })?;
         Ok(Self {
             state_root,
+            lance_read_admission: None,
+            lance_work_factory: None,
+            maintenance_file_factory: None,
             runtime: Arc::new(runtime),
             window_policy,
+            retention_measurement_policy:
+                quanta_index_core::domains::generation::RetentionMeasurementPolicy::DEFAULT,
             query_tallies: Arc::new(DenseLaneTalliesV1::default()),
             seal_tallies: Arc::new(SealTalliesV1::default()),
             generation_mutations: std::array::from_fn(|_| Mutex::new(())),
@@ -234,6 +328,39 @@ impl SemanticAdapter {
                 quanta_index_core::domains::integrity::IntegrityScrubProgressV1::default(),
             ),
         })
+    }
+
+    /// Attach the canonical root authority. Qualified builds require a held
+    /// work parent and get a new Session; cold opens use read-only admission.
+    #[must_use]
+    pub fn with_qualified_file_admission(
+        mut self,
+        read_admission: Arc<dyn FileAdmission>,
+        work_factory: Arc<dyn SemanticFileAdmissionFactory>,
+    ) -> Self {
+        self.lance_read_admission = Some(read_admission);
+        self.lance_work_factory = Some(work_factory);
+        self
+    }
+
+    /// Install a same-ledger reservation factory for scrub/quarantine receipts.
+    #[must_use]
+    pub fn with_maintenance_file_admission(
+        mut self,
+        factory: Arc<dyn SemanticMaintenanceFileFactory>,
+    ) -> Self {
+        self.maintenance_file_factory = Some(factory);
+        self
+    }
+
+    /// Configure the disposable main-file cap for retention membership.
+    #[must_use]
+    pub const fn with_retention_measurement_policy(
+        mut self,
+        policy: quanta_index_core::domains::generation::RetentionMeasurementPolicy,
+    ) -> Self {
+        self.retention_measurement_policy = policy;
+        self
     }
 
     /// Hold the sealed-generation directory lifecycle (see the field).
@@ -369,7 +496,12 @@ impl SemanticScopeStreamBuildPort for SemanticAdapter {
             |_diagnostic| {
                 let _mutation = self.generation_contract_guards(pin, contract)?;
                 let _lifecycle = self.directory_lifecycle_read_guard()?;
-                build::preflight_contract(&self.state_root, pin, contract)
+                build::preflight_contract(
+                    &self.state_root,
+                    pin,
+                    contract,
+                    self.lance_read_admission.as_deref(),
+                )
             },
         )
     }
@@ -378,6 +510,9 @@ impl SemanticScopeStreamBuildPort for SemanticAdapter {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        publication: Option<
+            quanta_index_core::publication_admission::PublicationOutputAdmission<'_>,
+        >,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<
         (
@@ -389,13 +524,34 @@ impl SemanticScopeStreamBuildPort for SemanticAdapter {
         observe_result(diagnostic, DiagnosticStageV1::SemanticBuild, |diagnostic| {
             let _mutation = self.generation_build_guards(header)?;
             let _lifecycle = self.directory_lifecycle_read_guard()?;
-            build::build_stream_reported_with_diagnostic(
+            let work_admission = match &self.lance_work_factory {
+                Some(factory) => {
+                    let held = publication
+                        .as_ref()
+                        .ok_or_else(|| CoreError::Typed {
+                            code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                            message: "qualified semantic build lacks publication admission".into(),
+                        })?
+                        .held_work_file_allowance()?
+                        .ok_or_else(|| CoreError::Typed {
+                            code: INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                            message: "qualified semantic build lacks held work allowance".into(),
+                        })?;
+                    Some(factory.for_work(held)?)
+                }
+                None => None,
+            };
+            build::build_stream_reported_with_diagnostic_and_lance(
                 &self.runtime,
                 &self.state_root,
                 self.window_policy,
                 header,
                 scopes,
-                &self.seal_tallies,
+                &build::BuildFileContext {
+                    seal_tallies: &self.seal_tallies,
+                    lance_file_admission: work_admission.as_ref(),
+                },
+                publication,
                 diagnostic,
             )
         })
@@ -462,9 +618,13 @@ impl SemanticIndexOpenPort for SemanticAdapter {
         // plane's snapshot registry, which is the single owner of opened
         // handles across both tracks. A second cache here would double the
         // resident bytes and hide a retirement from the registry.
-        let loaded = run_blocking(
+        let loaded = open_generation_with_read_admission(
             &self.runtime,
-            open_generation(&self.state_root, repo, revision, generation),
+            &self.state_root,
+            repo,
+            revision,
+            generation,
+            self.lance_read_admission.as_ref(),
         )?;
         Ok(self.searcher(loaded))
     }
@@ -493,29 +653,31 @@ impl SemanticAdapter {
 /// Every generation dataset under the semantic track root (QI-BB-015).
 impl TrackDiskUsagePort for SemanticAdapter {
     /// Bytes the semantic state root occupies on disk, by unique inode (an
-    /// inherited dataset's hard-linked fragments count once), measured
-    /// while ingest, seals and reclaims keep running.
+    /// inherited dataset's hard-linked fragments count once), observed while
+    /// writers continue. Exact admission and retention use the snapshot port.
     fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
         budget.checkpoint("semantic-disk-usage:entry")?;
-        if !self.state_root.exists() {
-            return Ok(0);
-        }
-        unique_inode_tree_bytes_in_track(
+        quanta_index_scratch_sqlite::physical::measure_live_inode_tree_bytes(
             &self.state_root,
             &|_name| false,
+            self.retention_measurement_policy.max_main_file_bytes(),
             budget,
             budget.diagnostic_context(),
         )
     }
 }
 
-/// The dense lanes' tallies as scrape points, `semantic_dense_queries_…`
-/// and `semantic_budget_interruptions_…` (QI-BB-015, W5 phase 3): the
+/// The dense lanes' tallies as scrape points.
+///
+/// `semantic_dense_queries_…` and `semantic_budget_interruptions_…`
+/// (QI-BB-015, W5 phase 3) count the
 /// queries each lane handed to the library and the request interruptions
-/// it observed inside, across every searcher this adapter opened, and
-/// `semantic_dense_exact_completions_total`, the short approximate passes
-/// the exact lane answered (QI-BB-025); and the
-/// seal tallies, `semantic_seal_…` (QI-BB-006 #4): the bytes every seal
+/// it observed inside, across every searcher this adapter opened.
+///
+/// `semantic_dense_exact_completions_total` counts the short approximate passes
+/// the exact lane answered (QI-BB-025).
+///
+/// The seal tallies, `semantic_seal_…` (QI-BB-006 #4), count the bytes every seal
 /// hashed itself against what it inherited from its base.
 impl MetricSourcePort for SemanticAdapter {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
@@ -576,7 +738,11 @@ impl SealedGenerationIdentityProbePort for SemanticAdapter {
                 }
             }
         }
-        match inventory_generation_dir(&self.state_root, &dir) {
+        match inventory_generation_dir_with_admission(
+            &self.state_root,
+            &dir,
+            self.lance_read_admission.as_deref(),
+        ) {
             Ok(Some(observed)) => Ok(observed.identity() == *candidate),
             Ok(None) | Err(InventoryGenerationError::Quarantined(_)) => Ok(false),
             Err(InventoryGenerationError::Infrastructure(error)) => Err(error),
@@ -611,11 +777,14 @@ impl SemanticAdapter {
             )));
         }
         let marker_path = layout::sealed_marker_path(&generation_dir);
-        let sealed_digest =
-            control_file::read_string_bounded(&marker_path, control_file::MAX_SEALED_MARKER_BYTES)
-                .map_err(|error| {
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        CoreError::Typed {
+        let sealed_digest = control_file::read_string_bounded_with_admission(
+            &marker_path,
+            control_file::MAX_SEALED_MARKER_BYTES,
+            self.lance_read_admission.as_deref(),
+        )
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                CoreError::Typed {
                     code:
                         quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
                     message: format!(
@@ -623,13 +792,10 @@ impl SemanticAdapter {
                         candidate.manifest_generation.get()
                     ),
                 }
-                    } else {
-                        CoreError::Storage(format!(
-                            "semantic: read sealed marker for generation {}: {error}",
-                            candidate.manifest_generation.get()
-                        ))
-                    }
-                })?;
+            } else {
+                crate::errors::fs_err("read sealed marker", &marker_path, &error)
+            }
+        })?;
         if sealed_digest != candidate.manifest_digest {
             return Err(CoreError::Typed {
                 code:
@@ -648,14 +814,13 @@ impl SemanticAdapter {
 
     /// The cold open of `candidate`'s generation.
     fn open_loaded(&self, candidate: &GenerationSnapshot) -> Result<LoadedGeneration, CoreError> {
-        run_blocking(
+        open_generation_with_read_admission(
             &self.runtime,
-            open_generation(
-                &self.state_root,
-                &candidate.repo_id,
-                &candidate.revision_id,
-                candidate.manifest_generation,
-            ),
+            &self.state_root,
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+            self.lance_read_admission.as_ref(),
         )
     }
 }
@@ -680,6 +845,7 @@ fn sync_generation_directory(generation_dir: &Path) -> Result<(), CoreError> {
 fn read_sealed_scope_manifest(
     semantic_root: &Path,
     candidate: &GenerationSnapshot,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<SemanticManifest, CoreError> {
     let generation_dir = layout::generation_dir(
         semantic_root,
@@ -687,9 +853,11 @@ fn read_sealed_scope_manifest(
         &candidate.revision_id,
         candidate.manifest_generation,
     );
-    let sealed_digest = control_file::read_string_bounded(
-        &layout::sealed_marker_path(&generation_dir),
+    let marker_path = layout::sealed_marker_path(&generation_dir);
+    let sealed_digest = control_file::read_string_bounded_with_admission(
+        &marker_path,
         control_file::MAX_SEALED_MARKER_BYTES,
+        admission,
     )
     .map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -701,10 +869,7 @@ fn read_sealed_scope_manifest(
                 ),
             }
         } else {
-            CoreError::Storage(format!(
-                "semantic: read sealed marker for generation {}: {error}",
-                candidate.manifest_generation.get()
-            ))
+            crate::errors::fs_err("read sealed marker", &marker_path, &error)
         }
     })?;
     if sealed_digest != candidate.manifest_digest {
@@ -712,13 +877,12 @@ fn read_sealed_scope_manifest(
     }
     let manifest_path = layout::manifest_path(&generation_dir);
     let manifest = SemanticManifest::decode(
-        &control_file::read_bounded(&manifest_path, control_file::MAX_SCOPE_MANIFEST_BYTES)
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "semantic: read manifest {}: {error}",
-                    manifest_path.display()
-                ))
-            })?,
+        &control_file::read_bounded_with_admission(
+            &manifest_path,
+            control_file::MAX_SCOPE_MANIFEST_BYTES,
+            admission,
+        )
+        .map_err(|error| crate::errors::fs_err("read manifest", &manifest_path, &error))?,
     )?;
     manifest.validate_scope(
         &candidate.repo_id,
@@ -742,7 +906,11 @@ impl SemanticContentRootsPort for SemanticAdapter {
                 sealed.track
             )));
         }
-        let manifest = read_sealed_scope_manifest(&self.state_root, sealed)?;
+        let manifest = read_sealed_scope_manifest(
+            &self.state_root,
+            sealed,
+            self.lance_read_admission.as_deref(),
+        )?;
         Ok(SemanticContentRootsV1 {
             row_root_digest: manifest.semantic_row_root_digest,
             membership_root_digest: manifest.cluster_membership_root_digest,
@@ -754,7 +922,13 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
     fn discard_incomplete_generation(
         &self,
         candidate: &GenerationSnapshot,
+        pending_batch: Option<&SearchCorpusIngestBatch>,
     ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
+        if pending_batch.is_some() {
+            return Err(CoreError::InvalidContract(
+                "semantic incomplete-generation discard cannot preserve a lexical attempt".into(),
+            ));
+        }
         let _lifecycle = self.directory_lifecycle_guard()?;
         if candidate.track != SearchPlaneTrackKind::Semantic {
             return Err(CoreError::InvalidContract(format!(
@@ -779,28 +953,23 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
                 marker_path.display()
             ))
         })? {
-            let observed_digest = control_file::read_string_bounded(
+            let observed_digest = control_file::read_string_bounded_with_admission(
                 &marker_path,
                 control_file::MAX_SEALED_MARKER_BYTES,
+                self.lance_read_admission.as_deref(),
             )
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "semantic: read sealed marker {}: {error}",
-                    marker_path.display()
-                ))
-            })?;
+            .map_err(|error| crate::errors::fs_err("read sealed marker", &marker_path, &error))?;
             if observed_digest != candidate.manifest_digest {
                 return Err(generation_digest_mismatch(candidate, "sealed marker"));
             }
             let manifest_path = layout::manifest_path(&generation_dir);
             let manifest = SemanticManifest::decode(
-                &control_file::read_bounded(&manifest_path, control_file::MAX_SCOPE_MANIFEST_BYTES)
-                    .map_err(|error| {
-                        CoreError::Storage(format!(
-                            "semantic: read manifest {}: {error}",
-                            manifest_path.display()
-                        ))
-                    })?,
+                &control_file::read_bounded_with_admission(
+                    &manifest_path,
+                    control_file::MAX_SCOPE_MANIFEST_BYTES,
+                    self.lance_read_admission.as_deref(),
+                )
+                .map_err(|error| crate::errors::fs_err("read manifest", &manifest_path, &error))?,
             )?;
             manifest.validate_scope(
                 &candidate.repo_id,
@@ -827,13 +996,14 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
             ))
         })? {
             let manifest = SemanticManifest::decode(
-                &control_file::read_bounded(&manifest_path, control_file::MAX_SCOPE_MANIFEST_BYTES)
-                    .map_err(|error| {
-                        CoreError::Storage(format!(
-                            "semantic: read incomplete manifest {}: {error}",
-                            manifest_path.display()
-                        ))
-                    })?,
+                &control_file::read_bounded_with_admission(
+                    &manifest_path,
+                    control_file::MAX_SCOPE_MANIFEST_BYTES,
+                    self.lance_read_admission.as_deref(),
+                )
+                .map_err(|error| {
+                    crate::errors::fs_err("read incomplete manifest", &manifest_path, &error)
+                })?,
             )?;
             manifest.validate_scope(
                 &candidate.repo_id,
@@ -844,7 +1014,7 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
                 return Err(generation_digest_mismatch(candidate, "incomplete manifest"));
             }
         }
-        reclaim_directory(
+        crate::qualified_fs::reclaim_directory(
             &self.state_root,
             &generation_dir,
             &format!(
@@ -853,8 +1023,9 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
                     &candidate.repo_id,
                     &candidate.revision_id
                 )
-                .reclaim_entry_name(candidate.manifest_generation)
+                .reclaim_entry_name(candidate.manifest_generation),
             ),
+            self.retirement_file_factory()?,
         )?;
         Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
     }
@@ -909,28 +1080,23 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
                     ),
                 });
             }
-            let observed_digest = control_file::read_string_bounded(
+            let observed_digest = control_file::read_string_bounded_with_admission(
                 &marker_path,
                 control_file::MAX_SEALED_MARKER_BYTES,
+                self.lance_read_admission.as_deref(),
             )
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "semantic: read sealed marker {}: {error}",
-                    marker_path.display()
-                ))
-            })?;
+            .map_err(|error| crate::errors::fs_err("read sealed marker", &marker_path, &error))?;
             if observed_digest != retired.manifest_digest {
                 return Err(generation_digest_mismatch(retired, "sealed marker"));
             }
             let manifest_path = layout::manifest_path(&generation_dir);
             let manifest = SemanticManifest::decode(
-                &control_file::read_bounded(&manifest_path, control_file::MAX_SCOPE_MANIFEST_BYTES)
-                    .map_err(|error| {
-                        CoreError::Storage(format!(
-                            "semantic: read manifest {}: {error}",
-                            manifest_path.display()
-                        ))
-                    })?,
+                &control_file::read_bounded_with_admission(
+                    &manifest_path,
+                    control_file::MAX_SCOPE_MANIFEST_BYTES,
+                    self.lance_read_admission.as_deref(),
+                )
+                .map_err(|error| crate::errors::fs_err("read manifest", &manifest_path, &error))?,
             )?;
             manifest.validate_scope(
                 &retired.repo_id,
@@ -954,11 +1120,12 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
             // Out of the generation namespace by one durable rename, then
             // removed: a crash leaves a reclaim-area entry, never a partial tree
             // that would read as an unsealed build (QI-BB-003).
-            let reclaimed = reclaim_directory(
+            let reclaimed = crate::qualified_fs::reclaim_directory(
                 &self.state_root,
                 &generation_dir,
                 &GenerationStorageKeyV1::for_repo_revision(&retired.repo_id, &retired.revision_id)
                     .reclaim_entry_name(retired.manifest_generation),
+                self.retirement_file_factory()?,
             );
             match std::fs::symlink_metadata(&generation_dir) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => on_absent()?,
@@ -986,7 +1153,11 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
     ) -> Result<FinishedReclaims, CoreError> {
         observe_result(diagnostic, DiagnosticStageV1::Compaction, |diagnostic| {
             let _lifecycle = self.directory_lifecycle_guard()?;
-            quanta_index_core::finish_interrupted_reclaims(&self.state_root, diagnostic)
+            crate::qualified_fs::finish_interrupted_reclaims(
+                &self.state_root,
+                diagnostic,
+                self.retirement_file_factory()?,
+            )
         })
     }
 
@@ -1028,15 +1199,13 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
                     }
                     let manifest_path = layout::manifest_path(&generation_dir);
                     let manifest = SemanticManifest::decode(
-                        &control_file::read_bounded(
+                        &control_file::read_bounded_with_admission(
                             &manifest_path,
                             control_file::MAX_SCOPE_MANIFEST_BYTES,
+                            self.lance_read_admission.as_deref(),
                         )
                         .map_err(|error| {
-                            CoreError::Storage(format!(
-                                "semantic: read manifest {}: {error}",
-                                manifest_path.display()
-                            ))
+                            crate::errors::fs_err("read manifest", &manifest_path, &error)
                         })?,
                     )?;
                     let generation = ManifestGeneration::new(manifest.generation);
@@ -1052,15 +1221,13 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
                     ),
                 });
                     }
-                    let marker_digest = control_file::read_string_bounded(
+                    let marker_digest = control_file::read_string_bounded_with_admission(
                         &marker_path,
                         control_file::MAX_SEALED_MARKER_BYTES,
+                        self.lance_read_admission.as_deref(),
                     )
                     .map_err(|error| {
-                        CoreError::Storage(format!(
-                            "semantic: read sealed marker {}: {error}",
-                            marker_path.display()
-                        ))
+                        crate::errors::fs_err("read sealed marker", &marker_path, &error)
                     })?;
                     if marker_digest != manifest.manifest_digest {
                         return Err(CoreError::Typed {
@@ -1087,6 +1254,27 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
 
     /// Bytes the named generation directories occupy together, by unique
     /// inode, dataset and index files included.
+    fn begin_pair_measurement(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        budget: quanta_index_core::RequestBudgetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<
+        Box<dyn quanta_index_core::domains::generation::SealedGenerationByteSession + '_>,
+        CoreError,
+    > {
+        Ok(Box::new(
+            retention_measurement::SemanticRetentionSession::open(
+                self,
+                repo_id,
+                revision_id,
+                budget,
+                diagnostic,
+            )?,
+        ))
+    }
+
     fn measure_sealed_generations(
         &self,
         repo_id: &RepoId,
@@ -1094,53 +1282,33 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
         generations: &BTreeSet<ManifestGeneration>,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
-        observe_result(
+        self.begin_pair_measurement(
+            repo_id,
+            revision_id,
+            self.retention_measurement_policy.physical_scan_budget()?,
             diagnostic,
-            DiagnosticStageV1::RetentionMeasure,
-            |diagnostic| {
-                let roots: Vec<_> = generations
-                    .iter()
-                    .map(|generation| {
-                        layout::generation_dir(&self.state_root, repo_id, revision_id, *generation)
-                    })
-                    .collect();
-                let (bytes, present) = unique_inode_tree_bytes_for_roots_below_track(
-                    &self.state_root,
-                    &roots,
-                    &|_name| false,
-                    diagnostic,
-                )
-                .map_err(|err| {
-                    CoreError::Storage(format!(
-                        "semantic: measure sealed generations of repo={} revision={}: {err}",
-                        repo_id.as_str(),
-                        revision_id.as_str()
-                    ))
-                })?;
-                let absent = generations
-                    .iter()
-                    .zip(present)
-                    .filter_map(|(generation, present)| (!present).then_some(*generation))
-                    .collect();
-                Ok(SealedGenerationBytesV1 { bytes, absent })
-            },
-        )
+        )?
+        .measure(generations)
+    }
+
+    fn begin_track_physical_measurement(
+        &self,
+    ) -> Result<
+        Box<dyn quanta_index_core::domains::generation::TrackPhysicalByteSession + '_>,
+        CoreError,
+    > {
+        Ok(Box::new(
+            physical_measurement::SemanticPhysicalSession::begin(self)?,
+        ))
     }
 
     fn measure_track_physical_bytes(
         &self,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<u64, CoreError> {
-        observe_result(
-            diagnostic,
-            DiagnosticStageV1::PhysicalInodeCensus,
-            |diagnostic| {
-                let budget = diagnostic.map_or_else(RequestBudgetV1::unbounded, |diagnostic| {
-                    RequestBudgetV1::unbounded().with_diagnostic_context(diagnostic.clone())
-                });
-                self.track_disk_bytes(&budget)
-            },
-        )
+        let budget = self.retention_measurement_policy.physical_scan_budget()?;
+        self.begin_track_physical_measurement()?
+            .measure(&budget, diagnostic)
     }
 }
 
@@ -1227,15 +1395,16 @@ fn inventory_unreadable_io(
             format!("{action}: {error}"),
         ))
     } else {
-        InventoryGenerationError::Infrastructure(CoreError::Storage(format!(
-            "semantic: {action} {}: {error}",
-            path.display()
-        )))
+        InventoryGenerationError::Infrastructure(crate::errors::fs_err(action, path, error))
     }
 }
 
 fn inventory_unreadable_error(path: &Path, error: CoreError) -> InventoryGenerationError {
-    if matches!(error, CoreError::Storage(_)) {
+    if matches!(
+        &error,
+        CoreError::Storage(_) | CoreError::StorageIo { .. } | CoreError::InvalidContract(_)
+    ) || matches!(&error, CoreError::Typed { code, .. } if *code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE)
+    {
         InventoryGenerationError::Infrastructure(error)
     } else {
         InventoryGenerationError::Quarantined(quarantine(
@@ -1269,6 +1438,24 @@ pub fn validate_persisted_generation_v2(
     semantic_root: &Path,
     record: &PersistedSemanticGeneration,
 ) -> Result<ValidatedPersistedSemanticGenerationV2, CoreError> {
+    validate_persisted_generation_with_read_admission(semantic_root, record, None)
+}
+
+/// Qualified boot/standalone validation: both Lance objects and directly
+/// opened sidecars use the same read-only canonical file binder.
+pub fn validate_persisted_generation_v2_admitted(
+    semantic_root: &Path,
+    record: &PersistedSemanticGeneration,
+    read_admission: &Arc<dyn FileAdmission>,
+) -> Result<ValidatedPersistedSemanticGenerationV2, CoreError> {
+    validate_persisted_generation_with_read_admission(semantic_root, record, Some(read_admission))
+}
+
+fn validate_persisted_generation_with_read_admission(
+    semantic_root: &Path,
+    record: &PersistedSemanticGeneration,
+    read_admission: Option<&Arc<dyn FileAdmission>>,
+) -> Result<ValidatedPersistedSemanticGenerationV2, CoreError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .thread_name("quanta-index-semantic-validate")
@@ -1278,14 +1465,13 @@ pub fn validate_persisted_generation_v2(
                 "semantic: tokio runtime init for persisted-generation validation: {err}"
             ))
         })?;
-    let _loaded = run_blocking(
+    let _loaded = open_generation_with_read_admission(
         &runtime,
-        open_generation(
-            semantic_root,
-            &record.repo_id,
-            &record.revision_id,
-            record.generation,
-        ),
+        semantic_root,
+        &record.repo_id,
+        &record.revision_id,
+        record.generation,
+        read_admission,
     )?;
     Ok(ValidatedPersistedSemanticGenerationV2 {
         repo_id: record.repo_id.clone(),
@@ -1338,6 +1524,13 @@ impl ValidatedPersistedSemanticGenerationV2 {
 pub fn inventory_persisted_generations(
     semantic_root: &Path,
 ) -> Result<SemanticGenerationInventoryV1, CoreError> {
+    inventory_persisted_generations_with_admission(semantic_root, None)
+}
+
+pub fn inventory_persisted_generations_with_admission(
+    semantic_root: &Path,
+    admission: Option<&dyn FileAdmission>,
+) -> Result<SemanticGenerationInventoryV1, CoreError> {
     let mut inventory = SemanticGenerationInventoryV1::default();
     if !semantic_root.exists() {
         return Ok(inventory);
@@ -1369,7 +1562,11 @@ pub fn inventory_persisted_generations(
             if !is_dir(&generation_entry)? {
                 continue;
             }
-            match inventory_generation_dir(semantic_root, &generation_entry.path()) {
+            match inventory_generation_dir_with_admission(
+                semantic_root,
+                &generation_entry.path(),
+                admission,
+            ) {
                 Ok(Some(record)) => inventory.sealed.push(record),
                 Ok(None) => {}
                 Err(InventoryGenerationError::Quarantined(quarantined)) => {
@@ -1387,15 +1584,29 @@ pub fn inventory_persisted_generations(
 /// `Ok(Some)` is a sealed manifest that owns the directory and agrees with its
 /// marker; `Ok(None)` is an in-progress build. `Err` distinguishes quarantine
 /// from infrastructure failure.
+#[cfg(test)]
 fn inventory_generation_dir(
     semantic_root: &Path,
     generation_dir: &Path,
 ) -> Result<Option<PersistedSemanticGeneration>, InventoryGenerationError> {
-    let candidate = inventory_generation_dir_before_sealed_manifest(semantic_root, generation_dir)?;
+    inventory_generation_dir_with_admission(semantic_root, generation_dir, None)
+}
+
+fn inventory_generation_dir_with_admission(
+    semantic_root: &Path,
+    generation_dir: &Path,
+    admission: Option<&dyn FileAdmission>,
+) -> Result<Option<PersistedSemanticGeneration>, InventoryGenerationError> {
+    let candidate =
+        inventory_generation_dir_before_sealed_manifest(semantic_root, generation_dir, admission)?;
     let Some(record) = candidate.as_ref() else {
         return Ok(None);
     };
-    if let Err(error) = inspect_sealed_manifest_identity(generation_dir, &record.manifest_digest) {
+    if let Err(error) = inspect_sealed_manifest_identity_with_admission(
+        generation_dir,
+        &record.manifest_digest,
+        admission,
+    ) {
         let reason = match &error {
             CoreError::Typed {
                 code:
@@ -1412,7 +1623,9 @@ fn inventory_generation_dir(
                     quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
                 ..
             } => GenerationQuarantineReasonV1::IdentityDigestMismatch,
-            CoreError::Storage(_) => return Err(InventoryGenerationError::Infrastructure(error)),
+            CoreError::Storage(_) | CoreError::StorageIo { .. } => {
+                return Err(InventoryGenerationError::Infrastructure(error));
+            }
             CoreError::InvalidContract(_)
             | CoreError::Typed { .. }
             | CoreError::NotReady(_)
@@ -1428,18 +1641,15 @@ fn inventory_generation_dir(
     Ok(candidate)
 }
 
-/// Recover a scrub identity from a canonical scope manifest and sealed marker.
-///
-/// Inventory already found the sealed manifest invalid, so that file cannot
-/// supply the identity required to fence a handle.
-pub(crate) fn scrub_candidate_from_quarantined(
+pub(crate) fn scrub_candidate_from_quarantined_with_admission(
     semantic_root: &Path,
     entry: &QuarantinedGenerationV1,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<Option<PersistedSemanticGeneration>, CoreError> {
     if entry.track != SearchPlaneTrackKind::Semantic {
         return Ok(None);
     }
-    match inventory_generation_dir_before_sealed_manifest(semantic_root, &entry.path) {
+    match inventory_generation_dir_before_sealed_manifest(semantic_root, &entry.path, admission) {
         Ok(record) => Ok(record),
         Err(InventoryGenerationError::Quarantined(_)) => Ok(None),
         Err(InventoryGenerationError::Infrastructure(error)) => Err(error),
@@ -1449,6 +1659,7 @@ pub(crate) fn scrub_candidate_from_quarantined(
 fn inventory_generation_dir_before_sealed_manifest(
     semantic_root: &Path,
     generation_dir: &Path,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<Option<PersistedSemanticGeneration>, InventoryGenerationError> {
     let Some(generation_name) = generation_dir.file_name().and_then(|name| name.to_str()) else {
         return Err(InventoryGenerationError::Quarantined(quarantine(
@@ -1486,7 +1697,7 @@ fn inventory_generation_dir_before_sealed_manifest(
     // A receipt the integrity scrub left (QI-BB-017): the generation's
     // bytes were proven not to match its seal, so it is set aside under
     // that proof rather than seeded and refused at every door.
-    match read_quarantine_receipt(generation_dir) {
+    match read_quarantine_receipt_with_admission(generation_dir, admission) {
         Ok(Some(receipt)) => {
             return Err(InventoryGenerationError::Quarantined(quarantine(
                 generation_dir.to_path_buf(),
@@ -1498,9 +1709,12 @@ fn inventory_generation_dir_before_sealed_manifest(
         Err(error) => return Err(inventory_unreadable_error(generation_dir, error)),
     }
     let manifest_path = layout::manifest_path(generation_dir);
-    let manifest_bytes =
-        control_file::read_bounded(&manifest_path, control_file::MAX_SCOPE_MANIFEST_BYTES)
-            .map_err(|error| inventory_unreadable_io(generation_dir, "read manifest", &error))?;
+    let manifest_bytes = control_file::read_bounded_with_admission(
+        &manifest_path,
+        control_file::MAX_SCOPE_MANIFEST_BYTES,
+        admission,
+    )
+    .map_err(|error| inventory_unreadable_io(generation_dir, "read manifest", &error))?;
     let manifest = SemanticManifest::decode(&manifest_bytes).map_err(|err| {
         if let CoreError::Typed { code, message } = &err
             && *code == FORMAT_UNSUPPORTED_CODE
@@ -1547,11 +1761,12 @@ fn inventory_generation_dir_before_sealed_manifest(
             ),
         )));
     }
-    let sealed_digest =
-        control_file::read_string_bounded(&marker_path, control_file::MAX_SEALED_MARKER_BYTES)
-            .map_err(|error| {
-                inventory_unreadable_io(generation_dir, "read sealed marker", &error)
-            })?;
+    let sealed_digest = control_file::read_string_bounded_with_admission(
+        &marker_path,
+        control_file::MAX_SEALED_MARKER_BYTES,
+        admission,
+    )
+    .map_err(|error| inventory_unreadable_io(generation_dir, "read sealed marker", &error))?;
     if sealed_digest != manifest.manifest_digest {
         return Err(InventoryGenerationError::Quarantined(quarantine(
             generation_dir.to_path_buf(),
@@ -1597,8 +1812,13 @@ impl QuarantinedGenerationDiscardPort for SemanticAdapter {
         let _lifecycle = self.directory_lifecycle_guard()?;
         let outcome = discard_quarantined_directory(
             &self.state_root,
-            &inventory_persisted_generations(&self.state_root)?.quarantined,
+            &inventory_persisted_generations_with_admission(
+                &self.state_root,
+                self.lance_read_admission.as_deref(),
+            )?
+            .quarantined,
             entry,
+            self.retirement_file_factory()?,
         );
         match std::fs::symlink_metadata(&entry.path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => on_absent()?,
@@ -1642,6 +1862,7 @@ fn discard_quarantined_directory(
     semantic_root: &Path,
     quarantined_now: &[QuarantinedGenerationV1],
     entry: &QuarantinedGenerationV1,
+    retirement_factory: Option<&dyn SemanticMaintenanceFileFactory>,
 ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
     let not_quarantined = |why: String| CoreError::Typed {
         code: quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetNotQuarantined,
@@ -1687,13 +1908,20 @@ fn discard_quarantined_directory(
         ));
     }
     let bytes = crate::search::dataset_tree_bytes(semantic_root, &entry.path)?;
-    quanta_index_core::reclaim_quarantined_directory(semantic_root, &entry.path)?;
+    crate::qualified_fs::reclaim_quarantined_directory(
+        semantic_root,
+        &entry.path,
+        retirement_factory,
+    )?;
     Ok(QuarantineDiscardOutcomeV1::Discarded { bytes })
 }
 
 impl SealedGenerationScanPort for SemanticAdapter {
     fn inventory_sealed_generations(&self) -> Result<SealedGenerationInventoryV1, CoreError> {
-        let inventory = inventory_persisted_generations(&self.state_root)?;
+        let inventory = inventory_persisted_generations_with_admission(
+            &self.state_root,
+            self.lance_read_admission.as_deref(),
+        )?;
         Ok(SealedGenerationInventoryV1 {
             sealed: inventory
                 .sealed
@@ -1932,7 +2160,7 @@ mod incomplete_generation_discard_tests {
 
         assert_eq!(
             adapter
-                .discard_incomplete_generation(&candidate)
+                .discard_incomplete_generation(&candidate, None)
                 .expect("discard incomplete"),
             IncompleteGenerationDiscardOutcomeV1::Discarded
         );
@@ -1940,7 +2168,7 @@ mod incomplete_generation_discard_tests {
         assert!(generation_dir.starts_with(temp.path()));
         assert_eq!(
             adapter
-                .discard_incomplete_generation(&candidate)
+                .discard_incomplete_generation(&candidate, None)
                 .expect("idempotent absent"),
             IncompleteGenerationDiscardOutcomeV1::Absent
         );
@@ -1967,7 +2195,7 @@ mod incomplete_generation_discard_tests {
             .expect("write marker");
 
         let exact_error = adapter
-            .discard_incomplete_generation(&sealed)
+            .discard_incomplete_generation(&sealed, None)
             .expect_err("sealed exact must be immutable");
         assert!(matches!(
             exact_error,
@@ -1976,7 +2204,7 @@ mod incomplete_generation_discard_tests {
         let mut conflict = sealed;
         conflict.manifest_digest = "digest-b".to_string();
         let conflict_error = adapter
-            .discard_incomplete_generation(&conflict)
+            .discard_incomplete_generation(&conflict, None)
             .expect_err("sealed digest conflict must fail closed");
         assert!(matches!(
             conflict_error,
@@ -2007,7 +2235,7 @@ mod incomplete_generation_discard_tests {
         candidate.manifest_digest = "digest-b".to_string();
 
         let error = adapter
-            .discard_incomplete_generation(&candidate)
+            .discard_incomplete_generation(&candidate, None)
             .expect_err("manifest conflict must fail closed");
         assert!(matches!(
             error,
@@ -2033,7 +2261,11 @@ mod incomplete_generation_discard_tests {
         std::os::unix::fs::symlink(generation_dir.join("missing-manifest"), &manifest)
             .expect("create dangling manifest symlink");
 
-        assert!(adapter.discard_incomplete_generation(&candidate).is_err());
+        assert!(
+            adapter
+                .discard_incomplete_generation(&candidate, None)
+                .is_err()
+        );
         assert!(generation_dir.is_dir());
         assert!(
             std::fs::symlink_metadata(&manifest)
@@ -2076,7 +2308,11 @@ mod incomplete_generation_discard_tests {
             entry.reason,
             GenerationQuarantineReasonV1::IdentityUnreadable
         );
-        assert!(adapter.discard_incomplete_generation(&candidate).is_err());
+        assert!(
+            adapter
+                .discard_incomplete_generation(&candidate, None)
+                .is_err()
+        );
         assert!(
             generation_dir.exists(),
             "incomplete discard removed a sealed marker"

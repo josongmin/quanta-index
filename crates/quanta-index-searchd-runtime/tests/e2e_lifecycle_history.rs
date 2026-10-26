@@ -372,7 +372,7 @@ fn query_at_gate(
 #[test]
 fn sdk_source_delete_append_pin_cas_duplicate_reorder_rollback_restart_history() -> TestResult {
     let directory = private_tempdir()?;
-    let process = SearchdBinaryProcess::start(directory.path())?;
+    let process = SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
     let client = process.connect()?;
     let history = History::default();
     let inputs = [
@@ -573,7 +573,8 @@ fn sdk_source_delete_append_pin_cas_duplicate_reorder_rollback_restart_history()
     // Restart is recorded as one operation only after all racing SDK calls have completed.
     let (process, client) = history.record(Operation::Restart, || {
         process.stop()?;
-        let restarted = SearchdBinaryProcess::start(directory.path())?;
+        let restarted =
+            SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
         let client = restarted.connect()?;
         let wire = client
             .generations()

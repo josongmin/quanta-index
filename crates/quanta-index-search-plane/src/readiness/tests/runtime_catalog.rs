@@ -182,7 +182,8 @@ fn runtime_catalog_batch_rejects_older_epoch_replay() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected stale batch typed error, got {other:?}").into());
         }
     }
@@ -248,7 +249,8 @@ fn runtime_catalog_batch_rejects_conflicting_same_epoch_replay() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected conflicting batch typed error, got {other:?}").into());
         }
     }
@@ -291,7 +293,8 @@ fn runtime_catalog_batch_rejects_unknown_doc_id() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected unknown doc typed error, got {other:?}").into());
         }
     }

@@ -1,0 +1,438 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The Lance Authors
+
+//! LSM Scanner builder.
+
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::sync::Arc;
+
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
+use datafusion::common::ToDFSchema;
+use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
+use datafusion::prelude::{Expr, SessionContext};
+use futures::TryStreamExt;
+use lance_core::{Error, Result};
+use uuid::Uuid;
+
+use super::collector::{InMemoryMemTableRef, InMemoryMemTables, LsmDataSourceCollector};
+use super::data_source::ShardSnapshot;
+use super::flushed_cache::FlushedMemTableCache;
+use super::planner::LsmScanPlanner;
+use crate::dataset::Dataset;
+use crate::session::Session;
+
+/// Either a base Lance table, or an explicit base path used to resolve
+/// flushed-generation directories when no base dataset is configured.
+enum BaseSource {
+    Table(Arc<Dataset>),
+    PathOnly(String),
+}
+
+/// Scanner for LSM tree data spanning base table, flushed MemTables, and active MemTable.
+///
+/// This scanner provides a unified interface for querying data across multiple
+/// LSM tree levels:
+/// - Base table (merged data, generation = 0)
+/// - Flushed MemTables (persisted but not yet merged, generation = 1, 2, ...)
+/// - Active MemTable (in-memory buffer, highest generation)
+///
+/// The scanner automatically handles deduplication by primary key, keeping
+/// the newest version based on generation number and row address.
+///
+/// # Example
+///
+/// ```ignore
+/// let scanner = LsmScanner::new(base_table, shard_snapshots, vec!["pk".to_string()])
+///     .project(&["id", "name"])
+///     .filter("id > 10")?
+///     .limit(100, None);
+///
+/// let results = scanner.try_into_batch().await?;
+/// ```
+pub struct LsmScanner {
+    // Data sources
+    base: BaseSource,
+    /// Schema used for projection, empty plans, and filter parsing.
+    /// Derived from the base dataset when one is present, otherwise supplied
+    /// explicitly by [`Self::without_base_table`].
+    schema: SchemaRef,
+    shard_snapshots: Vec<ShardSnapshot>,
+    /// In-memory memtables by shard (active + frozen-awaiting-flush), so
+    /// the scanner path carries frozen-undrained generations too.
+    in_memory_memtables: HashMap<Uuid, InMemoryMemTables>,
+
+    // Query configuration
+    projection: Option<Vec<String>>,
+    filter: Option<Expr>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+
+    // Internal columns
+    with_row_address: bool,
+    with_memtable_gen: bool,
+
+    // Primary key columns (required for deduplication)
+    pk_columns: Vec<String>,
+
+    /// Session threaded into flushed-generation opens so the first open of
+    /// each generation populates the shared index / file-metadata caches.
+    /// Defaults to the base table's session when one is present.
+    session: Option<Arc<Session>>,
+    /// Cache of opened flushed-generation datasets. When set, repeated
+    /// queries against the same generation skip the manifest read entirely.
+    flushed_cache: Option<Arc<FlushedMemTableCache>>,
+}
+
+impl LsmScanner {
+    /// Create a new LSM scanner.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_table` - The base Lance table (merged data)
+    /// * `shard_snapshots` - Snapshots of shard states from MemWAL index
+    /// * `pk_columns` - Primary key column names for deduplication
+    pub fn new(
+        base_table: Arc<Dataset>,
+        shard_snapshots: Vec<ShardSnapshot>,
+        pk_columns: Vec<String>,
+    ) -> Self {
+        let lance_schema = base_table.schema();
+        let arrow_schema: arrow_schema::Schema = lance_schema.into();
+        // Default the session to the base table's so the common path reuses
+        // the shared index / metadata caches without extra wiring. An
+        // explicit `with_session` still overrides this.
+        let session = Some(base_table.session());
+        Self {
+            base: BaseSource::Table(base_table),
+            schema: Arc::new(arrow_schema),
+            shard_snapshots,
+            in_memory_memtables: HashMap::new(),
+            projection: None,
+            filter: None,
+            limit: None,
+            offset: None,
+            with_row_address: false,
+            with_memtable_gen: false,
+            pk_columns,
+            session,
+            flushed_cache: None,
+        }
+    }
+
+    /// Create a scanner that reads only the fresh tier (active memtable and
+    /// flushed generations) without including a base Lance table.
+    ///
+    /// This is useful when the caller owns the base read path separately and
+    /// only needs the WAL's contribution: active memtable ∪ L0 flushed
+    /// generations. Deduplication semantics are unchanged — newer generations
+    /// still win on PK conflicts.
+    ///
+    /// # Arguments
+    ///
+    /// * `schema` - Schema used for projection, filter parsing, and empty plans.
+    ///   Should match the schema flushed generations were written with.
+    /// * `base_path` - Table-root URI used to resolve relative flushed paths.
+    /// * `shard_snapshots` - Snapshots of shard states from MemWAL index.
+    /// * `pk_columns` - Primary key column names for deduplication.
+    pub fn without_base_table(
+        schema: SchemaRef,
+        base_path: impl Into<String>,
+        shard_snapshots: Vec<ShardSnapshot>,
+        pk_columns: Vec<String>,
+    ) -> Self {
+        Self {
+            base: BaseSource::PathOnly(base_path.into()),
+            schema,
+            shard_snapshots,
+            in_memory_memtables: HashMap::new(),
+            projection: None,
+            filter: None,
+            limit: None,
+            offset: None,
+            with_row_address: false,
+            with_memtable_gen: false,
+            pk_columns,
+            session: None,
+            flushed_cache: None,
+        }
+    }
+
+    /// Set a shard's active memtable. Back-compat / test entry point; the
+    /// read path uses [`Self::with_in_memory_memtables`]. Replaces the
+    /// active memtable, preserving any frozen memtables already registered.
+    pub fn with_active_memtable(mut self, shard_id: Uuid, memtable: InMemoryMemTableRef) -> Self {
+        match self.in_memory_memtables.entry(shard_id) {
+            Entry::Occupied(mut e) => e.get_mut().active = memtable,
+            Entry::Vacant(e) => {
+                e.insert(InMemoryMemTables {
+                    active: memtable,
+                    frozen: Vec::new(),
+                });
+            }
+        }
+        self
+    }
+
+    /// Register a shard's in-memory memtables (active + frozen-awaiting-
+    /// flush) captured atomically by `ShardWriter::in_memory_memtable_refs`.
+    /// The read path's entry point — closes the concurrent-read-vs-flush
+    /// hole by carrying frozen-undrained generations into the scan.
+    pub fn with_in_memory_memtables(
+        mut self,
+        shard_id: Uuid,
+        memtables: InMemoryMemTables,
+    ) -> Self {
+        self.in_memory_memtables.insert(shard_id, memtables);
+        self
+    }
+
+    /// Thread an existing session into flushed-generation opens.
+    ///
+    /// The first open of each flushed generation then populates the shared
+    /// index / file-metadata caches, so later queries skip re-decoding them.
+    /// When a base table is configured this defaults to its session; call
+    /// this to override (e.g. on a fresh-tier-only scanner that owns its own
+    /// long-lived session).
+    pub fn with_session(mut self, session: Arc<Session>) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    /// Inject a cache of opened flushed-generation datasets.
+    ///
+    /// With a cache, repeated queries against the same generation become a
+    /// pure `Arc::clone` with no manifest read or object-store I/O. The cache
+    /// is owned and sized by the caller (see [`FlushedMemTableCache`]); not
+    /// set by default, so behavior is unchanged unless opted in.
+    pub fn with_flushed_cache(mut self, cache: Arc<FlushedMemTableCache>) -> Self {
+        self.flushed_cache = Some(cache);
+        self
+    }
+
+    /// Project specific columns.
+    ///
+    /// If not called, all columns from the base schema are included.
+    /// Primary key columns are always included for deduplication.
+    pub fn project(mut self, columns: &[&str]) -> Self {
+        self.projection = Some(columns.iter().map(|s| s.to_string()).collect());
+        self
+    }
+
+    /// Set filter expression using SQL-like syntax.
+    ///
+    /// The filter is pushed down to each data source when possible.
+    pub fn filter(mut self, filter_expr: &str) -> Result<Self> {
+        let ctx = SessionContext::new();
+        let df_schema = self
+            .schema
+            .as_ref()
+            .clone()
+            .to_dfschema()
+            .map_err(|e| Error::invalid_input(format!("Failed to create DFSchema: {}", e)))?;
+        let expr = ctx.parse_sql_expr(filter_expr, &df_schema).map_err(|e| {
+            Error::invalid_input(format!("Failed to parse filter expression: {}", e))
+        })?;
+        self.filter = Some(expr);
+        Ok(self)
+    }
+
+    /// Set filter expression directly.
+    pub fn filter_expr(mut self, expr: Expr) -> Self {
+        self.filter = Some(expr);
+        self
+    }
+
+    /// Limit the number of results.
+    pub fn limit(mut self, limit: usize, offset: Option<usize>) -> Self {
+        self.limit = Some(limit);
+        self.offset = offset;
+        self
+    }
+
+    /// Include `_rowaddr` column in output.
+    ///
+    /// The row address is used for ordering within a generation.
+    pub fn with_row_address(mut self) -> Self {
+        self.with_row_address = true;
+        self
+    }
+
+    /// Include `_memtable_gen` column in output.
+    ///
+    /// The generation column shows which data source each row came from:
+    /// - 0: Base table
+    /// - 1, 2, ...: MemTable generations (higher = newer)
+    pub fn with_memtable_gen(mut self) -> Self {
+        self.with_memtable_gen = true;
+        self
+    }
+
+    /// Get the output schema.
+    pub fn schema(&self) -> SchemaRef {
+        // For now, return the configured schema. Full implementation would
+        // compute the projected schema with optional _gen/_rowaddr columns.
+        self.schema.clone()
+    }
+
+    /// Create the execution plan.
+    pub async fn create_plan(&self) -> Result<Arc<dyn ExecutionPlan>> {
+        let collector = self.build_collector();
+        let base_schema = self.schema();
+        let mut planner = LsmScanPlanner::new(collector, self.pk_columns.clone(), base_schema);
+        if let Some(session) = &self.session {
+            planner = planner.with_session(session.clone());
+        }
+        if let Some(cache) = &self.flushed_cache {
+            planner = planner.with_flushed_cache(cache.clone());
+        }
+
+        planner
+            .plan_scan(
+                self.projection.as_deref(),
+                self.filter.as_ref(),
+                self.limit,
+                self.offset,
+                self.with_memtable_gen,
+                self.with_row_address,
+            )
+            .await
+    }
+
+    /// Execute the scan and return a stream of record batches.
+    pub async fn try_into_stream(&self) -> Result<SendableRecordBatchStream> {
+        let plan = self.create_plan().await?;
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        plan.execute(0, task_ctx)
+            .map_err(|e| Error::io(format!("Failed to execute plan: {}", e)))
+    }
+
+    /// Execute the scan and collect all results into a single RecordBatch.
+    pub async fn try_into_batch(&self) -> Result<RecordBatch> {
+        let stream = self.try_into_stream().await?;
+        let batches: Vec<RecordBatch> = stream
+            .try_collect()
+            .await
+            .map_err(|e| Error::io(format!("Failed to collect batches: {}", e)))?;
+
+        if batches.is_empty() {
+            let schema = self.schema();
+            return Ok(RecordBatch::new_empty(schema));
+        }
+
+        let schema = batches[0].schema();
+        arrow_select::concat::concat_batches(&schema, &batches)
+            .map_err(|e| Error::io(format!("Failed to concatenate batches: {}", e)))
+    }
+
+    /// Count the number of rows that match the query.
+    pub async fn count_rows(&self) -> Result<u64> {
+        let stream = self.try_into_stream().await?;
+        let batches: Vec<RecordBatch> = stream
+            .try_collect()
+            .await
+            .map_err(|e| Error::io(format!("Failed to count rows: {}", e)))?;
+
+        Ok(batches.iter().map(|b| b.num_rows() as u64).sum())
+    }
+
+    /// Build the data source collector.
+    fn build_collector(&self) -> LsmDataSourceCollector {
+        let mut collector = match &self.base {
+            BaseSource::Table(dataset) => {
+                LsmDataSourceCollector::new(dataset.clone(), self.shard_snapshots.clone())
+            }
+            BaseSource::PathOnly(path) => LsmDataSourceCollector::without_base_table(
+                path.clone(),
+                self.shard_snapshots.clone(),
+            ),
+        };
+
+        for (shard_id, mems) in &self.in_memory_memtables {
+            collector = collector.with_in_memory_memtables(*shard_id, mems.clone());
+        }
+
+        collector
+    }
+}
+
+impl std::fmt::Debug for LsmScanner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (label, value) = match &self.base {
+            BaseSource::Table(dataset) => ("base_table", dataset.uri().to_string()),
+            BaseSource::PathOnly(path) => ("base_path", path.clone()),
+        };
+        f.debug_struct("LsmScanner")
+            .field(label, &value)
+            .field("num_shards", &self.shard_snapshots.len())
+            .field(
+                "num_in_memory_memtables",
+                &self
+                    .in_memory_memtables
+                    .values()
+                    .map(|m| 1 + m.frozen.len())
+                    .sum::<usize>(),
+            )
+            .field("projection", &self.projection)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .field("pk_columns", &self.pk_columns)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lsm_scanner_builder() {
+        // Test that the builder pattern compiles and works
+        // Full integration tests would require a real dataset
+
+        let pk_columns = ["id".to_string()];
+        let shard_snapshots: Vec<ShardSnapshot> = vec![];
+
+        // We can't easily create an Arc<Dataset> without I/O,
+        // so just test the type construction
+        assert_eq!(pk_columns.len(), 1);
+        assert!(shard_snapshots.is_empty());
+    }
+
+    #[test]
+    fn test_shard_snapshot_construction() {
+        use super::super::data_source::ShardSnapshot;
+
+        let shard_id = Uuid::new_v4();
+        let snapshot = ShardSnapshot::new(shard_id)
+            .with_spec_id(1)
+            .with_current_generation(5)
+            .with_flushed_generation(1, "path/gen_1".to_string())
+            .with_flushed_generation(2, "path/gen_2".to_string());
+
+        assert_eq!(snapshot.shard_id, shard_id);
+        assert_eq!(snapshot.spec_id, 1);
+        assert_eq!(snapshot.current_generation, 5);
+        assert_eq!(snapshot.flushed_generations.len(), 2);
+    }
+
+    #[test]
+    fn test_in_memory_memtable_ref() {
+        use crate::dataset::mem_wal::write::{BatchStore, IndexStore};
+
+        let batch_store = Arc::new(BatchStore::with_capacity(100));
+        let index_store = Arc::new(IndexStore::new());
+        let schema = Arc::new(arrow_schema::Schema::empty());
+
+        let memtable_ref = InMemoryMemTableRef {
+            batch_store,
+            index_store,
+            schema,
+            generation: 10,
+        };
+
+        assert_eq!(memtable_ref.generation, 10);
+    }
+}

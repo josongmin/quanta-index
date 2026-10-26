@@ -265,7 +265,8 @@ pub(super) fn expect_decode_fail(err: CoreError, needle: &str) -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             Err(format!("expected typed decode fail, got {other:?}").into())
         }
     }

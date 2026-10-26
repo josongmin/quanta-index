@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn sdk_binary_process_dsl_roundtrip() -> TestResult {
     let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let runtime = SearchdBinaryProcess::start(dir.path())?;
+    let runtime = SearchdBinaryProcess::start_with_history_max_generations(dir.path(), 8)?;
     let result = (|| -> TestResult {
         let client = runtime.connect()?;
         let batch = lexical_frontdoor_matrix_batch()?;
@@ -164,12 +164,12 @@ fn assert_binary_semantic_work_settlement(client: &QuantaIndex) -> TestResult {
 #[test]
 fn sdk_binary_semantic_work_settlement_survives_refusal_and_restart() -> TestResult {
     let dir = quanta_index_searchd_harness::private_tempdir()?;
-    let runtime = SearchdBinaryProcess::start(dir.path())?;
+    let runtime = SearchdBinaryProcess::start_with_history_max_generations(dir.path(), 8)?;
     let client = runtime.connect()?;
     let _active = publish_and_activate_sdk_search_corpus(&client, &lexical_batch()?)?;
     assert_binary_semantic_work_settlement(&client)?;
     runtime.stop()?;
-    let restarted = SearchdBinaryProcess::start(dir.path())?;
+    let restarted = SearchdBinaryProcess::start_with_history_max_generations(dir.path(), 8)?;
     assert_binary_semantic_work_settlement(&restarted.connect()?)?;
     restarted.stop()
 }

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Snapshot the public API surface of guarded integration crates.
 
-`quanta-index-contract` and `quanta-index-sdk` are typed integration surfaces.
+`quanta-index-contract-base`, `quanta-index-contract` and `quanta-index-sdk`
+are typed integration surfaces. The facade reexports base types opaquely, so
+base must be guarded directly to track changes to their methods and traits.
 Changes to their public items must appear as a reviewable diff in
 `tools/ci/lint/baselines/public-api/<crate>.txt`.
 
@@ -31,7 +33,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 BASELINE_DIR = ROOT / "tools" / "ci" / "lint" / "baselines" / "public-api"
 
-GUARDED_CRATES: list[str] = ["quanta-index-contract", "quanta-index-sdk"]
+GUARDED_CRATES: list[str] = [
+    "quanta-index-contract-base", "quanta-index-contract", "quanta-index-sdk"
+]
 PUBLIC_API_TOOLCHAIN = "nightly-2026-08-01"
 
 

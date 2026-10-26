@@ -5,9 +5,11 @@ use std::collections::BTreeSet;
 
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, MapAccess, Visitor},
+    de::{self, DeserializeSeed, MapAccess, Visitor},
     ser::SerializeStruct,
 };
+
+use crate::admitted_decode::{AdmittedBoxedTextSeedV1, DecodeBackingAdmissionV1};
 
 const MAX_EXACT_REPO_RELATIVE_PATH_BYTES_V1: usize = 4096;
 
@@ -35,6 +37,39 @@ impl ExactRepoRelativePathV1 {
     #[must_use]
     pub fn into_inner(self) -> Box<str> {
         self.0
+    }
+
+    /// Decode the same wire scalar with its retained backing admitted by the
+    /// caller. The caller must keep `admission` alive alongside the result.
+    pub fn deserialize_seed_with_admission_v1<A: DecodeBackingAdmissionV1 + ?Sized>(
+        admission: &A,
+        max_text_bytes: usize,
+    ) -> impl for<'de> DeserializeSeed<'de, Value = Self> + '_ {
+        AdmittedExactRepoRelativePathSeedV1 {
+            admission,
+            max_text_bytes: max_text_bytes.min(MAX_EXACT_REPO_RELATIVE_PATH_BYTES_V1),
+        }
+    }
+}
+
+struct AdmittedExactRepoRelativePathSeedV1<'a, A: ?Sized> {
+    admission: &'a A,
+    max_text_bytes: usize,
+}
+
+impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> DeserializeSeed<'de>
+    for AdmittedExactRepoRelativePathSeedV1<'_, A>
+{
+    type Value = ExactRepoRelativePathV1;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        let value = AdmittedBoxedTextSeedV1::new_validated(
+            self.admission,
+            self.max_text_bytes,
+            validate_exact_repo_relative_path_v1,
+        )
+        .deserialize(deserializer)?;
+        Ok(ExactRepoRelativePathV1(value))
     }
 }
 
@@ -86,7 +121,7 @@ impl<'de> Deserialize<'de> for ExactRepoRelativePathV1 {
     }
 }
 
-fn validate_exact_repo_relative_path_v1(value: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_exact_repo_relative_path_v1(value: &str) -> Result<(), &'static str> {
     if value.is_empty() {
         return Err("exact repository-relative path must not be empty");
     }
@@ -141,6 +176,28 @@ impl LanguageCode {
         Ok(Self(value.into_boxed_str()))
     }
 
+    /// Validate and retain existing text without copying or reallocating it.
+    /// Any backing admission remains the caller's responsibility.
+    pub fn try_from_boxed_v1(value: Box<str>) -> Result<Self, &'static str> {
+        validate_language_code(&value)?;
+        Ok(Self(value))
+    }
+
+    /// Validate exterior backing before moving it. A failed attempt preserves
+    /// both slots, so the enclosing Source can retain the complete rejected input.
+    pub fn try_from_boxed_into_v3(
+        source: &mut Option<Box<str>>,
+        destination: &mut Option<Self>,
+    ) -> Result<(), &'static str> {
+        if destination.is_some() {
+            return Err("language destination is occupied");
+        }
+        validate_language_code(source.as_deref().ok_or("language source is missing")?)?;
+        let value = source.take().ok_or("language source is missing")?;
+        *destination = Some(Self(value));
+        Ok(())
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_ref()
@@ -149,6 +206,39 @@ impl LanguageCode {
     #[must_use]
     pub fn into_inner(self) -> Box<str> {
         self.0
+    }
+
+    /// Decode the same wire scalar with its retained backing admitted by the
+    /// caller. The caller must keep `admission` alive alongside the result.
+    pub fn deserialize_seed_with_admission_v1<A: DecodeBackingAdmissionV1 + ?Sized>(
+        admission: &A,
+        max_text_bytes: usize,
+    ) -> impl for<'de> DeserializeSeed<'de, Value = Self> + '_ {
+        AdmittedLanguageCodeSeedV1 {
+            admission,
+            max_text_bytes,
+        }
+    }
+}
+
+struct AdmittedLanguageCodeSeedV1<'a, A: ?Sized> {
+    admission: &'a A,
+    max_text_bytes: usize,
+}
+
+impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> DeserializeSeed<'de>
+    for AdmittedLanguageCodeSeedV1<'_, A>
+{
+    type Value = LanguageCode;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        let value = AdmittedBoxedTextSeedV1::new_validated(
+            self.admission,
+            self.max_text_bytes,
+            validate_language_code,
+        )
+        .deserialize(deserializer)?;
+        Ok(LanguageCode(value))
     }
 }
 
@@ -408,10 +498,249 @@ pub enum QueryConstraintIntersectionV1 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn boxed_move_retains_backing_and_rejected_slots_v3() -> Result<(), &'static str> {
+        let mut source = Some(String::from("rust").into_boxed_str());
+        let pointer = source.as_deref().ok_or("fixture source")?.as_ptr();
+        let mut destination = None;
+        LanguageCode::try_from_boxed_into_v3(&mut source, &mut destination)?;
+        assert!(source.is_none());
+        assert_eq!(
+            destination
+                .as_ref()
+                .ok_or("accepted value")?
+                .as_str()
+                .as_ptr(),
+            pointer
+        );
+
+        let mut rejected = Some(String::from("Rust").into_boxed_str());
+        let rejected_pointer = rejected.as_deref().ok_or("rejected source")?.as_ptr();
+        let mut empty = None;
+        assert!(LanguageCode::try_from_boxed_into_v3(&mut rejected, &mut empty).is_err());
+        assert_eq!(rejected.as_deref().ok_or("preserved rejection")?.as_ptr(), rejected_pointer);
+        assert!(empty.is_none());
+
+        let mut occupied_source = Some(String::from("rust").into_boxed_str());
+        let occupied_pointer = occupied_source
+            .as_deref()
+            .ok_or("occupied source")?
+            .as_ptr();
+        assert!(LanguageCode::try_from_boxed_into_v3(&mut occupied_source, &mut destination).is_err());
+        assert_eq!(
+            occupied_source
+                .as_deref()
+                .ok_or("occupied rejection")?
+                .as_ptr(),
+            occupied_pointer
+        );
+        assert_eq!(
+            destination
+                .as_ref()
+                .ok_or("preserved destination")?
+                .as_str()
+                .as_ptr(),
+            pointer
+        );
+        Ok(())
+    }
+
     use super::{
         ExactRepoRelativePathV1, LanguageCode, MAX_EXACT_REPO_RELATIVE_PATH_BYTES_V1,
         QueryConstraintIntersectionV1, QueryConstraintSetV1,
     };
+    use crate::admitted_decode::{DecodeBackingAdmissionV1, DecodeBackingRefusalV1};
+    use serde::de::DeserializeSeed as _;
+
+    /// Test-only admission gate. It proves the typed seed invokes the neutral
+    /// port; production funding and parser temporaries belong to its caller.
+    struct TestDecodeAdmission {
+        refuse: bool,
+        attempt: std::cell::RefCell<crate::DecodeAttemptStateV1>,
+    }
+
+    impl DecodeBackingAdmissionV1 for TestDecodeAdmission {
+        fn abort_decode(&self) {
+            self.attempt.borrow_mut().abort_v1();
+        }
+
+        fn enter_decode_field_v1(
+            &self,
+            kind: crate::DecodeFieldKindV1,
+            maximum: usize,
+        ) -> Result<crate::DecodeFieldTokenV1, DecodeBackingRefusalV1> {
+            let mut attempt = self.attempt.borrow_mut();
+            if !attempt.is_reading_v1() {
+                attempt.begin_decode_v1()?;
+            }
+            attempt.enter_field_v1(kind, maximum)
+        }
+
+        fn leave_decode_field_v1(
+            &self,
+            token: crate::DecodeFieldTokenV1,
+        ) -> Result<(), DecodeBackingRefusalV1> {
+            self.attempt.borrow_mut().leave_field_v1(token)
+        }
+
+        fn reserve_text(
+            &self,
+            destination: &mut String,
+            additional: usize,
+        ) -> Result<(), DecodeBackingRefusalV1> {
+            if self.refuse {
+                return Err(DecodeBackingRefusalV1);
+            }
+            destination
+                .try_reserve_exact(additional)
+                .map_err(|_allocation_refusal| DecodeBackingRefusalV1)
+        }
+
+        fn reserve_bytes(
+            &self,
+            destination: &mut Vec<u8>,
+            additional: usize,
+        ) -> Result<(), DecodeBackingRefusalV1> {
+            if self.refuse {
+                return Err(DecodeBackingRefusalV1);
+            }
+            destination
+                .try_reserve_exact(additional)
+                .map_err(|_allocation_refusal| DecodeBackingRefusalV1)
+        }
+
+        fn reserve_elements<T>(
+            &self,
+            destination: &mut Vec<T>,
+            additional: usize,
+        ) -> Result<(), DecodeBackingRefusalV1> {
+            if self.refuse {
+                return Err(DecodeBackingRefusalV1);
+            }
+            destination
+                .try_reserve_exact(additional)
+                .map_err(|_allocation_refusal| DecodeBackingRefusalV1)
+        }
+
+        fn copy_boxed_text(&self, source: &str) -> Result<Box<str>, DecodeBackingRefusalV1> {
+            if self.refuse {
+                return Err(DecodeBackingRefusalV1);
+            }
+            Ok(Box::from(source))
+        }
+
+        fn adopt_parser_text<E>(
+            &self,
+            _source: &mut Option<String>,
+            _validate: impl FnOnce(&str) -> Result<(), E>,
+        ) -> Result<String, crate::ParserTextInputErrorV1<E>> {
+            Err(DecodeBackingRefusalV1.into())
+        }
+
+        fn copy_boxed_parser_text<E>(
+            &self,
+            _source: &mut Option<String>,
+            _validate: impl FnOnce(&str) -> Result<(), E>,
+        ) -> Result<Box<str>, crate::ParserTextInputErrorV1<E>> {
+            Err(DecodeBackingRefusalV1.into())
+        }
+
+        fn verify_parser_owned_bytes(
+            &self,
+            _source: &[u8],
+            _capacity: usize,
+        ) -> Result<(), DecodeBackingRefusalV1> {
+            if self.refuse {
+                return Err(DecodeBackingRefusalV1);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn admitted_leaf_seeds_preserve_wire_and_validation_v1()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let admission = TestDecodeAdmission {
+            refuse: false,
+            attempt: std::cell::RefCell::new(crate::DecodeAttemptStateV1::default()),
+        };
+        let mut language_wire = serde_json::Deserializer::from_str("\"typescript\"");
+        let language = LanguageCode::deserialize_seed_with_admission_v1(&admission, 32)
+            .deserialize(&mut language_wire)?;
+        language_wire.end()?;
+        if language.as_str() != "typescript"
+            || serde_json::to_string(&language)? != "\"typescript\""
+        {
+            return Err("admitted language differs from the ordinary wire".into());
+        }
+
+        let mut path_wire = serde_json::Deserializer::from_str("\"src/검색/lib.rs\"");
+        let path = ExactRepoRelativePathV1::deserialize_seed_with_admission_v1(&admission, 128)
+            .deserialize(&mut path_wire)?;
+        path_wire.end()?;
+        if path.as_str() != "src/검색/lib.rs"
+            || serde_json::to_string(&path)? != "\"src/검색/lib.rs\""
+        {
+            return Err("admitted exact path differs from the ordinary wire".into());
+        }
+
+        for invalid in ["\"Rust\"", "\"rust script\""] {
+            let mut wire = serde_json::Deserializer::from_str(invalid);
+            if LanguageCode::deserialize_seed_with_admission_v1(&admission, 32)
+                .deserialize(&mut wire)
+                .is_ok()
+            {
+                return Err("admitted language bypassed the canonical predicate".into());
+            }
+        }
+        for invalid in ["\"/src/lib.rs\"", "\"src/../lib.rs\""] {
+            let mut wire = serde_json::Deserializer::from_str(invalid);
+            if ExactRepoRelativePathV1::deserialize_seed_with_admission_v1(&admission, 128)
+                .deserialize(&mut wire)
+                .is_ok()
+            {
+                return Err("admitted exact path bypassed the canonical predicate".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_leaf_seeds_refuse_capacity_and_backing_denial_v1() {
+        let admission = TestDecodeAdmission {
+            refuse: false,
+            attempt: std::cell::RefCell::new(crate::DecodeAttemptStateV1::default()),
+        };
+        let mut short_limit = serde_json::Deserializer::from_str("\"rust\"");
+        assert!(
+            LanguageCode::deserialize_seed_with_admission_v1(&admission, 3)
+                .deserialize(&mut short_limit)
+                .is_err()
+        );
+        let mut path_limit = serde_json::Deserializer::from_str("\"src/lib.rs\"");
+        assert!(
+            ExactRepoRelativePathV1::deserialize_seed_with_admission_v1(&admission, 9)
+                .deserialize(&mut path_limit)
+                .is_err()
+        );
+
+        let refusing = TestDecodeAdmission {
+            refuse: true,
+            attempt: std::cell::RefCell::new(crate::DecodeAttemptStateV1::default()),
+        };
+        let mut language_wire = serde_json::Deserializer::from_str("\"rust\"");
+        assert!(
+            LanguageCode::deserialize_seed_with_admission_v1(&refusing, 32)
+                .deserialize(&mut language_wire)
+                .is_err()
+        );
+        let mut path_wire = serde_json::Deserializer::from_str("\"src/lib.rs\"");
+        assert!(
+            ExactRepoRelativePathV1::deserialize_seed_with_admission_v1(&refusing, 32)
+                .deserialize(&mut path_wire)
+                .is_err()
+        );
+    }
 
     #[test]
     fn language_constraints_are_canonical_and_intersect_as_or_sets() {
@@ -440,7 +769,20 @@ mod tests {
     fn language_code_rejects_noncanonical_values() {
         for invalid in ["", "Rust", "rust script", "rust/"] {
             assert!(LanguageCode::new(invalid).is_err(), "accepted {invalid:?}");
+            assert!(
+                LanguageCode::try_from_boxed_v1(invalid.into()).is_err(),
+                "accepted boxed {invalid:?}"
+            );
         }
+    }
+
+    #[test]
+    fn language_code_adopts_valid_boxed_backing_without_reallocation() {
+        let text: Box<str> = "rust".into();
+        let pointer = text.as_ptr();
+        let language = LanguageCode::try_from_boxed_v1(text).expect("canonical boxed language");
+        assert_eq!(language.as_str(), "rust");
+        assert_eq!(language.as_str().as_ptr(), pointer);
     }
 
     #[test]

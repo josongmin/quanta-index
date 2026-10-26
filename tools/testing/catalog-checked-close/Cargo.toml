@@ -1,0 +1,18 @@
+[package]
+name = "quanta-index-catalog-checked-close"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# This test-only package does not inherit the production workspace's
+# unsafe-code prohibition. SQLite's real outstanding-VM cleanup needs FFI.
+[workspace]
+
+[lints.rust]
+unsafe_code = "allow"
+
+[dev-dependencies]
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+
+[patch.crates-io]
+libsqlite3-sys = { path = "../../../vendor/libsqlite3-sys-0.38.2" }

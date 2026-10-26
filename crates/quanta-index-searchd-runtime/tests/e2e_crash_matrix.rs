@@ -518,7 +518,7 @@ struct ActiveLine {
 /// `point`; the state root is left as the crash left it.
 fn seal_through_a_gc_crash(state_root: &Path, point: &str) -> Result<ActiveLine, Box<dyn Error>> {
     // Sealing 1–3 retires nothing under the first daemon's cap of 8.
-    let first = SearchdBinaryProcess::start(state_root)?;
+    let first = SearchdBinaryProcess::start_with_history_max_generations(state_root, 8)?;
     let client = first.connect()?;
     let one = publish_and_activate(&client, 1, None)?;
     let predecessor = publish_and_activate(&client, 2, Some(one))?;

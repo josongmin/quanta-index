@@ -30,8 +30,8 @@ use quanta_index_contract::{
     SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchPlaneTrackKind, SourceFileKey,
 };
 use quanta_index_core::{
-    GenerationIdentityValidatePort, GenerationStorageKeyV1, LexicalIndexOpenPort, LexicalPageSpec,
-    RequestBudgetV1,
+    CoreError, GenerationIdentityValidatePort, GenerationStorageKeyV1, LexicalIndexOpenPort,
+    LexicalPageSpec, LexicalSearcher, MetricSourcePort, MetricValueV1, RequestBudgetV1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -39,8 +39,7 @@ use super::{Case, Cut, Guard, Mode, Side, WaitPoint};
 use crate::LexicalAdapter;
 use crate::lexical_store::ObjectStore;
 
-#[path = "../../tests/support/current_source_fixture.rs"]
-mod current_source_fixture;
+use crate::current_source_fixture;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type CustodyTree = BTreeMap<PathBuf, (u64, u64, [u8; 32])>;
@@ -176,6 +175,49 @@ fn file_tree(directory: &Path) -> Result<CustodyTree, Box<dyn Error>> {
     Ok(result)
 }
 
+// Count committed digest files and their encoded file lengths, independently
+// of the adapter's write-cost accumulator. Control files are outside objects/.
+fn physical_pool_objects(root: &Path) -> Result<(u64, u64), Box<dyn Error>> {
+    let directory = root.join("lexical-object-pool/objects");
+    if !directory.exists() {
+        return Ok((0, 0));
+    }
+    let mut count = 0_u64;
+    let mut bytes = 0_u64;
+    for shard in std::fs::read_dir(directory)? {
+        let shard = shard?;
+        let shard_name = shard.file_name();
+        let shard_name = shard_name.to_str().ok_or("non-UTF8 object shard")?;
+        if shard_name.len() != 2
+            || !shard_name
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || !shard.file_type()?.is_dir()
+        {
+            return Err("unexpected object shard entry".into());
+        }
+        for object in std::fs::read_dir(shard.path())? {
+            let object = object?;
+            let name = object.file_name();
+            let name = name.to_str().ok_or("non-UTF8 pool object")?;
+            if name.len() != 64
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                || name.get(..2) != Some(shard_name)
+                || !object.file_type()?.is_file()
+            {
+                return Err("unexpected pool object entry".into());
+            }
+            count = count.checked_add(1).ok_or("pool object count overflow")?;
+            bytes = bytes
+                .checked_add(object.metadata()?.len())
+                .ok_or("pool encoded byte count overflow")?;
+        }
+    }
+    Ok((count, bytes))
+}
+
 fn no_temporary_files(directory: &Path) -> TestResult {
     if !directory.exists() {
         return Ok(());
@@ -194,6 +236,71 @@ fn no_temporary_files(directory: &Path) -> TestResult {
                     entry.path().display()
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+fn pool_temporary_bytes(root: &Path) -> Result<Vec<Vec<u8>>, Box<dyn Error>> {
+    let mut bytes = Vec::new();
+    let mut pending = vec![root.join("lexical-object-pool/objects")];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            } else if entry.file_name().to_string_lossy().contains(".tmp-") {
+                bytes.push(std::fs::read(entry.path())?);
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn assert_base_view(searcher: &dyn LexicalSearcher) -> TestResult {
+    let budget = RequestBudgetV1::unbounded();
+    for (needle, expected) in [
+        ("keepneedle", Some(KEEP)),
+        ("oldneedle", Some(EDIT)),
+        ("retiredneedle", Some(RETIRE)),
+        ("newneedle", None),
+    ] {
+        for file_surface in [false, true] {
+            let mut options = LqOptions::defaults();
+            if file_surface {
+                options.pattern_type = LqPatternType::CodeSearch;
+            }
+            let request = LqQuery {
+                lq_version: LQ_VERSION_TAG,
+                expr: LqExpr::Leaf(if file_surface {
+                    LqLeaf::RawString(needle.to_string())
+                } else {
+                    LqLeaf::Keyword(needle.to_string())
+                }),
+                filters: if file_surface {
+                    vec![LqFilter::Select {
+                        dim: LqSelect::File,
+                    }]
+                } else {
+                    Vec::new()
+                },
+                options,
+                directives: Vec::new(),
+                source_span: LqSpan::eof(0),
+            };
+            let results = searcher
+                .search_constrained(
+                    &request,
+                    &QueryConstraintSetV1::default(),
+                    &LexicalPageSpec::first(10),
+                    &budget,
+                )?
+                .candidates;
+            assert_eq!(results.len(), usize::from(expected.is_some()));
+            assert_eq!(
+                results.first().map(|row| row.repo_relative_path.as_str()),
+                expected
+            );
         }
     }
     Ok(())
@@ -518,6 +625,73 @@ fn independent_root_directory_writers_preserve_a_live_temporary() -> TestResult 
 }
 
 #[test]
+fn completed_build_write_metrics_match_pool_files_and_skip_replay_and_refusals() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(root.path().to_path_buf());
+    let initial = batch(false)?;
+    let mut unsealed = initial.clone();
+    unsealed.seal = false;
+    assert!(matches!(
+        adapter.build_fixture_batch(&unsealed),
+        Err(CoreError::InvalidContract(message))
+            if message.contains("source-event publication requires a sealed batch")
+    ));
+    assert_eq!(adapter.publication_write_stats()?.completed_builds, 0);
+    assert_eq!(physical_pool_objects(root.path())?, (0, 0));
+
+    assert!(adapter.build_fixture_batch(&initial)?.is_some());
+    // Empty-pool first build: every digest file, including adoption manifests,
+    // is a new object from this completed invocation; file length is encoded size.
+    let physical = physical_pool_objects(root.path())?;
+    assert!(
+        physical.0 > 0 && physical.1 > 0,
+        "fixture wrote no pool objects"
+    );
+    let completed = adapter.publication_write_stats()?;
+    assert_eq!(completed.completed_builds, 1);
+    assert_eq!(completed.new_objects, physical.0);
+    assert_eq!(completed.new_encoded_bytes, physical.1);
+
+    assert!(adapter.build_fixture_batch(&initial)?.is_none());
+    assert_eq!(adapter.publication_write_stats()?, completed);
+    assert_eq!(physical_pool_objects(root.path())?, physical);
+
+    let guard = Guard::install(
+        Case {
+            cut: Cut::PoolObjectWriteCall,
+            side: Side::Before,
+            occurrence: 1,
+        },
+        Mode::Error,
+    );
+    assert!(adapter.build_fixture_batch(&batch(true)?).is_err());
+    assert!(
+        guard.fired(),
+        "the failed delta did not reach pool object I/O"
+    );
+    drop(guard);
+    assert_eq!(adapter.publication_write_stats()?, completed);
+
+    let metrics = adapter.scrape()?;
+    for (name, expected) in [
+        ("lexical_completed_builds_with_pool_write_cost_total", 1),
+        ("lexical_completed_build_pool_new_objects_total", physical.0),
+        (
+            "lexical_completed_build_pool_new_encoded_bytes_total",
+            physical.1,
+        ),
+    ] {
+        let observed = metrics
+            .iter()
+            .filter(|point| point.name == name)
+            .map(|point| point.value)
+            .collect::<Vec<_>>();
+        assert_eq!(observed, vec![MetricValueV1::Counter(expected)], "{name}");
+    }
+    Ok(())
+}
+
+#[test]
 fn pool_and_root_io_refusals_never_admit_unsealed_target() -> TestResult {
     for case in io_cases() {
         eprintln!("POOL-IO-CUT {case:?}");
@@ -539,6 +713,129 @@ fn pool_and_root_io_refusals_never_admit_unsealed_target() -> TestResult {
         let cold = LexicalAdapter::with_state_root(root.path().to_path_buf());
         assert_not_admitted(&cold)?;
         assert_eq!(file_tree(&generation(root.path(), false)?)?, base_tree);
+        drop(cold);
+        recover(root.path(), &base_tree)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn pool_errno_and_partial_write_faults_preserve_base_and_retry() -> TestResult {
+    const PREFIX_BYTES: usize = 7;
+    let enospc = nix::libc::ENOSPC;
+    let eio = nix::libc::EIO;
+    let mut exhausted_output = &mut [][..];
+    let write_zero = match std::io::Write::write_all(&mut exhausted_output, b"x") {
+        Err(error) => error.to_string(),
+        Ok(()) => return Err("empty output admitted a nonempty write".into()),
+    };
+    for (name, case, mode, expected_context, expected_error, partial) in [
+        (
+            "pool-write-enospc",
+            Case {
+                cut: Cut::PoolObjectWriteCall,
+                side: Side::Before,
+                occurrence: 1,
+            },
+            Mode::OsError(enospc),
+            "write object temporary",
+            std::io::Error::from_raw_os_error(enospc).to_string(),
+            false,
+        ),
+        (
+            "pool-fsync-eio",
+            Case {
+                cut: Cut::PoolObjectFileSyncCall,
+                side: Side::Before,
+                occurrence: 1,
+            },
+            Mode::OsError(eio),
+            "object temporary",
+            std::io::Error::from_raw_os_error(eio).to_string(),
+            false,
+        ),
+        (
+            "pool-prefix-then-enospc",
+            Case {
+                cut: Cut::PoolObjectPartialWrite,
+                side: Side::Before,
+                occurrence: 1,
+            },
+            Mode::PartialWrite {
+                prefix_bytes: PREFIX_BYTES,
+                failure: super::PartialWriteFailure::OsError(enospc),
+            },
+            "write object temporary",
+            std::io::Error::from_raw_os_error(enospc).to_string(),
+            true,
+        ),
+        (
+            "pool-prefix-then-write-zero",
+            Case {
+                cut: Cut::PoolObjectPartialWrite,
+                side: Side::Before,
+                occurrence: 1,
+            },
+            Mode::PartialWrite {
+                prefix_bytes: PREFIX_BYTES,
+                failure: super::PartialWriteFailure::WriteZero,
+            },
+            "write object temporary",
+            write_zero,
+            true,
+        ),
+    ] {
+        let root = tempfile::tempdir()?;
+        let base_tree = setup(root.path())?;
+        let adapter = LexicalAdapter::with_state_root(root.path().to_path_buf());
+        let held = adapter.open(
+            &repo()?,
+            &revision()?,
+            ManifestGeneration::new(1),
+            &RequestBudgetV1::unbounded(),
+        )?;
+        assert_base_view(held.as_ref())?;
+        let guard = Guard::install(case, mode);
+        let result = adapter.build_fixture_batch(&batch(true)?);
+        assert!(guard.fired(), "fault was not reached: {name}");
+        let error = result.err().ok_or("injected fault was suppressed")?;
+        assert!(
+            error.to_string().contains(&expected_error),
+            "wrong error at {name}: {error}"
+        );
+        assert!(
+            error.to_string().contains(expected_context),
+            "missing storage context at {name}: {error}"
+        );
+        if case.cut == Cut::PoolObjectFileSyncCall {
+            assert!(
+                error.to_string().contains("sync object temporary")
+                    || error.to_string().contains("sync batched object temporary"),
+                "missing pool file-sync context at {name}: {error}"
+            );
+        }
+        drop(guard);
+        assert_base_view(held.as_ref())?;
+        if partial {
+            assert_eq!(
+                pool_temporary_bytes(root.path())?,
+                vec![b"QLSTOR0".to_vec()],
+                "the object temporary did not retain exactly the written prefix at {name}"
+            );
+        }
+        drop(held);
+        drop(adapter);
+        let cold = LexicalAdapter::with_state_root(root.path().to_path_buf());
+        assert_not_admitted(&cold)?;
+        let cold_base = cold.open(
+            &repo()?,
+            &revision()?,
+            ManifestGeneration::new(1),
+            &RequestBudgetV1::unbounded(),
+        )?;
+        assert_base_view(cold_base.as_ref())?;
+        assert_eq!(file_tree(&generation(root.path(), false)?)?, base_tree);
+        drop(cold_base);
         drop(cold);
         recover(root.path(), &base_tree)?;
     }

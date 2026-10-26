@@ -18,10 +18,16 @@ crate quanta_index_searchd
 │   │   ├── struct ProviderEgressGrantConfig: pub
 │   │   ├── struct ProviderWorkBudgetConfig: pub
 │   │   ├── struct SearchdConfig: pub
-│   │   └── enum SemanticEmbedderProfile: pub
+│   │   ├── enum SemanticEmbedderProfile: pub
+│   │   └── mod publication_physical: pub(self)
+│   │       ├── struct LegacyPhysicalAllowance: pub
+│   │       ├── struct LegacyPhysicalBinderLimits: pub
+│   │       ├── struct LegacyPhysicalInventoryLimits: pub
+│   │       └── struct LegacyPublicationPhysicalPolicy: pub
 │   ├── mod integrity_scrub: pub
 │   │   ├── struct InFlightScrubV1: pub(self)
 │   │   ├── struct PacedIntegrityScrubV1: pub
+│   │   ├── type ScrubCandidateKeyV1: pub(self)
 │   │   ├── struct ScrubSchedulerV1: pub
 │   │   ├── struct ScrubTalliesV1: pub
 │   │   └── enum ScrubTickV1: pub
@@ -34,6 +40,10 @@ crate quanta_index_searchd
 │   ├── mod maintenance: pub
 │   │   ├── struct BackendObservation: pub(self)
 │   │   ├── struct BackendProbeParts: pub
+│   │   ├── struct DiskMeterJoinGuard: pub(self)
+│   │   ├── struct DiskMeterStop: pub(self)
+│   │   ├── struct DiskRefreshErrors: pub(self)
+│   │   ├── enum DiskTrack: pub(self)
 │   │   ├── struct MaintenanceMetricSource: pub
 │   │   ├── struct MaintenanceParts: pub
 │   │   ├── struct MaintenanceStop: pub
@@ -47,6 +57,7 @@ crate quanta_index_searchd
 │   ├── mod request_events: pub(self)
 │   │   └── struct RuntimeRequestEvents: pub(crate)
 │   ├── mod runtime: pub
+│   │   ├── struct CompiledStructuralFilters: pub(self)
 │   │   ├── struct LedgerStructuralProducer: pub(self)
 │   │   ├── struct NoopQueryObsSink: pub(self)
 │   │   ├── struct ProviderUnavailableQueryTextEmbedder: pub(self)
@@ -58,7 +69,12 @@ crate quanta_index_searchd
 │   │   ├── struct SemanticEmbedders: pub(self)
 │   │   ├── struct SharedFileEmbeddingCache: pub(self)
 │   │   ├── enum StateRootAccessV1: pub
-│   │   └── struct StateRootLease: pub
+│   │   ├── struct StateRootDirectoryV1: pub #[cfg(unix)]
+│   │   ├── struct StateRootLease: pub
+│   │   ├── mod retirement: pub(self)
+│   │   │   ├── struct RuntimeRetirementGuard: pub(super)
+│   │   │   └── trait RuntimeRetirementPort: pub
+│   │   └── mod test_provider_transport: pub #[cfg(feature = "test-provider-transport")]
 │   ├── mod searchd: pub
 │   │   └── struct ChildAlive: pub(self)
 │   ├── mod semantic_boot: pub
@@ -82,7 +98,10 @@ crate quanta_index_searchd
 │   │   ├── trait StateMigrationFaultPort: pub
 │   │   ├── struct StateObjectEntryV1: pub
 │   │   ├── enum StateRootFormatV1: pub
-│   │   └── struct StateRootManifestV1: pub
+│   │   ├── struct StateRootManifestV1: pub
+│   │   └── mod cutover: pub(self)
+│   │       ├── struct Identity: pub(self)
+│   │       └── struct PreparedStateRootV1: pub
 │   ├── mod state_migration: pub
 │   │   ├── struct CatalogFreezeV1: pub
 │   │   ├── trait CatalogSnapshotPort: pub
@@ -93,11 +112,12 @@ crate quanta_index_searchd
 │   │   ├── enum OfflineStateOperationV1: pub
 │   │   ├── struct OfflineStateOutcomeV1: pub
 │   │   ├── struct OfflineStateVerificationV1: pub
+│   │   ├── trait OfflineTargetFactoryV1: pub
+│   │   ├── trait OfflineTargetSessionV1: pub
 │   │   ├── struct ReadOnlyRootLeaseV1: pub
 │   │   ├── enum SourceEntryKindV1: pub
 │   │   ├── struct SourceFreezeReceiptV1: pub
 │   │   ├── struct SourceFrozenFileV1: pub
-│   │   ├── trait StateRootDeepOpenPort: pub
 │   │   ├── struct StateRootDeepOpenReceiptV1: pub
 │   │   └── enum VerifyManifestKindV1: pub
 │   ├── mod supervisor: pub
@@ -107,13 +127,32 @@ crate quanta_index_searchd
 │   │   ├── enum ChildExitKind: pub
 │   │   ├── struct ChildSpawnFailure: pub
 │   │   ├── struct DrainTally: pub(self)
+│   │   ├── enum GuardRetirement: pub(self)
 │   │   ├── struct RegisteredChild: pub(self)
 │   │   ├── struct SearchdSupervisor: pub
 │   │   ├── struct SupervisionError: pub
 │   │   ├── enum SupervisionOutcome: pub
+│   │   ├── trait SupervisorGuards: pub
 │   │   ├── enum SupervisorPhase: pub
 │   │   └── struct SupervisorStatus: pub(crate)
+│   ├── mod trace_recorder: pub
+│   │   ├── enum DiagnosticCaptureCloseErrorV1: pub
+│   │   ├── struct DiagnosticCaptureClosedV1: pub
+│   │   ├── struct DiagnosticCaptureLeaseV1: pub
+│   │   ├── struct DiagnosticCaptureLimitsV1: pub
+│   │   ├── enum DiagnosticCaptureStatusV1: pub
+│   │   ├── struct DiagnosticCaptureV1: pub
+│   │   ├── struct MonotonicClock: pub(self)
+│   │   ├── enum QueueItem: pub(self)
+│   │   ├── struct QueueSink: pub(self)
+│   │   ├── struct SinkCounts: pub(self)
+│   │   └── struct WriterSummary: pub(self)
 │   └── mod umask: pub
 └── mod cli: pub
-    └── mod command: pub
-        └── struct SearchdCommand: pub
+    ├── mod command: pub
+    │   └── struct SearchdCommand: pub
+    └── mod native: pub
+        ├── struct NativeBootIdentityV1: pub
+        ├── struct NativeCommandInput: pub(super)
+        ├── enum NativeCommandModeV1: pub
+        └── struct NativeStateCommandV1: pub

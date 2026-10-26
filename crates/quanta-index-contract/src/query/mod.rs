@@ -5,6 +5,7 @@ mod expression;
 mod filters;
 mod history_cursor;
 mod history_order;
+mod native_content;
 mod options;
 mod requests;
 mod runtime_metadata_cursor;
@@ -17,6 +18,7 @@ pub use expression::*;
 pub use filters::*;
 pub use history_cursor::*;
 pub use history_order::*;
+pub use native_content::*;
 pub use options::*;
 pub use quanta_index_contract_base::query::{
     CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE,

@@ -26,6 +26,7 @@ mod bm25;
 mod collector;
 mod layout;
 mod manifest;
+mod physical_directory;
 mod publish;
 mod query;
 mod schema;
@@ -33,6 +34,10 @@ mod searcher;
 
 pub use adapter::HistoryTextIndexAdapter;
 pub use bm25::{HISTORY_BM25_B, HISTORY_BM25_K1};
+pub(crate) use physical_directory::engine_error;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod physical_tests;

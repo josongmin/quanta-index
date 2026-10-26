@@ -2915,7 +2915,7 @@ fn a_dangling_sealed_identity_is_never_discarded_as_incomplete() -> TestResult {
     {
         return Err(format!("dangling identity was not quarantined: {inventory:?}").into());
     }
-    match adapter.discard_incomplete_generation(&identity(generation)) {
+    match adapter.discard_incomplete_generation(&identity(generation), None) {
         Err(CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
             ..

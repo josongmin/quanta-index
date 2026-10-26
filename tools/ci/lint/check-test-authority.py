@@ -9,6 +9,8 @@ targets are fully inventoried:
   nested helpers such as ``tests/common/*.rs`` are modules, not targets.
 * ``benchmarks/*/tests/*.rs`` -- benchmark workspace members follow the same
   rule as crates.
+* ``vendor/ciborium-0.2.2/tests/*.rs`` -- the one workspace-owned CBOR codec
+  fork has its own integration binaries; unrelated vendor crates are excluded.
 * ``crates/*/fuzz/fuzz_targets/*.rs`` -- cargo-fuzz executables declared by
   the sibling fuzz manifest.
 
@@ -101,7 +103,11 @@ def _load_catalog(catalog: Path, violations: list[Violation]) -> dict[str, Any] 
 
 
 def _discover_integration_targets(root: Path) -> set[str]:
-    patterns = ("crates/*/tests/*.rs", "benchmarks/*/tests/*.rs")
+    patterns = (
+        "crates/*/tests/*.rs",
+        "benchmarks/*/tests/*.rs",
+        "vendor/ciborium-0.2.2/tests/*.rs",
+    )
     found: set[str] = set()
     for pattern in patterns:
         for path in root.glob(pattern):

@@ -24,6 +24,10 @@ impl RequestEnvelope<NativeIndexRequest> for NativeIndexRequestEnvelope {
         // belongs to catalog CAS and fences, not a transport repository key.
         None
     }
+
+    fn streaming(request: &NativeIndexRequest) -> bool {
+        matches!(request, NativeIndexRequest::QueryEffortStream { .. })
+    }
 }
 
 impl ResponseEnvelope<NativeIndexResponse> for NativeIndexResponseEnvelope {
@@ -32,6 +36,33 @@ impl ResponseEnvelope<NativeIndexResponse> for NativeIndexResponseEnvelope {
             request_id,
             payload,
         }
+    }
+
+    fn stream_unsupported(request_id: u64) -> Option<Self> {
+        Some(Self {
+            request_id,
+            payload: NativeIndexResponse::Error(NativeIndexWireError {
+                code: NativeIndexErrorCode::CapabilityUnavailable,
+                message: "native effort stream is unavailable".into(),
+            }),
+        })
+    }
+
+    fn stream_stage(payload: &NativeIndexResponse) -> bool {
+        matches!(
+            payload,
+            NativeIndexResponse::TextRanked(_)
+                | NativeIndexResponse::SemanticRanked(_)
+                | NativeIndexResponse::OverlayTextRanked(_)
+                | NativeIndexResponse::OverlaySemanticRanked(_)
+        )
+    }
+
+    fn stream_terminal(payload: &NativeIndexResponse) -> bool {
+        matches!(
+            payload,
+            NativeIndexResponse::EffortDone(_) | NativeIndexResponse::Error(_)
+        )
     }
 
     fn result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> Option<Self> {

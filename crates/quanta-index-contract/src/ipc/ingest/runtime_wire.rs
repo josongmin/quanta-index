@@ -4,6 +4,9 @@ use super::{BatchIngestMode, SearchScopeKey};
 use crate::lex::{DirtyRecord, ParseTreeRecord};
 use crate::{ChunkId, ManifestGeneration, RepoId, RevisionId};
 use core::fmt;
+
+mod admitted;
+use admitted::{OrdinaryRuntime, RuntimeDecodePolicy};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, VariantAccess, Visitor},
@@ -32,9 +35,9 @@ impl Serialize for DirtyDelete {
     }
 }
 
-struct DirtyDeleteVisitor;
+struct DirtyDeleteVisitor<P>(P);
 
-impl<'de> Visitor<'de> for DirtyDeleteVisitor {
+impl<'de, P: RuntimeDecodePolicy<'de>> Visitor<'de> for DirtyDeleteVisitor<P> {
     type Value = DirtyDelete;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -46,9 +49,9 @@ impl<'de> Visitor<'de> for DirtyDeleteVisitor {
         A: MapAccess<'de>,
     {
         let mut doc_id: Option<ChunkId> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "doc_id" => doc_id = Some(map.next_value()?),
+        while let Some(key) = self.0.next_field(&mut map, DIRTY_DELETE_FIELDS)? {
+            match key {
+                "doc_id" => doc_id = Some(self.0.next_chunk(&mut map)?),
                 other => return Err(de::Error::unknown_field(other, DIRTY_DELETE_FIELDS)),
             }
         }
@@ -63,7 +66,11 @@ impl<'de> Deserialize<'de> for DirtyDelete {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_struct("DirtyDelete", DIRTY_DELETE_FIELDS, DirtyDeleteVisitor)
+        deserializer.deserialize_struct(
+            "DirtyDelete",
+            DIRTY_DELETE_FIELDS,
+            DirtyDeleteVisitor(OrdinaryRuntime),
+        )
     }
 }
 
@@ -161,9 +168,9 @@ impl Serialize for DirtyIngestBatch {
     }
 }
 
-struct DirtyIngestBatchVisitor;
+struct DirtyIngestBatchVisitor<P>(P);
 
-impl<'de> Visitor<'de> for DirtyIngestBatchVisitor {
+impl<'de, P: RuntimeDecodePolicy<'de>> Visitor<'de> for DirtyIngestBatchVisitor<P> {
     type Value = DirtyIngestBatch;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -180,14 +187,14 @@ impl<'de> Visitor<'de> for DirtyIngestBatchVisitor {
         let mut overlay_epoch_ms: Option<u64> = None;
         let mut batch_digest: Option<String> = None;
         let mut entries: Option<Vec<DirtyMutation>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "repo_id" => repo_id = Some(map.next_value()?),
-                "revision_id" => revision_id = Some(map.next_value()?),
+        while let Some(key) = self.0.next_field(&mut map, DIRTY_INGEST_BATCH_FIELDS)? {
+            match key {
+                "repo_id" => repo_id = Some(self.0.next_repo(&mut map)?),
+                "revision_id" => revision_id = Some(self.0.next_revision(&mut map)?),
                 "generation" => generation = Some(map.next_value()?),
                 "overlay_epoch_ms" => overlay_epoch_ms = Some(map.next_value()?),
-                "batch_digest" => batch_digest = Some(map.next_value()?),
-                "entries" => entries = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(self.0.next_text(&mut map)?),
+                "entries" => entries = Some(self.0.next_dirty_entries(&mut map)?),
                 other => return Err(de::Error::unknown_field(other, DIRTY_INGEST_BATCH_FIELDS)),
             }
         }
@@ -211,7 +218,7 @@ impl<'de> Deserialize<'de> for DirtyIngestBatch {
         deserializer.deserialize_struct(
             "DirtyIngestBatch",
             DIRTY_INGEST_BATCH_FIELDS,
-            DirtyIngestBatchVisitor,
+            DirtyIngestBatchVisitor(OrdinaryRuntime),
         )
     }
 }
@@ -682,9 +689,9 @@ impl Serialize for StructuralTreeRecord {
     }
 }
 
-struct StructuralTreeRecordVisitor;
+struct StructuralTreeRecordVisitor<P>(P);
 
-impl<'de> Visitor<'de> for StructuralTreeRecordVisitor {
+impl<'de, P: RuntimeDecodePolicy<'de>> Visitor<'de> for StructuralTreeRecordVisitor<P> {
     type Value = StructuralTreeRecord;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -697,10 +704,10 @@ impl<'de> Visitor<'de> for StructuralTreeRecordVisitor {
     {
         let mut chunk_id: Option<ChunkId> = None;
         let mut record: Option<ParseTreeRecord> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "chunk_id" => chunk_id = Some(map.next_value()?),
-                "record" => record = Some(map.next_value()?),
+        while let Some(key) = self.0.next_field(&mut map, STRUCTURAL_TREE_RECORD_FIELDS)? {
+            match key {
+                "chunk_id" => chunk_id = Some(self.0.next_chunk(&mut map)?),
+                "record" => record = Some(self.0.next_parse_tree(&mut map)?),
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -724,7 +731,7 @@ impl<'de> Deserialize<'de> for StructuralTreeRecord {
         deserializer.deserialize_struct(
             "StructuralTreeRecord",
             STRUCTURAL_TREE_RECORD_FIELDS,
-            StructuralTreeRecordVisitor,
+            StructuralTreeRecordVisitor(OrdinaryRuntime),
         )
     }
 }
@@ -751,9 +758,9 @@ impl Serialize for StructuralReplaceScope {
     }
 }
 
-struct StructuralReplaceScopeVisitor;
+struct StructuralReplaceScopeVisitor<P>(P);
 
-impl<'de> Visitor<'de> for StructuralReplaceScopeVisitor {
+impl<'de, P: RuntimeDecodePolicy<'de>> Visitor<'de> for StructuralReplaceScopeVisitor<P> {
     type Value = StructuralReplaceScope;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -767,25 +774,28 @@ impl<'de> Visitor<'de> for StructuralReplaceScopeVisitor {
         let mut scope: Option<SearchScopeKey> = None;
         let mut scope_digest: Option<String> = None;
         let mut trees: Option<Vec<StructuralTreeRecord>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self
+            .0
+            .next_field(&mut map, STRUCTURAL_REPLACE_SCOPE_FIELDS)?
+        {
+            match key {
                 "scope" => {
                     if scope.is_some() {
                         return Err(de::Error::duplicate_field("scope"));
                     }
-                    scope = Some(map.next_value()?);
+                    scope = Some(self.0.next_scope(&mut map)?);
                 }
                 "scope_digest" => {
                     if scope_digest.is_some() {
                         return Err(de::Error::duplicate_field("scope_digest"));
                     }
-                    scope_digest = Some(map.next_value()?);
+                    scope_digest = Some(self.0.next_text(&mut map)?);
                 }
                 "trees" => {
                     if trees.is_some() {
                         return Err(de::Error::duplicate_field("trees"));
                     }
-                    trees = Some(map.next_value()?);
+                    trees = Some(self.0.next_trees(&mut map)?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
@@ -811,7 +821,7 @@ impl<'de> Deserialize<'de> for StructuralReplaceScope {
         deserializer.deserialize_struct(
             "StructuralReplaceScope",
             STRUCTURAL_REPLACE_SCOPE_FIELDS,
-            StructuralReplaceScopeVisitor,
+            StructuralReplaceScopeVisitor(OrdinaryRuntime),
         )
     }
 }
@@ -834,9 +844,9 @@ impl Serialize for StructuralTombstoneScope {
     }
 }
 
-struct StructuralTombstoneScopeVisitor;
+struct StructuralTombstoneScopeVisitor<P>(P);
 
-impl<'de> Visitor<'de> for StructuralTombstoneScopeVisitor {
+impl<'de, P: RuntimeDecodePolicy<'de>> Visitor<'de> for StructuralTombstoneScopeVisitor<P> {
     type Value = StructuralTombstoneScope;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -848,13 +858,16 @@ impl<'de> Visitor<'de> for StructuralTombstoneScopeVisitor {
         A: MapAccess<'de>,
     {
         let mut scope: Option<SearchScopeKey> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self
+            .0
+            .next_field(&mut map, STRUCTURAL_TOMBSTONE_SCOPE_FIELDS)?
+        {
+            match key {
                 "scope" => {
                     if scope.is_some() {
                         return Err(de::Error::duplicate_field("scope"));
                     }
-                    scope = Some(map.next_value()?);
+                    scope = Some(self.0.next_scope(&mut map)?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
@@ -878,7 +891,7 @@ impl<'de> Deserialize<'de> for StructuralTombstoneScope {
         deserializer.deserialize_struct(
             "StructuralTombstoneScope",
             STRUCTURAL_TOMBSTONE_SCOPE_FIELDS,
-            StructuralTombstoneScopeVisitor,
+            StructuralTombstoneScopeVisitor(OrdinaryRuntime),
         )
     }
 }
@@ -930,9 +943,9 @@ impl Serialize for StructuralIngestBatch {
     }
 }
 
-struct StructuralIngestBatchVisitor;
+struct StructuralIngestBatchVisitor<P>(P);
 
-impl<'de> Visitor<'de> for StructuralIngestBatchVisitor {
+impl<'de, P: RuntimeDecodePolicy<'de>> Visitor<'de> for StructuralIngestBatchVisitor<P> {
     type Value = StructuralIngestBatch;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -953,19 +966,22 @@ impl<'de> Visitor<'de> for StructuralIngestBatchVisitor {
         let mut replace_scopes: Option<Vec<StructuralReplaceScope>> = None;
         let mut tombstone_scopes: Option<Vec<StructuralTombstoneScope>> = None;
         let mut seal: Option<bool> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self
+            .0
+            .next_field(&mut map, STRUCTURAL_INGEST_BATCH_FIELDS)?
+        {
+            match key {
                 "repo_id" => {
                     if repo_id.is_some() {
                         return Err(de::Error::duplicate_field("repo_id"));
                     }
-                    repo_id = Some(map.next_value()?);
+                    repo_id = Some(self.0.next_repo(&mut map)?);
                 }
                 "revision_id" => {
                     if revision_id.is_some() {
                         return Err(de::Error::duplicate_field("revision_id"));
                     }
-                    revision_id = Some(map.next_value()?);
+                    revision_id = Some(self.0.next_revision(&mut map)?);
                 }
                 "generation" => {
                     if generation.is_some() {
@@ -983,13 +999,13 @@ impl<'de> Visitor<'de> for StructuralIngestBatchVisitor {
                     if manifest_digest.is_some() {
                         return Err(de::Error::duplicate_field("manifest_digest"));
                     }
-                    manifest_digest = Some(map.next_value()?);
+                    manifest_digest = Some(self.0.next_text(&mut map)?);
                 }
                 "batch_digest" => {
                     if batch_digest.is_some() {
                         return Err(de::Error::duplicate_field("batch_digest"));
                     }
-                    batch_digest = Some(map.next_value()?);
+                    batch_digest = Some(self.0.next_text(&mut map)?);
                 }
                 "mode" => {
                     if mode.is_some() {
@@ -1001,13 +1017,13 @@ impl<'de> Visitor<'de> for StructuralIngestBatchVisitor {
                     if replace_scopes.is_some() {
                         return Err(de::Error::duplicate_field("replace_scopes"));
                     }
-                    replace_scopes = Some(map.next_value()?);
+                    replace_scopes = Some(self.0.next_replace_scopes(&mut map)?);
                 }
                 "tombstone_scopes" => {
                     if tombstone_scopes.is_some() {
                         return Err(de::Error::duplicate_field("tombstone_scopes"));
                     }
-                    tombstone_scopes = Some(map.next_value()?);
+                    tombstone_scopes = Some(self.0.next_tombstone_scopes(&mut map)?);
                 }
                 "seal" => {
                     if seal.is_some() {
@@ -1050,7 +1066,7 @@ impl<'de> Deserialize<'de> for StructuralIngestBatch {
         deserializer.deserialize_struct(
             "StructuralIngestBatch",
             STRUCTURAL_INGEST_BATCH_FIELDS,
-            StructuralIngestBatchVisitor,
+            StructuralIngestBatchVisitor(OrdinaryRuntime),
         )
     }
 }

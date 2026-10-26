@@ -1,6 +1,50 @@
 //! Declarative helpers for closed native records and externally tagged enums.
 //! These emit manual Serde implementations without proc-macro derives.
 
+/// Decode a closed record key to its static schema name without allocating a
+/// `String` for every known field. Unknown keys retain Serde's field error.
+pub struct ClosedFieldKeySeedV1(pub &'static [&'static str]);
+
+impl<'de> serde::de::DeserializeSeed<'de> for ClosedFieldKeySeedV1 {
+    type Value = &'static str;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        struct KeyVisitor(&'static [&'static str]);
+
+        impl serde::de::Visitor<'_> for KeyVisitor {
+            type Value = &'static str;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a known record field")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                self.0
+                    .iter()
+                    .copied()
+                    .find(|field| *field == value)
+                    .ok_or_else(|| E::unknown_field(value, self.0))
+            }
+
+            fn visit_borrowed_str<E: serde::de::Error>(
+                self,
+                value: &'_ str,
+            ) -> Result<Self::Value, E> {
+                self.visit_str(value)
+            }
+
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_identifier(KeyVisitor(self.0))
+    }
+}
+
 /// Implement a closed record codec. All fields, including nullable fields,
 /// must be present; duplicate, unknown and excess sequence fields are refused.
 #[macro_export]
@@ -25,15 +69,15 @@ macro_rules! native_serde_struct {
                     }
                     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
                         $(let mut $field: Option<$ty> = None;)+
-                        while let Some(key) = map.next_key::<String>()? {
-                            match key.as_str() {
+                        while let Some(key) = map.next_key_seed($crate::ClosedFieldKeySeedV1(FIELDS))? {
+                            match key {
                                 $(stringify!($field) => {
                                     if $field.is_some() {
                                         return Err(serde::de::Error::duplicate_field(stringify!($field)));
                                     }
                                     $field = Some(map.next_value::<$ty>()?);
                                 },)+
-                                _ => return Err(serde::de::Error::unknown_field(&key, FIELDS)),
+                                _ => unreachable!("closed field seed only returns schema keys"),
                             }
                         }
                         Ok($name { $($field: $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?,)+ })
@@ -182,8 +226,8 @@ macro_rules! native_serde_enum {
                         formatter.write_str(concat!("a closed ", stringify!($name), " variant"))
                     }
                     fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
-                        let (name, variant) = serde::de::EnumAccess::variant::<String>(data)?;
-                        match name.as_str() {
+                        let (name, variant) = serde::de::EnumAccess::variant_seed(data, $crate::ClosedFieldKeySeedV1(VARIANTS))?;
+                        match name {
                             $(stringify!($unit) => {
                                 serde::de::VariantAccess::unit_variant(variant)?;
                                 Ok($name::$unit)
@@ -199,15 +243,15 @@ macro_rules! native_serde_enum {
                                     }
                                     fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
                                         $(let mut $field: Option<$ty> = None;)+
-                                        while let Some(key) = map.next_key::<String>()? {
-                                            match key.as_str() {
+                                        while let Some(key) = map.next_key_seed($crate::ClosedFieldKeySeedV1(FIELDS))? {
+                                            match key {
                                                 $(stringify!($field) => {
                                                     if $field.is_some() {
                                                         return Err(serde::de::Error::duplicate_field(stringify!($field)));
                                                     }
                                                     $field = Some(map.next_value::<$ty>()?);
                                                 },)+
-                                                _ => return Err(serde::de::Error::unknown_field(&key, FIELDS)),
+                                                _ => unreachable!("closed field seed only returns schema keys"),
                                             }
                                         }
                                         Ok($name::$record { $($field: $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?,)+ })
@@ -223,7 +267,7 @@ macro_rules! native_serde_enum {
                                 }
                                 serde::de::VariantAccess::struct_variant(variant, FIELDS, RecordVisitor)
                             },)*
-                            _ => Err(serde::de::Error::unknown_variant(&name, VARIANTS)),
+                            _ => unreachable!("closed variant seed only returns schema names"),
                         }
                     }
                 }

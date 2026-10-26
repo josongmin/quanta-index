@@ -471,7 +471,10 @@ impl CachingEmbeddingProvider {
 }
 
 impl TextEmbeddingProvider for CachingEmbeddingProvider {
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+    fn embed_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
         self.embed_batch_within(texts, &RequestBudgetV1::unbounded())
     }
 
@@ -481,10 +484,15 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
         &self,
         texts: &[&str],
         budget: &RequestBudgetV1,
-    ) -> Result<Vec<Vec<f32>>, CoreError> {
+    ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
         // A fully cached batch never reaches the inner provider, but it still
         // owes the same budget checkpoint as every other embedding path.
         budget.checkpoint(EMBED_CHECKPOINT)?;
+        let memory = quanta_index_core::TextEmbeddingBatch::reserve_output(
+            texts.len(),
+            self.dimension(),
+            budget,
+        )?;
         let mut slots: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
         let mut cache_hit_count = 0_usize;
         // Misses deduped BY CONTENT: each distinct uncached text is embedded once
@@ -528,7 +536,12 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
                     distinct_texts.len()
                 )));
             }
-            for ((key, positions), vector) in distinct_keys.iter().zip(waiters.iter()).zip(fresh) {
+            let parts = fresh.into_parts();
+            let _fresh_memory = parts.1;
+            let fresh_vectors = parts.0;
+            for ((key, positions), vector) in
+                distinct_keys.iter().zip(waiters.iter()).zip(fresh_vectors)
+            {
                 // Fresh output is held to the same contract a hit is; a
                 // provider that breaks it fails the batch instead of
                 // poisoning the cache.
@@ -560,7 +573,9 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
                 CoreError::Storage("embedding cache: unfilled vector slot".to_string())
             })?);
         }
-        Ok(out)
+        Ok(quanta_index_core::TextEmbeddingBatch::from_parts(
+            out, memory,
+        ))
     }
 
     fn model_id(&self) -> &str {
@@ -1623,7 +1638,10 @@ mod tests {
     }
 
     impl TextEmbeddingProvider for CountingProvider {
-        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        fn embed_batch(
+            &self,
+            texts: &[&str],
+        ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
             let _prior = self.embedded.fetch_add(texts.len(), Ordering::SeqCst);
             // Deterministic fake vector: text length in the first slot, the
             // revision length in the second, unit-normalized.
@@ -1897,7 +1915,10 @@ mod tests {
     fn a_provider_that_breaks_its_own_contract_poisons_nothing() {
         struct Liar;
         impl TextEmbeddingProvider for Liar {
-            fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+            fn embed_batch(
+                &self,
+                texts: &[&str],
+            ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
                 Ok(texts.iter().map(|_| vec![2.0, 0.0]).collect())
             }
             fn model_id(&self) -> &'static str {
@@ -2118,7 +2139,10 @@ mod tests {
     }
 
     impl TextEmbeddingProvider for RawProvider {
-        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        fn embed_batch(
+            &self,
+            texts: &[&str],
+        ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
             let _prior = self.embedded.fetch_add(texts.len(), Ordering::SeqCst);
             Ok(texts
                 .iter()

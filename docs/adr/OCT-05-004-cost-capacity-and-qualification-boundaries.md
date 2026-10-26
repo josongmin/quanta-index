@@ -9,7 +9,7 @@ Consolidates implemented O4-E4/I0 contracts under
 [SEP-26-003](SEP-26-003-retrieval-evidence-custody-and-qualification.md) and
 [SEP-27-004](SEP-27-004-benchmark-capture-and-resource-custody.md).
 No conditional optimization or staged operation becomes accepted implementation.
-Measurements and missing authority remain in the [residual ledger](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs).
+Measurements and missing authority remain in the [Oct-17 residual ledger](../plans/oct-17-index-closeout/tickets/README.md); [performance records](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs) retain source-scoped execution evidence.
 
 ## Decision
 

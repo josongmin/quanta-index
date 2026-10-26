@@ -2,18 +2,22 @@ mod native_decode_v1;
 use core::fmt;
 #[cfg(feature = "quanta-native-identity-v1")]
 pub use native_decode_v1::{
-    NativeCorpusDataFailureV1, NativeCorpusDecodeAdmissionV1, NativeCorpusDecodeDataV1,
-    NativeCorpusDecodeFailureV1, NativeCorpusDecodeRefusalV1,
+    AdmittedCorpusHeadRefusalV3, NativeCorpusDataFailureV1, NativeCorpusDecodeAdmissionV1,
+    NativeCorpusDecodeDataV1, NativeCorpusDecodeFailureV1, NativeCorpusDecodeRefusalV1,
 };
 
 use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
-use quanta_index_contract_base::SearchCorpusActivationTokenV1;
 use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract_base::SearchCorpusActivationTokenV1;
+#[cfg(feature = "quanta-native-identity-v1")]
+use quanta_index_contract_base::{AdmittedOptionalSeedV1, SourceIdentityDecodeAdmissionV1};
+#[cfg(feature = "quanta-native-identity-v1")]
+use serde::de::DeserializeSeed;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SearchPlaneTrackKind {
@@ -685,34 +689,215 @@ impl Serialize for SearchPlaneSearchCorpusActivationCasAck {
     }
 }
 
-struct SearchPlaneSearchCorpusActivationCasAckVisitor;
+trait ActivationAckDecodePolicyV3<'de> {
+    fn next_field<M: MapAccess<'de>>(
+        &mut self,
+        map: &mut M,
+    ) -> Result<Option<&'static str>, M::Error>;
+    fn next_active<M: MapAccess<'de>>(
+        &mut self,
+        map: &mut M,
+    ) -> Result<SearchCorpusActiveHeadV1, M::Error>;
+    fn next_previous<M: MapAccess<'de>>(
+        &mut self,
+        map: &mut M,
+    ) -> Result<Option<SearchCorpusActiveHeadV1>, M::Error>;
+}
 
-impl<'de> Visitor<'de> for SearchPlaneSearchCorpusActivationCasAckVisitor {
+struct OrdinaryActivationAckPolicyV3;
+
+impl<'de> ActivationAckDecodePolicyV3<'de> for OrdinaryActivationAckPolicyV3 {
+    fn next_field<M: MapAccess<'de>>(
+        &mut self,
+        map: &mut M,
+    ) -> Result<Option<&'static str>, M::Error> {
+        map.next_key::<String>()?
+            .map(|key| {
+                SEARCH_PLANE_SEARCH_CORPUS_ACTIVATION_CAS_ACK_FIELDS
+                    .iter()
+                    .copied()
+                    .find(|field| *field == key)
+                    .ok_or_else(|| {
+                        de::Error::unknown_field(
+                            &key,
+                            SEARCH_PLANE_SEARCH_CORPUS_ACTIVATION_CAS_ACK_FIELDS,
+                        )
+                    })
+            })
+            .transpose()
+    }
+    fn next_active<M: MapAccess<'de>>(
+        &mut self,
+        map: &mut M,
+    ) -> Result<SearchCorpusActiveHeadV1, M::Error> {
+        map.next_value()
+    }
+    fn next_previous<M: MapAccess<'de>>(
+        &mut self,
+        map: &mut M,
+    ) -> Result<Option<SearchCorpusActiveHeadV1>, M::Error> {
+        map.next_value()
+    }
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+struct ActivationAckKeySeedV3;
+
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<'de> DeserializeSeed<'de> for ActivationAckKeySeedV3 {
+    type Value = &'static str;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        decoder.deserialize_identifier(self)
+    }
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+impl Visitor<'_> for ActivationAckKeySeedV3 {
+    type Value = &'static str;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a borrowed activation ACK field")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        SEARCH_PLANE_SEARCH_CORPUS_ACTIVATION_CAS_ACK_FIELDS
+            .iter()
+            .copied()
+            .find(|field| *field == value)
+            .ok_or_else(|| {
+                de::Error::unknown_field(
+                    value,
+                    SEARCH_PLANE_SEARCH_CORPUS_ACTIVATION_CAS_ACK_FIELDS,
+                )
+            })
+    }
+
+    fn visit_string<E: de::Error>(self, _value: String) -> Result<Self::Value, E> {
+        Err(E::custom("activation ACK key must be borrowed"))
+    }
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+struct AdmittedActivationAckPolicyV3<'a, A: ?Sized, W, E> {
+    admission: &'a A,
+    active_data: &'a mut NativeCorpusDecodeDataV1<AdmittedCorpusHeadRefusalV3<E>, ()>,
+    previous_data: &'a mut NativeCorpusDecodeDataV1<AdmittedCorpusHeadRefusalV3<E>, ()>,
+    work: &'a mut W,
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<'de, A, W, E> ActivationAckDecodePolicyV3<'de> for AdmittedActivationAckPolicyV3<'_, A, W, E>
+where
+    A: SourceIdentityDecodeAdmissionV1 + ?Sized,
+    W: FnMut(u64) -> Result<(), E>,
+{
+    fn next_field<M: MapAccess<'de>>(
+        &mut self,
+        map: &mut M,
+    ) -> Result<Option<&'static str>, M::Error> {
+        map.next_key_seed(ActivationAckKeySeedV3)
+    }
+
+    fn next_active<M: MapAccess<'de>>(
+        &mut self,
+        map: &mut M,
+    ) -> Result<SearchCorpusActiveHeadV1, M::Error> {
+        map.next_value_seed(
+            SearchCorpusActiveHeadV1::deserialize_seed_with_admission_v3(
+                self.admission,
+                self.active_data,
+                self.work,
+            ),
+        )
+    }
+
+    fn next_previous<M: MapAccess<'de>>(
+        &mut self,
+        map: &mut M,
+    ) -> Result<Option<SearchCorpusActiveHeadV1>, M::Error> {
+        map.next_value_seed(AdmittedOptionalSeedV1::new(
+            self.admission,
+            SearchCorpusActiveHeadV1::deserialize_seed_with_admission_v3(
+                self.admission,
+                self.previous_data,
+                self.work,
+            ),
+        ))
+    }
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+struct AdmittedActivationAckSeedV3<'a, A: ?Sized, W, E>(AdmittedActivationAckPolicyV3<'a, A, W, E>);
+
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<'de, A, W, E> DeserializeSeed<'de> for AdmittedActivationAckSeedV3<'_, A, W, E>
+where
+    A: SourceIdentityDecodeAdmissionV1 + ?Sized,
+    W: FnMut(u64) -> Result<(), E>,
+{
+    type Value = SearchPlaneSearchCorpusActivationCasAck;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        decoder.deserialize_struct(
+            "SearchPlaneSearchCorpusActivationCasAck",
+            SEARCH_PLANE_SEARCH_CORPUS_ACTIVATION_CAS_ACK_FIELDS,
+            SearchPlaneSearchCorpusActivationCasAckVisitor(self.0),
+        )
+    }
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+impl SearchPlaneSearchCorpusActivationCasAck {
+    pub fn deserialize_seed_with_admission_v3<'a, A, W, E>(
+        admission: &'a A,
+        active_data: &'a mut NativeCorpusDecodeDataV1<AdmittedCorpusHeadRefusalV3<E>, ()>,
+        previous_data: &'a mut NativeCorpusDecodeDataV1<AdmittedCorpusHeadRefusalV3<E>, ()>,
+        work: &'a mut W,
+    ) -> impl for<'de> DeserializeSeed<'de, Value = Self> + 'a
+    where
+        A: SourceIdentityDecodeAdmissionV1 + ?Sized,
+        W: FnMut(u64) -> Result<(), E>,
+    {
+        AdmittedActivationAckSeedV3(AdmittedActivationAckPolicyV3 {
+            admission,
+            active_data,
+            previous_data,
+            work,
+        })
+    }
+}
+
+struct SearchPlaneSearchCorpusActivationCasAckVisitor<P>(P);
+
+impl<'de, P: ActivationAckDecodePolicyV3<'de>> Visitor<'de>
+    for SearchPlaneSearchCorpusActivationCasAckVisitor<P>
+{
     type Value = SearchPlaneSearchCorpusActivationCasAck;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a SearchPlaneSearchCorpusActivationCasAck map")
     }
 
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    fn visit_map<A>(mut self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
         let mut active: Option<SearchCorpusActiveHeadV1> = None;
         let mut previous_sealed_active: Option<Option<SearchCorpusActiveHeadV1>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self.0.next_field(&mut map)? {
+            match key {
                 "active" => {
                     if active.is_some() {
                         return Err(de::Error::duplicate_field("active"));
                     }
-                    active = Some(map.next_value()?);
+                    active = Some(self.0.next_active(&mut map)?);
                 }
                 "previous_sealed_active" => {
                     if previous_sealed_active.is_some() {
                         return Err(de::Error::duplicate_field("previous_sealed_active"));
                     }
-                    previous_sealed_active = Some(map.next_value()?);
+                    previous_sealed_active = Some(self.0.next_previous(&mut map)?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
@@ -738,7 +923,7 @@ impl<'de> Deserialize<'de> for SearchPlaneSearchCorpusActivationCasAck {
         deserializer.deserialize_struct(
             "SearchPlaneSearchCorpusActivationCasAck",
             SEARCH_PLANE_SEARCH_CORPUS_ACTIVATION_CAS_ACK_FIELDS,
-            SearchPlaneSearchCorpusActivationCasAckVisitor,
+            SearchPlaneSearchCorpusActivationCasAckVisitor(OrdinaryActivationAckPolicyV3),
         )
     }
 }
@@ -2746,5 +2931,182 @@ mod qi_act_01_tests {
             return;
         };
         assert!(err.to_string().contains("missing field `track`"));
+    }
+
+    #[cfg(feature = "quanta-native-identity-v1")]
+    mod admitted_activation_ack_tests_v3 {
+        use super::*;
+        use core::cell::{Cell, RefCell};
+        use quanta_index_contract_base::{
+            DecodeAttemptStateV1, DecodeBackingAdmissionV1, DecodeBackingRefusalV1,
+            DecodeFieldKindV1, DecodeFieldTokenV1, ParserTextInputErrorV1,
+            SourceIdentityDecodeAdmissionV1,
+        };
+        use serde::{de::DeserializeSeed, Deserializer};
+
+        struct Admission {
+            births: Cell<usize>,
+            refuse_after: usize,
+            aborted: Cell<bool>,
+            attempt: RefCell<DecodeAttemptStateV1>,
+        }
+
+        impl Admission {
+            fn new(refuse_after: usize) -> Self {
+                Self {
+                    births: Cell::new(0),
+                    refuse_after,
+                    aborted: Cell::new(false),
+                    attempt: RefCell::new(DecodeAttemptStateV1::default()),
+                }
+            }
+
+            fn permit(&self) -> Result<(), DecodeBackingRefusalV1> {
+                if self.aborted.get() || self.births.get() >= self.refuse_after {
+                    return Err(DecodeBackingRefusalV1);
+                }
+                let births = self
+                    .births
+                    .get()
+                    .checked_add(1)
+                    .ok_or(DecodeBackingRefusalV1)?;
+                self.births.set(births);
+                Ok(())
+            }
+        }
+
+        impl DecodeBackingAdmissionV1 for Admission {
+            fn abort_decode(&self) {
+                self.aborted.set(true);
+                self.attempt.borrow_mut().abort_v1();
+            }
+            fn enter_decode_field_v1(
+                &self,
+                kind: DecodeFieldKindV1,
+                maximum: usize,
+            ) -> Result<DecodeFieldTokenV1, DecodeBackingRefusalV1> {
+                let mut attempt = self.attempt.borrow_mut();
+                if !attempt.is_reading_v1() {
+                    attempt.begin_decode_v1()?;
+                }
+                attempt.enter_field_v1(kind, maximum)
+            }
+            fn leave_decode_field_v1(
+                &self,
+                token: DecodeFieldTokenV1,
+            ) -> Result<(), DecodeBackingRefusalV1> {
+                self.attempt.borrow_mut().leave_field_v1(token)
+            }
+            fn reserve_text(
+                &self,
+                destination: &mut String,
+                additional: usize,
+            ) -> Result<(), DecodeBackingRefusalV1> {
+                self.permit()?;
+                destination
+                    .try_reserve_exact(additional)
+                    .map_err(|_allocation_error| DecodeBackingRefusalV1)
+            }
+            fn reserve_bytes(
+                &self,
+                destination: &mut Vec<u8>,
+                additional: usize,
+            ) -> Result<(), DecodeBackingRefusalV1> {
+                self.permit()?;
+                destination
+                    .try_reserve_exact(additional)
+                    .map_err(|_allocation_error| DecodeBackingRefusalV1)
+            }
+            fn reserve_elements<T>(
+                &self,
+                destination: &mut Vec<T>,
+                additional: usize,
+            ) -> Result<(), DecodeBackingRefusalV1> {
+                self.permit()?;
+                destination
+                    .try_reserve_exact(additional)
+                    .map_err(|_allocation_error| DecodeBackingRefusalV1)
+            }
+            fn copy_boxed_text(&self, source: &str) -> Result<Box<str>, DecodeBackingRefusalV1> {
+                self.permit()?;
+                Ok(source.into())
+            }
+            fn adopt_parser_text<E>(
+                &self,
+                _source: &mut Option<String>,
+                _validate: impl FnOnce(&str) -> Result<(), E>,
+            ) -> Result<String, ParserTextInputErrorV1<E>> {
+                Err(DecodeBackingRefusalV1.into())
+            }
+            fn copy_boxed_parser_text<E>(
+                &self,
+                _source: &mut Option<String>,
+                _validate: impl FnOnce(&str) -> Result<(), E>,
+            ) -> Result<Box<str>, ParserTextInputErrorV1<E>> {
+                Err(DecodeBackingRefusalV1.into())
+            }
+            fn verify_parser_owned_bytes(
+                &self,
+                _source: &[u8],
+                _capacity: usize,
+            ) -> Result<(), DecodeBackingRefusalV1> {
+                Err(DecodeBackingRefusalV1)
+            }
+        }
+
+        impl SourceIdentityDecodeAdmissionV1 for Admission {
+            fn decode_repo_id_v1<'de, D: Deserializer<'de>>(
+                &self,
+                decoder: D,
+            ) -> Result<RepoId, D::Error> {
+                RepoId::deserialize(decoder)
+            }
+            fn decode_revision_id_v1<'de, D: Deserializer<'de>>(
+                &self,
+                decoder: D,
+            ) -> Result<RevisionId, D::Error> {
+                RevisionId::deserialize(decoder)
+            }
+        }
+
+        #[test]
+        fn admitted_ack_matches_ordinary_shape_and_refuses_text_birth() {
+            let ack = SearchPlaneSearchCorpusActivationCasAck {
+                active: corpus_head(11, "digest-11", 2),
+                previous_sealed_active: Some(corpus_head(10, "digest-10", 1)),
+            };
+            let bytes = encode(&ack).expect("canonical fixture");
+            let ordinary: SearchPlaneSearchCorpusActivationCasAck =
+                decode(&bytes).expect("ordinary ACK");
+            let json = serde_json::to_vec(&ack).expect("ordinary JSON ACK");
+            let admission = Admission::new(usize::MAX);
+            let mut active = NativeCorpusDecodeDataV1::new_v1();
+            let mut previous = NativeCorpusDecodeDataV1::new_v1();
+            let mut work = |_| Ok::<_, &'static str>(());
+            let admitted =
+                SearchPlaneSearchCorpusActivationCasAck::deserialize_seed_with_admission_v3(
+                    &admission,
+                    &mut active,
+                    &mut previous,
+                    &mut work,
+                )
+                .deserialize(&mut serde_json::Deserializer::from_slice(&json))
+                .expect("admitted ACK");
+            assert_eq!(admitted, ordinary);
+            assert!(admission.births.get() > 0);
+
+            let admission = Admission::new(0);
+            let mut active = NativeCorpusDecodeDataV1::new_v1();
+            let mut previous = NativeCorpusDecodeDataV1::new_v1();
+            let refused =
+                SearchPlaneSearchCorpusActivationCasAck::deserialize_seed_with_admission_v3(
+                    &admission,
+                    &mut active,
+                    &mut previous,
+                    &mut work,
+                )
+                .deserialize(&mut serde_json::Deserializer::from_slice(&json));
+            assert!(refused.is_err());
+        }
     }
 }

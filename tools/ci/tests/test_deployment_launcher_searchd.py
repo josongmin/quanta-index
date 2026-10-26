@@ -218,7 +218,8 @@ def _selection_wire(path: Path, binary: Path, root: Path, environment: dict[str,
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     assert json.loads(path.read_text(encoding="utf-8")) == {
-        "schema_version": 1,
+        "schema_version": 2,
+        "mode": "legacy",
         "binary": str(binary),
         "binary_sha256": digest.hexdigest(),
         "state_root": str(root),
@@ -353,6 +354,31 @@ def test_real_searchd_selection_handover_and_restart(short_state_root_path: Path
         "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES": str(16 * 1024 * 1024),
         "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS": "128",
         "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES": str(256 * 1024 * 1024),
+        # Match TEST_STATE_ROOT_PHYSICAL_POLICY used by real Rust daemon tests.
+        # These explicit fixture limits are not deployment defaults.
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAX_BYTES": str(16 << 30),
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAX_FILES": "200000",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAX_PENDING": "100000",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAX_ENTRIES": "400000",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAX_DEPTH": "64",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAX_PENDING_FRAMES": "4096",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAX_READER_HANDLES": "4096",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAX_TRACKED_ENTRIES": "100000",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAX_PROCESS_ROOTS": "256",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_GLOBAL_MAX_SQLITE_HANDLES": "8192",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAINTENANCE_RESERVED_BYTES": str(1 << 30),
+        "QUANTA_INDEX_LEGACY_PHYSICAL_MAINTENANCE_RESERVED_FILES": "1000",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_CONTROL_RESERVED_BYTES": str(1 << 30),
+        "QUANTA_INDEX_LEGACY_PHYSICAL_CONTROL_RESERVED_FILES": "10000",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_WORK_RESERVED_BYTES": str(4 << 30),
+        "QUANTA_INDEX_LEGACY_PHYSICAL_WORK_RESERVED_FILES": "30000",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_HISTORY_RESERVED_BYTES": str(1 << 30),
+        "QUANTA_INDEX_LEGACY_PHYSICAL_HISTORY_RESERVED_FILES": "10000",
+        "QUANTA_INDEX_LEGACY_PHYSICAL_DURABLE_CONTROL_FILE_MAX_BYTES": str(1 << 20),
+        "QUANTA_INDEX_LEGACY_PHYSICAL_REPOMAP_CONTROL_FILE_MAX_BYTES": str(64 << 20),
+        "QUANTA_INDEX_LEGACY_PHYSICAL_REPOMAP_CANDIDATE_FILE_MAX_BYTES": str(512 << 20),
+        "QUANTA_INDEX_LEGACY_PHYSICAL_CATALOG_PARENT_RESERVED_BYTES": str(2 << 30),
+        "QUANTA_INDEX_LEGACY_PHYSICAL_CATALOG_PARENT_RESERVED_FILES": "10000",
     }
     # Ambient environment is consulted only for binary selection above.
     launcher_env = {key: environment[key] for key in ("HOME", "TMPDIR", "PATH")}

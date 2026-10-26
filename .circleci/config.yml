@@ -206,6 +206,13 @@ jobs:
       - store_artifacts:
           path: artifacts/test-authority
           destination: test-authority
+      - run:
+          name: ciborium no-default integration
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            ./scripts/cargow --lane test-ciborium-no-default-lane test -p ciborium --no-default-features --test no_std --locked
       - run: *verify_unchanged_worker_source
 
   verify-rust-docs:

@@ -1,13 +1,102 @@
 use std::sync::Arc;
 
-use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::lex::LexicalErrorCode;
+use quanta_index_contract::EmbeddingNormalization;
+use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::{
-    CoreError, EMBED_CHECKPOINT, ProviderAuditEventV1, ProviderBudgetLedger,
-    ProviderSettlementKindV1, ProviderSettlementReceiptV1, ProviderSettlementUsageV1,
-    ProviderWorkEstimateV1, RequestBudgetV1, RequestProviderStageV1, SemanticAdmissionEngine,
-    SemanticEgressPolicyV1, SemanticInputClass, SemanticPolicy, TextEmbeddingProvider,
+    CoreError, ProviderAuditEventV1, ProviderBudgetLedger, ProviderSettlementKindV1,
+    ProviderSettlementReceiptV1, ProviderSettlementUsageV1, ProviderWorkEstimateV1,
+    RequestBudgetV1, RequestProviderStageV1, SemanticAdmissionEngine, SemanticEgressPolicyV1,
+    SemanticInputClass, SemanticNormalizationFailureV1, SemanticPolicy, TextEmbeddingProvider,
+    EMBED_CHECKPOINT,
 };
+
+/// Scalar failure from the canonical hash and normalization path. It can be
+/// retained by an admitted caller without constructing a diagnostic String.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HashingQueryTextFailureV1 {
+    DimensionMismatch,
+    ZeroDimension,
+    DimensionConversion,
+    SlotConversion {
+        slot: u64,
+    },
+    SlotOutOfBounds {
+        slot: usize,
+        dimension: usize,
+        primary: bool,
+    },
+    EmptyQuery,
+    Normalization(SemanticNormalizationFailureV1),
+}
+
+impl HashingQueryTextFailureV1 {
+    /// Preserve the existing search-plane error taxonomy without rendering it.
+    #[must_use]
+    pub fn code_v1(self) -> SearchPlaneErrorCodeV2 {
+        match self {
+            Self::DimensionMismatch
+            | Self::ZeroDimension
+            | Self::DimensionConversion
+            | Self::SlotConversion { .. } => SearchPlaneErrorCodeV2::InvalidRequest,
+            Self::SlotOutOfBounds { .. } => SearchPlaneErrorCodeV2::Internal,
+            Self::EmptyQuery => LexicalErrorCode::EmptyQuery.into(),
+            Self::Normalization(_) => LexicalErrorCode::SemInvalidVector.into(),
+        }
+    }
+
+    /// A static diagnostic retained without allocating a String.
+    #[must_use]
+    pub const fn detail_v1(self) -> &'static str {
+        match self {
+            Self::DimensionMismatch => "semantic: hashing embedder output dimension mismatch",
+            Self::ZeroDimension => "semantic: hashing embedder dimension must be non-zero",
+            Self::DimensionConversion => "semantic: hashing embedder dimension conversion failed",
+            Self::SlotConversion { .. } => "semantic: hashed slot conversion failed",
+            Self::SlotOutOfBounds { primary: true, .. } => {
+                "semantic: primary hashed slot out of bounds"
+            }
+            Self::SlotOutOfBounds { primary: false, .. } => {
+                "semantic: secondary hashed slot out of bounds"
+            }
+            Self::EmptyQuery => "semantic: query text must contain at least one alphanumeric token",
+            Self::Normalization(_) => {
+                "semantic: hashed query text collapsed to a zero-norm embedding"
+            }
+        }
+    }
+
+    fn into_core_error_v1(self) -> CoreError {
+        match self {
+            Self::DimensionMismatch => CoreError::InvalidContract(
+                "semantic: hashing embedder output dimension mismatch".to_string(),
+            ),
+            Self::ZeroDimension => CoreError::InvalidContract(
+                "semantic: hashing embedder dimension must be non-zero".to_string(),
+            ),
+            Self::DimensionConversion => CoreError::InvalidContract(
+                "semantic: hashing embedder dimension conversion failed: out of range integral type conversion attempted".to_string(),
+            ),
+            Self::SlotConversion { slot } => CoreError::InvalidContract(format!(
+                "semantic: hashed slot conversion failed for {slot}: out of range integral type conversion attempted"
+            )),
+            Self::SlotOutOfBounds { slot, dimension, primary } => CoreError::Storage(format!(
+                "semantic: {} hashed slot {slot} out of bounds for dimension {dimension}",
+                if primary { "primary" } else { "secondary" }
+            )),
+            Self::EmptyQuery => CoreError::Typed {
+                code: LexicalErrorCode::EmptyQuery.into(),
+                message: "semantic: query text must contain at least one alphanumeric token"
+                    .to_string(),
+            },
+            Self::Normalization(_) => CoreError::Typed {
+                code: LexicalErrorCode::SemInvalidVector.into(),
+                message: "semantic: hashed query text collapsed to a zero-norm embedding"
+                    .to_string(),
+            },
+        }
+    }
+}
 
 /// Output dimension of the search-owned hash embedder.
 pub const SEARCH_OWNED_SEMANTIC_DIMENSION: usize = 64;
@@ -61,6 +150,39 @@ impl HashingQueryTextEmbedder {
     pub const fn new(dimension: usize) -> Self {
         Self { dimension }
     }
+
+    /// Upper bound on source-level visits by the shared hash calculation.
+    /// A UTF-8 byte bounds a scalar or token: split (1), trim (2), filter
+    /// (1), token loop (1), FNV byte pass (1), and two slot calculations plus
+    /// two updates (4). Filter also visits the final empty segment once.
+    /// Fill, norm validation, and normalization visit each component once.
+    /// This bounds work without tokenizing or allocating before admission.
+    #[must_use]
+    pub fn checked_work_upper_bound_v1(&self, text: &str) -> Option<usize> {
+        text.len()
+            .checked_mul(10)?
+            .checked_add(1)?
+            .checked_add(self.dimension.checked_mul(3)?)
+    }
+
+    /// Fill a caller-owned vector without allocating another embedding backing.
+    /// The caller is responsible for admitting its storage and work first.
+    pub fn embed_query_into_v1(&self, text: &str, values: &mut [f32]) -> Result<(), CoreError> {
+        self.embed_query_into_checked_v1(text, values)
+            .map_err(HashingQueryTextFailureV1::into_core_error_v1)
+    }
+
+    /// Use the same calculation with an allocation-free typed failure.
+    pub fn embed_query_into_checked_v1(
+        &self,
+        text: &str,
+        values: &mut [f32],
+    ) -> Result<(), HashingQueryTextFailureV1> {
+        if values.len() != self.dimension {
+            return Err(HashingQueryTextFailureV1::DimensionMismatch);
+        }
+        hash_query_text_into_checked(text, values)
+    }
 }
 
 impl QueryTextEmbedderPort for HashingQueryTextEmbedder {
@@ -83,7 +205,10 @@ impl QueryTextEmbedderPort for HashingQueryTextEmbedder {
 }
 
 impl TextEmbeddingProvider for HashingQueryTextEmbedder {
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+    fn embed_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
         texts
             .iter()
             .map(|text| hash_query_text(text, self.dimension))
@@ -114,17 +239,23 @@ impl TextEmbeddingProvider for HashingQueryTextEmbedder {
     reason = "crate-private hashing helper is shared across sibling search-plane modules"
 )]
 pub(crate) fn hash_query_text(text: &str, dimension: usize) -> Result<Vec<f32>, CoreError> {
-    if dimension == 0 {
-        return Err(CoreError::InvalidContract(
-            "semantic: hashing embedder dimension must be non-zero".to_string(),
-        ));
-    }
     let mut vector = vec![0.0_f32; dimension];
-    let dimension_u64 = u64::try_from(dimension).map_err(|err| {
-        CoreError::InvalidContract(format!(
-            "semantic: hashing embedder dimension conversion failed: {err}"
-        ))
-    })?;
+    hash_query_text_into_checked(text, &mut vector)
+        .map_err(HashingQueryTextFailureV1::into_core_error_v1)?;
+    Ok(vector)
+}
+
+fn hash_query_text_into_checked(
+    text: &str,
+    vector: &mut [f32],
+) -> Result<(), HashingQueryTextFailureV1> {
+    let dimension = vector.len();
+    if dimension == 0 {
+        return Err(HashingQueryTextFailureV1::ZeroDimension);
+    }
+    vector.fill(0.0);
+    let dimension_u64 =
+        u64::try_from(dimension).map_err(|_| HashingQueryTextFailureV1::DimensionConversion)?;
     let mut saw_token = false;
     for token in text
         .split(|ch: char| !ch.is_alphanumeric())
@@ -135,54 +266,42 @@ pub(crate) fn hash_query_text(text: &str, dimension: usize) -> Result<Vec<f32>, 
         let hash = stable_fnv1a64(token.as_bytes());
         let primary_slot = hashed_slot(hash, dimension_u64)?;
         let secondary_slot = hashed_slot(hash.rotate_right(32), dimension_u64)?;
-        let primary = vector.get_mut(primary_slot).ok_or_else(|| {
-            CoreError::Storage(format!(
-                "semantic: primary hashed slot {primary_slot} out of bounds for dimension {dimension}"
-            ))
-        })?;
+        let primary =
+            vector
+                .get_mut(primary_slot)
+                .ok_or(HashingQueryTextFailureV1::SlotOutOfBounds {
+                    slot: primary_slot,
+                    dimension,
+                    primary: true,
+                })?;
         *primary += 1.0;
-        let secondary = vector.get_mut(secondary_slot).ok_or_else(|| {
-            CoreError::Storage(format!(
-                "semantic: secondary hashed slot {secondary_slot} out of bounds for dimension {dimension}"
-            ))
-        })?;
+        let secondary =
+            vector
+                .get_mut(secondary_slot)
+                .ok_or(HashingQueryTextFailureV1::SlotOutOfBounds {
+                    slot: secondary_slot,
+                    dimension,
+                    primary: false,
+                })?;
         *secondary -= 0.5;
     }
     if !saw_token {
-        return Err(CoreError::Typed {
-            code: LexicalErrorCode::EmptyQuery.into(),
-            message: "semantic: query text must contain at least one alphanumeric token"
-                .to_string(),
-        });
+        return Err(HashingQueryTextFailureV1::EmptyQuery);
     }
     // The same normalization every provider gets (QI-BB-031); a text whose
     // slots cancel to a zero vector is refused typed here, not turned into
     // NaNs.
-    SemanticPolicy::normalize_l2_unit_v1(&mut vector).map_err(|err| match err {
-        CoreError::Typed { code, .. } => CoreError::Typed {
-            code,
-            message: "semantic: hashed query text collapsed to a zero-norm embedding".to_string(),
-        },
-        other @ (CoreError::InvalidContract(_)
-        | CoreError::NotReady(_)
-        | CoreError::NotImplemented(_)
-        | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => other,
-    })?;
-    Ok(vector)
+    SemanticPolicy::normalize_l2_unit_checked_v1(vector)
+        .map_err(HashingQueryTextFailureV1::Normalization)?;
+    Ok(())
 }
 
-fn hashed_slot(hash: u64, dimension_u64: u64) -> Result<usize, CoreError> {
-    let slot_u64 = hash.checked_rem(dimension_u64).ok_or_else(|| {
-        CoreError::InvalidContract(
-            "semantic: hashing embedder dimension must be non-zero".to_string(),
-        )
-    })?;
-    usize::try_from(slot_u64).map_err(|err| {
-        CoreError::InvalidContract(format!(
-            "semantic: hashed slot conversion failed for {slot_u64}: {err}"
-        ))
-    })
+fn hashed_slot(hash: u64, dimension_u64: u64) -> Result<usize, HashingQueryTextFailureV1> {
+    let slot_u64 = hash
+        .checked_rem(dimension_u64)
+        .ok_or(HashingQueryTextFailureV1::ZeroDimension)?;
+    usize::try_from(slot_u64)
+        .map_err(|_| HashingQueryTextFailureV1::SlotConversion { slot: slot_u64 })
 }
 
 fn stable_fnv1a64(bytes: &[u8]) -> u64 {
@@ -192,6 +311,73 @@ fn stable_fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod admitted_output_tests {
+    use super::{HashingQueryTextEmbedder, HashingQueryTextFailureV1, QueryTextEmbedderPort};
+    use quanta_index_core::RequestBudgetV1;
+
+    #[test]
+    fn caller_owned_slice_matches_ordinary_hash_gold() {
+        let embedder = HashingQueryTextEmbedder::new(64);
+        for input in ["alpha beta", "alpha-alpha", "x", "a b c"] {
+            let ordinary = embedder
+                .embed_query(input, &RequestBudgetV1::unbounded())
+                .expect("ordinary hash");
+            let mut admitted = [0.0_f32; 64];
+            embedder
+                .embed_query_into_v1(input, &mut admitted)
+                .expect("caller-owned hash");
+            assert_eq!(ordinary, admitted);
+        }
+        let mut fixed = [0.0_f32; 64];
+        embedder
+            .embed_query_into_v1("alpha beta", &mut fixed)
+            .expect("fixed hash gold");
+        for (index, actual) in fixed.iter().enumerate() {
+            let expected = match index {
+                27 | 59 => -0.316_227_76_f32,
+                39 | 43 => 0.632_455_5_f32,
+                _ => 0.0,
+            };
+            assert!((actual - expected).abs() < 1e-6, "slot {index}");
+        }
+    }
+
+    #[test]
+    fn caller_owned_slice_refuses_wrong_dimension() {
+        let embedder = HashingQueryTextEmbedder::new(64);
+        assert!(embedder
+            .embed_query_into_v1("alpha", &mut [0.0; 63])
+            .is_err());
+        assert_eq!(
+            embedder.embed_query_into_checked_v1("alpha", &mut [0.0; 63]),
+            Err(HashingQueryTextFailureV1::DimensionMismatch),
+        );
+        assert_eq!(
+            embedder.embed_query_into_checked_v1(" -- ", &mut [0.0; 64]),
+            Err(HashingQueryTextFailureV1::EmptyQuery),
+        );
+    }
+
+    #[test]
+    fn canonical_work_bound_covers_text_and_vector_visits() {
+        let embedder = HashingQueryTextEmbedder::new(64);
+        assert_eq!(
+            embedder.checked_work_upper_bound_v1("alpha beta"),
+            Some(293)
+        );
+        assert_eq!(embedder.checked_work_upper_bound_v1(""), Some(193));
+        assert_eq!(
+            embedder.checked_work_upper_bound_v1("한글 α"),
+            Some(10 * "한글 α".len() + 193)
+        );
+        assert_eq!(
+            HashingQueryTextEmbedder::new(usize::MAX).checked_work_upper_bound_v1("a"),
+            None
+        );
+    }
 }
 
 /// The provider boundary every admitted embedder sits behind (S21-08).

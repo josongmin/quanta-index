@@ -33,6 +33,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field};
 use futures::TryStreamExt as _;
+use lance::session::Session;
+use lance_io::object_store::file_admission::FileAdmission;
 use lancedb::connect;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
@@ -42,6 +44,7 @@ use quanta_index_contract::{
     cluster_membership_content_digest_v1,
 };
 use quanta_index_core::domains::semantic::SemanticPolicy;
+use quanta_index_core::publication_admission::PublicationOutputAdmission;
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticLaneV1, DiagnosticSpanGuardV1,
     DiagnosticStageV1, DiagnosticTerminalV1, SemanticGenerationContractV1, SemanticIngestHeaderV1,
@@ -49,7 +52,8 @@ use quanta_index_core::{
     owner_key_v1,
 };
 
-use crate::durable_write::write_atomic;
+use crate::dataset_promotion::DatasetPromotion;
+use crate::durable_write::{AtomicOutput, with_cleanup_context, write_atomic};
 use crate::errors::{arrow_err, fs_err, lancedb_err};
 use crate::generation_contract::GenerationContract;
 use crate::integrity::SealTalliesV1;
@@ -67,7 +71,7 @@ use crate::manifest::{
 use crate::membership_integrity::{
     ClusterMembershipCommitmentV1, ClusterMembershipStoredRowV1, cluster_membership_commitment_v1,
 };
-use crate::sealed_manifest::{build_sealed_manifest_bytes, sealed_manifest_path};
+use crate::sealed_manifest::{build_sealed_manifest_bytes_with_admission, sealed_manifest_path};
 use crate::semantic_row_integrity_v1::semantic_row_commitment_v1;
 use crate::vector_index::{
     VectorIndexSealInputV1, inherited_index_contracted_v1, seal_vector_index_v1,
@@ -76,13 +80,14 @@ use crate::vector_index::{
 /// Sibling-of-`dataset/` staging dir used to make delta-base cloning
 /// crash-atomic — see `prepare_generation_dir`.
 const STAGING_DIR_NAME: &str = "dataset.staging";
+#[cfg(test)]
 const BACKUP_DIR_NAME: &str = "dataset.backup";
 
 // Private backend SQL allocation ceiling, independent of vector residency.
 // Refuse oversized exact-owner predicates; never split or broaden deletion.
 const MAX_DELETE_PREDICATE_BYTES: usize = 32 * 1024 * 1024;
 
-fn begin_build_stage(
+pub(crate) fn begin_build_stage(
     diagnostic: Option<&DiagnosticContextV1>,
     stage: DiagnosticStageV1,
 ) -> Option<DiagnosticSpanGuardV1> {
@@ -110,7 +115,7 @@ fn begin_build_stage(
     })
 }
 
-fn finish_build_stage(span: Option<DiagnosticSpanGuardV1>, success: bool) {
+pub(crate) fn finish_build_stage(span: Option<DiagnosticSpanGuardV1>, success: bool) {
     if let Some(span) = span {
         let outcome = if success {
             DiagnosticTerminalV1::Ok
@@ -265,8 +270,18 @@ fn is_dataset_local_entry(file_name: &std::ffi::OsStr) -> bool {
 /// A link failure is a typed error, not a silent full copy: both trees live
 /// under the same state root, so a cross-device failure cannot happen, and any
 /// other failure would otherwise cost the incremental guarantee unnoticed.
-fn inherit_dataset_tree(src: &Path, dst: &Path) -> Result<(), CoreError> {
-    fs::create_dir_all(dst).map_err(|err| fs_err("create inherited dataset dir", dst, &err))?;
+fn inherit_dataset_tree(
+    src: &Path,
+    dst: &Path,
+    admission: Option<&dyn FileAdmission>,
+) -> Result<(), CoreError> {
+    if let Some(admission) = admission {
+        admission
+            .prepare_parent_dirs(&dst.join(".directory-parent-witness"))
+            .map_err(|err| fs_err("prepare inherited dataset dir", dst, &err))?;
+    } else {
+        fs::create_dir_all(dst).map_err(|err| fs_err("create inherited dataset dir", dst, &err))?;
+    }
     for entry in fs::read_dir(src).map_err(|err| fs_err("read source dataset dir", src, &err))? {
         let entry = entry.map_err(|err| fs_err("read source dataset entry", src, &err))?;
         let from = entry.path();
@@ -275,43 +290,27 @@ fn inherit_dataset_tree(src: &Path, dst: &Path) -> Result<(), CoreError> {
             .file_type()
             .map_err(|err| fs_err("inherited dataset entry type", &from, &err))?;
         if file_type.is_dir() {
-            inherit_dataset_tree(&from, &to)?;
+            inherit_dataset_tree(&from, &to, admission)?;
         } else if is_dataset_local_entry(&entry.file_name()) {
-            let _bytes = fs::copy(&from, &to)
-                .map_err(|err| fs_err("copy generation-local dataset entry", &from, &err))?;
+            crate::qualified_fs::copy_file(&from, &to, admission)?;
         } else {
-            fs::hard_link(&from, &to)
-                .map_err(|err| fs_err("link inherited dataset entry", &from, &err))?;
+            crate::qualified_fs::hard_link(&from, &to, admission)?;
         }
     }
     Ok(())
 }
 
-/// The `dataset/`, `dataset.staging`, and `dataset.backup` sibling directories.
-///
-/// The triple makes dataset replacement crash-atomic: we build into staging and
-/// park the previous live dataset in backup during promotion, then recover from
-/// whichever combination a crash leaves behind.
-struct DatasetPaths {
-    dataset: PathBuf,
-    staging: PathBuf,
-    backup: PathBuf,
-}
-
-impl DatasetPaths {
-    fn for_generation(generation_dir: &Path) -> Self {
-        Self {
-            dataset: layout::dataset_dir(generation_dir),
-            staging: generation_dir.join(STAGING_DIR_NAME),
-            backup: generation_dir.join(BACKUP_DIR_NAME),
-        }
-    }
-}
-
 /// Remove `dir` and its contents if it exists, tagging IO failure with `action`.
-fn remove_dir_if_exists(action: &str, dir: &Path) -> Result<(), CoreError> {
+fn remove_dir_if_exists(
+    action: &str,
+    dir: &Path,
+    admission: Option<&dyn FileAdmission>,
+) -> Result<(), CoreError> {
     if dir.exists() {
-        fs::remove_dir_all(dir).map_err(|err| fs_err(action, dir, &err))?;
+        match admission {
+            Some(admission) => crate::qualified_fs::remove_dir_all(dir, Some(admission))?,
+            None => fs::remove_dir_all(dir).map_err(|err| fs_err(action, dir, &err))?,
+        }
     }
     Ok(())
 }
@@ -342,9 +341,21 @@ fn monotonic_nanos_since(started: Instant) -> u64 {
     }
 }
 
+#[cfg(test)]
 async fn open_connection(dataset_dir: &Path) -> Result<lancedb::Connection, CoreError> {
+    open_connection_with_session(dataset_dir, None).await
+}
+
+async fn open_connection_with_session(
+    dataset_dir: &Path,
+    session: Option<Arc<Session>>,
+) -> Result<lancedb::Connection, CoreError> {
     let uri = layout::dataset_dir_to_uri(dataset_dir)?;
-    connect(&uri)
+    let mut builder = connect(&uri);
+    if let Some(session) = session {
+        builder = builder.session(session);
+    }
+    builder
         .execute()
         .await
         .map_err(|err| lancedb_err(&format!("connect {uri}"), err))
@@ -484,7 +495,8 @@ fn validate_replace_scope(
             | CoreError::NotReady(_)
             | CoreError::NotImplemented(_)
             | CoreError::NotFound(_)
-            | CoreError::Storage(_)) => other,
+            | CoreError::Storage(_)
+            | CoreError::StorageIo { .. }) => other,
         })?;
     }
     let mut embeddings_by_record_id = BTreeMap::new();
@@ -1409,63 +1421,25 @@ async fn append_cluster_membership_scope(
     Ok(())
 }
 
-fn recover_dataset_artifacts(generation_dir: &Path) -> Result<(), CoreError> {
-    let paths = DatasetPaths::for_generation(generation_dir);
-    let contract_path = layout::build_contract_path(generation_dir);
-    let staged_contract_path = contract_path.with_extension("next");
-
-    if paths.dataset.exists() {
-        if staged_contract_path.exists() {
-            if paths.backup.exists() || !contract_path.exists() {
-                fs::rename(&staged_contract_path, &contract_path).map_err(|err| {
-                    fs_err(
-                        "recover promoted generation contract",
-                        &staged_contract_path,
-                        &err,
-                    )
-                })?;
-            } else {
-                fs::remove_file(&staged_contract_path).map_err(|err| {
-                    fs_err(
-                        "abort pre-promotion generation contract",
-                        &staged_contract_path,
-                        &err,
-                    )
-                })?;
-            }
-        }
-        remove_dir_if_exists("clean stale staging dir", &paths.staging)?;
-        remove_dir_if_exists("clean stale backup dir", &paths.backup)?;
-        return Ok(());
-    }
-
-    if staged_contract_path.exists() {
-        fs::remove_file(&staged_contract_path).map_err(|err| {
-            fs_err(
-                "remove aborted generation contract",
-                &staged_contract_path,
-                &err,
-            )
-        })?;
-    }
-    if paths.backup.exists() {
-        fs::rename(&paths.backup, &paths.dataset)
-            .map_err(|err| fs_err("restore backup dataset", &paths.backup, &err))?;
-    }
-    remove_dir_if_exists("clean stale staging dir", &paths.staging)?;
-    Ok(())
+fn recover_dataset_artifacts(
+    generation_dir: &Path,
+    admission: Option<Arc<dyn FileAdmission>>,
+) -> Result<(), CoreError> {
+    DatasetPromotion::recover_with_admission(generation_dir, admission)
 }
 
 fn ensure_generation_contract(
     generation_dir: &Path,
     header: &SemanticIngestHeaderV1,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<GenerationContract, CoreError> {
     GenerationContract::validate_batch_shape(&header.contract)?;
     let contract_path = layout::build_contract_path(generation_dir);
     if contract_path.exists() {
-        let bytes = crate::control_file::read_bounded(
+        let bytes = crate::control_file::read_bounded_with_admission(
             &contract_path,
             crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
+            admission,
         )
         .map_err(|err| fs_err("read generation contract", &contract_path, &err))?;
         let contract = GenerationContract::decode(&bytes)?;
@@ -1477,8 +1451,14 @@ fn ensure_generation_contract(
             generation_dir.display()
         )));
     }
-    fs::create_dir_all(generation_dir)
-        .map_err(|err| fs_err("create generation dir", generation_dir, &err))?;
+    if let Some(admission) = admission {
+        admission
+            .prepare_parent_dirs(&contract_path)
+            .map_err(|err| fs_err("prepare generation dir", generation_dir, &err))?;
+    } else {
+        fs::create_dir_all(generation_dir)
+            .map_err(|err| fs_err("create generation dir", generation_dir, &err))?;
+    }
     Ok(GenerationContract::from_batch(&header.contract))
 }
 
@@ -1489,6 +1469,7 @@ pub(crate) fn preflight_contract(
     semantic_root: &Path,
     pin: &GenerationPin,
     contract: &SemanticGenerationContractV1,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<(), CoreError> {
     use quanta_index_contract::lex::LexicalErrorCode;
 
@@ -1534,9 +1515,10 @@ pub(crate) fn preflight_contract(
             &error,
         )
     })? {
-        let bytes = crate::control_file::read_bounded(
+        let bytes = crate::control_file::read_bounded_with_admission(
             &target_contract_path,
             crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
+            admission,
         )
         .map_err(|error| {
             fs_err(
@@ -1584,17 +1566,23 @@ pub(crate) fn preflight_contract(
                 base_generation.get()
             )));
         }
-        let marker_digest = crate::control_file::read_string_bounded(
+        let marker_digest = crate::control_file::read_string_bounded_with_admission(
             &marker_path,
             crate::control_file::MAX_SEALED_MARKER_BYTES,
+            admission,
         )
         .map_err(|error| fs_err("read delta base sealed marker", &marker_path, &error))?;
-        crate::sealed_manifest::verify_sealed_sidecars(&base_dir, &marker_digest)?;
+        crate::sealed_manifest::verify_sealed_sidecars_with_admission(
+            &base_dir,
+            &marker_digest,
+            admission,
+        )?;
         let manifest_path = layout::manifest_path(&base_dir);
         let manifest = SemanticManifest::decode(
-            &crate::control_file::read_bounded(
+            &crate::control_file::read_bounded_with_admission(
                 &manifest_path,
                 crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
+                admission,
             )
             .map_err(|error| fs_err("read delta base manifest", &manifest_path, &error))?,
         )?;
@@ -1607,9 +1595,10 @@ pub(crate) fn preflight_contract(
         }
         let base_contract_path = layout::build_contract_path(&base_dir);
         let base_contract = GenerationContract::decode(
-            &crate::control_file::read_bounded(
+            &crate::control_file::read_bounded_with_admission(
                 &base_contract_path,
                 crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
+                admission,
             )
             .map_err(|error| {
                 fs_err(
@@ -1692,30 +1681,33 @@ fn persist_generation_contract(
     contract: &GenerationContract,
 ) -> Result<(), CoreError> {
     let bytes = contract.encode()?;
-    write_atomic(
+    let _output = write_atomic(
         &layout::build_contract_path(generation_dir),
         &bytes,
         "write generation contract",
-    )
+        None,
+    )?;
+    Ok(())
 }
 
 fn stage_generation_contract(
     generation_dir: &Path,
     contract: &GenerationContract,
-) -> Result<PathBuf, CoreError> {
+    publication: Option<PublicationOutputAdmission<'_>>,
+) -> Result<AtomicOutput, CoreError> {
     let staged_path = layout::build_contract_path(generation_dir).with_extension("next");
     let bytes = contract.encode()?;
     write_atomic(
         &staged_path,
         &bytes,
         "stage generation contract for dataset promotion",
-    )?;
-    Ok(staged_path)
+        publication,
+    )
 }
 
 fn promote_staged_generation_contract(
     generation_dir: &Path,
-    staged_path: &Path,
+    staged: &mut AtomicOutput,
 ) -> Result<(), CoreError> {
     if failpoint::should_fail_contract_promotion(generation_dir.to_string_lossy().as_ref()) {
         return Err(CoreError::Storage(
@@ -1723,8 +1715,7 @@ fn promote_staged_generation_contract(
         ));
     }
     let contract_path = layout::build_contract_path(generation_dir);
-    fs::rename(staged_path, &contract_path)
-        .map_err(|err| fs_err("promote generation contract", staged_path, &err))
+    staged.rename_to(&contract_path, "promote generation contract")
 }
 
 fn prepare_staging_dataset(
@@ -1733,13 +1724,19 @@ fn prepare_staging_dataset(
     generation_contract: &GenerationContract,
     repo_id: &quanta_index_contract::RepoId,
     revision_id: &quanta_index_contract::RevisionId,
+    admission: Option<&Arc<dyn FileAdmission>>,
 ) -> Result<std::path::PathBuf, CoreError> {
-    recover_dataset_artifacts(generation_dir)?;
-    let paths = DatasetPaths::for_generation(generation_dir);
-    remove_dir_if_exists("clean stale staging dir", &paths.staging)?;
-    if paths.dataset.exists() {
-        inherit_dataset_tree(&paths.dataset, &paths.staging)?;
-        return Ok(paths.staging);
+    recover_dataset_artifacts(generation_dir, admission.cloned())?;
+    let dataset = layout::dataset_dir(generation_dir);
+    let staging = generation_dir.join(STAGING_DIR_NAME);
+    remove_dir_if_exists(
+        "clean stale staging dir",
+        &staging,
+        admission.map(AsRef::as_ref),
+    )?;
+    if dataset.exists() {
+        inherit_dataset_tree(&dataset, &staging, admission.map(AsRef::as_ref))?;
+        return Ok(staging);
     }
     if let Some(base_generation) = generation_contract.base_generation {
         let base_dir = layout::generation_dir(semantic_root, repo_id, revision_id, base_generation);
@@ -1763,52 +1760,18 @@ fn prepare_staging_dataset(
                 revision_id.as_str()
             )));
         }
-        inherit_dataset_tree(&base_dataset, &paths.staging)?;
-        return Ok(paths.staging);
+        inherit_dataset_tree(&base_dataset, &staging, admission.map(AsRef::as_ref))?;
+        return Ok(staging);
     }
-    fs::create_dir_all(&paths.staging)
-        .map_err(|err| fs_err("create staging dataset dir", &paths.staging, &err))?;
-    Ok(paths.staging)
-}
-
-fn promote_staging_dataset(generation_dir: &Path) -> Result<(), CoreError> {
-    let paths = DatasetPaths::for_generation(generation_dir);
-    remove_dir_if_exists("clean stale backup dir", &paths.backup)?;
-    if paths.dataset.exists() {
-        fs::rename(&paths.dataset, &paths.backup)
-            .map_err(|err| fs_err("move current dataset to backup", &paths.dataset, &err))?;
+    if let Some(admission) = admission.map(AsRef::as_ref) {
+        admission
+            .prepare_parent_dirs(&staging.join(".directory-parent-witness"))
+            .map_err(|err| fs_err("prepare staging dataset dir", &staging, &err))?;
+    } else {
+        fs::create_dir_all(&staging)
+            .map_err(|err| fs_err("create staging dataset dir", &staging, &err))?;
     }
-    match fs::rename(&paths.staging, &paths.dataset) {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            if paths.backup.exists() && !paths.dataset.exists() {
-                fs::rename(&paths.backup, &paths.dataset).map_err(|restore_err| {
-                    fs_err("restore backup dataset", &paths.backup, &restore_err)
-                })?;
-            }
-            Err(fs_err("promote staging dataset", &paths.staging, &err))
-        }
-    }
-}
-
-fn finalize_promoted_dataset(generation_dir: &Path) -> Result<(), CoreError> {
-    let paths = DatasetPaths::for_generation(generation_dir);
-    remove_dir_if_exists("remove promoted backup dataset", &paths.backup)
-}
-
-fn rollback_promoted_dataset(generation_dir: &Path) -> Result<(), CoreError> {
-    let paths = DatasetPaths::for_generation(generation_dir);
-    remove_dir_if_exists("remove uncommitted promoted dataset", &paths.dataset)?;
-    if paths.backup.exists() {
-        fs::rename(&paths.backup, &paths.dataset).map_err(|err| {
-            fs_err(
-                "restore dataset after contract failure",
-                &paths.backup,
-                &err,
-            )
-        })?;
-    }
-    Ok(())
+    Ok(staging)
 }
 
 /// The verified index contract of the sealed base a delta inherited.
@@ -1821,6 +1784,8 @@ async fn inherited_vector_index_seal_v1(
     semantic_root: &Path,
     header: &SemanticIngestHeaderV1,
     generation_contract: &GenerationContract,
+    session: Option<Arc<Session>>,
+    admission: Option<Arc<dyn FileAdmission>>,
 ) -> Result<Option<crate::search::VerifiedInheritedVectorIndexV1>, CoreError> {
     let Some(base_generation) = generation_contract.base_generation else {
         return Ok(None);
@@ -1830,6 +1795,8 @@ async fn inherited_vector_index_seal_v1(
         &header.pin.repo_id,
         &header.pin.revision_id,
         base_generation,
+        session,
+        admission.as_deref(),
     )
     .await?;
     Ok(Some(verified))
@@ -1860,6 +1827,8 @@ async fn build_manifest_bytes(
     membership_table: &lancedb::Table,
     header: &SemanticIngestHeaderV1,
     generation_contract: &GenerationContract,
+    session: Option<Arc<Session>>,
+    admission: Option<Arc<dyn FileAdmission>>,
 ) -> Result<Vec<u8>, CoreError> {
     let semantic_rows = semantic_row_commitment_v1(table).await?;
     let row_count_u64 = semantic_rows.row_count;
@@ -1872,8 +1841,14 @@ async fn build_manifest_bytes(
     // admits it and trains otherwise. The index is approximate; what the
     // seal makes deterministic is its recipe, effort and lineage, not its
     // top-k.
-    let inherited =
-        inherited_vector_index_seal_v1(semantic_root, header, generation_contract).await?;
+    let inherited = inherited_vector_index_seal_v1(
+        semantic_root,
+        header,
+        generation_contract,
+        session,
+        admission,
+    )
+    .await?;
     let contracted = match inherited.as_ref() {
         Some(base) => {
             inherited_index_contracted_v1(
@@ -1940,11 +1915,20 @@ struct WorkingTables {
     membership_table: lancedb::Table,
 }
 
+#[cfg(test)]
 async fn open_working_tables(
     working_dataset: &Path,
     dimension: usize,
 ) -> Result<WorkingTables, CoreError> {
-    let connection = open_connection(working_dataset).await?;
+    open_working_tables_with_session(working_dataset, dimension, None).await
+}
+
+async fn open_working_tables_with_session(
+    working_dataset: &Path,
+    dimension: usize,
+    session: Option<Arc<Session>>,
+) -> Result<WorkingTables, CoreError> {
+    let connection = open_connection_with_session(working_dataset, session).await?;
     let table = ensure_table(&connection, dimension).await?;
     let membership_table = ensure_cluster_membership_table(&connection).await?;
     Ok(WorkingTables {
@@ -2074,6 +2058,8 @@ async fn seal_manifest_bytes(
     tables: &WorkingTables,
     header: &SemanticIngestHeaderV1,
     generation_contract: &GenerationContract,
+    session: Option<Arc<Session>>,
+    admission: Option<Arc<dyn FileAdmission>>,
 ) -> Result<Vec<u8>, CoreError> {
     validate_cluster_membership_coverage_v1(&tables.table, &tables.membership_table).await?;
     build_manifest_bytes(
@@ -2082,6 +2068,8 @@ async fn seal_manifest_bytes(
         &tables.membership_table,
         header,
         generation_contract,
+        session,
+        admission,
     )
     .await
 }
@@ -2180,9 +2168,11 @@ pub(crate) fn build_stream_reported(
         scopes,
         seal_tallies,
         None,
+        None,
     )
 }
 
+#[cfg(test)]
 pub(crate) fn build_stream_reported_with_diagnostic(
     runtime: &tokio::runtime::Runtime,
     semantic_root: &Path,
@@ -2190,8 +2180,42 @@ pub(crate) fn build_stream_reported_with_diagnostic(
     header: &SemanticIngestHeaderV1,
     scopes: &mut dyn SemanticScopeSource,
     seal_tallies: &SealTalliesV1,
+    publication: Option<PublicationOutputAdmission<'_>>,
     diagnostic: Option<&DiagnosticContextV1>,
 ) -> Result<(SemanticStreamTallyV1, IngestStageReport), CoreError> {
+    build_stream_reported_with_diagnostic_and_lance(
+        runtime,
+        semantic_root,
+        policy,
+        header,
+        scopes,
+        &BuildFileContext {
+            seal_tallies,
+            lance_file_admission: None,
+        },
+        publication,
+        diagnostic,
+    )
+}
+
+pub(crate) struct BuildFileContext<'a> {
+    pub(crate) seal_tallies: &'a SealTalliesV1,
+    pub(crate) lance_file_admission: Option<&'a Arc<dyn FileAdmission>>,
+}
+
+pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
+    runtime: &tokio::runtime::Runtime,
+    semantic_root: &Path,
+    policy: SemanticStreamWindowPolicy,
+    header: &SemanticIngestHeaderV1,
+    scopes: &mut dyn SemanticScopeSource,
+    files: &BuildFileContext<'_>,
+    publication: Option<PublicationOutputAdmission<'_>>,
+    diagnostic: Option<&DiagnosticContextV1>,
+) -> Result<(SemanticStreamTallyV1, IngestStageReport), CoreError> {
+    let seal_tallies = files.seal_tallies;
+    let lance_file_admission = files.lance_file_admission;
+    let lance_session = lance_file_admission.map(crate::qualified_fs::lance_session);
     let build_started = Instant::now();
     let mut report = IngestStageReport::default();
     let mut appended = AppendedVectors::default();
@@ -2211,7 +2235,12 @@ pub(crate) fn build_stream_reported_with_diagnostic(
             header.pin.manifest_generation.get()
         )));
     }
-    preflight_contract(semantic_root, &header.pin, &header.contract)?;
+    preflight_contract(
+        semantic_root,
+        &header.pin,
+        &header.contract,
+        lance_file_admission.map(AsRef::as_ref),
+    )?;
     if header.contract.model_contract.distance_metric != EmbeddingDistanceMetric::Cosine {
         return Err(CoreError::InvalidContract(format!(
             "semantic: unsupported distance metric {:?}; this backend serves cosine only",
@@ -2246,17 +2275,24 @@ pub(crate) fn build_stream_reported_with_diagnostic(
     let prepare_started = Instant::now();
     let prepare_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticPrepare);
     let prepared = (|| {
-        recover_dataset_artifacts(&generation_dir)?;
-        let generation_contract = ensure_generation_contract(&generation_dir, header)?;
+        recover_dataset_artifacts(&generation_dir, lance_file_admission.cloned())?;
+        let generation_contract = ensure_generation_contract(
+            &generation_dir,
+            header,
+            lance_file_admission.map(AsRef::as_ref),
+        )?;
         let working_dataset = prepare_staging_dataset(
             semantic_root,
             &generation_dir,
             &generation_contract,
             &header.pin.repo_id,
             &header.pin.revision_id,
+            lance_file_admission,
         )?;
-        let tables =
-            crate::run_blocking(runtime, open_working_tables(&working_dataset, dimension))?;
+        let tables = crate::run_blocking(
+            runtime,
+            open_working_tables_with_session(&working_dataset, dimension, lance_session.clone()),
+        )?;
         Ok::<_, CoreError>((generation_contract, tables))
     })();
     finish_build_stage(prepare_span, prepared.is_ok());
@@ -2370,7 +2406,14 @@ pub(crate) fn build_stream_reported_with_diagnostic(
             let seal_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticSeal);
             let sealed = crate::run_blocking(
                 runtime,
-                seal_manifest_bytes(semantic_root, &tables, header, &generation_contract),
+                seal_manifest_bytes(
+                    semantic_root,
+                    &tables,
+                    header,
+                    &generation_contract,
+                    lance_session,
+                    lance_file_admission.cloned(),
+                ),
             );
             finish_build_stage(seal_span, sealed.is_ok());
             let sealed = sealed?;
@@ -2391,51 +2434,51 @@ pub(crate) fn build_stream_reported_with_diagnostic(
     let promotion_started = Instant::now();
     let promotion_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticPromote);
     let promotion_result = (|| -> Result<(), CoreError> {
-        let staged_contract_path =
-            stage_generation_contract(&generation_dir, &generation_contract)?;
+        let mut staged_contract =
+            stage_generation_contract(&generation_dir, &generation_contract, publication)?;
+        let promotion = DatasetPromotion::begin_with_admission(
+            &generation_dir,
+            &staged_contract,
+            publication,
+            lance_file_admission.cloned(),
+        )?;
         #[cfg(test)]
         exit_for_promotion_crash_boundary(PRE_DATASET_PROMOTION);
-        if let Err(promote_err) = promote_staging_dataset(&generation_dir) {
-            if let Err(cleanup_err) = fs::remove_file(&staged_contract_path) {
-                return Err(CoreError::Storage(format!(
-                    "semantic: dataset promotion failed ({promote_err}); cleanup staged generation contract {} also failed: {cleanup_err}",
-                    staged_contract_path.display()
-                )));
-            }
-            return Err(promote_err);
-        }
+        // Any rename/sync failure retains the authenticated intent, staging,
+        // contract and backup for recovery. Cleanup cannot guess its phase.
+        promotion.promote_dataset()?;
         #[cfg(test)]
         exit_for_promotion_crash_boundary(POST_DATASET_PRE_CONTRACT_PROMOTION);
         if let Err(contract_err) =
-            promote_staged_generation_contract(&generation_dir, &staged_contract_path)
+            promote_staged_generation_contract(&generation_dir, &mut staged_contract)
         {
-            let rollback_result = rollback_promoted_dataset(&generation_dir);
-            let cleanup_result = fs::remove_file(&staged_contract_path);
-            if let Err(rollback_err) = rollback_result {
-                return Err(CoreError::Storage(format!(
-                    "semantic: generation contract promotion failed ({contract_err}); dataset rollback also failed: {rollback_err}"
-                )));
+            // Once rename has succeeded, the dataset and contract are both
+            // advanced. A sync or ledger error keeps their recovery state;
+            // rolling back only the dataset would make the pair inconsistent.
+            if staged_contract.path() == layout::build_contract_path(&generation_dir) {
+                return Err(contract_err);
             }
-            if let Err(cleanup_err) = cleanup_result {
-                return Err(CoreError::Storage(format!(
-                    "semantic: generation contract promotion failed ({contract_err}); staged contract cleanup {} also failed: {cleanup_err}",
-                    staged_contract_path.display()
-                )));
-            }
-            return Err(contract_err);
+            return Err(match promotion.rollback(staged_contract) {
+                Ok(()) => contract_err,
+                Err(error) => {
+                    with_cleanup_context(contract_err, format!("dataset rollback: {error}"))
+                }
+            });
         }
-        finalize_promoted_dataset(&generation_dir)?;
+        promotion.finish()?;
 
-        write_atomic(
+        let _ready = write_atomic(
             &layout::ready_marker_path(&generation_dir),
             b"ready",
             "write ready marker",
+            publication,
         )?;
         if let Some(manifest_bytes) = manifest_bytes {
-            write_atomic(
+            let _manifest = write_atomic(
                 &layout::manifest_path(&generation_dir),
                 &manifest_bytes,
                 "write manifest",
+                publication,
             )?;
             // The file commitment every door checks the layout of and the scrub
             // proves the bytes of (QI-BB-017): measured after the dataset, the
@@ -2445,26 +2488,29 @@ pub(crate) fn build_stream_reported_with_diagnostic(
             // bytes hashed here are proportional to what this generation added
             // (QI-BB-006 #4); the measurement is tallied for the scrape.
             let base_dir = delta_base_dir_v1(semantic_root, header, &generation_contract);
-            let (sealed_manifest_bytes, measurement) = build_sealed_manifest_bytes(
+            let (sealed_manifest_bytes, measurement) = build_sealed_manifest_bytes_with_admission(
                 &generation_dir,
                 header.batch.manifest_digest.as_str(),
                 base_dir.as_deref(),
+                lance_file_admission.map(AsRef::as_ref),
             )?;
             seal_tallies.record(measurement);
-            write_atomic(
+            let _sealed_manifest = write_atomic(
                 &sealed_manifest_path(&generation_dir),
                 &sealed_manifest_bytes,
                 "write sealed generation manifest",
+                publication,
             )?;
             crate::control_file::ensure_bounded(
                 header.batch.manifest_digest.as_bytes(),
                 crate::control_file::MAX_SEALED_MARKER_BYTES,
                 "sealed marker",
             )?;
-            write_atomic(
+            let _sealed_marker = write_atomic(
                 &layout::sealed_marker_path(&generation_dir),
                 header.batch.manifest_digest.as_bytes(),
                 "write sealed marker",
+                publication,
             )?;
         }
         Ok(())

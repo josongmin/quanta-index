@@ -66,9 +66,15 @@ mod file_authority;
 mod lexical_allocation;
 mod lexical_compaction;
 mod lexical_gc;
+mod lexical_hard_scan;
 mod lexical_publication;
 mod lexical_root_names;
+mod lexical_runs;
 mod lexical_store;
+mod maintenance_merge_facts;
+mod maintenance_stats;
+mod physical_measurement;
+mod retention_measurement;
 
 pub mod filters;
 
@@ -110,6 +116,7 @@ mod index_store;
 mod inventory;
 mod metadata_normalize;
 mod overlay_codec;
+mod publication_write_stats;
 mod query_admission;
 mod query_errors;
 mod schema;
@@ -136,12 +143,19 @@ extern crate self as quanta_index_lexical;
 mod publication_fixture;
 
 #[cfg(test)]
+#[path = "../tests/support/current_source_fixture.rs"]
+mod current_source_fixture;
+
+#[cfg(test)]
 mod publication_faults;
 
 /// The one text normalization contract (QI-BB-011), shared with the query DSL
 /// and the search plane; every text surface of this crate lowers through it.
 pub(crate) use quanta_index_lq_text_normalizer as normalize;
 
+pub use maintenance_merge_facts::{FileRunMergeFacts, NativeMergeOutputFacts, NativeRunMergeFacts};
+pub use maintenance_stats::{LexicalMaintenanceObservation, LexicalMaintenanceStats};
+pub use publication_write_stats::LexicalPublicationWriteStats;
 pub use sealed_generation::LexicalSealCommitmentStats;
 pub use sealed_generation::coverage::{LexicalCoverageReadByPhaseStats, LexicalCoverageReadStats};
 
@@ -336,9 +350,11 @@ const WRITER_THREADS_MAX: usize = 8;
 /// Releasing an entry calls `IndexWriter::commit` on the writer it owns. The
 /// adapter's invariant is that any uncommitted ops belong to an in-flight
 /// `build` invocation that holds the entry's `Arc<Mutex<GenerationWriter>>`;
-/// the cache only drops its own `Arc`, so an in-flight build is unaffected.
-/// A failing commit is surfaced as a typed storage error and aborts the
-/// operation that triggered the release.
+/// the cache releases only a writer it owns exclusively and joins its workers.
+/// Idle sweep skips an in-flight writer; an entirely busy LRU envelope refuses
+/// a new writer. Discard joins without committing abandoned changes. A failing
+/// commit or join aborts the release, and uncertain quiescence refuses a physical
+/// snapshot until the service is restarted.
 struct WriterCache {
     entries: BTreeMap<GenKey, CachedWriter>,
     order: VecDeque<GenKey>,
@@ -349,6 +365,7 @@ struct WriterCache {
     lru_releases: u64,
     idle_releases: u64,
     seal_releases: u64,
+    quiescence_failed: bool,
 }
 
 /// One overlay family's snapshot as a query holds it, decoded from the
@@ -440,6 +457,17 @@ pub struct LexicalAdapter {
     /// rebuilds versus in-place updates, in documents derived and retired
     /// and in shards written and inherited.
     text_authority_updates: Arc<Mutex<TextAuthorityUpdateStats>>,
+    publication_write_costs: Mutex<LexicalPublicationWriteStats>,
+    /// Logical index-bundle limits. Physical resource reservation and measured
+    /// threshold qualification remain with the service composition.
+    maintenance_policy: Option<quanta_index_core::lexical_maintenance::LexicalMaintenancePolicy>,
+    maintenance_observations: Mutex<LexicalMaintenanceStats>,
+    retention_measurement_policy:
+        quanta_index_core::domains::generation::RetentionMeasurementPolicy,
+    pool_write_admission:
+        Option<Arc<dyn quanta_index_core::pool_write_admission::PoolWriteAdmissionPort>>,
+    object_lifetime:
+        Option<Arc<dyn quanta_index_core::publication_admission::PublicationObjectLifetimePort>>,
     /// What the adapter's seals read to commit their generations
     /// (QI-BB-006 보완 #4).
     seal_commitments: Arc<Mutex<LexicalSealCommitmentStats>>,
@@ -818,7 +846,7 @@ mod adapter_tests {
 
         assert_eq!(
             adapter
-                .discard_incomplete_generation(&candidate)
+                .discard_incomplete_generation(&candidate, None)
                 .expect("discard incomplete"),
             IncompleteGenerationDiscardOutcomeV1::Discarded
         );
@@ -826,7 +854,7 @@ mod adapter_tests {
         assert!(generation_dir.starts_with(temp.path()));
         assert_eq!(
             adapter
-                .discard_incomplete_generation(&candidate)
+                .discard_incomplete_generation(&candidate, None)
                 .expect("idempotent absent"),
             IncompleteGenerationDiscardOutcomeV1::Absent
         );
@@ -847,7 +875,7 @@ mod adapter_tests {
         persist_lexical_sealed_identity(&generation_dir, &sealed).expect("persist identity");
 
         let exact_error = adapter
-            .discard_incomplete_generation(&sealed)
+            .discard_incomplete_generation(&sealed, None)
             .expect_err("sealed exact must be immutable");
         assert!(matches!(
             exact_error,
@@ -857,7 +885,7 @@ mod adapter_tests {
         let mut conflict = sealed;
         conflict.manifest_digest = "digest-b".to_string();
         let conflict_error = adapter
-            .discard_incomplete_generation(&conflict)
+            .discard_incomplete_generation(&conflict, None)
             .expect_err("sealed conflict must fail closed");
         assert!(matches!(
             conflict_error,

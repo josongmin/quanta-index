@@ -8,6 +8,10 @@ use quanta_index_contract::{
 
 use crate::{QuantaIndexClientPayloadV1, SdkError};
 
+#[path = "repomap/admitted_v3.rs"]
+mod admitted_v3;
+pub use admitted_v3::{AdmittedRepoMapTerminalReceiptV3, RepoMapAdmittedPublishErrorV3};
+
 pub struct RepoMapNamespace<'a> {
     client: &'a QuantaIndexClientPayloadV1,
 }

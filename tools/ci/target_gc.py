@@ -490,6 +490,16 @@ class Collector:
         locks = lane_lock_files(lane.path)
         try:
             with hold_locks(locks):
+                referenced = self.census_provider().references(lane.path)
+                if referenced is not False:
+                    self.report.keep(
+                        "stale-artifacts",
+                        lane.path,
+                        "referenced by a running process"
+                        if referenced
+                        else "process census unavailable",
+                    )
+                    return
                 for profile in self._profile_dirs(lane.path):
                     self._prune_deps(profile / "deps")
                     if self.policy.prune_incremental:
@@ -501,9 +511,11 @@ class Collector:
 
     def _profile_dirs(self, lane: Path) -> list[Path]:
         return sorted(
-            path.parent
-            for path, _st, is_dir in _shallow_walk(lane)
-            if is_dir and path.name in {"deps", "incremental"}
+            {
+                path.parent
+                for path, _st, is_dir in _shallow_walk(lane)
+                if is_dir and path.name in {"deps", "incremental"}
+            }
         )
 
     @staticmethod
@@ -513,11 +525,31 @@ class Collector:
             return None
         return stem
 
-    def _stale_groups(self, entries: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    @staticmethod
+    def _incremental_stem(name: str) -> str | None:
+        # rustc 1.92 crate_path uses a fixed-width base36 StableCrateId (u64).
+        # Cargo deps executables use a different, 16-hex suffix namespace.
+        stem, sep, suffix = name.rpartition("-")
+        if (
+            not sep
+            or not stem
+            or len(suffix) != 13
+            or any(c not in "0123456789abcdefghijklmnopqrstuvwxyz" for c in suffix)
+            or int(suffix, 36) > 0xFFFF_FFFF_FFFF_FFFF
+        ):
+            return None
+        return stem
+
+    def _stale_groups(
+        self,
+        entries: list[tuple[str, float]],
+        *,
+        stem_of: Callable[[str], str | None],
+    ) -> list[tuple[str, float]]:
         """Entries older than the threshold that are not the newest of their stem."""
         groups: dict[str, list[tuple[str, float]]] = {}
         for name, used in entries:
-            stem = self._stem(name)
+            stem = stem_of(name)
             if stem is not None:
                 groups.setdefault(stem, []).append((name, used))
         stale = []
@@ -538,7 +570,7 @@ class Collector:
             if st.st_mode & 0o111:
                 # atime advances when a test binary runs, so it counts as use.
                 executables.append((entry.name, max(st.st_mtime, st.st_atime)))
-        for name, used in self._stale_groups(executables):
+        for name, used in self._stale_groups(executables, stem_of=self._stem):
             for victim in (deps / name, deps / f"{name}.d", deps / f"{name}.dSYM"):
                 if _lstat(victim) is None:
                     continue
@@ -565,7 +597,7 @@ class Collector:
             if not entry.is_dir(follow_symlinks=False):
                 continue
             dirs.append((entry.name, dir_activity(Path(entry.path))))
-        for name, used in self._stale_groups(dirs):
+        for name, used in self._stale_groups(dirs, stem_of=self._incremental_stem):
             victim = incremental / name
             size = tree_usage(victim)
             if not self.dry_run:
@@ -690,6 +722,16 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--protect-lane", action="append", default=[], help="additional protected lane"
     )
+    parser.add_argument(
+        "--unprotect-idle-lane",
+        action="append",
+        choices=DEFAULT_PROTECTED_LANES,
+        default=[],
+        help=(
+            "allow age/budget eviction of a default-protected lane; "
+            "current-lane, Cargo-lock and active-process guards still apply"
+        ),
+    )
     parser.add_argument("--max-total-gb", type=float, default=None)
     parser.add_argument("--budget-min-idle-hours", type=float, default=1.0)
     parser.add_argument("--no-orphans", action="store_true")
@@ -734,7 +776,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     cache_root = args.cache_root or default_cache_root()
     state_dir = cache_root / "target-gc"
-    protected = set(DEFAULT_PROTECTED_LANES) | set(args.protect_lane)
+    protected = (set(DEFAULT_PROTECTED_LANES) - set(args.unprotect_idle_lane)) | set(
+        args.protect_lane
+    )
     current = os.environ.get("QUANTA_INDEX_BUILD_LANE")
     if current:
         protected.add(current)

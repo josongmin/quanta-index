@@ -1,5 +1,6 @@
 use quanta_index_contract::{
-    GenerationPin, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    GenerationPin, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
+    SearchCorpusIngestBatch, SearchPlaneTrackKind,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -7,9 +8,11 @@ use std::fmt;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::CoreError;
 use crate::diagnostic_trace::{DiagnosticContextV1, DiagnosticInodeCensusV1};
+use crate::request_budget::RequestBudgetV1;
 
 /// Wire code for a pin the durable authority does not retain.
 ///
@@ -373,11 +376,15 @@ pub enum IncompleteGenerationDiscardOutcomeV1 {
 /// Destructive recovery port restricted to an unsealed/incomplete generation.
 ///
 /// Implementations must refuse a sealed exact identity and any observed digest
-/// conflict. Missing storage is an idempotent `Absent` outcome.
+/// conflict. Missing storage is an idempotent `Absent` outcome. `pending_batch`
+/// identifies an original catalog-pending lexical publication whose exact
+/// attempt must survive removal of incomplete target-generation bytes. `None`
+/// retains ordinary explicit-retirement behavior.
 pub trait IncompleteGenerationDiscardPort: Send + Sync {
     fn discard_incomplete_generation(
         &self,
         candidate: &GenerationSnapshot,
+        pending_batch: Option<&SearchCorpusIngestBatch>,
     ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError>;
 }
 
@@ -445,6 +452,188 @@ pub struct SealedGenerationBytesV1 {
     pub absent: BTreeSet<ManifestGeneration>,
 }
 
+/// Request-local measurement of the exact union for one pair of sealed generations.
+///
+/// Implementations may retain authenticated membership across calls. Every call
+/// must describe the requested set, not a sum of preceding probes. A failed
+/// probe must leave the session usable for a later requested set.
+pub trait SealedGenerationByteSession {
+    fn measure(
+        &mut self,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError>;
+}
+
+/// Scratch and service-owned scan limits for retention measurement.
+///
+/// The scratch limit bounds disposable membership databases, not process RSS,
+/// secondary memory, allocated disk blocks, or a filesystem free-space
+/// reservation. The scan duration covers physical censuses and pair-local
+/// plans; it is a cooperative service guardrail, not a calibrated throughput
+/// or capacity threshold.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetentionMeasurementPolicy {
+    max_main_file_bytes: u64,
+    max_physical_scan_duration: Duration,
+}
+
+impl RetentionMeasurementPolicy {
+    /// Configurable scratch and a finite 60-second service scan guardrail.
+    pub const DEFAULT: Self = Self {
+        max_main_file_bytes: 128 * 1024 * 1024,
+        max_physical_scan_duration: Duration::from_secs(60),
+    };
+
+    /// Require enough page-aligned capacity for the two lexical databases.
+    pub fn new(max_main_file_bytes: u64) -> Result<Self, CoreError> {
+        const MIN_BYTES: u64 = 128 * 1024;
+        let max_bytes = u64::from(u32::MAX - 1).checked_mul(4096).ok_or_else(|| {
+            CoreError::InvalidContract("retention scratch page range overflow".into())
+        })?;
+        if max_main_file_bytes < MIN_BYTES
+            || max_main_file_bytes > max_bytes
+            || !max_main_file_bytes.is_multiple_of(8192)
+        {
+            return Err(CoreError::InvalidContract(
+                "retention measurement scratch must be at least 128 KiB, aligned to 8192 bytes, and fit SQLite page counts".into(),
+            ));
+        }
+        Ok(Self {
+            max_main_file_bytes,
+            max_physical_scan_duration: Self::DEFAULT.max_physical_scan_duration,
+        })
+    }
+
+    /// Set a finite scan deadline independently of any peer request budget.
+    pub fn with_max_physical_scan_duration(
+        mut self,
+        duration: Duration,
+    ) -> Result<Self, CoreError> {
+        if duration.is_zero() || Instant::now().checked_add(duration).is_none() {
+            return Err(CoreError::InvalidContract(
+                "retention physical scan duration must be positive and representable as a deadline"
+                    .into(),
+            ));
+        }
+        self.max_physical_scan_duration = duration;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub const fn max_main_file_bytes(self) -> u64 {
+        self.max_main_file_bytes
+    }
+
+    #[must_use]
+    pub const fn max_physical_scan_duration(self) -> Duration {
+        self.max_physical_scan_duration
+    }
+
+    /// Start a service-owned deadline for one physical census or pair-local
+    /// retention plan. Pair callers clone this one budget across both tracks
+    /// and all subset probes. It has no transport cancellation parent.
+    pub fn physical_scan_budget(self) -> Result<RequestBudgetV1, CoreError> {
+        let deadline = Instant::now()
+            .checked_add(self.max_physical_scan_duration)
+            .ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "retention physical scan deadline is not representable".into(),
+                )
+            })?;
+        Ok(RequestBudgetV1::until(deadline))
+    }
+}
+
+#[cfg(test)]
+mod retention_measurement_policy_tests {
+    use super::RetentionMeasurementPolicy;
+    use std::time::Duration;
+
+    #[test]
+    fn scratch_cap_is_explicit_and_page_aligned() {
+        for invalid in [0, 128 * 1024 - 1, 128 * 1024 + 4096, u64::MAX] {
+            assert!(RetentionMeasurementPolicy::new(invalid).is_err());
+        }
+        for valid in [128 * 1024, 2 * 1024 * 1024] {
+            let policy = RetentionMeasurementPolicy::new(valid).expect("valid scratch cap");
+            assert_eq!(policy.max_main_file_bytes(), valid);
+        }
+        assert!(
+            RetentionMeasurementPolicy::new(
+                RetentionMeasurementPolicy::DEFAULT.max_main_file_bytes()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn physical_scan_guardrail_is_finite_and_validated() {
+        let policy = RetentionMeasurementPolicy::new(128 * 1024)
+            .expect("scratch cap")
+            .with_max_physical_scan_duration(Duration::from_millis(250))
+            .expect("finite deadline");
+        assert_eq!(
+            policy.max_physical_scan_duration(),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            RetentionMeasurementPolicy::DEFAULT.max_physical_scan_duration(),
+            Duration::from_secs(60)
+        );
+        assert!(
+            policy
+                .with_max_physical_scan_duration(Duration::ZERO)
+                .is_err()
+        );
+        assert!(
+            policy
+                .with_max_physical_scan_duration(Duration::MAX)
+                .is_err()
+        );
+    }
+}
+
+struct DirectSealedGenerationByteSession<'a, T: SealedGenerationReclaimPort + ?Sized> {
+    owner: &'a T,
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    diagnostic: Option<DiagnosticContextV1>,
+    budget: RequestBudgetV1,
+}
+
+impl<T: SealedGenerationReclaimPort + ?Sized> SealedGenerationByteSession
+    for DirectSealedGenerationByteSession<'_, T>
+{
+    fn measure(
+        &mut self,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        self.budget.checkpoint("retention-pair:direct-measure")?;
+        let measured = self.owner.measure_sealed_generations(
+            &self.repo_id,
+            &self.revision_id,
+            generations,
+            self.diagnostic.as_ref(),
+        )?;
+        self.budget.checkpoint("retention-pair:direct-complete")?;
+        Ok(measured)
+    }
+}
+
+/// One track's physical-byte census under custody that excludes all of its
+/// service-controlled filesystem mutations for the session's lifetime.
+///
+/// The search plane acquires both track sessions before measuring either one.
+/// A backend must refuse acquisition if it cannot hold that custody; a live
+/// unfenced walk is not an implementation of this contract.
+pub trait TrackPhysicalByteSession {
+    fn measure(
+        &self,
+        budget: &RequestBudgetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<u64, CoreError>;
+}
+
 /// Destructive port for a sealed generation the search plane has retired
 /// from its authority (physical GC, QI-BB-003).
 ///
@@ -469,6 +658,35 @@ pub struct SealedGenerationBytesV1 {
 /// that [`Self::finish_interrupted_reclaims`] removes, never a half-removed
 /// generation.
 pub trait SealedGenerationReclaimPort: Send + Sync {
+    /// Acquire exclusive physical-measurement custody without waiting on a
+    /// writer while another track's custody may already be held. The default
+    /// refuses rather than treating the standalone live census as a snapshot.
+    fn begin_track_physical_measurement(
+        &self,
+    ) -> Result<Box<dyn TrackPhysicalByteSession + '_>, CoreError> {
+        Err(CoreError::InvalidContract(
+            "track physical snapshot measurement is unavailable".into(),
+        ))
+    }
+
+    /// Open one pair-local measurement session. The default preserves the
+    /// direct full-set measurement behavior of existing adapters.
+    fn begin_pair_measurement(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        budget: RequestBudgetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<Box<dyn SealedGenerationByteSession + '_>, CoreError> {
+        Ok(Box::new(DirectSealedGenerationByteSession {
+            owner: self,
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            diagnostic: diagnostic.cloned(),
+            budget,
+        }))
+    }
+
     fn reclaim_sealed_generation(
         &self,
         retired: &GenerationSnapshot,
@@ -992,13 +1210,16 @@ pub struct TreeScrubStepV1 {
 /// after a layout check of the whole tree (QI-BB-017).
 ///
 /// The layout check makes a missing, extra or resized file visible on every
-/// step, whatever the cursor; the hashing is [`hash_committed_step_v1`].
-pub fn scrub_tree_commitment_v1(
+/// step, whatever the cursor. `open` owns each reader for its entire hash;
+/// a caller using external file admission can keep its inode lease in that
+/// reader until the read ends.
+pub fn scrub_tree_commitment_v1<R: Read>(
     root: &Path,
     prefix: &str,
     committed: &[SealedArtifactCommitmentV1],
     start_artifact: u64,
     max_bytes: u64,
+    open: &dyn Fn(&Path) -> std::io::Result<R>,
 ) -> std::io::Result<TreeScrubStepV1> {
     if let Err(mismatch) = verify_tree_layout_v1(root, prefix, committed)? {
         return Ok(TreeScrubStepV1 {
@@ -1007,8 +1228,12 @@ pub fn scrub_tree_commitment_v1(
             verdict: TreeScrubVerdictV1::Mismatch(mismatch),
         });
     }
-    hash_committed_step_v1(
-        &|name| committed_path_v1(root, prefix, name),
+    hash_committed_step_opened_impl(
+        &|name| {
+            let path =
+                committed_path_v1(root, prefix, name).map_err(OpenCommittedError::Resolve)?;
+            open(&path).map_err(OpenCommittedError::File)
+        },
         committed,
         start_artifact,
         max_bytes,
@@ -1045,8 +1270,8 @@ pub fn hash_committed_step_v1(
 /// resolved again after the descriptor is acquired.
 ///
 /// A missing file is a content mismatch; other open/read errors prove nothing.
-pub fn hash_committed_step_opened_v1(
-    open: &dyn Fn(&str) -> std::io::Result<std::fs::File>,
+pub fn hash_committed_step_opened_v1<R: Read>(
+    open: &dyn Fn(&str) -> std::io::Result<R>,
     committed: &[SealedArtifactCommitmentV1],
     start_artifact: u64,
     max_bytes: u64,
@@ -1210,10 +1435,12 @@ fn committed_path_v1(root: &Path, prefix: &str, name: &str) -> std::io::Result<P
 /// hashed; only files new to this generation are read. When the base's
 /// file has since been replaced or the platform reports no identity, the
 /// file is hashed like any other, and the report says so.
-pub fn commit_tree_inheriting_v1(
+/// `open` owns each reader through hashing, including a qualified inode lease.
+pub fn commit_tree_inheriting_v1<R: Read>(
     root: &Path,
     prefix: &str,
     base: Option<(&Path, &[SealedArtifactCommitmentV1])>,
+    open: &dyn Fn(&Path) -> std::io::Result<R>,
 ) -> std::io::Result<TreeCommitmentV1> {
     let entries = list_tree_v1(root, prefix)?;
     let base_by_name: BTreeMap<&str, &SealedArtifactCommitmentV1> = base
@@ -1246,7 +1473,7 @@ pub fn commit_tree_inheriting_v1(
             commitment.inherited_files = commitment.inherited_files.saturating_add(1);
             sha256
         } else {
-            let (bytes, sha256) = sha256_of_file(&entry.path)?;
+            let (bytes, sha256) = sha256_of_reader(&mut open(&entry.path)?)?;
             if bytes != entry.bytes {
                 return Err(std::io::Error::other(format!(
                     "{} changed length while being committed ({} then {bytes} bytes)",
@@ -1313,6 +1540,7 @@ mod unique_inode_bytes_tests {
 mod tree_commitment_tests {
     use std::cell::Cell;
     use std::io::{self, Read};
+    use std::path::Path;
     use std::rc::Rc;
 
     use super::{
@@ -1330,6 +1558,60 @@ mod tree_commitment_tests {
     }
 
     #[test]
+    fn caller_owned_readers_retire_after_commit_and_failed_scrub() {
+        struct OwnedReader {
+            file: std::fs::File,
+            retired: Rc<Cell<usize>>,
+            fail_read: bool,
+        }
+
+        impl Read for OwnedReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if self.fail_read {
+                    return Err(io::Error::from(io::ErrorKind::NotFound));
+                }
+                self.file.read(buffer)
+            }
+        }
+
+        impl Drop for OwnedReader {
+            fn drop(&mut self) {
+                self.retired.set(self.retired.get() + 1);
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("dataset");
+        write(&root, "a.lance", b"alpha");
+        let retired = Rc::new(Cell::new(0));
+        let open = |path: &Path, fail_read| {
+            Ok(OwnedReader {
+                file: std::fs::File::open(path)?,
+                retired: Rc::clone(&retired),
+                fail_read,
+            })
+        };
+
+        let committed =
+            commit_tree_inheriting_v1(&root, "dataset", None, &|path| open(path, false))
+                .expect("commit through caller-owned reader");
+        assert_eq!(committed.hashed_bytes, 5);
+        assert_eq!(retired.get(), 1);
+
+        let error = scrub_tree_commitment_v1(
+            &root,
+            "dataset",
+            &committed.artifacts,
+            0,
+            u64::MAX,
+            &|path| open(path, true),
+        )
+        .expect_err("post-open read failure proves no missing file");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(retired.get(), 2);
+    }
+
+    #[test]
     fn descriptor_open_error_does_not_claim_a_digest_mismatch() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("dataset");
@@ -1337,7 +1619,7 @@ mod tree_commitment_tests {
         let committed = commit_tree_v1(&root, "dataset").expect("commit");
         let error = hash_committed_step_opened_v1(
             &|_name| {
-                Err(std::io::Error::new(
+                Err::<std::fs::File, _>(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "read failed",
                 ))
@@ -1525,7 +1807,10 @@ mod tree_commitment_tests {
         // …and is the scrub's to find, whatever the cursor; the bytes it
         // read to find it are reported, not hidden.
         assert_eq!(
-            scrub_tree_commitment_v1(&root, "dataset", &committed, 0, u64::MAX).expect("io"),
+            scrub_tree_commitment_v1(&root, "dataset", &committed, 0, u64::MAX, &|path| {
+                std::fs::File::open(path)
+            },)
+            .expect("io"),
             TreeScrubStepV1 {
                 files_verified: 0,
                 bytes_read: 5,
@@ -1546,7 +1831,10 @@ mod tree_commitment_tests {
             })
         );
         assert_eq!(
-            scrub_tree_commitment_v1(&root, "dataset", &committed, 2, u64::MAX).expect("io"),
+            scrub_tree_commitment_v1(&root, "dataset", &committed, 2, u64::MAX, &|path| {
+                std::fs::File::open(path)
+            },)
+            .expect("io"),
             TreeScrubStepV1 {
                 files_verified: 0,
                 bytes_read: 0,
@@ -1560,7 +1848,10 @@ mod tree_commitment_tests {
         std::fs::write(root.join("a.lance"), b"alpha").expect("restore");
 
         // A budget of one byte still hashes one file per step, then pauses.
-        let first = scrub_tree_commitment_v1(&root, "dataset", &committed, 0, 1).expect("io");
+        let first = scrub_tree_commitment_v1(&root, "dataset", &committed, 0, 1, &|path| {
+            std::fs::File::open(path)
+        })
+        .expect("io");
         assert_eq!(
             first,
             TreeScrubStepV1 {
@@ -1569,7 +1860,10 @@ mod tree_commitment_tests {
                 verdict: TreeScrubVerdictV1::Paused { next_artifact: 1 }
             }
         );
-        let second = scrub_tree_commitment_v1(&root, "dataset", &committed, 1, 6).expect("io");
+        let second = scrub_tree_commitment_v1(&root, "dataset", &committed, 1, 6, &|path| {
+            std::fs::File::open(path)
+        })
+        .expect("io");
         assert_eq!(
             second,
             TreeScrubStepV1 {
@@ -1578,7 +1872,10 @@ mod tree_commitment_tests {
                 verdict: TreeScrubVerdictV1::Paused { next_artifact: 2 }
             }
         );
-        let third = scrub_tree_commitment_v1(&root, "dataset", &committed, 2, 6).expect("io");
+        let third = scrub_tree_commitment_v1(&root, "dataset", &committed, 2, 6, &|path| {
+            std::fs::File::open(path)
+        })
+        .expect("io");
         assert_eq!(
             third,
             TreeScrubStepV1 {
@@ -1588,8 +1885,10 @@ mod tree_commitment_tests {
             }
         );
         // One unbounded step reads exactly the committed bytes, once.
-        let whole =
-            scrub_tree_commitment_v1(&root, "dataset", &committed, 0, u64::MAX).expect("io");
+        let whole = scrub_tree_commitment_v1(&root, "dataset", &committed, 0, u64::MAX, &|path| {
+            std::fs::File::open(path)
+        })
+        .expect("io");
         assert_eq!(
             whole,
             TreeScrubStepV1 {
@@ -1599,8 +1898,18 @@ mod tree_commitment_tests {
             }
         );
         // A cursor beyond the list is a caller defect, not a completed scrub.
-        assert!(scrub_tree_commitment_v1(&root, "dataset", &committed, 3, u64::MAX).is_err());
-        assert!(scrub_tree_commitment_v1(&root, "dataset", &committed, 4, u64::MAX).is_err());
+        assert!(
+            scrub_tree_commitment_v1(&root, "dataset", &committed, 3, u64::MAX, &|path| {
+                std::fs::File::open(path)
+            },)
+            .is_err()
+        );
+        assert!(
+            scrub_tree_commitment_v1(&root, "dataset", &committed, 4, u64::MAX, &|path| {
+                std::fs::File::open(path)
+            },)
+            .is_err()
+        );
     }
 
     /// A delta tree inherits the digest of every file that is still the
@@ -1621,9 +1930,13 @@ mod tree_commitment_tests {
         std::fs::write(delta.join("_versions/1.manifest"), b"bravo!").expect("copy");
         write(&delta, "data/2.lance", b"charlie");
 
-        let commitment =
-            commit_tree_inheriting_v1(&delta, "dataset", Some((&base, &base_commitment)))
-                .expect("commit delta");
+        let commitment = commit_tree_inheriting_v1(
+            &delta,
+            "dataset",
+            Some((&base, &base_commitment)),
+            &|path| std::fs::File::open(path),
+        )
+        .expect("commit delta");
         assert_eq!(commitment.inherited_files, 1);
         assert_eq!(commitment.inherited_bytes, 5);
         assert_eq!(commitment.hashed_bytes, 6 + 7);
@@ -1645,15 +1958,21 @@ mod tree_commitment_tests {
                 .map(|artifact| artifact.sha256)
         );
         // Without a base, everything is hashed and nothing is inherited.
-        let fresh = commit_tree_inheriting_v1(&delta, "dataset", None).expect("commit fresh");
+        let fresh =
+            commit_tree_inheriting_v1(&delta, "dataset", None, &|path| std::fs::File::open(path))
+                .expect("commit fresh");
         assert_eq!(fresh.inherited_files, 0);
         assert_eq!(fresh.hashed_bytes, 18);
         assert_eq!(fresh.artifacts, commitment.artifacts);
         // A base file that vanished since is not inherited either.
         std::fs::remove_file(base.join("data/1.lance")).expect("remove base file");
-        let orphaned =
-            commit_tree_inheriting_v1(&delta, "dataset", Some((&base, &base_commitment)))
-                .expect("commit with a vanished base file");
+        let orphaned = commit_tree_inheriting_v1(
+            &delta,
+            "dataset",
+            Some((&base, &base_commitment)),
+            &|path| std::fs::File::open(path),
+        )
+        .expect("commit with a vanished base file");
         assert_eq!(orphaned.inherited_files, 0);
         assert_eq!(orphaned.artifacts, commitment.artifacts);
     }

@@ -1,4 +1,5 @@
 use std::env;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,10 +33,10 @@ use super::{
     PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE, STAGING_DIR_NAME,
     StreamScopeAuthorityV1, build_stream, build_stream_reported,
     build_stream_reported_with_diagnostic, column_as, ensure_generation_contract, failpoint,
-    open_connection, persist_generation_contract, recover_dataset_artifacts,
-    stage_generation_contract,
+    open_connection, persist_generation_contract, stage_generation_contract,
 };
 use crate::budget::{DenseLaneBudgetV1, DenseLaneTalliesV1};
+use crate::dataset_promotion::DatasetPromotion;
 use crate::durable_write::{set_atomic_write_fail_before_rename_action, write_atomic};
 use crate::generation_contract::GenerationContract;
 use crate::integrity::SealTalliesV1;
@@ -580,7 +581,7 @@ fn assert_recovered_promotion_state(
 
     let loaded = crate::run_blocking(
         &runtime,
-        open_generation(root, &repo_id(), &revision_id(), generation),
+        open_generation(root, &repo_id(), &revision_id(), generation, None),
     )?;
     let symbol_hits = crate::run_blocking(
         &runtime,
@@ -633,7 +634,7 @@ fn atomic_sidecar_write_persists_payload_without_staging_residue() -> TestResult
     let temp = tempdir()?;
     let target = temp.path().join("manifest.cbor");
 
-    write_atomic(&target, b"durable-manifest", "test durable manifest")?;
+    let _output = write_atomic(&target, b"durable-manifest", "test durable manifest", None)?;
 
     assert_eq!(std::fs::read(&target)?, b"durable-manifest");
     assert!(atomic_temporary_paths(temp.path(), &target)?.is_empty());
@@ -647,7 +648,7 @@ fn atomic_sidecar_write_cleans_staging_on_pre_rename_failure() -> TestResult {
     let temp = tempdir()?;
     let target = temp.path().join("manifest.cbor");
     set_atomic_write_fail_before_rename_action(Some(ACTION));
-    let result = write_atomic(&target, b"must-not-promote", ACTION);
+    let result = write_atomic(&target, b"must-not-promote", ACTION, None);
     set_atomic_write_fail_before_rename_action(None);
 
     assert!(result.is_err());
@@ -793,6 +794,7 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
     let symbol_contract = ensure_generation_contract(
         &generation_dir,
         &SemanticIngestHeaderV1::of_batch(&symbol_batch),
+        None,
     )?;
     assert_eq!(symbol_contract.required_corpora, vec!["SymbolCard"]);
     assert!(!layout::build_contract_path(&generation_dir).exists());
@@ -813,6 +815,7 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
     let merged_contract = ensure_generation_contract(
         &generation_dir,
         &SemanticIngestHeaderV1::of_batch(&module_batch),
+        None,
     )?;
     assert_eq!(
         merged_contract.required_corpora,
@@ -832,6 +835,7 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
     let sealed_contract = ensure_generation_contract(
         &generation_dir,
         &SemanticIngestHeaderV1::of_batch(&seal_batch),
+        None,
     )?;
     assert_eq!(
         sealed_contract.required_corpora,
@@ -848,9 +852,6 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
 
 #[test]
 fn generation_contract_recovery_distinguishes_pre_and_post_dataset_promotion() -> TestResult {
-    let temp = tempdir()?;
-    let generation_dir = temp.path().join("generation");
-    std::fs::create_dir_all(layout::dataset_dir(&generation_dir))?;
     let generation = ManifestGeneration::new(49);
     let mut symbol_batch = batch(
         generation,
@@ -863,31 +864,149 @@ fn generation_contract_recovery_distinguishes_pre_and_post_dataset_promotion() -
     symbol_batch.corpus_policy_digest = Some("semantic-source.v1".to_string());
     let symbol_contract =
         GenerationContract::from_batch(&SemanticIngestHeaderV1::of_batch(&symbol_batch).contract);
-    persist_generation_contract(&generation_dir, &symbol_contract)?;
-
     let mut module_batch = symbol_batch;
     module_batch.required_corpora = vec![SemanticCorpusKindV1::ModuleCard];
     let merged_contract =
         symbol_contract.merge_batch(&SemanticIngestHeaderV1::of_batch(&module_batch).contract)?;
-    let staged_path = stage_generation_contract(&generation_dir, &merged_contract)?;
-    recover_dataset_artifacts(&generation_dir)?;
-    assert!(!staged_path.exists());
-    let pre_promotion_recovered = GenerationContract::decode(&std::fs::read(
-        layout::build_contract_path(&generation_dir),
-    )?)?;
-    assert_eq!(pre_promotion_recovered.required_corpora, vec!["SymbolCard"]);
 
-    let staged_path = stage_generation_contract(&generation_dir, &merged_contract)?;
-    std::fs::create_dir_all(generation_dir.join(BACKUP_DIR_NAME))?;
-    recover_dataset_artifacts(&generation_dir)?;
-    assert!(!staged_path.exists());
-    assert!(!generation_dir.join(BACKUP_DIR_NAME).exists());
-    let post_promotion_recovered = GenerationContract::decode(&std::fs::read(
-        layout::build_contract_path(&generation_dir),
-    )?)?;
+    for (boundary, expected_payload, expected_corpora) in [
+        (
+            PRE_DATASET_PROMOTION,
+            b"old-dataset".as_slice(),
+            vec!["SymbolCard"],
+        ),
+        (
+            POST_DATASET_PRE_CONTRACT_PROMOTION,
+            b"new-dataset".as_slice(),
+            vec!["ModuleCard", "SymbolCard"],
+        ),
+    ] {
+        let temp = tempdir()?;
+        let generation_dir = temp.path().join("generation");
+        let dataset = layout::dataset_dir(&generation_dir);
+        let staging = generation_dir.join(STAGING_DIR_NAME);
+        std::fs::create_dir_all(&dataset)?;
+        std::fs::create_dir_all(&staging)?;
+        std::fs::write(dataset.join("rows"), b"old-dataset")?;
+        std::fs::write(staging.join("rows"), b"new-dataset")?;
+        persist_generation_contract(&generation_dir, &symbol_contract)?;
+        let staged_contract = stage_generation_contract(&generation_dir, &merged_contract, None)?;
+        let promotion = DatasetPromotion::begin(&generation_dir, &staged_contract, None)?;
+        if boundary == POST_DATASET_PRE_CONTRACT_PROMOTION {
+            promotion.promote_dataset()?;
+        }
+        drop(promotion);
+        drop(staged_contract);
+
+        DatasetPromotion::recover(&generation_dir)?;
+        assert_eq!(std::fs::read(dataset.join("rows"))?, expected_payload);
+        assert!(!staging.exists(), "{boundary}: stale staging dataset");
+        assert!(
+            !generation_dir.join(BACKUP_DIR_NAME).exists(),
+            "{boundary}: stale backup dataset"
+        );
+        assert!(
+            !layout::build_contract_path(&generation_dir)
+                .with_extension("next")
+                .exists(),
+            "{boundary}: staged contract remains"
+        );
+        let recovered = GenerationContract::decode(&std::fs::read(layout::build_contract_path(
+            &generation_dir,
+        ))?)?;
+        assert_eq!(recovered.required_corpora, expected_corpora, "{boundary}");
+    }
+    Ok(())
+}
+
+#[test]
+fn post_contract_rename_recovery_keeps_new_dataset_when_contract_bytes_match_old() -> TestResult {
+    let temp = tempdir()?;
+    let generation_dir = temp.path().join("generation");
+    let dataset = layout::dataset_dir(&generation_dir);
+    let staging = generation_dir.join(STAGING_DIR_NAME);
+    std::fs::create_dir_all(&dataset)?;
+    std::fs::create_dir_all(&staging)?;
+    std::fs::write(dataset.join("rows"), b"old-dataset")?;
+    std::fs::write(staging.join("rows"), b"new-dataset")?;
+    let mut symbol_batch = batch(
+        ManifestGeneration::new(50),
+        "src/recovery.rs",
+        "symbol-a",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
+    symbol_batch.required_corpora = vec![SemanticCorpusKindV1::SymbolCard];
+    symbol_batch.corpus_policy_digest = Some("semantic-source.v1".to_string());
+    let contract =
+        GenerationContract::from_batch(&SemanticIngestHeaderV1::of_batch(&symbol_batch).contract);
+    let contract_path = layout::build_contract_path(&generation_dir);
+    persist_generation_contract(&generation_dir, &contract)?;
+    let old_bytes = std::fs::read(&contract_path)?;
+    let old_metadata = std::fs::symlink_metadata(&contract_path)?;
+    assert!(old_metadata.file_type().is_file());
+    let old_identity = (old_metadata.dev(), old_metadata.ino());
+    let mut staged_contract = stage_generation_contract(&generation_dir, &contract, None)?;
+    assert_eq!(std::fs::read(staged_contract.path())?, old_bytes);
+    let staged_metadata = std::fs::symlink_metadata(staged_contract.path())?;
+    assert!(staged_metadata.file_type().is_file());
+    let staged_identity = (staged_metadata.dev(), staged_metadata.ino());
+    assert_ne!(staged_identity.1, old_identity.1);
+    let promotion = DatasetPromotion::begin(&generation_dir, &staged_contract, None)?;
+    promotion.promote_dataset()?;
+    staged_contract.rename_to(&contract_path, "promote identical generation contract")?;
+    let committed_metadata = std::fs::symlink_metadata(&contract_path)?;
+    assert!(committed_metadata.file_type().is_file());
     assert_eq!(
-        post_promotion_recovered.required_corpora,
-        vec!["ModuleCard", "SymbolCard"]
+        (committed_metadata.dev(), committed_metadata.ino()),
+        staged_identity
+    );
+    assert_ne!(committed_metadata.ino(), old_identity.1);
+    drop(promotion);
+    drop(staged_contract);
+
+    DatasetPromotion::recover(&generation_dir)?;
+    assert_eq!(std::fs::read(dataset.join("rows"))?, b"new-dataset");
+    assert_eq!(std::fs::read(&contract_path)?, old_bytes);
+    let recovered_metadata = std::fs::symlink_metadata(&contract_path)?;
+    assert!(recovered_metadata.file_type().is_file());
+    assert_eq!(
+        (recovered_metadata.dev(), recovered_metadata.ino()),
+        staged_identity
+    );
+    assert!(!generation_dir.join(BACKUP_DIR_NAME).exists());
+    Ok(())
+}
+
+#[test]
+fn legacy_ambiguous_dataset_and_backup_without_intent_refuses_without_deletion() -> TestResult {
+    let temp = tempdir()?;
+    let generation_dir = temp.path().join("generation");
+    let dataset = layout::dataset_dir(&generation_dir);
+    let backup = generation_dir.join(BACKUP_DIR_NAME);
+    std::fs::create_dir_all(&dataset)?;
+    std::fs::create_dir_all(&backup)?;
+    std::fs::write(dataset.join("rows"), b"partial-new")?;
+    std::fs::write(backup.join("rows"), b"intact-old")?;
+    let mut old_batch = batch(
+        ManifestGeneration::new(51),
+        "src/recovery.rs",
+        "symbol-a",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
+    old_batch.required_corpora = vec![SemanticCorpusKindV1::SymbolCard];
+    old_batch.corpus_policy_digest = Some("semantic-source.v1".to_string());
+    let old_contract =
+        GenerationContract::from_batch(&SemanticIngestHeaderV1::of_batch(&old_batch).contract);
+    persist_generation_contract(&generation_dir, &old_contract)?;
+    let old_contract_bytes = std::fs::read(layout::build_contract_path(&generation_dir))?;
+    assert!(DatasetPromotion::recover(&generation_dir).is_err());
+    assert_eq!(std::fs::read(dataset.join("rows"))?, b"partial-new");
+    assert_eq!(std::fs::read(backup.join("rows"))?, b"intact-old");
+    assert_eq!(
+        std::fs::read(layout::build_contract_path(&generation_dir))?,
+        old_contract_bytes
     );
     Ok(())
 }
@@ -998,7 +1117,7 @@ fn failed_contract_promotion_rolls_back_dataset_and_policy() -> TestResult {
     build(&runtime, &root, &seal_batch)?;
     let loaded = crate::run_blocking(
         &runtime,
-        open_generation(&root, &repo_id(), &revision_id(), generation),
+        open_generation(&root, &repo_id(), &revision_id(), generation, None),
     )?;
     let module_hits = crate::run_blocking(
         &runtime,
@@ -1069,7 +1188,7 @@ fn failed_append_does_not_delete_prior_rows() -> TestResult {
 
     let loaded = crate::run_blocking(
         &runtime,
-        open_generation(&root, &repo_id(), &revision_id(), generation),
+        open_generation(&root, &repo_id(), &revision_id(), generation, None),
     )?;
     let hits = crate::run_blocking(
         &runtime,
@@ -1269,7 +1388,7 @@ fn scv2_02_same_path_delete_one_owner_keeps_other() -> TestResult {
     build(&runtime, &root, &delete_one)?;
     let loaded = crate::run_blocking(
         &runtime,
-        open_generation(&root, &repo_id(), &revision_id(), generation),
+        open_generation(&root, &repo_id(), &revision_id(), generation, None),
     )?;
     let removed = crate::run_blocking(
         &runtime,
@@ -1375,7 +1494,7 @@ fn clear_symbol_surface_removes_exact_and_fallback_rows_only_v1() -> TestResult 
 
     let loaded = crate::run_blocking(
         &runtime,
-        open_generation(&root, &repo_id(), &revision_id(), generation),
+        open_generation(&root, &repo_id(), &revision_id(), generation, None),
     )?;
     let exact_symbol = crate::run_blocking(
         &runtime,
@@ -1505,6 +1624,7 @@ fn scv2_02_missing_required_corpus_fails_seal() -> TestResult {
         | CoreError::Typed { .. }
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
+        | CoreError::StorageIo { .. }
         | CoreError::NotFound(_)) => {
             panic!("expected storage error for missing required corpus, got {other:?}")
         }
@@ -1568,7 +1688,7 @@ fn scv2_02_filtered_search_excludes_other_corpora() -> TestResult {
     build(&runtime, &root, &batch)?;
     let loaded = crate::run_blocking(
         &runtime,
-        open_generation(&root, &repo_id(), &revision_id(), generation),
+        open_generation(&root, &repo_id(), &revision_id(), generation, None),
     )?;
     let symbol_hits = crate::run_blocking(
         &runtime,
@@ -1785,7 +1905,13 @@ fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestRes
     assert!(
         crate::run_blocking(
             &runtime,
-            open_generation(&root, &repo_id(), &revision_id(), replacement_generation,),
+            open_generation(
+                &root,
+                &repo_id(),
+                &revision_id(),
+                replacement_generation,
+                None
+            ),
         )
         .is_err(),
         "cold open must reject a membership row deleted after seal"
@@ -1801,7 +1927,7 @@ fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestRes
     assert!(
         crate::run_blocking(
             &runtime,
-            open_generation(&root, &repo_id(), &revision_id(), base_generation,),
+            open_generation(&root, &repo_id(), &revision_id(), base_generation, None),
         )
         .is_err(),
         "cold open must reject a deleted membership sidecar table"
@@ -1853,7 +1979,7 @@ fn sealed_manifest_rejects_same_row_count_content_mutation() -> TestResult {
 
     let Err(error) = crate::run_blocking(
         &runtime,
-        open_generation(&root, &repo_id(), &revision_id(), generation),
+        open_generation(&root, &repo_id(), &revision_id(), generation, None),
     ) else {
         return Err("same-row-count content mutation must fail closed".into());
     };
@@ -2139,7 +2265,13 @@ fn streamed_windows_stay_bounded_and_seal_to_the_all_at_once_manifest() -> TestR
     // Every row is served from the streamed generation.
     let loaded = crate::run_blocking(
         &runtime,
-        open_generation(streamed_root.path(), &repo_id(), &revision_id(), generation),
+        open_generation(
+            streamed_root.path(),
+            &repo_id(),
+            &revision_id(),
+            generation,
+            None,
+        ),
     )?;
     let hits = crate::run_blocking(
         &runtime,
@@ -2246,7 +2378,7 @@ fn a_refused_third_window_seals_nothing_and_leaves_no_partial_rows() -> TestResu
     assert!(!generation_dir.join(STAGING_DIR_NAME).exists());
     let loaded = crate::run_blocking(
         &runtime,
-        open_generation(&root, &repo_id(), &revision_id(), generation),
+        open_generation(&root, &repo_id(), &revision_id(), generation, None),
     )?;
     let hits = crate::run_blocking(
         &runtime,
@@ -2358,6 +2490,7 @@ fn semantic_trace_retains_completed_window_counters_on_later_source_error() -> T
         &header,
         &mut source,
         &SealTalliesV1::default(),
+        None,
         Some(&diagnostic),
     );
     assert!(

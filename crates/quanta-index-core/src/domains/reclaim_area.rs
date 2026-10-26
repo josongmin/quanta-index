@@ -208,19 +208,88 @@ fn remove_tree_at(parent: &File, name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
-fn tree_bytes_at(
+/// Metadata for one regular file encountered by a descriptor-anchored walk.
+/// Hard links are emitted for every path; the consumer owns deduplication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegularFileInodeV1 {
+    pub device: u64,
+    pub inode: u64,
+    pub bytes: u64,
+}
+
+enum InodeWalkError {
+    Io(io::Error),
+    Visitor(CoreError),
+}
+
+impl From<io::Error> for InodeWalkError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl InodeWalkError {
+    fn into_io(self) -> io::Error {
+        match self {
+            Self::Io(error) => error,
+            Self::Visitor(error) => io::Error::other(error),
+        }
+    }
+}
+
+fn regular_file_inode(metadata: &Stat) -> io::Result<RegularFileInodeV1> {
+    let (device, inode) = inode_key(metadata)?;
+    let bytes = u64::try_from(metadata.st_size).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid file size {}: {error}", metadata.st_size),
+        )
+    })?;
+    Ok(RegularFileInodeV1 {
+        device,
+        inode,
+        bytes,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct WalkEnvelope {
+    max_pending_frames: usize,
+    max_components: usize,
+}
+
+const PHYSICAL_CENSUS_ENVELOPE: WalkEnvelope = WalkEnvelope {
+    max_pending_frames: 4096,
+    max_components: 64,
+};
+
+#[derive(Clone, Copy)]
+struct InodeWalkGuardrails<'a> {
+    budget: Option<&'a RequestBudgetV1>,
+    envelope: Option<WalkEnvelope>,
+}
+
+fn physical_walk_exhausted(what: &str) -> InodeWalkError {
+    InodeWalkError::Visitor(CoreError::Typed {
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+        message: format!("physical inode census {what} exceeds bounded traversal envelope"),
+    })
+}
+
+fn walk_regular_inode_tree_at(
     parent: &File,
     name: &OsStr,
-    seen: &mut BTreeSet<(u64, u64)>,
+    expected_root: Option<(u64, u64)>,
     skip: &dyn Fn(&str) -> bool,
-    budget: Option<&RequestBudgetV1>,
+    guardrails: InodeWalkGuardrails<'_>,
     mut census: Option<&mut DiagnosticInodeCensusV1>,
-) -> io::Result<u64> {
-    let checkpoint = || -> io::Result<()> {
-        if let Some(budget) = budget {
+    visitor: &mut dyn FnMut(RegularFileInodeV1) -> Result<Option<u64>, InodeWalkError>,
+) -> Result<(), InodeWalkError> {
+    let checkpoint = || -> Result<(), InodeWalkError> {
+        if let Some(budget) = guardrails.budget {
             budget
                 .checkpoint("track-disk-usage:scan")
-                .map_err(io::Error::other)?;
+                .map_err(InodeWalkError::Visitor)?;
         }
         Ok(())
     };
@@ -228,34 +297,37 @@ fn tree_bytes_at(
     let path = Path::new(name);
     let metadata = statat(parent, path, AtFlags::SYMLINK_NOFOLLOW).map_err(io_error)?;
     let file_type = FileType::from_raw_mode(metadata.st_mode);
+    if let Some(expected) = expected_root
+        && (!file_type.is_dir() || inode_key(&metadata)? != expected)
+    {
+        return Err(InodeWalkError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "reclaim root directory changed during traversal",
+        )));
+    }
     if let Some(census) = census.as_deref_mut() {
         census.visit_inode();
     }
     if file_type.is_file() {
-        let unique = seen.insert(inode_key(&metadata)?);
-        let bytes = if unique {
-            u64::try_from(metadata.st_size).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("invalid file size {}: {error}", metadata.st_size),
-                )
-            })?
-        } else {
-            0
-        };
+        let charged = visitor(regular_file_inode(&metadata)?)?;
         if let Some(census) = census.as_deref_mut() {
-            census.visit_file(unique.then_some(bytes));
+            census.visit_file(charged);
         }
-        return Ok(bytes);
+        return Ok(());
     }
     if !file_type.is_dir() {
-        return Ok(0);
+        return Ok(());
     }
-    let mut total = 0_u64;
-    let mut pending = vec![DirectoryFrame {
+    let first_frame = DirectoryFrame {
         components: vec![name.to_os_string()],
         identity: inode_key(&metadata)?,
-    }];
+    };
+    if guardrails.envelope.is_some_and(|envelope| {
+        1 > envelope.max_pending_frames || first_frame.components.len() > envelope.max_components
+    }) {
+        return Err(physical_walk_exhausted("initial directory"));
+    }
+    let mut pending = vec![first_frame];
     while let Some(frame) = pending.pop() {
         checkpoint()?;
         let directory = open_frame_directory(parent, &frame)?;
@@ -270,13 +342,21 @@ fn tree_bytes_at(
             {
                 Ok(stat) => stat,
                 Err(error) if error == rustix::io::Errno::NOENT => continue,
-                Err(error) => return Err(io_error(error)),
+                Err(error) => return Err(InodeWalkError::Io(io_error(error))),
             };
             let child_type = FileType::from_raw_mode(child_stat.st_mode);
             if let Some(census) = census.as_deref_mut() {
                 census.visit_inode();
             }
             if child_type.is_dir() {
+                if let Some(envelope) = guardrails.envelope {
+                    if frame.components.len() >= envelope.max_components {
+                        return Err(physical_walk_exhausted("directory depth"));
+                    }
+                    if pending.len() >= envelope.max_pending_frames {
+                        return Err(physical_walk_exhausted("pending directory count"));
+                    }
+                }
                 let mut components = frame.components.clone();
                 components.push(child);
                 pending.push(DirectoryFrame {
@@ -284,25 +364,212 @@ fn tree_bytes_at(
                     identity: inode_key(&child_stat)?,
                 });
             } else if child_type.is_file() {
-                let unique = seen.insert(inode_key(&child_stat)?);
-                let bytes = if unique {
-                    u64::try_from(child_stat.st_size).map_err(|error| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("invalid file size {}: {error}", child_stat.st_size),
-                        )
-                    })?
-                } else {
-                    0
-                };
+                let charged = visitor(regular_file_inode(&child_stat)?)?;
                 if let Some(census) = census.as_deref_mut() {
-                    census.visit_file(unique.then_some(bytes));
+                    census.visit_file(charged);
                 }
-                total = total.saturating_add(bytes);
             }
         }
     }
+    Ok(())
+}
+
+/// Stream every regular-file path in a pinned track, including reclaim files.
+///
+/// The visitor returns the newly charged byte width for diagnostic counters,
+/// or `None` for an already-seen hard link. The caller owns exact inode
+/// deduplication and must not publish partial totals after an error.
+pub fn visit_regular_inode_tree_in_track(
+    track_root: &Path,
+    skip: &dyn Fn(&str) -> bool,
+    budget: &RequestBudgetV1,
+    diagnostic: Option<&DiagnosticContextV1>,
+    visitor: &mut dyn FnMut(RegularFileInodeV1) -> Result<Option<u64>, CoreError>,
+) -> Result<bool, CoreError> {
+    let mut census = DiagnosticInodeCensusV1::new(diagnostic);
+    let result = (|| {
+        budget.checkpoint("track-disk-usage:entry")?;
+        let track = match open(track_root, DIRECTORY_FLAGS, Mode::empty()) {
+            Ok(track) => File::from(track),
+            Err(error) if error == rustix::io::Errno::NOENT => {
+                budget.checkpoint("track-disk-usage:complete")?;
+                return Ok(false);
+            }
+            Err(error) => return Err(storage("open track root", track_root, &io_error(error))),
+        };
+        let metadata = fstat(&track)
+            .map_err(|error| storage("stat track root", track_root, &io_error(error)))?;
+        let identity =
+            inode_key(&metadata).map_err(|error| storage("stat track root", track_root, &error))?;
+        let mut forward = |file| visitor(file).map_err(InodeWalkError::Visitor);
+        match walk_regular_inode_tree_at(
+            &track,
+            OsStr::new("."),
+            Some(identity),
+            skip,
+            InodeWalkGuardrails {
+                budget: Some(budget),
+                envelope: Some(PHYSICAL_CENSUS_ENVELOPE),
+            },
+            census.as_mut(),
+            &mut forward,
+        ) {
+            Ok(()) => {}
+            Err(InodeWalkError::Io(error)) => {
+                return Err(storage("visit track root", track_root, &error));
+            }
+            Err(InodeWalkError::Visitor(error)) => return Err(error),
+        }
+        budget.checkpoint("track-disk-usage:complete")?;
+        Ok(true)
+    })();
+    if let Some(census) = census.take() {
+        census.finish(result.is_ok());
+    }
+    result
+}
+
+fn tree_bytes_at(
+    parent: &File,
+    name: &OsStr,
+    seen: &mut BTreeSet<(u64, u64)>,
+    skip: &dyn Fn(&str) -> bool,
+    budget: Option<&RequestBudgetV1>,
+    census: Option<&mut DiagnosticInodeCensusV1>,
+) -> io::Result<u64> {
+    let mut total = 0_u64;
+    let mut count_unique = |file: RegularFileInodeV1| {
+        if !seen.insert((file.device, file.inode)) {
+            return Ok(None);
+        }
+        total = total.checked_add(file.bytes).ok_or_else(|| {
+            InodeWalkError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "reclaim inode byte total overflow",
+            ))
+        })?;
+        Ok(Some(file.bytes))
+    };
+    walk_regular_inode_tree_at(
+        parent,
+        name,
+        None,
+        skip,
+        InodeWalkGuardrails {
+            budget,
+            envelope: None,
+        },
+        census,
+        &mut count_unique,
+    )
+    .map_err(InodeWalkError::into_io)?;
     Ok(total)
+}
+
+/// Visit regular-file inode metadata below one family or generation directory.
+///
+/// The path must be one or two normal components below `track_root`. A missing
+/// track, family, or generation returns `false`; an existing non-directory or
+/// substituted symlink refuses. The walk uses descriptor-relative no-follow
+/// opens and rechecks directory identities. Hard links are emitted once per
+/// path, so callers must deduplicate `(device, inode)` and stage visitor state
+/// until the whole walk succeeds.
+pub fn visit_regular_inode_tree_below_track(
+    track_root: &Path,
+    path: &Path,
+    skip: &dyn Fn(&str) -> bool,
+    diagnostic: Option<&DiagnosticContextV1>,
+    visitor: &mut dyn FnMut(RegularFileInodeV1) -> Result<(), CoreError>,
+) -> Result<bool, CoreError> {
+    visit_regular_inode_tree_below_track_inner(track_root, path, skip, None, diagnostic, visitor)
+}
+
+/// Visit one retained generation under a service-owned deadline. The visitor
+/// must stage its writes until the entire scan succeeds.
+pub fn visit_regular_inode_tree_below_track_with_budget(
+    track_root: &Path,
+    path: &Path,
+    skip: &dyn Fn(&str) -> bool,
+    budget: &RequestBudgetV1,
+    diagnostic: Option<&DiagnosticContextV1>,
+    visitor: &mut dyn FnMut(RegularFileInodeV1) -> Result<(), CoreError>,
+) -> Result<bool, CoreError> {
+    visit_regular_inode_tree_below_track_inner(
+        track_root,
+        path,
+        skip,
+        Some(budget),
+        diagnostic,
+        visitor,
+    )
+}
+
+fn visit_regular_inode_tree_below_track_inner(
+    track_root: &Path,
+    path: &Path,
+    skip: &dyn Fn(&str) -> bool,
+    budget: Option<&RequestBudgetV1>,
+    diagnostic: Option<&DiagnosticContextV1>,
+    visitor: &mut dyn FnMut(RegularFileInodeV1) -> Result<(), CoreError>,
+) -> Result<bool, CoreError> {
+    let mut census = DiagnosticInodeCensusV1::new(diagnostic);
+    let result = (|| {
+        if let Some(budget) = budget {
+            budget.checkpoint("retention-inode-census:entry")?;
+        }
+        let _names = source_names(track_root, path)?;
+        let track = match open(track_root, DIRECTORY_FLAGS, Mode::empty()) {
+            Ok(track) => File::from(track),
+            Err(error) if error == rustix::io::Errno::NOENT => return Ok(false),
+            Err(error) => return Err(storage("open track root", track_root, &io_error(error))),
+        };
+        let Some((parent, name)) = source_parent_at_if_present(track_root, path, &track)? else {
+            return Ok(false);
+        };
+        let metadata = match statat(&parent, Path::new(&name), AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(metadata) => metadata,
+            Err(error) if error == rustix::io::Errno::NOENT => return Ok(false),
+            Err(error) => return Err(storage("inspect generation", path, &io_error(error))),
+        };
+        if !FileType::from_raw_mode(metadata.st_mode).is_dir() {
+            return Err(CoreError::Storage(format!(
+                "reclaim: generation {} is not a directory",
+                path.display()
+            )));
+        }
+        let mut forward = |file| {
+            visitor(file).map_err(InodeWalkError::Visitor)?;
+            Ok(None)
+        };
+        match walk_regular_inode_tree_at(
+            &parent,
+            &name,
+            Some(
+                inode_key(&metadata)
+                    .map_err(|error| storage("inspect generation", path, &error))?,
+            ),
+            skip,
+            InodeWalkGuardrails {
+                budget,
+                envelope: budget.map(|_| PHYSICAL_CENSUS_ENVELOPE),
+            },
+            census.as_mut(),
+            &mut forward,
+        ) {
+            Ok(()) => {
+                if let Some(budget) = budget {
+                    budget.checkpoint("retention-inode-census:complete")?;
+                }
+                Ok(true)
+            }
+            Err(InodeWalkError::Io(error)) => Err(storage("visit inode tree", path, &error)),
+            Err(InodeWalkError::Visitor(error)) => Err(error),
+        }
+    })();
+    if let Some(census) = census.take() {
+        census.finish(result.is_ok());
+    }
+    result
 }
 
 /// Measure a family or generation below a track root without following a
@@ -402,7 +669,9 @@ pub fn unique_inode_tree_bytes_for_roots_below_track(
                 return Err(storage("measure tree", root, &error));
             }
         };
-        total = total.saturating_add(bytes);
+        total = total.checked_add(bytes).ok_or_else(|| {
+            CoreError::InvalidContract("reclaim generation byte total overflow".into())
+        })?;
         present.push(true);
     }
     if let Some(census) = census.take() {
@@ -662,6 +931,7 @@ pub fn finish_interrupted_reclaims(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::BTreeSet;
     use std::io;
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
@@ -672,13 +942,254 @@ mod tests {
     use crate::{CoreError, RequestBudgetV1};
 
     use super::{
-        FinishedReclaims, finish_interrupted_reclaims, reclaim_area, reclaim_directory,
+        FinishedReclaims, InodeWalkError, InodeWalkGuardrails, WalkEnvelope,
+        finish_interrupted_reclaims, reclaim_area, reclaim_directory,
         reclaim_directory_removing_with, reclaim_quarantined_directory,
         unique_inode_tree_bytes_below_track, unique_inode_tree_bytes_for_roots_below_track,
-        unique_inode_tree_bytes_in_track,
+        unique_inode_tree_bytes_in_track, visit_regular_inode_tree_below_track,
+        visit_regular_inode_tree_below_track_with_budget, visit_regular_inode_tree_in_track,
+        walk_regular_inode_tree_at,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    // Preserve single evaluation and borrowed operands while reporting test failures as errors.
+    macro_rules! check {
+        ($condition:expr $(,)?) => {{
+            if !$condition {
+                return Err(format!("assertion failed: {}", stringify!($condition)).into());
+            }
+        }};
+    }
+    macro_rules! check_eq {
+        ($left:expr, $right:expr $(,)?) => {{
+            match (&$left, &$right) {
+                (left, right) => {
+                    if left != right {
+                        return Err(format!(
+                            "assertion failed: {} == {}; left: {left:?}, right: {right:?}",
+                            stringify!($left),
+                            stringify!($right)
+                        )
+                        .into());
+                    }
+                }
+            }
+        }};
+    }
+
+    #[test]
+    fn retained_generation_walk_stops_after_cancellation_without_successful_partial_scan()
+    -> TestResult {
+        let root = tempfile::tempdir()?;
+        let generation = root.path().join("family/g1");
+        std::fs::create_dir_all(&generation)?;
+        std::fs::write(generation.join("one"), b"12345")?;
+        std::fs::write(generation.join("two"), b"1234567")?;
+        let budget = RequestBudgetV1::unbounded();
+        let mut visited = 0_u64;
+        let refusal = visit_regular_inode_tree_below_track_with_budget(
+            root.path(),
+            &generation,
+            &|_| false,
+            &budget,
+            None,
+            &mut |_file| {
+                visited = visited.saturating_add(1);
+                budget.cancel_handle().cancel();
+                Ok(())
+            },
+        );
+        check_eq!(visited, 1);
+        check!(matches!(
+            refusal,
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled,
+                ..
+            })
+        ));
+        let mut widths = Vec::new();
+        check!(visit_regular_inode_tree_below_track_with_budget(
+            root.path(),
+            &generation,
+            &|_| false,
+            &RequestBudgetV1::unbounded(),
+            None,
+            &mut |file| {
+                widths.push(file.bytes);
+                Ok(())
+            },
+        )?);
+        widths.sort_unstable();
+        check_eq!(widths, [5, 7]);
+        Ok(())
+    }
+
+    #[test]
+    fn whole_track_visitor_streams_hardlinks_and_preserves_typed_failure() -> TestResult {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir_all(root.path().join("family/g1"))?;
+        std::fs::create_dir(root.path().join(".reclaim"))?;
+        std::fs::write(root.path().join("family/g1/shared"), b"12345")?;
+        std::fs::hard_link(
+            root.path().join("family/g1/shared"),
+            root.path().join(".reclaim/alias"),
+        )?;
+        std::fs::write(root.path().join("family/g1/private"), b"1234567")?;
+        let mut widths = Vec::new();
+        let present = visit_regular_inode_tree_in_track(
+            root.path(),
+            &|_| false,
+            &RequestBudgetV1::unbounded(),
+            None,
+            &mut |file| {
+                widths.push(file.bytes);
+                Ok(Some(file.bytes))
+            },
+        )?;
+        widths.sort_unstable();
+        check!(present);
+        check_eq!(widths, [5, 5, 7]);
+
+        let refused = visit_regular_inode_tree_in_track(
+            root.path(),
+            &|_| false,
+            &RequestBudgetV1::unbounded(),
+            None,
+            &mut |_file| {
+                Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                message: "fixed visitor refusal".into(),
+            })
+            },
+        );
+        check!(matches!(
+            refused,
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                message,
+            }) if message == "fixed visitor refusal"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn whole_track_visitor_reports_absence_and_preserves_cancel() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let absent = root.path().join("absent");
+        let mut calls = 0_u64;
+        check!(!visit_regular_inode_tree_in_track(
+            &absent,
+            &|_| false,
+            &RequestBudgetV1::unbounded(),
+            None,
+            &mut |_file| {
+                calls += 1;
+                Ok(None)
+            },
+        )?);
+        check_eq!(calls, 0);
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(1));
+        budget.cancel_handle().cancel();
+        check!(matches!(
+            visit_regular_inode_tree_in_track(
+                root.path(),
+                &|_| false,
+                &budget,
+                None,
+                &mut |_file| Ok(None),
+            ),
+            Err(CoreError::Typed {
+                code: crate::REQUEST_CANCELLED_CODE,
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn whole_track_visitor_preserves_mid_walk_cancel() -> TestResult {
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("first"), b"1")?;
+        std::fs::write(root.path().join("second"), b"2")?;
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+        let cancel = budget.cancel_handle();
+        let mut visited = 0_u64;
+        let result = visit_regular_inode_tree_in_track(
+            root.path(),
+            &|_| false,
+            &budget,
+            None,
+            &mut |_file| {
+                visited += 1;
+                cancel.cancel();
+                Ok(None)
+            },
+        );
+        check_eq!(visited, 1);
+        check!(matches!(
+            result,
+            Err(CoreError::Typed {
+                code: crate::REQUEST_CANCELLED_CODE,
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn physical_walk_envelope_refuses_directory_only_width_and_depth() -> TestResult {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("left"))?;
+        std::fs::create_dir(root.path().join("right"))?;
+        let opened = std::fs::File::open(root.path())?;
+        let budget = RequestBudgetV1::unbounded();
+        let width = walk_regular_inode_tree_at(
+            &opened,
+            std::ffi::OsStr::new("."),
+            None,
+            &|_| false,
+            InodeWalkGuardrails {
+                budget: Some(&budget),
+                envelope: Some(WalkEnvelope {
+                    max_pending_frames: 1,
+                    max_components: 2,
+                }),
+            },
+            None,
+            &mut |_file| Ok(None),
+        );
+        check!(matches!(
+            width,
+            Err(InodeWalkError::Visitor(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                ..
+            }))
+        ));
+        let depth = walk_regular_inode_tree_at(
+            &opened,
+            std::ffi::OsStr::new("."),
+            None,
+            &|_| false,
+            InodeWalkGuardrails {
+                budget: Some(&budget),
+                envelope: Some(WalkEnvelope {
+                    max_pending_frames: 4,
+                    max_components: 1,
+                }),
+            },
+            None,
+            &mut |_file| Ok(None),
+        );
+        check!(matches!(
+            depth,
+            Err(InodeWalkError::Visitor(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                ..
+            }))
+        ));
+        Ok(())
+    }
 
     #[test]
     fn track_walker_refuses_a_directory_renamed_during_the_scan() -> TestResult {
@@ -982,6 +1493,94 @@ mod tests {
         )? != 7
         {
             return Err("track measurement double-counted the hard link".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inode_visitor_emits_hardlinks_and_preserves_absence() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let generation = generation(root.path(), "family", "g1", b"abc")?;
+        let data = generation.join("payload/data");
+        std::fs::hard_link(&data, generation.join("payload/alias"))?;
+        let mut observed = Vec::new();
+        let present = {
+            let mut collect = |inode| {
+                observed.push(inode);
+                Ok(())
+            };
+            visit_regular_inode_tree_below_track(
+                root.path(),
+                &generation,
+                &|_| false,
+                None,
+                &mut collect,
+            )?
+        };
+        if !present {
+            return Err("present generation was reported absent".into());
+        }
+        if observed.len() != 3 {
+            return Err(format!("expected identity and two hardlink paths: {observed:?}").into());
+        }
+        let unique: BTreeSet<_> = observed
+            .iter()
+            .map(|inode| (inode.device, inode.inode, inode.bytes))
+            .collect();
+        if unique.len() != 2 || !unique.iter().any(|(_, _, bytes)| *bytes == 3) {
+            return Err(format!("hardlink identities changed: {unique:?}").into());
+        }
+        let before_absent = observed.len();
+        let absent = {
+            let mut absent_collect = |inode| {
+                observed.push(inode);
+                Ok(())
+            };
+            visit_regular_inode_tree_below_track(
+                root.path(),
+                &root.path().join("family/g2"),
+                &|_| false,
+                None,
+                &mut absent_collect,
+            )?
+        };
+        if absent || observed.len() != before_absent {
+            return Err("absent generation emitted inode data".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inode_visitor_refuses_symlinks_and_preserves_visitor_error() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let current = generation(root.path(), "family", "g1", b"abc")?;
+        let external = generation(outside.path(), "other", "g2", b"keep")?;
+        std::os::unix::fs::symlink(&external, root.path().join("family/redirect"))?;
+        let mut accept = |_inode| Ok(());
+        if visit_regular_inode_tree_below_track(
+            root.path(),
+            &root.path().join("family/redirect"),
+            &|_| false,
+            None,
+            &mut accept,
+        )
+        .is_ok()
+        {
+            return Err("symlinked generation was accepted".into());
+        }
+        let mut fail = |_inode| Err(CoreError::InvalidContract("visitor sentinel".into()));
+        if !matches!(
+            visit_regular_inode_tree_below_track(
+                root.path(),
+                &current,
+                &|_| false,
+                None,
+                &mut fail,
+            ),
+            Err(CoreError::InvalidContract(message)) if message == "visitor sentinel"
+        ) {
+            return Err("visitor error lost its type or context".into());
         }
         Ok(())
     }

@@ -323,7 +323,7 @@ fn binary_restart_replays_original_operation_and_refuses_conflicting_source_dige
         batch_digest: batch.batch_digest.clone(),
     };
     let socket = daemon_socket_paths(&root)[2].clone();
-    let first_process = SearchdBinaryProcess::start(&root)?;
+    let first_process = SearchdBinaryProcess::start_with_history_max_generations(&root, 8)?;
     let first = receipt_of(
         send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
             &socket,
@@ -350,7 +350,7 @@ fn binary_restart_replays_original_operation_and_refuses_conflicting_source_dige
     }
     drop(catalog);
 
-    let second_process = SearchdBinaryProcess::start(&root)?;
+    let second_process = SearchdBinaryProcess::start_with_history_max_generations(&root, 8)?;
     let replay = receipt_of(
         send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
             &socket,

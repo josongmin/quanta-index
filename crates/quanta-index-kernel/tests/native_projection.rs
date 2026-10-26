@@ -1,4 +1,12 @@
 //! Producer-certified projection intake against real custody, map and catalog.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "test-only synchronous driver executes the Kernel future; production runtime has its own async boundary"
+)]
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "integration assertions are independent behavior oracles inside Result-returning test functions"
+)]
 use futures::executor::block_on;
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::index::{
@@ -36,14 +44,14 @@ const PROJECTION: ProjectionId = ProjectionId([14; 16]);
 const INSTANCE: IndexInstanceId = IndexInstanceId([15; 16]);
 
 fn budget() -> WorkBudget {
-    WorkBudget::new(
+    WorkBudget::with_request(
         WorkLimits {
             reads: 1_000_000,
             writes: 1_000_000,
             bytes: 128 * 1024 * 1024,
             mutations: 1_000_000,
         },
-        Instant::now() + Duration::from_secs(30),
+        quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(30)),
     )
 }
 
@@ -114,11 +122,23 @@ struct ExactOwner;
 impl IndexOwnerBuildPort for ExactOwner {
     type Candidate = Candidate;
 
+    fn resource_demand(&self) -> quanta_index_core::index::effort::ResourceNeed {
+        quanta_index_core::index::effort::ResourceNeed::default()
+    }
+
+    fn validate_instance(
+        &self,
+        _instance: &quanta_index_core::index::InstanceSpec,
+    ) -> Result<(), IndexError> {
+        Ok(())
+    }
+
     fn prepare_owner<'a>(
         &'a self,
         instance: &'a InstanceSpec,
         owner: OwnerKey,
         input: OwnerInputBinding,
+        _prior: Option<OwnerMemberBinding>,
         _: &'a mut AttemptContext<'_>,
     ) -> IndexFuture<'a, Candidate> {
         Box::pin(async move {
@@ -176,23 +196,38 @@ fn setup(
         },
         ExactOwner,
     )?;
-    let services = KernelServices::new(objects.clone(), objects.clone(), catalog.clone());
+    let services = KernelServices::new(
+        objects.clone(),
+        objects.clone(),
+        catalog.clone(),
+        Arc::new(quanta_index_storage::FileScratchSpace::open_standalone(
+            root.join("scratch"),
+            16 * 1024 * 1024 * 1024,
+        )?),
+        Duration::from_secs(30),
+    )?
+    .with_object_map_backend(objects.clone());
     Ok((Kernel::new(services, registry), objects, catalog))
 }
 
 fn published(result: SubmitOutcome) -> TestResult<ViewRef> {
     match result {
         SubmitOutcome::Terminal(OperationStatus::Published(view)) => Ok(view),
-        other => Err(format!("expected publication, got {other:?}").into()),
+        other @ (SubmitOutcome::Accepted(_)
+        | SubmitOutcome::Terminal(_)
+        | SubmitOutcome::Unknown(_)) => Err(format!("expected publication, got {other:?}").into()),
     }
 }
 
 fn current(kernel: &Kernel<SqliteCatalog>) -> TestResult<quanta_index_core::index::CatalogView> {
     Ok(kernel
-        .pin_view(ViewSelection::Latest {
-            workspace: workspace(),
-            epoch: 1,
-        })?
+        .pin_view(
+            ViewSelection::Latest {
+                workspace: workspace(),
+                epoch: 1,
+            },
+            &budget(),
+        )?
         .view()
         .clone())
 }
@@ -205,6 +240,7 @@ fn stage_source(objects: &FileObjectStore, path: &str, bytes: &[u8]) -> TestResu
         path: path.into(),
         bytes: blob,
         byte_len: u64::try_from(bytes.len())?,
+        text: quanta_index_core::index::SourceTextAdmission::Excluded,
     };
     Ok(objects
         .put(&serde_json::to_vec(&record)?, &[blob], &mut budget())?
@@ -330,10 +366,7 @@ fn stage_empty_contribution(objects: &FileObjectStore, stamp: u8) -> TestResult<
         .reference)
 }
 
-fn projection_request(
-    kernel: &Kernel<SqliteCatalog>,
-    catalog: &SqliteCatalog,
-    objects: &FileObjectStore,
+struct ProjectionRequestParams {
     view: ViewRef,
     source: SourceCut,
     prior: Option<ProjectionBinding>,
@@ -342,16 +375,33 @@ fn projection_request(
     schema: SchemaId,
     producer_policy: Digest,
     owners: Vec<OwnerMutation>,
+}
+
+fn projection_request(
+    kernel: &Kernel<SqliteCatalog>,
+    catalog: &SqliteCatalog,
+    objects: &FileObjectStore,
+    params: &ProjectionRequestParams,
 ) -> TestResult<UpdateRequest> {
-    let operation = runtime_operation(operation_sequence);
-    let affected = stage_manifest(kernel, catalog, objects, operation, owners)?;
+    let ProjectionRequestParams {
+        view,
+        source,
+        prior,
+        operation_sequence,
+        event_sequence,
+        schema,
+        producer_policy,
+        owners,
+    } = params;
+    let operation = runtime_operation(*operation_sequence);
+    let affected = stage_manifest(kernel, catalog, objects, operation, owners.clone())?;
     let mut transition = ProjectionTransition {
         projection: PROJECTION,
         producer: RUNTIME_PRODUCER,
-        expected: prior,
-        target_source: source,
-        schema,
-        producer_policy,
+        expected: *prior,
+        target_source: *source,
+        schema: *schema,
+        producer_policy: *producer_policy,
         dependency_context: Digest([25; 32]),
         completeness: ProducerCompleteness::Partial {
             missing: MapRoot(None),
@@ -382,12 +432,12 @@ fn projection_request(
         predecessor: event_sequence
             .checked_sub(1)
             .ok_or("invalid event sequence")?,
-        sequence: event_sequence,
+        sequence: *event_sequence,
         payload: transition.payload_digest()?,
     });
     Ok(UpdateRequest {
         operation,
-        expected_view: view,
+        expected_view: *view,
         kind: UpdateKind::ProjectionAdvance(Box::new(transition)),
     })
 }
@@ -396,7 +446,7 @@ fn projection_binding(objects: &FileObjectStore, root: MapRoot) -> TestResult<Pr
     let mut key = b"projection\0".to_vec();
     key.extend_from_slice(&PROJECTION.0);
     let reference = objects
-        .lookup(root, &key, &mut budget())?
+        .lookup_object(root, &key, &mut budget())?
         .ok_or("projection missing")?;
     let stored = objects.get(reference, &mut budget())?;
     Ok(serde_json::from_slice(&stored.payload)?)
@@ -406,7 +456,7 @@ fn coverage(objects: &FileObjectStore, root: MapRoot) -> TestResult<CoverageBind
     let mut key = b"member\0".to_vec();
     key.extend_from_slice(&INSTANCE.0);
     let reference = objects
-        .lookup(root, &key, &mut budget())?
+        .lookup_object(root, &key, &mut budget())?
         .ok_or("coverage missing")?;
     Ok(serde_json::from_slice(
         &objects.get(reference, &mut budget())?.payload,
@@ -416,7 +466,7 @@ fn coverage(objects: &FileObjectStore, root: MapRoot) -> TestResult<CoverageBind
 fn owner_coverage(objects: &FileObjectStore, root: MapRoot) -> TestResult<OwnerCoverage> {
     let key = quanta_index_core::index::owner_map_key(owner(RUNTIME_PRODUCER, 2));
     let reference = objects
-        .lookup(root, &key, &mut budget())?
+        .lookup_object(root, &key, &mut budget())?
         .ok_or("owner coverage missing")?;
     Ok(serde_json::from_slice(
         &objects.get(reference, &mut budget())?.payload,
@@ -441,19 +491,24 @@ fn projection_event_sequence_is_independent_of_operation_journal_sequence() -> T
         &kernel,
         &catalog,
         &objects,
-        configured,
-        current(&kernel)?.source,
-        None,
-        2,
-        1,
-        SchemaId([23; 16]),
-        Digest([24; 32]),
-        Vec::new(),
+        &ProjectionRequestParams {
+            view: configured,
+            source: current(&kernel)?.source,
+            prior: None,
+            operation_sequence: 2,
+            event_sequence: 1,
+            schema: SchemaId([23; 16]),
+            producer_policy: Digest([24; 32]),
+            owners: Vec::new(),
+        },
     )?;
     request.operation = runtime_operation(2);
     let published_view = published(block_on(kernel.submit(request.clone(), &mut budget()))?)?;
     assert_eq!(
-        kernel.status(request.operation)?,
+        kernel.status(
+            request.operation,
+            quanta_index_core::index::ports::OperationInspectAccess::Request(&budget())
+        )?,
         OperationStatus::Published(published_view)
     );
     assert_eq!(
@@ -494,6 +549,7 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
             ImmutableOperation {
                 key: configure.operation,
                 request: configure_object.reference,
+                source_mode: configure.kind.source_mode(),
             },
             ingress,
             &[],
@@ -501,13 +557,22 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
         )?,
         AdmissionOutcome::New(_)
     ));
-    let pending_core = catalog.inspect(configure.operation)?;
+    let pending_core = catalog.inspect(
+        configure.operation,
+        quanta_index_core::index::ports::OperationInspectAccess::Request(&budget()),
+    )?;
     assert!(matches!(pending_core, OperationStatus::Pending(_)));
     assert_eq!(
         kernel.resume_dispatch(configure.operation, &mut budget())?,
         ResumeDispatch::Execute(OperationExecutionClass::Core)
     );
-    assert_eq!(catalog.inspect(configure.operation)?, pending_core);
+    assert_eq!(
+        catalog.inspect(
+            configure.operation,
+            quanta_index_core::index::ports::OperationInspectAccess::Request(&budget())
+        )?,
+        pending_core
+    );
     let configured = published(block_on(kernel.resume(configure.operation, &mut budget()))?)?;
     let source_a = stage_source(&objects, "a.rs", b"A1")?;
     let source_b = stage_source(&objects, "b.rs", b"B-stable")?;
@@ -544,18 +609,20 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
         &kernel,
         &catalog,
         &objects,
-        initial,
-        current(&kernel)?.source,
-        None,
-        1,
-        1,
-        SchemaId([23; 16]),
-        Digest([24; 32]),
-        vec![OwnerMutation {
-            owner: owner(RUNTIME_PRODUCER, 2),
-            expected: None,
-            next: Some(contribution1),
-        }],
+        &ProjectionRequestParams {
+            view: initial,
+            source: current(&kernel)?.source,
+            prior: None,
+            operation_sequence: 1,
+            event_sequence: 1,
+            schema: SchemaId([23; 16]),
+            producer_policy: Digest([24; 32]),
+            owners: vec![OwnerMutation {
+                owner: owner(RUNTIME_PRODUCER, 2),
+                expected: None,
+                next: Some(contribution1),
+            }],
+        },
     )?;
     let first_projection = published(block_on(kernel.submit(first_request, &mut budget()))?)?;
     let first_binding = projection_binding(&objects, current(&kernel)?.projections)?;
@@ -565,7 +632,7 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
     ));
     let work = kernel.ready_work(workspace(), 1, 10, &mut budget())?;
     let intent = work.into_iter().next().ok_or("owner work missing")?;
-    let claim = kernel.claim_work(&intent, Duration::from_secs(120))?;
+    let claim = kernel.claim_work(&intent, Duration::from_secs(120), &budget())?;
     let materialize = UpdateRequest {
         operation: source_operation(3),
         expected_view: first_projection,
@@ -589,7 +656,7 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
         .map(|reference| {
             objects
                 .get(*reference, &mut budget())
-                .map(|stored| stored.registration)
+                .map(|stored| stored.registration.clone())
         })
         .collect::<Result<Vec<_>, _>>()?;
     let ingress = kernel.begin_input(materialize.operation)?;
@@ -606,6 +673,7 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
             ImmutableOperation {
                 key: materialize.operation,
                 request: materialize_reference,
+                source_mode: materialize.kind.source_mode(),
             },
             ingress,
             &[],
@@ -613,15 +681,27 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
         )?,
         AdmissionOutcome::New(_)
     ));
-    let pending_enrichment = catalog.inspect(materialize.operation)?;
+    let pending_enrichment = catalog.inspect(
+        materialize.operation,
+        quanta_index_core::index::ports::OperationInspectAccess::Request(&budget()),
+    )?;
     assert!(matches!(pending_enrichment, OperationStatus::Pending(_)));
     assert_eq!(
         kernel.resume_dispatch(materialize.operation, &mut budget())?,
         ResumeDispatch::Execute(OperationExecutionClass::Enrichment)
     );
-    assert_eq!(catalog.inspect(materialize.operation)?, pending_enrichment);
-    let request_budget =
-        quanta_index_core::RequestBudgetV1::until(Instant::now() + Duration::from_secs(30));
+    assert_eq!(
+        catalog.inspect(
+            materialize.operation,
+            quanta_index_core::index::ports::OperationInspectAccess::Request(&budget())
+        )?,
+        pending_enrichment
+    );
+    let request_budget = quanta_index_core::RequestBudgetV1::until(
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .ok_or("test deadline overflow")?,
+    );
     request_budget.cancel_handle().cancel();
     let mut cancelled = WorkBudget::with_request(
         WorkLimits {
@@ -636,7 +716,13 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
         kernel.resume_dispatch(materialize.operation, &mut cancelled),
         Err(IndexError::Cancelled)
     );
-    assert_eq!(catalog.inspect(materialize.operation)?, pending_enrichment);
+    assert_eq!(
+        catalog.inspect(
+            materialize.operation,
+            quanta_index_core::index::ports::OperationInspectAccess::Request(&budget())
+        )?,
+        pending_enrichment
+    );
     let materialized = published(block_on(
         kernel.resume(materialize.operation, &mut budget()),
     )?)?;
@@ -671,18 +757,20 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
         &kernel,
         &catalog,
         &objects,
-        advanced,
-        current(&kernel)?.source,
-        Some(first_binding),
-        2,
-        2,
-        SchemaId([23; 16]),
-        Digest([24; 32]),
-        vec![OwnerMutation {
-            owner: owner(RUNTIME_PRODUCER, 2),
-            expected: Some(contribution1),
-            next: Some(contribution2),
-        }],
+        &ProjectionRequestParams {
+            view: advanced,
+            source: current(&kernel)?.source,
+            prior: Some(first_binding),
+            operation_sequence: 2,
+            event_sequence: 2,
+            schema: SchemaId([23; 16]),
+            producer_policy: Digest([24; 32]),
+            owners: vec![OwnerMutation {
+                owner: owner(RUNTIME_PRODUCER, 2),
+                expected: Some(contribution1),
+                next: Some(contribution2),
+            }],
+        },
     )?;
     let second = published(block_on(
         kernel.submit(second_request.clone(), &mut budget()),
@@ -709,7 +797,7 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
         projection_binding(
             &objects,
             kernel
-                .pin_view(ViewSelection::Exact(first_projection))?
+                .pin_view(ViewSelection::Exact(first_projection), &budget())?
                 .view()
                 .projections
         )?,
@@ -726,18 +814,20 @@ fn unchanged_source_owner_can_be_replaced_by_producer_certified_dependency_delta
         &kernel,
         &catalog,
         &objects,
-        second,
-        current(&kernel)?.source,
-        Some(first_binding),
-        3,
-        3,
-        SchemaId([23; 16]),
-        Digest([24; 32]),
-        vec![OwnerMutation {
-            owner: owner(RUNTIME_PRODUCER, 2),
-            expected: Some(contribution1),
-            next: Some(contribution1),
-        }],
+        &ProjectionRequestParams {
+            view: second,
+            source: current(&kernel)?.source,
+            prior: Some(first_binding),
+            operation_sequence: 3,
+            event_sequence: 3,
+            schema: SchemaId([23; 16]),
+            producer_policy: Digest([24; 32]),
+            owners: vec![OwnerMutation {
+                owner: owner(RUNTIME_PRODUCER, 2),
+                expected: Some(contribution1),
+                next: Some(contribution1),
+            }],
+        },
     )?;
     assert!(matches!(
         block_on(kernel.submit(stale, &mut budget()))?,
@@ -868,14 +958,16 @@ fn schema_or_policy_change_cannot_rebind_unchanged_projection_outputs() -> TestR
             &kernel,
             &catalog,
             &objects,
-            configured,
-            current(&kernel)?.source,
-            None,
-            1,
-            1,
-            SchemaId([23; 16]),
-            Digest([24; 32]),
-            Vec::new(),
+            &ProjectionRequestParams {
+                view: configured,
+                source: current(&kernel)?.source,
+                prior: None,
+                operation_sequence: 1,
+                event_sequence: 1,
+                schema: SchemaId([23; 16]),
+                producer_policy: Digest([24; 32]),
+                owners: Vec::new(),
+            },
         )?;
         let first_view = published(block_on(kernel.submit(first, &mut budget()))?)?;
         let prior = projection_binding(&objects, current(&kernel)?.projections)?;
@@ -883,14 +975,16 @@ fn schema_or_policy_change_cannot_rebind_unchanged_projection_outputs() -> TestR
             &kernel,
             &catalog,
             &objects,
-            first_view,
-            current(&kernel)?.source,
-            Some(prior),
-            2,
-            2,
-            schema,
-            policy,
-            Vec::new(),
+            &ProjectionRequestParams {
+                view: first_view,
+                source: current(&kernel)?.source,
+                prior: Some(prior),
+                operation_sequence: 2,
+                event_sequence: 2,
+                schema,
+                producer_policy: policy,
+                owners: Vec::new(),
+            },
         )?;
         assert!(matches!(
             block_on(kernel.submit(altered, &mut budget()))?,
@@ -922,18 +1016,20 @@ fn reconfigure_cannot_inherit_old_projection_owner_under_new_recipe() -> TestRes
         &kernel,
         &catalog,
         &objects,
-        configured,
-        current(&kernel)?.source,
-        None,
-        1,
-        1,
-        SchemaId([23; 16]),
-        Digest([24; 32]),
-        vec![OwnerMutation {
-            owner: owner(RUNTIME_PRODUCER, 2),
-            expected: None,
-            next: Some(contribution),
-        }],
+        &ProjectionRequestParams {
+            view: configured,
+            source: current(&kernel)?.source,
+            prior: None,
+            operation_sequence: 1,
+            event_sequence: 1,
+            schema: SchemaId([23; 16]),
+            producer_policy: Digest([24; 32]),
+            owners: vec![OwnerMutation {
+                owner: owner(RUNTIME_PRODUCER, 2),
+                expected: None,
+                next: Some(contribution),
+            }],
+        },
     )?;
     let projected = published(block_on(kernel.submit(first, &mut budget()))?)?;
     let mut changed_policy = spec();
@@ -1009,18 +1105,20 @@ fn repeated_source_advances_preserve_pending_missing_until_certified_projection_
             &kernel,
             &catalog,
             &objects,
-            initial,
-            current(&kernel)?.source,
-            None,
-            1,
-            1,
-            SchemaId([23; 16]),
-            Digest([24; 32]),
-            vec![OwnerMutation {
-                owner: owner(RUNTIME_PRODUCER, 2),
-                expected: None,
-                next: Some(contribution),
-            }],
+            &ProjectionRequestParams {
+                view: initial,
+                source: current(&kernel)?.source,
+                prior: None,
+                operation_sequence: 1,
+                event_sequence: 1,
+                schema: SchemaId([23; 16]),
+                producer_policy: Digest([24; 32]),
+                owners: vec![OwnerMutation {
+                    owner: owner(RUNTIME_PRODUCER, 2),
+                    expected: None,
+                    next: Some(contribution),
+                }],
+            },
         )?,
         &mut budget(),
     ))?)?;
@@ -1055,6 +1153,18 @@ fn repeated_source_advances_preserve_pending_missing_until_certified_projection_
         matches!(coverage(&objects, current(&kernel)?.coverage)?.status,
         CoverageStatus::Pending { previous_missing } if previous_missing == original_missing)
     );
+    // The pending coverage itself must retain the missing-map root. Another
+    // historical view or a shared owner leaf is not an ownership guarantee.
+    let pending_view = current(&kernel)?;
+    let mut coverage_key = b"member\0".to_vec();
+    coverage_key.extend_from_slice(&INSTANCE.0);
+    let pending_ref = objects
+        .lookup_object(pending_view.coverage, &coverage_key, &mut budget())?
+        .ok_or("pending coverage absent")?;
+    let pending_object = objects.get(pending_ref, &mut budget())?;
+    let missing_root = original_missing.0.ok_or("missing root absent")?;
+    assert!(pending_object.registration.children.contains(&missing_root));
+    let _missing_object = objects.get(missing_root, &mut budget())?;
     let source_a2 = stage_source(&objects, "a.rs", b"A2")?;
     let advanced_twice = published(block_on(kernel.submit(
         source_request(
@@ -1077,19 +1187,43 @@ fn repeated_source_advances_preserve_pending_missing_until_certified_projection_
         matches!(coverage(&objects, current(&kernel)?.coverage)?.status,
         CoverageStatus::Pending { previous_missing } if previous_missing == original_missing)
     );
+    let before_reconfigure = current(&kernel)?;
+    let before_binding = coverage(&objects, before_reconfigure.coverage)?;
+    let ready_before = kernel.ready_work(workspace(), 1, 64, &mut budget())?;
+    let profile = stage_profile(&kernel, source_operation(5), vec![spec()])?;
+    let reconfigured = published(block_on(kernel.submit(
+        UpdateRequest {
+            operation: source_operation(5),
+            expected_view: advanced_twice,
+            kind: UpdateKind::Reconfigure { profile },
+        },
+        &mut budget(),
+    ))?)?;
+    let after_reconfigure = current(&kernel)?;
+    assert_eq!(after_reconfigure.coverage, before_reconfigure.coverage);
+    assert_eq!(
+        coverage(&objects, after_reconfigure.coverage)?,
+        before_binding
+    );
+    assert_eq!(
+        kernel.ready_work(workspace(), 1, 64, &mut budget())?,
+        ready_before
+    );
     let _certified = published(block_on(kernel.submit(
         projection_request(
             &kernel,
             &catalog,
             &objects,
-            advanced_twice,
-            current(&kernel)?.source,
-            Some(prior_binding),
-            2,
-            2,
-            SchemaId([23; 16]),
-            Digest([24; 32]),
-            Vec::new(),
+            &ProjectionRequestParams {
+                view: reconfigured,
+                source: current(&kernel)?.source,
+                prior: Some(prior_binding),
+                operation_sequence: 2,
+                event_sequence: 2,
+                schema: SchemaId([23; 16]),
+                producer_policy: Digest([24; 32]),
+                owners: Vec::new(),
+            },
         )?,
         &mut budget(),
     ))?)?;
@@ -1131,18 +1265,20 @@ fn certified_empty_contribution_clears_current_searchable_artifact() -> TestResu
             &kernel,
             &catalog,
             &objects,
-            configured,
-            current(&kernel)?.source,
-            None,
-            1,
-            1,
-            SchemaId([23; 16]),
-            Digest([24; 32]),
-            vec![OwnerMutation {
-                owner: owner(RUNTIME_PRODUCER, 2),
-                expected: None,
-                next: Some(present),
-            }],
+            &ProjectionRequestParams {
+                view: configured,
+                source: current(&kernel)?.source,
+                prior: None,
+                operation_sequence: 1,
+                event_sequence: 1,
+                schema: SchemaId([23; 16]),
+                producer_policy: Digest([24; 32]),
+                owners: vec![OwnerMutation {
+                    owner: owner(RUNTIME_PRODUCER, 2),
+                    expected: None,
+                    next: Some(present),
+                }],
+            },
         )?,
         &mut budget(),
     ))?)?;
@@ -1152,7 +1288,7 @@ fn certified_empty_contribution_clears_current_searchable_artifact() -> TestResu
         .into_iter()
         .next()
         .ok_or("owner work missing")?;
-    let claim = kernel.claim_work(&intent, Duration::from_secs(10))?;
+    let claim = kernel.claim_work(&intent, Duration::from_secs(10), &budget())?;
     let materialized = published(block_on(kernel.submit(
         UpdateRequest {
             operation: source_operation(2),
@@ -1162,7 +1298,7 @@ fn certified_empty_contribution_clears_current_searchable_artifact() -> TestResu
         &mut budget(),
     ))?)?;
     let old_view = kernel
-        .pin_view(ViewSelection::Exact(materialized))?
+        .pin_view(ViewSelection::Exact(materialized), &budget())?
         .view()
         .clone();
     let old = owner_coverage(&objects, coverage(&objects, old_view.coverage)?.owners)?;
@@ -1173,18 +1309,20 @@ fn certified_empty_contribution_clears_current_searchable_artifact() -> TestResu
             &kernel,
             &catalog,
             &objects,
-            materialized,
-            current(&kernel)?.source,
-            Some(prior_binding),
-            2,
-            2,
-            SchemaId([23; 16]),
-            Digest([24; 32]),
-            vec![OwnerMutation {
-                owner: owner(RUNTIME_PRODUCER, 2),
-                expected: Some(present),
-                next: Some(empty),
-            }],
+            &ProjectionRequestParams {
+                view: materialized,
+                source: current(&kernel)?.source,
+                prior: Some(prior_binding),
+                operation_sequence: 2,
+                event_sequence: 2,
+                schema: SchemaId([23; 16]),
+                producer_policy: Digest([24; 32]),
+                owners: vec![OwnerMutation {
+                    owner: owner(RUNTIME_PRODUCER, 2),
+                    expected: Some(present),
+                    next: Some(empty),
+                }],
+            },
         )?,
         &mut budget(),
     ))?)?;

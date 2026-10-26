@@ -21,16 +21,30 @@
 mod macros;
 mod bounded_cluster_members;
 pub mod canonical_order;
+mod native_boot_source_cut_digest;
+mod native_score;
 mod semantic_kinds;
 mod source_coverage;
 
+pub use native_score::{FiniteScore, FiniteScoreError};
+pub use native_boot_source_cut_digest::{
+    NativeBootSourceCutDigestErrorV1, native_boot_source_cut_digest_v1,
+    native_boot_source_cut_digest_with_work_v1,
+};
 pub use quanta_index_contract_base::{
-    PreviewByteRange, PreviewKind, PreviewMetadata, PreviewUnavailableReason, SourceFileKey,
-    SourceFileRevision,
+    AdmittedBoxedTextSeedV1, AdmittedByteStringSeedV1, AdmittedOptionalSeedV1,
+    AdmittedSequenceSeedV1, AdmittedTextSeedV1, DecodeAttemptStateV1, DecodeBackingAdmissionV1,
+    DecodeBackingRefusalV1, DecodeFieldGuardV1, DecodeFieldKindV1, DecodeFieldTokenV1,
+    ParserTextInputErrorV1, PreviewByteRange, PreviewKind, PreviewMetadata,
+    PreviewUnavailableReason, SourceFileKey, SourceFileRevision, SourceIdentityDecodeAdmissionV1,
 };
 pub use source_coverage::{
-    FileCoverageIter, FileCoverageSnapshot, SourceCoverageError, SourceFileCoverage,
-    SourcePublicationEvent, SymbolCoverage, SymbolNameSourcePolicyV1, source_file_unit_set_sha256,
+    FileCoverageIter, FileCoverageSnapshot, SourceCoverageError, SourceCoverageProgressError,
+    SourceFileCoverage, SourcePublicationEvent, SymbolCoverage, SymbolNameSourcePolicyV1,
+    source_file_unit_set_sha256, source_file_unit_set_sha256_with_borrowed_scratch,
+    source_file_unit_set_sha256_with_borrowed_scratch_and_sort_v3,
+    source_file_unit_set_sha256_with_borrowed_scratch_sort_and_work_v3,
+    source_file_unit_set_sha256_with_progress,
 };
 
 /// Internal legacy channel surface used by `searchd` composition-root,

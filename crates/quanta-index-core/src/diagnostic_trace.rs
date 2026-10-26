@@ -67,11 +67,20 @@ pub enum DiagnosticStageV1 {
     SemanticPromote,
     SemanticBuild,
     LexicalBuild,
+    NativeTextPostings,
+    NativeTextRoot,
+    NativeCoverageScan,
+    NativeCoverageMapApply,
+    NativeSearchablePrepare,
+    NativeCoverageSave,
+    NativeMemberAssemble,
     Bm25CensusBuild,
     Bm25LiveBuild,
     Bm25Boundary,
     Finalize,
     Activate,
+    CatalogLockWait,
+    CatalogLockHold,
     RetentionPairLockWait,
     RetentionPairLockHold,
     RetentionRootLockWait,
@@ -79,6 +88,9 @@ pub enum DiagnosticStageV1 {
     RetentionRootSnapshot,
     SourceTransactionOne,
     SourceTransactionTwo,
+    NativeSourceApply,
+    NativeSourcePathInstall,
+    NativeSourceMapApply,
     RetentionPlan,
     RetentionMeasure,
     RetentionWrite,
@@ -88,6 +100,8 @@ pub enum DiagnosticStageV1 {
     ClosureDecode,
     SqliteWork,
     PhysicalInodeCensus,
+    ManagedObjectReserve,
+    ManagedObjectConfirm,
     NativePublish,
     FilePublish,
     LexicalSeal,
@@ -96,6 +110,12 @@ pub enum DiagnosticStageV1 {
     QueryParse,
     QueryPlan,
     QueryReadView,
+    QueryOverlaySnapshot,
+    QueryFast,
+    QueryDeep,
+    QueryLexical,
+    QueryEmbedding,
+    QueryOverlayEmbedding,
     QueryCandidate,
     QueryVerify,
     QueryRank,
@@ -146,6 +166,32 @@ pub enum DiagnosticPhaseV1 {
     DeleteSeal,
     DeleteActivate,
     SameProcessReopen,
+    NativeCorpusGeneration,
+    NativeConfigSetup,
+    NativeStartup,
+    NativeWorkspaceCreate,
+    NativeProfileConfigure,
+    NativeFullBeginInput,
+    NativeFullStageSources,
+    NativeFullEventAck,
+    NativeFirstSearch,
+    NativeDeltaStageSource,
+    NativeDeltaEventAck,
+    NativeDeltaSearch,
+    NativeNoopEventAck,
+    NativeNoopStableSearch,
+    NativeDeleteEventAck,
+    NativeDeletedSearch,
+    NativeOldPinSearch,
+    NativeChurnCycles,
+    NativeChurnOldViewSearch,
+    NativeDrain,
+    NativeReopen,
+    NativeReopenReadHead,
+    NativeReopenDeletedSearch,
+    NativeReopenChurnSearch,
+    NativeReopenSearch,
+    NativeFinalDrain,
 }
 
 /// Closed sync call sites. Labels are diagnostic dimensions, never product
@@ -283,6 +329,11 @@ impl DiagnosticTerminalV1 {
 }
 
 /// Fixed work counter keys. Values are aggregate work, never synthetic spans.
+///
+/// The six `SqliteSync*` keys classify a native `xSync` attempt by mutations
+/// since its last successful settlement. A reached native sync span emits
+/// exactly one of them with value 1, independent of the sync result. This is
+/// not evidence of a stable parent, durability credit, or permission to skip.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum DiagnosticCounterV1 {
@@ -312,8 +363,30 @@ pub enum DiagnosticCounterV1 {
     BytesRead,
     BytesHashed,
     BytesDecoded,
+    /// Accepted logical work during a stage, not physical I/O or failed charges.
+    WorkReads,
+    WorkWrites,
+    WorkBytes,
+    WorkMutations,
     SqliteRows,
     SqliteBatches,
+    /// Reached lower-VFS xWrite calls in one diagnostic I/O scope. WAL, main
+    /// and other calls partition this total; failures are included in it.
+    /// These are not cache misses/spills, unique pages or durable commits.
+    SqliteWriteCalls,
+    /// Sum of requested xWrite byte lengths, including failed/short writes.
+    /// The native callback does not prove how many bytes reached storage.
+    SqliteWriteRequestedBytes,
+    SqliteWriteFailures,
+    SqliteWalWriteCalls,
+    SqliteMainWriteCalls,
+    SqliteOtherWriteCalls,
+    /// Native lexical query aggregate; not per-hit spans or physical I/O.
+    QueryPostingCalls,
+    QueryPostingHits,
+    QueryPostingElapsedNs,
+    QueryPhraseChecks,
+    QueryPhraseElapsedNs,
     Candidates,
     CandidatesVerified,
     Matches,
@@ -321,6 +394,12 @@ pub enum DiagnosticCounterV1 {
     SyncCalls,
     SyncFailures,
     SyncElapsedNs,
+    SqliteSyncOverwrite,
+    SqliteSyncGrowth,
+    SqliteSyncTruncate,
+    SqliteSyncCreate,
+    SqliteSyncNoMutation,
+    SqliteSyncUnclassified,
     NewObjects,
     ReusedObjects,
     CompactedDocuments,
@@ -328,6 +407,9 @@ pub enum DiagnosticCounterV1 {
     CompactedBytes,
     PostingMutations,
     MapPageMutations,
+    /// Entries passed to one reached managed reserve/confirm call, including
+    /// retries and refusals. Not newly created files or confirmed registrations.
+    ManagedObjectInputs,
     InvalidAttemptTokens,
     UniqueClosureRefs,
     ClosureDependencyEdges,
@@ -340,6 +422,62 @@ pub enum DiagnosticCounterV1 {
     QueueAccepted,
     OutputWritten,
     OutputUnwritten,
+}
+
+/// Where an authenticated immutable ANN region was observed. This is
+/// identity metadata, not additive work or a recall/exhaustion claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticAnnRegionPhaseV1 {
+    Installed,
+    SelectedQuery,
+}
+
+/// Closed index mode copied from the verified region seal, without exposing a
+/// backend library type through the diagnostic contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticAnnIndexKindV1 {
+    Flat,
+    IvfHnswSq,
+}
+
+/// One bounded region identity/shape observation.
+///
+/// `fileset_ref` identifies immutable bytes across installation and query;
+/// a selected query also binds
+/// the authenticated directory descriptor. Ordinals are directory-local;
+/// `chunks` counts file-manifest entries, not unique objects or bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticAnnRegionObservationV1 {
+    pub phase: DiagnosticAnnRegionPhaseV1,
+    pub fileset_ref: [u8; 32],
+    pub descriptor_ref: Option<[u8; 32]>,
+    pub ordinal: u64,
+    pub rows: u32,
+    pub index_kind: DiagnosticAnnIndexKindV1,
+    pub files: u32,
+    pub chunks: u32,
+}
+
+/// One native sync call observation, never a durability or settlement grant.
+///
+/// Missing syscall results mean that the syscall was not attempted. An
+/// unobserved, ambiguous, foreign-FD or overridden call cannot prove that the
+/// kernel completed a full barrier, even when the enclosing `SQLite` call succeeds.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the independent native observation flags preserve evidence rather than configuring a state machine"
+)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DiagnosticSqliteSyncObservationV1 {
+    pub observed: bool,
+    pub same_native_fd: bool,
+    pub ambiguous: bool,
+    pub full_requested: bool,
+    pub full_default_syscall: bool,
+    pub full_result: Option<i32>,
+    pub full_errno: Option<i32>,
+    pub posix_result: Option<i32>,
+    pub posix_errno: Option<i32>,
 }
 
 /// Closed lexical object kinds used for bounded publication attribution.
@@ -444,6 +582,14 @@ pub enum DiagnosticEventKindV1 {
         span_id: DiagnosticSpanIdV1,
         key: DiagnosticCounterV1,
         value: u64,
+    },
+    AnnRegionObservation {
+        span_id: DiagnosticSpanIdV1,
+        observation: DiagnosticAnnRegionObservationV1,
+    },
+    SqliteSyncObservation {
+        span_id: DiagnosticSpanIdV1,
+        observation: DiagnosticSqliteSyncObservationV1,
     },
     SyncAggregate {
         span_id: DiagnosticSpanIdV1,
@@ -672,6 +818,40 @@ impl DiagnosticContextV1 {
             span_id: span.span_id,
             key,
             value,
+        });
+    }
+
+    /// Attach one immutable region identity to its actual seal or selected
+    /// query span. Unlike counters, observations must never be summed.
+    pub fn ann_region_observation(
+        &self,
+        span: &DiagnosticSpanGuardV1,
+        observation: DiagnosticAnnRegionObservationV1,
+    ) {
+        if !self.owns_span(span) {
+            self.health(DiagnosticHealthCodeV1::ForeignCaptureSpan);
+            return;
+        }
+        self.emit(DiagnosticEventKindV1::AnnRegionObservation {
+            span_id: span.span_id,
+            observation,
+        });
+    }
+
+    /// Attach the native result to its existing live sync span. The observer
+    /// cannot authorize publication or replace the enclosing product result.
+    pub fn sqlite_sync_observation(
+        &self,
+        span: &DiagnosticSpanGuardV1,
+        observation: DiagnosticSqliteSyncObservationV1,
+    ) {
+        if !self.owns_span(span) {
+            self.health(DiagnosticHealthCodeV1::ForeignCaptureSpan);
+            return;
+        }
+        self.emit(DiagnosticEventKindV1::SqliteSyncObservation {
+            span_id: span.span_id,
+            observation,
         });
     }
 
@@ -1389,6 +1569,66 @@ mod tests {
             recorded_event(&events, 0).kind,
             DiagnosticEventKindV1::Health {
                 code: DiagnosticHealthCodeV1::MissingParentSpan
+            }
+        ));
+    }
+
+    #[test]
+    fn ann_region_observation_binds_only_to_owning_span() {
+        let (owner_context, _, sink) = context();
+        let span = owner_context
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(3))
+            .expect("root");
+        let observation = DiagnosticAnnRegionObservationV1 {
+            phase: DiagnosticAnnRegionPhaseV1::Installed,
+            fileset_ref: [3; 32],
+            descriptor_ref: None,
+            ordinal: 7,
+            rows: 256,
+            index_kind: DiagnosticAnnIndexKindV1::IvfHnswSq,
+            files: 2,
+            chunks: 3,
+        };
+        owner_context.ann_region_observation(&span, observation);
+        let (foreign, _, foreign_sink) = context();
+        foreign.ann_region_observation(&span, observation);
+        span.finish(DiagnosticTerminalV1::Ok).expect("finish");
+        let events = recorded_events(&sink);
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            recorded_event(&events, 1).kind,
+            DiagnosticEventKindV1::AnnRegionObservation { observation: actual, .. }
+                if actual == observation
+        ));
+        assert!(matches!(
+            recorded_event(&recorded_events(&foreign_sink), 0).kind,
+            DiagnosticEventKindV1::Health {
+                code: DiagnosticHealthCodeV1::ForeignCaptureSpan
+            }
+        ));
+    }
+
+    #[test]
+    fn sqlite_sync_observation_preserves_unknown_and_rejects_foreign_span() {
+        let (owner_context, _, sink) = context();
+        let span = owner_context
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+            .expect("root");
+        let observation = DiagnosticSqliteSyncObservationV1::default();
+        owner_context.sqlite_sync_observation(&span, observation);
+        let (foreign, _, foreign_sink) = context();
+        foreign.sqlite_sync_observation(&span, observation);
+        span.finish(DiagnosticTerminalV1::Ok).expect("finish");
+        let events = recorded_events(&sink);
+        assert!(matches!(
+            recorded_event(&events, 1).kind,
+            DiagnosticEventKindV1::SqliteSyncObservation { observation: actual, .. }
+                if actual == observation && actual.full_result.is_none()
+        ));
+        assert!(matches!(
+            recorded_event(&recorded_events(&foreign_sink), 0).kind,
+            DiagnosticEventKindV1::Health {
+                code: DiagnosticHealthCodeV1::ForeignCaptureSpan
             }
         ));
     }

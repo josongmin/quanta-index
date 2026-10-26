@@ -6,14 +6,20 @@
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
-    DiagnosticAttemptFieldV1, DiagnosticAttemptOutcomeV1, DiagnosticAttemptTokenV1,
-    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponseEnvelope,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponseEnvelope,
+    BorrowedAuxiliaryIngestIpcRequestEnvelopeV1, BorrowedAuxiliaryIngestIpcRequestV1,
+    BorrowedRepoMapActivateControlIpcRequestEnvelopeV3, DiagnosticAttemptFieldV1,
+    DiagnosticAttemptOutcomeV1, DiagnosticAttemptTokenV1, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequestEnvelope,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponseEnvelope,
 };
 use quanta_index_ipc::{
-    ClientIoPolicy, ClientIpcTimingV1, RequestSizeDecisionV1, request_size_decision_v1,
-    send_request, send_request_negotiated, send_request_observed, send_request_observed_negotiated,
+    AdmittedClientResponseBody, CborPayloadLengthProgressErrorV1, ClientIoPolicy,
+    ClientIpcTimingV1, IpcError, MemoryScope, RequestBudgetV1, RequestSizeDecisionV1,
+    cbor_payload_len_with_progress_v1, request_size_decision_v1, send_request,
+    send_request_body_negotiated_with_budget_admitted_with_work_v1,
+    send_request_body_with_budget_admitted_with_work_v1, send_request_negotiated,
+    send_request_observed, send_request_observed_negotiated,
 };
 
 use crate::SdkError;
@@ -77,6 +83,19 @@ pub(crate) trait ControlTransport: Send + Sync {
         source: Option<&dyn DiagnosticAttemptSourceV1>,
     ) -> Result<SearchPlaneControlIpcResponseEnvelope, SdkError> {
         send_with_attempt(request, source, false, |request| self.send(request))
+    }
+
+    fn send_borrowed_repo_map_admitted_v3(
+        &self,
+        _request: BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'_>,
+        _source: Option<&dyn DiagnosticAttemptSourceV1>,
+        _budget: &RequestBudgetV1,
+        _memory: &MemoryScope,
+        _work: &mut dyn FnMut(usize) -> Result<(), IpcError>,
+    ) -> Result<AdmittedClientResponseBody, SdkError> {
+        Err(SdkError::Protocol(
+            "control transport does not support admitted RepoMap activation".to_string(),
+        ))
     }
 }
 
@@ -161,6 +180,39 @@ impl ControlTransport for UdsControlTransport {
             self.inner.send_negotiated(plain, linked)
         })
     }
+
+    fn send_borrowed_repo_map_admitted_v3(
+        &self,
+        request: BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'_>,
+        source: Option<&dyn DiagnosticAttemptSourceV1>,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+        work: &mut dyn FnMut(usize) -> Result<(), IpcError>,
+    ) -> Result<AdmittedClientResponseBody, SdkError> {
+        send_with_uds_attempt_admitted(&request, source, work, |plain, linked, work| {
+            match linked {
+                Some((linked, capture_id)) => {
+                    send_request_body_negotiated_with_budget_admitted_with_work_v1(
+                        self.inner.socket_path(),
+                        plain,
+                        linked,
+                        capture_id,
+                        budget,
+                        memory,
+                        work,
+                    )
+                }
+                None => send_request_body_with_budget_admitted_with_work_v1(
+                    self.inner.socket_path(),
+                    plain,
+                    budget,
+                    memory,
+                    work,
+                ),
+            }
+            .map_err(SdkError::Transport)
+        })
+    }
 }
 
 /// QI-SDK-01: typed ingest transport.
@@ -180,6 +232,29 @@ pub(crate) trait IngestTransport: Send + Sync {
         source: Option<&dyn DiagnosticAttemptSourceV1>,
     ) -> Result<SearchPlaneIngestIpcResponseEnvelope, SdkError> {
         send_with_attempt(request, source, false, |request| self.send(request))
+    }
+
+    fn send_borrowed_auxiliary_traced_v1(
+        &self,
+        _request: BorrowedAuxiliaryIngestIpcRequestEnvelopeV1<'_>,
+        _source: Option<&dyn DiagnosticAttemptSourceV1>,
+    ) -> Result<SearchPlaneIngestIpcResponseEnvelope, SdkError> {
+        Err(SdkError::Protocol(
+            "ingest transport does not support borrowed auxiliary publish".to_string(),
+        ))
+    }
+
+    fn send_borrowed_auxiliary_admitted_v1(
+        &self,
+        _request: BorrowedAuxiliaryIngestIpcRequestEnvelopeV1<'_>,
+        _source: Option<&dyn DiagnosticAttemptSourceV1>,
+        _budget: &RequestBudgetV1,
+        _memory: &MemoryScope,
+        _work: &mut dyn FnMut(usize) -> Result<(), IpcError>,
+    ) -> Result<AdmittedClientResponseBody, SdkError> {
+        Err(SdkError::Protocol(
+            "ingest transport does not support admitted auxiliary publish".to_string(),
+        ))
     }
 }
 
@@ -259,6 +334,38 @@ impl DiagnosticAttemptEnvelope for SearchPlaneIngestIpcRequestEnvelope {
     fn request_id(&self) -> u64 {
         self.request_id
     }
+    fn payload(&self) -> &Self::Payload {
+        &self.payload
+    }
+}
+
+impl<'a> DiagnosticAttemptEnvelope for BorrowedAuxiliaryIngestIpcRequestEnvelopeV1<'a> {
+    type Payload = BorrowedAuxiliaryIngestIpcRequestV1<'a>;
+
+    fn diagnostic_attempt(&mut self) -> &mut DiagnosticAttemptFieldV1 {
+        &mut self.diagnostic_attempt
+    }
+
+    fn request_id(&self) -> u64 {
+        self.request_id
+    }
+
+    fn payload(&self) -> &Self::Payload {
+        &self.payload
+    }
+}
+
+impl<'a> DiagnosticAttemptEnvelope for BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'a> {
+    type Payload = quanta_index_contract::BorrowedRepoMapActivateControlIpcRequestV3<'a>;
+
+    fn diagnostic_attempt(&mut self) -> &mut DiagnosticAttemptFieldV1 {
+        &mut self.diagnostic_attempt
+    }
+
+    fn request_id(&self) -> u64 {
+        self.request_id
+    }
+
     fn payload(&self) -> &Self::Payload {
         &self.payload
     }
@@ -353,6 +460,81 @@ where
     result
 }
 
+fn send_with_uds_attempt_admitted<Envelope>(
+    request: &Envelope,
+    source: Option<&dyn DiagnosticAttemptSourceV1>,
+    work: &mut dyn FnMut(usize) -> Result<(), IpcError>,
+    send: impl FnOnce(
+        &Envelope,
+        Option<(&LinkedEnvelope<'_, Envelope::Payload>, [u8; 16])>,
+        &mut dyn FnMut(usize) -> Result<(), IpcError>,
+    ) -> Result<AdmittedClientResponseBody, SdkError>,
+) -> Result<AdmittedClientResponseBody, SdkError>
+where
+    Envelope: DiagnosticAttemptEnvelope,
+{
+    fn size_with_original_work<T: serde::Serialize>(
+        value: &T,
+        work: &mut dyn FnMut(usize) -> Result<(), IpcError>,
+    ) -> Result<u64, SdkError> {
+        cbor_payload_len_with_progress_v1(value, work).map_err(|error| match error {
+            CborPayloadLengthProgressErrorV1::Codec(error)
+            | CborPayloadLengthProgressErrorV1::Progress(error) => SdkError::Transport(error),
+        })
+    }
+
+    let attempt = source.and_then(DiagnosticAttemptSourceV1::begin_attempt);
+    let result = (|| {
+        let linked = attempt.as_ref().map(|guard| {
+            let token = guard.token();
+            (request.linked_view(token), token.capture_id())
+        });
+        let plain_bytes = size_with_original_work(request, work)?;
+        let linked_bytes = linked
+            .as_ref()
+            .map(|(view, _capture_id)| size_with_original_work(view, work))
+            .transpose()?;
+        let maximum = u64::try_from(quanta_index_contract::MAX_IPC_FRAME_BODY_BYTES_V1)
+            .map_err(|_overflow| SdkError::Transport(IpcError::Oversized(plain_bytes)))?;
+        if plain_bytes > maximum {
+            return Err(SdkError::Transport(IpcError::Oversized(plain_bytes)));
+        }
+        // Preserve the ordinary diagnostic path: a linked view that alone
+        // exceeds the frame cap falls back to the valid plain product body.
+        let selected_linked = linked
+            .as_ref()
+            .filter(|_| linked_bytes.is_some_and(|bytes| bytes <= maximum));
+        // IPC currently prepares the plain frame before diagnostic negotiation,
+        // then prepares a linked frame if the peer accepts the capture. Fund
+        // both possible frame count/encode pairs before either can run.
+        let linked_selected_bytes = selected_linked.and(linked_bytes).unwrap_or(0);
+        let selected_bytes = plain_bytes
+            .checked_add(linked_selected_bytes)
+            .ok_or(SdkError::Transport(IpcError::Oversized(u64::MAX)))?;
+        let total_bytes = selected_bytes
+            .checked_mul(2)
+            .ok_or(SdkError::Transport(IpcError::Oversized(u64::MAX)))?;
+        let remaining = usize::try_from(total_bytes)
+            .map_err(|_overflow| SdkError::Transport(IpcError::Oversized(total_bytes)))?;
+        work(remaining).map_err(SdkError::Transport)?;
+        send(
+            request,
+            selected_linked.map(|(view, capture_id)| (view, *capture_id)),
+            work,
+        )
+    })();
+    if let Some(guard) = attempt {
+        guard.finish(match &result {
+            Ok(_) => DiagnosticAttemptOutcomeV1::Ok,
+            Err(SdkError::Transport(
+                IpcError::Timeout { .. } | IpcError::ClientIoDeadlineElapsed,
+            )) => DiagnosticAttemptOutcomeV1::Cancelled,
+            Err(_) => DiagnosticAttemptOutcomeV1::Error,
+        });
+    }
+    result
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct UdsIngestTransport {
     inner: UdsTransport,
@@ -382,6 +564,49 @@ impl IngestTransport for UdsIngestTransport {
     ) -> Result<SearchPlaneIngestIpcResponseEnvelope, SdkError> {
         send_with_uds_attempt(&request, source, |plain, linked| {
             self.inner.send_negotiated(plain, linked)
+        })
+    }
+
+    fn send_borrowed_auxiliary_traced_v1(
+        &self,
+        request: BorrowedAuxiliaryIngestIpcRequestEnvelopeV1<'_>,
+        source: Option<&dyn DiagnosticAttemptSourceV1>,
+    ) -> Result<SearchPlaneIngestIpcResponseEnvelope, SdkError> {
+        send_with_uds_attempt(&request, source, |plain, linked| {
+            self.inner.send_negotiated(plain, linked)
+        })
+    }
+
+    fn send_borrowed_auxiliary_admitted_v1(
+        &self,
+        request: BorrowedAuxiliaryIngestIpcRequestEnvelopeV1<'_>,
+        source: Option<&dyn DiagnosticAttemptSourceV1>,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+        work: &mut dyn FnMut(usize) -> Result<(), IpcError>,
+    ) -> Result<AdmittedClientResponseBody, SdkError> {
+        send_with_uds_attempt_admitted(&request, source, work, |plain, linked, work| {
+            match linked {
+                Some((linked, capture_id)) => {
+                    send_request_body_negotiated_with_budget_admitted_with_work_v1(
+                        self.inner.socket_path(),
+                        plain,
+                        linked,
+                        capture_id,
+                        budget,
+                        memory,
+                        work,
+                    )
+                }
+                None => send_request_body_with_budget_admitted_with_work_v1(
+                    self.inner.socket_path(),
+                    plain,
+                    budget,
+                    memory,
+                    work,
+                ),
+            }
+            .map_err(SdkError::Transport)
         })
     }
 }
@@ -486,7 +711,79 @@ mod diagnostic_attempt_tests {
         DiagnosticAttemptEnvelope, DiagnosticAttemptFieldV1, DiagnosticAttemptGuardV1,
         DiagnosticAttemptSourceV1, RequestSizeDecisionV1, SdkError, UdsTransport,
         request_size_decision_v1, send_with_attempt, send_with_uds_attempt,
+        send_with_uds_attempt_admitted,
     };
+
+    #[test]
+    fn admitted_history_frame_cap_refuses_before_transport_send() {
+        let request = Request {
+            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
+            virtual_payload: Some(VirtualPayload {
+                chunk: vec![0; 133 * 1024],
+                tail: Vec::new(),
+            }),
+        };
+        let mut charged = 0_usize;
+        let result = send_with_uds_attempt_admitted(
+            &request,
+            None,
+            &mut |bytes| {
+                charged = charged.saturating_add(bytes);
+                Ok(())
+            },
+            |_plain, _linked, _work| panic!("oversize request reached transport send"),
+        );
+        assert!(matches!(
+            result,
+            Err(SdkError::Transport(quanta_index_ipc::IpcError::Oversized(
+                _
+            )))
+        ));
+        assert!(charged > quanta_index_contract::MAX_IPC_FRAME_BODY_BYTES_V1);
+    }
+
+    #[test]
+    fn admitted_history_oversized_diagnostic_view_uses_valid_plain_body() {
+        let mut request = Request {
+            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
+            virtual_payload: Some(VirtualPayload {
+                chunk: vec![0; 128 * 1024],
+                tail: Vec::new(),
+            }),
+        };
+        let cap = u64::try_from(quanta_index_contract::MAX_IPC_FRAME_BODY_BYTES_V1)
+            .expect("frame cap fits u64");
+        let base = quanta_index_ipc::cbor_payload_len(&request).expect("plain base length");
+        let tail_len = usize::try_from(cap - base - 8).expect("tail length fits usize");
+        request
+            .virtual_payload
+            .as_mut()
+            .expect("virtual payload")
+            .tail = vec![0; tail_len];
+        let token =
+            DiagnosticAttemptTokenV1::new([3; 16], NonZeroU64::new(1).expect("nonzero attempt"));
+        assert!(quanta_index_ipc::cbor_payload_len(&request).expect("plain length") <= cap);
+        assert!(
+            quanta_index_ipc::cbor_payload_len(&request.linked_view(token)).expect("linked length")
+                > cap
+        );
+        let source = Source {
+            next: AtomicU64::new(0),
+            outcomes: Arc::new(Mutex::new(Vec::new())),
+        };
+        let mut saw_plain = false;
+        let result = send_with_uds_attempt_admitted(
+            &request,
+            Some(&source),
+            &mut |_bytes| Ok(()),
+            |_plain, linked, _work| {
+                saw_plain = linked.is_none();
+                Err(SdkError::Protocol("scripted transport stop".into()))
+            },
+        );
+        assert!(saw_plain);
+        assert!(matches!(result, Err(SdkError::Protocol(_))));
+    }
 
     #[test]
     fn uds_attempt_token_requires_same_stream_positive_ack() {

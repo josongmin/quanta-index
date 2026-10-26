@@ -5,21 +5,24 @@
 //! records the text normalizer the index was built under — an index
 //! built under any other normalizer is never served, it is rebuilt — and
 //! the digest of each kind's index commit file so a directory whose
-//! files do not match its manifest is refused rather than searched. Format 2
-//! requires exact live BM25 token totals after deleted-document compaction;
-//! format 1 epochs need a full producer rebuild before serving or inheritance.
+//! files do not match its manifest is refused rather than searched. Format 3
+//! also binds the exact producer build and receipt for safe publish replay;
+//! older epochs need a full producer rebuild before serving or inheritance.
 
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::AuxEpochV1;
+use quanta_index_core::HistoryTextFileIoPort;
 use quanta_index_core::{CoreError, HistoryTextEpochStatusV1, HistoryTextKindV1, sha256_of_file};
+use sha2::{Digest as _, Sha256};
 
 use crate::history_text_index::layout::{fsync_parent_observed, kind_dir};
+use crate::history_text_index::physical_directory::read_all;
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 
 const MANIFEST_FILE_NAME: &str = "history-text-manifest.cbor";
-/// Manifest format; earlier epochs cannot prove exact live BM25 statistics.
-const MANIFEST_FORMAT_VERSION: u32 = 2;
+/// Manifest format; earlier epochs cannot prove exact replay and receipt.
+const MANIFEST_FORMAT_VERSION: u32 = 3;
 /// The index engine's commit file, whose digest commits the index content.
 const INDEX_COMMIT_FILE_NAME: &str = "meta.json";
 
@@ -30,11 +33,14 @@ pub(super) struct HistoryTextManifest {
     pub(super) epoch: AuxEpochV1,
     pub(super) commits_commit_sha256: [u8; 32],
     pub(super) diffs_commit_sha256: [u8; 32],
+    pub(super) build_sha256: [u8; 32],
+    pub(super) docs_written: u64,
 }
 
 /// Wire shape: a fixed-order CBOR array so the encoding is auditable
 /// without a derive. Element 0 is the format version.
-type ManifestRow = (u32, (u16, u16), u64, [u8; 32], [u8; 32]);
+pub(super) type ManifestRow = (u32, (u16, u16), u64, [u8; 32], [u8; 32], [u8; 32], u64);
+type OldManifestRow = (u32, (u16, u16), u64, [u8; 32], [u8; 32]);
 
 fn manifest_path(epoch_dir: &Path) -> PathBuf {
     epoch_dir.join(MANIFEST_FILE_NAME)
@@ -44,6 +50,28 @@ fn corrupt(message: String) -> CoreError {
     CoreError::Typed {
         code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt,
         message,
+    }
+}
+
+fn unsupported_format(version: u32) -> CoreError {
+    corrupt(format!(
+        "history text index: manifest format {version} is not the supported {MANIFEST_FORMAT_VERSION} with exact replay and live BM25 totals; a full producer rebuild is required"
+    ))
+}
+
+fn decode_manifest(bytes: &[u8], path: &Path) -> Result<HistoryTextManifest, CoreError> {
+    match ciborium::de::from_reader::<ManifestRow, _>(bytes) {
+        Ok(row) => HistoryTextManifest::from_row(row),
+        Err(error) => {
+            let old: Result<OldManifestRow, _> = ciborium::de::from_reader(bytes);
+            if let Ok((version @ (1 | 2), _, _, _, _)) = old {
+                return Err(unsupported_format(version));
+            }
+            Err(corrupt(format!(
+                "history text index: decode manifest {}: {error}",
+                path.display()
+            )))
+        }
     }
 }
 
@@ -64,15 +92,62 @@ pub(super) fn kind_commit_sha256(
         })
 }
 
+fn kind_commit_sha256_admitted(
+    epoch_dir: &Path,
+    kind: HistoryTextKindV1,
+    io: &dyn HistoryTextFileIoPort,
+) -> Result<[u8; 32], CoreError> {
+    let path = kind_dir(epoch_dir, kind).join(INDEX_COMMIT_FILE_NAME);
+    let bytes = read_all(io, &path)?.ok_or_else(|| {
+        corrupt(format!(
+            "history text index: {} commit file absent",
+            path.display()
+        ))
+    })?;
+    Ok(Sha256::digest(&bytes).into())
+}
+
 impl HistoryTextManifest {
     /// The manifest of a freshly built epoch directory: the current
     /// normalizer and the digests of what was just committed.
-    pub(super) fn describe(epoch_dir: &Path, epoch: AuxEpochV1) -> Result<Self, CoreError> {
+    pub(super) fn describe(
+        epoch_dir: &Path,
+        epoch: AuxEpochV1,
+        build_sha256: [u8; 32],
+        docs_written: u64,
+    ) -> Result<Self, CoreError> {
         Ok(Self {
             normalizer: TEXT_NORMALIZER_VERSION,
             epoch,
             commits_commit_sha256: kind_commit_sha256(epoch_dir, HistoryTextKindV1::Commit)?,
             diffs_commit_sha256: kind_commit_sha256(epoch_dir, HistoryTextKindV1::Diff)?,
+            build_sha256,
+            docs_written,
+        })
+    }
+
+    pub(super) fn describe_admitted(
+        epoch_dir: &Path,
+        epoch: AuxEpochV1,
+        build_sha256: [u8; 32],
+        docs_written: u64,
+        io: &dyn HistoryTextFileIoPort,
+    ) -> Result<Self, CoreError> {
+        Ok(Self {
+            normalizer: TEXT_NORMALIZER_VERSION,
+            epoch,
+            commits_commit_sha256: kind_commit_sha256_admitted(
+                epoch_dir,
+                HistoryTextKindV1::Commit,
+                io,
+            )?,
+            diffs_commit_sha256: kind_commit_sha256_admitted(
+                epoch_dir,
+                HistoryTextKindV1::Diff,
+                io,
+            )?,
+            build_sha256,
+            docs_written,
         })
     }
 
@@ -83,22 +158,31 @@ impl HistoryTextManifest {
             self.epoch.get(),
             self.commits_commit_sha256,
             self.diffs_commit_sha256,
+            self.build_sha256,
+            self.docs_written,
         )
     }
 
     fn from_row(row: ManifestRow) -> Result<Self, CoreError> {
-        let (format_version, (major, minor), epoch, commits_commit_sha256, diffs_commit_sha256) =
-            row;
+        let (
+            format_version,
+            (major, minor),
+            epoch,
+            commits_commit_sha256,
+            diffs_commit_sha256,
+            build_sha256,
+            docs_written,
+        ) = row;
         if format_version != MANIFEST_FORMAT_VERSION {
-            return Err(corrupt(format!(
-                "history text index: manifest format {format_version} is not the supported {MANIFEST_FORMAT_VERSION} with exact live BM25 token totals; a full producer rebuild is required"
-            )));
+            return Err(unsupported_format(format_version));
         }
         Ok(Self {
             normalizer: TextNormalizerVersion { major, minor },
             epoch: AuxEpochV1::new(epoch),
             commits_commit_sha256,
             diffs_commit_sha256,
+            build_sha256,
+            docs_written,
         })
     }
 
@@ -154,6 +238,18 @@ impl HistoryTextManifest {
         fsync_parent_observed(&path, sync)
     }
 
+    pub(super) fn write_admitted(
+        &self,
+        epoch_dir: &Path,
+        io: &dyn HistoryTextFileIoPort,
+    ) -> Result<(), CoreError> {
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&self.to_row(), &mut bytes).map_err(|error| {
+            CoreError::Storage(format!("history text index: encode manifest: {error}"))
+        })?;
+        io.atomic_write(&manifest_path(epoch_dir), &bytes)
+    }
+
     /// The manifest a published epoch directory carries.
     pub(super) fn read(epoch_dir: &Path) -> Result<Self, CoreError> {
         let path = manifest_path(epoch_dir);
@@ -163,13 +259,21 @@ impl HistoryTextManifest {
                 path.display()
             ))
         })?;
-        let row: ManifestRow = ciborium::de::from_reader(bytes.as_slice()).map_err(|err| {
+        decode_manifest(&bytes, &path)
+    }
+
+    pub(super) fn read_admitted(
+        epoch_dir: &Path,
+        io: &dyn HistoryTextFileIoPort,
+    ) -> Result<Self, CoreError> {
+        let path = manifest_path(epoch_dir);
+        let bytes = read_all(io, &path)?.ok_or_else(|| {
             corrupt(format!(
-                "history text index: decode manifest {}: {err}",
+                "history text index: manifest {} absent",
                 path.display()
             ))
         })?;
-        Self::from_row(row)
+        decode_manifest(&bytes, &path)
     }
 }
 
@@ -207,6 +311,50 @@ pub(super) fn epoch_status(
     ] {
         let observed = kind_commit_sha256(epoch_dir, kind)?;
         if observed != expected {
+            return Err(corrupt(format!(
+                "history text index: {} {} index does not match its manifest",
+                epoch_dir.display(),
+                kind.as_str()
+            )));
+        }
+    }
+    Ok(HistoryTextEpochStatusV1::Servable)
+}
+
+pub(super) fn epoch_status_admitted(
+    epoch_dir: &Path,
+    epoch: AuxEpochV1,
+    io: &dyn HistoryTextFileIoPort,
+) -> Result<HistoryTextEpochStatusV1, CoreError> {
+    match io.metadata(epoch_dir)? {
+        None => return Ok(HistoryTextEpochStatusV1::Absent),
+        Some(metadata) if !metadata.is_dir() => {
+            return Err(corrupt(format!(
+                "history text index: published epoch {} is not a directory",
+                epoch_dir.display()
+            )));
+        }
+        Some(_) => {}
+    }
+    let manifest = HistoryTextManifest::read_admitted(epoch_dir, io)?;
+    if manifest.epoch != epoch {
+        return Err(corrupt(format!(
+            "history text index: {} is stamped epoch {} but sits under epoch {}",
+            epoch_dir.display(),
+            manifest.epoch,
+            epoch
+        )));
+    }
+    if manifest.normalizer != TEXT_NORMALIZER_VERSION {
+        return Ok(HistoryTextEpochStatusV1::Unsupported {
+            built_with: manifest.normalizer.to_string(),
+        });
+    }
+    for (kind, expected) in [
+        (HistoryTextKindV1::Commit, manifest.commits_commit_sha256),
+        (HistoryTextKindV1::Diff, manifest.diffs_commit_sha256),
+    ] {
+        if kind_commit_sha256_admitted(epoch_dir, kind, io)? != expected {
             return Err(corrupt(format!(
                 "history text index: {} {} index does not match its manifest",
                 epoch_dir.display(),

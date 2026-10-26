@@ -312,3 +312,147 @@ reason = "manual costly XL32768 supported-profile real daemon process restart"
 owner = "quanta-index-searchd-runtime"
 cadence = "release"
 review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_index_uds.rs"
+test = "native_forced_exit_child"
+reason = "invoked only by native_kill_reopen_retains_view_and_reclaims_owned_scratch"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-storage/src/scratch.rs"
+test = "scratch_process_holder"
+reason = "subprocess fixture; invoked by exact name from managed_recovery_uses_process_lease_not_pid_or_age"
+owner = "quanta-index-storage"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-storage/tests/native_object_namespace_process.rs"
+test = "child_namespace_probe"
+reason = "run only as a subprocess of a namespace ownership test"
+owner = "quanta-index-storage"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-kernel/tests/native_lifecycle.rs"
+test = "native_text_large_initial_delta_delete_preserve_gold_and_changed_work"
+reason = "explicit 4,096-owner Native engine-scale acceptance"
+owner = "quanta-index-kernel"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/publication_file_capacity/tests.rs"
+test = "original_fd_kernel_fsync_eio_keeps_charge_and_recovers_same_inode"
+reason = "requires bounded FUSE fault backend, explicit control and TMPDIR on that mount"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/publication_file_capacity/tests.rs"
+test = "original_fd_kernel_close_eio_keeps_charge_and_quarantines_root"
+reason = "requires bounded FUSE fault backend, explicit control and TMPDIR on that mount"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/publication_file_capacity/tests.rs"
+test = "native_parent_fsyncdir_eio_retains_latest_original_fd_witness_for_retry"
+reason = "requires bounded FUSE fault backend with fsyncdir injection, explicit control and TMPDIR on that mount"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/native_object_write_io/ann_enospc.rs"
+test = "real_ann_seal_write_enospc_preserves_selected_views_and_recovers_same_operation"
+reason = "requires QUANTA_INDEX_PHYSICAL_ENOSPC_ROOT on an isolated bounded filesystem"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/native_object_write_io/ann_enospc.rs"
+test = "real_ann_seal_file_fsync_eio_preserves_selected_views_and_recovers_same_operation"
+reason = "requires bounded FUSE fault backend, exact control and isolated mount"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/native_object_write_io/ann_enospc.rs"
+test = "real_ann_seal_checked_close_eio_recovers_only_after_process_exit"
+reason = "requires bounded FUSE fault backend, checked-close EIO and cold process reopen"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-harness/src/scale/native_index.rs"
+test = "real_daemon_churn_and_resource_observation_preserve_product_gold"
+reason = "requires an explicitly built daemon, native sampling=1 and churn cycles=20"
+owner = "quanta-index-searchd-harness"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-harness/src/scale/native_index.rs"
+test = "real_daemon_selected_scale_and_churn_preserve_product_gold"
+reason = "requires an explicit daemon, sampling=1, functional tier and churn cycles"
+owner = "quanta-index-searchd-harness"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-harness/src/scale/native_index.rs"
+test = "real_daemon_small_off_record_capture_preserves_product_gold"
+reason = "requires an explicitly built daemon, native sampling=1 and churn cycles=20"
+owner = "quanta-index-searchd-harness"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/physical_mixed_pressure.rs"
+test = "native_extended_pin_pressure_reclaims_under_same_cap_after_last_release"
+reason = "opt-in fixed-cap long-pin pressure; bounded diagnostic, not a steady-state SLO"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_product_process/ann_quality/materialization_diagnostic.rs"
+test = "diagnostic_native_ann_128_owner_materialization_phases"
+reason = "phase diagnosis only; requires QIDX_NATIVE_ANN_TRACE_DIR"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_product_process/ann_quality/materialization_diagnostic.rs"
+test = "diagnostic_native_ann_4096_source_128_completed_prefix"
+reason = "4K source and exact 128-owner completion prefix diagnosis only; requires trace directory and explicit 256 MiB Record cap"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_product_process/ann_quality/materialization_diagnostic.rs"
+test = "diagnostic_native_ann_4096_source_advance_phases"
+reason = "source phase diagnosis only; requires QIDX_NATIVE_ANN_TRACE_DIR"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/state_migration_owner_v1/physical_os_faults.rs"
+test = "actual_bounded_volume_enospc_preserves_source_and_unpublished_target"
+reason = "requires QUANTA_INDEX_PHYSICAL_ENOSPC_ROOT on an isolated 32..=128 MiB mount"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"

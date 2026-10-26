@@ -5,8 +5,9 @@
 //! return every row with a flag saying whether it made the cut. Now the
 //! snapshot is shared and indexed once, a query keeps at most the entries it
 //! can return, and the response carries the included rows and a count of
-//! the rest: for a fixed `top_k` the work that scales with the snapshot is
-//! one scalar scoring pass, and nothing else does.
+//! the rest. Selection starts with a `top_k` prefix; variable token costs
+//! may require wider prefixes and repeated scoring passes to find rows that
+//! fit. It stops widening when the scan proves no remaining row can fit.
 //!
 //! Ranking is unchanged: exact focus subjects first, then entries under a
 //! focused owner path, then query-term matches, then the materialized
@@ -15,8 +16,9 @@
 //! admitted over the budget so a query never returns nothing for a budget
 //! alone.
 
-use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap};
+pub(crate) mod ranking;
+
+use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     RepoMapDocType, RepoMapEntryDto, RepoMapQueryRequest, RepoMapQueryResponse,
@@ -25,35 +27,98 @@ use quanta_index_core::{CoreError, RepoMapPolicy};
 
 use crate::model::{RepoMapEntry, RepoMapIndexedSnapshot, RepoMapSnapshotIndex};
 
+use self::ranking::{RankCandidate, RankPlan, RankScanner, select, tokenize};
+
 pub struct RepoMapQueryEngine;
 
-/// The rank of one entry under one query; greater sorts first.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct RankKey<'a> {
-    exact_focus: bool,
-    owner_path_focus: bool,
-    query_match_score: u32,
-    final_score_millis: u32,
-    identity: Reverse<&'a str>,
+struct SnapshotCandidate<'a> {
+    entry: &'a RepoMapEntry,
+    folded_search_text: &'a str,
+    position: usize,
 }
 
-/// The rank-ordered prefix a selection pass retained, best first.
-struct RankedPrefix<'a> {
-    entries: Vec<(RankKey<'a>, usize)>,
-    /// Every entry the pass considered, retained or not.
-    universe: usize,
-    any_query_match: bool,
+impl RankCandidate for SnapshotCandidate<'_> {
+    fn identity(&self) -> &str {
+        &self.entry.subject_identity
+    }
+
+    fn doc_type(&self) -> RepoMapDocType {
+        self.entry.subject_doc_type
+    }
+
+    fn owner_path(&self) -> &str {
+        &self.entry.owner_path
+    }
+
+    fn folded_search_text(&self) -> &str {
+        self.folded_search_text
+    }
+
+    fn final_score_millis(&self) -> u32 {
+        self.entry.final_score_millis
+    }
+
+    fn token_budget_hint(&self) -> u32 {
+        self.entry.token_budget_hint
+    }
+
+    fn source_ordinal(&self) -> usize {
+        self.position
+    }
 }
 
-/// What one inclusion walk over a prefix decided.
-struct InclusionWalk {
-    /// Admitted entries as `(position, rank)`, in rank order.
-    included: Vec<(usize, u32)>,
-    /// How many prefix entries the walk visited before the page filled or
-    /// the prefix ran out.
-    walked: usize,
-    budget_skips: bool,
-    forced_budget_floor: bool,
+struct SnapshotScanner<'a> {
+    entries: &'a [RepoMapEntry],
+    index: &'a RepoMapSnapshotIndex,
+    candidates: Option<&'a [usize]>,
+}
+
+impl<'a> RankScanner for SnapshotScanner<'a> {
+    type Candidate = SnapshotCandidate<'a>;
+    type Error = CoreError;
+    type Grant = ();
+
+    fn resource_limited() -> Self::Error {
+        CoreError::Storage("repomap rank allocation refused".to_string())
+    }
+
+    fn reserve_prefix(&mut self, _bytes: usize) -> Result<Self::Grant, Self::Error> {
+        Ok(())
+    }
+
+    fn scan(
+        &mut self,
+        sink: &mut dyn FnMut(Self::Candidate) -> Result<(), Self::Error>,
+    ) -> Result<(), Self::Error> {
+        let entries = self.entries;
+        let index = self.index;
+        let candidates = self.candidates;
+        let mut consider = |position: usize, entry: &'a RepoMapEntry| {
+            sink(SnapshotCandidate {
+                entry,
+                folded_search_text: index
+                    .folded_search_text
+                    .get(position)
+                    .map_or("", String::as_str),
+                position,
+            })
+        };
+        match candidates {
+            Some(positions) => {
+                for &position in positions {
+                    if let Some(entry) = entries.get(position) {
+                        consider(position, entry)?;
+                    }
+                }
+            }
+            None => {
+                for (position, entry) in entries.iter().enumerate() {
+                    consider(position, entry)?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl RepoMapQueryEngine {
@@ -99,7 +164,6 @@ impl RepoMapQueryEngine {
                 ),
             });
         }
-        let mut degraded_reason_codes = BTreeSet::<String>::new();
         // The candidate universe: under a focus only the focused subjects and
         // the entries sharing their owner paths; without a focus every entry.
         let candidates: Vec<usize> = if focus_owner_paths.is_empty() {
@@ -118,65 +182,29 @@ impl RepoMapQueryEngine {
         } else {
             candidates.len()
         };
-        let top_k_limit = saturating_usize_from_u32(request.top_k);
-
-        // Retain the best `prefix` entries; widen the prefix only when the
-        // token budget skipped entries and the page is still short, since a
-        // skip before the last retained entry means a smaller entry further
-        // down the order could still fit.
-        let mut prefix = top_k_limit.max(1).min(universe_size.max(1));
-        let (ranked, walk) = loop {
-            let ranked = rank_prefix(
-                entries,
-                index,
-                if focus_owner_paths.is_empty() {
-                    None
-                } else {
-                    Some(&candidates)
-                },
-                &focus_keys,
-                &focus_owner_paths,
-                &query_terms,
-                prefix,
-            );
-            let walk = walk_inclusion(entries, &ranked.entries, top_k_limit, request.token_budget);
-            let exhausted_prefix = ranked.entries.len() >= universe_size;
-            if walk.included.len() >= top_k_limit || !walk.budget_skips || exhausted_prefix {
-                break (ranked, walk);
-            }
-            prefix = prefix.saturating_mul(2).min(universe_size);
+        let top_k_limit = usize::try_from(request.top_k).map_or(usize::MAX, std::convert::identity);
+        let plan = RankPlan {
+            focus_keys: &focus_keys,
+            focus_owner_paths: &focus_owner_paths,
+            query_terms: &query_terms,
+            top_k_limit,
+            initial_prefix: top_k_limit.max(1).min(universe_size.max(1)),
+            token_budget: request.token_budget,
         };
-
-        if !query_terms.is_empty() && !ranked.any_query_match {
-            let _inserted = degraded_reason_codes.insert("query_terms_unmatched".to_string());
-        }
-        if walk.forced_budget_floor {
-            let _inserted = degraded_reason_codes.insert("token_budget_floor_applied".to_string());
-        }
-        // Drops are of two kinds: an entry the walk saw while the page had
-        // room but the budget did not, and every entry past the point the
-        // page filled, walked or not.
-        let mut drop_reason_codes = BTreeSet::<String>::new();
-        if walk.budget_skips {
-            let _inserted = drop_reason_codes.insert("token_budget_exhausted".to_string());
-        }
-        let included_count = walk.included.len();
-        let page_filled = included_count >= top_k_limit;
-        let entries_past_the_page = ranked.universe.saturating_sub(walk.walked);
-        if page_filled && entries_past_the_page > 0 {
-            let _inserted = drop_reason_codes.insert("top_k_exhausted".to_string());
-        }
-        let dropped_entries_count =
-            saturating_u32_from_usize(ranked.universe.saturating_sub(included_count));
-
-        let mut response_entries: Vec<RepoMapEntryDto> = Vec::with_capacity(included_count);
-        for (position, rank) in walk.included {
-            let Some(entry) = entries.get(position) else {
-                return Err(CoreError::Storage(format!(
-                    "repomap query: ranked position {position} is outside the snapshot"
-                )));
-            };
-            response_entries.push(entry.to_dto(rank));
+        let mut scanner = SnapshotScanner {
+            entries,
+            index,
+            candidates: if focus_owner_paths.is_empty() {
+                None
+            } else {
+                Some(&candidates)
+            },
+        };
+        let selection = select(&mut scanner, &plan)?;
+        let mut response_entries: Vec<RepoMapEntryDto> =
+            Vec::with_capacity(selection.included.len());
+        for (candidate, rank) in &selection.included {
+            response_entries.push(candidate.entry.to_dto(*rank));
         }
         Ok(RepoMapQueryResponse {
             repo_id: snapshot.snapshot.repo_id.clone(),
@@ -184,152 +212,9 @@ impl RepoMapQueryEngine {
             manifest_generation: snapshot.snapshot.manifest_generation,
             snapshot_meta: snapshot.snapshot.snapshot_meta.clone(),
             entries: response_entries,
-            dropped_entries_count,
-            drop_reason_codes: drop_reason_codes.into_iter().collect(),
-            degraded_reason_codes: degraded_reason_codes.into_iter().collect(),
+            dropped_entries_count: selection.dropped_entries_count,
+            drop_reason_codes: selection.drop_reason_codes,
+            degraded_reason_codes: selection.degraded_reason_codes,
         })
     }
-}
-
-/// Score every candidate once and keep the best `prefix`, in rank order.
-///
-/// A bounded min-heap holds the retained set, so the pass allocates for
-/// `prefix` entries and scans the rest without allocating.
-fn rank_prefix<'a>(
-    entries: &'a [RepoMapEntry],
-    index: &RepoMapSnapshotIndex,
-    candidates: Option<&[usize]>,
-    focus_keys: &BTreeSet<(&str, RepoMapDocType)>,
-    focus_owner_paths: &BTreeSet<&str>,
-    query_terms: &[String],
-    prefix: usize,
-) -> RankedPrefix<'a> {
-    let mut retained: BinaryHeap<Reverse<(RankKey<'a>, usize)>> =
-        BinaryHeap::with_capacity(prefix.saturating_add(1));
-    let mut any_query_match = false;
-    let mut universe = 0_usize;
-    let mut consider = |position: usize, entry: &'a RepoMapEntry| {
-        universe = universe.saturating_add(1);
-        let query_match_score = index
-            .folded_search_text
-            .get(position)
-            .map_or(0, |folded| query_match_score(folded, query_terms));
-        if query_match_score > 0 {
-            any_query_match = true;
-        }
-        let key = RankKey {
-            exact_focus: focus_keys
-                .contains(&(entry.subject_identity.as_str(), entry.subject_doc_type)),
-            owner_path_focus: focus_owner_paths.contains(entry.owner_path.as_str()),
-            query_match_score,
-            final_score_millis: entry.final_score_millis,
-            identity: Reverse(entry.subject_identity.as_str()),
-        };
-        if retained.len() < prefix {
-            retained.push(Reverse((key, position)));
-        } else if retained
-            .peek()
-            .is_some_and(|Reverse((weakest, _))| key > *weakest)
-        {
-            let _evicted = retained.pop();
-            retained.push(Reverse((key, position)));
-        }
-    };
-    match candidates {
-        Some(positions) => {
-            for &position in positions {
-                if let Some(entry) = entries.get(position) {
-                    consider(position, entry);
-                }
-            }
-        }
-        None => {
-            for (position, entry) in entries.iter().enumerate() {
-                consider(position, entry);
-            }
-        }
-    }
-    let mut ordered: Vec<(RankKey<'a>, usize)> =
-        retained.into_iter().map(|Reverse(item)| item).collect();
-    ordered.sort_by(|left, right| right.0.cmp(&left.0));
-    RankedPrefix {
-        entries: ordered,
-        universe,
-        any_query_match,
-    }
-}
-
-/// Walk a rank-ordered prefix and admit entries while `top_k` and the token
-/// budget allow.
-fn walk_inclusion(
-    entries: &[RepoMapEntry],
-    ordered: &[(RankKey<'_>, usize)],
-    top_k_limit: usize,
-    token_budget: u32,
-) -> InclusionWalk {
-    let mut included = Vec::with_capacity(top_k_limit.min(ordered.len()));
-    let mut consumed_tokens = 0_u32;
-    let mut budget_skips = false;
-    let mut forced_budget_floor = false;
-    let mut walked = 0_usize;
-    for &(_, position) in ordered {
-        if included.len() >= top_k_limit {
-            break;
-        }
-        walked = walked.saturating_add(1);
-        let token_hint = entries
-            .get(position)
-            .map_or(1, |entry| entry.token_budget_hint.max(1));
-        let within_budget = consumed_tokens.saturating_add(token_hint) <= token_budget;
-        let apply_budget_floor = included.is_empty() && !within_budget;
-        if within_budget || apply_budget_floor {
-            if apply_budget_floor {
-                forced_budget_floor = true;
-            }
-            consumed_tokens = consumed_tokens.saturating_add(token_hint);
-            let rank = saturating_u32_from_usize(included.len().saturating_add(1));
-            included.push((position, rank));
-        } else {
-            budget_skips = true;
-        }
-    }
-    InclusionWalk {
-        included,
-        walked,
-        budget_skips,
-        forced_budget_floor,
-    }
-}
-
-/// Tokenize with the one shared Unicode tokenizer (NFC + full Unicode fold).
-/// CJK runs stay one token; there is no route-local ASCII tokenizer here.
-fn tokenize(query_text: &str) -> Vec<String> {
-    quanta_index_lq_text_normalizer::tokenize(
-        query_text,
-        quanta_index_lq_text_normalizer::CaseMode::Folded,
-    )
-    .indexable()
-    .map(|token| token.text.clone())
-    .collect()
-}
-
-/// How many query terms the entry's folded search text contains.
-fn query_match_score(folded_search_text: &str, query_terms: &[String]) -> u32 {
-    if query_terms.is_empty() {
-        return 0;
-    }
-    query_terms
-        .iter()
-        .filter(|term| folded_search_text.contains(term.as_str()))
-        .count()
-        .try_into()
-        .map_or(u32::MAX, |count| count)
-}
-
-fn saturating_usize_from_u32(value: u32) -> usize {
-    usize::try_from(value).map_or(usize::MAX, std::convert::identity)
-}
-
-fn saturating_u32_from_usize(value: usize) -> u32 {
-    u32::try_from(value).map_or(u32::MAX, std::convert::identity)
 }

@@ -6,9 +6,11 @@ use quanta_index_core::{CoreError, RequestBudgetV1};
 use quanta_index_lq_positions::MAX_POSITIONS_PER_CELL;
 use sha2::{Digest as _, Sha256};
 
+use crate::lexical_runs::RunScrubCursor;
 use crate::lexical_store::{BlobCursor, BlobRef, ObjectKind, ObjectRef, ObjectStore};
 use crate::normalize::{self, CaseMode};
 use crate::text_authority::paged_manifest::NativeRoot;
+use crate::text_authority::paged_merge_proof::NativeMergeProof;
 use crate::text_authority::paged_posting_page::{PostingPage, route_posting_key};
 use crate::text_authority::paged_segment::{
     GRAM_FOLDED, GRAM_RAW, TERM_FOLDED, TERM_RAW, decode_body,
@@ -34,6 +36,7 @@ pub(crate) struct NativeScrubCursor {
     source_after: Option<[u8; 32]>,
     segment: Option<ScrubSegment>,
     pending: Option<PendingBlob>,
+    run_cursor: RunScrubCursor,
     live_count: u64,
     gram_routes: u64,
     term_routes: u64,
@@ -49,6 +52,7 @@ enum NativeScrubPhase {
     Route,
     Page,
     Source,
+    RunRegistry,
     Done,
 }
 
@@ -92,6 +96,7 @@ impl NativeScrubCursor {
             source_after: None,
             segment: None,
             pending: None,
+            run_cursor: RunScrubCursor::new(&root.run_registry)?,
             live_count: 0,
             gram_routes: 0,
             term_routes: 0,
@@ -101,7 +106,8 @@ impl NativeScrubCursor {
     }
 
     /// Advance through at most the caller's byte allowance, except for one
-    /// indivisible authenticated map/record read or one 32 KiB blob block.
+    /// indivisible authenticated map/record read, one 32 KiB blob block, or
+    /// one bounded run-registry row with its membership witnesses.
     pub(crate) fn step(
         &mut self,
         store: &ObjectStore,
@@ -199,6 +205,12 @@ impl NativeScrubCursor {
             NativeScrubPhase::Route => self.read_next_route(store, budget),
             NativeScrubPhase::Page => self.start_next_page(store),
             NativeScrubPhase::Source => self.read_next_source(store, budget),
+            NativeScrubPhase::RunRegistry => {
+                if self.run_cursor.step(store, budget)? {
+                    self.phase = NativeScrubPhase::Done;
+                }
+                Ok(())
+            }
             NativeScrubPhase::Done => Ok(()),
         }
     }
@@ -243,9 +255,13 @@ impl NativeScrubCursor {
         if descriptor.id != id {
             return Err(corrupt("scrub segment key/value differs"));
         }
+        let _stored_index_bytes = self
+            .root
+            .run_registry
+            .verify_segment_owner(store, &key, &reference, budget)?;
         let due = store.map_get(&self.root.compaction_due, &key, budget)?;
         if descriptor.live_locals.len() < descriptor.logical_ids.len() {
-            if due != Some(reference) {
+            if due.as_ref() != Some(&reference) {
                 return Err(corrupt("scrub segment debt differs"));
             }
             self.due_count = self
@@ -404,7 +420,7 @@ impl NativeScrubCursor {
             None => vec![0],
             Some(key) => {
                 let Some(next) = prefix_upper(&key) else {
-                    self.phase = NativeScrubPhase::Done;
+                    self.phase = NativeScrubPhase::RunRegistry;
                     return Ok(());
                 };
                 next
@@ -412,7 +428,7 @@ impl NativeScrubCursor {
         };
         let mut cursor = store.map_cursor(&self.root.source, &lower, None, budget)?;
         let Some((key, reference)) = cursor.next()? else {
-            self.phase = NativeScrubPhase::Done;
+            self.phase = NativeScrubPhase::RunRegistry;
             return Ok(());
         };
         let digest: [u8; 32] = key
@@ -546,11 +562,35 @@ impl NativeScrubCursor {
 ///
 /// Compare the complete route inventory and persisted posting bytes. Unchanged
 /// segments are inherited through their sealed base root and are not rederived.
+#[cfg(test)]
 pub(crate) fn verify_changed_segments_for_seal(
     store: &ObjectStore,
     root: &NativeRoot,
     first_new_segment_id: u64,
 ) -> Result<(), CoreError> {
+    verify_changed_segments_for_seal_inner(store, root, first_new_segment_id, None).map(|_facts| ())
+}
+
+/// Complete the independent transition's clean-merge attribution.
+///
+/// The existing changed-segment oracle reads each new descriptor and its postings.
+/// No input or output facts escape unless both proofs complete.
+pub(crate) fn verify_changed_segments_for_seal_with_merge_facts(
+    store: &ObjectStore,
+    root: &NativeRoot,
+    first_new_segment_id: u64,
+    proof: NativeMergeProof,
+) -> Result<crate::maintenance_merge_facts::NativeRunMergeFacts, CoreError> {
+    verify_changed_segments_for_seal_inner(store, root, first_new_segment_id, Some(proof))?
+        .ok_or_else(|| corrupt("Native merge proof facts missing"))
+}
+
+fn verify_changed_segments_for_seal_inner(
+    store: &ObjectStore,
+    root: &NativeRoot,
+    first_new_segment_id: u64,
+    mut merge_proof: Option<NativeMergeProof>,
+) -> Result<Option<crate::maintenance_merge_facts::NativeRunMergeFacts>, CoreError> {
     // Reauthenticate in this independent proof, with bounded map-page reuse.
     let verification_store = store.metered_clone();
     let store = &verification_store;
@@ -558,6 +598,8 @@ pub(crate) fn verify_changed_segments_for_seal(
     if first_new_segment_id == 0 || first_new_segment_id > root.next_segment_id {
         return Err(corrupt("new segment range differs"));
     }
+    let mut output = crate::maintenance_merge_facts::NativeMergeOutputFacts::default();
+    let mut output_attributable = true;
     for segment_key in first_new_segment_id..root.next_segment_id {
         let segment = read_segment(store, root, segment_key)?;
         if segment.live_locals.len() != segment.logical_ids.len()
@@ -683,8 +725,76 @@ pub(crate) fn verify_changed_segments_for_seal(
                 ));
             }
         }
+        if let Some(proof) = merge_proof.as_mut() {
+            observe_verified_native_output(
+                proof,
+                segment_key,
+                &segment.logical_ids,
+                &mut output,
+                &mut output_attributable,
+            );
+        }
     }
-    Ok(())
+    let Some(proof) = merge_proof else {
+        return Ok(None);
+    };
+    finish_native_output(proof, output, output_attributable).map(Some)
+}
+
+fn observe_verified_native_output(
+    proof: &mut NativeMergeProof,
+    segment_key: u64,
+    logical_ids: &[u64],
+    output: &mut crate::maintenance_merge_facts::NativeMergeOutputFacts,
+    output_attributable: &mut bool,
+) {
+    if proof.input.input_runs == 0 {
+        return;
+    }
+    let clean_here = logical_ids
+        .iter()
+        .filter(|id| proof.clean_doc_ids.remove(*id))
+        .count();
+    if clean_here == 0 {
+        return;
+    }
+    if clean_here != logical_ids.len() {
+        *output_attributable = false;
+    } else if let Some(bytes) = proof.new_segment_index_bytes.get(&segment_key) {
+        match output
+            .segments
+            .checked_add(1)
+            .zip(output.index_encoded_bytes.checked_add(*bytes))
+        {
+            Some((segments, index_encoded_bytes)) => {
+                output.segments = segments;
+                output.index_encoded_bytes = index_encoded_bytes;
+            }
+            None => *output_attributable = false,
+        }
+    } else {
+        *output_attributable = false;
+    }
+}
+
+fn finish_native_output(
+    mut proof: NativeMergeProof,
+    output: crate::maintenance_merge_facts::NativeMergeOutputFacts,
+    output_attributable: bool,
+) -> Result<crate::maintenance_merge_facts::NativeRunMergeFacts, CoreError> {
+    if proof.input.input_runs > 0 {
+        proof.input.output = if output_attributable
+            && proof.clean_doc_ids.is_empty()
+            && output.segments > 0
+            && output.index_encoded_bytes > 0
+        {
+            Some(output)
+        } else {
+            None
+        };
+    }
+    proof.input.validate()?;
+    Ok(proof.input)
 }
 
 /// Full semantic scrub of every live Native document and committed route.
@@ -719,7 +829,7 @@ pub(crate) fn verify_all_for_scrub(
         }
         let due = store.map_get(&root.compaction_due, &key, budget)?;
         if descriptor.live_locals.len() < descriptor.logical_ids.len() {
-            if due != Some(reference) {
+            if due.as_ref() != Some(&reference) {
                 return Err(corrupt("partially retired segment debt differs"));
             }
             due_count = due_count
@@ -879,6 +989,9 @@ pub(crate) fn verify_all_for_scrub(
         {
             return Err(corrupt("body term or gram lacks posting route"));
         }
+        let indexed = independently_count_segment_index(store, root, &key, &reference, budget)?;
+        root.run_registry
+            .verify_segment(store, &key, &reference, indexed, budget)?;
     }
     if live_count != root.live_docs
         || gram_routes != root.gram_routes.entries
@@ -887,6 +1000,10 @@ pub(crate) fn verify_all_for_scrub(
     {
         return Err(corrupt("full scrub counts differ from roots"));
     }
+    // Run metadata is a separate authenticated ownership graph. The loop
+    // above checked each segment against its owner; this streams the run
+    // headers and members to check aggregate custody and hidden extra rows.
+    root.run_registry.verify_all(store, budget)?;
     let mut sources = store.map_cursor(&root.source, &[0], None, budget)?;
     while let Some((key, reference)) = sources.next()? {
         checkpoint(budget, "lexical:native:scrub-source")?;
@@ -903,6 +1020,61 @@ pub(crate) fn verify_all_for_scrub(
         }
     }
     Ok(())
+}
+
+/// Independently enumerate one changed segment's authenticated index closure.
+///
+/// The writer's producer-side root selection is not reused by seal
+/// or scrub. Body/current/source bytes are outside this posting-run counter
+/// and must be accounted by the service disk authority.
+pub(crate) fn independently_count_segment_index(
+    store: &ObjectStore,
+    root: &NativeRoot,
+    key: &[u8],
+    reference: &BlobRef,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<u64, CoreError> {
+    let id = u64::from_be_bytes(
+        key.try_into()
+            .map_err(|_error| corrupt("run verifier segment key width differs"))?,
+    );
+    if reference.root.kind != ObjectKind::Segment {
+        return Err(corrupt("run verifier segment kind differs"));
+    }
+    let descriptor = SegmentDescriptor::decode(&store.read_blob(reference, 64 * 1024, budget)?)?;
+    if descriptor.id != id {
+        return Err(corrupt("run verifier segment key/value differs"));
+    }
+    let inventory = descriptor
+        .route_inventory
+        .as_ref()
+        .ok_or_else(|| corrupt("run verifier route inventory absent"))?;
+    let mut roots = BTreeSet::from([reference.root.clone(), inventory.root.clone()]);
+    for route in read_route_inventory_budget(store, &descriptor, budget)? {
+        let surface = route
+            .first()
+            .copied()
+            .ok_or_else(|| corrupt("empty route"))?;
+        let (map, kind) = match surface {
+            GRAM_RAW | GRAM_FOLDED => (&root.gram_routes, ObjectKind::NativeTrigrams),
+            TERM_RAW | TERM_FOLDED => (&root.term_routes, ObjectKind::NativePositions),
+            _ => return Err(corrupt("run verifier route surface differs")),
+        };
+        let posting = store
+            .map_get(map, &route, budget)?
+            .ok_or_else(|| corrupt("run verifier posting route absent"))?;
+        if posting.root.kind != kind {
+            return Err(corrupt("run verifier posting kind differs"));
+        }
+        let _inserted = roots.insert(posting.root);
+    }
+    crate::lexical_runs::segment_index_encoded_bytes(
+        store,
+        &roots.into_iter().collect::<Vec<_>>(),
+        budget,
+        u64::try_from(crate::lexical_store::MAX_CLOSURE_REFS)
+            .map_err(|error| corrupt(&format!("closure bound width: {error}")))?,
+    )
 }
 
 fn decode_term_posting_live(
@@ -1142,19 +1314,81 @@ fn corrupt(reason: &str) -> CoreError {
 
 #[cfg(test)]
 mod cursor_tests {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fmt::Write as _;
 
-    use super::{NativeScrubCursor, verify_all_for_scrub, verify_changed_segments_for_seal};
+    use super::{
+        NativeScrubCursor, finish_native_output, independently_count_segment_index,
+        observe_verified_native_output, verify_all_for_scrub, verify_changed_segments_for_seal,
+        verify_changed_segments_for_seal_with_merge_facts,
+    };
     use crate::lexical_allocation::DocVersionReservation;
-    use crate::lexical_store::{AttemptBinding, ObjectStore};
-    use crate::text_authority::paged_transition::verify_transition_for_seal;
+    use crate::lexical_runs::SegmentRemoval;
+    use crate::lexical_store::{AttemptBinding, MapEdit, ObjectStore};
+    use crate::maintenance_merge_facts::{NativeMergeOutputFacts, NativeRunMergeFacts};
+    use crate::text_authority::paged_merge_proof::NativeMergeProof;
+    use crate::text_authority::paged_transition::{
+        verify_transition_for_seal, verify_transition_for_seal_with_policy,
+    };
+    use crate::text_authority::paged_writer::publish_delta_prepared_with_policy;
     use crate::text_authority::{AddedTextDoc, NativeAuthority, NativeSourceEdit, publish_delta};
     use quanta_index_contract::{
         ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SourceFileCoverage,
         SourceFileKey, SourceFileRevision, SymbolCoverage, SymbolNameSourcePolicyV1,
     };
     use quanta_index_core::RequestBudgetV1;
+    use quanta_index_core::lexical_maintenance::LexicalMaintenancePolicy;
     use sha2::{Digest as _, Sha256};
+
+    #[test]
+    fn mixed_clean_output_attribution_is_unavailable_without_refusing_valid_facts() {
+        let proof = || NativeMergeProof {
+            input: NativeRunMergeFacts {
+                input_runs: 2,
+                input_segments: 2,
+                input_index_encoded_bytes: 47,
+                output: Some(NativeMergeOutputFacts::default()),
+            },
+            clean_doc_ids: BTreeSet::from([11, 12]),
+            new_segment_index_bytes: BTreeMap::from([(7, 31), (8, 29)]),
+        };
+        let mut pure = proof();
+        let mut pure_output = NativeMergeOutputFacts::default();
+        let mut pure_available = true;
+        observe_verified_native_output(&mut pure, 7, &[11], &mut pure_output, &mut pure_available);
+        observe_verified_native_output(&mut pure, 8, &[12], &mut pure_output, &mut pure_available);
+        let pure_facts = finish_native_output(pure, pure_output, pure_available)
+            .expect("fixed pure output facts");
+        assert_eq!(
+            pure_facts.output,
+            Some(NativeMergeOutputFacts {
+                segments: 2,
+                index_encoded_bytes: 60,
+            })
+        );
+
+        for unrelated_id in [13, 99] {
+            let mut mixed = proof();
+            let mut output = NativeMergeOutputFacts::default();
+            let mut available = true;
+            // 13 is a fresh document, 99 a queued-debt survivor. Neither has
+            // clean input ownership, so this segment has no exact clean cost.
+            observe_verified_native_output(
+                &mut mixed,
+                7,
+                &[11, unrelated_id],
+                &mut output,
+                &mut available,
+            );
+            observe_verified_native_output(&mut mixed, 8, &[12], &mut output, &mut available);
+            let facts = finish_native_output(mixed, output, available)
+                .expect("mixed attribution must not refuse a publication");
+            assert_eq!(facts.input_runs, 2);
+            assert_eq!(facts.input_segments, 2);
+            assert_eq!(facts.input_index_encoded_bytes, 47);
+            assert_eq!(facts.output, None);
+        }
+    }
 
     #[test]
     fn bounded_cursor_proves_the_same_live_pages_as_full_scrub() {
@@ -1406,5 +1640,510 @@ mod cursor_tests {
             Ok(())
         };
         run().expect("bounded Native scrub oracle");
+    }
+
+    #[test]
+    fn append_only_runs_merge_physically_and_unrelated_healthy_removal_is_rejected() {
+        let run = || -> Result<(), Box<dyn std::error::Error>> {
+            let directory = tempfile::tempdir()?;
+            let store = ObjectStore::open(directory.path())?;
+            let mut base = None;
+            // Body payload dominates a deliberately small posting/index bundle.
+            let texts = [
+                format!("fn alpha() {{}} {}", "a".repeat(16 * 1024)),
+                format!("fn beta() {{}} {}", "b".repeat(16 * 1024)),
+                format!("fn gamma() {{}} {}", "c".repeat(16 * 1024)),
+            ];
+            for (ordinal, text) in texts.iter().enumerate() {
+                let id = u64::try_from(ordinal)? + 1;
+                let source = SourceFileKey {
+                    source_repo_id: RepoId::new("source-repo")?,
+                    repo_relative_path: RepoRelativePath::new(format!("src/doc-{id}.rs")),
+                };
+                let coverage = SourceFileCoverage {
+                    source: SourceFileRevision {
+                        file: source.clone(),
+                        revision_id: RevisionId::new(format!("source-r{id}"))?,
+                        source_sha256: Sha256::digest(text.as_bytes()).into(),
+                    },
+                    language: quanta_index_contract::lex::LanguageCode::new("rust")?,
+                    producer_policy_sha256: [1; 32],
+                    symbol_name_source_policy: SymbolNameSourcePolicyV1::Unspecified,
+                    unit_set_sha256: [2; 32],
+                    text_admitted: true,
+                    symbols: SymbolCoverage::Complete { symbol_count: 0 },
+                };
+                let binding = AttemptBinding {
+                    root_incarnation: [1; 16],
+                    repository_sha256: [2; 32],
+                    revision_sha256: [u8::try_from(id)?; 32],
+                    source_event_sha256: [u8::try_from(id)?; 32],
+                    target_generation: id,
+                    base_root_sha256: base.as_ref().map(|_| [u8::try_from(id - 1).unwrap(); 32]),
+                    operations_sha256: [u8::try_from(id)?; 32],
+                    format: 1,
+                };
+                let inherited = base
+                    .as_ref()
+                    .map_or_else(Vec::new, super::NativeRoot::root_objects);
+                let lease = store.begin_attempt(&binding, &inherited)?;
+                let (next, _) = publish_delta(
+                    &store,
+                    &lease,
+                    base.as_ref(),
+                    &[NativeSourceEdit::Upsert(coverage)],
+                    &[],
+                    &[AddedTextDoc {
+                        doc_id: id,
+                        source_file: source,
+                        candidate_id: format!("doc-{id}"),
+                        text: text.clone(),
+                    }],
+                    false,
+                    ManifestGeneration::new(id),
+                    [9; 32],
+                )?;
+                lease.finish_published(&next.root_objects())?;
+                base = Some(next);
+            }
+            let base = base.expect("three append-only generations");
+            assert_eq!(base.run_registry.runs.entries, 3);
+            let budget = RequestBudgetV1::unbounded();
+            let gold = texts.iter().cloned().map(Some).collect::<Vec<_>>();
+            let prior = NativeAuthority::open(store.clone(), base.clone())?;
+            assert_eq!(prior.intersect_terms(&["alpha"], true, &budget)?, vec![1]);
+            assert_eq!(prior.intersect_terms(&["beta"], true, &budget)?, vec![2]);
+            assert_eq!(prior.intersect_terms(&["gamma"], true, &budget)?, vec![3]);
+            let prior_docs = (1..=3)
+                .map(|id| {
+                    prior
+                        .read_document(id, &budget)
+                        .map(|document| document.map(|document| document.indexed_text))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(prior_docs, gold);
+            let body_limited = LexicalMaintenancePolicy::new(
+                2,
+                8,
+                64 * 1024 * 1024,
+                128 * 1024 * 1024,
+                2,
+                64 * 1024 * 1024,
+                8 * 1024,
+                60_000,
+            )?;
+            let no_op_binding = AttemptBinding {
+                root_incarnation: [1; 16],
+                repository_sha256: [2; 32],
+                revision_sha256: [5; 32],
+                source_event_sha256: [5; 32],
+                target_generation: 5,
+                base_root_sha256: Some([3; 32]),
+                operations_sha256: [5; 32],
+                format: 1,
+            };
+            let no_op_lease = store.begin_attempt(&no_op_binding, &base.root_objects())?;
+            let (unmerged, _) = publish_delta_prepared_with_policy(
+                &store,
+                &no_op_lease,
+                Some(&base),
+                &[],
+                &[],
+                &[],
+                false,
+                ManifestGeneration::new(5),
+                [9; 32],
+                None,
+                Some(&body_limited),
+                None,
+            )?;
+            assert_eq!(unmerged.run_registry.runs.entries, 3);
+            assert_eq!(unmerged.segments, base.segments);
+            let empty_reservation = DocVersionReservation {
+                first: 0,
+                count: 0,
+                scope_sha256: [9; 32],
+            };
+            let no_merge_proof = verify_transition_for_seal_with_policy(
+                &store,
+                &unmerged,
+                Some(&base),
+                &empty_reservation,
+                &[],
+                &[],
+                &[],
+                false,
+                base.next_segment_id,
+                None,
+                Some(&body_limited),
+                None,
+            )?;
+            let no_merge_facts = verify_changed_segments_for_seal_with_merge_facts(
+                &store,
+                &unmerged,
+                base.next_segment_id,
+                no_merge_proof,
+            )?;
+            assert_eq!(
+                no_merge_facts,
+                crate::maintenance_merge_facts::NativeRunMergeFacts::default()
+            );
+            no_op_lease.discard_unsealed()?;
+
+            let delta_source = SourceFileKey {
+                source_repo_id: RepoId::new("source-repo")?,
+                repo_relative_path: RepoRelativePath::new("src/doc-4.rs"),
+            };
+            let delta_text = "fn delta() {}";
+            let delta_coverage = SourceFileCoverage {
+                source: SourceFileRevision {
+                    file: delta_source.clone(),
+                    revision_id: RevisionId::new("source-r4")?,
+                    source_sha256: Sha256::digest(delta_text.as_bytes()).into(),
+                },
+                language: quanta_index_contract::lex::LanguageCode::new("rust")?,
+                producer_policy_sha256: [1; 32],
+                symbol_name_source_policy: SymbolNameSourcePolicyV1::Unspecified,
+                unit_set_sha256: [2; 32],
+                text_admitted: true,
+                symbols: SymbolCoverage::Complete { symbol_count: 0 },
+            };
+            let delta_doc = AddedTextDoc {
+                doc_id: 4,
+                source_file: delta_source,
+                candidate_id: "doc-4".into(),
+                text: delta_text.into(),
+            };
+            let delta_edit = NativeSourceEdit::Upsert(delta_coverage);
+            let delta_binding = AttemptBinding {
+                root_incarnation: [1; 16],
+                repository_sha256: [2; 32],
+                revision_sha256: [6; 32],
+                source_event_sha256: [6; 32],
+                target_generation: 6,
+                base_root_sha256: Some([3; 32]),
+                operations_sha256: [6; 32],
+                format: 1,
+            };
+            let delta_lease = store.begin_attempt(&delta_binding, &base.root_objects())?;
+            let (delta, _) = publish_delta_prepared_with_policy(
+                &store,
+                &delta_lease,
+                Some(&base),
+                std::slice::from_ref(&delta_edit),
+                &[],
+                std::slice::from_ref(&delta_doc),
+                false,
+                ManifestGeneration::new(6),
+                [9; 32],
+                None,
+                Some(&body_limited),
+                None,
+            )?;
+            assert_eq!(delta.run_registry.runs.entries, 4);
+            let delta_reservation = DocVersionReservation {
+                first: 4,
+                count: 1,
+                scope_sha256: [9; 32],
+            };
+            let append_proof = verify_transition_for_seal_with_policy(
+                &store,
+                &delta,
+                Some(&base),
+                &delta_reservation,
+                std::slice::from_ref(&delta_edit),
+                &[],
+                std::slice::from_ref(&delta_doc),
+                false,
+                base.next_segment_id,
+                None,
+                Some(&body_limited),
+                None,
+            )?;
+            let append_facts = verify_changed_segments_for_seal_with_merge_facts(
+                &store,
+                &delta,
+                base.next_segment_id,
+                append_proof,
+            )?;
+            assert_eq!(
+                append_facts,
+                crate::maintenance_merge_facts::NativeRunMergeFacts::default()
+            );
+            let delta_reader = NativeAuthority::open(store.clone(), delta)?;
+            assert_eq!(
+                delta_reader.intersect_terms(&["delta"], true, &budget)?,
+                vec![4]
+            );
+            assert_eq!(
+                delta_reader
+                    .read_document(4, &budget)?
+                    .map(|doc| doc.indexed_text),
+                Some(delta_text.into())
+            );
+            delta_lease.discard_unsealed()?;
+            let policy = LexicalMaintenancePolicy::new(
+                2,
+                4,
+                64 * 1024 * 1024,
+                128 * 1024 * 1024,
+                2,
+                64 * 1024 * 1024,
+                64 * 1024 * 1024,
+                60_000,
+            )?;
+            let binding = AttemptBinding {
+                root_incarnation: [1; 16],
+                repository_sha256: [2; 32],
+                revision_sha256: [4; 32],
+                source_event_sha256: [4; 32],
+                target_generation: 4,
+                base_root_sha256: Some([3; 32]),
+                operations_sha256: [4; 32],
+                format: 1,
+            };
+            let lease = store.begin_attempt(&binding, &base.root_objects())?;
+            let (merged, receipt) = publish_delta_prepared_with_policy(
+                &store,
+                &lease,
+                Some(&base),
+                &[],
+                &[],
+                &[],
+                false,
+                ManifestGeneration::new(4),
+                [9; 32],
+                None,
+                Some(&policy),
+                None,
+            )?;
+            assert_eq!(merged.run_registry.runs.entries, 2);
+            assert_eq!(merged.live_docs, base.live_docs);
+            assert_eq!(receipt.compaction_rederived_docs, 2);
+            assert!(receipt.shards_written > 0);
+            assert!(
+                store
+                    .map_get(&merged.segments, &1_u64.to_be_bytes(), None)?
+                    .is_none()
+            );
+            assert!(
+                store
+                    .map_get(&merged.segments, &2_u64.to_be_bytes(), None)?
+                    .is_none()
+            );
+            assert!(
+                store
+                    .map_get(&merged.segments, &3_u64.to_be_bytes(), None)?
+                    .is_some()
+            );
+            let reservation = DocVersionReservation {
+                first: 0,
+                count: 0,
+                scope_sha256: [9; 32],
+            };
+            let merge_proof = verify_transition_for_seal_with_policy(
+                &store,
+                &merged,
+                Some(&base),
+                &reservation,
+                &[],
+                &[],
+                &[],
+                false,
+                base.next_segment_id,
+                None,
+                Some(&policy),
+                None,
+            )?;
+            let merge_facts = verify_changed_segments_for_seal_with_merge_facts(
+                &store,
+                &merged,
+                base.next_segment_id,
+                merge_proof,
+            )?;
+            assert_eq!(merge_facts.input_runs, 2);
+            assert_eq!(merge_facts.input_segments, 2);
+            let expected_input_bytes = [1_u64, 2].into_iter().try_fold(0_u64, |sum, id| {
+                let key = id.to_be_bytes();
+                let reference = store.map_get(&base.segments, &key, None)?.ok_or_else(|| {
+                    quanta_index_core::CoreError::NotFound("fixed old segment absent".into())
+                })?;
+                let bytes =
+                    independently_count_segment_index(&store, &base, &key, &reference, None)?;
+                sum.checked_add(bytes).ok_or_else(|| {
+                    quanta_index_core::CoreError::InvalidContract(
+                        "fixed old index byte sum overflow".into(),
+                    )
+                })
+            })?;
+            assert_eq!(merge_facts.input_index_encoded_bytes, expected_input_bytes);
+            let expected_output =
+                std::iter::once(base.next_segment_id).try_fold(0_u64, |sum, id| {
+                    let key = id.to_be_bytes();
+                    let reference =
+                        store
+                            .map_get(&merged.segments, &key, None)?
+                            .ok_or_else(|| {
+                                quanta_index_core::CoreError::NotFound(
+                                    "fixed merged segment absent".into(),
+                                )
+                            })?;
+                    let bytes =
+                        independently_count_segment_index(&store, &merged, &key, &reference, None)?;
+                    sum.checked_add(bytes).ok_or_else(|| {
+                        quanta_index_core::CoreError::InvalidContract(
+                            "fixed merged index byte sum overflow".into(),
+                        )
+                    })
+                })?;
+            assert_eq!(
+                merge_facts.output,
+                Some(crate::maintenance_merge_facts::NativeMergeOutputFacts {
+                    segments: 1,
+                    index_encoded_bytes: expected_output,
+                })
+            );
+            let mixed_binding = AttemptBinding {
+                root_incarnation: [1; 16],
+                repository_sha256: [2; 32],
+                revision_sha256: [7; 32],
+                source_event_sha256: [7; 32],
+                target_generation: 7,
+                base_root_sha256: Some([3; 32]),
+                operations_sha256: [7; 32],
+                format: 1,
+            };
+            let mixed_lease = store.begin_attempt(&mixed_binding, &base.root_objects())?;
+            let (mixed, _) = publish_delta_prepared_with_policy(
+                &store,
+                &mixed_lease,
+                Some(&base),
+                std::slice::from_ref(&delta_edit),
+                &[],
+                std::slice::from_ref(&delta_doc),
+                false,
+                ManifestGeneration::new(7),
+                [9; 32],
+                None,
+                Some(&policy),
+                None,
+            )?;
+            let mixed_proof = verify_transition_for_seal_with_policy(
+                &store,
+                &mixed,
+                Some(&base),
+                &delta_reservation,
+                std::slice::from_ref(&delta_edit),
+                &[],
+                std::slice::from_ref(&delta_doc),
+                false,
+                base.next_segment_id,
+                None,
+                Some(&policy),
+                None,
+            )?;
+            let mixed_facts = verify_changed_segments_for_seal_with_merge_facts(
+                &store,
+                &mixed,
+                base.next_segment_id,
+                mixed_proof,
+            )?;
+            assert_eq!(mixed_facts.input_runs, 2);
+            assert_eq!(mixed_facts.input_segments, 2);
+            assert_eq!(mixed_facts.input_index_encoded_bytes, expected_input_bytes);
+            let mut clean_outputs = Vec::new();
+            let mut fresh_outputs = Vec::new();
+            for id in base.next_segment_id..mixed.next_segment_id {
+                let segment =
+                    crate::text_authority::paged_writer::read_segment(&store, &mixed, id)?;
+                if segment
+                    .logical_ids
+                    .iter()
+                    .all(|logical| [1, 2].contains(logical))
+                {
+                    clean_outputs.push(id);
+                } else {
+                    assert_eq!(segment.logical_ids, vec![4]);
+                    fresh_outputs.push(id);
+                }
+            }
+            assert_eq!(clean_outputs.len(), 1);
+            assert_eq!(fresh_outputs.len(), 1);
+            let clean_key = clean_outputs
+                .first()
+                .ok_or("fixed mixed clean output absent")?
+                .to_be_bytes();
+            let clean_reference = store
+                .map_get(&mixed.segments, &clean_key, None)?
+                .ok_or("fixed mixed clean segment absent")?;
+            let clean_output_bytes = independently_count_segment_index(
+                &store,
+                &mixed,
+                &clean_key,
+                &clean_reference,
+                None,
+            )?;
+            assert_eq!(
+                mixed_facts.output,
+                Some(crate::maintenance_merge_facts::NativeMergeOutputFacts {
+                    segments: 1,
+                    index_encoded_bytes: clean_output_bytes,
+                })
+            );
+            mixed_lease.discard_unsealed()?;
+            verify_all_for_scrub(&store, &merged, None)?;
+            let current = NativeAuthority::open(store.clone(), merged.clone())?;
+            let actual = (1..=3)
+                .map(|id| {
+                    current
+                        .read_document(id, &budget)
+                        .map(|document| document.map(|document| document.indexed_text))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(actual, gold);
+
+            let unrelated = 3_u64.to_be_bytes().to_vec();
+            let reference = store
+                .map_get(&merged.segments, &unrelated, None)?
+                .expect("third run remains physical");
+            let mut forged = merged;
+            forged.segments = store.map_apply(
+                &lease,
+                &forged.segments,
+                std::iter::once(Ok(MapEdit {
+                    key: unrelated.clone(),
+                    value: None,
+                })),
+            )?;
+            forged.run_registry = forged.run_registry.apply(
+                &store,
+                &lease,
+                &[SegmentRemoval {
+                    key: unrelated,
+                    reference,
+                }],
+                &[],
+            )?;
+            forged.validate()?;
+            assert!(
+                verify_transition_for_seal_with_policy(
+                    &store,
+                    &forged,
+                    Some(&base),
+                    &reservation,
+                    &[],
+                    &[],
+                    &[],
+                    false,
+                    base.next_segment_id,
+                    None,
+                    Some(&policy),
+                    None,
+                )
+                .is_err()
+            );
+            Ok(())
+        };
+        run().expect("clean Native run merge and independent refusal");
     }
 }

@@ -24,6 +24,14 @@ workflow = ".circleci/config.yml"
 job = "verify-rust-tests"
 step = "rust nextest"
 
+[rails.pr-ciborium-no-default]
+tier = "pr"
+command = "./scripts/cargow --lane test-ciborium-no-default-lane test -p ciborium --no-default-features --test no_std --locked"
+target_kind = "integration"
+workflow = ".circleci/config.yml"
+job = "verify-rust-tests"
+step = "ciborium no-default integration"
+
 [rails.manual-heavy-workspace-nextest]
 tier = "correctness"
 command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
@@ -668,6 +676,72 @@ owner = "tools/benchmark/retrieval/conditional_proof.py"
 rail = "pr-benchmark-control-python"
 
 [[integration_targets]]
+id = "ciborium-admitted-seed-decode-v3"
+path = "vendor/ciborium-0.2.2/tests/admitted_seed_decode_v3.rs"
+owner = "ciborium"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ciborium-canonical"
+path = "vendor/ciborium-0.2.2/tests/canonical.rs"
+owner = "ciborium"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ciborium-codec"
+path = "vendor/ciborium-0.2.2/tests/codec.rs"
+owner = "ciborium"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ciborium-error"
+path = "vendor/ciborium-0.2.2/tests/error.rs"
+owner = "ciborium"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ciborium-finite-decode-v3"
+path = "vendor/ciborium-0.2.2/tests/finite_decode_v3.rs"
+owner = "ciborium"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ciborium-fuzz"
+path = "vendor/ciborium-0.2.2/tests/fuzz.rs"
+owner = "ciborium"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ciborium-macro"
+path = "vendor/ciborium-0.2.2/tests/macro.rs"
+owner = "ciborium"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ciborium-no-std"
+path = "vendor/ciborium-0.2.2/tests/no_std.rs"
+owner = "ciborium"
+rail = "pr-ciborium-no-default"
+
+[[integration_targets]]
+id = "ciborium-recursion"
+path = "vendor/ciborium-0.2.2/tests/recursion.rs"
+owner = "ciborium"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ciborium-pointer-integer"
+path = "vendor/ciborium-0.2.2/tests/pointer_integer.rs"
+owner = "ciborium"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ciborium-tag"
+path = "vendor/ciborium-0.2.2/tests/tag.rs"
+owner = "ciborium"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "contract-hybrid-candidate"
 path = "crates/quanta-index-contract/tests/hybrid_candidate_contract.rs"
 owner = "quanta-index-contract"
@@ -863,6 +937,13 @@ rail = "pr-workspace-nextest"
 id = "lexical-planner-authority"
 path = "crates/quanta-index-lexical/tests/planner_authority.rs"
 owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lexical-native-text-policy"
+path = "crates/quanta-index-lexical/tests/native_text_policy.rs"
+owner = "quanta-index-lexical"
+target = "native_text_policy"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
@@ -2023,6 +2104,13 @@ target = "native_projection"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "kernel-native-bootstrap"
+path = "crates/quanta-index-kernel/tests/native_bootstrap.rs"
+owner = "quanta-index-kernel"
+target = "native_bootstrap"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "kernel-native-semantic-projection"
 path = "crates/quanta-index-kernel/tests/native_semantic_projection.rs"
 owner = "quanta-index-kernel"
@@ -2037,8 +2125,142 @@ target = "native_index_uds"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-runtime-native-source-owner-lookup"
+path = "crates/quanta-index-searchd-runtime/tests/native_source_owner_lookup.rs"
+owner = "quanta-index-searchd-runtime"
+target = "native_source_owner_lookup"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-native-producer-source-recovery"
+path = "crates/quanta-index-searchd-runtime/tests/native_producer_source_recovery.rs"
+owner = "quanta-index-searchd-runtime"
+target = "native_producer_source_recovery"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "kernel-native-source-batch"
 path = "crates/quanta-index-kernel/tests/native_source_batch.rs"
 owner = "quanta-index-kernel"
 target = "native_source_batch"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-source-rebase"
+path = "crates/quanta-index-kernel/tests/native_source_rebase.rs"
+owner = "quanta-index-kernel"
+target = "native_source_rebase"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-native-owned-pump"
+path = "crates/quanta-index-searchd-runtime/tests/native_owned_pump.rs"
+owner = "quanta-index-searchd-runtime"
+target = "native_owned_pump"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-fault-edges"
+path = "crates/quanta-index-kernel/tests/native_fault_edges.rs"
+owner = "quanta-index-kernel"
+target = "native_fault_edges"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-semantic-rebind"
+path = "crates/quanta-index-kernel/tests/native_semantic_rebind.rs"
+owner = "quanta-index-kernel"
+target = "native_semantic_rebind"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-hard-scan-checkpoint-restart"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_hard_scan_checkpoint_restart.rs"
+owner = "quanta-index-searchd-runtime"
+target = "runtime_risk_suite"
+rail = "pr-workspace-nextest"
+cfg = "debug_assertions"
+
+[[integration_targets]]
+id = "kernel-native-query-session"
+path = "crates/quanta-index-kernel/tests/native_query_session.rs"
+owner = "quanta-index-kernel"
+target = "native_query_session"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-query-session-real"
+path = "crates/quanta-index-kernel/tests/native_query_session_real.rs"
+owner = "quanta-index-kernel"
+target = "native_query_session_real"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-native-effort"
+path = "crates/quanta-index-searchd-runtime/tests/native_effort.rs"
+owner = "quanta-index-searchd-runtime"
+target = "native_effort"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "storage-native-object-namespace"
+path = "crates/quanta-index-storage/tests/native_object_namespace.rs"
+owner = "quanta-index-storage"
+target = "native_object_namespace"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "storage-native-object-namespace-process"
+path = "crates/quanta-index-storage/tests/native_object_namespace_process.rs"
+owner = "quanta-index-storage"
+target = "native_object_namespace_process"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-noop-cost"
+path = "crates/quanta-index-kernel/tests/native_noop_cost.rs"
+owner = "quanta-index-kernel"
+target = "native_noop_cost"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-native-product-process"
+path = "crates/quanta-index-searchd-runtime/tests/native_product_process.rs"
+owner = "quanta-index-searchd-runtime"
+target = "native_product_process"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-source-resync"
+path = "crates/quanta-index-kernel/tests/native_source_resync.rs"
+owner = "quanta-index-kernel"
+target = "native_source_resync"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-graph"
+path = "crates/quanta-index-kernel/tests/native_graph.rs"
+owner = "quanta-index-kernel"
+target = "native_graph"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "kernel-native-semantic-certified-chunks"
+path = "crates/quanta-index-kernel/tests/native_semantic_certified_chunks.rs"
+owner = "quanta-index-kernel"
+target = "native_semantic_certified_chunks"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-native-graph-uds"
+path = "crates/quanta-index-searchd-runtime/tests/native_graph_uds.rs"
+owner = "quanta-index-searchd-runtime"
+target = "native_graph_uds"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-native-overlay-uds"
+path = "crates/quanta-index-searchd-runtime/tests/native_overlay_uds.rs"
+owner = "quanta-index-searchd-runtime"
+target = "native_overlay_uds"
 rail = "pr-workspace-nextest"

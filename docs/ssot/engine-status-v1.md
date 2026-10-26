@@ -41,34 +41,35 @@ Selection itself does not create a lifetime lease; acquired views retain handles
 Stronger pin or resource claims keep their [proposed scope](../adr/OCT-04-001-search-corpus-selection-and-ingest-pressure.md)
 rather than reopening completed E3 implementation scopes.
 
-[Index closeout](../plans/oct-10-index-closeout/README.md) owns remaining code and conditional
+[Index closeout](../plans/oct-22-finalizing/README.md) owns remaining code and conditional
 optimization, missing inputs and remaining execution.
-Frozen5796 matching release diagnostics confirmed large default build/seal
-timeout and XL posting admission refusal before daemon startup. Current F15
-source stores immutable bucket packs and postings, publishes a durable root
-before the sealed manifest, and reuses unchanged committed objects on delta.
-Cold open independently validates the complete source/posting census and retains
-a bounded term/range/hash directory; queries read admitted posting ranges under
-one request work budget. Logical heap admission does not establish an RSS bound.
-F15 implementation/selected owner checks are consolidated in the accepted ADR;
-matching Large/XL, crash/reopen and release evidence remain capacity/cost boundaries under
-[E4-01/05](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs).
+The lexical file authority stores immutable bucket packs and postings, publishes
+its durable root before the sealed manifest, and reuses unchanged committed
+objects on delta. Cold open validates the complete source/posting census and
+retains a bounded term/range/hash directory; queries read admitted posting ranges
+under one request work budget. Logical heap admission does not establish an RSS
+bound. Architecture decisions are recorded in the accepted ADRs; source-specific
+Large/XL failures and passes belong to
+[VALIDATION](../history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#performance-inputs).
 Explicit timeout/retention diagnostic success does not close default capacity.
-[SEP-21](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer)
-owns installed/paired/Linux/provider/release acceptance. Its R3 gap belongs to
-the external Semantica producer's independent expected semantic partition/omission
-check before dispatch. It is a separate producer-integration obligation, not a
-Quanta standalone engine code defect. Supplied-scope duplicate/conflict validation
-is already implemented.
+[E08](../plans/oct-22-finalizing/E08-integration-release.md)
+owns installed/paired/Linux/provider/release work; [SEP-21 execution records](../history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#release-and-consumer)
+remain evidence. Independent expected semantic partition/omission checking before
+dispatch is producer-owned under [E01](../plans/oct-22-finalizing/E01-producer-generation.md).
+The R3 fixed test oracle has an implementation history; its actual Runtime/pair
+execution is separate. Do not infer an absent Quanta engine or rewrite the oracle.
+Supplied-scope duplicate/conflict validation is already implemented.
 P11's common typed deploy/activate/restore-forward producer, recipes and
 parser/checker/aggregate are implemented under
 [OCT-05-004](../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#operational-actions).
-[S21-12](../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance)
-still needs concrete target adapters, independent pre/post contracts and authorized inputs.
+[E08](../plans/oct-22-finalizing/E08-integration-release.md#release-inputs)
+owns the [S21-12 contract](../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance)
+for concrete target adapters, independent pre/post observers and authorized inputs.
 The [existing cross-repo recipe](../../scripts/verify-repomap-cross-repo.sh) and
 [paired component archive](../../tools/ci/paired_r5_result.py) bind caller/kernel
 selection, canonical resolver mapping and CLI-owned completion receipts. Their
 `runner-candidate-only` result is distinct from actual exact-pair qualification
-and concrete operational target/observer acceptance. Current execution status belongs
-to [I0-03](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer).
+and concrete operational target/observer acceptance. Current work status belongs
+to E08; [I0-03 records](../history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#release-and-consumer)
+retain their source-scoped results.
 Local tests, code presence and documentation cleanup do not issue qualification.

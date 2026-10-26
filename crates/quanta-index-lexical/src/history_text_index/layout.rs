@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
+use quanta_index_core::HistoryTextFileIoPort;
 use quanta_index_core::{
     AuxiliaryGenerationKeyV1, CoreError, GenerationStorageKeyV1, HistoryTextKindV1,
 };
@@ -131,6 +132,36 @@ pub(super) fn list_generations(
     Ok(generations)
 }
 
+pub(super) fn list_generations_admitted(
+    root: &Path,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    io: &dyn HistoryTextFileIoPort,
+) -> Result<Vec<ManifestGeneration>, CoreError> {
+    let dir = root.join(GenerationStorageKeyV1::for_repo_revision(repo_id, revision_id).as_str());
+    if io.metadata(&dir)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut generations = Vec::new();
+    for entry in io.list_directory(&dir)? {
+        let generation = entry
+            .name
+            .to_str()
+            .and_then(GenerationStorageKeyV1::generation_of_dir_name)
+            .ok_or_else(|| CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt,
+                message: format!(
+                    "history text index: foreign entry {} in {}",
+                    entry.name.to_string_lossy(),
+                    dir.display()
+                ),
+            })?;
+        generations.push(generation);
+    }
+    generations.sort_unstable();
+    Ok(generations)
+}
+
 /// Every published epoch of one generation, ascending; none when the
 /// generation has no directory.
 pub(super) fn list_epochs(
@@ -171,6 +202,29 @@ pub(super) fn list_epochs(
     Ok(epochs)
 }
 
+pub(super) fn list_epochs_admitted(
+    root: &Path,
+    generation: &AuxiliaryGenerationKeyV1,
+    io: &dyn HistoryTextFileIoPort,
+) -> Result<Vec<AuxEpochV1>, CoreError> {
+    let dir = generation_dir(root, generation);
+    if io.metadata(&dir)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut epochs = Vec::new();
+    for entry in io.list_directory(&dir)? {
+        let name = entry.name.to_str().ok_or_else(|| CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::HistoryTextIndexCorrupt,
+            message: format!("history text index: non-UTF-8 entry in {}", dir.display()),
+        })?;
+        if let Some(epoch) = parse_epoch_dir_name(name)? {
+            epochs.push(epoch);
+        }
+    }
+    epochs.sort_unstable();
+    Ok(epochs)
+}
+
 /// Recursive byte size of a directory tree (what a discard reclaims).
 pub(super) fn tree_bytes(path: &Path) -> Result<u64, CoreError> {
     let metadata = std::fs::symlink_metadata(path).map_err(|err| {
@@ -199,6 +253,33 @@ pub(super) fn tree_bytes(path: &Path) -> Result<u64, CoreError> {
         total = total.saturating_add(tree_bytes(&entry.path())?);
     }
     Ok(total)
+}
+
+pub(super) fn tree_bytes_admitted(
+    path: &Path,
+    io: &dyn HistoryTextFileIoPort,
+) -> Result<u64, CoreError> {
+    let metadata = io.metadata(path)?.ok_or_else(|| {
+        CoreError::NotFound(format!("history text tree absent: {}", path.display()))
+    })?;
+    if !metadata.is_dir() {
+        return Ok(metadata.len());
+    }
+    let mut total = 0_u64;
+    for entry in io.list_directory(path)? {
+        total = total.saturating_add(tree_bytes_admitted(&path.join(entry.name), io)?);
+    }
+    Ok(total)
+}
+
+pub(super) fn sync_parent_admitted(
+    path: &Path,
+    io: &dyn HistoryTextFileIoPort,
+) -> Result<(), CoreError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| CoreError::InvalidContract("history path has no parent".into()))?;
+    io.sync_directory(parent)
 }
 
 /// Make the directory entry `path` durable in its parent.

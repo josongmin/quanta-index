@@ -101,7 +101,8 @@ fn an_undeclared_repo_map_accessor_is_a_typed_refusal() {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_) => panic!("unexpected refusal: {err:?}"),
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. } => panic!("unexpected refusal: {err:?}"),
     }
     // The refusal is constructible through the view's own error type.
     let refused = ReadViewRefusedError::DomainUndeclared {

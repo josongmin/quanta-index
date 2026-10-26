@@ -247,9 +247,10 @@ fn reference_ranking(commits: &[CommitRecord], terms: &[&str]) -> Vec<(CommitSha
 #[test]
 fn relevance_ranks_by_score_and_recency_by_time_on_one_fixture() -> TestResult {
     let plane = plane()?;
-    let _receipt = plane
-        .materializer
-        .publish_batch(&batch("fixture", fixture()), None)?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch("fixture", fixture()),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let reference = reference_ranking(&fixture(), &["needle"]);
     if reference.len() != 5 {
         return Err(format!("five commits mention needle: {reference:?}").into());
@@ -339,9 +340,10 @@ fn relevance_ranks_by_score_and_recency_by_time_on_one_fixture() -> TestResult {
 #[test]
 fn a_cursor_of_the_other_order_is_refused_typed() -> TestResult {
     let plane = plane()?;
-    let _receipt = plane
-        .materializer
-        .publish_batch(&batch("fixture", fixture()), None)?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch("fixture", fixture()),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let relevance = page(
         &plane.dispatcher,
         "type:commit needle",
@@ -410,9 +412,10 @@ fn a_cursor_of_the_other_order_is_refused_typed() -> TestResult {
 #[test]
 fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> TestResult {
     let plane = plane()?;
-    let _receipt = plane
-        .materializer
-        .publish_batch(&batch("fixture", fixture()), None)?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch("fixture", fixture()),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let reference: Vec<CommitSha> = reference_ranking(&fixture(), &["needle"])
         .into_iter()
         .map(|(sha, _score)| sha)
@@ -469,7 +472,7 @@ fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> Test
             "late",
             vec![commit(9, 900, "carol", "needle needle needle needle")],
         ),
-        None,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     let continued = page(
         &plane.dispatcher,
@@ -509,7 +512,7 @@ fn relevance_pages_partition_the_ranking_and_a_pruned_epoch_is_expired() -> Test
                 &format!("more-{step}"),
                 vec![commit(byte, 1_000, "dave", "unrelated")],
             ),
-            None,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
         )?;
     }
     let code = error_code(
@@ -600,9 +603,10 @@ fn a_discard_that_fails_after_the_delta_is_durable_is_counted_and_retried() -> T
             plane.index.epochs_of(&generation)?.into_iter().collect();
         Ok((retained, durable))
     };
-    let _receipt = plane
-        .materializer
-        .publish_batch(&batch("fixture", fixture()), None)?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch("fixture", fixture()),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     plane.index.fail_next_discard();
     for step in 0..=AUX_EPOCH_RETAIN {
         let byte = u8::try_from(step.saturating_add(20))?;
@@ -611,7 +615,7 @@ fn a_discard_that_fails_after_the_delta_is_durable_is_counted_and_retried() -> T
                 &format!("more-{step}"),
                 vec![commit(byte, 1_000, "dave", "unrelated")],
             ),
-            None,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
         )?;
     }
     let (retained, durable) = retained_and_durable(&plane)?;
@@ -628,7 +632,7 @@ fn a_discard_that_fails_after_the_delta_is_durable_is_counted_and_retried() -> T
 
     let _receipt = plane.materializer.publish_batch(
         &batch("after", vec![commit(99, 2_000, "erin", "unrelated")]),
-        None,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     let (retained, durable) = retained_and_durable(&plane)?;
     if failures(&plane)? != 1 || retained != durable {
@@ -677,9 +681,10 @@ fn relevance_without_a_wired_index_is_refused_typed_while_recency_serves() -> Te
 #[test]
 fn an_unscorable_expression_is_refused_under_relevance_and_filters_under_recency() -> TestResult {
     let plane = plane()?;
-    let _receipt = plane
-        .materializer
-        .publish_batch(&batch("fixture", fixture()), None)?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch("fixture", fixture()),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let code = error_code(
         &plane.dispatcher,
         "type:commit 'needle'",
@@ -724,7 +729,7 @@ fn recency_and_relevance_count_the_same_rows_for_the_same_text_query() -> TestRe
                 commit(4, 400, "alice", "fix the 'x.y' literal"),
             ],
         ),
-        None,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     for (query_text, expected) in [
         ("type:commit fix", BTreeSet::from([sha(1), sha(3), sha(4)])),
@@ -755,9 +760,10 @@ fn recency_and_relevance_count_the_same_rows_for_the_same_text_query() -> TestRe
 #[test]
 fn filters_apply_to_relevance_rows_and_the_count_is_exact() -> TestResult {
     let plane = plane()?;
-    let _receipt = plane
-        .materializer
-        .publish_batch(&batch("fixture", fixture()), None)?;
+    let _receipt = plane.materializer.publish_batch(
+        &batch("fixture", fixture()),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let bob = page(
         &plane.dispatcher,
         "type:commit author:bob needle",
@@ -806,14 +812,14 @@ fn an_epoch_index_is_rebuilt_in_full_when_the_base_has_none() -> TestResult {
     }
     let _receipt = plane.materializer.publish_batch(
         &batch("first-indexed", vec![commit(2, 200, "bob", "needle now")]),
-        None,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     let _receipt = plane.materializer.publish_batch(
         &batch(
             "second-indexed",
             vec![commit(3, 300, "carol", "needle again")],
         ),
-        None,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     let builds = plane.index.builds()?;
     if builds
@@ -856,13 +862,16 @@ fn a_failed_index_publish_leaves_the_ledger_and_catalog_untouched() -> TestResul
         ledger: Arc::clone(&ledger),
     })
     .with_history_text(history_text);
-    let _receipt = materializer.publish_batch(&batch("fixture", fixture()), None)?;
+    let _receipt = materializer.publish_batch(
+        &batch("fixture", fixture()),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let applies_before = catalog.applies();
     let rows_before = catalog.row_count();
     index.fail_next_publish();
     match materializer.publish_batch(
         &batch("refused", vec![commit(9, 900, "carol", "needle")]),
-        None,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     ) {
         Err(CoreError::Storage(message)) if message.contains("injected publish failure") => {}
         other => return Err(format!("the publish failure propagates, got {other:?}").into()),
@@ -895,7 +904,7 @@ fn a_failed_index_publish_leaves_the_ledger_and_catalog_untouched() -> TestResul
     // The next attempt lands and claims epoch 2 with its index.
     let _receipt = materializer.publish_batch(
         &batch("retry", vec![commit(9, 900, "carol", "needle")]),
-        None,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     if index.epochs_of(&generation)? != vec![AuxEpochV1::new(1), AuxEpochV1::new(2)] {
         return Err("the retry publishes epoch 2".into());

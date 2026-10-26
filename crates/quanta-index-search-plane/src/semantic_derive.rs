@@ -282,7 +282,7 @@ impl<'a> DerivedSemanticScopeSource<'a> {
             .record_provider_stage_v1(RequestProviderStageV1::IngestWindowReturned {
                 window_ordinal,
             });
-        let all_vectors = embedded?;
+        let all_vectors = embedded?.into_unscoped()?;
         if all_vectors.len() != texts.len() {
             return Err(CoreError::InvalidContract(format!(
                 "semantic derivation: embedder returned {} vectors for {} window texts",
@@ -1384,7 +1384,10 @@ mod tests {
     }
 
     impl TextEmbeddingProvider for RecordingEmbedder {
-        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        fn embed_batch(
+            &self,
+            texts: &[&str],
+        ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
             self.calls
                 .lock()
                 .map_err(|err| CoreError::Storage(format!("recording embedder poisoned: {err}")))?

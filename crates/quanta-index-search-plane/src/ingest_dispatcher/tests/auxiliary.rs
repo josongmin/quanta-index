@@ -10,6 +10,69 @@ use quanta_index_core::{
     SemanticStreamWindowPolicy,
 };
 
+#[test]
+fn cancelled_history_materialization_refuses_before_text_or_catalog_birth() -> TestRes {
+    let ledger = Arc::new(RwLock::new(Ledger::new()));
+    let (parts, catalog) = aux_parts(Arc::clone(&ledger));
+    let text = MemoryHistoryTextIndex::shared();
+    let materializer = DirectHistoryMaterializer::new(parts)
+        .with_history_text(HistoryTextIndexParts::new(text.clone()));
+    let batch = fixture_history_batch(9, vec![fixture_commit(1, &[])]);
+    let budget = quanta_index_core::RequestBudgetV1::unbounded();
+    budget.cancel_handle().cancel();
+    if !matches!(
+        materializer.publish_batch(&batch, &budget),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled,
+            ..
+        })
+    ) || catalog.applies() != 0
+        || !text.builds()?.is_empty()
+    {
+        return Err("cancelled history request reached a fresh text/Catalog publication".into());
+    }
+    if ledger
+        .read()
+        .map_err(|error| format!("ledger poisoned: {error}"))?
+        .history_state(&batch.repo_id, &batch.revision_id, batch.generation)
+        .is_some()
+    {
+        return Err("cancelled history request made its epoch visible".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn history_coordinator_wait_observes_original_deadline_without_catalog_publication() -> TestRes {
+    let ledger = Arc::new(RwLock::new(Ledger::new()));
+    let (parts, catalog) = aux_parts(ledger);
+    let coordinator = Arc::clone(&parts.coordinator);
+    let held = coordinator.lock("fixed other writer")?;
+    let materializer = DirectHistoryMaterializer::new(parts);
+    let batch = fixture_history_batch(9, vec![fixture_commit(1, &[])]);
+    let (sent, received) = std::sync::mpsc::channel();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(30);
+    let worker = std::thread::spawn(move || {
+        let outcome = materializer
+            .publish_batch(&batch, &quanta_index_core::RequestBudgetV1::until(deadline));
+        let _reported = sent.send(outcome);
+    });
+    let observed = received.recv_timeout(std::time::Duration::from_secs(2));
+    drop(held);
+    worker.join().map_err(|_panic| "history waiter panicked")?;
+    if !matches!(
+        observed,
+        Ok(Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestDeadlineExceeded,
+            ..
+        }))
+    ) || catalog.applies() != 0
+    {
+        return Err(format!("history wait ignored its original deadline: {observed:?}").into());
+    }
+    Ok(())
+}
+
 use crate::ingest_dispatcher::auxiliary::{
     AuxiliaryMaterializerParts, DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer,
     dirty_publish_receipt_v1,
@@ -28,6 +91,63 @@ use crate::ingest_dispatcher::tests::support::{
 use crate::query_dispatcher::tests::support::history_text::MemoryHistoryTextIndex;
 use crate::readiness::SearchCorpusHistoryRetentionReceiptV1;
 use crate::{HistoryTextIndexParts, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistries};
+
+struct CancelAfterDurableHistoryApply {
+    inner: Arc<dyn quanta_index_core::AuxiliaryAuthorityCatalogPort>,
+    cancel: quanta_index_core::CancelHandleV1,
+}
+
+impl quanta_index_core::AuxiliaryAuthorityCatalogPort for CancelAfterDurableHistoryApply {
+    fn apply(
+        &self,
+        batch: &quanta_index_core::AuxiliaryMutationBatchV1,
+    ) -> Result<quanta_index_core::AuxiliaryMutationReceiptV1, CoreError> {
+        let receipt = self.inner.apply(batch)?;
+        self.cancel.cancel();
+        Ok(receipt)
+    }
+
+    fn for_each_row(
+        &self,
+        visit: &mut dyn FnMut(quanta_index_core::AuxiliaryRowV1) -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        self.inner.for_each_row(visit)
+    }
+
+    fn track_rows(&self) -> Result<Vec<quanta_index_core::AuxiliaryTrackRowV1>, CoreError> {
+        self.inner.track_rows()
+    }
+}
+
+#[test]
+fn cancellation_after_durable_history_apply_does_not_hide_the_committed_epoch() -> TestRes {
+    let ledger = Arc::new(RwLock::new(Ledger::new()));
+    let (mut parts, catalog) = aux_parts(Arc::clone(&ledger));
+    let budget = quanta_index_core::RequestBudgetV1::unbounded();
+    parts.catalog = Arc::new(CancelAfterDurableHistoryApply {
+        inner: catalog.clone(),
+        cancel: budget.cancel_handle(),
+    });
+    let text = MemoryHistoryTextIndex::shared();
+    let materializer =
+        DirectHistoryMaterializer::new(parts).with_history_text(HistoryTextIndexParts::new(text));
+    let batch = fixture_history_batch(9, vec![fixture_commit(1, &[])]);
+    let receipt = materializer.publish_batch(&batch, &budget)?;
+    if receipt.accepted_replace_scopes != 1
+        || catalog.applies() != 1
+        || budget
+            .checkpoint("observe late history cancellation")
+            .is_ok()
+        || ledger
+            .read()
+            .map_err(|error| format!("ledger poisoned: {error}"))?
+            .history_state(&batch.repo_id, &batch.revision_id, batch.generation)
+            .is_none()
+    {
+        return Err("late cancellation hid or duplicated durable history publication".into());
+    }
+    Ok(())
+}
 
 #[test]
 fn dirty_publish_receipt_binds_exact_auxiliary_batch_without_sealing_v1() {
@@ -59,7 +179,7 @@ fn a_mutation_whose_rows_never_became_durable_is_never_visible() -> TestRes {
 
     catalog.fail_next_apply();
     let refused = materializer
-        .publish_batch(&batch, None)
+        .publish_batch(&batch, &quanta_index_core::RequestBudgetV1::unbounded())
         .expect_err("a catalog that cannot commit refuses the publish");
     if !matches!(refused, CoreError::Storage(_)) {
         return Err(format!("expected the catalog's failure, got {refused:?}").into());
@@ -79,7 +199,8 @@ fn a_mutation_whose_rows_never_became_durable_is_never_visible() -> TestRes {
         return Err("nothing was applied".into());
     }
 
-    let receipt = materializer.publish_batch(&batch, None)?;
+    let receipt =
+        materializer.publish_batch(&batch, &quanta_index_core::RequestBudgetV1::unbounded())?;
     if receipt.accepted_replace_scopes != 1 || catalog.applies() != 1 {
         return Err(format!("the retry must apply once: {receipt:?}").into());
     }
@@ -105,7 +226,7 @@ fn a_batch_that_fails_validation_never_reaches_the_catalog() -> TestRes {
     let materializer = DirectHistoryMaterializer::new(parts);
     // A child whose parent is neither in the state nor earlier in the batch.
     let orphan = fixture_history_batch(9, vec![fixture_commit(2, &[1])]);
-    match materializer.publish_batch(&orphan, None) {
+    match materializer.publish_batch(&orphan, &quanta_index_core::RequestBudgetV1::unbounded()) {
         Err(CoreError::Typed {
             code:
                 quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
@@ -120,7 +241,8 @@ fn a_batch_that_fails_validation_never_reaches_the_catalog() -> TestRes {
     }
     // The parent earlier in the same batch is enough.
     let ordered = fixture_history_batch(9, vec![fixture_commit(1, &[]), fixture_commit(2, &[1])]);
-    let _receipt = materializer.publish_batch(&ordered, None)?;
+    let _receipt =
+        materializer.publish_batch(&ordered, &quanta_index_core::RequestBudgetV1::unbounded())?;
     if catalog.applies() != 1 {
         return Err("an ordered batch applies once".into());
     }
@@ -197,7 +319,8 @@ fn a_reader_holding_a_snapshot_neither_blocks_nor_sees_a_mutation() -> TestRes {
     let (parts, _catalog) = aux_parts(Arc::clone(&ledger));
     let materializer = Arc::new(DirectHistoryMaterializer::new(parts));
     let first = fixture_history_batch(9, vec![fixture_commit(1, &[])]);
-    let _receipt = materializer.publish_batch(&first, None)?;
+    let _receipt =
+        materializer.publish_batch(&first, &quanta_index_core::RequestBudgetV1::unbounded())?;
     let snapshot = ledger
         .read()
         .map_err(|err| format!("ledger poisoned: {err}"))?
@@ -215,7 +338,9 @@ fn a_reader_holding_a_snapshot_neither_blocks_nor_sees_a_mutation() -> TestRes {
     let second = fixture_history_batch(9, vec![fixture_commit(2, &[1])]);
     let writer = {
         let materializer = Arc::clone(&materializer);
-        std::thread::spawn(move || materializer.publish_batch(&second, None))
+        std::thread::spawn(move || {
+            materializer.publish_batch(&second, &quanta_index_core::RequestBudgetV1::unbounded())
+        })
     };
     let _receipt = writer
         .join()
@@ -284,7 +409,7 @@ fn retention_forgets_auxiliary_generations_the_receipt_does_not_retain() -> Test
     for generation in [3, 4] {
         let _receipt = history.publish_batch(
             &fixture_history_batch(generation, vec![fixture_commit(1, &[])]),
-            None,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
         )?;
     }
     let materializer = sealing_materializer(&ledger, &aux);
@@ -359,7 +484,7 @@ fn a_seal_whose_reap_transaction_fails_changes_neither_catalog_nor_ledger() -> T
     for generation in [3, 4] {
         let _receipt = history.publish_batch(
             &fixture_history_batch(generation, vec![fixture_commit(1, &[])]),
-            None,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
         )?;
     }
     let materializer = sealing_materializer(&ledger, &aux);
@@ -452,7 +577,7 @@ fn forgotten_generations_text_indexes_are_swept_and_a_failed_discard_is_retried(
     for generation in [3, 4] {
         let _receipt = history.publish_batch(
             &fixture_history_batch(generation, vec![fixture_commit(1, &[])]),
-            None,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
         )?;
     }
     let mut batch = fixture_search_corpus_batch()?;
@@ -465,7 +590,7 @@ fn forgotten_generations_text_indexes_are_swept_and_a_failed_discard_is_retried(
         &key(2),
         AuxEpochV1::new(1),
         HistoryTextBuildV1::Full { docs: Vec::new() },
-        None,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     let materializer = sealing_materializer(&ledger, &aux).with_history_text(history_text.clone());
     let durable = |generation: u64| -> Result<bool, Box<dyn std::error::Error>> {
@@ -532,7 +657,7 @@ fn a_refused_history_text_listing_fails_the_seal_closed() -> TestRes {
     for generation in [3, 4] {
         let _receipt = history.publish_batch(
             &fixture_history_batch(generation, vec![fixture_commit(1, &[])]),
-            None,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
         )?;
     }
     let materializer = sealing_materializer(&ledger, &aux).with_history_text(history_text.clone());

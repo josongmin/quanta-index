@@ -280,7 +280,8 @@ pub(crate) fn seal_failure_quarantine_reason(
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_) => None,
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. } => None,
     }
 }
 

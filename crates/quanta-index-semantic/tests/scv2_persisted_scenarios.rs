@@ -325,6 +325,7 @@ fn scv2_s04_seal_rejects_missing_required_corpus() -> TestResult {
         | CoreError::Typed { .. }
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
+        | CoreError::StorageIo { .. }
         | CoreError::NotFound(_)) => {
             return Err(format!("expected storage seal error, got {other:?}").into());
         }

@@ -79,6 +79,67 @@ pub enum SearchPlaneIngestIpcRequest {
     PublishRepoDescriptionBatch(RepoDescriptionIngestBatch),
 }
 
+/// Read-only view of the five Required auxiliary publish routes. The payload remains
+/// owned by the caller until the synchronous transport send returns.
+#[derive(Clone, Copy, Debug)]
+pub enum BorrowedAuxiliaryIngestIpcRequestV1<'a> {
+    History(&'a HistoryIngestBatch),
+    RepoCommitRecency(&'a RepoCommitRecencyIngestBatch),
+    FileContributor(&'a FileContributorIngestBatch),
+    Dirty(&'a DirtyIngestBatch),
+    Structural(&'a StructuralIngestBatch),
+    RepoMap(crate::BorrowedRepoMapPublishBundleRequestV3<'a>),
+}
+
+fn serialize_auxiliary_publish_variant_v1<S: Serializer, P: Serialize>(
+    serializer: S,
+    variant: u32,
+    name: &'static str,
+    payload: &P,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_newtype_variant("SearchPlaneIngestIpcRequest", variant, name, payload)
+}
+
+impl Serialize for BorrowedAuxiliaryIngestIpcRequestV1<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::History(payload) => serialize_auxiliary_publish_variant_v1(
+                serializer,
+                2,
+                "PublishHistoryBatch",
+                payload,
+            ),
+            Self::RepoCommitRecency(payload) => serialize_auxiliary_publish_variant_v1(
+                serializer,
+                3,
+                "PublishRepoCommitRecencyBatch",
+                payload,
+            ),
+            Self::FileContributor(payload) => serialize_auxiliary_publish_variant_v1(
+                serializer,
+                11,
+                "PublishFileContributorBatch",
+                payload,
+            ),
+            Self::Dirty(payload) => {
+                serialize_auxiliary_publish_variant_v1(serializer, 6, "PublishDirtyBatch", payload)
+            }
+            Self::Structural(payload) => serialize_auxiliary_publish_variant_v1(
+                serializer,
+                8,
+                "PublishStructuralBatch",
+                payload,
+            ),
+            Self::RepoMap(payload) => serialize_auxiliary_publish_variant_v1(
+                serializer,
+                14,
+                "PublishRepoMapBundleV2",
+                payload,
+            ),
+        }
+    }
+}
+
 const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
     "StageSourcePublication",
     "PublishStagedSourcePublication",
@@ -127,18 +188,13 @@ impl Serialize for SearchPlaneIngestIpcRequest {
                 "PublishSearchCorpusBatchV2",
                 payload,
             ),
-            Self::PublishHistoryBatch(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest",
-                2,
-                "PublishHistoryBatch",
-                payload,
-            ),
-            Self::PublishRepoCommitRecencyBatch(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest",
-                3,
-                "PublishRepoCommitRecencyBatch",
-                payload,
-            ),
+            Self::PublishHistoryBatch(payload) => {
+                BorrowedAuxiliaryIngestIpcRequestV1::History(payload).serialize(serializer)
+            }
+            Self::PublishRepoCommitRecencyBatch(payload) => {
+                BorrowedAuxiliaryIngestIpcRequestV1::RepoCommitRecency(payload)
+                    .serialize(serializer)
+            }
             Self::PublishRepoTopicBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
                 4,
@@ -151,36 +207,28 @@ impl Serialize for SearchPlaneIngestIpcRequest {
                 "PublishFileOwnershipBatch",
                 payload,
             ),
-            Self::PublishFileContributorBatch(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest",
-                11,
-                "PublishFileContributorBatch",
-                payload,
-            ),
-            Self::PublishDirtyBatch(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest",
-                6,
-                "PublishDirtyBatch",
-                payload,
-            ),
+            Self::PublishFileContributorBatch(payload) => {
+                BorrowedAuxiliaryIngestIpcRequestV1::FileContributor(payload).serialize(serializer)
+            }
+            Self::PublishDirtyBatch(payload) => {
+                BorrowedAuxiliaryIngestIpcRequestV1::Dirty(payload).serialize(serializer)
+            }
             Self::PublishRuntimeCatalogBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
                 7,
                 "PublishRuntimeCatalogBatch",
                 payload,
             ),
-            Self::PublishStructuralBatch(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest",
-                8,
-                "PublishStructuralBatch",
-                payload,
-            ),
-            Self::PublishRepoMapBundleV2(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest",
-                14,
-                "PublishRepoMapBundleV2",
-                payload,
-            ),
+            Self::PublishStructuralBatch(payload) => {
+                BorrowedAuxiliaryIngestIpcRequestV1::Structural(payload).serialize(serializer)
+            }
+            Self::PublishRepoMapBundleV2(payload) => BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(
+                crate::BorrowedRepoMapPublishBundleRequestV3 {
+                    source_bundle_digest: &payload.source_bundle_digest,
+                    bundle: &payload.bundle,
+                },
+            )
+            .serialize(serializer),
             Self::PublishRepoMetaBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
                 10,
@@ -516,25 +564,58 @@ pub struct SearchPlaneIngestIpcRequestEnvelope {
     pub diagnostic_attempt: DiagnosticAttemptFieldV1,
 }
 
+/// Borrowed form of the canonical ingest envelope for History routes.
+#[derive(Clone, Copy, Debug)]
+pub struct BorrowedAuxiliaryIngestIpcRequestEnvelopeV1<'a> {
+    pub request_id: u64,
+    pub payload: BorrowedAuxiliaryIngestIpcRequestV1<'a>,
+    pub diagnostic_attempt: DiagnosticAttemptFieldV1,
+}
+
 const SEARCH_PLANE_INGEST_REQUEST_ENVELOPE_FIELDS: &[&str] =
     &["request_id", "payload", "diagnostic_attempt"];
+
+fn serialize_ingest_request_envelope_v1<S: Serializer, P: Serialize>(
+    serializer: S,
+    request_id: u64,
+    payload: &P,
+    diagnostic_attempt: &DiagnosticAttemptFieldV1,
+) -> Result<S::Ok, S::Error> {
+    let token = diagnostic_attempt.token();
+    let mut state = serializer.serialize_struct(
+        "SearchPlaneIngestIpcRequestEnvelope",
+        if token.is_some() { 3 } else { 2 },
+    )?;
+    state.serialize_field("request_id", &request_id)?;
+    state.serialize_field("payload", payload)?;
+    if let Some(token) = token {
+        state.serialize_field("diagnostic_attempt", &token)?;
+    }
+    state.end()
+}
 
 impl Serialize for SearchPlaneIngestIpcRequestEnvelope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let token = self.diagnostic_attempt.token();
-        let mut state = serializer.serialize_struct(
-            "SearchPlaneIngestIpcRequestEnvelope",
-            if token.is_some() { 3 } else { 2 },
-        )?;
-        state.serialize_field("request_id", &self.request_id)?;
-        state.serialize_field("payload", &self.payload)?;
-        if let Some(token) = token {
-            state.serialize_field("diagnostic_attempt", &token)?;
-        }
-        state.end()
+        serialize_ingest_request_envelope_v1(
+            serializer,
+            self.request_id,
+            &self.payload,
+            &self.diagnostic_attempt,
+        )
+    }
+}
+
+impl Serialize for BorrowedAuxiliaryIngestIpcRequestEnvelopeV1<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_ingest_request_envelope_v1(
+            serializer,
+            self.request_id,
+            &self.payload,
+            &self.diagnostic_attempt,
+        )
     }
 }
 
@@ -683,5 +764,135 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcResponseEnvelope {
             SEARCH_PLANE_INGEST_RESPONSE_ENVELOPE_FIELDS,
             SearchPlaneIngestIpcResponseEnvelopeVisitor,
         )
+    }
+}
+
+/// Decode the five auxiliary receipt variants and the canonical ingest
+/// refusal under the caller's retained parser/visitor allocation owner.
+pub fn admitted_auxiliary_response_seed_v1<
+    'a,
+    A: crate::SourceIdentityDecodeAdmissionV1 + ?Sized,
+>(
+    admission: &'a A,
+    max_text_bytes: usize,
+) -> impl for<'de> serde::de::DeserializeSeed<'de, Value = SearchPlaneIngestIpcResponseEnvelope> + 'a
+{
+    admitted_auxiliary_response::AuxiliaryResponseEnvelopeSeedV1::new(admission, max_text_bytes)
+}
+
+#[path = "envelope/admitted_auxiliary_response.rs"]
+mod admitted_auxiliary_response;
+
+#[cfg(test)]
+mod borrowed_auxiliary_wire_tests {
+    use super::*;
+    use crate::{ManifestGeneration, RepoId, RevisionId};
+
+    fn same_canonical_wire_v1(
+        owned: SearchPlaneIngestIpcRequest,
+        borrowed: BorrowedAuxiliaryIngestIpcRequestV1<'_>,
+        variant: &str,
+    ) {
+        let owned = SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 41,
+            payload: owned,
+            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
+        };
+        let borrowed = BorrowedAuxiliaryIngestIpcRequestEnvelopeV1 {
+            request_id: 41,
+            payload: borrowed,
+            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
+        };
+        let owned_json = serde_json::to_value(&owned).expect("owned JSON");
+        let borrowed_json = serde_json::to_value(borrowed).expect("borrowed JSON");
+        assert_eq!(owned_json, borrowed_json);
+        assert!(
+            owned_json
+                .get("payload")
+                .and_then(|payload| payload.get(variant))
+                .is_some()
+        );
+        let mut owned_cbor = Vec::new();
+        let mut borrowed_cbor = Vec::new();
+        ciborium::into_writer(&owned, &mut owned_cbor).expect("owned CBOR");
+        ciborium::into_writer(&borrowed, &mut borrowed_cbor).expect("borrowed CBOR");
+        assert_eq!(owned_cbor, borrowed_cbor);
+    }
+
+    #[test]
+    fn borrowed_auxiliary_envelopes_match_owned_tags_and_bytes_v1() {
+        let repo_id = RepoId::new("repo-1").expect("repo ID");
+        let revision_id = RevisionId::new("rev-1").expect("revision ID");
+        let generation = ManifestGeneration::new(7);
+        let history = HistoryIngestBatch {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            generation,
+            manifest_digest: None,
+            batch_digest: "digest:history".to_string(),
+            commits: Vec::new(),
+            refs: Vec::new(),
+            tags: Vec::new(),
+            diff_hunks: Vec::new(),
+        };
+        let recency = RepoCommitRecencyIngestBatch {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            generation,
+            batch_digest: "digest:recency".to_string(),
+            entries: Vec::new(),
+        };
+        let contributor = FileContributorIngestBatch {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            generation,
+            batch_digest: "digest:contributor".to_string(),
+            entries: Vec::new(),
+        };
+        same_canonical_wire_v1(
+            SearchPlaneIngestIpcRequest::PublishHistoryBatch(history.clone()),
+            BorrowedAuxiliaryIngestIpcRequestV1::History(&history),
+            "PublishHistoryBatch",
+        );
+        same_canonical_wire_v1(
+            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(recency.clone()),
+            BorrowedAuxiliaryIngestIpcRequestV1::RepoCommitRecency(&recency),
+            "PublishRepoCommitRecencyBatch",
+        );
+        same_canonical_wire_v1(
+            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(contributor.clone()),
+            BorrowedAuxiliaryIngestIpcRequestV1::FileContributor(&contributor),
+            "PublishFileContributorBatch",
+        );
+        let dirty = DirtyIngestBatch {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            generation,
+            overlay_epoch_ms: 17,
+            batch_digest: "digest:dirty".to_string(),
+            entries: Vec::new(),
+        };
+        same_canonical_wire_v1(
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(dirty.clone()),
+            BorrowedAuxiliaryIngestIpcRequestV1::Dirty(&dirty),
+            "PublishDirtyBatch",
+        );
+        let structural = StructuralIngestBatch {
+            repo_id,
+            revision_id,
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:structural".to_string(),
+            batch_digest: "digest:structural".to_string(),
+            mode: crate::BatchIngestMode::ReplaceGeneration,
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        };
+        same_canonical_wire_v1(
+            SearchPlaneIngestIpcRequest::PublishStructuralBatch(structural.clone()),
+            BorrowedAuxiliaryIngestIpcRequestV1::Structural(&structural),
+            "PublishStructuralBatch",
+        );
     }
 }

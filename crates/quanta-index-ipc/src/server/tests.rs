@@ -1,12 +1,13 @@
 //! Transport server and peer-watch behavior regressions.
 
 use super::{
-    ClientIoPolicy, ConnectionCloseReason, IpcDispatcher, IpcError, IpcPlane, IpcServerCounters,
-    PeerCredentials, PeerWatch, PeerWatchOutcome, RequestEnvelope, RequestEventStageV1,
-    ResponseEnvelope, SocketPathIdentity, UdsServer, WatchEvent, WatchObserver,
-    connect_before_deadline, connect_requires_completion_wait, create_connect_socket,
-    decode_response, encode_request, handle_connection, send_request, send_request_negotiated,
-    send_request_observed, wait_for_connect,
+    ClientIoPolicy, ConnectionCloseReason, DeadlineStream, IpcDispatcher, IpcError, IpcPlane,
+    IpcServerCounters, PeerCredentials, PeerWatch, PeerWatchOutcome, RequestEnvelope,
+    RequestEventStageV1, ResponseEnvelope, SocketPathIdentity, UdsServer, WatchEvent,
+    WatchObserver, connect_before_deadline, connect_requires_completion_wait,
+    connect_stream_before_budget, create_connect_socket, decode_response, encode_request,
+    handle_connection, send_request, send_request_negotiated, send_request_observed,
+    send_request_with_budget, wait_for_connect, wait_for_stream_connect,
 };
 use crate::socket_access::{PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE};
 use rustix::fs::{OFlags, fcntl_getfl};
@@ -879,6 +880,23 @@ fn connect_readiness_wait_obeys_absolute_deadline() -> TestRes {
     if started.elapsed() > Duration::from_secs(1) {
         return Err("connect readiness exceeded its absolute deadline bound".to_string());
     }
+    let request_budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    let cancel = request_budget.cancel_handle();
+    let canceller = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(5));
+        cancel.cancel();
+    });
+    let cancellation_started = Instant::now();
+    let outcome = wait_for_stream_connect(&socket, &request_budget);
+    canceller
+        .join()
+        .map_err(|panic| format!("connect canceller panicked: {panic:?}"))?;
+    if !matches!(outcome, Err(error) if error.kind() == std::io::ErrorKind::Other) {
+        return Err("stream completion poll ignored the original cancellation".into());
+    }
+    if cancellation_started.elapsed() >= Duration::from_secs(1) {
+        return Err("stream completion poll waited for the request deadline".into());
+    }
     Ok(())
 }
 
@@ -912,6 +930,222 @@ fn connect_socket_preserves_descriptor_and_blocking_invariants() -> TestRes {
     let connected_flags = fcntl_getfl(&stream).map_err(|error| error.to_string())?;
     if connected_flags.contains(OFlags::NONBLOCK) {
         return Err("connected client stream must return to blocking mode".to_string());
+    }
+    let live_budget = RequestBudgetV1::for_duration(Duration::from_secs(1));
+    let stream = connect_stream_before_budget(&socket_path, &live_budget)
+        .map_err(|error| error.to_string())?;
+    if fcntl_getfl(&stream)
+        .map_err(|error| error.to_string())?
+        .contains(OFlags::NONBLOCK)
+    {
+        return Err("budgeted stream connect did not restore blocking I/O".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn cancelled_stream_read_and_write_escape_codec_retry() -> TestRes {
+    let (reader, _writer) = UnixStream::pair().map_err(|error| error.to_string())?;
+    let read_budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    let mut reader = DeadlineStream::new(reader, read_budget.deadline());
+    reader.budget = Some(read_budget.clone());
+    let cancel = read_budget.cancel_handle();
+    let canceller = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(5));
+        cancel.cancel();
+    });
+    let mut byte = [0_u8; 1];
+    let read_started = Instant::now();
+    let read = reader.read_exact(&mut byte);
+    canceller
+        .join()
+        .map_err(|panic| format!("read canceller panicked: {panic:?}"))?;
+    if !matches!(read, Err(error) if error.kind() == std::io::ErrorKind::Other) {
+        return Err("cancelled read was retried as Interrupted or timed out".into());
+    }
+    if read_started.elapsed() >= Duration::from_secs(1) {
+        return Err("cancelled read waited for the request deadline".into());
+    }
+
+    let (mut writer, _reader) = UnixStream::pair().map_err(|error| error.to_string())?;
+    writer
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    let payload = vec![0x5a_u8; 64 * 1024];
+    loop {
+        match writer.write(&payload) {
+            Ok(0) => return Err("socket send buffer closed while filling".into()),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    writer
+        .set_nonblocking(false)
+        .map_err(|error| error.to_string())?;
+    let write_budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    let mut writer = DeadlineStream::new(writer, write_budget.deadline());
+    writer.budget = Some(write_budget.clone());
+    let cancel = write_budget.cancel_handle();
+    let canceller = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(5));
+        cancel.cancel();
+    });
+    let write_started = Instant::now();
+    let written = writer.write_all(&[1]);
+    canceller
+        .join()
+        .map_err(|panic| format!("write canceller panicked: {panic:?}"))?;
+    if !matches!(written, Err(error) if error.kind() == std::io::ErrorKind::Other) {
+        return Err("stalled stream write ignored original cancellation".into());
+    }
+    if write_started.elapsed() >= Duration::from_secs(1) {
+        return Err("cancelled write waited for the request deadline".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn one_shot_original_cancel_interrupts_held_header_and_payload() -> TestRes {
+    for payload_wait in [false, true] {
+        let dir = private_tempdir()?;
+        let socket = dir.path().join("held-one-shot.sock");
+        let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
+        let (sent_tx, sent_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let peer = thread::spawn(move || -> TestRes {
+            let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+            let request: TestRequestEnvelope =
+                super::decode_request(&mut stream).map_err(|error| error.to_string())?;
+            if request.request_id != 91 || request.payload != 23 {
+                return Err("one-shot fixture request changed".into());
+            }
+            let frame = super::encode_response(&TestResponseEnvelope {
+                request_id: 91,
+                payload: 24,
+            })
+            .map_err(|error| error.to_string())?;
+            let prefix = if payload_wait {
+                frame.len().checked_sub(1).ok_or("empty response frame")?
+            } else {
+                1
+            };
+            stream
+                .write_all(frame.get(..prefix).ok_or("invalid response prefix")?)
+                .map_err(|error| error.to_string())?;
+            sent_tx.send(()).map_err(|error| error.to_string())?;
+            let _released = release_rx.recv_timeout(Duration::from_secs(2));
+            Ok(())
+        });
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+        let client_budget = budget.clone();
+        let client_socket = socket.clone();
+        let (result_tx, result_rx) = mpsc::channel();
+        let client = thread::spawn(move || {
+            let result = send_request_with_budget::<_, TestResponseEnvelope>(
+                &client_socket,
+                &TestRequestEnvelope {
+                    request_id: 91,
+                    payload: 23,
+                },
+                &client_budget,
+            );
+            let _sent = result_tx.send(result);
+        });
+        sent_rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| error.to_string())?;
+        let started = Instant::now();
+        budget.cancel_handle().cancel();
+        let observed = result_rx.recv_timeout(Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        let _released = release_tx.send(());
+        let client_join = client.join();
+        let peer_join = peer.join();
+        client_join.map_err(|panic| format!("client panicked: {panic:?}"))?;
+        peer_join.map_err(|panic| format!("peer panicked: {panic:?}"))??;
+        let result = observed.map_err(|error| format!("one-shot cancellation ignored: {error}"))?;
+        if !matches!(&result, Err(IpcError::Io(error)) if error.kind() == std::io::ErrorKind::Other)
+            || elapsed >= Duration::from_secs(1)
+        {
+            return Err(format!(
+                "held one-shot frame escaped cancellation: {result:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+thread_local! {
+    static CANCEL_AFTER_DECODE: std::cell::RefCell<Option<quanta_index_core::CancelHandleV1>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[derive(Debug)]
+struct CancelAfterDecode;
+
+impl<'de> Deserialize<'de> for CancelAfterDecode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let response = TestResponseEnvelope::deserialize(deserializer)?;
+        if response.request_id != 92 || response.payload != 24 {
+            return Err(de::Error::custom("one-shot response fixture changed"));
+        }
+        CANCEL_AFTER_DECODE.with(|slot| {
+            if let Some(handle) = slot.borrow_mut().take() {
+                handle.cancel();
+            }
+        });
+        Ok(Self)
+    }
+}
+
+#[test]
+fn one_shot_cannot_return_success_after_fully_decoded_cancelled_reply() -> TestRes {
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("decoded-one-shot.sock");
+    let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
+    let peer = thread::spawn(move || -> TestRes {
+        let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+        let request: TestRequestEnvelope =
+            super::decode_request(&mut stream).map_err(|error| error.to_string())?;
+        if request.request_id != 92 || request.payload != 23 {
+            return Err("decoded fixture request changed".into());
+        }
+        let frame = super::encode_response(&TestResponseEnvelope {
+            request_id: 92,
+            payload: 24,
+        })
+        .map_err(|error| error.to_string())?;
+        stream
+            .write_all(&frame)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    CANCEL_AFTER_DECODE.with(|slot| {
+        let _prior = slot.borrow_mut().replace(budget.cancel_handle());
+    });
+    let result = send_request_with_budget::<_, CancelAfterDecode>(
+        &socket,
+        &TestRequestEnvelope {
+            request_id: 92,
+            payload: 23,
+        },
+        &budget,
+    );
+    let hook_unused = CANCEL_AFTER_DECODE.with(|slot| slot.borrow_mut().take().is_some());
+    peer.join()
+        .map_err(|panic| format!("peer panicked: {panic:?}"))??;
+    if hook_unused || !budget.is_cancelled() {
+        return Err("full reply did not reach the decoder cancellation point".into());
+    }
+    if !matches!(&result, Err(IpcError::Io(error)) if error.kind() == std::io::ErrorKind::Other) {
+        return Err(format!(
+            "cancelled fully decoded reply became success: {result:?}"
+        ));
     }
     Ok(())
 }
@@ -1222,6 +1456,140 @@ fn client_write_timeout_closes_peer_that_never_reads_with_typed_error() -> TestR
     Ok(())
 }
 
+#[test]
+fn accept_poll_wakes_for_a_queued_connection() -> TestRes {
+    let dir = private_tempdir()?;
+    let path = dir.path().join("accept-ready.sock");
+    let listener = UnixListener::bind(&path).map_err(|error| error.to_string())?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    let (started_tx, started_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        let _started = started_tx.send(());
+        let result = super::wait_for_accept_ready(&listener, Duration::from_secs(2))
+            .map_err(|error| error.to_string())
+            .and_then(|()| {
+                listener
+                    .accept()
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            });
+        let _finished = result_tx.send(result);
+    });
+    let observation = (|| -> TestRes {
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|error| error.to_string())?;
+        thread::sleep(Duration::from_millis(50));
+        let client = UnixStream::connect(&path).map_err(|error| error.to_string())?;
+        let observed = result_rx.recv_timeout(Duration::from_secs(1));
+        drop(client);
+        observed.map_err(|error| format!("queued connection did not wake poll: {error}"))??;
+        Ok(())
+    })();
+    waiter
+        .join()
+        .map_err(|panic| format!("accept waiter panicked: {panic:?}"))?;
+    observation
+}
+
+#[test]
+fn accept_poll_idle_wait_is_bounded() -> TestRes {
+    let dir = private_tempdir()?;
+    let path = dir.path().join("accept-idle.sock");
+    let listener = UnixListener::bind(&path).map_err(|error| error.to_string())?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    let (started_tx, started_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        let _started = started_tx.send(());
+        let result = super::wait_for_accept_ready(&listener, Duration::from_millis(200))
+            .map_err(|error| error.to_string())
+            .and_then(|()| match listener.accept() {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+                outcome => Err(format!("idle listener accepted or failed: {outcome:?}")),
+            });
+        let _finished = result_tx.send(result);
+    });
+    let observation = (|| -> TestRes {
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|error| error.to_string())?;
+        let observed = result_rx.recv_timeout(Duration::from_secs(2));
+        observed.map_err(|error| format!("idle poll did not time out: {error}"))??;
+        Ok(())
+    })();
+    waiter
+        .join()
+        .map_err(|panic| format!("idle waiter panicked: {panic:?}"))?;
+    observation
+}
+
+#[test]
+fn sequential_one_shot_requests_do_not_wait_for_accept_idle() -> TestRes {
+    let dir = private_tempdir()?;
+    let path = dir.path().join("accept-sequential.sock");
+    let server = UdsServer::bind(&path).map_err(|error| error.to_string())?;
+    let shutdown = server.shutdown_handle();
+    let dispatcher = Arc::new(TestDispatcher);
+    let server_thread = thread::spawn(move || {
+        server
+            .run::<TestRequestEnvelope, u64, TestResponseEnvelope, u64, _>(
+                &dispatcher,
+                IpcPlane::Query,
+                Duration::from_secs(2),
+            )
+            .map_err(|error| error.to_string())
+    });
+    let requests = (|| -> TestRes {
+        let first: TestResponseEnvelope = send_request_with_budget(
+            &path,
+            &test_request(501, 9),
+            &RequestBudgetV1::for_duration(Duration::from_secs(2)),
+        )
+        .map_err(|error| error.to_string())?;
+        if first
+            != (TestResponseEnvelope {
+                request_id: 501,
+                payload: 10,
+            })
+        {
+            return Err(format!("first response changed: {first:?}"));
+        }
+        // Let the server finish the first connection and enter its idle wait.
+        thread::sleep(Duration::from_millis(50));
+        let second: TestResponseEnvelope = send_request_with_budget(
+            &path,
+            &test_request(502, 10),
+            &RequestBudgetV1::for_duration(Duration::from_secs(1)),
+        )
+        .map_err(|error| error.to_string())?;
+        if second
+            != (TestResponseEnvelope {
+                request_id: 502,
+                payload: 11,
+            })
+        {
+            return Err(format!("second response changed: {second:?}"));
+        }
+        Ok(())
+    })();
+    shutdown.trigger();
+    let server_result = server_thread
+        .join()
+        .map_err(|panic| format!("accept server panicked: {panic:?}"))?;
+    requests?;
+    server_result?;
+    if path.exists() {
+        return Err("shutdown did not remove the owned socket path".into());
+    }
+    Ok(())
+}
+
 struct TestDispatcher;
 
 impl IpcDispatcher<u64, u64> for TestDispatcher {
@@ -1303,6 +1671,98 @@ fn dispatch_context_uses_the_admitted_budget_deadline() -> TestRes {
         .map_err(|_panic_payload| "server panicked".to_string())??;
     if response.payload != 1 {
         return Err(format!("dispatch deadlines disagreed: {response:?}"));
+    }
+    Ok(())
+}
+
+struct ExpiredReplyDispatcher;
+
+impl IpcDispatcher<u64, u64> for ExpiredReplyDispatcher {
+    fn dispatch(
+        &self,
+        context: &super::DispatchContextV1,
+        request: u64,
+        _budget: &RequestBudgetV1,
+    ) -> u64 {
+        // Exercise the transport boundary even when a backend returns late.
+        thread::sleep(context.deadline.saturating_duration_since(Instant::now()));
+        request.saturating_add(1)
+    }
+}
+
+#[test]
+fn one_shot_response_after_original_deadline_writes_no_frame() -> TestRes {
+    let policy = ServerAdmissionPolicy::new(
+        1,
+        1,
+        1,
+        Duration::from_secs(1),
+        Duration::from_millis(25),
+        Duration::from_secs(2),
+    )
+    .map_err(|error| error.to_string())?;
+    let (stream, mut client) = UnixStream::pair().map_err(|error| error.to_string())?;
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| error.to_string())?;
+    let counters = test_counters();
+    let server_counters = Arc::clone(&counters);
+    let server = thread::spawn(move || {
+        handle_connection::<
+            TestRequestEnvelope,
+            u64,
+            TestResponseEnvelope,
+            u64,
+            ExpiredReplyDispatcher,
+        >(
+            stream,
+            &ExpiredReplyDispatcher,
+            &DispatchSlots::for_policy(policy),
+            policy,
+            IpcPlane::Query,
+            PeerCredentials {
+                uid: 1000,
+                gid: 1000,
+                pid: None,
+            },
+            1000,
+            1,
+            &AtomicBool::new(false),
+            &server_counters,
+        )
+    });
+    client
+        .write_all(&encode_request(&test_request(23, 4)).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    let received = client.read(&mut [0]);
+    drop(client);
+    let reason = server
+        .join()
+        .map_err(|_panic_payload| "server panicked".to_string())?;
+    if !matches!(received, Ok(0))
+        || !matches!(&reason, ConnectionCloseReason::ResponseEncodeFailed(IpcError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+    {
+        return Err(format!(
+            "late reply crossed transport: read={received:?}, reason={reason:?}"
+        ));
+    }
+    let snapshot = counters.snapshot();
+    let events = counters
+        .recent_request_events_v1()
+        .map_err(|error| error.to_string())?;
+    if snapshot.requests_dispatched != 1
+        || snapshot.response_bytes != 0
+        || snapshot.dispatch_in_flight != 0
+        || !events
+            .iter()
+            .any(|event| event.stage == RequestEventStageV1::ResponseEncodeFailed)
+        || events
+            .iter()
+            .any(|event| event.stage == RequestEventStageV1::ResponseWritten)
+    {
+        return Err(format!(
+            "late reply cleanup or diagnostics changed: {snapshot:?}, events={events:?}"
+        ));
     }
     Ok(())
 }
@@ -2902,4 +3362,545 @@ fn handle_connection_surfaces_a_failed_peer_watch() {
         Ok(())
     })();
     assert_test_ok(&result);
+}
+
+#[test]
+fn response_write_original_cancel_releases_a_blocked_socket() -> TestRes {
+    let (mut stream, mut reader) = UnixStream::pair().map_err(|error| error.to_string())?;
+    rustix::net::sockopt::set_socket_send_buffer_size(&stream, 4096)
+        .map_err(|error| error.to_string())?;
+    reader
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| error.to_string())?;
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    let cancel = budget.cancel_handle();
+    let (entered, started) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        let bytes = vec![0; 4 * 1024 * 1024];
+        let _sent = entered.send(());
+        super::write_all_before(&mut stream, &bytes, &budget)
+    });
+    started
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|error| error.to_string())?;
+    reader
+        .read_exact(&mut [0])
+        .map_err(|error| error.to_string())?;
+    cancel.cancel();
+    let outcome = writer
+        .join()
+        .map_err(|_panic| "writer panicked".to_string())?;
+    if !matches!(outcome, Err(error) if error.kind() == std::io::ErrorKind::Interrupted) {
+        return Err("original response cancellation did not interrupt write".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn response_write_slow_reader_cannot_restart_absolute_deadline() -> TestRes {
+    let (mut stream, mut reader) = UnixStream::pair().map_err(|error| error.to_string())?;
+    let budget = RequestBudgetV1::for_duration(Duration::from_millis(150));
+    let deadline = budget.deadline();
+    let slow = thread::spawn(move || {
+        let _timeout = reader.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut byte = [0];
+        while Instant::now() < deadline && matches!(reader.read(&mut byte), Ok(1)) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _closed = reader.shutdown(Shutdown::Both);
+    });
+    let bytes = vec![0; 4 * 1024 * 1024];
+    let outcome = super::write_all_before(&mut stream, &bytes, &budget);
+    drop(stream);
+    slow.join()
+        .map_err(|_panic| "reader panicked".to_string())?;
+    if outcome.is_ok() || Instant::now() < deadline {
+        return Err("trickling reader extended the response deadline".into());
+    }
+    Ok(())
+}
+
+// The response is computed after the request deadline. Only the typed terminal
+// error may use a fresh, bounded reply phase; the ordinary success above keeps
+// its original deadline and remains a no-frame regression.
+struct LateTerminalQueryDispatcher {
+    code: quanta_index_contract::SearchPlaneErrorCodeV2,
+    original_deadline_observed: Arc<AtomicBool>,
+    response_memory_observed: Arc<AtomicBool>,
+}
+
+impl
+    IpcDispatcher<
+        quanta_index_contract::SearchPlaneQueryIpcRequest,
+        quanta_index_contract::SearchPlaneQueryIpcResponse,
+    > for LateTerminalQueryDispatcher
+{
+    fn dispatch(
+        &self,
+        context: &super::DispatchContextV1,
+        _request: quanta_index_contract::SearchPlaneQueryIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> quanta_index_contract::SearchPlaneQueryIpcResponse {
+        while budget.checkpoint("late-terminal-query").is_ok() {
+            thread::yield_now();
+        }
+        self.original_deadline_observed
+            .store(Instant::now() > budget.deadline(), Ordering::Release);
+        if self.code == quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled {
+            context.cancellation.cancel();
+        }
+        quanta_index_contract::SearchPlaneQueryIpcResponse::Error(
+            quanta_index_contract::SearchPlaneIpcError {
+                code: self.code,
+                message: "terminal query interruption".to_string(),
+                repair: None,
+            },
+        )
+    }
+
+    fn reserve_response_memory(
+        &self,
+        budget: &RequestBudgetV1,
+        bytes: u64,
+    ) -> Result<Option<quanta_index_core::index::MemoryLease>, IpcError> {
+        self.response_memory_observed.store(
+            bytes > 0 && budget.checkpoint("late-terminal-response-memory").is_ok(),
+            Ordering::Release,
+        );
+        Ok(None)
+    }
+}
+
+fn late_terminal_query_round_trip(code: quanta_index_contract::SearchPlaneErrorCodeV2) -> TestRes {
+    use quanta_index_contract::{
+        CurrentGenerationRequest, RepoId, RevisionId, SearchPlaneQueryIpcRequest,
+        SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+        SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind,
+    };
+
+    let policy = ServerAdmissionPolicy::new(
+        1,
+        1,
+        1,
+        Duration::from_secs(1),
+        Duration::from_millis(25),
+        Duration::from_secs(2),
+    )
+    .map_err(|error| error.to_string())?;
+    let (stream, mut client) = UnixStream::pair().map_err(|error| error.to_string())?;
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| error.to_string())?;
+    let original_deadline_observed = Arc::new(AtomicBool::new(false));
+    let response_memory_observed = Arc::new(AtomicBool::new(false));
+    let dispatcher = LateTerminalQueryDispatcher {
+        code,
+        original_deadline_observed: Arc::clone(&original_deadline_observed),
+        response_memory_observed: Arc::clone(&response_memory_observed),
+    };
+    let counters = test_counters();
+    let server_counters = Arc::clone(&counters);
+    let server = thread::spawn(move || {
+        handle_connection::<
+            SearchPlaneQueryIpcRequestEnvelope,
+            SearchPlaneQueryIpcRequest,
+            SearchPlaneQueryIpcResponseEnvelope,
+            SearchPlaneQueryIpcResponse,
+            LateTerminalQueryDispatcher,
+        >(
+            stream,
+            &dispatcher,
+            &DispatchSlots::for_policy(policy),
+            policy,
+            IpcPlane::Query,
+            PeerCredentials {
+                uid: 1000,
+                gid: 1000,
+                pid: None,
+            },
+            1000,
+            1,
+            &AtomicBool::new(false),
+            &server_counters,
+        )
+    });
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 73,
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
+        payload: SearchPlaneQueryIpcRequest::ResolveActiveGeneration(CurrentGenerationRequest {
+            repo_id: RepoId::new("terminal-reply").map_err(|error| error.to_string())?,
+            revision_id: RevisionId::new("r1").map_err(|error| error.to_string())?,
+            track: SearchPlaneTrackKind::Lexical,
+        }),
+    };
+    client
+        .write_all(&encode_request(&request).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    let response: SearchPlaneQueryIpcResponseEnvelope =
+        decode_response(&mut client).map_err(|error| error.to_string())?;
+    drop(client);
+    let reason = server
+        .join()
+        .map_err(|_panic_payload| "server panicked".to_string())?;
+    if response.request_id != 73
+        || !matches!(&response.payload, SearchPlaneQueryIpcResponse::Error(error) if error.code == code && error.message == "terminal query interruption")
+        || !original_deadline_observed.load(Ordering::Acquire)
+        || !response_memory_observed.load(Ordering::Acquire)
+        || !matches!(reason, ConnectionCloseReason::PeerClosed)
+        || counters.snapshot().response_bytes == 0
+    {
+        return Err(format!(
+            "terminal query reply mismatch: response={response:?}, reason={reason:?}, original_expired={}, memory_hook={}, counters={:?}",
+            original_deadline_observed.load(Ordering::Acquire),
+            response_memory_observed.load(Ordering::Acquire),
+            counters.snapshot(),
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn late_query_deadline_reply_preserves_typed_id_and_memory_hook() -> TestRes {
+    late_terminal_query_round_trip(
+        quanta_index_contract::SearchPlaneErrorCodeV2::RequestDeadlineExceeded,
+    )
+}
+
+#[test]
+fn late_query_cancel_reply_preserves_typed_id_and_memory_hook() -> TestRes {
+    late_terminal_query_round_trip(quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled)
+}
+
+#[derive(Clone, Copy)]
+enum LateIngestReply {
+    SearchCorpusReceipt,
+    HistoryReceipt,
+}
+
+struct LateIngestDispatcher {
+    reply: LateIngestReply,
+    original_deadline_observed: Arc<AtomicBool>,
+    response_memory_observed: Arc<AtomicBool>,
+}
+
+impl
+    IpcDispatcher<
+        quanta_index_contract::SearchPlaneIngestIpcRequest,
+        quanta_index_contract::SearchPlaneIngestIpcResponse,
+    > for LateIngestDispatcher
+{
+    fn dispatch(
+        &self,
+        _context: &super::DispatchContextV1,
+        _request: quanta_index_contract::SearchPlaneIngestIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> quanta_index_contract::SearchPlaneIngestIpcResponse {
+        use quanta_index_contract::{
+            BatchPublishReceipt, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
+            SearchCorpusPublishOutcome, SearchPlaneIngestIpcResponse, SearchPlaneTrackKind,
+            SourcePublicationBinding, SourcePublicationEvent,
+        };
+        while budget.checkpoint("late-ingest-receipt").is_ok() {
+            thread::yield_now();
+        }
+        self.original_deadline_observed
+            .store(Instant::now() > budget.deadline(), Ordering::Release);
+        let semantic_content = match self.reply {
+            LateIngestReply::SearchCorpusReceipt => {
+                Some(quanta_index_contract::SemanticContentRootsV1 {
+                    row_root_digest: format!("sha256:{}", "0".repeat(64)),
+                    membership_root_digest: format!("sha256:{}", "1".repeat(64)),
+                })
+            }
+            LateIngestReply::HistoryReceipt => None,
+        };
+        let receipt = BatchPublishReceipt {
+            generation: ManifestGeneration::new(7),
+            manifest_digest: Some("manifest:fixed".to_string()),
+            batch_digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            accepted_replace_scopes: 1,
+            accepted_tombstone_scopes: 0,
+            accepted_semantic_replace_scopes: 0,
+            accepted_semantic_tombstone_scopes: 0,
+            accepted_clear_surfaces: 0,
+            sealed: true,
+            applied: true,
+            durable_sequence: 11,
+            semantic_content,
+        };
+        match self.reply {
+            LateIngestReply::SearchCorpusReceipt => {
+                SearchPlaneIngestIpcResponse::SearchCorpusReceipt(SearchCorpusPublishOutcome {
+                    publication: SourcePublicationBinding {
+                        event: SourcePublicationEvent {
+                            stream_id: "terminal-test".to_string(),
+                            event_id: "event-1".to_string(),
+                            expected_base_event_id: None,
+                            payload_sha256: [1; 32],
+                        },
+                        target: GenerationSnapshot {
+                            repo_id: RepoId::new("terminal-reply").expect("fixed test repo id"),
+                            revision_id: RevisionId::new("r1").expect("fixed test revision id"),
+                            track: SearchPlaneTrackKind::Lexical,
+                            manifest_generation: ManifestGeneration::new(7),
+                            manifest_digest: "manifest:fixed".to_string(),
+                        },
+                        batch_digest: receipt.batch_digest.clone(),
+                    },
+                    receipt,
+                    observation: None,
+                })
+            }
+            LateIngestReply::HistoryReceipt => {
+                SearchPlaneIngestIpcResponse::HistoryReceipt(receipt)
+            }
+        }
+    }
+
+    fn reserve_response_memory(
+        &self,
+        budget: &RequestBudgetV1,
+        bytes: u64,
+    ) -> Result<Option<quanta_index_core::index::MemoryLease>, IpcError> {
+        self.response_memory_observed.store(
+            bytes > 0 && budget.checkpoint("late-ingest-response-memory").is_ok(),
+            Ordering::Release,
+        );
+        Ok(None)
+    }
+}
+
+fn late_ingest_reply_case(reply: LateIngestReply) -> TestRes {
+    use quanta_index_contract::{
+        SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
+        SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope,
+        SourcePublicationUploadIdentity,
+    };
+
+    let policy = ServerAdmissionPolicy::new(
+        1,
+        1,
+        1,
+        Duration::from_secs(1),
+        Duration::from_millis(25),
+        Duration::from_secs(2),
+    )
+    .map_err(|error| error.to_string())?;
+    let (stream, mut client) = UnixStream::pair().map_err(|error| error.to_string())?;
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| error.to_string())?;
+    let original_deadline_observed = Arc::new(AtomicBool::new(false));
+    let response_memory_observed = Arc::new(AtomicBool::new(false));
+    let dispatcher = LateIngestDispatcher {
+        reply,
+        original_deadline_observed: Arc::clone(&original_deadline_observed),
+        response_memory_observed: Arc::clone(&response_memory_observed),
+    };
+    let counters = test_counters();
+    let server_counters = Arc::clone(&counters);
+    let server = thread::spawn(move || {
+        handle_connection::<
+            SearchPlaneIngestIpcRequestEnvelope,
+            SearchPlaneIngestIpcRequest,
+            SearchPlaneIngestIpcResponseEnvelope,
+            SearchPlaneIngestIpcResponse,
+            LateIngestDispatcher,
+        >(
+            stream,
+            &dispatcher,
+            &DispatchSlots::for_policy(policy),
+            policy,
+            IpcPlane::Ingest,
+            PeerCredentials {
+                uid: 1000,
+                gid: 1000,
+                pid: None,
+            },
+            1000,
+            1,
+            &AtomicBool::new(false),
+            &server_counters,
+        )
+    });
+    let request = SearchPlaneIngestIpcRequestEnvelope {
+        request_id: 74,
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
+        payload: SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(
+            SourcePublicationUploadIdentity {
+                body_sha256: [0; 32],
+                body_bytes: 0,
+            },
+        ),
+    };
+    client
+        .write_all(&encode_request(&request).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    let result = match reply {
+        LateIngestReply::SearchCorpusReceipt => {
+            let response: SearchPlaneIngestIpcResponseEnvelope =
+                decode_response(&mut client).map_err(|error| error.to_string())?;
+            if response.request_id != 74
+                || !matches!(&response.payload, SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) if outcome.receipt.durable_sequence == 11 && outcome.publication.target.manifest_digest == "manifest:fixed")
+            {
+                return Err(format!("late durable receipt changed: {response:?}"));
+            }
+            true
+        }
+        LateIngestReply::HistoryReceipt => {
+            let mut one = [0];
+            matches!(client.read(&mut one), Ok(0))
+        }
+    };
+    drop(client);
+    let reason = server
+        .join()
+        .map_err(|_panic_payload| "server panicked".to_string())?;
+    let expected_reason = match reply {
+        LateIngestReply::SearchCorpusReceipt => matches!(reason, ConnectionCloseReason::PeerClosed),
+        LateIngestReply::HistoryReceipt => {
+            matches!(reason, ConnectionCloseReason::ResponseEncodeFailed(IpcError::Io(ref error)) if error.kind() == std::io::ErrorKind::TimedOut)
+        }
+    };
+    let expected_memory = matches!(reply, LateIngestReply::SearchCorpusReceipt);
+    if !result
+        || !expected_reason
+        || !original_deadline_observed.load(Ordering::Acquire)
+        || response_memory_observed.load(Ordering::Acquire) != expected_memory
+        || (counters.snapshot().response_bytes > 0) != expected_memory
+    {
+        return Err(format!(
+            "late ingest reply mismatch: reason={reason:?}, original_expired={}, memory_hook={}, counters={:?}",
+            original_deadline_observed.load(Ordering::Acquire),
+            response_memory_observed.load(Ordering::Acquire),
+            counters.snapshot(),
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn late_durable_search_corpus_receipt_uses_bounded_reply_phase() -> TestRes {
+    late_ingest_reply_case(LateIngestReply::SearchCorpusReceipt)
+}
+
+#[test]
+fn late_wrong_kind_ingest_receipt_still_writes_no_frame() -> TestRes {
+    late_ingest_reply_case(LateIngestReply::HistoryReceipt)
+}
+
+struct PeerHangupTerminalDispatcher {
+    entered: mpsc::Sender<()>,
+    observed_cancel: Arc<AtomicBool>,
+}
+
+impl
+    IpcDispatcher<
+        quanta_index_contract::SearchPlaneQueryIpcRequest,
+        quanta_index_contract::SearchPlaneQueryIpcResponse,
+    > for PeerHangupTerminalDispatcher
+{
+    fn dispatch(
+        &self,
+        _context: &super::DispatchContextV1,
+        _request: quanta_index_contract::SearchPlaneQueryIpcRequest,
+        budget: &RequestBudgetV1,
+    ) -> quanta_index_contract::SearchPlaneQueryIpcResponse {
+        let _entered = self.entered.send(());
+        while budget.checkpoint("peer-hangup-terminal").is_ok() {
+            thread::yield_now();
+        }
+        self.observed_cancel
+            .store(budget.is_cancelled(), Ordering::Release);
+        quanta_index_contract::SearchPlaneQueryIpcResponse::Error(
+            quanta_index_contract::SearchPlaneIpcError {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled,
+                message: "peer closed".to_string(),
+                repair: None,
+            },
+        )
+    }
+}
+
+#[test]
+fn peer_hangup_during_terminal_query_dispatch_writes_no_frame() -> TestRes {
+    use quanta_index_contract::{
+        CurrentGenerationRequest, RepoId, RevisionId, SearchPlaneQueryIpcRequest,
+        SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+        SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind,
+    };
+
+    let policy = ServerAdmissionPolicy::new(
+        1,
+        1,
+        1,
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    )
+    .map_err(|error| error.to_string())?;
+    let (stream, mut client) = UnixStream::pair().map_err(|error| error.to_string())?;
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let observed_cancel = Arc::new(AtomicBool::new(false));
+    let dispatcher = PeerHangupTerminalDispatcher {
+        entered: entered_tx,
+        observed_cancel: Arc::clone(&observed_cancel),
+    };
+    let counters = test_counters();
+    let server_counters = Arc::clone(&counters);
+    let server = thread::spawn(move || {
+        handle_connection::<
+            SearchPlaneQueryIpcRequestEnvelope,
+            SearchPlaneQueryIpcRequest,
+            SearchPlaneQueryIpcResponseEnvelope,
+            SearchPlaneQueryIpcResponse,
+            PeerHangupTerminalDispatcher,
+        >(
+            stream,
+            &dispatcher,
+            &DispatchSlots::for_policy(policy),
+            policy,
+            IpcPlane::Query,
+            PeerCredentials {
+                uid: 1000,
+                gid: 1000,
+                pid: None,
+            },
+            1000,
+            1,
+            &AtomicBool::new(false),
+            &server_counters,
+        )
+    });
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 75,
+        diagnostic_attempt: quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
+        payload: SearchPlaneQueryIpcRequest::ResolveActiveGeneration(CurrentGenerationRequest {
+            repo_id: RepoId::new("terminal-reply").map_err(|error| error.to_string())?,
+            revision_id: RevisionId::new("r1").map_err(|error| error.to_string())?,
+            track: SearchPlaneTrackKind::Lexical,
+        }),
+    };
+    client
+        .write_all(&encode_request(&request).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|error| error.to_string())?;
+    drop(client);
+    let reason = server
+        .join()
+        .map_err(|_panic_payload| "server panicked".to_string())?;
+    if !observed_cancel.load(Ordering::Acquire)
+        || !matches!(reason, ConnectionCloseReason::PeerClosed)
+        || counters.snapshot().response_bytes != 0
+    {
+        return Err(format!(
+            "peer hangup sent terminal reply: reason={reason:?}, observed_cancel={}, counters={:?}",
+            observed_cancel.load(Ordering::Acquire),
+            counters.snapshot(),
+        ));
+    }
+    Ok(())
 }

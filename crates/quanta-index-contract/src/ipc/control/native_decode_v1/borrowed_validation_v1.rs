@@ -114,9 +114,9 @@ mod native_v1 {
         HeadDataV1, NativeCorpusDecodeAdmissionV1, NativeCorpusDecodeDataV1, NativeCorpusPolicyV1,
     };
     use super::{
-        Activation, CorpusPolicyV1, ExpectedActivePolicyV1, ManifestGeneration, RepoId, RevisionId,
-        SearchCorpusActiveHeadV1, de, validate_expected_active_with_policy_v1,
-        validate_head_with_policy_v1,
+        de, validate_expected_active_with_policy_v1, validate_head_with_policy_v1, Activation,
+        CorpusPolicyV1, ExpectedActivePolicyV1, ManifestGeneration, RepoId, RevisionId,
+        SearchCorpusActiveHeadV1,
     };
     use crate::NativeIdentityDecodeDataRefusalV1 as Refusal;
     use crate::SearchPlaneActivateSearchCorpusGenerationCasRequest as CasRequest;

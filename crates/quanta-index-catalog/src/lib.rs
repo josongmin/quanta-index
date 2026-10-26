@@ -27,13 +27,14 @@ mod candidate;
 mod connection;
 mod idempotency;
 mod integrity;
+mod io_admission;
 mod native;
 mod open;
 mod sequence;
 
 pub use backup::{
-    CatalogSnapshotReceiptV1, catalog_content_digest, fsync_directory, live_catalog_receipt,
-    normalize_catalog_journal_mode, snapshot_catalog_file, verify_snapshot,
+    CatalogSnapshotReceiptV1, CatalogSnapshotSessionV1, catalog_content_digest, fsync_directory,
+    live_catalog_receipt, normalize_catalog_journal_mode, snapshot_catalog_file, verify_snapshot,
 };
 pub use candidate::{
     ActivationOutcomeV1, RepoMapActivationRowV1, RepoMapCandidateRowV1, RepoMapCandidateStateV1,
@@ -41,4 +42,9 @@ pub use candidate::{
 };
 pub use connection::{
     CATALOG_FILE_NAME, CatalogClockPort, SqliteCatalog, SystemCatalogClock, catalog_dir,
+};
+pub use io_admission::{CatalogIoAdmission, CatalogIoScope, CatalogReadOnlyIoAdmission};
+pub use native::{
+    NativeBootCatalogCandidate, NativeBootCatalogSnapshot, NativeBootManifest,
+    verify_native_boot_candidate, verify_native_boot_catalog,
 };

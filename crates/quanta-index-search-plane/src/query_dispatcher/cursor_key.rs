@@ -14,6 +14,11 @@ use quanta_index_contract::{
     SearchPlaneErrorCodeV2,
 };
 use quanta_index_core::CoreError;
+use quanta_index_core::publication_admission::{
+    DurableControlFileAdmissionPort, PublicationControlOpenTicket,
+};
+
+use crate::readiness::{create_cursor_key_admitted_v1, prepare_cursor_key_admitted_v1};
 
 /// File mode the key file must have: owner read/write only.
 const CURSOR_KEY_FILE_MODE: u32 = 0o600;
@@ -74,6 +79,36 @@ impl CursorKeyStore {
         Self::load(&key_path)
     }
 
+    /// Open a service-owned cursor key through the canonical Control file
+    /// authority. A new key is published only after both parents and the
+    /// original writer have settled; an existing key is read under an owned
+    /// reader lease on its actual file descriptor.
+    pub fn open_with_durable_file_admission(
+        state_root: &Path,
+        admission: &dyn DurableControlFileAdmissionPort,
+    ) -> Result<Self, CoreError> {
+        let key_path = state_root.join("keys/cursor-v2.key");
+        admission.reconcile_deletions()?;
+        // Authenticate the exact root and key path before even creating a
+        // directory. Only source absence authorizes the first-birth path.
+        let prior = match admission.begin_reader_open(&key_path) {
+            Ok(ticket) => Some(ticket),
+            Err(CoreError::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        prepare_cursor_key_admitted_v1(state_root, admission)?;
+        let ticket = if let Some(ticket) = prior {
+            ticket
+        } else {
+            let entropy = fresh_entropy(CURSOR_KEY_FILE_LEN)?;
+            let mut raw = [0u8; CURSOR_KEY_FILE_LEN];
+            raw.copy_from_slice(&entropy);
+            create_cursor_key_admitted_v1(&key_path, &raw, admission)?;
+            admission.begin_reader_open(&key_path)?
+        };
+        Self::load_admitted(&key_path, ticket)
+    }
+
     fn load(key_path: &Path) -> Result<Self, CoreError> {
         let raw = fs::read(key_path)
             .map_err(|err| CoreError::Storage(format!("cursor key: read: {err}")))?;
@@ -84,6 +119,48 @@ impl CursorKeyStore {
             )));
         }
         check_key_file_mode(key_path)?;
+        Self::from_raw(&raw)
+    }
+
+    fn load_admitted(
+        key_path: &Path,
+        ticket: Box<dyn PublicationControlOpenTicket>,
+    ) -> Result<Self, CoreError> {
+        use std::io::Read as _;
+        let file = open_cursor_key_nofollow(key_path)?;
+        let mut reader = ticket.opened_owned(file)?;
+        let loaded = (|| {
+            let metadata = reader.metadata()?;
+            check_admitted_key_metadata(&metadata)?;
+            let mut raw = [0u8; CURSOR_KEY_FILE_LEN];
+            reader
+                .read_exact(&mut raw)
+                .map_err(|error| cursor_io_error("read original FD", &error))?;
+            let mut extra = [0u8; 1];
+            if reader
+                .read(&mut extra)
+                .map_err(|error| cursor_io_error("check EOF", &error))?
+                != 0
+            {
+                return Err(CoreError::Storage(
+                    "cursor key: trailing bytes after fixed key".into(),
+                ));
+            }
+            Self::from_raw(&raw)
+        })();
+        let retirement = reader.retire();
+        match (loaded, retirement) {
+            (Ok(key), Ok(())) => Ok(key),
+            (Err(primary), Ok(())) => Err(primary),
+            (Ok(_), Err(error)) => Err(error),
+            (Err(mut primary), Err(error)) => {
+                append_key_retirement_error(&mut primary, &error);
+                Err(primary)
+            }
+        }
+    }
+
+    fn from_raw(raw: &[u8]) -> Result<Self, CoreError> {
         let (id_bytes, key_bytes) = raw
             .split_first_chunk::<8>()
             .and_then(|(id, rest)| rest.split_first_chunk::<32>().map(|(key, _)| (id, key)))
@@ -104,6 +181,130 @@ impl CursorKeyStore {
     pub const fn key_id(&self) -> u64 {
         self.key.id()
     }
+}
+
+#[cfg(unix)]
+fn open_cursor_key_nofollow(path: &Path) -> Result<fs::File, CoreError> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+
+    let keys_dir = path
+        .parent()
+        .ok_or_else(|| CoreError::InvalidContract("cursor key: keys directory absent".into()))?;
+    let state_root = keys_dir
+        .parent()
+        .ok_or_else(|| CoreError::InvalidContract("cursor key: state root absent".into()))?;
+    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let root = fs::File::from(
+        open(state_root, directory_flags, Mode::empty()).map_err(|error| {
+            cursor_io_error("open held state root", &std::io::Error::from(error))
+        })?,
+    );
+    verify_cursor_directory_identity(&root, state_root, false)?;
+    let keys = fs::File::from(
+        openat(&root, "keys", directory_flags, Mode::empty()).map_err(|error| {
+            cursor_io_error("open held keys directory", &std::io::Error::from(error))
+        })?,
+    );
+    verify_cursor_directory_identity(&keys, keys_dir, true)?;
+    let fd = openat(
+        &keys,
+        "cursor-v2.key",
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|error| cursor_io_error("open original FD", &std::io::Error::from(error)))?;
+    Ok(fs::File::from(fd))
+}
+
+#[cfg(unix)]
+fn verify_cursor_directory_identity(
+    directory: &fs::File,
+    path: &Path,
+    private: bool,
+) -> Result<(), CoreError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let held = directory
+        .metadata()
+        .map_err(|error| cursor_io_error("stat held directory", &error))?;
+    let named = fs::symlink_metadata(path)
+        .map_err(|error| cursor_io_error("stat named directory", &error))?;
+    if !held.is_dir()
+        || !named.is_dir()
+        || held.dev() != named.dev()
+        || held.ino() != named.ino()
+        || (private
+            && (held.uid() != rustix::process::geteuid().as_raw() || held.mode() & 0o022 != 0))
+    {
+        return Err(CoreError::InvalidContract(
+            "cursor key: directory identity or permissions changed".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn open_cursor_key_nofollow(_path: &Path) -> Result<fs::File, CoreError> {
+    Err(CoreError::InvalidContract(
+        "cursor key: anchored nofollow open requires Unix".into(),
+    ))
+}
+
+#[cfg(unix)]
+fn check_admitted_key_metadata(metadata: &fs::Metadata) -> Result<(), CoreError> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    if !metadata.is_file()
+        || metadata.len() != 40
+        || metadata.permissions().mode() & 0o7777 != CURSOR_KEY_FILE_MODE
+        || metadata.nlink() != 1
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+    {
+        return Err(CoreError::Storage(
+            "cursor key: original FD is not a private 40-byte regular key".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_admitted_key_metadata(_metadata: &fs::Metadata) -> Result<(), CoreError> {
+    Err(CoreError::InvalidContract(
+        "cursor key: metadata verification requires Unix".into(),
+    ))
+}
+
+fn append_key_retirement_error(primary: &mut CoreError, retirement: &CoreError) {
+    let message = match primary {
+        CoreError::InvalidContract(message)
+        | CoreError::Typed { message, .. }
+        | CoreError::NotReady(message)
+        | CoreError::NotImplemented(message)
+        | CoreError::NotFound(message)
+        | CoreError::Storage(message)
+        | CoreError::StorageIo { message, .. } => message,
+    };
+    message.push_str("; additionally failed to retire cursor key reader: ");
+    message.push_str(&retirement.to_string());
+}
+
+fn cursor_io_error(context: &str, error: &std::io::Error) -> CoreError {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(cause) = source {
+        if let Some(primary) = cause.downcast_ref::<CoreError>() {
+            return primary.clone();
+        }
+        if let Some(io) = cause.downcast_ref::<std::io::Error>()
+            && io.raw_os_error().is_some()
+        {
+            return CoreError::storage_io(context, io);
+        }
+        source = cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .map(|inner| -> &(dyn std::error::Error + 'static) { inner })
+            .or_else(|| cause.source());
+    }
+    CoreError::storage_io(context, error)
 }
 
 impl CursorKeyStore {
@@ -251,12 +452,46 @@ fn check_key_file_mode(_path: &Path) -> Result<(), CoreError> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::CursorKeyStore;
+    use super::{CursorKeyStore, cursor_io_error};
     use quanta_index_contract::{
         CursorBindingV2, CursorRouteV2, GenerationPin, ManifestGeneration, RepoId, RevisionId,
         SearchPlaneErrorCodeV2,
     };
     use quanta_index_core::CoreError;
+
+    #[test]
+    fn admitted_reader_io_keeps_nested_typed_and_os_causes() {
+        let budget = CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+            message: "fixed reader budget refusal".into(),
+        };
+        let nested = cursor_io_error(
+            "read original FD",
+            &std::io::Error::other(std::io::Error::other(budget)),
+        );
+        assert!(matches!(nested, CoreError::Typed { code, message }
+            if code == SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded
+                && message == "fixed reader budget refusal"));
+        let os = cursor_io_error(
+            "read original FD",
+            &std::io::Error::from_raw_os_error(rustix::io::Errno::NOSPC.raw_os_error()),
+        );
+        assert!(
+            matches!(os, CoreError::StorageIo { raw_os_error: Some(code), .. }
+            if code == rustix::io::Errno::NOSPC.raw_os_error())
+        );
+        let text = cursor_io_error(
+            "read original FD",
+            &std::io::Error::other("IngestResourceBudgetExceeded"),
+        );
+        assert!(matches!(
+            text,
+            CoreError::StorageIo {
+                raw_os_error: None,
+                ..
+            }
+        ));
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir =

@@ -12,6 +12,7 @@ use quanta_index_contract::{
 };
 use quanta_index_sdk::{QuantaIndex, SdkError};
 
+mod native;
 mod parse;
 mod render;
 
@@ -60,6 +61,13 @@ where
     I: IntoIterator<Item = T>,
     T: Into<String>,
 {
+    let args: Vec<String> = args.into_iter().map(Into::into).collect();
+    if args.first().is_some_and(|command| command == "native") {
+        let native_args = args
+            .get(1..)
+            .ok_or_else(|| CliError::usage("native command missing".into()))?;
+        return native::run(native_args, stdout);
+    }
     let ParsedCommand {
         kind,
         output,

@@ -10,12 +10,12 @@ use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2, SourceFileKey, SourcePublicationEvent,
-    TextQueryResponse, lex::LanguageCode,
+    ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, ManifestGeneration,
+    ProcessRequestEventPlaneV1, RepoId, RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2,
+    SourceFileKey, SourcePublicationEvent, TextQueryResponse, lex::LanguageCode,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 use quanta_index_searchd_harness::{
@@ -40,6 +40,66 @@ const EVENT_2: &str = "fixture:scale-process-restart:g2";
 const RETAINED_TOKEN: &str = "scalefileneedle001file00000";
 const DELETED_TOKEN: &str = "scalefileneedle000file00000";
 const SUPPORTED_PROFILE_TIMEOUT: Duration = Duration::from_secs(600);
+
+#[derive(Debug)]
+struct MediumPublishFailure {
+    stage: &'static str,
+    primary: SdkError,
+    diagnostic: String,
+}
+
+impl std::fmt::Display for MediumPublishFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "medium {stage} failed: {primary}; {diagnostic}",
+            stage = self.stage,
+            primary = self.primary,
+            diagnostic = self.diagnostic,
+        )
+    }
+}
+
+impl Error for MediumPublishFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.primary)
+    }
+}
+
+fn publish_failure_context(
+    state_root: &Path,
+    tier: ScaleTier,
+    stage: &'static str,
+    primary: SdkError,
+) -> Box<dyn Error> {
+    if tier != ScaleTier::Medium {
+        return Box::new(primary);
+    }
+    // One absolute deadline covers both control reads; diagnostic failure
+    // cannot replace the original publish error or add another 30s wait.
+    let diagnostic = Instant::now()
+        .checked_add(Duration::from_secs(1))
+        .map_or_else(
+            || "diagnostic deadline unavailable".to_string(),
+            |deadline| match QuantaIndex::connect(
+                ConnectOptions::from_state_root(state_root).with_request_io_deadline(deadline),
+            ) {
+                Ok(probe) => {
+                    let events = probe
+                        .observability()
+                        .request_events(ProcessRequestEventPlaneV1::Ingest, 1024);
+                    let readiness = probe.observability().process_readiness();
+                    format!("ingest events: {events:?}; control readiness: {readiness:?}")
+                }
+                Err(error) => format!("diagnostic client unavailable: {error}"),
+            },
+        );
+    Box::new(MediumPublishFailure {
+        stage,
+        primary,
+        diagnostic,
+    })
+}
 
 fn repo() -> Result<RepoId, Box<dyn Error>> {
     Ok(RepoId::new(REPO)?)
@@ -377,7 +437,16 @@ fn restored_shared_object_corpus_serves_in_two_fresh_daemon_processes() -> TestR
         ("backup-state", source.path(), backup.as_path()),
         ("restore-state", backup.as_path(), restored.as_path()),
     ] {
-        let output = Command::new(command.get_program())
+        let mut migration = Command::new(command.get_program());
+        // Offline commands require the same explicit policy as the source daemon.
+        for (name, value) in command.get_envs() {
+            if let Some(value) = value {
+                let _configured = migration.env(name, value);
+            } else {
+                let _configured = migration.env_remove(name);
+            }
+        }
+        let output = migration
             .arg(operation)
             .arg("--source")
             .arg(from)
@@ -643,6 +712,22 @@ fn export_trace_status(
     trace: &Path,
     output_root: &Path,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
+    // Resolve the macOS /tmp directory alias while preserving each leaf for
+    // the exporter's own symlink and exclusive-output checks.
+    let trace = trace
+        .parent()
+        .ok_or("trace input has no parent")?
+        .canonicalize()?
+        .join(trace.file_name().ok_or("trace input has no filename")?);
+    let output_root = output_root
+        .parent()
+        .ok_or("trace output has no parent")?
+        .canonicalize()?
+        .join(
+            output_root
+                .file_name()
+                .ok_or("trace output has no filename")?,
+        );
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = Command::new("uv")
         .current_dir(repo_root)
@@ -656,12 +741,20 @@ fn export_trace_status(
             "tools.benchmark.retrieval.causal_cost_capture",
             "--offline-input",
         ])
-        .arg(trace)
+        .arg(&trace)
         .arg("--out-root")
-        .arg(output_root)
+        .arg(&output_root)
         .output()?;
-    let status: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(output_root.join("timeline-status.json"))?)?;
+    let status_path = output_root.join("timeline-status.json");
+    let status_bytes = std::fs::read(&status_path).map_err(|error| {
+        format!(
+            "offline exporter did not provide {}: {error}; exit={} stderr={}",
+            status_path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })?;
+    let status: serde_json::Value = serde_json::from_slice(&status_bytes)?;
     let viewer_available = json_field(&status, "viewer_available")?
         .as_bool()
         .ok_or("offline exporter status has non-boolean viewer_available")?;
@@ -720,9 +813,8 @@ fn start_process(
     tier: ScaleTier,
 ) -> Result<SearchdBinaryProcess, Box<dyn Error>> {
     let mut command = scale_process_command(state)?;
-    if tier == ScaleTier::Medium {
-        return SearchdBinaryProcess::start_with_command(state, command);
-    }
+    // All declared scale tiers use the same existing history profile.
+    // Medium retains its original client and readiness deadlines.
     let _configured = command
         .env(
             "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
@@ -731,7 +823,11 @@ fn start_process(
         .env(
             "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
             SCALE_HISTORY_MAX_TOTAL_BYTES.to_string(),
-        )
+        );
+    if tier == ScaleTier::Medium {
+        return SearchdBinaryProcess::start_with_command(state, command);
+    }
+    let _configured = command
         .env("QUANTA_INDEX_INGEST_MAX_RECORDS", "100000")
         .env(
             "QUANTA_INDEX_INGEST_MAX_TEXT_BYTES",
@@ -846,7 +942,10 @@ fn run_scale_process_restart(tier: ScaleTier) -> TestResult {
     let client = connect_process(&first, state.path(), tier)?;
     let (_full_receipt, first_head) = client
         .search_corpus()
-        .publish_and_activate(&initial_batch(files, tier)?, None)?;
+        .publish_and_activate(&initial_batch(files, tier)?, None)
+        .map_err(|primary| {
+            publish_failure_context(state.path(), tier, "initial publish", primary)
+        })?;
     if first_head.active.generation.lexical.manifest_generation != ManifestGeneration::new(1) {
         return Err("full source generation did not activate".into());
     }
@@ -867,7 +966,10 @@ fn run_scale_process_restart(tier: ScaleTier) -> TestResult {
     )?;
     let (_delta_receipt, second_head) = client
         .search_corpus()
-        .publish_and_activate(&tombstone_batch()?, Some(first_head.active))?;
+        .publish_and_activate(&tombstone_batch()?, Some(first_head.active))
+        .map_err(|primary| {
+            publish_failure_context(state.path(), tier, "tombstone publish", primary)
+        })?;
     if second_head.active.generation.lexical.manifest_generation != ManifestGeneration::new(2) {
         return Err("deleted source generation did not activate".into());
     }

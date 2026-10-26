@@ -14,6 +14,9 @@ use serde::{
 
 use crate::DiffHunkSide;
 
+mod admitted;
+use admitted::{DiffDecodePolicy, Ordinary};
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DiffHunkRecord {
     pub wire_version: u32,
@@ -55,9 +58,9 @@ impl Serialize for DiffHunkRecord {
     }
 }
 
-struct DiffHunkRecordVisitor;
+struct DiffHunkRecordVisitor<P>(P);
 
-impl<'de> Visitor<'de> for DiffHunkRecordVisitor {
+impl<'de, P: DiffDecodePolicy<'de>> Visitor<'de> for DiffHunkRecordVisitor<P> {
     type Value = DiffHunkRecord;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -69,15 +72,15 @@ impl<'de> Visitor<'de> for DiffHunkRecordVisitor {
         A: MapAccess<'de>,
     {
         let mut wire_version: Option<u32> = None;
-        let mut hunk_header: Option<String> = None;
+        let mut hunk_header: Option<Box<str>> = None;
         let mut side: Option<DiffHunkSide> = None;
-        let mut added_text: Option<String> = None;
-        let mut removed_text: Option<String> = None;
-        let mut touched_text: Option<String> = None;
+        let mut added_text: Option<Box<str>> = None;
+        let mut removed_text: Option<Box<str>> = None;
+        let mut touched_text: Option<Box<str>> = None;
         let mut byte_start: Option<u32> = None;
         let mut byte_end: Option<u32> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self.0.next_field(&mut map)? {
+            match key {
                 "wire_version" => {
                     if wire_version.is_some() {
                         return Err(de::Error::duplicate_field("wire_version"));
@@ -88,7 +91,7 @@ impl<'de> Visitor<'de> for DiffHunkRecordVisitor {
                     if hunk_header.is_some() {
                         return Err(de::Error::duplicate_field("hunk_header"));
                     }
-                    hunk_header = Some(map.next_value()?);
+                    hunk_header = Some(self.0.next_text(&mut map)?);
                 }
                 "side" => {
                     if side.is_some() {
@@ -100,19 +103,19 @@ impl<'de> Visitor<'de> for DiffHunkRecordVisitor {
                     if added_text.is_some() {
                         return Err(de::Error::duplicate_field("added_text"));
                     }
-                    added_text = Some(map.next_value()?);
+                    added_text = Some(self.0.next_text(&mut map)?);
                 }
                 "removed_text" => {
                     if removed_text.is_some() {
                         return Err(de::Error::duplicate_field("removed_text"));
                     }
-                    removed_text = Some(map.next_value()?);
+                    removed_text = Some(self.0.next_text(&mut map)?);
                 }
                 "touched_text" => {
                     if touched_text.is_some() {
                         return Err(de::Error::duplicate_field("touched_text"));
                     }
-                    touched_text = Some(map.next_value()?);
+                    touched_text = Some(self.0.next_text(&mut map)?);
                 }
                 "byte_start" => {
                     if byte_start.is_some() {
@@ -131,19 +134,11 @@ impl<'de> Visitor<'de> for DiffHunkRecordVisitor {
         }
         Ok(DiffHunkRecord {
             wire_version: wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?,
-            hunk_header: hunk_header
-                .ok_or_else(|| de::Error::missing_field("hunk_header"))?
-                .into_boxed_str(),
+            hunk_header: hunk_header.ok_or_else(|| de::Error::missing_field("hunk_header"))?,
             side: side.ok_or_else(|| de::Error::missing_field("side"))?,
-            added_text: added_text
-                .ok_or_else(|| de::Error::missing_field("added_text"))?
-                .into_boxed_str(),
-            removed_text: removed_text
-                .ok_or_else(|| de::Error::missing_field("removed_text"))?
-                .into_boxed_str(),
-            touched_text: touched_text
-                .ok_or_else(|| de::Error::missing_field("touched_text"))?
-                .into_boxed_str(),
+            added_text: added_text.ok_or_else(|| de::Error::missing_field("added_text"))?,
+            removed_text: removed_text.ok_or_else(|| de::Error::missing_field("removed_text"))?,
+            touched_text: touched_text.ok_or_else(|| de::Error::missing_field("touched_text"))?,
             byte_start: byte_start.ok_or_else(|| de::Error::missing_field("byte_start"))?,
             byte_end: byte_end.ok_or_else(|| de::Error::missing_field("byte_end"))?,
         })
@@ -158,7 +153,7 @@ impl<'de> Deserialize<'de> for DiffHunkRecord {
         deserializer.deserialize_struct(
             "DiffHunkRecord",
             DIFF_HUNK_RECORD_FIELDS,
-            DiffHunkRecordVisitor,
+            DiffHunkRecordVisitor(Ordinary),
         )
     }
 }

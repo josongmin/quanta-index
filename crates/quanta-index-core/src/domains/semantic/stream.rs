@@ -37,6 +37,7 @@ use quanta_index_contract::{
 
 use crate::diagnostic_trace::DiagnosticContextV1;
 use crate::error::CoreError;
+use crate::publication_admission::PublicationOutputAdmission;
 
 /// Most owner scopes one window carries.
 ///
@@ -527,6 +528,7 @@ pub trait SemanticScopeStreamBuildPort: Send + Sync {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        publication: Option<PublicationOutputAdmission<'_>>,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<
         (
@@ -801,7 +803,7 @@ pub fn build_resident_semantic_batch_v1(
 ) -> Result<SemanticStreamTallyV1, CoreError> {
     let header = SemanticIngestHeaderV1::of_batch(batch);
     let mut source = ResidentScopeSource::new(&batch.replace_scopes, policy)?;
-    let (appended, _observation) = port.build_stream(&header, &mut source, None)?;
+    let (appended, _observation) = port.build_stream(&header, &mut source, None, None)?;
     let issued = source.tally();
     if appended != issued {
         return Err(CoreError::InvalidContract(format!(

@@ -7,6 +7,14 @@
 filter = 'binary(=runtime_semantic_stream_suite) & test(=e2e_semantic_stream_window::a_batch_streams_through_bounded_windows_and_every_row_survives_a_restart)'
 threads-required = "num-test-threads"
 
+# The 256-source process/restart fixture has a fixed 30-second SDK deadline.
+# It timed out in the concurrent daemon selection and completed with the same
+# deadline in the focused selection. Reserve the pool for this process fixture;
+# every other test retains its existing parallelism, deadline and assertions.
+[[profile.default.overrides]]
+filter = 'binary(=runtime_extended_suite) & test(=e2e_scale_process_restart::medium_scale_source_survives_real_daemon_process_restart_and_delete)'
+threads-required = "num-test-threads"
+
 # ANN incremental sealing trains and appends a persisted vector index through
 # the daemon IPC front door. The 30-second IPC read deadline was exhausted
 # under the default full-suite concurrency on macOS; isolate this test's
@@ -22,4 +30,19 @@ threads-required = "num-test-threads"
 # production or client deadlines.
 [[profile.default.overrides]]
 filter = '(binary(=runtime_extended_suite) | binary(=process_readiness_owner_v1)) & test(=e2e_process_readiness::binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page)'
+threads-required = "num-test-threads"
+
+# The fixed Native quality gate materializes 4,096 source owners through the
+# real owned pump and checks both process epochs. Keep the original service
+# deadlines and funding while reserving the pool for this corpus fixture.
+[[profile.default.overrides]]
+filter = 'binary(=native_product_process) & test(=ann_quality::product_native_ann_quality_4096x64_reopens_at_fixed_recall)'
+threads-required = "num-test-threads"
+
+# Cold truth shards repeatedly boot, publish and retire complete runtimes.
+# Shard 3 exhausted the unchanged 30-second IPC read budget alongside another
+# cold shard in the official daemon scope. Admit each truth fixture exclusively;
+# retain every scenario, oracle and service deadline.
+[[profile.default.overrides]]
+filter = 'binary(=dsl_scenario_truth)'
 threads-required = "num-test-threads"

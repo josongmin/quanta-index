@@ -82,7 +82,8 @@ fn typed_code(error: &CoreError) -> Option<quanta_index_contract::SearchPlaneErr
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_) => None,
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. } => None,
     }
 }
 

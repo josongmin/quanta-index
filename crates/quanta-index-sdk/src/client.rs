@@ -4,6 +4,8 @@ use std::sync::{
 };
 
 use quanta_index_contract::{
+    BorrowedAuxiliaryIngestIpcRequestEnvelopeV1, BorrowedAuxiliaryIngestIpcRequestV1,
+    BorrowedRepoMapActivateControlIpcRequestEnvelopeV3, BorrowedRepoMapActivateControlIpcRequestV3,
     DiagnosticAttemptFieldV1, GenerationPin, GenerationSelector, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
@@ -623,13 +625,102 @@ impl QuantaIndexClientPayloadV1 {
         };
         let response =
             ingest_transport.send_traced(envelope, self.diagnostic_attempt_source.as_deref())?;
+        Self::complete_ingest_v1(&binding, request_id, response)
+    }
+
+    pub(super) fn dispatch_borrowed_auxiliary_ingest_v1(
+        &self,
+        payload: BorrowedAuxiliaryIngestIpcRequestV1<'_>,
+    ) -> Result<SearchPlaneIngestIpcResponse, SdkError> {
+        if matches!(payload, BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(_)) {
+            return Err(SdkError::Protocol(
+                "RepoMap requires the exact borrowed receipt binding route".to_string(),
+            ));
+        }
+        let binding = IngestCallBinding::from_borrowed_auxiliary_v1(&payload);
+        let ingest_transport = self
+            .transports
+            .ingest()
+            .ok_or(SdkError::PlaneUnavailable { plane: "ingest" })?;
+        let request_id = self.next_request_id();
+        let envelope = BorrowedAuxiliaryIngestIpcRequestEnvelopeV1 {
+            request_id,
+            payload,
+            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
+        };
+        let response = ingest_transport.send_borrowed_auxiliary_traced_v1(
+            envelope,
+            self.diagnostic_attempt_source.as_deref(),
+        )?;
+        Self::complete_ingest_v1(&binding, request_id, response)
+    }
+
+    pub(super) fn dispatch_borrowed_auxiliary_ingest_admitted_v1(
+        &self,
+        payload: BorrowedAuxiliaryIngestIpcRequestV1<'_>,
+        budget: &quanta_index_ipc::RequestBudgetV1,
+        memory: &quanta_index_ipc::MemoryScope,
+        work: &mut dyn FnMut(usize) -> Result<(), quanta_index_ipc::IpcError>,
+    ) -> Result<(u64, quanta_index_ipc::AdmittedClientResponseBody), SdkError> {
+        let ingest_transport = self
+            .transports
+            .ingest()
+            .ok_or(SdkError::PlaneUnavailable { plane: "ingest" })?;
+        let request_id = self.next_request_id();
+        let envelope = BorrowedAuxiliaryIngestIpcRequestEnvelopeV1 {
+            request_id,
+            payload,
+            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
+        };
+        let body = ingest_transport.send_borrowed_auxiliary_admitted_v1(
+            envelope,
+            self.diagnostic_attempt_source.as_deref(),
+            budget,
+            memory,
+            work,
+        )?;
+        Ok((request_id, body))
+    }
+
+    pub(super) fn dispatch_borrowed_repo_map_activate_admitted_v3(
+        &self,
+        request: &quanta_index_contract::RepoMapActivateGenerationRequestV2,
+        budget: &quanta_index_ipc::RequestBudgetV1,
+        memory: &quanta_index_ipc::MemoryScope,
+        work: &mut dyn FnMut(usize) -> Result<(), quanta_index_ipc::IpcError>,
+    ) -> Result<(u64, quanta_index_ipc::AdmittedClientResponseBody), SdkError> {
+        let control_transport = self
+            .transports
+            .control()
+            .ok_or(SdkError::PlaneUnavailable { plane: "control" })?;
+        let request_id = self.next_request_id();
+        let envelope = BorrowedRepoMapActivateControlIpcRequestEnvelopeV3 {
+            request_id,
+            payload: BorrowedRepoMapActivateControlIpcRequestV3(request),
+            diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
+        };
+        let body = control_transport.send_borrowed_repo_map_admitted_v3(
+            envelope,
+            self.diagnostic_attempt_source.as_deref(),
+            budget,
+            memory,
+            work,
+        )?;
+        Ok((request_id, body))
+    }
+
+    fn complete_ingest_v1(
+        binding: &IngestCallBinding,
+        request_id: u64,
+        response: quanta_index_contract::SearchPlaneIngestIpcResponseEnvelope,
+    ) -> Result<SearchPlaneIngestIpcResponse, SdkError> {
         if response.request_id != request_id {
             return Err(SdkError::Protocol(format!(
                 "ingest response request_id {} != request {}",
                 response.request_id, request_id
             )));
         }
-        bind_ingest_response(&binding, &response.payload)?;
+        bind_ingest_response(binding, &response.payload)?;
         binding.validate_observation(request_id, &response.payload)?;
         match response.payload {
             SearchPlaneIngestIpcResponse::Error(error) => Err(SdkError::Remote {

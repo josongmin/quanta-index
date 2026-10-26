@@ -21,6 +21,7 @@ use std::error::Error;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
 use quanta_index_contract::{ManifestGeneration, PlannerStage};
 use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_searchd_harness as e2e_harness;
@@ -82,7 +83,9 @@ fn ingest_files(
             .zip(chunks.iter())
             .map(|((path, _), chunk)| (path.as_str(), chunk.as_slice()))
             .collect();
-        ids.extend(rt.ingest_text_files_one_batch(&files)?);
+        ids.extend(rt.ingest_text_files_one_batch(&files).with_context(|| {
+            format!("ANN append generation {generation} files {first}..{last}")
+        })?);
     }
     Ok(ids)
 }
@@ -150,14 +153,30 @@ fn dense_lane_trace(result: &E2eQueryResult) -> Option<String> {
 
 #[test]
 #[expect(
-    clippy::print_stdout,
-    reason = "the QI-BB-027-APPEND-EVIDENCE line is the measurement the ledger cites; it must land in the run log"
+    clippy::print_stderr,
+    reason = "preserve the scenario error while reporting a separate cleanup failure"
 )]
 fn a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
+    let scenario = verify_append_case(&mut rt);
+    let cleanup = rt.stop();
+    if let Err(primary) = scenario {
+        if let Err(secondary) = cleanup {
+            eprintln!("ANN append cleanup also failed: {secondary:#}");
+        }
+        return Err(primary);
+    }
+    cleanup?;
+    Ok(())
+}
 
+#[expect(
+    clippy::print_stdout,
+    reason = "the independently counted ANN append evidence belongs in the test output"
+)]
+fn verify_append_case(rt: &mut E2eRuntime) -> TestResult {
     // g1: past the floor, so the seal trains the policy index.
-    let base_ids = ingest_files(&mut rt, 1, BASE_FILES)?;
+    let base_ids = ingest_files(rt, 1, BASE_FILES)?;
     if base_ids.len() != usize::try_from(BASE_FILES)? {
         return Err(format!(
             "base ingest returned {} ids for {BASE_FILES} files",
@@ -165,7 +184,7 @@ fn a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so() -> Te
         )
         .into());
     }
-    let base = rt.seal()?;
+    let base = rt.seal().context("ANN append base seal")?;
     rt.activate_last_sealed_generation()?;
     let base_query = rt.query_semantic(&file_content(1, 17), TOP_K, None);
     served(&base_query, "semantic query pinned to the base")?;
@@ -185,15 +204,15 @@ fn a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so() -> Te
         )
         .into());
     }
-    let base_index_bytes = index_bytes_by_inode(&semantic_generation_dir(&rt, base)?)?;
+    let base_index_bytes = index_bytes_by_inode(&semantic_generation_dir(rt, base)?)?;
     let base_bytes: u64 = base_index_bytes.values().sum();
     if base_bytes == 0 {
         return Err("the base seal wrote no index files; the fixture is below the floor".into());
     }
 
     // g2: a delta inside the append budget.
-    let delta_ids = ingest_files(&mut rt, 2, DELTA_FILES)?;
-    let delta = rt.seal()?;
+    let delta_ids = ingest_files(rt, 2, DELTA_FILES)?;
+    let delta = rt.seal().context("ANN append delta seal")?;
     rt.activate_last_sealed_generation()?;
     if delta.get() != base.get().saturating_add(1) {
         return Err(format!("the delta must follow the base: {base:?} -> {delta:?}").into());
@@ -280,7 +299,7 @@ fn a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so() -> Te
 
     // Cost oracle: the delta shares every base index file by inode and
     // its own new index bytes are a fraction of the base's.
-    let delta_index_bytes = index_bytes_by_inode(&semantic_generation_dir(&rt, delta)?)?;
+    let delta_index_bytes = index_bytes_by_inode(&semantic_generation_dir(rt, delta)?)?;
     let shared_inodes = delta_index_bytes
         .keys()
         .filter(|inode| base_index_bytes.contains_key(*inode))

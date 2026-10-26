@@ -163,8 +163,13 @@ mod vector_contract {
     }
 
     impl TextEmbeddingProvider for Scripted {
-        fn embed_batch(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
-            Ok(self.vectors.clone())
+        fn embed_batch(
+            &self,
+            _texts: &[&str],
+        ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
+            Ok(quanta_index_core::TextEmbeddingBatch::unscoped(
+                self.vectors.clone(),
+            ))
         }
         fn model_id(&self) -> &'static str {
             "scripted"

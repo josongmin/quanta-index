@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
+use quanta_index_core::domains::generation::RetentionMeasurementPolicy;
+use quanta_index_core::lexical_maintenance::LexicalMaintenancePolicy;
+use quanta_index_core::pool_write_admission::PoolWriteLimits;
 use quanta_index_core::{
     EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY, IngestResourcePolicy, IntegrityScrubPolicyV1,
     LexicalExecutionBudgetV1, LexicalWriterPolicy, MAX_EMBEDDING_DIMENSION,
@@ -21,6 +24,12 @@ use quanta_index_search_plane::{
 };
 
 use crate::app::socket_access::SocketAccessPolicies;
+
+mod publication_physical;
+pub use publication_physical::{
+    LegacyPhysicalAllowance, LegacyPhysicalBinderLimits, LegacyPhysicalInventoryLimits,
+    LegacyPublicationPhysicalPolicy, TEST_STATE_ROOT_PHYSICAL_POLICY,
+};
 
 /// Default `OpenAI` embedding model and dimension when the `openai` profile is
 /// selected without explicit overrides.
@@ -414,6 +423,13 @@ pub struct SearchdConfig {
     /// The heap every open lexical generation writer may hold together, the
     /// heap one takes, and how long an idle one is kept (QI-BB-016).
     lexical_writer_policy: LexicalWriterPolicy,
+    /// Explicit logical run policy. Unset means the existing debt-only path;
+    /// configuration alone does not qualify physical reserves or thresholds.
+    lexical_maintenance_policy: Option<LexicalMaintenancePolicy>,
+    lexical_pool_write_limits: Option<PoolWriteLimits>,
+    /// None preserves the explicitly unqualified Legacy composition.
+    legacy_publication_physical_policy: Option<LegacyPublicationPhysicalPolicy>,
+    retention_measurement_policy: RetentionMeasurementPolicy,
     /// Who may connect to each socket (QI-BB-014). Every socket is private
     /// unless its own knob opens it; the state root stays owner-only
     /// regardless.
@@ -589,6 +605,66 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
         },
     },
     EnvPolicyFamily {
+        name: "lexical run maintenance",
+        env_vars: &[
+            "QUANTA_INDEX_LEXICAL_MERGE_SOFT_RUNS",
+            "QUANTA_INDEX_LEXICAL_MERGE_HARD_RUNS",
+            "QUANTA_INDEX_LEXICAL_MERGE_SOFT_INDEX_BYTES",
+            "QUANTA_INDEX_LEXICAL_MERGE_HARD_INDEX_BYTES",
+            "QUANTA_INDEX_LEXICAL_MERGE_MAX_FAN_IN",
+            "QUANTA_INDEX_LEXICAL_MERGE_MAX_INPUT_INDEX_BYTES",
+            "QUANTA_INDEX_LEXICAL_STAGING_MAX_BYTES",
+            "QUANTA_INDEX_LEXICAL_STAGING_MAX_AGE_MS",
+        ],
+        apply: |config, lookup| {
+            Ok(config
+                .with_lexical_maintenance_policy(lexical_maintenance_policy_from_lookup(lookup)?))
+        },
+    },
+    EnvPolicyFamily {
+        name: "lexical pool writes",
+        env_vars: &[
+            "QUANTA_INDEX_LEXICAL_POOL_MAX_ENCODED_BYTES",
+            "QUANTA_INDEX_LEXICAL_POOL_MAX_FILES",
+        ],
+        apply: |config, lookup| {
+            Ok(config
+                .with_lexical_pool_write_limits(lexical_pool_write_limits_from_lookup(lookup)?))
+        },
+    },
+    EnvPolicyFamily {
+        name: "legacy publication physical",
+        env_vars: publication_physical::ENV_VARS,
+        apply: |config, lookup| {
+            config.try_with_legacy_publication_physical_policy(publication_physical::from_lookup(
+                lookup,
+            )?)
+        },
+    },
+    EnvPolicyFamily {
+        name: "retention measurement",
+        env_vars: &[
+            "QUANTA_INDEX_RETENTION_MEASUREMENT_SCRATCH_BYTES",
+            "QUANTA_INDEX_RETENTION_MEASUREMENT_TIMEOUT_MS",
+        ],
+        apply: |config, lookup| {
+            const NAME: &str = "QUANTA_INDEX_RETENTION_MEASUREMENT_SCRATCH_BYTES";
+            const TIMEOUT: &str = "QUANTA_INDEX_RETENTION_MEASUREMENT_TIMEOUT_MS";
+            let mut policy = match lookup(NAME)? {
+                Some(raw) => {
+                    RetentionMeasurementPolicy::new(required_positive_raw_u64(NAME, Some(raw))?)?
+                }
+                None => RetentionMeasurementPolicy::DEFAULT,
+            };
+            if let Some(raw) = lookup(TIMEOUT)? {
+                policy = policy.with_max_physical_scan_duration(Duration::from_millis(
+                    required_positive_raw_u64(TIMEOUT, Some(raw))?,
+                ))?;
+            }
+            Ok(config.with_retention_measurement_policy(policy))
+        },
+    },
+    EnvPolicyFamily {
         name: "socket access",
         env_vars: &[
             "QUANTA_INDEX_QUERY_SOCKET_ACCESS",
@@ -705,11 +781,18 @@ pub(crate) const STATE_ROOT_ENV_VARS: &[&str] =
     &["QUANTA_INDEX_STATE_ROOT", "QUANTA_INDEX_CACHE_ROOT"];
 
 impl SearchdConfig {
-    /// In-process test/harness builder. Its hash embedder is intentionally
-    /// explicit in the name; daemon entry points must use [`Self::from_env`]
-    /// or [`Self::from_env_with_state_root`] so potion-code is the default.
+    /// In-process test/harness builder with explicit fixture-only physical
+    /// limits. Daemon entry points use [`Self::from_env`] or
+    /// [`Self::from_env_with_state_root`] and require the complete env family.
     #[must_use]
     pub fn from_test_state_root(state_root: PathBuf) -> Self {
+        let mut config = Self::base_with_state_root(state_root);
+        config.legacy_publication_physical_policy =
+            Some(publication_physical::TEST_STATE_ROOT_PHYSICAL_POLICY);
+        config
+    }
+
+    fn base_with_state_root(state_root: PathBuf) -> Self {
         let socket_dir = state_root.join("search-plane");
         Self {
             state_root,
@@ -727,6 +810,10 @@ impl SearchdConfig {
                 quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_DEFAULT_BYTES,
             semantic_stream_window_policy: SemanticStreamWindowPolicy::DEFAULT,
             lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
+            lexical_maintenance_policy: None,
+            lexical_pool_write_limits: None,
+            legacy_publication_physical_policy: None,
+            retention_measurement_policy: RetentionMeasurementPolicy::DEFAULT,
             socket_access_policies: SocketAccessPolicies::PRIVATE,
             process_memory_ceilings: ProcessMemoryCeilings::DEFAULT,
             maintenance_policy: MaintenancePolicy::DEFAULT,
@@ -765,7 +852,9 @@ impl SearchdConfig {
             Some(state_root) => state_root,
             None => Self::resolve_state_root_from_lookup(lookup)?,
         };
-        let mut config = Self::from_test_state_root(state_root);
+        // Production starts without a physical policy. Only the explicit env
+        // family can supply one; the test/harness fixture never enters here.
+        let mut config = Self::base_with_state_root(state_root);
         for family in ENV_POLICY_FAMILIES {
             config = (family.apply)(config, lookup).map_err(|error| {
                 anyhow::anyhow!(
@@ -878,6 +967,63 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_lexical_writer_policy(mut self, policy: LexicalWriterPolicy) -> Self {
         self.lexical_writer_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn lexical_maintenance_policy(&self) -> Option<LexicalMaintenancePolicy> {
+        self.lexical_maintenance_policy
+    }
+
+    #[must_use]
+    pub const fn lexical_pool_write_limits(&self) -> Option<PoolWriteLimits> {
+        self.lexical_pool_write_limits
+    }
+
+    #[must_use]
+    pub const fn legacy_publication_physical_policy(
+        &self,
+    ) -> Option<LegacyPublicationPhysicalPolicy> {
+        self.legacy_publication_physical_policy
+    }
+
+    pub fn try_with_legacy_publication_physical_policy(
+        mut self,
+        policy: Option<LegacyPublicationPhysicalPolicy>,
+    ) -> Result<Self> {
+        self.legacy_publication_physical_policy = policy
+            .map(LegacyPublicationPhysicalPolicy::validate)
+            .transpose()?;
+        Ok(self)
+    }
+
+    /// Main-file scratch ceiling per track's retention measurement session.
+    #[must_use]
+    pub const fn retention_measurement_policy(&self) -> RetentionMeasurementPolicy {
+        self.retention_measurement_policy
+    }
+
+    #[must_use]
+    pub const fn with_retention_measurement_policy(
+        mut self,
+        policy: RetentionMeasurementPolicy,
+    ) -> Self {
+        self.retention_measurement_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_lexical_pool_write_limits(mut self, limits: Option<PoolWriteLimits>) -> Self {
+        self.lexical_pool_write_limits = limits;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_lexical_maintenance_policy(
+        mut self,
+        policy: Option<LexicalMaintenancePolicy>,
+    ) -> Self {
+        self.lexical_maintenance_policy = policy;
         self
     }
 
@@ -1350,6 +1496,64 @@ fn lexical_writer_policy_from_lookup(lookup: &EnvLookup<'_>) -> Result<LexicalWr
     };
     LexicalWriterPolicy::new(envelope_bytes, writer_heap_bytes, idle_after)
         .map_err(anyhow::Error::from)
+}
+
+/// All run-maintenance limits are supplied together. There are no measured
+/// production defaults; these logical bounds do not reserve physical capacity.
+fn lexical_maintenance_policy_from_lookup(
+    lookup: &EnvLookup<'_>,
+) -> Result<Option<LexicalMaintenancePolicy>> {
+    const NAMES: [&str; 8] = [
+        "QUANTA_INDEX_LEXICAL_MERGE_SOFT_RUNS",
+        "QUANTA_INDEX_LEXICAL_MERGE_HARD_RUNS",
+        "QUANTA_INDEX_LEXICAL_MERGE_SOFT_INDEX_BYTES",
+        "QUANTA_INDEX_LEXICAL_MERGE_HARD_INDEX_BYTES",
+        "QUANTA_INDEX_LEXICAL_MERGE_MAX_FAN_IN",
+        "QUANTA_INDEX_LEXICAL_MERGE_MAX_INPUT_INDEX_BYTES",
+        "QUANTA_INDEX_LEXICAL_STAGING_MAX_BYTES",
+        "QUANTA_INDEX_LEXICAL_STAGING_MAX_AGE_MS",
+    ];
+    let raw = NAMES
+        .iter()
+        .map(|name| lookup(name))
+        .collect::<Result<Vec<_>>>()?;
+    if raw.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    let mut values = [0_u64; 8];
+    for ((name, raw), value) in NAMES.iter().zip(raw).zip(&mut values) {
+        anyhow::ensure!(raw.is_some(), "lexical run maintenance requires {name}");
+        *value = required_positive_raw_u64(name, raw)?;
+    }
+    let fan_in =
+        u32::try_from(values[4]).map_err(|error| anyhow::anyhow!("{}: {error}", NAMES[4]))?;
+    LexicalMaintenancePolicy::new(
+        values[0], values[1], values[2], values[3], fan_in, values[5], values[6], values[7],
+    )
+    .map(Some)
+    .map_err(anyhow::Error::from)
+}
+
+fn lexical_pool_write_limits_from_lookup(
+    lookup: &EnvLookup<'_>,
+) -> Result<Option<PoolWriteLimits>> {
+    const BYTES: &str = "QUANTA_INDEX_LEXICAL_POOL_MAX_ENCODED_BYTES";
+    const FILES: &str = "QUANTA_INDEX_LEXICAL_POOL_MAX_FILES";
+    let bytes = lookup(BYTES)?;
+    let files = lookup(FILES)?;
+    if bytes.is_none() && files.is_none() {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        bytes.is_some() && files.is_some(),
+        "pool writes require both {BYTES} and {FILES}"
+    );
+    PoolWriteLimits::new(
+        required_positive_raw_u64(BYTES, bytes)?,
+        required_positive_raw_u64(FILES, files)?,
+    )
+    .map(Some)
+    .map_err(anyhow::Error::from)
 }
 
 /// Resolve the ingest resource envelope from env (QI-BB-021).
@@ -1996,6 +2200,171 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
+    fn retention_measurement_scratch_env_preserves_an_explicit_page_aligned_cap() {
+        const KNOB: &str = "QUANTA_INDEX_RETENTION_MEASUREMENT_SCRATCH_BYTES";
+        let family = ENV_POLICY_FAMILIES
+            .iter()
+            .find(|family| family.env_vars.contains(&KNOB))
+            .expect("registered retention measurement policy");
+        for (raw, expected) in [
+            (
+                None,
+                RetentionMeasurementPolicy::DEFAULT.max_main_file_bytes(),
+            ),
+            (Some("262144"), 262_144),
+        ] {
+            let configured = (family.apply)(
+                SearchdConfig::from_test_state_root(PathBuf::from("/tmp/qi-retention-config")),
+                &|name| Ok((name == KNOB).then(|| raw.map(str::to_string)).flatten()),
+            )
+            .expect("valid scratch policy");
+            assert_eq!(
+                configured
+                    .retention_measurement_policy()
+                    .max_main_file_bytes(),
+                expected
+            );
+        }
+        for raw in ["", "0", "65536", "131073", "18446744073709551615"] {
+            assert!(
+                (family.apply)(
+                    SearchdConfig::from_test_state_root(PathBuf::from("/tmp/qi-retention-config")),
+                    &|name| Ok((name == KNOB).then(|| raw.to_string())),
+                )
+                .is_err(),
+                "accepted invalid scratch cap {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn retention_measurement_timeout_is_finite_and_preserves_scratch_cap() {
+        const SCRATCH: &str = "QUANTA_INDEX_RETENTION_MEASUREMENT_SCRATCH_BYTES";
+        const TIMEOUT: &str = "QUANTA_INDEX_RETENTION_MEASUREMENT_TIMEOUT_MS";
+        let family = ENV_POLICY_FAMILIES
+            .iter()
+            .find(|family| family.env_vars.contains(&TIMEOUT))
+            .expect("registered retention measurement timeout");
+        let configured = (family.apply)(
+            SearchdConfig::from_test_state_root(PathBuf::from("/tmp/qi-retention-config")),
+            &|name| {
+                Ok(match name {
+                    SCRATCH => Some("262144".to_string()),
+                    TIMEOUT => Some("12345".to_string()),
+                    _ => None,
+                })
+            },
+        )
+        .expect("valid finite measurement policy");
+        assert_eq!(
+            configured
+                .retention_measurement_policy()
+                .max_main_file_bytes(),
+            262_144
+        );
+        assert_eq!(
+            configured
+                .retention_measurement_policy()
+                .max_physical_scan_duration(),
+            Duration::from_millis(12345)
+        );
+        for raw in ["", "0", "-1", "never"] {
+            assert!(
+                (family.apply)(
+                    SearchdConfig::from_test_state_root(PathBuf::from("/tmp/qi-retention-config")),
+                    &|name| Ok((name == TIMEOUT).then(|| raw.to_string())),
+                )
+                .is_err(),
+                "accepted invalid physical scan timeout {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn pool_limits_require_a_complete_positive_pair_and_preserve_each_knob() {
+        let names = [
+            "QUANTA_INDEX_LEXICAL_POOL_MAX_ENCODED_BYTES",
+            "QUANTA_INDEX_LEXICAL_POOL_MAX_FILES",
+        ];
+        assert_eq!(
+            lexical_pool_write_limits_from_lookup(&|_name| Ok(None)).expect("unset"),
+            None
+        );
+        let config = SearchdConfig::from_test_state_root(PathBuf::from("/tmp/qi-pool-config"));
+        assert_eq!(config.lexical_pool_write_limits(), None);
+        let expected = PoolWriteLimits::new(8192, 73).expect("explicit limits");
+        let supplied = lexical_pool_write_limits_from_lookup(&|name| {
+            Ok(match name {
+                "QUANTA_INDEX_LEXICAL_POOL_MAX_ENCODED_BYTES" => Some("8192".into()),
+                "QUANTA_INDEX_LEXICAL_POOL_MAX_FILES" => Some("73".into()),
+                _ => None,
+            })
+        })
+        .expect("paired limits");
+        assert_eq!(supplied, Some(expected));
+        assert_eq!(
+            config
+                .with_lexical_pool_write_limits(supplied)
+                .lexical_pool_write_limits(),
+            Some(expected)
+        );
+        for rejected in names {
+            assert!(
+                lexical_pool_write_limits_from_lookup(&|name| Ok(
+                    (name != rejected).then(|| "1".into())
+                ))
+                .is_err()
+            );
+            assert!(
+                lexical_pool_write_limits_from_lookup(&|name| Ok(Some(
+                    if name == rejected { "0" } else { "1" }.into()
+                )))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn lexical_run_policy_requires_all_explicit_limits_and_has_no_defaults() {
+        assert_eq!(
+            lexical_maintenance_policy_from_lookup(&|_name| Ok(None)).expect("unset"),
+            None
+        );
+        let knobs = every_knob_non_default();
+        let names = ENV_POLICY_FAMILIES
+            .iter()
+            .find(|family| family.name == "lexical run maintenance")
+            .expect("registered maintenance family")
+            .env_vars;
+        let expected = LexicalMaintenancePolicy::new(8, 16, 4096, 8192, 2, 2048, 1024, 1000)
+            .expect("explicit fixture policy");
+        assert_eq!(
+            lexical_maintenance_policy_from_lookup(&|name| {
+                Ok(knobs.get(name).map(|value| (*value).to_string()))
+            })
+            .expect("complete policy"),
+            Some(expected)
+        );
+        for missing in names {
+            let error = lexical_maintenance_policy_from_lookup(&|name| {
+                Ok((name != *missing)
+                    .then(|| knobs.get(name).map(|value| (*value).to_string()))
+                    .flatten())
+            })
+            .expect_err("partial policy must not synthesize a limit");
+            assert!(error.to_string().contains(missing), "{error}");
+            let zero_policy = lexical_maintenance_policy_from_lookup(&|name| {
+                Ok(if name == *missing {
+                    Some("0".into())
+                } else {
+                    knobs.get(name).map(|value| (*value).to_string())
+                })
+            });
+            assert!(zero_policy.is_err(), "zero accepted for {missing}");
+        }
+    }
+
+    #[test]
     fn retired_semantic_derivation_switch_is_rejected_before_policy_resolution() {
         for value in ["semantic_with_legacy_fallback", "semantic_only", ""] {
             let error = SearchdConfig::from_lookup(
@@ -2075,6 +2444,71 @@ mod tests {
             ("QUANTA_INDEX_LEXICAL_WRITER_ENVELOPE_BYTES", "45000000"),
             ("QUANTA_INDEX_LEXICAL_WRITER_HEAP_BYTES", "15000001"),
             ("QUANTA_INDEX_LEXICAL_WRITER_IDLE_SECS", "7"),
+            ("QUANTA_INDEX_LEXICAL_POOL_MAX_ENCODED_BYTES", "16384"),
+            ("QUANTA_INDEX_LEXICAL_POOL_MAX_FILES", "256"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_BYTES", "1048576"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_FILES", "128"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_PENDING", "64"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_ENTRIES", "512"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_DEPTH", "12"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_PENDING_FRAMES", "24"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_READER_HANDLES", "16"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_TRACKED_ENTRIES", "256"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_PROCESS_ROOTS", "4"),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_GLOBAL_MAX_SQLITE_HANDLES",
+                "32",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_MAINTENANCE_RESERVED_BYTES",
+                "4096",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_MAINTENANCE_RESERVED_FILES",
+                "2",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_CONTROL_RESERVED_BYTES",
+                "8192",
+            ),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_CONTROL_RESERVED_FILES", "4"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_WORK_RESERVED_BYTES", "16384"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_WORK_RESERVED_FILES", "8"),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_HISTORY_RESERVED_BYTES",
+                "8192",
+            ),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_HISTORY_RESERVED_FILES", "3"),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_DURABLE_CONTROL_FILE_MAX_BYTES",
+                "40",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_REPOMAP_CONTROL_FILE_MAX_BYTES",
+                "72",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_REPOMAP_CANDIDATE_FILE_MAX_BYTES",
+                "4096",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_CATALOG_PARENT_RESERVED_BYTES",
+                "32768",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_CATALOG_PARENT_RESERVED_FILES",
+                "6",
+            ),
+            ("QUANTA_INDEX_RETENTION_MEASUREMENT_SCRATCH_BYTES", "262144"),
+            ("QUANTA_INDEX_RETENTION_MEASUREMENT_TIMEOUT_MS", "12345"),
+            ("QUANTA_INDEX_LEXICAL_MERGE_SOFT_RUNS", "8"),
+            ("QUANTA_INDEX_LEXICAL_MERGE_HARD_RUNS", "16"),
+            ("QUANTA_INDEX_LEXICAL_MERGE_SOFT_INDEX_BYTES", "4096"),
+            ("QUANTA_INDEX_LEXICAL_MERGE_HARD_INDEX_BYTES", "8192"),
+            ("QUANTA_INDEX_LEXICAL_MERGE_MAX_FAN_IN", "2"),
+            ("QUANTA_INDEX_LEXICAL_MERGE_MAX_INPUT_INDEX_BYTES", "2048"),
+            ("QUANTA_INDEX_LEXICAL_STAGING_MAX_BYTES", "1024"),
+            ("QUANTA_INDEX_LEXICAL_STAGING_MAX_AGE_MS", "1000"),
             ("QUANTA_INDEX_QUERY_SOCKET_ACCESS", "shared:uid=0"),
             ("QUANTA_INDEX_CONTROL_SOCKET_ACCESS", "shared:uid=0"),
             ("QUANTA_INDEX_INGEST_SOCKET_ACCESS", "shared:uid=0"),
@@ -2193,7 +2627,11 @@ mod tests {
     /// Every `QUANTA_INDEX_*` (and `OPENAI_*`) literal the config sources
     /// name, read from the sources themselves.
     fn env_literals_in_sources() -> BTreeSet<String> {
-        let sources = [include_str!("config.rs"), include_str!("socket_access.rs")];
+        let sources = [
+            include_str!("config.rs"),
+            include_str!("config/publication_physical.rs"),
+            include_str!("socket_access.rs"),
+        ];
         let mut found = BTreeSet::new();
         for source in sources {
             for prefix in ["\"QUANTA_INDEX_", "\"OPENAI_"] {

@@ -46,7 +46,8 @@ pub(crate) struct LexicalMutationTimings {
 }
 
 impl LexicalAdapter {
-    /// Serialize the index commit and both authority roots under one writer.
+    /// Commit the index under its writer mutex. The caller retains the target
+    /// and base generation mutation guards through both authority publications.
     pub(crate) fn commit_ops_under_lock(
         &self,
         handle: &Arc<Mutex<GenerationWriter>>,
@@ -61,7 +62,13 @@ impl LexicalAdapter {
         let mut prepared = publication
             .compaction_worker
             .take()
-            .map(crate::lexical_compaction::CompactionWorker::finish)
+            .map(|worker| {
+                worker.finish_for(
+                    publication.file_base.as_ref(),
+                    publication.native_base.as_ref(),
+                    publication.maintenance_policy.as_ref(),
+                )
+            })
             .transpose()?
             .unwrap_or_default();
         let mut guarded = handle
@@ -107,6 +114,10 @@ impl LexicalAdapter {
                 .commit()
                 .map_err(|error| CoreError::Storage(format!("lexical: commit: {error}")))?;
         }
+        // No further operation reads or mutates the Tantivy writer. Keep the
+        // generation fence, but release this mutex before authority I/O and
+        // potentially large clean-run merges.
+        drop(guarded);
         let writer_mutation_ns = crate::stage_timing::elapsed_stage_ns(writer_started)?;
         let text_started = Instant::now();
         let lease = publication.lease.as_ref().ok_or_else(|| {
@@ -121,8 +132,12 @@ impl LexicalAdapter {
                 });
                 // A real no-op source event may pay existing physical debt;
                 // it consumes no fresh logical IDs or maintenance generation.
-                let written = if prior.compaction_due.entries != 0 {
-                    text_authority::publish_delta_prepared(
+                let maintenance_due = match &publication.maintenance_policy {
+                    Some(policy) => policy.merge_due(prior.run_registry.snapshot()?),
+                    None => false,
+                };
+                let written = if prior.compaction_due.entries != 0 || maintenance_due {
+                    text_authority::publish_delta_prepared_with_policy(
                         &publication.store,
                         lease,
                         Some(&prior),
@@ -132,7 +147,15 @@ impl LexicalAdapter {
                         false,
                         key.generation,
                         publication.reservation.native_text.scope_sha256,
-                        prepared.native.take(),
+                        prepared.take_native_for(
+                            publication.native_base.as_ref(),
+                            publication.maintenance_policy.as_ref(),
+                        )?,
+                        publication.maintenance_policy.as_ref(),
+                        crate::lexical_hard_scan::lane(
+                            publication.hard_scan.as_ref(),
+                            crate::lexical_store::Authority::Native,
+                        ),
                     )?
                 } else {
                     (prior, TextAuthorityWriteReceipt::default())
@@ -156,7 +179,7 @@ impl LexicalAdapter {
                     quanta_index_core::DiagnosticStageV1::NativePublish,
                     |_diagnostic| {
                         crate::causal_profile::timed_work("native_authority_publish", || {
-                            text_authority::publish_delta_prepared(
+                            text_authority::publish_delta_prepared_with_policy(
                                 &publication.store,
                                 lease,
                                 plan.prior.as_ref(),
@@ -166,7 +189,15 @@ impl LexicalAdapter {
                                 clear_all,
                                 key.generation,
                                 publication.reservation.native_text.scope_sha256,
-                                prepared.native.take(),
+                                prepared.take_native_for(
+                                    publication.native_base.as_ref(),
+                                    publication.maintenance_policy.as_ref(),
+                                )?,
+                                publication.maintenance_policy.as_ref(),
+                                crate::lexical_hard_scan::lane(
+                                    publication.hard_scan.as_ref(),
+                                    crate::lexical_store::Authority::Native,
+                                ),
                             )
                         })
                     },
@@ -195,13 +226,21 @@ impl LexicalAdapter {
             quanta_index_core::DiagnosticStageV1::FilePublish,
             |_diagnostic| {
                 crate::causal_profile::timed_work("file_authority_publish", || {
-                    crate::file_authority::paged::build_for_seal_prepared(
+                    crate::file_authority::paged::build_for_seal_prepared_with_policy(
                         &publication.store,
                         lease,
                         publication.file_base.as_ref(),
                         &publication.reservation.file,
                         &mutation,
-                        prepared.file.take(),
+                        prepared.take_file_for(
+                            publication.file_base.as_ref(),
+                            publication.maintenance_policy.as_ref(),
+                        )?,
+                        publication.maintenance_policy.as_ref(),
+                        crate::lexical_hard_scan::lane(
+                            publication.hard_scan.as_ref(),
+                            crate::lexical_store::Authority::File,
+                        ),
                     )
                 })
             },
@@ -215,7 +254,6 @@ impl LexicalAdapter {
         publication.file_root = Some(file.root);
         publication.file_mutation = Some(mutation);
         let file_authority_ns = crate::stage_timing::elapsed_stage_ns(file_started)?;
-        drop(guarded);
         self.record_text_authority_write(publication.native_base.is_none(), receipt)?;
         Ok(LexicalMutationTimings {
             writer_mutation_ns,
@@ -476,7 +514,7 @@ impl LexicalAdapter {
             identity,
             &mut loaded,
             budget,
-            &crate::lexical_store::ObjectStore::open_existing(&self.state_root)?,
+            &self.open_existing_store()?,
         )?;
         self.record_coverage_read(
             crate::sealed_generation::coverage::CoverageReadPhase::Open,

@@ -1,4 +1,4 @@
-//! File authority V17: bounded map roots and immutable posting segments.
+//! File authority V20: bounded immutable leaves and run posting authority.
 //!
 //! The root contains only authenticated map descriptors. Source bodies and
 //! posting pages are selected through the shared object store. A map value
@@ -6,16 +6,21 @@
 
 mod producer;
 mod reader;
+mod run_postings;
+mod run_verify;
 mod verify;
 #[cfg(test)]
 pub(crate) use producer::build_for_seal;
 pub(crate) use producer::{
-    FileAuthorityMutation, FileSourceEdit, PreparedFileCompaction, build_for_seal_prepared,
-    prepare_compaction,
+    FileAuthorityMutation, FileSourceEdit, PreparedFileCompaction,
+    build_for_seal_prepared_with_policy, prepare_compaction, prepare_hard_scan_window,
 };
 pub(crate) use reader::{FileMetadata, PagedFileAuthority};
+#[cfg(test)]
+pub(crate) use verify::verify_for_seal;
 pub(crate) use verify::{
-    FileScrubCursor, verify_all_for_scrub, verify_for_seal, verify_scrub_step,
+    FileScrubCursor, replay_hard_scan_window, verify_all_for_scrub,
+    verify_for_seal_with_merge_facts, verify_scrub_step,
 };
 
 use quanta_index_contract::{SourceFileCoverage, SourceFileKey};
@@ -24,11 +29,12 @@ use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest as _, Sha256};
 
-use crate::channel_payloads::{decode_cbor_exact, encode_cbor};
+use crate::channel_payloads::{decode_cbor_exact, encode_cbor, leading_cbor_array_version};
 pub(super) use crate::lexical_root_names::MAX_ROOT_BYTES;
-use crate::lexical_store::{BlobRef, MapRoot};
+use crate::lexical_runs::RunRegistry;
+use crate::lexical_store::{BlobRef, MapRoot, ObjectStore};
 
-pub(super) const FILE_AUTHORITY_FORMAT: u16 = 18;
+pub(super) const FILE_AUTHORITY_FORMAT: u16 = 20;
 pub(super) const MAX_RECORD_BYTES: usize = 32 * 1024;
 pub(super) const MAX_SEGMENT_DOCS: usize = 64;
 pub(super) const MAX_POSTING_PAGE_BYTES: usize = 32 * 1024;
@@ -69,7 +75,7 @@ impl<'de, T: Deserialize<'de>, const LIMIT: usize> Deserialize<'de> for BoundedV
 /// Infallible by construction: hashes the fixed policy domain and its policy digest.
 pub(super) fn policy_digest() -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"quanta-file-authority-v17-paged-segments-policy\0");
+    hasher.update(b"quanta-file-authority-v20-run-postings-policy\0");
     hasher.update(super::policy_digest_for_paged());
     hasher.finalize().into()
 }
@@ -93,6 +99,14 @@ pub(crate) struct AuthorityRoot {
     pub(crate) current_docs: MapRoot,
     pub(crate) memberships: MapRoot,
     pub(crate) segments: MapRoot,
+    pub(crate) run_registry: RunRegistry,
+    /// Authenticated physical-delta registry before an optional whole-cohort
+    /// transfer. This is a seal witness, never the query ownership authority.
+    pub(crate) premerge_run_registry: Option<RunRegistry>,
+    pub(crate) run_postings: MapRoot,
+    /// Sum of per-run logical posting bundles. Shared physical objects can
+    /// appear in more than one run and are intentionally counted per owner.
+    pub(crate) run_index_encoded_bytes: u64,
     pub(crate) compaction_debt: MapRoot,
     pub(crate) path_routes: MapRoot,
     pub(crate) content_routes: MapRoot,
@@ -110,6 +124,8 @@ type RootWire = (
     MapRoot,
     MapRoot,
     MapRoot,
+    RunRegistry,
+    (Option<RunRegistry>, MapRoot, u64),
     MapRoot,
     MapRoot,
     MapRoot,
@@ -129,6 +145,12 @@ impl AuthorityRoot {
             self.current_docs.clone(),
             self.memberships.clone(),
             self.segments.clone(),
+            self.run_registry.clone(),
+            (
+                self.premerge_run_registry.clone(),
+                self.run_postings.clone(),
+                self.run_index_encoded_bytes,
+            ),
             self.compaction_debt.clone(),
             self.path_routes.clone(),
             self.content_routes.clone(),
@@ -141,7 +163,7 @@ impl AuthorityRoot {
 
     pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
         self.validate()?;
-        let bytes = encode_cbor(&self.wire(), "file authority v17 root")?;
+        let bytes = encode_cbor(&self.wire(), "file authority v20 root")?;
         if bytes.len() > MAX_ROOT_BYTES {
             return Err(invalid("root exceeds byte admission"));
         }
@@ -152,14 +174,24 @@ impl AuthorityRoot {
         if bytes.len() > MAX_ROOT_BYTES {
             return Err(corrupt("root exceeds byte admission"));
         }
+        let format = leading_cbor_array_version(bytes)
+            .map_err(|error| corrupt(&format!("root format decode: {error}")))?;
+        if format != u32::from(FILE_AUTHORITY_FORMAT) {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                message: format!("file authority format {format} requires rebuild"),
+            });
+        }
         let (
-            format,
+            _format,
             policy_sha256,
             allocation_scope_sha256,
             source_heads,
             current_docs,
             memberships,
             segments,
+            run_registry,
+            (premerge_run_registry, run_postings, run_index_encoded_bytes),
             compaction_debt,
             path_routes,
             content_routes,
@@ -169,12 +201,6 @@ impl AuthorityRoot {
             membership_count,
         ): RootWire =
             decode_cbor_exact(bytes).map_err(|error| corrupt(&format!("root decode: {error}")))?;
-        if format != FILE_AUTHORITY_FORMAT {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
-                message: format!("file authority format {format} requires rebuild"),
-            });
-        }
         let root = Self {
             policy_sha256,
             allocation_scope_sha256,
@@ -182,6 +208,10 @@ impl AuthorityRoot {
             current_docs,
             memberships,
             segments,
+            run_registry,
+            premerge_run_registry,
+            run_postings,
+            run_index_encoded_bytes,
             compaction_debt,
             path_routes,
             content_routes,
@@ -199,6 +229,13 @@ impl AuthorityRoot {
     }
 
     fn validate(&self) -> Result<(), CoreError> {
+        self.run_registry.validate()?;
+        if let Some(premerge) = &self.premerge_run_registry {
+            premerge.validate()?;
+            if premerge.segment_owners.entries != self.segments.entries {
+                return Err(invalid("premerge registry segment count differs"));
+            }
+        }
         if self.policy_sha256 != policy_digest()
             || self.allocation_scope_sha256 == [0; 32]
             || self.live_sources > super::policy().source_files
@@ -209,6 +246,9 @@ impl AuthorityRoot {
             || self.current_docs.entries != self.live_docs
             || self.memberships.entries != self.live_docs
             || self.segments.entries > self.live_docs
+            || self.run_registry.segment_owners.entries != self.segments.entries
+            || self.run_postings.entries != self.run_registry.runs.entries
+            || (self.run_postings.entries == 0) != (self.run_index_encoded_bytes == 0)
             || self.compaction_debt.entries > self.segments.entries
         {
             return Err(invalid(
@@ -220,6 +260,9 @@ impl AuthorityRoot {
             &self.current_docs,
             &self.memberships,
             &self.segments,
+            &self.run_registry.runs,
+            &self.run_registry.segment_owners,
+            &self.run_postings,
             &self.compaction_debt,
             &self.path_routes,
             &self.content_routes,
@@ -232,18 +275,45 @@ impl AuthorityRoot {
     }
 
     pub(crate) fn object_roots(&self) -> Vec<crate::lexical_store::ObjectRef> {
-        [
+        let mut roots = [
             &self.source_heads,
             &self.current_docs,
             &self.memberships,
             &self.segments,
+            &self.run_postings,
             &self.compaction_debt,
             &self.path_routes,
             &self.content_routes,
         ]
         .into_iter()
         .filter_map(|map| map.page.as_ref().map(|page| page.object.clone()))
-        .collect()
+        .collect::<Vec<_>>();
+        roots.extend(self.run_registry.object_roots());
+        if let Some(premerge) = &self.premerge_run_registry {
+            roots.extend(premerge.object_roots());
+        }
+        roots
+    }
+
+    /// Active logical index bytes include leaf segment bundles, run posting
+    /// bundles, and the outer run-postings map structure. Source bodies,
+    /// current/source maps, route maps, and unique pool occupancy are separate.
+    pub(crate) fn maintenance_snapshot(
+        &self,
+        store: &ObjectStore,
+    ) -> Result<quanta_index_core::lexical_maintenance::TargetCounters, CoreError> {
+        let outer_structure = store.map_structure_encoded_bytes(&self.run_postings, None)?;
+        let bytes = self
+            .run_registry
+            .active_index_encoded_bytes
+            .checked_add(self.run_index_encoded_bytes)
+            .and_then(|sum| sum.checked_add(outer_structure))
+            .ok_or_else(|| invalid("active logical index bytes overflow"))?;
+        quanta_index_core::lexical_maintenance::TargetCounters::new(
+            self.run_registry.runs.entries,
+            self.segments.entries,
+            bytes,
+        )
     }
 }
 
@@ -549,6 +619,7 @@ pub(super) fn membership_key(source_digest: [u8; 32], id: u64) -> [u8; 40] {
     key
 }
 
+#[cfg(test)]
 pub(super) fn route_key(
     surface: u8,
     gram: [u8; 3],
@@ -561,10 +632,6 @@ pub(super) fn route_key(
     key[4..8].copy_from_slice(&posting_count.to_be_bytes());
     key[8..].copy_from_slice(&segment);
     key
-}
-
-pub(super) fn route_prefix(surface: u8, gram: [u8; 3]) -> [u8; 4] {
-    [surface, gram[0], gram[1], gram[2]]
 }
 
 fn encode_bounded<T: Serialize>(
@@ -598,9 +665,26 @@ fn decode_bounded<T: for<'de> Deserialize<'de> + Serialize>(
 
 #[cfg(test)]
 mod codec_tests {
-    use super::{PostingPage, Segment};
+    use super::{AuthorityRoot, PostingPage, Segment};
     use crate::channel_payloads::encode_cbor;
     use crate::lexical_store::MapRoot;
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use quanta_index_core::CoreError;
+
+    #[test]
+    fn older_root_format_is_refused_before_current_tuple_decode() {
+        let old_shape = encode_cbor(&(18_u16,), "old file root fixture").expect("fixture");
+        assert!(matches!(
+            AuthorityRoot::decode(&old_shape),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                ..
+            })
+        ));
+        let malformed_current =
+            encode_cbor(&(19_u16,), "malformed current file root").expect("fixture");
+        assert!(AuthorityRoot::decode(&malformed_current).is_err());
+    }
 
     #[test]
     fn posting_page_rejects_noncanonical_or_impossible_memberships() {

@@ -28,6 +28,7 @@ use tantivy::query::Bm25StatisticsProvider;
 use tantivy::query::{EmptyScorer, EnableScoring, Explanation, Query, Scorer, TermQuery, Weight};
 use tantivy::{DocId, DocSet, Score, Searcher, SegmentReader, TERMINATED};
 
+use crate::history_text_index::engine_error;
 use crate::sealed_generation::live_bm25::{LiveBm25Provider, LiveBm25Statistics};
 
 /// Documents a scorer advances between two looks at the budget.
@@ -474,7 +475,7 @@ fn search_with_probe<C: Collector>(
     let weight = BudgetedWeight {
         inner: query
             .weight(enable_scoring)
-            .map_err(|err| CoreError::Storage(format!("lexical: {stage}: weight: {err}")))?,
+            .map_err(|err| engine_error(&format!("lexical: {stage}: weight"), &err))?,
         probe: probe.clone(),
         native_term: query
             .as_any()
@@ -502,9 +503,8 @@ fn search_with_probe<C: Collector>(
         if let Some(error) = probe.error(stage) {
             return Err(error);
         }
-        fruits.push(
-            fruit.map_err(|err| CoreError::Storage(format!("lexical: {stage}: collect: {err}")))?,
-        );
+        fruits
+            .push(fruit.map_err(|err| engine_error(&format!("lexical: {stage}: collect"), &err))?);
     }
     if let Some(error) = probe.error(stage) {
         return Err(error);
@@ -514,7 +514,7 @@ fn search_with_probe<C: Collector>(
     if let Some(error) = probe.error(stage) {
         return Err(error);
     }
-    result.map_err(|err| CoreError::Storage(format!("lexical: {stage}: merge: {err}")))
+    result.map_err(|err| engine_error(&format!("lexical: {stage}: merge"), &err))
 }
 
 /// The inner weight with the probe on every path that walks postings.
@@ -653,11 +653,13 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
     use std::time::{Duration, Instant};
+    use std::{io, path::PathBuf};
 
     use quanta_index_core::{
         CoreError, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1,
     };
     use tantivy::collector::{Count, TopDocs};
+    use tantivy::directory::error::OpenReadError;
     use tantivy::query::{
         AllQuery, BooleanQuery, EnableScoring, Explanation, Occur, Query, Scorer, TermQuery, Weight,
     };
@@ -753,6 +755,49 @@ mod tests {
         Ok(index)
     }
 
+    #[derive(Clone, Debug)]
+    struct LazyAdmissionFailure;
+
+    impl Query for LazyAdmissionFailure {
+        fn weight(&self, _enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
+            let cause = CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                message: "fixed lazy reader refusal".into(),
+            };
+            Err(tantivy::TantivyError::OpenReadError(
+                OpenReadError::wrap_io_error(
+                    io::Error::other(io::Error::other(cause)),
+                    PathBuf::from("segment"),
+                ),
+            ))
+        }
+    }
+
+    #[test]
+    fn lazy_weight_reader_refusal_keeps_typed_cause() -> TestResult {
+        let index = index_with(1)?;
+        let searcher = index.reader()?.searcher();
+        let error = budgeted_search(
+            &searcher,
+            &LazyAdmissionFailure,
+            &Count,
+            &RequestBudgetV1::unbounded(),
+            "history:lazy",
+        )
+        .err()
+        .ok_or("lazy reader refusal must stop the search")?;
+        if !matches!(
+            error,
+            CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                ..
+            }
+        ) {
+            return Err("lazy query reader refusal lost its typed source".into());
+        }
+        Ok(())
+    }
+
     fn typed_code(err: &CoreError) -> Option<quanta_index_contract::SearchPlaneErrorCodeV2> {
         match err {
             CoreError::Typed { code, .. } => Some(*code),
@@ -760,7 +805,8 @@ mod tests {
             | CoreError::NotReady(_)
             | CoreError::NotImplemented(_)
             | CoreError::NotFound(_)
-            | CoreError::Storage(_) => None,
+            | CoreError::Storage(_)
+            | CoreError::StorageIo { .. } => None,
         }
     }
 

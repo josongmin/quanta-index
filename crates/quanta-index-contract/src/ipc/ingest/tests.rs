@@ -47,6 +47,130 @@ fn legacy_repo_map_publish_and_receipt_tags_are_refused() -> TestRes {
     Ok(())
 }
 
+fn verify_corpus_map_key_contract<T>(value: &T, required_field: &str) -> TestRes
+where
+    T: Serialize + serde::de::DeserializeOwned + PartialEq,
+{
+    let json = serde_json::to_string(value)?;
+    if &serde_json::from_str::<T>(&json)? != value {
+        return Err("JSON map round trip changed the value".into());
+    }
+    let mut json_map = serde_json::to_value(value)?;
+    let original_field = json_map
+        .get(required_field)
+        .cloned()
+        .ok_or("required field absent in JSON fixture")?;
+    let rest = json.strip_prefix('{').ok_or("JSON fixture is not a map")?;
+    let duplicate_json = format!(
+        "{{\"{required_field}\":{},{}",
+        serde_json::to_string(&original_field)?,
+        rest
+    );
+    if serde_json::from_str::<T>(&duplicate_json).is_ok() {
+        return Err("duplicate JSON field was accepted".into());
+    }
+    let mut missing_json = json_map.clone();
+    let missing_object = missing_json
+        .as_object_mut()
+        .ok_or("JSON fixture is not a map")?;
+    if missing_object.remove(required_field).is_none() {
+        return Err("required JSON field was absent before removal".into());
+    }
+    if serde_json::from_value::<T>(missing_json).is_ok() {
+        return Err("missing JSON field was accepted".into());
+    }
+    let json_object = json_map
+        .as_object_mut()
+        .ok_or("JSON fixture is not a map")?;
+    if json_object
+        .insert("alien_field".into(), serde_json::Value::Bool(true))
+        .is_some()
+    {
+        return Err("unknown JSON field already existed in fixture".into());
+    }
+    if serde_json::from_value::<T>(json_map).is_ok() {
+        return Err("unknown JSON field was accepted".into());
+    }
+
+    let bytes = encode(value)?;
+    if &decode::<T>(&bytes)? != value {
+        return Err("CBOR map round trip changed the value".into());
+    }
+    let encoded: ciborium::value::Value = decode(&bytes)?;
+    let ciborium::value::Value::Map(fields) = encoded else {
+        return Err("CBOR fixture is not a map".into());
+    };
+    let duplicate_value = fields
+        .iter()
+        .find_map(|(key, field_value)| {
+            if let ciborium::value::Value::Text(name) = key {
+                (name == required_field).then(|| field_value.clone())
+            } else {
+                None
+            }
+        })
+        .ok_or("required field absent in CBOR fixture")?;
+    let mut duplicate_fields = fields.clone();
+    duplicate_fields.insert(
+        0,
+        (
+            ciborium::value::Value::Text(required_field.into()),
+            duplicate_value,
+        ),
+    );
+    if decode::<T>(&encode(&ciborium::value::Value::Map(duplicate_fields))?).is_ok() {
+        return Err("duplicate CBOR field was accepted".into());
+    }
+    let mut missing_fields = fields.clone();
+    missing_fields.retain(
+        |(key, _)| !matches!(key, ciborium::value::Value::Text(name) if name == required_field),
+    );
+    if missing_fields.len() == fields.len() {
+        return Err("required CBOR field was absent before removal".into());
+    }
+    if decode::<T>(&encode(&ciborium::value::Value::Map(missing_fields))?).is_ok() {
+        return Err("missing CBOR field was accepted".into());
+    }
+    let mut unknown_fields = fields.clone();
+    unknown_fields.push((
+        ciborium::value::Value::Text("alien_field".into()),
+        ciborium::value::Value::Bool(true),
+    ));
+    if decode::<T>(&encode(&ciborium::value::Value::Map(unknown_fields))?).is_ok() {
+        return Err("unknown CBOR field was accepted".into());
+    }
+    let mut nontext_fields = fields;
+    nontext_fields.push((
+        ciborium::value::Value::Integer(1.into()),
+        ciborium::value::Value::Bool(true),
+    ));
+    if decode::<T>(&encode(&ciborium::value::Value::Map(nontext_fields))?).is_ok() {
+        return Err("nontext CBOR field was accepted".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn corpus_wire_map_keys_preserve_json_and_cbor_refusals() -> TestRes {
+    let batch = fixture_search_corpus_batch();
+    verify_corpus_map_key_contract(&fixture_scope_key(), "doc_surface")?;
+    verify_corpus_map_key_contract(
+        batch
+            .replace_scopes
+            .first()
+            .ok_or("missing replacement fixture")?,
+        "chunks",
+    )?;
+    verify_corpus_map_key_contract(
+        batch
+            .tombstone_scopes
+            .first()
+            .ok_or("missing tombstone fixture")?,
+        "file",
+    )?;
+    verify_corpus_map_key_contract(&batch, "seal")
+}
+
 fn fixture_repo_id() -> RepoId {
     RepoId::new("repo").expect("static fixture ID satisfies canonical policy")
 }
@@ -700,6 +824,19 @@ fn search_corpus_clear_surface_authority_rejects_conflicts_v1() {
         Err(SearchCorpusSurfaceMutationConflictV1::NonCanonicalClearOrder)
     );
 
+    // Duplicate refusal precedes canonical-order refusal even when both apply.
+    batch.clear_surfaces = vec![
+        SearchScopeSurface::Symbol,
+        SearchScopeSurface::Chunk,
+        SearchScopeSurface::Symbol,
+    ];
+    assert_eq!(
+        batch.validate_surface_mutations_v1(),
+        Err(SearchCorpusSurfaceMutationConflictV1::DuplicateClear(
+            SearchScopeSurface::Symbol
+        ))
+    );
+
     let mut batch = fixture_search_corpus_batch();
     let duplicate_replace = batch
         .replace_scopes
@@ -981,6 +1118,64 @@ fn g0_source_event_binds_payload_not_materialization_target() -> TestRes {
     let _old = map.insert("scope".into(), serde_json::to_value(fixture_scope_key())?);
     assert!(serde_json::from_value::<SearchCorpusReplaceScope>(old_scope).is_err());
     Ok(())
+}
+
+#[test]
+fn source_event_progress_retains_digest_and_propagates_mid_body_refusal() -> TestRes {
+    let mut batch = fixture_search_corpus_batch();
+    batch.replace_scopes[0].source_bytes = vec![b'x'; 262_144];
+    let expected = crate::source_event_payload_sha256(&batch)?;
+    let mut checkpoints = 0usize;
+    let observed = crate::source_event_payload_sha256_with_progress(&batch, &mut || {
+        checkpoints = checkpoints.saturating_add(1);
+        Ok::<_, &'static str>(())
+    });
+    assert!(matches!(observed, Ok(digest) if digest == expected));
+    assert!(checkpoints >= 2);
+
+    let mut checkpoints = 0usize;
+    let interrupted = crate::source_event_payload_sha256_with_progress(&batch, &mut || {
+        checkpoints = checkpoints.saturating_add(1);
+        if checkpoints == 2 {
+            Err("stop")
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(
+        interrupted,
+        Err(crate::SourceCoverageProgressError::Progress("stop"))
+    ));
+    assert_eq!(crate::source_event_payload_sha256(&batch)?, expected);
+    Ok(())
+}
+
+#[test]
+fn surface_validation_progress_stops_inside_source_hash_without_mutating_batch() {
+    let mut batch = fixture_search_corpus_batch();
+    batch.replace_scopes[0]
+        .source_bytes
+        .extend(std::iter::repeat_n(b'x', 262_144));
+    batch.replace_scopes[0].coverage.source.source_sha256 =
+        sha2::Sha256::digest(&batch.replace_scopes[0].source_bytes).into();
+    let event = batch.source_event.clone();
+    assert!(batch.validate_surface_mutations_v1().is_ok());
+
+    let mut checkpoints = 0usize;
+    let interrupted = batch.validate_surface_mutations_with_progress_v1(&mut || {
+        checkpoints = checkpoints.saturating_add(1);
+        if checkpoints == 4 {
+            Err("stop")
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(
+        interrupted,
+        Err(SearchCorpusValidationProgressError::Progress("stop"))
+    ));
+    assert_eq!(batch.source_event, event);
+    assert!(batch.validate_surface_mutations_v1().is_ok());
 }
 
 #[test]

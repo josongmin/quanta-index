@@ -230,6 +230,7 @@ define_search_plane_error_codes! {
         SearchCorpusGenerationRepairRequired => "SEARCH_CORPUS_GENERATION_REPAIR_REQUIRED",
         SearchCorpusHistoryRetentionExhausted => "SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED",
         SearchCorpusHistoryRetentionPolicyInvalid => "SEARCH_CORPUS_HISTORY_RETENTION_POLICY_INVALID",
+        SearchCorpusRetentionMeasurementBusy => "SEARCH_CORPUS_RETENTION_MEASUREMENT_BUSY",
         SearchTrackGenerationNotSealed => "SEARCH_TRACK_GENERATION_NOT_SEALED",
         SearchTrackManifestDigestMismatch => "SEARCH_TRACK_MANIFEST_DIGEST_MISMATCH",
         SemanticGenerationNotMaterialized => "SEMANTIC_GENERATION_NOT_MATERIALIZED",
@@ -637,6 +638,18 @@ impl<'de> Deserialize<'de> for SearchPlaneIpcError {
         )
     }
 }
+
+/// Auxiliary ingest replies admit remote text and optional repair metadata
+/// under the same owner as the response parser.
+pub fn admitted_auxiliary_error_seed_v1<'a, A: crate::DecodeBackingAdmissionV1 + ?Sized>(
+    admission: &'a A,
+    max_message_bytes: usize,
+) -> impl for<'de> serde::de::DeserializeSeed<'de, Value = SearchPlaneIpcError> + 'a {
+    admitted_auxiliary_error::AuxiliaryErrorSeedV1::new(admission, max_message_bytes)
+}
+
+#[path = "error/admitted_auxiliary_error.rs"]
+mod admitted_auxiliary_error;
 
 #[cfg(test)]
 mod tests {

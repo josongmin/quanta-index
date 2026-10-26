@@ -8,21 +8,32 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
     BatchIngestMode, GenerationPin, GenerationSnapshot, IngestOperationKindV1, ManifestGeneration,
-    OwnerDocKind, RepoId, RevisionId, SearchPlaneTrackKind, SearchScopeSurface,
-    SemanticCorpusKindV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
+    OwnerDocKind, RepoId, RevisionId, SearchCorpusIngestBatch, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneTrackKind, SearchScopeSurface, SemanticCorpusKindV1,
+    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
+};
+use quanta_index_core::publication_admission::{
+    PublicationAdmissionRequest, PublicationBuildWork, PublicationOutputPermit,
+    PublicationOutputReservation, PublicationResourceAdmissionPort, PublicationResourcePermit,
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, IdempotencyCatalogPort as _, IdempotencyKeyV1,
-    IngestResourcePolicy, RequestBudgetV1, SearchCorpusIngestPort, SemanticGenerationContractV1,
-    SemanticIngestHeaderV1, SemanticIngestPort, SemanticScopeSource, SemanticStreamWindowPolicy,
+    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort, IngestBatchFootprint,
+    IngestResourcePolicy, OperationInspectV1, RequestBudgetV1, SearchCorpusBatchBuildPort,
+    SearchCorpusIngestPort, SemanticGenerationContractV1, SemanticIngestHeaderV1,
+    SemanticIngestPort, SemanticScopeSource, SemanticStreamWindowPolicy,
     SourceEventAllocationOutcomeV1, SourceEventAllocationRequestV1, SourceEventStateV1,
     SourcePublicationCatalogPort as _,
 };
 
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
+use crate::ingest_dispatcher::dispatcher::SearchPlaneIngestDispatcher;
 use crate::ingest_dispatcher::generation_plan::{
     DeferredGcStep, PhysicalGenerationStateV1, SealedGenerationBuildPlanV1,
     batch_publish_receipt_v1, generation_pair_from_batch_v1,
+};
+use crate::ingest_dispatcher::ports::{
+    HistoryIngestPort, RuntimeMetadataIngestPort, StructuralIngestPort,
 };
 use crate::ingest_dispatcher::search_corpus::{
     DirectSearchCorpusMaterializer, IngestResourceStats, SearchCorpusMaterializerParts,
@@ -43,6 +54,808 @@ use crate::{
     Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotKey, SnapshotRegistries,
     SnapshotRetirementOwner,
 };
+
+type PermitDropObserver = Arc<dyn Fn(PermitClass) + Send + Sync>;
+
+struct ScriptedPublicationAdmission {
+    refuse: bool,
+    refuse_control: bool,
+    active: Arc<AtomicUsize>,
+    active_control: Arc<AtomicUsize>,
+    control_calls: AtomicUsize,
+    requests: Mutex<Vec<(PublicationBuildWork, IngestBatchFootprint)>>,
+    drop_observer: Mutex<Option<PermitDropObserver>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PermitClass {
+    Control,
+    Work,
+}
+
+struct ScriptedPublicationPermit {
+    active: Arc<AtomicUsize>,
+    class: PermitClass,
+    drop_observer: Option<PermitDropObserver>,
+}
+
+impl PublicationResourcePermit for ScriptedPublicationPermit {
+    fn held_file_allowance(
+        &self,
+    ) -> Result<Option<Arc<quanta_index_core::publication_capacity::PublicationAllowance>>, CoreError>
+    {
+        Ok(None)
+    }
+
+    fn reserve_output(
+        &self,
+        _request: PublicationOutputReservation,
+    ) -> Result<Box<dyn PublicationOutputPermit>, CoreError> {
+        Err(CoreError::InvalidContract(
+            "scripted publication admission has no output ledger".into(),
+        ))
+    }
+}
+
+impl Drop for ScriptedPublicationPermit {
+    fn drop(&mut self) {
+        if let Some(observer) = &self.drop_observer {
+            observer(self.class);
+        }
+        let _prior = self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl PublicationResourceAdmissionPort for ScriptedPublicationAdmission {
+    fn try_acquire_control(
+        &self,
+        _batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        _budget: &RequestBudgetV1,
+    ) -> Result<Box<dyn PublicationResourcePermit>, CoreError> {
+        let _prior = self.control_calls.fetch_add(1, Ordering::SeqCst);
+        if self.refuse_control {
+            return Err(CoreError::Typed {
+                code: quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                message: "scripted journal control refusal".into(),
+            });
+        }
+        let _prior = self.active_control.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(ScriptedPublicationPermit {
+            active: Arc::clone(&self.active_control),
+            class: PermitClass::Control,
+            drop_observer: self
+                .drop_observer
+                .lock()
+                .map_err(|error| {
+                    CoreError::Storage(format!("admission observer poisoned: {error}"))
+                })?
+                .clone(),
+        }))
+    }
+
+    fn try_acquire(
+        &self,
+        request: &PublicationAdmissionRequest<'_>,
+        _budget: &RequestBudgetV1,
+    ) -> Result<Box<dyn PublicationResourcePermit>, CoreError> {
+        self.requests
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("admission requests poisoned: {error}")))?
+            .push((request.work, request.footprint));
+        if self.refuse {
+            return Err(CoreError::Typed {
+                code: quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
+                message: "scripted publication resource refusal".into(),
+            });
+        }
+        let _prior = self.active.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(ScriptedPublicationPermit {
+            active: Arc::clone(&self.active),
+            class: PermitClass::Work,
+            drop_observer: self
+                .drop_observer
+                .lock()
+                .map_err(|error| {
+                    CoreError::Storage(format!("admission observer poisoned: {error}"))
+                })?
+                .clone(),
+        }))
+    }
+}
+
+struct PermitWitnessBuilder {
+    inner: Arc<FakeSearchCorpusBuilder>,
+    active: Arc<AtomicUsize>,
+}
+
+impl SearchCorpusBatchBuildPort for PermitWitnessBuilder {
+    fn prepare_hard_recovery_scan_with_owner(
+        &self,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+        budget: &quanta_index_core::RequestBudgetV1,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        self.inner
+            .prepare_hard_recovery_scan_with_owner(batch, owner, budget, diagnostic)
+    }
+
+    fn preflight_batch(
+        &self,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        phase: quanta_index_core::SearchCorpusPreflightPhaseV1,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        self.inner.preflight_batch(batch, phase, diagnostic)
+    }
+
+    fn build_batch(
+        &self,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
+        if self.active.load(Ordering::SeqCst) != 1 {
+            return Err(CoreError::InvalidContract(
+                "lexical build lost publication resource permit".into(),
+            ));
+        }
+        self.inner.build_batch(batch, diagnostic)
+    }
+}
+
+struct PublicationAdmissionCase {
+    materializer: DirectSearchCorpusMaterializer,
+    lexical_builder: Arc<FakeSearchCorpusBuilder>,
+    semantic_builder: Arc<FakeSemanticBuilder>,
+    embedder: Arc<CountingEmbedder>,
+    authority: Arc<RecordingSearchCorpusAuthority>,
+    source_catalog: Arc<super::support::TestSourceCatalog>,
+    idempotency: Arc<MemoryIdempotencyCatalog>,
+}
+
+struct UnusedPublicationRoute;
+
+fn unused_publication_route() -> CoreError {
+    CoreError::InvalidContract("unrelated route entered source publication test".into())
+}
+
+macro_rules! unused_publication_batch_route {
+    ($port:path, $batch:path) => {
+        impl $port for UnusedPublicationRoute {
+            fn publish_batch(
+                &self,
+                _batch: &$batch,
+            ) -> Result<quanta_index_contract::BatchPublishReceipt, CoreError> {
+                Err(unused_publication_route())
+            }
+        }
+    };
+}
+
+unused_publication_batch_route!(
+    quanta_index_core::RepoCommitRecencyIngestPort,
+    quanta_index_contract::RepoCommitRecencyIngestBatch
+);
+unused_publication_batch_route!(
+    quanta_index_core::RepoTopicIngestPort,
+    quanta_index_contract::RepoTopicIngestBatch
+);
+unused_publication_batch_route!(
+    quanta_index_core::RepoDescriptionIngestPort,
+    quanta_index_contract::RepoDescriptionIngestBatch
+);
+unused_publication_batch_route!(
+    quanta_index_core::FileOwnershipIngestPort,
+    quanta_index_contract::FileOwnershipIngestBatch
+);
+unused_publication_batch_route!(
+    quanta_index_core::FileContributorIngestPort,
+    quanta_index_contract::FileContributorIngestBatch
+);
+unused_publication_batch_route!(
+    quanta_index_core::RepoMetaIngestPort,
+    quanta_index_contract::RepoMetaIngestBatch
+);
+unused_publication_batch_route!(
+    StructuralIngestPort,
+    quanta_index_contract::StructuralIngestBatch
+);
+
+impl HistoryIngestPort for UnusedPublicationRoute {
+    fn publish_batch(
+        &self,
+        _batch: &quanta_index_contract::HistoryIngestBatch,
+        _budget: &quanta_index_core::RequestBudgetV1,
+    ) -> Result<quanta_index_contract::BatchPublishReceipt, CoreError> {
+        Err(unused_publication_route())
+    }
+}
+
+impl RuntimeMetadataIngestPort for UnusedPublicationRoute {
+    fn publish_batch(
+        &self,
+        _batch: &quanta_index_contract::DirtyIngestBatch,
+    ) -> Result<quanta_index_contract::BatchPublishReceipt, CoreError> {
+        Err(unused_publication_route())
+    }
+
+    fn publish_catalog_batch(
+        &self,
+        _batch: &quanta_index_contract::RuntimeCatalogIngestBatch,
+    ) -> Result<quanta_index_contract::BatchPublishReceipt, CoreError> {
+        Err(unused_publication_route())
+    }
+}
+
+impl quanta_index_core::RepoMapBundleIngestPort for UnusedPublicationRoute {
+    fn ingest_bundle(
+        &self,
+        _request: &quanta_index_contract::RepoMapPublishBundleRequestV2,
+    ) -> Result<quanta_index_contract::RepoMapTerminalReceiptV2, CoreError> {
+        Err(unused_publication_route())
+    }
+}
+
+fn publication_dispatcher(
+    case: PublicationAdmissionCase,
+    admission: Arc<ScriptedPublicationAdmission>,
+) -> SearchPlaneIngestDispatcher {
+    let unused = Arc::new(UnusedPublicationRoute);
+    SearchPlaneIngestDispatcher::new(
+        Arc::new(case.materializer),
+        unused.clone(),
+        unused.clone(),
+        unused.clone(),
+        unused.clone(),
+        unused.clone(),
+        unused.clone(),
+        unused.clone(),
+        unused.clone(),
+        unused.clone(),
+        unused,
+        case.idempotency,
+        case.source_catalog,
+        case.authority,
+    )
+    .with_publication_resource_admission(admission)
+}
+
+fn publication_admission_case(
+    admission: Arc<ScriptedPublicationAdmission>,
+) -> PublicationAdmissionCase {
+    publication_admission_case_with_authority(admission, false)
+}
+
+fn publication_admission_case_with_authority(
+    admission: Arc<ScriptedPublicationAdmission>,
+    authority_exact: bool,
+) -> PublicationAdmissionCase {
+    let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+    let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+    let embedder = Arc::new(CountingEmbedder {
+        dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+        calls: Mutex::new(0),
+    });
+    let authority = Arc::new(RecordingSearchCorpusAuthority {
+        identities: Mutex::new(Vec::new()),
+        exact: authority_exact,
+    });
+    let idempotency = memory_catalog();
+    let source_catalog = Arc::clone(&idempotency.source_publication);
+    let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+        SearchCorpusMaterializerParts {
+            builder: Arc::new(PermitWitnessBuilder {
+                inner: Arc::clone(&lexical_builder),
+                active: Arc::clone(&admission.active),
+            }),
+            ledger: Arc::new(RwLock::new(Ledger::new())),
+            semantic_ingest: Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone())),
+            semantic_embedder: embedder.clone(),
+            authority: authority.clone(),
+            lexical_generation_validator: build_then_valid_generation(),
+            semantic_generation_validator: build_then_valid_generation(),
+            semantic_content_roots:
+                crate::content_roots_test_support::generation_keyed_content_roots(),
+            lexical_incomplete_discard: test_incomplete_generation_discard(),
+            semantic_incomplete_discard: test_incomplete_generation_discard(),
+            lexical_reclaim: no_storage_sealed_reclaim(),
+            semantic_reclaim: no_storage_sealed_reclaim(),
+            snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+            idempotency: idempotency.clone(),
+            source_publication: source_catalog.clone(),
+            resource_policy: IngestResourcePolicy::DEFAULT,
+            semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+            source_egress_policy: None,
+            auxiliary_catalog: memory_aux_catalog(),
+            auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
+        },
+    )
+    .with_publication_resource_admission(admission);
+    PublicationAdmissionCase {
+        materializer,
+        lexical_builder,
+        semantic_builder,
+        embedder,
+        authority,
+        source_catalog,
+        idempotency,
+    }
+}
+
+fn publication_key(batch: &quanta_index_contract::SearchCorpusIngestBatch) -> IdempotencyKeyV1 {
+    IdempotencyKeyV1 {
+        kind: IngestOperationKindV1::SearchCorpus,
+        repo_id: batch.repo_id.clone(),
+        revision_id: batch.revision_id.clone(),
+        generation: batch.generation,
+        batch_digest: batch.batch_digest.clone(),
+    }
+}
+
+fn scripted_admission(
+    refuse_control: bool,
+    refuse_work: bool,
+) -> Arc<ScriptedPublicationAdmission> {
+    Arc::new(ScriptedPublicationAdmission {
+        refuse: refuse_work,
+        refuse_control,
+        active: Arc::new(AtomicUsize::new(0)),
+        active_control: Arc::new(AtomicUsize::new(0)),
+        control_calls: AtomicUsize::new(0),
+        requests: Mutex::new(Vec::new()),
+        drop_observer: Mutex::new(None),
+    })
+}
+
+struct NeverEnteredCatalogFunding(AtomicUsize);
+
+impl quanta_index_core::publication_admission::CatalogPublicationFundingPort
+    for NeverEnteredCatalogFunding
+{
+    fn enter_funded_scope(
+        &self,
+        _parent: Arc<quanta_index_core::publication_capacity::PublicationAllowance>,
+    ) -> Result<
+        Box<dyn quanta_index_core::publication_admission::CatalogPublicationFundingScope>,
+        CoreError,
+    > {
+        let _previous_calls = self.0.fetch_add(1, Ordering::SeqCst);
+        Err(CoreError::InvalidContract("unexpected funding call".into()))
+    }
+}
+
+#[test]
+fn funded_dispatcher_refuses_unqualified_control_before_first_journal_write() -> TestRes {
+    let admission = scripted_admission(false, false);
+    let case = publication_admission_case(Arc::clone(&admission));
+    let batch = fixture_search_corpus_batch()?;
+    let key = publication_key(&batch);
+    let catalog = Arc::clone(&case.idempotency);
+    let source_catalog = Arc::clone(&case.source_catalog);
+    let before_source = source_catalog.inspect_source_event(&batch.repo_id, &batch.source_event)?;
+    let funding = Arc::new(NeverEnteredCatalogFunding(AtomicUsize::new(0)));
+    let dispatcher = publication_dispatcher(case, Arc::clone(&admission))
+        .with_catalog_publication_funding(funding.clone());
+    let response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+        &RequestBudgetV1::unbounded(),
+    );
+    if !matches!(response, SearchPlaneIngestIpcResponse::Error(_)) {
+        return Err("funded dispatcher accepted an unqualified control permit".into());
+    }
+    if !matches!(catalog.inspect(&key)?, OperationInspectV1::Absent) {
+        return Err("funding refusal wrote the operation journal".into());
+    }
+    if source_catalog.inspect_source_event(&batch.repo_id, &batch.source_event)? != before_source {
+        return Err("funding refusal mutated the source event".into());
+    }
+    if funding.0.load(Ordering::SeqCst) != 0 || admission.control_calls.load(Ordering::SeqCst) != 1
+    {
+        return Err("funding custody skipped control admission or used a missing parent".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn dispatcher_control_refusal_precedes_first_journal_or_source_mutation() -> TestRes {
+    let admission = scripted_admission(true, false);
+    let case = publication_admission_case(Arc::clone(&admission));
+    let batch = fixture_search_corpus_batch()?;
+    let key = publication_key(&batch);
+    let prior_source = case
+        .source_catalog
+        .inspect_source_event(&batch.repo_id, &batch.source_event)?;
+    let catalog = Arc::clone(&case.idempotency);
+    let source_catalog = Arc::clone(&case.source_catalog);
+    let lexical_builder = Arc::clone(&case.lexical_builder);
+    let semantic_builder = Arc::clone(&case.semantic_builder);
+    let embedder = Arc::clone(&case.embedder);
+    let authority = Arc::clone(&case.authority);
+    let dispatcher = publication_dispatcher(case, Arc::clone(&admission));
+
+    let response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(
+        matches!(response, SearchPlaneIngestIpcResponse::Error(ref error)
+        if error.code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE)
+    );
+    assert!(matches!(catalog.inspect(&key)?, OperationInspectV1::Absent));
+    assert_eq!(
+        source_catalog.inspect_source_event(&batch.repo_id, &batch.source_event)?,
+        prior_source
+    );
+    assert!(
+        lexical_builder
+            .batches
+            .lock()
+            .map_err(|error| error.to_string())?
+            .is_empty()
+    );
+    assert!(semantic_builder.take()?.is_empty());
+    assert_eq!(
+        *embedder.calls.lock().map_err(|error| error.to_string())?,
+        0
+    );
+    assert!(
+        authority
+            .identities
+            .lock()
+            .map_err(|error| error.to_string())?
+            .is_empty()
+    );
+    assert_eq!(admission.control_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        admission
+            .requests
+            .lock()
+            .map_err(|error| error.to_string())?
+            .is_empty()
+    );
+    assert_eq!(admission.active_control.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.active.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn dispatcher_work_refusal_keeps_control_until_uncertain_journal_terminal() -> TestRes {
+    let admission = scripted_admission(false, true);
+    let case = publication_admission_case(Arc::clone(&admission));
+    let batch = fixture_search_corpus_batch()?;
+    let key = publication_key(&batch);
+    let catalog = Arc::clone(&case.idempotency);
+    let source_catalog = Arc::clone(&case.source_catalog);
+    let prior_source = source_catalog.inspect_source_event(&batch.repo_id, &batch.source_event)?;
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observer_catalog = Arc::clone(&catalog);
+    let observer_key = key.clone();
+    let observed_at_drop = Arc::clone(&observed);
+    *admission
+        .drop_observer
+        .lock()
+        .map_err(|error| error.to_string())? = Some(Arc::new(move |class| {
+        let uncertain = matches!(
+            observer_catalog.inspect(&observer_key),
+            Ok(OperationInspectV1::Uncertain { .. })
+        );
+        observed_at_drop
+            .lock()
+            .expect("permit observation lock")
+            .push((class, uncertain));
+    }));
+    let dispatcher = publication_dispatcher(case, Arc::clone(&admission));
+
+    let response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(
+        matches!(response, SearchPlaneIngestIpcResponse::Error(ref error)
+        if error.code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE)
+    );
+    assert!(matches!(
+        catalog.inspect(&key)?,
+        OperationInspectV1::Uncertain { .. }
+    ));
+    assert_eq!(
+        source_catalog.inspect_source_event(&batch.repo_id, &batch.source_event)?,
+        prior_source
+    );
+    assert_eq!(
+        observed
+            .lock()
+            .map_err(|error| error.to_string())?
+            .as_slice(),
+        &[(PermitClass::Control, true)]
+    );
+    assert_eq!(admission.control_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        admission
+            .requests
+            .lock()
+            .map_err(|error| error.to_string())?
+            .len(),
+        1
+    );
+    assert_eq!(admission.active_control.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.active.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn dispatcher_permits_survive_commit_and_reconcile_then_replay_skips_admission() -> TestRes {
+    let admission = scripted_admission(false, false);
+    let case = publication_admission_case_with_authority(Arc::clone(&admission), true);
+    let batch = fixture_search_corpus_batch()?;
+    let key = publication_key(&batch);
+    let catalog = Arc::clone(&case.idempotency);
+    let source_catalog = Arc::clone(&case.source_catalog);
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observer_catalog = Arc::clone(&catalog);
+    let observer_source = Arc::clone(&source_catalog);
+    let observer_key = key;
+    let observer_repo = batch.repo_id.clone();
+    let observer_event = batch.source_event.clone();
+    let observed_at_drop = Arc::clone(&observed);
+    *admission
+        .drop_observer
+        .lock()
+        .map_err(|error| error.to_string())? = Some(Arc::new(move |class| {
+        let committed = matches!(
+            observer_catalog.inspect(&observer_key),
+            Ok(OperationInspectV1::Committed { .. })
+        );
+        let reconciled = matches!(observer_source.inspect_source_event(&observer_repo, &observer_event), Ok(Some(record))
+            if matches!(record.phase_v1(), Some(quanta_index_core::SourceEventPhaseV1::Staged | quanta_index_core::SourceEventPhaseV1::Active)));
+        observed_at_drop
+            .lock()
+            .expect("permit observation lock")
+            .push((class, committed, reconciled));
+    }));
+    let dispatcher = publication_dispatcher(case, Arc::clone(&admission));
+
+    let response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(
+        matches!(response, SearchPlaneIngestIpcResponse::SearchCorpusReceipt(ref outcome)
+        if outcome.receipt.applied && outcome.receipt.sealed)
+    );
+    assert_eq!(
+        observed
+            .lock()
+            .map_err(|error| error.to_string())?
+            .as_slice(),
+        &[
+            (PermitClass::Work, true, true),
+            (PermitClass::Control, true, true),
+        ]
+    );
+    assert_eq!(admission.active.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.active_control.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.control_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        admission
+            .requests
+            .lock()
+            .map_err(|error| error.to_string())?
+            .len(),
+        1
+    );
+
+    let replay = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(
+        matches!(replay, SearchPlaneIngestIpcResponse::SearchCorpusReceipt(ref outcome)
+        if !outcome.receipt.applied && outcome.receipt.sealed)
+    );
+    assert_eq!(admission.control_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        admission
+            .requests
+            .lock()
+            .map_err(|error| error.to_string())?
+            .len(),
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn publication_resource_refusal_precedes_source_and_builder_mutations() -> TestRes {
+    let admission = Arc::new(ScriptedPublicationAdmission {
+        refuse: true,
+        refuse_control: false,
+        active: Arc::new(AtomicUsize::new(0)),
+        active_control: Arc::new(AtomicUsize::new(0)),
+        control_calls: AtomicUsize::new(0),
+        requests: Mutex::new(Vec::new()),
+        drop_observer: Mutex::new(None),
+    });
+    let case = publication_admission_case(Arc::clone(&admission));
+    let batch = fixture_search_corpus_batch()?;
+    let prior = case
+        .source_catalog
+        .inspect_source_event(&batch.repo_id, &batch.source_event)?;
+    let mut owner = quanta_index_core::PublicationValidationOwner::default();
+    assert!(matches!(
+        case.materializer.publish_batch_with_owner(
+            &batch,
+            &RequestBudgetV1::unbounded(),
+            &mut owner,
+        ),
+        Err(CoreError::Typed { code, .. })
+            if code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+    ));
+    assert!(!owner.has_publication_resource_permit());
+    assert!(owner.source_allocation().is_none());
+    assert!(owner.lexical_reservation().is_none());
+    assert_eq!(
+        case.source_catalog
+            .inspect_source_event(&batch.repo_id, &batch.source_event)?,
+        prior
+    );
+    assert!(
+        case.lexical_builder
+            .batches
+            .lock()
+            .map_err(|error| error.to_string())?
+            .is_empty()
+    );
+    assert!(case.semantic_builder.take()?.is_empty());
+    assert!(
+        case.authority
+            .identities
+            .lock()
+            .map_err(|error| error.to_string())?
+            .is_empty()
+    );
+    assert_eq!(
+        *case
+            .embedder
+            .calls
+            .lock()
+            .map_err(|error| error.to_string())?,
+        0
+    );
+    assert_eq!(admission.active.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        admission
+            .requests
+            .lock()
+            .map_err(|error| error.to_string())?
+            .len(),
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn publication_resource_permit_survives_builder_until_owner_drop() -> TestRes {
+    let admission = Arc::new(ScriptedPublicationAdmission {
+        refuse: false,
+        refuse_control: false,
+        active: Arc::new(AtomicUsize::new(0)),
+        active_control: Arc::new(AtomicUsize::new(0)),
+        control_calls: AtomicUsize::new(0),
+        requests: Mutex::new(Vec::new()),
+        drop_observer: Mutex::new(None),
+    });
+    let case = publication_admission_case(Arc::clone(&admission));
+    let batch = fixture_search_corpus_batch()?;
+    let mut owner = quanta_index_core::PublicationValidationOwner::default();
+    let outcome = case.materializer.publish_batch_with_owner(
+        &batch,
+        &RequestBudgetV1::unbounded(),
+        &mut owner,
+    )?;
+    assert!(outcome.receipt.sealed);
+    assert!(owner.has_publication_resource_permit());
+    assert_eq!(admission.active.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        case.lexical_builder
+            .batches
+            .lock()
+            .map_err(|error| error.to_string())?
+            .len(),
+        1
+    );
+    assert_eq!(
+        admission
+            .requests
+            .lock()
+            .map_err(|error| error.to_string())?
+            .as_slice(),
+        &[(
+            PublicationBuildWork::Materialize {
+                lexical: true,
+                semantic: true,
+            },
+            IngestResourcePolicy::DEFAULT
+                .admit_search_corpus_batch(&batch, SEARCH_OWNED_SEMANTIC_DIMENSION,)?,
+        )]
+    );
+    drop(owner);
+    assert_eq!(admission.active.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn empty_source_finalize_only_still_requests_publication_capacity() -> TestRes {
+    let admission = Arc::new(ScriptedPublicationAdmission {
+        refuse: true,
+        refuse_control: false,
+        active: Arc::new(AtomicUsize::new(0)),
+        active_control: Arc::new(AtomicUsize::new(0)),
+        control_calls: AtomicUsize::new(0),
+        requests: Mutex::new(Vec::new()),
+        drop_observer: Mutex::new(None),
+    });
+    let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+    let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+    let authority = Arc::new(RecordingSearchCorpusAuthority {
+        identities: Mutex::new(Vec::new()),
+        exact: true,
+    });
+    let materializer = search_corpus_materializer!(
+        lexical_builder.clone(),
+        Arc::new(RwLock::new(Ledger::new())),
+        Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone())),
+        Arc::new(crate::HashingQueryTextEmbedder::new(
+            SEARCH_OWNED_SEMANTIC_DIMENSION,
+        )),
+        authority.clone(),
+        always_valid_generation(),
+        always_valid_generation(),
+        test_incomplete_generation_discard(),
+        test_incomplete_generation_discard(),
+    )
+    .with_publication_resource_admission(admission.clone());
+    let mut batch = fixture_search_corpus_batch()?;
+    batch.replace_scopes.clear();
+    batch.semantic_replace_scopes.clear();
+    restamp_search_corpus_fixture(&mut batch)?;
+    batch.validate_v1()?;
+    batch.validate_surface_mutations_v1()?;
+    assert!(matches!(
+        materializer.publish_batch(&batch, &RequestBudgetV1::unbounded()),
+        Err(CoreError::Typed { code, .. })
+            if code == quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+    ));
+    assert_eq!(
+        admission
+            .requests
+            .lock()
+            .map_err(|error| error.to_string())?
+            .as_slice(),
+        &[(
+            PublicationBuildWork::FinalizeOnly,
+            IngestResourcePolicy::DEFAULT
+                .admit_search_corpus_batch(&batch, SEARCH_OWNED_SEMANTIC_DIMENSION,)?,
+        )]
+    );
+    assert!(
+        lexical_builder
+            .batches
+            .lock()
+            .map_err(|error| error.to_string())?
+            .is_empty()
+    );
+    assert!(semantic_builder.take()?.is_empty());
+    assert!(
+        authority
+            .identities
+            .lock()
+            .map_err(|error| error.to_string())?
+            .is_empty()
+    );
+    assert_eq!(admission.active.load(Ordering::SeqCst), 0);
+    Ok(())
+}
 
 #[derive(Default)]
 struct PublicationPhaseWitness(Vec<&'static str>);
@@ -111,6 +924,17 @@ impl GenerationIdentityValidatePort for PublicationPhasePorts {
 }
 
 impl quanta_index_core::SearchCorpusBatchBuildPort for PublicationPhasePorts {
+    fn prepare_hard_recovery_scan_with_owner(
+        &self,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+        _budget: &quanta_index_core::RequestBudgetV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        // This synthetic builder owns no lexical run registry or durable scan.
+        owner.bind_batch(batch)
+    }
+
     fn preflight_batch(
         &self,
         _batch: &quanta_index_contract::SearchCorpusIngestBatch,
@@ -1233,11 +2057,17 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
         });
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
     let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+    let recovery_steps = Arc::new(Mutex::new(Vec::new()));
+    let observed_builder = Arc::new(ObservedRecoveryBuilder {
+        inner: lexical_builder.clone(),
+        steps: Arc::clone(&recovery_steps),
+        reclaim_before_prepare: Some(Arc::clone(&lexical_reclaim)),
+    });
     let ledger = Arc::new(RwLock::new(Ledger::new()));
     let source_publication = super::support::test_source_catalog();
     let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
         SearchCorpusMaterializerParts {
-            builder: lexical_builder.clone(),
+            builder: observed_builder,
             ledger: Arc::clone(&ledger),
             semantic_ingest: Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone())),
             semantic_embedder: Arc::new(crate::HashingQueryTextEmbedder::new(
@@ -1323,6 +2153,17 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
         )
         .into());
     }
+    assert_eq!(
+        recovery_steps
+            .lock()
+            .map_err(|error| format!("recovery steps poisoned: {error}"))?
+            .clone(),
+        vec![
+            AsymmetricRecoveryStep::Prepare,
+            AsymmetricRecoveryStep::Build
+        ],
+        "corrupt repair must finish before hard scan and build"
+    );
     if lexical_builder
         .batches
         .lock()
@@ -1530,6 +2371,9 @@ impl SemanticIngestPort for RefusingSemanticPreflight {
         &self,
         _header: &SemanticIngestHeaderV1,
         _scopes: &mut dyn SemanticScopeSource,
+        _publication: Option<
+            quanta_index_core::publication_admission::PublicationOutputAdmission<'_>,
+        >,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<
         (
@@ -2016,21 +2860,109 @@ fn exact_lexical_missing_semantic_retry_builds_only_missing_track() -> TestRes {
     pair_sealed_in_ledger(&ledger, &batch)
 }
 
+/// Observable order and original-batch custody around asymmetric recovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AsymmetricRecoveryStep {
+    Prepare,
+    Discard(Box<(GenerationSnapshot, Option<SearchCorpusIngestBatch>)>),
+    Build,
+}
+
+struct ObservedRecoveryBuilder {
+    inner: Arc<FakeSearchCorpusBuilder>,
+    steps: Arc<Mutex<Vec<AsymmetricRecoveryStep>>>,
+    reclaim_before_prepare: Option<Arc<ScriptedSealedReclaim>>,
+}
+
+impl SearchCorpusBatchBuildPort for ObservedRecoveryBuilder {
+    fn prepare_hard_recovery_scan_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+        budget: &RequestBudgetV1,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        if self
+            .reclaim_before_prepare
+            .as_ref()
+            .is_some_and(|reclaim| reclaim.remaining().contains(&batch.generation.get()))
+        {
+            return Err(CoreError::InvalidContract(
+                "corrupt lexical target was not reclaimed before hard scan".into(),
+            ));
+        }
+        self.inner
+            .prepare_hard_recovery_scan_with_owner(batch, owner, budget, diagnostic)?;
+        self.steps
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("recovery steps poisoned: {error}")))?
+            .push(AsymmetricRecoveryStep::Prepare);
+        Ok(())
+    }
+
+    fn preflight_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        phase: quanta_index_core::SearchCorpusPreflightPhaseV1,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        self.inner.preflight_batch(batch, phase, diagnostic)
+    }
+
+    fn build_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
+        self.steps
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("recovery steps poisoned: {error}")))?
+            .push(AsymmetricRecoveryStep::Build);
+        self.inner.build_batch(batch, diagnostic)
+    }
+}
+
+struct ObservedRecoveryDiscard {
+    steps: Arc<Mutex<Vec<AsymmetricRecoveryStep>>>,
+}
+
+impl IncompleteGenerationDiscardPort for ObservedRecoveryDiscard {
+    fn discard_incomplete_generation(
+        &self,
+        candidate: &GenerationSnapshot,
+        pending_batch: Option<&SearchCorpusIngestBatch>,
+    ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
+        self.steps
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("recovery steps poisoned: {error}")))?
+            .push(AsymmetricRecoveryStep::Discard(Box::new((
+                candidate.clone(),
+                pending_batch.cloned(),
+            ))));
+        Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
+    }
+}
+
 /// An incomplete lexical track is rebuilt; a semantic one sealed exact is kept.
-///
-/// The retry after a crash inside the lexical seal discards and rebuilds
-/// the lexical track, only records the semantic one, and the ledger —
-/// fresh, like a restarted daemon's — holds both.
+/// The lexical attempt survives residue discard before the physical rebuild.
 #[test]
 fn incomplete_lexical_exact_semantic_retry_discards_and_rebuilds_only_lexical() -> TestRes {
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
     let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
         Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
     let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
-    let lexical_discard = Arc::new(RecordingIncompleteGenerationDiscard::default());
+    let steps = Arc::new(Mutex::new(Vec::new()));
+    let observed_builder = Arc::new(ObservedRecoveryBuilder {
+        inner: lexical_builder.clone(),
+        steps: Arc::clone(&steps),
+        reclaim_before_prepare: None,
+    });
+    let lexical_discard = Arc::new(ObservedRecoveryDiscard {
+        steps: Arc::clone(&steps),
+    });
     let ledger = Arc::new(RwLock::new(Ledger::new()));
     let materializer = search_corpus_materializer!(
-        lexical_builder.clone(),
+        observed_builder,
         Arc::clone(&ledger),
         semantic_materializer,
         Arc::new(crate::HashingQueryTextEmbedder::new(
@@ -2039,14 +2971,26 @@ fn incomplete_lexical_exact_semantic_retry_discards_and_rebuilds_only_lexical() 
         recording_search_corpus_authority(),
         incomplete_then_valid_generation(),
         always_valid_generation(),
-        lexical_discard.clone(),
+        lexical_discard,
         test_incomplete_generation_discard(),
     );
 
     let batch = fixture_search_corpus_batch()?;
     let receipt = materializer.publish_batch(&batch, &RequestBudgetV1::unbounded())?;
     assert!(receipt.sealed);
-    assert_eq!(lexical_discard.calls.load(Ordering::SeqCst), 1);
+    let (lexical, _) = generation_pair_from_batch_v1(&batch);
+    assert_eq!(
+        steps
+            .lock()
+            .map_err(|error| format!("recovery steps poisoned: {error}"))?
+            .clone(),
+        vec![
+            AsymmetricRecoveryStep::Prepare,
+            AsymmetricRecoveryStep::Discard(Box::new((lexical, Some(batch.clone())))),
+            AsymmetricRecoveryStep::Build,
+        ],
+        "the exact pending batch is preserved before lexical build and finalization"
+    );
     assert_eq!(
         lexical_builder
             .batches

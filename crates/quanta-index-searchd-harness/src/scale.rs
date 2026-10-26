@@ -72,6 +72,13 @@ use crate::harness::{
     ObservedSearchCorpusPublication,
 };
 
+#[path = "scale/native_index.rs"]
+mod native_index;
+pub use native_index::{
+    NativeIndexMeasurement, measure_index_native_tier, native_source_binding_for_failure,
+    write_index_native_artifacts,
+};
+
 /// The artifact dimension this rail writes.
 pub const DIMENSION: &str = "scale";
 
@@ -1145,16 +1152,27 @@ impl ScaleIngestObservation {
 
 /// Stop the operation clock immediately after the original seal finishes.
 /// Validation and projection of its observation occur outside that clock.
+#[cfg(test)]
 fn measure_observed_seal(
     rt: &mut E2eRuntime,
     started: Instant,
     stage: &'static str,
 ) -> AnyResult<ScaleIngestObservation> {
+    let diagnostic = rt.diagnostic_context().cloned();
+    measure_observed_seal_with_context(rt, started, stage, diagnostic.as_ref())
+}
+
+fn measure_observed_seal_with_context(
+    rt: &mut E2eRuntime,
+    started: Instant,
+    stage: &'static str,
+    diagnostic: Option<&DiagnosticContextV1>,
+) -> AnyResult<ScaleIngestObservation> {
     let repo = rt.repo();
     let revision = rt.revision();
     let expected_generation = rt.current_generation();
     let (generation, publication) = rt
-        .seal_observed()
+        .seal_observed_with_context(diagnostic)
         .map_err(|error| ScaleStageError::operation(stage, &error))?;
     let wall_ns = u64::try_from(started.elapsed().as_nanos())
         .map_err(|error| stage_or_preserve(stage, error))?;
@@ -1417,7 +1435,16 @@ struct DiskPoint {
 #[cfg(unix)]
 fn allocated_root_bytes_with_cancel(
     root: &Path,
+    cancelled: impl FnMut() -> bool,
+) -> AnyResult<u64> {
+    allocated_root_visit(root, cancelled, |_path, _metadata| Ok(()))
+}
+
+#[cfg(unix)]
+fn allocated_root_visit(
+    root: &Path,
     mut cancelled: impl FnMut() -> bool,
+    mut visit: impl FnMut(&Path, &fs::Metadata) -> AnyResult<()>,
 ) -> AnyResult<u64> {
     let mut pending = vec![root.to_path_buf()];
     let mut seen = BTreeSet::new();
@@ -1425,6 +1452,9 @@ fn allocated_root_bytes_with_cancel(
     while let Some(path) = pending.pop() {
         anyhow::ensure!(!cancelled(), "disk_probe_cancelled");
         let metadata = fs::symlink_metadata(&path)?;
+        // A hard link may first be visited outside a caller's subset. Each
+        // subset must see its own path before the union deduplicates the inode.
+        visit(&path, &metadata)?;
         if !seen.insert((metadata.dev(), metadata.ino())) {
             continue;
         }
@@ -1445,6 +1475,46 @@ fn allocated_root_bytes_with_cancel(
         }
     }
     Ok(total)
+}
+
+#[cfg(unix)]
+fn allocated_native_fixture_with_cancel(
+    state: &Path,
+    cancelled: impl FnMut() -> bool,
+) -> AnyResult<[u64; 3]> {
+    let fixture = state
+        .parent()
+        .context("native state root has no fixture parent")?;
+    let scratch = state.join("native-scratch-v1");
+    let mut state_inodes = BTreeSet::new();
+    let mut scratch_inodes = BTreeSet::new();
+    let mut state_bytes = 0_u64;
+    let mut scratch_bytes = 0_u64;
+    let mut state_seen = false;
+    let fixture_bytes = allocated_root_visit(fixture, cancelled, |path, metadata| {
+        if path == state {
+            anyhow::ensure!(metadata.is_dir(), "native state root is not a directory");
+            state_seen = true;
+        }
+        let inode = (metadata.dev(), metadata.ino());
+        let bytes = metadata
+            .blocks()
+            .checked_mul(512)
+            .context("native fixture allocated-block byte count overflow")?;
+        if path.starts_with(state) && state_inodes.insert(inode) {
+            state_bytes = state_bytes
+                .checked_add(bytes)
+                .context("native state allocation overflow")?;
+        }
+        if path.starts_with(&scratch) && scratch_inodes.insert(inode) {
+            scratch_bytes = scratch_bytes
+                .checked_add(bytes)
+                .context("native scratch allocation overflow")?;
+        }
+        Ok(())
+    })?;
+    anyhow::ensure!(state_seen, "native state root absent from fixture census");
+    Ok([fixture_bytes, state_bytes, scratch_bytes])
 }
 
 #[cfg(unix)]
@@ -2600,27 +2670,27 @@ fn measure_scoped_delete_reopen(
     require_single_source_file(&retained_before, "repo1", &file.repo_relative_path)?;
 
     let before_seal = seal_work_snapshot(&rt.metrics_snapshot()?)?;
-    let (ingest_observation, delete_resource) = observe_phase_at_root_traced(
+    let (ingest_observation, delete_resource) = observe_phase_at_root_traced_with_context(
         "delete_seal",
         Some(&disk_root),
         disk_observation,
         diagnostic.as_ref(),
-        || {
+        |phase_context| {
             let delete_started = Instant::now();
             rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
                 .map_err(|error| ScaleStageError::operation("delete", &error))?;
-            measure_observed_seal(rt, delete_started, "delete_seal")
+            measure_observed_seal_with_context(rt, delete_started, "delete_seal", phase_context)
         },
     )?;
     let delete_seal_ms = ingest_observation.wall_ms();
-    let (delete_activation_ms, activation_resource) = observe_phase_at_root_traced(
+    let (delete_activation_ms, activation_resource) = observe_phase_at_root_traced_with_context(
         "delete_activate",
         Some(&disk_root),
         disk_observation,
         diagnostic.as_ref(),
-        || {
+        |phase_context| {
             let activation_started = Instant::now();
-            rt.activate_last_sealed_generation()
+            rt.activate_last_sealed_generation_with_context(phase_context)
                 .map_err(|error| ScaleStageError::operation("delete_activate", &error))?;
             Ok(elapsed_ms(activation_started))
         },
@@ -2850,31 +2920,32 @@ fn measure_delta(
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let serving_owner = rt.repo();
-    let (ingest_observation, update_resource) = observe_phase_at_root_traced(
+    let (ingest_observation, update_resource) = observe_phase_at_root_traced_with_context(
         "delta_ingest_seal",
         Some(&disk_root),
         disk_observation,
         diagnostic.as_ref(),
-        || {
+        |phase_context| {
             let update_started = Instant::now();
             rt.ingest_text(serving_owner.as_str(), path, &changed)?;
-            measure_observed_seal(rt, update_started, "delta_seal")
+            measure_observed_seal_with_context(rt, update_started, "delta_seal", phase_context)
         },
     )?;
     let update_ms = ingest_observation.wall_ms();
     let after_build = directory_bytes(rt.state_root())?;
-    let (activation_with_reclaim_ms, activation_resource) = observe_phase_at_root_traced(
-        "delta_activate",
-        Some(&disk_root),
-        disk_observation,
-        diagnostic.as_ref(),
-        || {
-            let activation_started = Instant::now();
-            rt.activate_last_sealed_generation()
-                .map_err(|error| ScaleStageError::operation("delta_activate", &error))?;
-            Ok(elapsed_ms(activation_started))
-        },
-    )?;
+    let (activation_with_reclaim_ms, activation_resource) =
+        observe_phase_at_root_traced_with_context(
+            "delta_activate",
+            Some(&disk_root),
+            disk_observation,
+            diagnostic.as_ref(),
+            |phase_context| {
+                let activation_started = Instant::now();
+                rt.activate_last_sealed_generation_with_context(phase_context)
+                    .map_err(|error| ScaleStageError::operation("delta_activate", &error))?;
+                Ok(elapsed_ms(activation_started))
+            },
+        )?;
     let after_activation = directory_bytes(rt.state_root())?;
     let mut phase_resources = BTreeMap::new();
     record_phase(&mut phase_resources, "delta_ingest_seal", update_resource)?;
@@ -2898,22 +2969,24 @@ fn measure_noop(
 ) -> AnyResult<ObservedSealPhase<NoOpMeasurementV1>> {
     let disk_root = rt.state_root().to_path_buf();
     let diagnostic = rt.diagnostic_context().cloned();
-    let (ingest_observation, seal_resource) = observe_phase_at_root_traced(
+    let (ingest_observation, seal_resource) = observe_phase_at_root_traced_with_context(
         "noop_seal",
         Some(&disk_root),
         disk_observation,
         diagnostic.as_ref(),
-        || measure_observed_seal(rt, Instant::now(), "noop_seal"),
+        |phase_context| {
+            measure_observed_seal_with_context(rt, Instant::now(), "noop_seal", phase_context)
+        },
     )?;
     let seal_ms = ingest_observation.wall_ms();
-    let (activation_ms, activation_resource) = observe_phase_at_root_traced(
+    let (activation_ms, activation_resource) = observe_phase_at_root_traced_with_context(
         "noop_activate",
         Some(&disk_root),
         disk_observation,
         diagnostic.as_ref(),
-        || {
+        |phase_context| {
             let started = Instant::now();
-            rt.activate_last_sealed_generation()
+            rt.activate_last_sealed_generation_with_context(phase_context)
                 .map_err(|error| ScaleStageError::operation("noop_activate", &error))?;
             Ok(elapsed_ms(started))
         },
@@ -3009,18 +3082,23 @@ fn measure_small_tier_with_config_and_capture(
         let before_build = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?;
         let serving_owner = rt.repo();
-        let (full_ingest_observation, build_resource) = observe_phase_at_root_traced(
+        let (full_ingest_observation, build_resource) = observe_phase_at_root_traced_with_context(
             "full_ingest_seal",
             Some(&disk_root),
             disk_observation,
             diagnostic.as_ref(),
-            || {
+            |phase_context| {
                 let build_started = Instant::now();
                 for (path, content) in &corpus {
                     rt.ingest_text(serving_owner.as_str(), path, content)
                         .map_err(|error| stage_or_preserve("build_ingest", error))?;
                 }
-                measure_observed_seal(&mut rt, build_started, "build_seal")
+                measure_observed_seal_with_context(
+                    &mut rt,
+                    build_started,
+                    "build_seal",
+                    phase_context,
+                )
             },
         )?;
         let build_ms = full_ingest_observation.wall_ms();
@@ -3028,14 +3106,14 @@ fn measure_small_tier_with_config_and_capture(
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
 
-        let (activation_ms, activation_resource) = observe_phase_at_root_traced(
+        let (activation_ms, activation_resource) = observe_phase_at_root_traced_with_context(
             "full_activate",
             Some(&disk_root),
             disk_observation,
             diagnostic.as_ref(),
-            || {
+            |phase_context| {
                 let activation_started = Instant::now();
-                rt.activate_last_sealed_generation()
+                rt.activate_last_sealed_generation_with_context(phase_context)
                     .map_err(|error| ScaleStageError::operation("build_activate", &error))?;
                 Ok(elapsed_ms(activation_started))
             },
@@ -3211,12 +3289,12 @@ fn measure_scoped_delta(
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let serving_owner = rt.repo();
-    let (ingest_observation, update_resource) = observe_phase_at_root_traced(
+    let (ingest_observation, update_resource) = observe_phase_at_root_traced_with_context(
         "delta_ingest_seal",
         Some(&disk_root),
         disk_observation,
         diagnostic.as_ref(),
-        || {
+        |phase_context| {
             let update_started = Instant::now();
             let _ids = rt.ingest_text_chunks(
                 serving_owner.as_str(),
@@ -3228,23 +3306,24 @@ fn measure_scoped_delta(
                     source_repo_id: Some(&file.source_repo_id),
                 }],
             )?;
-            measure_observed_seal(rt, update_started, "delta_seal")
+            measure_observed_seal_with_context(rt, update_started, "delta_seal", phase_context)
         },
     )?;
     let update_ms = ingest_observation.wall_ms();
     let after_build = directory_bytes(rt.state_root())?;
-    let (activation_with_reclaim_ms, activation_resource) = observe_phase_at_root_traced(
-        "delta_activate",
-        Some(&disk_root),
-        disk_observation,
-        diagnostic.as_ref(),
-        || {
-            let activation_started = Instant::now();
-            rt.activate_last_sealed_generation()
-                .map_err(|error| ScaleStageError::operation("delta_activate", &error))?;
-            Ok(elapsed_ms(activation_started))
-        },
-    )?;
+    let (activation_with_reclaim_ms, activation_resource) =
+        observe_phase_at_root_traced_with_context(
+            "delta_activate",
+            Some(&disk_root),
+            disk_observation,
+            diagnostic.as_ref(),
+            |phase_context| {
+                let activation_started = Instant::now();
+                rt.activate_last_sealed_generation_with_context(phase_context)
+                    .map_err(|error| ScaleStageError::operation("delta_activate", &error))?;
+                Ok(elapsed_ms(activation_started))
+            },
+        )?;
     let after_activation = directory_bytes(rt.state_root())?;
     let mut phase_resources = BTreeMap::new();
     record_phase(&mut phase_resources, "delta_ingest_seal", update_resource)?;
@@ -3369,14 +3448,19 @@ pub fn measure_tier_with_runtime_config_and_capture(
         let (ingest_decoded_bytes, ingest_wire_bytes) = rt
             .preview_pending_search_corpus_wire_bytes()
             .map_err(|error| ScaleStageError::wire_admission(&error))?;
-        let (full_ingest_observation, seal_resource) = observe_phase_at_root_traced(
+        let (full_ingest_observation, seal_resource) = observe_phase_at_root_traced_with_context(
             "full_seal",
             Some(&disk_root),
             disk_observation,
             diagnostic.as_ref(),
-            || {
+            |phase_context| {
                 let seal_started = Instant::now();
-                measure_observed_seal(&mut rt, seal_started, "build_seal")
+                measure_observed_seal_with_context(
+                    &mut rt,
+                    seal_started,
+                    "build_seal",
+                    phase_context,
+                )
             },
         )?;
         let seal_ms = full_ingest_observation.wall_ms();
@@ -3384,14 +3468,14 @@ pub fn measure_tier_with_runtime_config_and_capture(
         let build_bytes_written = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
-        let (activation_ms, activation_resource) = observe_phase_at_root_traced(
+        let (activation_ms, activation_resource) = observe_phase_at_root_traced_with_context(
             "full_activate",
             Some(&disk_root),
             disk_observation,
             diagnostic.as_ref(),
-            || {
+            |phase_context| {
                 let activation_started = Instant::now();
-                rt.activate_last_sealed_generation()
+                rt.activate_last_sealed_generation_with_context(phase_context)
                     .map_err(|error| ScaleStageError::operation("build_activate", &error))?;
                 Ok(elapsed_ms(activation_started))
             },
@@ -3708,6 +3792,16 @@ pub fn refusal_json_with_context(
         );
         let _previous = failure.insert("secondary_failures".to_string(), json!(secondary_failures));
     }
+    if dimension == "scale-index-native"
+        && let Some(prefix) = error.downcast_ref::<native_index::NativeFailurePrefix>()
+    {
+        let _previous = failure.insert("phase_prefix".to_string(), prefix.phases.clone());
+    }
+    if dimension == "scale-index-native"
+        && let Some(captures) = native_index::failure_capture_detail(error)
+    {
+        let _previous = failure.insert("child_trace_files".to_string(), captures);
+    }
     let mut record = serde_json::Map::new();
     let _previous = record.insert(
         "kind".to_string(),
@@ -3735,7 +3829,9 @@ pub fn refusal_json_with_context(
             "corpus_bytes": binding.corpus_bytes,
             "source_bytes": binding.source_bytes,
             "corpus_digest": binding.corpus_digest,
-            "corpus_digest_kind": if binding.tier == ScaleTier::Small {
+            "corpus_digest_kind": if dimension == "scale-index-native" {
+                "generated_scoped_source_repo_path_v1"
+            } else if binding.tier == ScaleTier::Small {
                 "generated_chunk_content_prefixed_path_v1"
             } else {
                 "generated_chunk_content_source_repo_path_v1"
@@ -4986,6 +5082,45 @@ mod tests {
     }
 
     #[test]
+    fn native_fixture_counts_hard_links_in_each_subset_once() -> AnyResult<()> {
+        let fixture = tempfile::tempdir()?;
+        let state = fixture.path().join("state");
+        let scratch = state.join("native-scratch-v1");
+        fs::create_dir_all(&scratch)?;
+        let outside = fixture.path().join("capture.jsonl");
+        fs::write(&outside, vec![1_u8; 65_536])?;
+        fs::hard_link(&outside, scratch.join("linked-object"))?;
+        fs::hard_link(&outside, state.join("second-link"))?;
+        let [all, observed_state, observed_scratch] =
+            allocated_native_fixture_with_cancel(&state, || false)?;
+        // This fixed topology has three directory inodes and one shared file
+        // inode. Expected allocation does not use the traversal under test.
+        let allocated = |path: &Path| -> AnyResult<u64> {
+            fs::symlink_metadata(path)?
+                .blocks()
+                .checked_mul(512)
+                .context("fixture allocated-block overflow")
+        };
+        let file_bytes = allocated(&outside)?;
+        let scratch_bytes = allocated(&scratch)? + file_bytes;
+        let state_bytes = allocated(&state)? + scratch_bytes;
+        ensure_predicate!(all == allocated(fixture.path())? + state_bytes);
+        ensure_predicate!(observed_state == state_bytes);
+        ensure_predicate!(observed_scratch == scratch_bytes);
+        ensure_predicate!(
+            allocated_native_fixture_with_cancel(&fixture.path().join("absent-state"), || false)
+                .is_err(),
+            "missing state root must not become a successful zero allocation"
+        );
+        let cancelled = allocated_native_fixture_with_cancel(&state, || true);
+        ensure_predicate!(
+            cancelled.is_err(),
+            "cancelled census must not report zero bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn disk_samples_report_observed_high_water_and_unavailable_without_inference() -> AnyResult<()>
     {
         use std::os::unix::fs::MetadataExt as _;
@@ -5532,7 +5667,7 @@ mod tests {
     }
 
     #[test]
-    fn small_scale_capture_negotiates_query_attempt_links() -> AnyResult<()> {
+    fn small_scale_capture_links_ingest_and_activation_to_named_phases() -> AnyResult<()> {
         let output = tempfile::tempdir()?;
         let trace_path = output.path().join("small-query-attempts.jsonl");
         let mut capture = quanta_index_searchd::DiagnosticCaptureV1::start(
@@ -5563,10 +5698,163 @@ mod tests {
             rows.iter()
                 .all(|row| { row["record_type"] != "event" || row["kind"]["type"] != "health" })
         );
-        ensure_predicate!(
-            rows.iter()
-                .any(|row| { row["record_type"] == "event" && row["kind"]["type"] == "link" })
-        );
+        let events = rows
+            .iter()
+            .filter(|row| row["record_type"] == "event")
+            .collect::<Vec<_>>();
+        let begins = events
+            .iter()
+            .filter(|row| row["kind"]["type"] == "span_begin")
+            .filter_map(|row| Some((row["kind"]["span_id"].as_u64()?, *row)))
+            .collect::<BTreeMap<_, _>>();
+        let ends = events
+            .iter()
+            .filter(|row| row["kind"]["type"] == "span_end")
+            .filter_map(|row| Some((row["kind"]["span_id"].as_u64()?, row["ts_ns"].as_u64()?)))
+            .collect::<BTreeMap<_, _>>();
+        let phases = events
+            .iter()
+            .filter(|row| row["kind"]["type"] == "phase_identity")
+            .filter_map(|row| {
+                Some((
+                    row["kind"]["span_id"].as_u64()?,
+                    row["kind"]["phase"].as_str()?,
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let requests = events
+            .iter()
+            .filter(|row| row["kind"]["type"] == "request_identity")
+            .filter_map(|row| {
+                Some((
+                    row["kind"]["span_id"].as_u64()?,
+                    row["kind"]["plane"].as_str()?,
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let links = events
+            .iter()
+            .filter(|row| row["kind"]["type"] == "link")
+            .filter_map(|row| {
+                Some((
+                    row["kind"]["span_id"].as_u64()?,
+                    row["kind"]["target_span_id"].as_u64()?,
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let phase_owner = |span_id: u64| {
+            let mut cursor = Some(span_id);
+            let mut seen = BTreeSet::new();
+            while let Some(current) = cursor {
+                if !seen.insert(current) {
+                    return None;
+                }
+                if let Some(phase) = phases.get(&current) {
+                    return Some(*phase);
+                }
+                cursor = begins
+                    .get(&current)
+                    .and_then(|row| row["kind"]["parent_span_id"].as_u64())
+                    .or_else(|| links.get(&current).copied());
+            }
+            None
+        };
+        for (phase, plane) in [
+            ("full_ingest_seal", "ingest"),
+            ("delta_ingest_seal", "ingest"),
+            ("noop_seal", "ingest"),
+            ("full_activate", "control"),
+            ("delta_activate", "control"),
+            ("noop_activate", "control"),
+        ] {
+            let linked = requests.iter().any(|(id, request_plane)| {
+                *request_plane == plane && links.contains_key(id) && phase_owner(*id) == Some(phase)
+            });
+            ensure_predicate!(
+                linked,
+                "{plane} request lacks its actual {phase} attempt link"
+            );
+        }
+        // Every aggregate must be rooted in a real linked request. Clock
+        // containment is checked independently of the ancestry assertions.
+        for row in events.iter().filter(|row| {
+            row["kind"]["type"]
+                .as_str()
+                .is_some_and(|kind| kind.ends_with("_aggregate"))
+        }) {
+            let id = row["kind"]["span_id"]
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("aggregate lacks owner"))?;
+            ensure_predicate!(
+                phase_owner(id).is_some(),
+                "aggregate is outside a measured phase"
+            );
+            let mut request = id;
+            while !requests.contains_key(&request) {
+                request = begins
+                    .get(&request)
+                    .and_then(|row| row["kind"]["parent_span_id"].as_u64())
+                    .ok_or_else(|| anyhow::anyhow!("aggregate has no request ancestor"))?;
+            }
+            let attempt = links
+                .get(&request)
+                .ok_or_else(|| anyhow::anyhow!("aggregate request has no attempt"))?;
+            let owner_begin = begins
+                .get(&id)
+                .and_then(|row| row["ts_ns"].as_u64())
+                .ok_or_else(|| anyhow::anyhow!("aggregate owner start missing"))?;
+            let attempt_begin = begins
+                .get(attempt)
+                .and_then(|row| row["ts_ns"].as_u64())
+                .ok_or_else(|| anyhow::anyhow!("aggregate attempt start missing"))?;
+            let owner_end = ends
+                .get(&id)
+                .ok_or_else(|| anyhow::anyhow!("aggregate owner end missing"))?;
+            let attempt_end = ends
+                .get(attempt)
+                .ok_or_else(|| anyhow::anyhow!("aggregate attempt end missing"))?;
+            ensure_predicate!(
+                attempt_begin <= owner_begin && owner_end <= attempt_end,
+                "computation owner escapes its actual client attempt"
+            );
+        }
+        for phase in ["full_ingest_seal", "delta_ingest_seal", "noop_seal"] {
+            for family in [
+                "sync_aggregate",
+                "bm25_census_aggregate",
+                "bm25_live_build_aggregate",
+                "bm25_boundary_aggregate",
+            ] {
+                let emitted = events.iter().any(|row| {
+                    row["kind"]["type"] == family
+                        && row["kind"]["span_id"].as_u64().and_then(phase_owner) == Some(phase)
+                });
+                ensure_predicate!(emitted, "{phase} lacks actual {family} metrics");
+            }
+        }
+        for (request, attempt) in &links {
+            if !requests.contains_key(request) {
+                continue;
+            }
+            let request_begin = begins
+                .get(request)
+                .and_then(|row| row["ts_ns"].as_u64())
+                .ok_or_else(|| anyhow::anyhow!("request start missing"))?;
+            let attempt_begin = begins
+                .get(attempt)
+                .and_then(|row| row["ts_ns"].as_u64())
+                .ok_or_else(|| anyhow::anyhow!("attempt start missing"))?;
+            let _request_end = ends
+                .get(request)
+                .ok_or_else(|| anyhow::anyhow!("request end missing"))?;
+            let attempt_end = ends
+                .get(attempt)
+                .ok_or_else(|| anyhow::anyhow!("attempt end missing"))?;
+            ensure_predicate!(
+                attempt_begin <= request_begin && request_begin <= *attempt_end,
+                "request starts outside linked attempt clock envelope"
+            );
+        }
         Ok(())
     }
 

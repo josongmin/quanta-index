@@ -11,22 +11,38 @@
 pub mod diagnostic_trace;
 pub mod domains;
 pub mod error;
+mod history_text_file_io;
 pub mod index;
 pub mod ingest_resource;
+pub use history_text_file_io::{
+    HistoryTextDirectoryEntry, HistoryTextFileAdmissionFactory, HistoryTextFileIoPort,
+    HistoryTextPhysicalLock,
+};
+pub mod lexical_maintenance;
+pub use lexical_maintenance::LexicalMaintenancePolicy;
+pub mod pool_write_admission;
+pub mod publication_admission;
+pub mod publication_capacity;
+mod repomap_file_admission;
+pub use repomap_file_admission::{
+    RepoMapImmutablePutOutcome, RepoMapPhysicalFileClass, RepoMapPhysicalFilePort,
+};
 mod publication_validation;
 pub use publication_validation::PublicationValidationOwner;
 mod source_upload;
-pub use source_upload::SourcePublicationUploadPort;
+pub use source_upload::{SourcePublicationUploadFileAdmissionPort, SourcePublicationUploadPort};
 pub mod request_budget;
 pub mod timeref;
 
 pub use diagnostic_trace::{
-    DiagnosticAdoptionFlushReasonV1, DiagnosticAttemptGuardCoreV1, DiagnosticCaptureIdV1,
+    DiagnosticAdoptionFlushReasonV1, DiagnosticAnnIndexKindV1, DiagnosticAnnRegionObservationV1,
+    DiagnosticAnnRegionPhaseV1, DiagnosticAttemptGuardCoreV1, DiagnosticCaptureIdV1,
     DiagnosticClockV1, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticEmitV1,
     DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
     DiagnosticObjectKindV1, DiagnosticOccupancyBucketV1, DiagnosticPhaseV1, DiagnosticPlaneV1,
-    DiagnosticRootKindV1, DiagnosticSpanGuardV1, DiagnosticSpanIdV1, DiagnosticStageV1,
-    DiagnosticSyncLabelV1, DiagnosticTerminalV1, DiagnosticTraceErrorV1, DiagnosticTraceRefV1,
+    DiagnosticRootKindV1, DiagnosticSpanGuardV1, DiagnosticSpanIdV1,
+    DiagnosticSqliteSyncObservationV1, DiagnosticStageV1, DiagnosticSyncLabelV1,
+    DiagnosticTerminalV1, DiagnosticTraceErrorV1, DiagnosticTraceRefV1,
 };
 pub use domains::lexical::{
     CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CodeSearchRankStudyV1,
@@ -40,8 +56,9 @@ pub use ingest_resource::{
     MAX_EMBEDDING_DIMENSION,
 };
 pub use request_budget::{
-    BudgetInterruptionV1, CancelHandleV1, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE,
-    RequestBudgetV1, RequestCorrelationV1, RequestProviderStageV1, RequestStageDiagnosticPortV1,
+    BudgetInterruptionV1, CancelHandleV1, ProviderAttemptCustodyPortV1, ProviderAttemptLeaseV1,
+    REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1, RequestCorrelationV1,
+    RequestExecutionObserverV1, RequestProviderStageV1, RequestStageDiagnosticPortV1,
 };
 
 pub use domains::auxiliary::{
@@ -143,12 +160,13 @@ pub use domains::semantic::{
     SemanticAdmissionEngine, SemanticBatchIdentityV1, SemanticBatchMutationsV1,
     SemanticContentRootsPort, SemanticEgressGrantV1, SemanticEgressPolicyV1,
     SemanticGenerationContractV1, SemanticIndexOpenPort, SemanticIngestHeaderV1,
-    SemanticIngestPort, SemanticInputClass, SemanticPolicy, SemanticQueryPort, SemanticReadiness,
+    SemanticIngestPort, SemanticInputClass, SemanticNormalizationFailureV1, SemanticPolicy,
+    SemanticQueryPort, SemanticReadiness,
     SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticScopeWindowV1, SemanticSearchHitV1,
     SemanticSearcher, SemanticStreamTallyV1, SemanticStreamWindowPolicy, SemanticWindowFillV1,
     SemanticWindowIssuerV1, SemanticWindowLeaseV1, SemanticWindowPlacementV1,
-    SemanticWindowResidencyV1, TextEmbeddingProvider, build_resident_semantic_batch_v1,
-    owner_key_v1,
+    SemanticWindowResidencyV1, TextEmbeddingBatch, TextEmbeddingProvider,
+    build_resident_semantic_batch_v1, owner_key_v1,
 };
 pub use domains::source_publication::{
     LexicalDocumentNamespaceV1, LexicalDocumentVersionRangeV1, LexicalDocumentVersionReservationV1,

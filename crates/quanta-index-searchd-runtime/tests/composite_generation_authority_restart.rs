@@ -510,7 +510,8 @@ fn rollback_rejects_missing_semantic_target_and_preserves_active_composite() -> 
 #[test]
 fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -> TestResult {
     let directory = quanta_index_searchd_harness::private_tempdir()?;
-    let first_process = SearchdBinaryProcess::start(directory.path())?;
+    let first_process =
+        SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
     let first_client = first_process.connect()?;
     let activated = publish_three_generations(&first_client)?;
     let g0 = activated
@@ -548,7 +549,8 @@ fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -
     drop(first_client);
     first_process.stop()?;
 
-    let second_process = SearchdBinaryProcess::start(directory.path())?;
+    let second_process =
+        SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
     let second_client = second_process.connect()?;
     let reopened = current_composite(&second_client)?;
     if reopened != activated.g2.generation {
@@ -562,7 +564,8 @@ fn rollback_rejects_stale_expected_active_and_preserves_current_composite_v1() -
 fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1() -> TestResult {
     let directory = quanta_index_searchd_harness::private_tempdir()?;
 
-    let first_process = SearchdBinaryProcess::start(directory.path())?;
+    let first_process =
+        SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
     let first_client = first_process.connect()?;
     let activated = publish_two_generations(&first_client)?;
     if current_composite(&first_client)? != activated.g2.generation {
@@ -573,7 +576,8 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
     drop(first_client);
     first_process.stop()?;
 
-    let second_process = SearchdBinaryProcess::start(directory.path())?;
+    let second_process =
+        SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
     let second_client = second_process.connect()?;
     if current_composite(&second_client)? != activated.g2.generation {
         return Err("child process restart did not recover exact G2 composite identity".into());
@@ -589,7 +593,8 @@ fn real_child_process_restart_preserves_and_rolls_back_composite_generation_v1()
     drop(second_client);
     second_process.stop()?;
 
-    let third_process = SearchdBinaryProcess::start(directory.path())?;
+    let third_process =
+        SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
     let third_client = third_process.connect()?;
     if current_composite(&third_client)? != activated.g1.generation {
         return Err(
@@ -716,7 +721,8 @@ fn real_child_process_cross_repo_restart_retains_and_rolls_back_each_composite_v
 #[test]
 fn real_child_process_state_root_lease_rejects_second_owner_and_releases_v1() -> TestResult {
     let directory = quanta_index_searchd_harness::private_tempdir()?;
-    let first_process = SearchdBinaryProcess::start(directory.path())?;
+    let first_process =
+        SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
 
     let rejected = searchd_lease_probe::require_start_failure(directory.path())?;
     if rejected.status.success() {
@@ -735,7 +741,8 @@ fn real_child_process_state_root_lease_rejects_second_owner_and_releases_v1() ->
     }
 
     first_process.stop()?;
-    let admitted_after_release = SearchdBinaryProcess::start(directory.path())?;
+    let admitted_after_release =
+        SearchdBinaryProcess::start_with_history_max_generations(directory.path(), 8)?;
     admitted_after_release.stop()
 }
 

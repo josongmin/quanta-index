@@ -5,5 +5,9 @@
 
 mod map;
 mod object;
+mod scratch;
 
-pub use object::FileObjectStore;
+pub use object::{
+    FileObjectReader, FileObjectStore, ManagedObjectIo, ObjectIoObservation, ObjectIoSnapshot,
+};
+pub use scratch::FileScratchSpace;

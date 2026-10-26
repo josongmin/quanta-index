@@ -195,14 +195,26 @@ fn assert_owned_wrong_type<T: NativeRetainedScalarLeafV1>() {
 
 #[test]
 fn closed_leaves_retain_owned_string_and_bytes_without_copy_v1() {
+    assert_owned_wrong_type::<bool>();
+    assert_owned_wrong_type::<u8>();
     assert_owned_wrong_type::<u32>();
     assert_owned_wrong_type::<u64>();
+    assert_owned_wrong_type::<[u8; 16]>();
     assert_owned_wrong_type::<[u8; 32]>();
 }
 
 #[test]
 fn byte_array_stops_before_second_owned_input_v1() {
-    for wrong_index in [0, 7, 31] {
+    assert_byte_array_stops_before_second_owned_input_v1::<16>();
+    assert_byte_array_stops_before_second_owned_input_v1::<32>();
+}
+
+fn assert_byte_array_stops_before_second_owned_input_v1<const N: usize>()
+where
+    [u8; N]: NativeRetainedScalarLeafV1,
+{
+    let last_index = N.checked_sub(1).expect("fixed scalar fixture is nonempty");
+    for wrong_index in [0, 7, last_index] {
         for bytes in [false, true] {
             let wrong = if bytes {
                 Input::Bytes(vec![7, 11, 17])
@@ -223,7 +235,7 @@ fn byte_array_stops_before_second_owned_input_v1() {
                 .chain([Some(wrong), Some(Input::String(second))])
                 .collect();
             let polls = Cell::new(0);
-            let mut data = NativeRetainedScalarDecodeDataV1::<[u8; 32]>::new_v1();
+            let mut data = NativeRetainedScalarDecodeDataV1::<[u8; N]>::new_v1();
             let mut failure = None;
             assert_eq!(
                 data.try_decode_into_v1(
@@ -235,9 +247,12 @@ fn byte_array_stops_before_second_owned_input_v1() {
                 ),
                 Err(Refusal::OperationRefused)
             );
-            assert_eq!(polls.get(), wrong_index + 1);
+            let next_index = wrong_index
+                .checked_add(1)
+                .expect("fixed fixture index fits");
+            assert_eq!(polls.get(), next_index);
             assert_eq!(failure.as_ref().unwrap().kind, ErrorKind::Type);
-            match elements.get(wrong_index + 1).unwrap().as_ref().unwrap() {
+            match elements.get(next_index).unwrap().as_ref().unwrap() {
                 Input::String(value) => assert_eq!(value.as_ptr(), second_pointer),
                 Input::Unsigned(_) | Input::Signed(_) | Input::Bytes(_) | Input::Failure(_) => {
                     panic!("second owned input was changed");
@@ -257,9 +272,18 @@ fn byte_array_stops_before_second_owned_input_v1() {
 
 #[test]
 fn byte_array_uses_the_existing_u8_and_length_predicates_v1() {
-    for length in [0, 31, 32] {
+    assert_byte_array_uses_the_existing_u8_and_length_predicates_v1::<16>();
+    assert_byte_array_uses_the_existing_u8_and_length_predicates_v1::<32>();
+}
+
+fn assert_byte_array_uses_the_existing_u8_and_length_predicates_v1<const N: usize>()
+where
+    [u8; N]: NativeRetainedScalarLeafV1,
+{
+    let short_length = N.checked_sub(1).expect("fixed scalar fixture is nonempty");
+    for length in [0, short_length, N] {
         let mut elements: Vec<_> = (0..length).map(|_| Some(Input::Unsigned(255))).collect();
-        let mut data = NativeRetainedScalarDecodeDataV1::<[u8; 32]>::new_v1();
+        let mut data = NativeRetainedScalarDecodeDataV1::<[u8; N]>::new_v1();
         let mut failure = None;
         let polls = Cell::new(0);
         let result = data.try_decode_into_v1(
@@ -269,11 +293,11 @@ fn byte_array_uses_the_existing_u8_and_length_predicates_v1() {
             },
             &mut failure,
         );
-        if length == 32 {
+        if length == N {
             result.unwrap();
             let mut output = None;
             data.complete_into_slot_v1(&mut output).unwrap();
-            assert_eq!(output, Some([255; 32]));
+            assert_eq!(output, Some([255; N]));
         } else {
             assert_eq!(result, Err(Refusal::OperationRefused));
             assert_eq!(failure.as_ref().unwrap().kind, ErrorKind::Length);
@@ -281,7 +305,7 @@ fn byte_array_uses_the_existing_u8_and_length_predicates_v1() {
         assert_eq!(polls.get(), length);
     }
     let mut elements = [Some(Input::Unsigned(256))];
-    let mut data = NativeRetainedScalarDecodeDataV1::<[u8; 32]>::new_v1();
+    let mut data = NativeRetainedScalarDecodeDataV1::<[u8; N]>::new_v1();
     let mut failure = None;
     assert_eq!(
         data.try_decode_into_v1(
@@ -359,4 +383,45 @@ fn unit_seed_and_pure_transfer_do_not_reset_one_attempt_v1() {
     assert_eq!(failure.kind, ErrorKind::Custom);
     assert_eq!(polls.get(), 1);
     assert!(!data.is_fresh_v1());
+}
+
+#[test]
+fn boolean_and_byte_leaves_preserve_existing_scalar_predicates_v1() {
+    for (wire, expected) in [("true", true), ("false", false)] {
+        let mut decoder = serde_json::Deserializer::from_str(wire);
+        let mut data = NativeRetainedScalarDecodeDataV1::<bool>::new_v1();
+        let mut failure = None;
+        data.try_decode_into_v1(&mut decoder, &mut failure).unwrap();
+        decoder.end().unwrap();
+        let mut output = None;
+        data.complete_into_slot_v1(&mut output).unwrap();
+        assert_eq!(output, Some(expected));
+        assert!(failure.is_none());
+    }
+    for expected in [0_u8, 1, u8::MAX] {
+        let mut data = NativeRetainedScalarDecodeDataV1::<u8>::new_v1();
+        decode(
+            Input::Unsigned(u64::from(expected)),
+            &mut data,
+            &mut None,
+            &Cell::new(0),
+        )
+        .unwrap();
+        let mut output = None;
+        data.complete_into_slot_v1(&mut output).unwrap();
+        assert_eq!(output, Some(expected));
+    }
+    for input in [Input::Signed(-1), Input::Unsigned(256)] {
+        let mut data = NativeRetainedScalarDecodeDataV1::<u8>::new_v1();
+        let mut failure = None;
+        assert_eq!(
+            decode(input, &mut data, &mut failure, &Cell::new(0)),
+            Err(Refusal::OperationRefused)
+        );
+        assert_eq!(failure.as_ref().unwrap().kind, ErrorKind::Value);
+        assert_eq!(
+            data.complete_into_slot_v1(&mut None),
+            Err(Refusal::MissingResult)
+        );
+    }
 }

@@ -1,0 +1,134 @@
+
+crate quanta_index_semantic
+├── enum InventoryGenerationError: pub(crate)
+├── struct PersistedSemanticGeneration: pub
+├── struct SemanticAdapter: pub
+├── struct SemanticGenerationInventoryV1: pub
+├── struct ValidatedPersistedSemanticGenerationV2: pub
+├── mod budget: pub(crate)
+│   ├── struct DenseLaneBudgetV1: pub(crate)
+│   ├── enum DenseLaneKindV1: pub(crate)
+│   ├── struct DenseLaneTalliesV1: pub(crate)
+│   ├── struct LaneTallyV1: pub(self)
+│   ├── struct RowBudgetProbe: pub(crate)
+│   └── mod failpoint: pub(crate) #[cfg(not(any(test, debug_assertions)))]
+├── mod build: pub(crate)
+│   ├── struct AppendedVectors: pub(self)
+│   ├── struct StreamScopeAuthorityV1: pub(self)
+│   ├── struct WorkingTables: pub(self)
+│   └── mod failpoint: pub(self) #[cfg(not(any(test, debug_assertions)))]
+├── mod codec: pub(crate)
+│   └── struct FormatVersionProbe: pub(self)
+├── mod control_file: pub(crate)
+├── mod dataset_promotion: pub(crate)
+│   ├── struct Contract: pub(self)
+│   ├── struct DatasetPromotion: pub(crate)
+│   ├── struct FsOps: pub(self)
+│   ├── struct Inode: pub(self)
+│   ├── struct Intent: pub(self)
+│   └── struct Paths: pub(self)
+├── mod durable_write: pub(crate)
+│   └── struct AtomicOutput: pub(crate)
+├── mod errors: pub(crate)
+├── mod generation_contract: pub(crate)
+│   └── struct GenerationContract: pub(crate)
+├── mod integrity: pub(crate)
+│   ├── struct QuarantineReceiptV1: pub(crate)
+│   ├── struct ScrubReceiptV1: pub(crate)
+│   └── struct SealTalliesV1: pub(crate)
+├── mod layout: pub(crate)
+├── mod manifest: pub(crate)
+│   ├── struct AnnIndexLineageV1: pub(crate)
+│   ├── struct AnnIndexSealV1: pub(crate)
+│   ├── struct AnnIndexSegmentSealV1: pub(crate)
+│   ├── struct ClusterMembershipSealV1: pub(crate)
+│   ├── struct SemanticCorpusCoverageV1: pub(crate)
+│   ├── struct SemanticManifest: pub(crate)
+│   ├── struct SemanticRowSealV1: pub(crate)
+│   └── struct VectorIndexSealV1: pub(crate)
+├── mod membership_integrity: pub(crate)
+│   ├── struct ClusterMembershipCommitmentV1: pub(crate)
+│   └── struct ClusterMembershipStoredRowV1: pub(crate)
+├── mod native: pub
+│   ├── mod certified_chunks: pub(self)
+│   │   └── struct CertifiedChunkPayload: pub
+│   ├── mod chunks: pub(self)
+│   │   ├── enum ChunkLocation: pub
+│   │   ├── struct ChunkMember: pub
+│   │   ├── struct ChunkPlan: pub(crate)
+│   │   └── struct Utf8ChunkPolicy: pub
+│   └── mod embedding: pub(self)
+│       ├── enum ArtifactChildren: pub(self)
+│       ├── struct EmbeddingInput: pub
+│       ├── enum EmbeddingInputPolicy: pub
+│       ├── struct EmbeddingOutput: pub
+│       ├── trait EmbeddingProvider: pub
+│       ├── struct EmbeddingRecipe: pub
+│       ├── struct EmbeddingVector: pub
+│       ├── struct LoadedOwnerArtifact: pub(self)
+│       ├── struct NativeSemantic: pub
+│       │   └── type Candidate: pub(self)
+│       ├── struct NativeSemanticReadConfig: pub
+│       ├── struct NativeSemanticReader: pub
+│       ├── struct OwnerArtifact: pub(self)
+│       ├── struct OwnerArtifactJson: pub(self)
+│       ├── struct OwnerArtifactJsonWriter: pub(self)
+│       ├── struct RankedHit: pub(self)
+│       ├── struct ReadContext: pub
+│       ├── struct SearchHit: pub
+│       ├── struct SearchLease: pub(self)
+│       ├── struct SearchQuery: pub(self)
+│       ├── struct SearchResult: pub
+│       ├── struct SemanticCandidate: pub
+│       ├── struct TextEmbeddingBridge: pub
+│       ├── struct TicketSearchQuery: pub
+│       ├── enum VectorNormalization: pub
+│       ├── mod chunk_materialization: pub(self)
+│       │   └── struct ChunkLookup: pub(super)
+│       ├── mod chunk_reuse: pub(self)
+│       │   ├── struct ChangedCoordinates: pub(self)
+│       │   ├── struct EmbeddingPrior: pub
+│       │   └── struct ReuseScratch: pub(self)
+│       ├── mod memory_envelope: pub(self)
+│       │   └── struct CountJson: pub(self)
+│       └── mod overlay: pub(self)
+│           ├── trait OverlayEmbeddingPort: pub(super)
+│           ├── struct OverlaySearch: pub(super)
+│           ├── struct OverlayVectors: pub(super)
+│           ├── struct SemanticOverlayChunk: pub
+│           ├── struct SemanticOverlayDocument: pub
+│           ├── struct SemanticOverlayHit: pub
+│           └── struct SemanticReadRequest: pub
+├── mod physical_measurement: pub(crate)
+│   └── struct SemanticPhysicalSession: pub(crate)
+├── mod retention_measurement: pub(crate)
+│   └── struct SemanticRetentionSession: pub(crate)
+├── mod sealed_manifest: pub(crate)
+│   ├── struct InheritableBaseV1: pub(self)
+│   ├── struct SealMeasurementV1: pub(crate)
+│   ├── type SealedManifestRowV1: pub(self)
+│   ├── struct SealedManifestScrubV1: pub(crate)
+│   ├── enum SealedManifestScrubVerdictV1: pub(crate)
+│   └── struct SemanticSealedManifestV1: pub(crate)
+├── mod search: pub(crate)
+│   ├── struct ClusterMembershipReadRowV1: pub(self)
+│   ├── struct LoadedGeneration: pub(crate)
+│   ├── struct PersistedSemanticSearcher: pub(crate)
+│   ├── struct SemanticSearchHit: pub(crate)
+│   └── struct VerifiedInheritedVectorIndexV1: pub(crate)
+├── mod semantic_ingest_fixtures_v1: pub(crate)
+├── mod semantic_row_integrity_v1: pub(crate)
+│   ├── struct CanonicalSemanticRowV1: pub(self)
+│   ├── struct SemanticRowCommitmentV1: pub(crate)
+│   ├── struct SemanticRowCoverageV1: pub(crate)
+│   └── struct SemanticRowFingerprintV1: pub(crate)
+├── mod sql: pub(crate)
+└── mod vector_index: pub(crate)
+    ├── struct AppendPlanV1: pub(self)
+    ├── struct IndexReportV1: pub(self)
+    ├── struct LoadedApproximateIndexV1: pub(crate)
+    ├── struct LoadedVectorIndexV1: pub(crate)
+    ├── struct QueryEffortV1: pub(crate)
+    ├── struct VectorIndexListingV1: pub(self)
+    ├── enum VectorIndexPlanV1: pub(crate)
+    └── struct VectorIndexSealInputV1: pub(crate)

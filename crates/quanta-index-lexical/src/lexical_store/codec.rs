@@ -17,6 +17,7 @@ pub(crate) enum ObjectKind {
     BlobBlock = 9,
     BlobNode = 10,
     AttemptBatch = 11,
+    HardScanAnchor = 12,
 }
 
 impl ObjectKind {
@@ -33,6 +34,7 @@ impl ObjectKind {
             Self::BlobBlock => 9,
             Self::BlobNode => 10,
             Self::AttemptBatch => 11,
+            Self::HardScanAnchor => 12,
         }
     }
 
@@ -49,6 +51,7 @@ impl ObjectKind {
             9 => Self::BlobBlock,
             10 => Self::BlobNode,
             11 => Self::AttemptBatch,
+            12 => Self::HardScanAnchor,
             _ => return None,
         })
     }
@@ -56,7 +59,11 @@ impl ObjectKind {
     pub(super) const fn is_payload(self) -> bool {
         !matches!(
             self,
-            Self::MapPage | Self::BlobBlock | Self::BlobNode | Self::AttemptBatch
+            Self::MapPage
+                | Self::BlobBlock
+                | Self::BlobNode
+                | Self::AttemptBatch
+                | Self::HardScanAnchor
         )
     }
 }
@@ -131,6 +138,8 @@ pub(crate) struct PageRef {
     pub(crate) last: Vec<u8>,
     pub(crate) entries: u64,
     pub(crate) height: u8,
+    /// Encoded `MapPage` object bytes in this subtree, excluding value blobs.
+    pub(crate) map_encoded_bytes: u64,
 }
 
 impl Serialize for PageRef {
@@ -141,6 +150,7 @@ impl Serialize for PageRef {
             &self.last,
             self.entries,
             self.height,
+            self.map_encoded_bytes,
         )
             .serialize(serializer)
     }
@@ -148,14 +158,15 @@ impl Serialize for PageRef {
 
 impl<'de> Deserialize<'de> for PageRef {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (object, first, last, entries, height) =
-            <(ObjectRef, Vec<u8>, Vec<u8>, u64, u8)>::deserialize(deserializer)?;
+        let (object, first, last, entries, height, map_encoded_bytes) =
+            <(ObjectRef, Vec<u8>, Vec<u8>, u64, u8, u64)>::deserialize(deserializer)?;
         Ok(Self {
             object,
             first,
             last,
             entries,
             height,
+            map_encoded_bytes,
         })
     }
 }

@@ -3,6 +3,9 @@
 use std::fs::File;
 use std::io::{self, Read as _};
 use std::path::Path;
+use std::sync::Arc;
+
+use lance_io::object_store::file_admission::{FileAdmission, FileReaderLease};
 
 use quanta_index_core::CoreError;
 use rustix::fs::{AtFlags, Mode, OFlags, open, openat, statat};
@@ -73,7 +76,72 @@ pub(crate) fn regular_file_present(path: &Path) -> io::Result<bool> {
     }
 }
 
-fn open_bounded(path: &Path, max_bytes: usize) -> io::Result<File> {
+enum BoundedControlFile {
+    Plain(File),
+    Admitted(Arc<dyn FileReaderLease>),
+}
+
+/// A committed dataset reader retains the canonical inode lease through the
+/// final byte hashed by Core's seal or scrub algorithm.
+pub(crate) enum DatasetReadFile {
+    Plain(File),
+    Admitted(Arc<dyn FileReaderLease>),
+}
+
+impl io::Read for DatasetReadFile {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(file) => file.read(buffer),
+            Self::Admitted(lease) => {
+                let mut file = lease.file()?;
+                file.read(buffer)
+            }
+        }
+    }
+}
+
+pub(crate) fn open_dataset_reader(
+    path: &Path,
+    admission: Option<&dyn FileAdmission>,
+) -> io::Result<DatasetReadFile> {
+    let mut opening = admission
+        .map(|admission| admission.begin_reader_open(path))
+        .transpose()?;
+    let file = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
+    match opening.as_deref_mut() {
+        Some(opening) => opening.opened_owned(file).map(DatasetReadFile::Admitted),
+        None => Ok(DatasetReadFile::Plain(file)),
+    }
+}
+
+impl io::Read for BoundedControlFile {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(file) => file.read(buffer),
+            Self::Admitted(lease) => {
+                let mut file = lease.file()?;
+                file.read(buffer)
+            }
+        }
+    }
+}
+
+fn open_bounded_with_admission(
+    path: &Path,
+    max_bytes: usize,
+    admission: Option<&dyn FileAdmission>,
+) -> io::Result<BoundedControlFile> {
+    // The guard precedes openat and owns path/inode custody even if a caller
+    // aborts before returning the final descriptor.
+    let mut opening = admission
+        .map(|admission| admission.begin_reader_open(path))
+        .transpose()?;
     let (generation, name) = generation_parent(path)?;
     let descriptor = openat(
         &generation,
@@ -89,13 +157,23 @@ fn open_bounded(path: &Path, max_bytes: usize) -> io::Result<File> {
         }
     })?;
     let file = File::from(descriptor);
-    if !file.metadata()?.is_file() {
+    // Transfer the original FD to the admission lease immediately. A failed
+    // metadata check must still retire that exact FD through the binder.
+    let file = match opening.as_deref_mut() {
+        Some(opening) => BoundedControlFile::Admitted(opening.opened_owned(file)?),
+        None => BoundedControlFile::Plain(file),
+    };
+    let metadata = match &file {
+        BoundedControlFile::Plain(file) => file.metadata()?,
+        BoundedControlFile::Admitted(lease) => lease.file()?.metadata()?,
+    };
+    if !metadata.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "control file is not a regular file",
         ));
     }
-    if file.metadata()?.len() > u64::try_from(max_bytes).map_err(io::Error::other)? {
+    if metadata.len() > u64::try_from(max_bytes).map_err(io::Error::other)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("control file exceeds {max_bytes} bytes"),
@@ -104,8 +182,17 @@ fn open_bounded(path: &Path, max_bytes: usize) -> io::Result<File> {
     Ok(file)
 }
 
+#[cfg(test)]
 pub(crate) fn read_bounded(path: &Path, max_bytes: usize) -> io::Result<Vec<u8>> {
-    let file = open_bounded(path, max_bytes)?;
+    read_bounded_with_admission(path, max_bytes, None)
+}
+
+pub(crate) fn read_bounded_with_admission(
+    path: &Path,
+    max_bytes: usize,
+    admission: Option<&dyn FileAdmission>,
+) -> io::Result<Vec<u8>> {
+    let file = open_bounded_with_admission(path, max_bytes, admission)?;
     // A file may grow after metadata. The extra byte detects that race without
     // reading unbounded attacker-controlled content into memory.
     let sentinel_limit = u64::try_from(max_bytes)
@@ -126,8 +213,17 @@ pub(crate) fn read_bounded(path: &Path, max_bytes: usize) -> io::Result<Vec<u8>>
 
 /// Stream a control-file commitment through the same nofollow and size
 /// admission used by the decoders, without retaining its bytes in memory.
+#[cfg(test)]
 pub(crate) fn measure_bounded(path: &Path, max_bytes: usize) -> io::Result<(u64, [u8; 32])> {
-    let mut file = open_bounded(path, max_bytes)?;
+    measure_bounded_with_admission(path, max_bytes, None)
+}
+
+pub(crate) fn measure_bounded_with_admission(
+    path: &Path,
+    max_bytes: usize,
+    admission: Option<&dyn FileAdmission>,
+) -> io::Result<(u64, [u8; 32])> {
+    let mut file = open_bounded_with_admission(path, max_bytes, admission)?;
     let limit = u64::try_from(max_bytes).map_err(io::Error::other)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 1 << 16].into_boxed_slice();
@@ -158,8 +254,12 @@ pub(crate) fn measure_bounded(path: &Path, max_bytes: usize) -> io::Result<(u64,
     Ok((length, hasher.finalize().into()))
 }
 
-pub(crate) fn read_string_bounded(path: &Path, max_bytes: usize) -> io::Result<String> {
-    String::from_utf8(read_bounded(path, max_bytes)?)
+pub(crate) fn read_string_bounded_with_admission(
+    path: &Path,
+    max_bytes: usize,
+    admission: Option<&dyn FileAdmission>,
+) -> io::Result<String> {
+    String::from_utf8(read_bounded_with_admission(path, max_bytes, admission)?)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 

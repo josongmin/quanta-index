@@ -1,3 +1,6 @@
+use std::error::Error as StdError;
+use std::fmt;
+use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 use std::thread;
@@ -43,6 +46,83 @@ fn error_in_index_worker_thread(context: &str) -> TantivyError {
     TantivyError::ErrorInThread(format!(
         "{context}. A worker thread encountered an error (io::Error most likely) or panicked."
     ))
+}
+
+#[derive(Debug)]
+enum JoinedFailure {
+    Worker(TantivyError),
+    Panic(String),
+    Merge(TantivyError),
+}
+
+#[derive(Debug)]
+struct JoinedFailures(Vec<JoinedFailure>);
+
+impl fmt::Display for JoinedFailures {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, failure) in self.0.iter().enumerate() {
+            if index != 0 {
+                formatter.write_str("; ")?;
+            }
+            match failure {
+                JoinedFailure::Worker(error) => write!(formatter, "worker failed: {error}")?,
+                JoinedFailure::Panic(detail) => write!(formatter, "worker panicked: {detail}")?,
+                JoinedFailure::Merge(error) => write!(formatter, "merge drain failed: {error}")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+impl StdError for JoinedFailures {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.0.iter().find_map(|failure| match failure {
+            JoinedFailure::Worker(error) | JoinedFailure::Merge(error) => {
+                Some(error as &(dyn StdError + 'static))
+            }
+            JoinedFailure::Panic(_) => None,
+        })
+    }
+}
+
+/// Retire every original worker before waiting for merges, even when an
+/// earlier worker failed. Returning early here would leave a merge thread
+/// holding the index directory after its caller starts staging cleanup.
+fn join_workers_and_merges(
+    workers: Vec<JoinHandle<crate::Result<()>>>,
+    wait_merges: impl FnOnce() -> crate::Result<()>,
+) -> crate::Result<()> {
+    let mut failures = Vec::new();
+    for worker in workers {
+        match worker.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => failures.push(JoinedFailure::Worker(error)),
+            Err(panic) => {
+                let detail = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string panic payload");
+                failures.push(JoinedFailure::Panic(detail.to_string()));
+            }
+        }
+    }
+    let merge_result = wait_merges();
+    if let Err(error) = merge_result {
+        failures.push(JoinedFailure::Merge(error));
+    }
+    match failures.len() {
+        0 => Ok(()),
+        1 => match failures.remove(0) {
+            JoinedFailure::Worker(error) | JoinedFailure::Merge(error) => Err(error),
+            JoinedFailure::Panic(detail) => {
+                Err(TantivyError::ErrorInThread(format!("worker panicked: {detail}")))
+            }
+        },
+        _ => Err(TantivyError::IoError(Arc::new(io::Error::other(
+            JoinedFailures(failures),
+        )))),
+    }
 }
 
 /// `IndexWriter` is the user entry-point to add document to an index.
@@ -336,17 +416,9 @@ impl<D: Document> IndexWriter<D> {
         self.drop_sender();
 
         let former_workers_handles = std::mem::take(&mut self.workers_join_handle);
-        for join_handle in former_workers_handles {
-            join_handle
-                .join()
-                .map_err(|_| error_in_index_worker_thread("Worker thread panicked."))?
-                .map_err(|_| error_in_index_worker_thread("Worker thread failed."))?;
-        }
-
-        let result = self
-            .segment_updater
-            .wait_merging_thread()
-            .map_err(|_| error_in_index_worker_thread("Failed to join merging thread."));
+        let result = join_workers_and_merges(former_workers_handles, || {
+            self.segment_updater.wait_merging_thread()
+        });
 
         if let Err(ref e) = result {
             error!("Some merging thread failed {:?}", e);
@@ -617,12 +689,8 @@ impl<D: Document> IndexWriter<D> {
         self.recreate_document_channel();
 
         let former_workers_join_handle = std::mem::take(&mut self.workers_join_handle);
-
-        for worker_handle in former_workers_join_handle {
-            let indexing_worker_result = worker_handle
-                .join()
-                .map_err(|e| TantivyError::ErrorInThread(format!("{e:?}")))?;
-            indexing_worker_result?;
+        join_workers_and_merges(former_workers_join_handle, || Ok(()))?;
+        for _ in 0..self.num_threads {
             self.add_indexing_worker()?;
         }
 
@@ -802,12 +870,15 @@ impl<D: Document> Drop for IndexWriter<D> {
 mod tests {
     use std::collections::{HashMap, HashSet};
     use std::net::Ipv6Addr;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     use columnar::{Cardinality, Column, MonotonicallyMappableToU128};
     use itertools::Itertools;
     use proptest::prop_oneof;
 
     use super::super::operation::UserOperation;
+    use super::{JoinedFailure, JoinedFailures, join_workers_and_merges};
     use crate::collector::TopDocs;
     use crate::directory::error::LockError;
     use crate::error::*;
@@ -832,6 +903,107 @@ mod tests {
                          voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur \
                          sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt \
                          mollit anim id est laborum.";
+
+    #[test]
+    fn worker_panic_still_joins_later_worker_and_drains_merge_with_all_causes() {
+        let later_finished = Arc::new(AtomicBool::new(false));
+        let merge_waited = Arc::new(AtomicBool::new(false));
+        let first = std::thread::spawn(|| -> crate::Result<()> {
+            panic!("first-worker-panic");
+        });
+        let (release, pending) = std::sync::mpsc::channel::<()>();
+        let finished = Arc::clone(&later_finished);
+        let later = std::thread::spawn(move || -> crate::Result<()> {
+            pending.recv().expect("test releases the later worker");
+            finished.store(true, Ordering::SeqCst);
+            Err(TantivyError::SystemError("later-worker-error".into()))
+        });
+        release
+            .send(())
+            .expect("later worker still receives release");
+        let observed_finished = Arc::clone(&later_finished);
+        let observed_merge = Arc::clone(&merge_waited);
+        let result = join_workers_and_merges(vec![first, later], move || {
+            assert!(observed_finished.load(Ordering::SeqCst));
+            observed_merge.store(true, Ordering::SeqCst);
+            Err(TantivyError::SystemError("merge-drain-error".into()))
+        });
+        assert!(later_finished.load(Ordering::SeqCst));
+        assert!(merge_waited.load(Ordering::SeqCst));
+        let Err(TantivyError::IoError(combined)) = result else {
+            panic!("worker and merge failures were not retained");
+        };
+        let failures = combined
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<JoinedFailures>())
+            .expect("all original worker and merge errors remain owned");
+        assert!(matches!(
+            &failures.0[0],
+            JoinedFailure::Panic(message) if message == "first-worker-panic"
+        ));
+        assert!(matches!(
+            &failures.0[1],
+            JoinedFailure::Worker(TantivyError::SystemError(message))
+                if message == "later-worker-error"
+        ));
+        assert!(matches!(
+            &failures.0[2],
+            JoinedFailure::Merge(TantivyError::SystemError(message))
+                if message == "merge-drain-error"
+        ));
+        assert!(combined.to_string().contains("first-worker-panic"));
+    }
+
+    #[test]
+    fn original_worker_io_source_survives_single_and_multiple_join_failures() {
+        #[derive(Debug)]
+        struct OriginalIoCause;
+
+        impl std::fmt::Display for OriginalIoCause {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("original I/O cause")
+            }
+        }
+        impl std::error::Error for OriginalIoCause {}
+
+        let make_worker = || {
+            std::thread::spawn(|| -> crate::Result<()> {
+                Err(TantivyError::IoError(Arc::new(std::io::Error::other(
+                    OriginalIoCause,
+                ))))
+            })
+        };
+        let single = join_workers_and_merges(vec![make_worker()], || Ok(()));
+        let Err(TantivyError::IoError(original)) = single else {
+            panic!("single worker error lost its Tantivy I/O variant");
+        };
+        assert!(original.get_ref().is_some_and(|source| source.is::<OriginalIoCause>()));
+
+        let later_finished = Arc::new(AtomicBool::new(false));
+        let later = Arc::clone(&later_finished);
+        let second = std::thread::spawn(move || -> crate::Result<()> {
+            later.store(true, Ordering::SeqCst);
+            Err(TantivyError::SystemError("second worker error".into()))
+        });
+        let result = join_workers_and_merges(vec![make_worker(), second], || {
+            assert!(later_finished.load(Ordering::SeqCst));
+            Ok(())
+        });
+        let Err(TantivyError::IoError(combined)) = result else {
+            panic!("multiple worker errors lost original sources");
+        };
+        let failures = combined
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<JoinedFailures>())
+            .expect("original worker errors retained");
+        assert_eq!(failures.0.len(), 2);
+        let original = std::error::Error::source(failures)
+            .and_then(|source| source.downcast_ref::<TantivyError>());
+        assert!(matches!(original, Some(TantivyError::IoError(error))
+            if error.get_ref().is_some_and(|source| source.is::<OriginalIoCause>())));
+        assert!(matches!(&failures.0[1], JoinedFailure::Worker(TantivyError::SystemError(message))
+            if message == "second worker error"));
+    }
 
     #[test]
     fn test_operations_group() {

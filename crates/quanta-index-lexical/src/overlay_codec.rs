@@ -1377,7 +1377,8 @@ pub(crate) fn decode_overlay_value(
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => other,
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => other,
     })
 }
 

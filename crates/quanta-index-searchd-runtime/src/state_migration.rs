@@ -2,35 +2,29 @@
 //! `verify-state` commands.
 //!
 //! This is the composition root for the offline surface: it is the only
-//! place that names [`SqliteCatalog`], the lexical
-//! inventory and [`RepoMapGenerationStore`], and it hands them to the engine
-//! as the two ports `quanta_index_searchd::app::state_migration` declares.
+//! place that wires Catalog, lexical inventory and RepoMap adapters to
+//! the engine ports in `quanta_index_searchd::app::state_migration`.
 //! The engine itself never names an adapter, so its ordering and refusal
 //! rules are provable without a storage engine.
 //!
 //! The daemon's boot path refuses a legacy root typed.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use quanta_index_catalog::{
-    CatalogSnapshotReceiptV1, SqliteCatalog, live_catalog_receipt, snapshot_catalog_file,
-    verify_snapshot,
-};
+use quanta_index_catalog::{CatalogSnapshotReceiptV1, verify_snapshot};
 use quanta_index_core::{
-    CoreError, IntegrityScrubBudgetV1, IntegrityScrubOutcomeV1, IntegrityScrubPort,
+    CoreError, IntegrityScrubBudgetV1, IntegrityScrubOutcomeV1, IntegrityScrubPort, RequestBudgetV1,
 };
-use quanta_index_repomap::RepoMapGenerationStore;
+use quanta_index_searchd::app::config::SearchdConfig;
 use quanta_index_searchd::app::runtime::StateRootLease;
 use quanta_index_searchd::app::state_format::{
     EnvironmentStateMigrationFaultV1, StateMigrationFaultPort, refuse_legacy_state_root_v1,
 };
 use quanta_index_searchd::app::state_migration::{
-    CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, OfflineSourceSessionV1,
-    OfflineStateCommandV1, OfflineStateOperationV1, OfflineStateOutcomeV1,
-    OfflineStateVerificationV1, StateRootDeepOpenPort, StateRootDeepOpenReceiptV1,
+    CatalogSnapshotPort, CatalogSnapshotV1, OfflineSourceSessionV1, OfflineStateCommandV1,
+    OfflineStateOperationV1, OfflineStateOutcomeV1, OfflineStateVerificationV1,
     VerifyManifestKindV1, peek_verify_manifest_v1, run_offline_backup_v1, run_offline_restore_v1,
     run_offline_verify_v1,
 };
@@ -39,29 +33,10 @@ use quanta_index_searchd::app::state_migration::{
 /// typed; the daemon uses the same budget for the same reason.
 const OFFLINE_CATALOG_BUSY_BUDGET: Duration = Duration::from_secs(2);
 
-/// The catalog port: the engine's backup API, with both halves of the freeze
-/// returned so the engine can refuse a snapshot that is not equal to its
-/// source.
+/// Independent read-side verification for operator and restore admission.
 struct CatalogSnapshotAdapter;
 
 impl CatalogSnapshotPort for CatalogSnapshotAdapter {
-    fn snapshot_into(
-        &self,
-        live_root: &Path,
-        destination_file: &Path,
-    ) -> Result<CatalogFreezeV1, CoreError> {
-        let live = live_catalog_receipt(live_root, OFFLINE_CATALOG_BUSY_BUDGET)?;
-        let snapshot = snapshot_catalog_file(
-            &live.destination,
-            destination_file,
-            OFFLINE_CATALOG_BUSY_BUDGET,
-        )?;
-        Ok(CatalogFreezeV1 {
-            live: map_receipt(&live),
-            snapshot: map_receipt(&snapshot),
-        })
-    }
-
     fn verify_snapshot_at(&self, snapshot_file: &Path) -> Result<CatalogSnapshotV1, CoreError> {
         verify_snapshot(snapshot_file).map(|receipt| map_receipt(&receipt))
     }
@@ -75,57 +50,33 @@ fn map_receipt(receipt: &CatalogSnapshotReceiptV1) -> CatalogSnapshotV1 {
     }
 }
 
-/// The deep open a produced root must survive before it is published.
-///
-/// The catalog's own open (crash recovery against unfinished journal rows,
-/// stale durable-lease release, and sequence reconciliation), the `RepoMap`
-/// store's catalog-versus-object reconciliation, and both index tracks'
-/// sealed-generation inventories. Lexical compact roots reference the shared
-/// pool outside each generation directory, so the staged root must also pass
-/// a complete lexical scrub before it can be published. This offline command
-/// holds exclusive custody; bounded scrub steps run to completion here.
-struct RootDeepOpenAdapter;
-
-impl StateRootDeepOpenPort for RootDeepOpenAdapter {
-    fn deep_open(&self, root: &Path) -> Result<StateRootDeepOpenReceiptV1, CoreError> {
-        let catalog = SqliteCatalog::open(root, OFFLINE_CATALOG_BUSY_BUDGET)?;
-        let candidates = catalog.repomap_candidate_rows()?;
-        let repomap_candidates = u64::try_from(candidates.len()).map_or(u64::MAX, |count| count);
-        let _repomap = RepoMapGenerationStore::open(root.join("repo-map"), Arc::new(catalog))?;
-        let lexical = quanta_index_lexical::inventory_sealed_generations(
-            &root.join("indexes").join("lexical"),
-        )?;
-        let lexical_adapter = quanta_index_lexical::LexicalAdapter::with_state_root(
-            root.join("indexes").join("lexical"),
-        );
-        for sealed in &lexical.sealed {
-            verify_staged_lexical_generation(&lexical_adapter, &sealed.identity)?;
-        }
-        let semantic = quanta_index_semantic::inventory_persisted_generations(
-            &quanta_index_semantic::semantic_state_root(root),
-        )?;
-        Ok(StateRootDeepOpenReceiptV1 {
-            sealed_generations: u64::try_from(
-                lexical.sealed.len().saturating_add(semantic.sealed.len()),
-            )
-            .map_or(u64::MAX, |count| count),
-            repomap_candidates,
-            catalog_rows: repomap_candidates,
-        })
-    }
-}
+mod target;
+pub use target::offline_target_factory_v1;
 
 fn verify_staged_lexical_generation(
     adapter: &dyn IntegrityScrubPort,
     generation: &quanta_index_contract::GenerationSnapshot,
+    budget: &RequestBudgetV1,
 ) -> Result<(), CoreError> {
     let mut cursor = None;
     loop {
-        let report = adapter.scrub(
+        budget.checkpoint("offline staged lexical scrub")?;
+        // Deep-open verifies a staged image. A corrupt image must fail before
+        // the scrub writes a new quarantine receipt through a raw file path.
+        let report = adapter.scrub_with_quarantine_fence(
             generation,
             cursor,
             IntegrityScrubBudgetV1 {
                 max_bytes: 32 * 1024 * 1024,
+            },
+            &|identity| {
+                Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    message: format!(
+                        "offline staged lexical generation {} requires quarantine",
+                        identity.manifest_generation.get()
+                    ),
+                })
             },
         )?;
         if report.generation != *generation {
@@ -173,8 +124,10 @@ pub enum OfflineStateCommandOutcomeV1 {
 /// `QUANTA_INDEX_STATE_MIGRATION_CRASH` names a boundary.
 pub fn run_offline_state_command_v1(
     command: &OfflineStateCommandV1,
+    config: &SearchdConfig,
+    budget: &RequestBudgetV1,
 ) -> Result<OfflineStateCommandOutcomeV1> {
-    run_offline_state_command_with_v1(command, &EnvironmentStateMigrationFaultV1)
+    run_offline_state_command_with_v1(command, config, budget, &EnvironmentStateMigrationFaultV1)
 }
 
 /// The fault-injectable body of [`run_offline_state_command_v1`].
@@ -186,29 +139,40 @@ pub fn run_offline_state_command_v1(
 /// inside the source.
 pub fn run_offline_state_command_with_v1(
     command: &OfflineStateCommandV1,
+    config: &SearchdConfig,
+    budget: &RequestBudgetV1,
     fault: &dyn StateMigrationFaultPort,
 ) -> Result<OfflineStateCommandOutcomeV1> {
+    // A producing operation's staged deep-open can mutate Catalog and RepoMap.
+    // Refuse missing or inconsistent deployment limits before even taking the
+    // source lease or creating the destination's staging directory.
+    let policy = config
+        .legacy_publication_physical_policy()
+        .ok_or_else(|| {
+            CoreError::InvalidContract(
+                "offline staged deep-open requires an explicit complete physical policy".into(),
+            )
+        })?
+        .validate()
+        .map_err(|error| CoreError::InvalidContract(format!("offline physical policy: {error}")))?;
+    let source_body_max_bytes = config.source_publication_max_bytes();
+    if source_body_max_bytes == 0 || source_body_max_bytes > policy.inventory.bytes {
+        return Err(CoreError::InvalidContract(
+            "offline source body maximum exceeds physical root byte cap".into(),
+        )
+        .into());
+    }
+    budget.checkpoint("offline state command preflight")?;
+    let targets = offline_target_factory_v1(config)?;
     let catalog = CatalogSnapshotAdapter;
     let produced = match command.operation {
         OfflineStateOperationV1::Backup => {
             let (session, destination) = backup_session_v1(command)?;
-            run_offline_backup_v1(
-                &session,
-                &destination,
-                &catalog,
-                &RootDeepOpenAdapter,
-                fault,
-            )?
+            run_offline_backup_v1(&session, &destination, &targets, fault, budget)?
         }
         OfflineStateOperationV1::Restore => {
             let (session, destination) = restore_session_v1(command)?;
-            run_offline_restore_v1(
-                &session,
-                &destination,
-                &catalog,
-                &RootDeepOpenAdapter,
-                fault,
-            )?
+            run_offline_restore_v1(&session, &destination, &catalog, &targets, fault, budget)?
         }
         // `verify-state` names one root; its arm returns the verified
         // outcome directly rather than through a produced-root receipt, and

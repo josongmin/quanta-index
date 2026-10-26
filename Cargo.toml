@@ -5,6 +5,7 @@ members = [
     "crates/quanta-index-core",
     "crates/quanta-index-kernel",
     "crates/quanta-index-storage",
+    "crates/quanta-index-scratch-sqlite",
     "crates/quanta-index-embed",
     "crates/quanta-index-lexical",
     "crates/quanta-index-repomap",
@@ -29,8 +30,9 @@ members = [
     "crates/quanta-index-catalog",
     "benchmarks/retrieval",
     "benchmarks/bench-protocol",
+    "vendor/ciborium-0.2.2",
 ]
-exclude = ["vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript", "vendor/tantivy-0.22.1"]
+exclude = ["vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript", "vendor/tantivy-0.22.1", "vendor/libsqlite3-sys-0.38.2", "vendor/lance-io-7.0.0", "vendor/lance-7.0.0", "vendor/object_store-0.13.2", "vendor/lancedb-0.30.0"]
 resolver = "2"
 
 [workspace.package]
@@ -122,7 +124,7 @@ anyhow = "1.0.100"
 # at runtime. Bump in lockstep with lancedb on upgrade.
 arrow-array = "58"
 arrow-schema = "58"
-ciborium = "0.2.2"
+ciborium = { version = "=0.2.2", path = "vendor/ciborium-0.2.2" }
 ciborium-ll = "0.2.2"
 crc32fast = "1.4.2"
 criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
@@ -141,6 +143,7 @@ lancedb = { version = "0.30", default-features = false }
 # code): the semantic adapter reads per-segment index build parameters from
 # its statistics, which lancedb does not surface (QI-BB-027).
 lance = { version = "=7.0.0", default-features = false }
+lance-io = { version = "=7.0.0", default-features = false }
 memchr = "2.8"
 # Safe Mach task-info access for current process RSS on macOS. Linux keeps
 # the existing /proc probe; this dependency is target-specific in searchd.
@@ -229,8 +232,20 @@ lto = false
 codegen-units = 16
 
 [patch.crates-io]
+# One controlled CBOR parser for standalone Quanta and sibling consumers.
+ciborium = { path = "vendor/ciborium-0.2.2" }
 # The pinned 0.22.1 merger counts surviving posting frequencies exactly after
 # deletes; upstream approximates token totals from quantized fieldnorms.
 tantivy = { path = "vendor/tantivy-0.22.1" }
 # Native identity admission shares the pinned canonical NFC producer.
 unicode-normalization = { path = "vendor/unicode-normalization-0.1.25" }
+
+# One bundled SQLite instance; the pinned fork adds the admitted Unix VFS.
+libsqlite3-sys = { path = "vendor/libsqlite3-sys-0.38.2" }
+
+# IVF metadata caches must not retain self-referential open reader leases.
+lance = { path = "vendor/lance-7.0.0" }
+# Admitted local writers and readers keep the existing file URI.
+lance-io = { path = "vendor/lance-io-7.0.0" }
+object_store = { path = "vendor/object_store-0.13.2" }
+lancedb = { path = "vendor/lancedb-0.30.0" }

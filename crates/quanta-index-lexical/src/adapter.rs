@@ -85,6 +85,13 @@ impl LexicalAdapter {
             writers: Arc::new(Mutex::new(WriterCache::new(writer_policy))),
             regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new(regex_match_cache_policy))),
             text_authority_updates: Arc::new(Mutex::new(TextAuthorityUpdateStats::default())),
+            publication_write_costs: Mutex::new(crate::LexicalPublicationWriteStats::default()),
+            maintenance_policy: None,
+            maintenance_observations: Mutex::new(crate::LexicalMaintenanceStats::default()),
+            retention_measurement_policy:
+                quanta_index_core::domains::generation::RetentionMeasurementPolicy::DEFAULT,
+            pool_write_admission: None,
+            object_lifetime: None,
             seal_commitments: Arc::new(Mutex::new(LexicalSealCommitmentStats::default())),
             coverage_reads: Arc::new(Mutex::new(crate::LexicalCoverageReadByPhaseStats::default())),
             coverage_decode_cache: Mutex::new(
@@ -104,7 +111,123 @@ impl LexicalAdapter {
         }
     }
 
-    fn generation_mutation_stripe(&self, key: &GenKey) -> Result<usize, CoreError> {
+    /// Configure the disposable main-file cap for retention membership.
+    #[must_use]
+    pub const fn with_retention_measurement_policy(
+        mut self,
+        policy: quanta_index_core::domains::generation::RetentionMeasurementPolicy,
+    ) -> Self {
+        self.retention_measurement_policy = policy;
+        self
+    }
+
+    /// Pool object write costs of completed build invocations, including
+    /// adoption manifests. Retries can authenticate reused objects again;
+    /// these counters are work, not unique retained disk occupancy.
+    pub fn publication_write_stats(
+        &self,
+    ) -> Result<crate::LexicalPublicationWriteStats, CoreError> {
+        self.publication_write_costs
+            .lock()
+            .map(|stats| *stats)
+            .map_err(|error| CoreError::Storage(format!("lexical write stats poisoned: {error}")))
+    }
+
+    /// Process-local observations of this adapter's sealed publications.
+    /// The last observation describes one publication, not all retained corpora.
+    pub fn maintenance_stats(&self) -> Result<crate::LexicalMaintenanceStats, CoreError> {
+        self.maintenance_observations
+            .lock()
+            .map(|stats| *stats)
+            .map_err(|error| {
+                CoreError::Storage(format!("lexical maintenance stats poisoned: {error}"))
+            })
+    }
+
+    pub(crate) fn record_maintenance_observation(
+        &self,
+        observation: crate::LexicalMaintenanceObservation,
+    ) -> Result<(), CoreError> {
+        self.maintenance_observations
+            .lock()
+            .map_err(|error| {
+                CoreError::Storage(format!("lexical maintenance stats poisoned: {error}"))
+            })?
+            .record_sealed(observation)
+    }
+
+    /// Apply externally supplied logical run/index-byte limits to post-merge
+    /// targets. Supplying this policy is not physical memory or disk admission,
+    /// and its digest does not qualify its thresholds against a workload.
+    #[must_use]
+    pub fn with_maintenance_policy(
+        mut self,
+        policy: quanta_index_core::lexical_maintenance::LexicalMaintenancePolicy,
+    ) -> Self {
+        self.maintenance_policy = Some(policy);
+        self
+    }
+
+    /// Install the service ledger after boot inventory under a state-root lease.
+    #[must_use]
+    pub fn with_pool_write_admission(
+        mut self,
+        admission: Arc<dyn quanta_index_core::pool_write_admission::PoolWriteAdmissionPort>,
+    ) -> Self {
+        self.pool_write_admission = Some(admission);
+        self
+    }
+
+    /// Install the physical object reader and deletion authority after boot inventory.
+    #[must_use]
+    pub fn with_object_lifetime(
+        mut self,
+        object_lifetime: Arc<
+            dyn quanta_index_core::publication_admission::PublicationObjectLifetimePort,
+        >,
+    ) -> Self {
+        self.object_lifetime = Some(object_lifetime);
+        self
+    }
+
+    /// Stream physical pool files once during service startup.
+    pub fn visit_pool_write_inventory(
+        &self,
+        max_files: u64,
+        visitor: &mut dyn FnMut(
+            quanta_index_core::pool_write_admission::PoolInventoryEntry,
+        ) -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        crate::lexical_store::ObjectStore::visit_existing_pool_inventory(
+            &self.state_root,
+            max_files,
+            visitor,
+        )
+    }
+
+    pub(crate) fn open_existing_store(
+        &self,
+    ) -> Result<crate::lexical_store::ObjectStore, CoreError> {
+        Ok(
+            crate::lexical_store::ObjectStore::open_existing_with_lifetime(
+                &self.state_root,
+                self.object_lifetime.clone(),
+            )?
+            .with_pool_write_admission(self.pool_write_admission.clone()),
+        )
+    }
+
+    pub(crate) fn record_publication_write_cost(
+        &self,
+        cost: crate::lexical_store::AttemptWriteCost,
+    ) -> Result<(), CoreError> {
+        self.publication_write_costs
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("lexical write stats poisoned: {error}")))?
+            .record(cost)
+    }
+
+    pub(crate) fn generation_mutation_stripe(&self, key: &GenKey) -> Result<usize, CoreError> {
         let mut hasher = Sha256::new();
         hasher.update(
             GenerationStorageKeyV1::for_repo_revision(&key.repo_id, &key.revision_id)
@@ -359,6 +482,12 @@ impl LexicalAdapter {
     /// maintenance timer sweeps on its own schedule through
     /// [`quanta_index_core::WriterIdleSweepPort`].
     pub fn release_idle_writers(&self) -> Result<u64, CoreError> {
+        let _lifecycle = self.directory_lifecycle_read_guard()?;
+        self.release_idle_writers_under_lifecycle()
+    }
+
+    /// Caller already holds lifecycle custody through all writer commits.
+    pub(crate) fn release_idle_writers_under_lifecycle(&self) -> Result<u64, CoreError> {
         self.writers
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?

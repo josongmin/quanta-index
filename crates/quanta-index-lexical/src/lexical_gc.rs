@@ -7,9 +7,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use quanta_index_core::{CoreError, RequestBudgetV1};
+#[cfg(test)]
 use quanta_index_core::{
-    CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticStageV1, DiagnosticTerminalV1,
-    RequestBudgetV1,
+    DiagnosticContextV1, DiagnosticCounterV1, DiagnosticStageV1, DiagnosticTerminalV1,
 };
 #[cfg(test)]
 use quanta_index_core::{DiagnosticHealthCodeV1, DiagnosticLaneV1};
@@ -17,8 +18,8 @@ use rusqlite::{Connection, OptionalExtension as _, Statement, params};
 
 use crate::file_authority::paged::AuthorityRoot;
 use crate::lexical_store::{
-    AdoptedRootAdvance, AdoptedRootCursor, ObjectInventoryAdvance, ObjectInventoryCursor,
-    ObjectKind, ObjectRef, ObjectStore,
+    AdoptedRootAdvance, AdoptedRootCursor, GcDeleteCustody, ObjectInventoryAdvance,
+    ObjectInventoryCursor, ObjectKind, ObjectRef, ObjectStore,
 };
 
 use crate::causal_profile::ClosureReadTotalsV1;
@@ -241,6 +242,7 @@ pub(crate) struct SharedGcProgress {
     adopted: Option<AdoptedRootCursor>,
     protected_index: usize,
     inventory: Option<ObjectInventoryCursor>,
+    pending_delete: Option<GcDeleteCustody>,
     sweep_after: Vec<u8>,
     marked: u64,
     examined: u64,
@@ -310,12 +312,13 @@ pub(crate) fn protected_roots(directory: &Path) -> Result<Vec<ObjectRef>, CoreEr
     Ok(roots)
 }
 
-/// Exact physical bytes of one selected sealed root set.
+/// Test reference for exact bytes of one selected sealed root set.
 ///
 /// The scratch table
 /// deduplicates by object digest across generations; every referenced object
 /// is authenticated before its encoded length is charged. This reads bounded
 /// physical objects, never decodes source text or postings into a corpus map.
+#[cfg(test)]
 pub(crate) fn measure_unique_closure_bytes(
     store: &ObjectStore,
     roots: impl IntoIterator<Item = ObjectRef>,
@@ -598,11 +601,10 @@ impl SharedGcProgress {
     /// The caller captures this epoch and complete retained directory set
     /// under one lifecycle fence. No object is unlinked during start.
     pub(crate) fn start(
-        state_root: &Path,
+        store: ObjectStore,
         retained_generation_dirs: Vec<PathBuf>,
         snapshot_epoch: u64,
     ) -> Result<Self, CoreError> {
-        let store = ObjectStore::open_existing(state_root)?;
         let scratch =
             tempfile::tempdir().map_err(|error| db_error("create temp directory", error))?;
         let db = Connection::open(scratch.path().join("lexical-gc.sqlite"))
@@ -628,6 +630,7 @@ impl SharedGcProgress {
             adopted: None,
             protected_index: 0,
             inventory: None,
+            pending_delete: None,
             sweep_after: Vec::new(),
             marked: 0,
             examined: 0,
@@ -647,8 +650,19 @@ impl SharedGcProgress {
                 "lexical GC step unit bound must be in 1..=256".into(),
             ));
         }
+        // An actual unlink may already have happened in the prior step.
+        // Finish its held ticket even if the mark epoch changed or the caller
+        // cancelled; only then may a new pass replace this progress owner.
+        let had_pending_delete = self.pending_delete.is_some();
+        if had_pending_delete {
+            self.store
+                .settle_pending_gc_delete(&mut self.pending_delete)?;
+        }
         if self.store.gc_epoch()? != self.snapshot_epoch {
             return Ok(SharedGcStep::Stale);
+        }
+        if had_pending_delete && max_units == 1 {
+            return Ok(SharedGcStep::Paused);
         }
         let mut references = ReferenceStatements::new(&self.db)?;
         let mut candidate_insert = self
@@ -659,7 +673,11 @@ impl SharedGcProgress {
             .db
             .prepare("SELECT 1 FROM refs WHERE sha=?1")
             .map_err(|error| db_error("prepare candidate liveness", error))?;
-        let mut remaining = max_units;
+        let mut remaining = max_units
+            .checked_sub(usize::from(had_pending_delete))
+            .ok_or_else(|| {
+                CoreError::InvalidContract("GC pending work exceeds step bound".into())
+            })?;
         while remaining > 0 {
             if let Some(budget) = budget {
                 budget.checkpoint("lexical:gc:step")?;
@@ -781,6 +799,7 @@ impl SharedGcProgress {
                                 .map_err(|error| db_error("check candidate liveness", error))?;
                             Ok(exists.is_some())
                         },
+                        &mut self.pending_delete,
                     )? {
                         return Ok(SharedGcStep::Stale);
                     }
@@ -800,17 +819,21 @@ impl SharedGcProgress {
         }
         Ok(SharedGcStep::Paused)
     }
+
+    pub(crate) fn has_pending_delete(&self) -> bool {
+        self.pending_delete.is_some()
+    }
 }
 
 #[cfg(test)]
 pub(crate) fn collect_shared_pool(
-    state_root: &Path,
+    store: &ObjectStore,
     retained_generation_dirs: &[PathBuf],
     snapshot_epoch: u64,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<SharedPoolGcOutcome, CoreError> {
     let mut progress = SharedGcProgress::start(
-        state_root,
+        store.clone(),
         retained_generation_dirs.to_vec(),
         snapshot_epoch,
     )?;
@@ -827,10 +850,25 @@ pub(crate) fn collect_shared_pool(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::fs::{File, Metadata};
+    use std::io::{self, Read, Seek, SeekFrom};
+    use std::os::fd::{AsRawFd as _, RawFd};
+    use std::os::unix::fs::MetadataExt as _;
+    use std::path::{Component, Path};
     use std::sync::{Arc, Mutex};
 
     use super::*;
     use crate::lexical_store::{AttemptBinding, ObjectKind};
+    use quanta_index_core::pool_write_admission::{
+        PendingOrphanUnlink, PoolInventoryEntry, PoolWriteAdmissionPort, PoolWritePermit,
+        PoolWriteUsage,
+    };
+    use quanta_index_core::publication_admission::{
+        PublicationControlOpenTicket, PublicationControlReader, PublicationObjectDeleteTicket,
+        PublicationObjectLifetimePort, PublicationObjectOpenTicket,
+    };
+    use quanta_index_core::publication_capacity::PublicationAllowance;
     use quanta_index_core::{
         DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticEmitV1, DiagnosticEventKindV1,
         DiagnosticEventSinkV1, DiagnosticRootKindV1,
@@ -866,6 +904,561 @@ mod tests {
             operations_sha256: [5; 32],
             format: 17,
         }
+    }
+
+    struct FakeGcLifetime(PathBuf);
+
+    struct FakeGcControlOpening(PathBuf);
+
+    struct FakeGcControlReader {
+        file: File,
+        original_fd: RawFd,
+    }
+
+    impl PublicationControlOpenTicket for FakeGcControlOpening {
+        fn opened_owned(
+            self: Box<Self>,
+            file: File,
+        ) -> Result<Box<dyn PublicationControlReader>, CoreError> {
+            let actual = file
+                .metadata()
+                .map_err(|error| CoreError::storage_io("test GC Control fstat", &error))?;
+            let expected = std::fs::symlink_metadata(&self.0)
+                .map_err(|error| CoreError::storage_io("test GC Control lstat", &error))?;
+            if !actual.is_file()
+                || !expected.is_file()
+                || actual.dev() != expected.dev()
+                || actual.ino() != expected.ino()
+            {
+                return Err(CoreError::InvalidContract(
+                    "test GC Control FD differs from exact canonical path".into(),
+                ));
+            }
+            Ok(Box::new(FakeGcControlReader {
+                original_fd: file.as_raw_fd(),
+                file,
+            }))
+        }
+    }
+
+    impl Read for FakeGcControlReader {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            self.file.read(bytes)
+        }
+    }
+
+    impl Seek for FakeGcControlReader {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.file.seek(position)
+        }
+    }
+
+    impl PublicationControlReader for FakeGcControlReader {
+        fn metadata(&self) -> Result<Metadata, CoreError> {
+            self.file
+                .metadata()
+                .map_err(|error| CoreError::storage_io("test GC Control metadata", &error))
+        }
+
+        fn sync_posix(&self) -> Result<(), CoreError> {
+            rustix::fs::fsync(&self.file).map_err(|error| {
+                CoreError::storage_io("test GC Control fsync", &io::Error::from(error))
+            })
+        }
+
+        fn lock_exclusive(&self) -> Result<(), CoreError> {
+            rustix::fs::flock(&self.file, rustix::fs::FlockOperation::LockExclusive).map_err(
+                |error| CoreError::storage_io("test GC Control lock", &io::Error::from(error)),
+            )
+        }
+
+        fn try_lock_exclusive(&self) -> Result<bool, CoreError> {
+            match rustix::fs::flock(
+                &self.file,
+                rustix::fs::FlockOperation::NonBlockingLockExclusive,
+            ) {
+                Ok(()) => Ok(true),
+                Err(rustix::io::Errno::WOULDBLOCK) => Ok(false),
+                Err(error) => Err(CoreError::storage_io(
+                    "test GC Control try-lock",
+                    &io::Error::from(error),
+                )),
+            }
+        }
+
+        fn retire(self: Box<Self>) -> Result<(), CoreError> {
+            let Self { file, original_fd } = *self;
+            if file.as_raw_fd() != original_fd {
+                return Err(CoreError::InvalidContract(
+                    "test GC Control reader lost its original FD".into(),
+                ));
+            }
+            rusqlite::ffi::quanta_capacity_vfs::close_owned_file(file)
+                .map_err(|error| CoreError::storage_io("test GC Control close", &error))
+        }
+    }
+
+    impl PublicationObjectLifetimePort for FakeGcLifetime {
+        fn validate_state_root(&self, root: &Path) -> Result<(), CoreError> {
+            if root == self.0 {
+                Ok(())
+            } else {
+                Err(CoreError::InvalidContract("test GC root differs".into()))
+            }
+        }
+
+        fn validate_parent(&self, _parent: &Arc<PublicationAllowance>) -> Result<(), CoreError> {
+            Err(CoreError::InvalidContract(
+                "test GC lifetime has no writer".into(),
+            ))
+        }
+
+        fn begin_control_reader_open(
+            &self,
+            path: &Path,
+        ) -> Result<Box<dyn PublicationControlOpenTicket>, CoreError> {
+            let pool = self.0.join("lexical-object-pool");
+            let attempts = pool.join("attempts");
+            let pool_control =
+                path == pool.join(".lifecycle-gate") || path == pool.join(".lifecycle-epoch");
+            let attempt_control = path.parent() == Some(attempts.as_path())
+                && matches!(path.components().next_back(), Some(Component::Normal(_)))
+                && path
+                    .file_name()
+                    .is_some_and(|leaf| attempts.join(leaf).as_os_str() == path.as_os_str());
+            if !pool_control && !attempt_control {
+                return Err(CoreError::InvalidContract(
+                    "test GC Control reader path escaped exact pool scope".into(),
+                ));
+            }
+            Ok(Box::new(FakeGcControlOpening(path.to_owned())))
+        }
+
+        fn begin_reader_open(
+            &self,
+            _path: &Path,
+        ) -> Result<Box<dyn PublicationObjectOpenTicket>, CoreError> {
+            Err(CoreError::InvalidContract(
+                "test GC lifetime has no reader".into(),
+            ))
+        }
+
+        fn begin_delete(
+            &self,
+            path: &Path,
+        ) -> Result<Box<dyn PublicationObjectDeleteTicket>, CoreError> {
+            if !path.starts_with(self.0.join("lexical-object-pool").join("objects")) {
+                return Err(CoreError::InvalidContract(
+                    "test GC path escaped pool".into(),
+                ));
+            }
+            crate::lexical_store::fake_gc_delete_ticket(path)
+        }
+    }
+
+    #[derive(Default)]
+    struct GcQuota(Arc<Mutex<GcQuotaLedger>>);
+
+    #[derive(Default)]
+    struct GcQuotaLedger {
+        next_permit: u64,
+        reserved: BTreeMap<u64, u64>,
+        writing: BTreeMap<[u8; 32], u64>,
+        orphans: BTreeMap<[u8; 32], u64>,
+        canonical: BTreeMap<[u8; 32], u64>,
+        pending_canonical_unlinks: BTreeMap<[u8; 32], u64>,
+        pending_orphan_unlinks: BTreeMap<[u8; 32], PendingOrphanUnlink>,
+        canonical_releases: Vec<([u8; 32], u64)>,
+        orphan_releases: Vec<([u8; 32], u64)>,
+    }
+
+    struct GcQuotaPermit {
+        ledger: Arc<Mutex<GcQuotaLedger>>,
+        permit: Option<u64>,
+        object: [u8; 32],
+        bytes: u64,
+        temp: Option<[u8; 32]>,
+        reused: bool,
+        done: bool,
+    }
+
+    fn quota_error(message: &str) -> CoreError {
+        CoreError::InvalidContract(message.into())
+    }
+
+    impl PoolWriteAdmissionPort for GcQuota {
+        fn try_reserve(
+            &self,
+            object_sha256: [u8; 32],
+            encoded_bytes: u64,
+        ) -> Result<Box<dyn PoolWritePermit>, CoreError> {
+            macro_rules! check {
+                ($condition:expr $(,)?) => {{
+                    if !$condition { return Err(CoreError::Storage(format!("test oracle failed at {}:{}: {}", file!(), line!(), stringify!($condition))).into()); }
+                }};
+                ($condition:expr, $($message:tt)+) => {{
+                    if !$condition { return Err(CoreError::Storage(format!($($message)+)).into()); }
+                }};
+            }
+
+            let mut ledger = self.0.lock().expect("GC quota ledger");
+            let reused = ledger.canonical.contains_key(&object_sha256);
+            let permit = if reused {
+                None
+            } else {
+                let id = ledger.next_permit;
+                ledger.next_permit = ledger
+                    .next_permit
+                    .checked_add(1)
+                    .expect("GC permit identity");
+                check!(ledger.reserved.insert(id, encoded_bytes).is_none());
+                Some(id)
+            };
+            drop(ledger);
+            Ok(Box::new(GcQuotaPermit {
+                ledger: Arc::clone(&self.0),
+                permit,
+                object: object_sha256,
+                bytes: encoded_bytes,
+                temp: None,
+                reused,
+                done: false,
+            }))
+        }
+
+        fn canonical_unlinked_pending_sync(
+            &self,
+            object_sha256: [u8; 32],
+            encoded_bytes: u64,
+        ) -> Result<(), CoreError> {
+            let mut ledger = self.0.lock().expect("quota observation lock");
+            if ledger.canonical.get(&object_sha256) != Some(&encoded_bytes)
+                || ledger
+                    .pending_canonical_unlinks
+                    .contains_key(&object_sha256)
+            {
+                return Err(quota_error("pending canonical release mismatch"));
+            }
+            let _previous = ledger
+                .pending_canonical_unlinks
+                .insert(object_sha256, encoded_bytes);
+            drop(ledger);
+            Ok(())
+        }
+
+        fn pending_canonical_unlinks(
+            &self,
+            max_objects: usize,
+        ) -> Result<Vec<([u8; 32], u64)>, CoreError> {
+            Ok(self
+                .0
+                .lock()
+                .expect("quota observation lock")
+                .pending_canonical_unlinks
+                .iter()
+                .take(max_objects)
+                .map(|(identity, bytes)| (*identity, *bytes))
+                .collect())
+        }
+
+        fn orphan_unlinked_pending_sync(
+            &self,
+            temp_identity: [u8; 32],
+            encoded_bytes: u64,
+            temp_name: &str,
+        ) -> Result<(), CoreError> {
+            let mut ledger = self.0.lock().expect("quota observation lock");
+            if ledger.orphans.get(&temp_identity) != Some(&encoded_bytes)
+                || ledger.pending_orphan_unlinks.contains_key(&temp_identity)
+            {
+                return Err(quota_error("pending orphan release mismatch"));
+            }
+            let _previous = ledger.pending_orphan_unlinks.insert(
+                temp_identity,
+                PendingOrphanUnlink {
+                    temp_identity,
+                    encoded_bytes,
+                    temp_name: temp_name.to_owned(),
+                },
+            );
+            drop(ledger);
+            Ok(())
+        }
+
+        fn pending_orphan_unlinks(
+            &self,
+            max_objects: usize,
+        ) -> Result<Vec<PendingOrphanUnlink>, CoreError> {
+            Ok(self
+                .0
+                .lock()
+                .expect("quota observation lock")
+                .pending_orphan_unlinks
+                .values()
+                .take(max_objects)
+                .cloned()
+                .collect())
+        }
+
+        fn confirmed_canonical_unlink(
+            &self,
+            object_sha256: [u8; 32],
+            encoded_bytes: u64,
+        ) -> Result<(), CoreError> {
+            let mut ledger = self.0.lock().expect("GC quota ledger");
+            if ledger.canonical.remove(&object_sha256) != Some(encoded_bytes) {
+                return Err(quota_error(
+                    "GC canonical release differs from charged object",
+                ));
+            }
+            ledger
+                .canonical_releases
+                .push((object_sha256, encoded_bytes));
+            let _pending = ledger.pending_canonical_unlinks.remove(&object_sha256);
+            drop(ledger);
+            Ok(())
+        }
+
+        fn confirmed_orphan_unlink(
+            &self,
+            temp_identity: [u8; 32],
+            encoded_bytes: u64,
+        ) -> Result<(), CoreError> {
+            let mut ledger = self.0.lock().expect("GC quota ledger");
+            if ledger.orphans.remove(&temp_identity) != Some(encoded_bytes) {
+                return Err(quota_error(
+                    "GC orphan release differs from charged temporary",
+                ));
+            }
+            ledger.orphan_releases.push((temp_identity, encoded_bytes));
+            let _pending = ledger.pending_orphan_unlinks.remove(&temp_identity);
+            drop(ledger);
+            Ok(())
+        }
+
+        fn orphan_charge(&self, temp_identity: [u8; 32]) -> Result<Option<u64>, CoreError> {
+            Ok(self
+                .0
+                .lock()
+                .expect("GC quota ledger")
+                .orphans
+                .get(&temp_identity)
+                .copied())
+        }
+
+        fn snapshot(&self) -> Result<PoolWriteUsage, CoreError> {
+            let ledger = self.0.lock().expect("GC quota ledger");
+            let canonical_bytes: u64 = ledger.canonical.values().sum();
+            let orphan_bytes: u64 = ledger.orphans.values().sum();
+            let in_flight_bytes = ledger
+                .reserved
+                .values()
+                .sum::<u64>()
+                .checked_add(ledger.writing.values().sum::<u64>())
+                .expect("in-flight bytes");
+            Ok(PoolWriteUsage {
+                file_limit: u64::MAX,
+                charged_files: u64::try_from(ledger.canonical.len())
+                    .expect("canonical count")
+                    .checked_add(u64::try_from(ledger.orphans.len()).expect("orphan count"))
+                    .and_then(|count| {
+                        count.checked_add(
+                            u64::try_from(ledger.reserved.len()).expect("reserved count"),
+                        )
+                    })
+                    .and_then(|count| {
+                        count.checked_add(
+                            u64::try_from(ledger.writing.len()).expect("writing count"),
+                        )
+                    })
+                    .expect("charged file count"),
+                ceiling_bytes: u64::MAX,
+                canonical_bytes,
+                in_flight_bytes,
+                orphan_bytes,
+                total_charged_bytes: canonical_bytes
+                    .checked_add(orphan_bytes)
+                    .and_then(|bytes| bytes.checked_add(in_flight_bytes))
+                    .expect("charged bytes"),
+            })
+        }
+    }
+
+    impl PoolWritePermit for GcQuotaPermit {
+        fn check_new_file_admitted(&self) -> Result<(), CoreError> {
+            if self.reused || self.done {
+                return Err(quota_error("GC reuse permit cannot create a file"));
+            }
+            Ok(())
+        }
+
+        fn temp_created(&mut self, temp_identity: [u8; 32]) -> Result<(), CoreError> {
+            self.check_new_file_admitted()?;
+            if self.temp.is_some() {
+                return Err(quota_error("GC temporary already created"));
+            }
+            let mut ledger = self.ledger.lock().expect("GC quota ledger");
+            let permit = self
+                .permit
+                .take()
+                .ok_or_else(|| quota_error("GC permit absent"))?;
+            if ledger.reserved.remove(&permit) != Some(self.bytes)
+                || ledger.writing.insert(temp_identity, self.bytes).is_some()
+            {
+                return Err(quota_error("GC temporary charge differs"));
+            }
+            drop(ledger);
+            self.temp = Some(temp_identity);
+            Ok(())
+        }
+
+        fn canonical_renamed(&mut self) -> Result<(), CoreError> {
+            let temp = self
+                .temp
+                .take()
+                .ok_or_else(|| quota_error("GC temp absent"))?;
+            let mut ledger = self.ledger.lock().expect("GC quota ledger");
+            if ledger.writing.remove(&temp) != Some(self.bytes)
+                || ledger.canonical.insert(self.object, self.bytes).is_some()
+            {
+                return Err(quota_error("GC canonical charge differs"));
+            }
+            drop(ledger);
+            self.done = true;
+            Ok(())
+        }
+
+        fn temp_unlinked_and_synced(&mut self) -> Result<(), CoreError> {
+            let temp = self
+                .temp
+                .take()
+                .ok_or_else(|| quota_error("GC temp absent"))?;
+            if self
+                .ledger
+                .lock()
+                .expect("GC quota ledger")
+                .writing
+                .remove(&temp)
+                != Some(self.bytes)
+            {
+                return Err(quota_error("GC cleaned temp charge differs"));
+            }
+            self.done = true;
+            Ok(())
+        }
+
+        fn reused_verified(&mut self) -> Result<(), CoreError> {
+            if !self.reused || self.done || self.temp.is_some() {
+                return Err(quota_error("GC unexpected reuse"));
+            }
+            self.done = true;
+            Ok(())
+        }
+    }
+
+    impl Drop for GcQuotaPermit {
+        fn drop(&mut self) {
+            if self.done {
+                return;
+            }
+            let mut ledger = self.ledger.lock().expect("GC quota ledger");
+            if let Some(temp) = self.temp {
+                let charged = ledger.writing.remove(&temp).expect("GC writing charge");
+                assert!(ledger.orphans.insert(temp, charged).is_none());
+            } else if let Some(permit) = self.permit {
+                assert_eq!(ledger.reserved.remove(&permit), Some(self.bytes));
+            }
+            drop(ledger);
+        }
+    }
+
+    #[test]
+    fn collector_refunds_real_canonical_and_orphan_deletions_before_digest_rewrite() {
+        use crate::publication_faults::with_pool_partial_write_at;
+
+        let dir = tempfile::tempdir().expect("state root");
+        let quota = Arc::new(GcQuota::default());
+        let store = ObjectStore::open(dir.path())
+            .expect("pool")
+            .with_pool_write_admission(Some(quota.clone()));
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let canonical = store
+            .put_blob(&lease, ObjectKind::FileBody, &[], b"collect and recreate")
+            .expect("canonical object");
+        let (failed, fired) = with_pool_partial_write_at(3, 1, || {
+            store.put_blob(&lease, ObjectKind::Record, &[], b"abandoned partial object")
+        });
+        assert!(fired);
+        assert!(failed.is_err());
+        lease.discard_unsealed().expect("retire attempt");
+
+        let mut disk_before = Vec::new();
+        ObjectStore::visit_existing_pool_inventory(dir.path(), 8, &mut |entry| {
+            disk_before.push(entry);
+            Ok(())
+        })
+        .expect("physical inventory before collection");
+        assert_eq!(disk_before.len(), 2);
+        assert!(disk_before.contains(&PoolInventoryEntry::Canonical {
+            object_sha256: canonical.root.sha256,
+            encoded_bytes: canonical.root.bytes,
+        }));
+        let (temp_identity, partial_width) = disk_before
+            .iter()
+            .find_map(|entry| match entry {
+                PoolInventoryEntry::Orphan {
+                    temp_identity,
+                    encoded_bytes,
+                } => Some((*temp_identity, *encoded_bytes)),
+                PoolInventoryEntry::Canonical { .. } => None,
+            })
+            .expect("physical orphan");
+        assert_eq!(partial_width, 3);
+        let orphan_charge = quota
+            .orphan_charge(temp_identity)
+            .expect("orphan charge")
+            .expect("charged orphan");
+        assert!(orphan_charge > partial_width);
+        let before = quota.snapshot().expect("quota before collection");
+        assert_eq!(before.canonical_bytes, canonical.root.bytes);
+        assert_eq!(before.orphan_bytes, orphan_charge);
+        assert_eq!(before.in_flight_bytes, 0);
+
+        assert!(matches!(
+            collect_shared_pool(&store, &[], store.gc_epoch().expect("epoch"), None)
+                .expect("collect physical files"),
+            SharedPoolGcOutcome::Completed { marked: 0, examined } if examined > 0
+        ));
+        let mut disk_after = Vec::new();
+        ObjectStore::visit_existing_pool_inventory(dir.path(), 8, &mut |entry| {
+            disk_after.push(entry);
+            Ok(())
+        })
+        .expect("physical inventory after collection");
+        assert!(disk_after.is_empty());
+        let after = quota.snapshot().expect("quota after collection");
+        assert_eq!(after.total_charged_bytes, 0);
+        let ledger = quota.0.lock().expect("GC quota ledger");
+        assert_eq!(
+            ledger.canonical_releases,
+            vec![(canonical.root.sha256, canonical.root.bytes)]
+        );
+        assert_eq!(ledger.orphan_releases, vec![(temp_identity, orphan_charge)]);
+        drop(ledger);
+
+        let retry = store.begin_attempt(&binding(), &[]).expect("retry attempt");
+        let rewritten = store
+            .put_blob(&retry, ObjectKind::FileBody, &[], b"collect and recreate")
+            .expect("same digest recreated after confirmed unlink");
+        assert_eq!(rewritten.root, canonical.root);
+        assert_eq!(
+            quota
+                .snapshot()
+                .expect("quota after rewrite")
+                .canonical_bytes,
+            rewritten.root.bytes
+        );
+        retry.discard_unsealed().expect("retire retry");
     }
 
     #[test]
@@ -978,26 +1571,18 @@ mod tests {
         let body = store
             .put_blob(&lease, ObjectKind::FileBody, &[], b"retained")
             .expect("body");
-        let retained = collect_shared_pool(
-            dir.path(),
-            &[],
-            store.gc_epoch().expect("snapshot epoch"),
-            None,
-        )
-        .expect("protected mark");
+        let retained =
+            collect_shared_pool(&store, &[], store.gc_epoch().expect("snapshot epoch"), None)
+                .expect("protected mark");
         assert!(matches!(retained, SharedPoolGcOutcome::Completed { marked, .. } if marked > 0));
         assert_eq!(
             store.read_blob(&body, 8, None).expect("still retained"),
             b"retained"
         );
         lease.discard_unsealed().expect("retire unsealed attempt");
-        let swept = collect_shared_pool(
-            dir.path(),
-            &[],
-            store.gc_epoch().expect("snapshot epoch"),
-            None,
-        )
-        .expect("orphan sweep");
+        let swept =
+            collect_shared_pool(&store, &[], store.gc_epoch().expect("snapshot epoch"), None)
+                .expect("orphan sweep");
         assert!(
             matches!(swept, SharedPoolGcOutcome::Completed { marked: 0, examined } if examined > 0)
         );
@@ -1011,7 +1596,7 @@ mod tests {
         let old_epoch = store.gc_epoch().expect("snapshot epoch");
         let lease = store.begin_attempt(&binding(), &[]).expect("new adoption");
         assert_eq!(
-            collect_shared_pool(dir.path(), &[], old_epoch, None).expect("stale collection"),
+            collect_shared_pool(&store, &[], old_epoch, None).expect("stale collection"),
             SharedPoolGcOutcome::Stale
         );
         lease.discard_unsealed().expect("retire attempt");
@@ -1027,7 +1612,7 @@ mod tests {
             .expect("body");
         lease.discard_unsealed().expect("retire attempt");
         let mut progress = SharedGcProgress::start(
-            dir.path(),
+            store.clone(),
             Vec::new(),
             store.gc_epoch().expect("snapshot epoch"),
         )
@@ -1063,11 +1648,219 @@ mod tests {
     }
 
     #[test]
+    fn stale_epoch_settles_the_prior_steps_actual_unlink_first() {
+        use crate::publication_faults::{Cut, Side, with_error_at};
+
+        let dir = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(dir.path()).expect("pool");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let body = store
+            .put_blob(&lease, ObjectKind::FileBody, &[], b"orphan")
+            .expect("physical object");
+        lease.discard_unsealed().expect("retire attempt");
+        let mut progress = SharedGcProgress::start(
+            store.clone(),
+            Vec::new(),
+            store.gc_epoch().expect("snapshot epoch"),
+        )
+        .expect("start collection");
+        for _ in 0..1024 {
+            if progress.phase == GcPhase::Sweep {
+                break;
+            }
+            assert_eq!(
+                progress.step(1, None).expect("bounded mark"),
+                SharedGcStep::Paused
+            );
+        }
+        assert_eq!(progress.phase, GcPhase::Sweep);
+        progress.store = progress
+            .store
+            .clone()
+            .with_object_lifetime(Some(Arc::new(FakeGcLifetime(dir.path().to_owned()))))
+            .expect("qualified GC lifetime");
+        let (failed, fired) = with_error_at(Cut::PoolGcDirectorySync, Side::Before, 1, || {
+            progress.step(1, None)
+        });
+        assert!(fired && matches!(failed, Err(CoreError::Storage(_))));
+        assert!(progress.has_pending_delete());
+        assert!(
+            progress
+                .pending_delete
+                .as_ref()
+                .is_some_and(GcDeleteCustody::is_qualified)
+        );
+        let mut physical = Vec::new();
+        ObjectStore::visit_existing_pool_inventory(dir.path(), 8, &mut |entry| {
+            physical.push(entry);
+            Ok(())
+        })
+        .expect("independent physical inventory after fault");
+        assert!(!physical.contains(&PoolInventoryEntry::Canonical {
+            object_sha256: body.root.sha256,
+            encoded_bytes: body.root.bytes,
+        }));
+
+        let changed = store.begin_attempt(&binding(), &[]).expect("epoch change");
+        assert_eq!(
+            progress.step(1, None).expect("settle before stale check"),
+            SharedGcStep::Stale
+        );
+        assert!(!progress.has_pending_delete());
+        changed.discard_unsealed().expect("retire changed attempt");
+    }
+
+    #[test]
+    fn qualified_same_epoch_replays_absent_candidate_after_pending_settlement() {
+        use crate::publication_faults::{Cut, Side, with_error_at};
+
+        let dir = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(dir.path()).expect("pool");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let body = store
+            .put_blob(&lease, ObjectKind::FileBody, &[], b"same epoch replay")
+            .expect("physical object");
+        lease.discard_unsealed().expect("retire attempt");
+        let mut progress = SharedGcProgress::start(
+            store.clone(),
+            Vec::new(),
+            store.gc_epoch().expect("snapshot epoch"),
+        )
+        .expect("start collection");
+        for _ in 0..1024 {
+            if progress.phase == GcPhase::Sweep {
+                break;
+            }
+            assert_eq!(
+                progress.step(1, None).expect("bounded mark"),
+                SharedGcStep::Paused
+            );
+        }
+        assert_eq!(progress.phase, GcPhase::Sweep);
+        progress.store = progress
+            .store
+            .clone()
+            .with_object_lifetime(Some(Arc::new(FakeGcLifetime(dir.path().to_owned()))))
+            .expect("qualified GC lifetime");
+        let (failed, fired) = with_error_at(Cut::PoolGcDirectorySync, Side::Before, 1, || {
+            progress.step(1, None)
+        });
+        assert!(fired && matches!(failed, Err(CoreError::Storage(_))));
+        assert!(
+            progress
+                .pending_delete
+                .as_ref()
+                .is_some_and(GcDeleteCustody::is_qualified)
+        );
+
+        let mut completed = false;
+        for _ in 0..1024 {
+            match progress.step(1, None).expect("same epoch replay") {
+                SharedGcStep::Paused => {}
+                SharedGcStep::Completed { examined, .. } => {
+                    assert!(examined > 0);
+                    completed = true;
+                    break;
+                }
+                SharedGcStep::Stale => panic!("unchanged epoch became stale"),
+            }
+        }
+        assert!(completed);
+        assert!(!progress.has_pending_delete());
+        let mut physical = Vec::new();
+        ObjectStore::visit_existing_pool_inventory(dir.path(), 8, &mut |entry| {
+            physical.push(entry);
+            Ok(())
+        })
+        .expect("independent physical inventory after replay");
+        assert!(!physical.contains(&PoolInventoryEntry::Canonical {
+            object_sha256: body.root.sha256,
+            encoded_bytes: body.root.bytes,
+        }));
+    }
+
+    #[test]
+    fn unqualified_gc_fault_rewrite_keeps_the_new_canonical_quota() {
+        use crate::publication_faults::{Cut, Side, with_error_at};
+
+        let dir = tempfile::tempdir().expect("state root");
+        let quota = Arc::new(GcQuota::default());
+        let store = ObjectStore::open(dir.path())
+            .expect("pool")
+            .with_pool_write_admission(Some(quota.clone()));
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let body = store
+            .put_blob(&lease, ObjectKind::FileBody, &[], b"rewrite after GC fault")
+            .expect("canonical object");
+        lease.discard_unsealed().expect("retire attempt");
+        let mut progress = SharedGcProgress::start(
+            store.clone(),
+            Vec::new(),
+            store.gc_epoch().expect("snapshot epoch"),
+        )
+        .expect("start collection");
+        for _ in 0..1024 {
+            if progress.phase == GcPhase::Sweep {
+                break;
+            }
+            assert_eq!(
+                progress.step(1, None).expect("bounded mark"),
+                SharedGcStep::Paused
+            );
+        }
+        assert_eq!(progress.phase, GcPhase::Sweep);
+        let (failed, fired) = with_error_at(Cut::PoolGcDirectorySync, Side::Before, 1, || {
+            progress.step(1, None)
+        });
+        assert!(fired && matches!(failed, Err(CoreError::Storage(_))));
+        assert!(!progress.has_pending_delete());
+        let after_fault = quota.snapshot().expect("old quota before recovery");
+        assert_eq!(after_fault.canonical_bytes, body.root.bytes);
+
+        let rewrite = store
+            .begin_attempt(&binding(), &[])
+            .expect("rewrite attempt");
+        let rewritten = store
+            .put_blob(
+                &rewrite,
+                ObjectKind::FileBody,
+                &[],
+                b"rewrite after GC fault",
+            )
+            .expect("same digest rewritten");
+        assert_eq!(rewritten.root, body.root);
+        let after_rewrite = quota.snapshot().expect("new canonical quota");
+        assert_eq!(after_rewrite.canonical_bytes, rewritten.root.bytes);
+        assert_eq!(after_rewrite.total_charged_bytes, rewritten.root.bytes);
+        assert_eq!(
+            progress.step(1, None).expect("old sweep becomes stale"),
+            SharedGcStep::Stale
+        );
+        assert_eq!(
+            quota.snapshot().expect("quota after stale sweep"),
+            after_rewrite
+        );
+        assert_eq!(
+            store
+                .read_blob(&rewritten, 64, None)
+                .expect("rewritten body"),
+            b"rewrite after GC fault"
+        );
+        let ledger = quota.0.lock().expect("GC quota ledger");
+        assert_eq!(
+            ledger.canonical_releases,
+            vec![(body.root.sha256, body.root.bytes)]
+        );
+        drop(ledger);
+        rewrite.discard_unsealed().expect("retire rewrite attempt");
+    }
+
+    #[test]
     fn epoch_change_between_bounded_steps_refuses_deletion() {
         let dir = tempfile::tempdir().expect("state root");
         let store = ObjectStore::open(dir.path()).expect("pool");
         let mut progress = SharedGcProgress::start(
-            dir.path(),
+            store.clone(),
             Vec::new(),
             store.gc_epoch().expect("snapshot epoch"),
         )

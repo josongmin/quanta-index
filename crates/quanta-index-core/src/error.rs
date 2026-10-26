@@ -7,7 +7,7 @@ use quanta_index_contract::{SearchPlaneErrorCodeV2, lex::LexicalErrorCode};
 /// `Clone` is deliberate: a failure observed once can be owed to several
 /// callers (a single-flight open shared by coalesced waiters), and each
 /// must receive the typed outcome itself, not a rendering of it.
-#[derive(Clone, Debug, Error)]
+#[derive(Clone, Debug, Eq, PartialEq, Error)]
 pub enum CoreError {
     #[error("invalid contract: {0}")]
     InvalidContract(String),
@@ -24,9 +24,25 @@ pub enum CoreError {
     NotFound(String),
     #[error("storage failure: {0}")]
     Storage(String),
+    /// An observed filesystem cause, retained through pending-operation replay.
+    #[error("storage failure: {message}")]
+    StorageIo {
+        kind: std::io::ErrorKind,
+        raw_os_error: Option<i32>,
+        message: String,
+    },
 }
 
 impl CoreError {
+    /// Preserve a filesystem cause without changing the closed wire taxonomy.
+    #[must_use]
+    pub fn storage_io(context: &str, error: &std::io::Error) -> Self {
+        Self::StorageIo {
+            kind: error.kind(),
+            raw_os_error: error.raw_os_error(),
+            message: format!("{context}: {error}"),
+        }
+    }
     /// Consume this domain error into the one closed search-plane wire taxonomy.
     ///
     /// This is the sole generic mapping owner. Query, ingest and control
@@ -39,7 +55,9 @@ impl CoreError {
             Self::NotReady(message) => (SearchPlaneErrorCodeV2::NotReady, message),
             Self::NotImplemented(message) => (SearchPlaneErrorCodeV2::NotImplemented, message),
             Self::NotFound(message) => (SearchPlaneErrorCodeV2::NotFound, message),
-            Self::Storage(message) => (SearchPlaneErrorCodeV2::Internal, message),
+            Self::Storage(message) | Self::StorageIo { message, .. } => {
+                (SearchPlaneErrorCodeV2::Internal, message)
+            }
         }
     }
 
@@ -53,7 +71,7 @@ impl CoreError {
     /// names every variant so a new one must be classified here.
     pub fn into_storage_failure(self) -> Result<String, Self> {
         match self {
-            Self::Storage(message) => Ok(message),
+            Self::Storage(message) | Self::StorageIo { message, .. } => Ok(message),
             refusal @ (Self::InvalidContract(_)
             | Self::Typed { .. }
             | Self::NotReady(_)
@@ -93,4 +111,30 @@ impl From<quanta_index_contract::InternalFetchOutOfRangeV1> for CoreError {
 /// Accept an adapter-boundary fetch size or return the contract refusal.
 pub fn validate_internal_fetch_size(fetch: u32) -> Result<u32, CoreError> {
     Ok(quanta_index_contract::validate_internal_fetch_size(fetch)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CoreError;
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+
+    #[test]
+    fn filesystem_cause_is_cloned_without_changing_wire_classification() {
+        let source = std::io::Error::new(std::io::ErrorKind::AlreadyExists, "fixed collision");
+        let observed = CoreError::storage_io("move", &source);
+        assert!(matches!(observed.clone(), CoreError::StorageIo {
+            kind: std::io::ErrorKind::AlreadyExists,
+            raw_os_error: None,
+            message,
+        } if message == "move: fixed collision"));
+        assert_eq!(
+            observed.clone().into_search_plane_wire(),
+            (
+                SearchPlaneErrorCodeV2::Internal,
+                "move: fixed collision".into()
+            )
+        );
+        assert!(matches!(observed.into_storage_failure(), Ok(message)
+            if message == "move: fixed collision"));
+    }
 }

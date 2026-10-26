@@ -163,6 +163,49 @@ def test_idle_lane_removed_protected_and_recent_lanes_kept(tree: dict[str, Path]
     assert recent.is_dir() and protected.is_dir() and extra.is_dir()
 
 
+@pytest.mark.parametrize(
+    ("options", "current_lane", "removed"),
+    [
+        ([], None, False),
+        (["--unprotect-idle-lane", "shared"], None, True),
+        (["--unprotect-idle-lane", "shared", "--protect-lane", "shared"], None, False),
+        (["--unprotect-idle-lane", "shared"], "shared", False),
+    ],
+)
+def test_explicit_idle_lane_eviction_keeps_current_and_requested_protection(
+    tree: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+    options: list[str], current_lane: str | None, removed: bool,
+) -> None:
+    lane = _make_lane(tree["live"], "shared", hours=48)
+    monkeypatch.setattr(target_gc, "git_worktrees", lambda _: ([str(tree["checkout"])], None))
+    monkeypatch.delenv("QUANTA_INDEX_REPO_ROOT", raising=False)
+    if current_lane is None:
+        monkeypatch.delenv("QUANTA_INDEX_BUILD_LANE", raising=False)
+    else:
+        monkeypatch.setenv("QUANTA_INDEX_BUILD_LANE", current_lane)
+    assert target_gc.main([
+        "--cache-root", str(tree["cache"]), "--repo-root", str(tree["checkout"]),
+        "--no-orphans", "--no-artifacts", "--no-incremental", *options,
+    ]) == 0
+    assert lane.exists() is not removed
+
+
+def test_explicit_idle_lane_eviction_cannot_remove_a_cargo_locked_lane(
+    tree: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lane = _make_lane(tree["live"], "shared", hours=48)
+    monkeypatch.setattr(target_gc, "git_worktrees", lambda _: ([str(tree["checkout"])], None))
+    monkeypatch.delenv("QUANTA_INDEX_BUILD_LANE", raising=False)
+    with (lane / "debug" / ".cargo-lock").open("r+") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert target_gc.main([
+            "--cache-root", str(tree["cache"]), "--repo-root", str(tree["checkout"]),
+            "--no-orphans", "--no-artifacts", "--no-incremental",
+            "--unprotect-idle-lane", "shared",
+        ]) == 0
+        assert lane.is_dir()
+
+
 def test_age_threshold_is_configurable(tree: dict[str, Path]) -> None:
     lane = _make_lane(tree["live"], "adhoc-lane", hours=30)
     report = _gc(tree, idle_seconds=48 * HOUR)
@@ -253,23 +296,77 @@ def test_stale_deps_skipped_while_lane_locked(tree: dict[str, Path]) -> None:
     assert old.exists()
 
 
-def test_stale_incremental_dirs_pruned(tree: dict[str, Path]) -> None:
+def _incremental(lane: Path, name: str, *, hours: float) -> Path:
+    directory = lane / "debug" / "incremental" / name
+    session = directory / "s-session"
+    session.mkdir(parents=True)
+    (session / "obj.o").write_bytes(b"o" * 4096)
+    for path in (session / "obj.o", session, directory):
+        _age(path, hours)
+    return directory
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_stale_incremental_dirs_pruned(tree: dict[str, Path], dry_run: bool) -> None:
     lane = _make_lane(tree["live"], "shared", hours=1)
-    incremental = lane / "debug" / "incremental"
-    dirs = {}
-    for name, hours in (("core-aaaaaaaaaaaaaaaa", 72), ("core-bbbbbbbbbbbbbbbb", 2)):
-        session = incremental / name / "s-session"
-        session.mkdir(parents=True)
-        (session / "obj.o").write_bytes(b"o" * 4096)
-        for path in (session / "obj.o", session, incremental / name):
-            _age(path, hours)
-        dirs[name] = incremental / name
-    report = _gc(tree)
-    assert _kinds(report)["stale-incremental"] == [str(dirs["core-aaaaaaaaaaaaaaaa"])]
-    assert not dirs["core-aaaaaaaaaaaaaaaa"].exists()
-    assert dirs["core-bbbbbbbbbbbbbbbb"].is_dir()
+    # Rust 1.92 crate_path uses a fixed-width base36 u64 discriminator, not
+    # Cargo's 16-hex executable suffix. These names also occur in the real cache.
+    old = _incremental(lane, "quanta_index_kernel-0qtpo1ziige7r", hours=72)
+    newest = _incremental(lane, "quanta_index_kernel-1liawxxxlurlf", hours=2)
+    sole = _incremental(lane, "quanta_index_storage-2c83u90iwz9gi", hours=500)
+    unknown = [
+        _incremental(lane, "hex-aaaaaaaaaaaaaaaa", hours=500),
+        _incremental(lane, "hex-bbbbbbbbbbbbbbbb", hours=400),
+        _incremental(lane, "oversized-9zzzzzzzzzzzz", hours=500),
+        _incremental(lane, "oversized-8zzzzzzzzzzzz", hours=400),
+    ]
     report = _gc(tree, prune_incremental=False)
     assert "stale-incremental" not in _kinds(report)
+    assert old.is_dir()
+    report = _gc(tree, dry_run=dry_run)
+    assert _kinds(report)["stale-incremental"] == [str(old)]
+    assert old.exists() == dry_run
+    for path in (newest, sole, *unknown):
+        assert path.is_dir()
+
+
+@pytest.mark.parametrize("guard", ["cargo-lock", "process", "unavailable", "new-process"])
+def test_incremental_pruning_preserves_busy_or_unknown_lane(
+    tree: dict[str, Path], guard: str
+) -> None:
+    lane = _make_lane(tree["live"], "shared", hours=1)
+    old = _incremental(lane, "quanta_index_kernel-0qtpo1ziige7r", hours=72)
+    _incremental(lane, "quanta_index_kernel-1liawxxxlurlf", hours=2)
+    running = target_gc.ProcessCensus([f"rustc -C incremental={old}"])
+    observations = iter((target_gc.ProcessCensus([]), running))
+
+    def census() -> target_gc.ProcessCensus:
+        if guard == "unavailable":
+            return target_gc.ProcessCensus(None)
+        if guard == "new-process":
+            return next(observations)
+        if guard == "process":
+            return running
+        return target_gc.ProcessCensus([])
+
+    before = sorted(str(path) for path in lane.rglob("*"))
+    with open(lane / "debug" / ".cargo-lock") as handle:
+        if guard == "cargo-lock":
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        report = _gc(tree, census=census, prune_orphans=False, prune_idle_lanes=False)
+    assert "stale-incremental" not in _kinds(report)
+    assert sorted(str(path) for path in lane.rglob("*")) == before
+    assert report.kept
+
+
+def test_incremental_discriminator_does_not_relax_executable_names(tree: dict[str, Path]) -> None:
+    lane = _make_lane(tree["live"], "shared", hours=1)
+    deps = lane / "debug" / "deps"
+    old = _exe(deps, "core-0qtpo1ziige7r", hours=72)
+    newest = _exe(deps, "core-1liawxxxlurlf", hours=30)
+    report = _gc(tree)
+    assert "stale-deps" not in _kinds(report)
+    assert old.exists() and newest.exists()
 
 
 def test_size_budget_evicts_oldest_unprotected_lanes(tree: dict[str, Path]) -> None:

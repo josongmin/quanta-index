@@ -9,15 +9,15 @@ use quanta_index_contract::lex::{
     SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    ActiveGenerationResolutionV1, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
-    ContinuationTokenV2, DiffHunkSide, ExactRepoRelativePathV1, GenerationSelector,
-    GenerationSnapshot, HistoryQueryRequest, HybridSeedQueryResponse, ManifestGeneration,
-    OwnerDocKind, PlannerStage, PlannerTraceEntry, QueryResultWindowV2, RepoId,
-    RepoMapChunkExactness, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
-    RepoMapItemIndexAvailability, RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath,
-    RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActivationTokenV1,
-    SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1, SearchExplanation,
-    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
+    ActiveGenerationResolutionV1, BatchPublishReceipt, BorrowedAuxiliaryIngestIpcRequestEnvelopeV1,
+    CapabilityStatusV1, ChunkId, ChunkRecord, ContinuationTokenV2, DiffHunkSide,
+    ExactRepoRelativePathV1, GenerationSelector, GenerationSnapshot, HistoryQueryRequest,
+    HybridSeedQueryResponse, ManifestGeneration, OwnerDocKind, PlannerStage, PlannerTraceEntry,
+    QueryResultWindowV2, RepoId, RepoMapChunkExactness, RepoMapExactnessSummary,
+    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapMutationAck,
+    RepoMapRedactionState, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
+    SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
+    SearchExplanation, SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
     SearchPlaneErrorCodeV2, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequestEnvelope,
@@ -268,11 +268,10 @@ impl StubIngestTransport {
 fn verified_request_digest(
     request: &SearchPlaneIngestIpcRequest,
 ) -> Result<Option<String>, crate::SdkError> {
-    fn verify<B: quanta_index_ipc::IngestBatchBodyV1 + serde::Serialize + Clone>(
+    fn verify<B: quanta_index_ipc::IngestBatchBodyV1 + serde::Serialize>(
         body: &B,
     ) -> Result<Option<String>, crate::SdkError> {
-        let mut body = body.clone();
-        match quanta_index_ipc::verify_batch_digest_v1(&mut body)
+        match quanta_index_ipc::verify_batch_digest_v1(body)
             .map_err(|err| crate::SdkError::Serialization(err.to_string()))?
         {
             quanta_index_ipc::BatchDigestVerdictV1::Verified(_) => {
@@ -377,6 +376,19 @@ impl IngestTransport for StubIngestTransport {
             request_id: request.request_id,
             payload,
         })
+    }
+
+    fn send_borrowed_auxiliary_traced_v1(
+        &self,
+        request: BorrowedAuxiliaryIngestIpcRequestEnvelopeV1<'_>,
+        _source: Option<&dyn crate::DiagnosticAttemptSourceV1>,
+    ) -> Result<SearchPlaneIngestIpcResponseEnvelope, crate::SdkError> {
+        let mut encoded = Vec::new();
+        ciborium::into_writer(&request, &mut encoded)
+            .map_err(|error| crate::SdkError::Serialization(error.to_string()))?;
+        let owned: SearchPlaneIngestIpcRequestEnvelope = ciborium::from_reader(encoded.as_slice())
+            .map_err(|error| crate::SdkError::Serialization(error.to_string()))?;
+        self.send(owned)
     }
 }
 
@@ -1021,6 +1033,7 @@ mod control_tests;
 mod corpus_ingest_tests;
 mod explicit_activation_adversarial_tests;
 mod other_ingest_tests;
+mod admitted_auxiliary_tests;
 mod published_activation_tests;
 mod query_routes_tests;
 mod query_tests;

@@ -221,7 +221,8 @@ fn assert_typed(error: &CoreError, code: quanta_index_contract::SearchPlaneError
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => unreachable!("expected typed {code:?}, got {other:?}"),
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => unreachable!("expected typed {code:?}, got {other:?}"),
     }
 }
 

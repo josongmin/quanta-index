@@ -135,6 +135,9 @@ pub struct PolicyState {
     pub phase: ExecutionPhase,
     pub entered_at_ms: u64,
     pub clear_since_ms: Option<u64>,
+    /// Exclusive end of the last fully observed clear-pressure window.
+    /// A new clear sample at this exact instant continues without a gap.
+    pub clear_valid_until_ms: Option<u64>,
     pub automatic_transitions: u8,
 }
 
@@ -146,7 +149,6 @@ pub enum StageObligation {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ResourceNeed {
-    pub latency_ms: u64,
     pub cpu_units: u64,
     pub io_bytes: u64,
     pub memory_bytes: u64,
@@ -156,8 +158,7 @@ pub struct ResourceNeed {
 impl ResourceNeed {
     #[must_use]
     pub fn fits(self, available: Self) -> bool {
-        self.latency_ms <= available.latency_ms
-            && self.cpu_units <= available.cpu_units
+        self.cpu_units <= available.cpu_units
             && self.io_bytes <= available.io_bytes
             && self.memory_bytes <= available.memory_bytes
             && self.provider_units <= available.provider_units
@@ -173,6 +174,8 @@ pub struct StageOffer {
     pub ready: bool,
     pub requires_exact_coverage: bool,
     pub requires_provider: bool,
+    /// Advisory planner estimate for stage ordering; None means unknown.
+    pub estimated_latency_ms: Option<u64>,
     /// Hard upper bound for reservation, independent of estimated cost.
     pub reservation: ResourceNeed,
 }
@@ -221,6 +224,8 @@ pub struct EffortAuthority {
     pub coverage: CoverageExactness,
     pub provider: ProviderPermission,
     pub required_proof: RequiredProofStatus,
+    /// Owner-issued time remaining until the request deadline.
+    pub remaining_time_ms: u64,
     pub remaining: ResourceNeed,
     pub max_automatic_transitions: u8,
 }
@@ -282,13 +287,13 @@ pub trait StageCostEstimator: Send + Sync {
     fn estimated_latency_ms(&self, offer: &StageOffer) -> Option<u64>;
 }
 
-/// Deterministic cold-start ordering from the planner's declared reservation
-/// envelope. It is not an observed latency or a completeness proof.
-pub struct EnvelopeCostEstimator;
+/// Deterministic ordering from the planner's declared cost. It is not an
+/// observed latency or a completeness proof.
+pub struct DeclaredCostEstimator;
 
-impl StageCostEstimator for EnvelopeCostEstimator {
+impl StageCostEstimator for DeclaredCostEstimator {
     fn estimated_latency_ms(&self, offer: &StageOffer) -> Option<u64> {
-        Some(offer.reservation.latency_ms)
+        offer.estimated_latency_ms
     }
 }
 
@@ -347,6 +352,28 @@ impl HysteresisPolicy {
             _ => PressureState::Middle,
         }
     }
+
+    fn clear_valid_until(frame: &DecisionFrame<'_>) -> Option<u64> {
+        [
+            fresh_until(frame.signals.interactive_pressure_bps, frame.now_ms),
+            fresh_until(frame.signals.index_backlog, frame.now_ms),
+            fresh_until(frame.signals.dispatch_lag_ms, frame.now_ms),
+            fresh_until(frame.signals.memory_headroom_bytes, frame.now_ms),
+        ]
+        .into_iter()
+        .try_fold(u64::MAX, |earliest, expiry| {
+            expiry.map(|until| earliest.min(until))
+        })
+    }
+}
+
+fn fresh_until<T: Copy>(signal: Signal<T>, now_ms: u64) -> Option<u64> {
+    match signal {
+        Signal::Known(sample) if signal.fresh(now_ms).is_some() => {
+            sample.observed_at_ms.checked_add(sample.valid_for_ms)
+        }
+        Signal::Known(_) | Signal::Unknown(_) => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -367,11 +394,28 @@ impl EffortPolicy for HysteresisPolicy {
         validate_frame(frame, state)?;
         let pressure = self.pressure(frame);
         let mut next = state;
-        next.clear_since_ms = if pressure == PressureState::Clear {
-            state.clear_since_ms.or(Some(frame.now_ms))
+        let clear_window = (pressure == PressureState::Clear)
+            .then(|| Self::clear_valid_until(frame))
+            .flatten();
+        if let Some(valid_until) = clear_window {
+            // `valid_until` is exclusive for the prior sample. A replacement
+            // observed exactly there leaves no unobserved millisecond.
+            next.clear_since_ms = Some(
+                state
+                    .clear_since_ms
+                    .filter(|since| *since <= frame.now_ms)
+                    .filter(|_| {
+                        state
+                            .clear_valid_until_ms
+                            .is_some_and(|prior| prior >= frame.now_ms)
+                    })
+                    .unwrap_or(frame.now_ms),
+            );
+            next.clear_valid_until_ms = Some(valid_until);
         } else {
-            None
-        };
+            next.clear_since_ms = None;
+            next.clear_valid_until_ms = None;
+        }
         let (mut target, mut reason) = match frame.preference {
             EffortPreference::Fast => (ExecutionPhase::Fast, DecisionReason::ExplicitFast),
             EffortPreference::Deep => (ExecutionPhase::Deep, DecisionReason::ExplicitDeep),
@@ -460,7 +504,10 @@ fn validate_frame(frame: &DecisionFrame<'_>, state: PolicyState) -> Result<(), E
     }
     let mut ids = BTreeSet::new();
     for offer in frame.offers {
-        if !ids.insert(offer.id) || offer.reservation.latency_ms == 0 {
+        if !ids.insert(offer.id)
+            || offer.estimated_latency_ms == Some(0)
+            || offer.reservation == ResourceNeed::default()
+        {
             return Err(EffortError::InvalidFrame);
         }
     }
@@ -475,11 +522,42 @@ pub trait ResourceScheduler: Send + Sync + 'static {
     type Token: Send;
     fn try_reserve(&self, need: ResourceNeed) -> Option<Self::Token>;
     fn release(&self, token: Self::Token);
+    /// Allocation custody is an optional capability for explicit standalone
+    /// schedulers. The native service provides it through its existing ledger.
+    fn memory_scope(&self, _token: &Self::Token) -> Option<super::MemoryScope> {
+        None
+    }
 }
 
 pub struct ReservationGuard<S: ResourceScheduler> {
     scheduler: Arc<S>,
+    need: ResourceNeed,
     token: Option<S::Token>,
+}
+
+impl<S: ResourceScheduler> ReservationGuard<S> {
+    /// Reserve execution capacity and keep it charged until work quiesces.
+    /// A refusal never transfers ownership of a scheduler token.
+    pub fn try_acquire(scheduler: Arc<S>, need: ResourceNeed) -> Option<Self> {
+        let token = scheduler.try_reserve(need)?;
+        Some(Self {
+            scheduler,
+            need,
+            token: Some(token),
+        })
+    }
+    /// The exact logical need charged when this non-cloneable guard was admitted.
+    #[must_use]
+    pub const fn need(&self) -> ResourceNeed {
+        self.need
+    }
+
+    #[must_use]
+    pub fn memory_scope(&self) -> Option<super::MemoryScope> {
+        self.token
+            .as_ref()
+            .and_then(|token| self.scheduler.memory_scope(token))
+    }
 }
 
 impl<S: ResourceScheduler> Drop for ReservationGuard<S> {
@@ -525,7 +603,7 @@ impl<S: ResourceScheduler> EffortGovernor<S> {
         if frame.authority.context == ContextStatus::Stale {
             return Err(EffortError::StaleContext);
         }
-        if frame.authority.remaining.latency_ms == 0 {
+        if frame.authority.remaining_time_ms == 0 {
             return Err(EffortError::Deadline);
         }
         if frame.preference == EffortPreference::Fast
@@ -657,7 +735,9 @@ impl<S: ResourceScheduler> EffortGovernor<S> {
                 DecisionReason::ResourceDenied,
             ));
         }
-        let Some(token) = self.scheduler.try_reserve(offer.reservation) else {
+        let Some(permit) =
+            ReservationGuard::try_acquire(Arc::clone(&self.scheduler), offer.reservation)
+        else {
             return Ok(self.denied(
                 frame,
                 state,
@@ -681,10 +761,7 @@ impl<S: ResourceScheduler> EffortGovernor<S> {
             } else {
                 proposal.next_state
             },
-            permit: Some(ReservationGuard {
-                scheduler: Arc::clone(&self.scheduler),
-                token: Some(token),
-            }),
+            permit: Some(permit),
         })
     }
 
@@ -719,8 +796,90 @@ impl<S: ResourceScheduler> EffortGovernor<S> {
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
+
+    // Preserve single evaluation and borrowed operands while reporting test failures as errors.
+    macro_rules! check {
+        ($condition:expr $(,)?) => {{
+            if !$condition {
+                return Err(format!("assertion failed: {}", stringify!($condition)).into());
+            }
+        }};
+    }
+    macro_rules! check_eq {
+        ($left:expr, $right:expr $(,)?) => {{
+            match (&$left, &$right) {
+                (left, right) => {
+                    if left != right {
+                        return Err(format!(
+                            "assertion failed: {} == {}; left: {left:?}, right: {right:?}",
+                            stringify!($left),
+                            stringify!($right)
+                        )
+                        .into());
+                    }
+                }
+            }
+        }};
+    }
+
+    #[test]
+    fn execution_guard_retains_capacity_through_move_and_unwind() {
+        struct CountingSlot {
+            occupied: AtomicBool,
+            releases: AtomicUsize,
+        }
+        impl ResourceScheduler for CountingSlot {
+            type Token = ();
+
+            fn try_reserve(&self, _need: ResourceNeed) -> Option<Self::Token> {
+                match self.occupied.compare_exchange(
+                    false,
+                    true,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_previous) => Some(()),
+                    Err(_occupied) => None,
+                }
+            }
+
+            fn release(&self, _token: Self::Token) {
+                assert!(self.occupied.swap(false, Ordering::AcqRel));
+                let _prior = self.releases.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+        let scheduler = Arc::new(CountingSlot {
+            occupied: AtomicBool::new(false),
+            releases: AtomicUsize::new(0),
+        });
+        let Some(guard) =
+            ReservationGuard::try_acquire(Arc::clone(&scheduler), ResourceNeed::default())
+        else {
+            panic!("empty slot must admit execution");
+        };
+        let moved_guard = guard;
+        assert!(
+            ReservationGuard::try_acquire(Arc::clone(&scheduler), ResourceNeed::default())
+                .is_none()
+        );
+        assert_eq!(scheduler.releases.load(Ordering::Acquire), 0);
+        drop(moved_guard);
+        assert_eq!(scheduler.releases.load(Ordering::Acquire), 1);
+        let unwound = std::panic::catch_unwind(|| {
+            let Some(_held) =
+                ReservationGuard::try_acquire(Arc::clone(&scheduler), ResourceNeed::default())
+            else {
+                panic!("released slot must admit execution");
+            };
+            panic!("simulate execution unwind");
+        });
+        assert!(unwound.is_err());
+        assert!(!scheduler.occupied.load(Ordering::Acquire));
+        assert_eq!(scheduler.releases.load(Ordering::Acquire), 2);
+    }
 
     #[derive(Default)]
     struct SingleSlot(Mutex<bool>);
@@ -771,6 +930,31 @@ mod tests {
         }
     }
 
+    fn short_clear_signals(now_ms: u64) -> EffortSignals {
+        let mut signals = clear_signals(now_ms);
+        signals.interactive_pressure_bps = Signal::Known(SignalSample {
+            value: 10,
+            observed_at_ms: now_ms,
+            valid_for_ms: 20,
+        });
+        signals.index_backlog = Signal::Known(SignalSample {
+            value: 0,
+            observed_at_ms: now_ms,
+            valid_for_ms: 20,
+        });
+        signals.dispatch_lag_ms = Signal::Known(SignalSample {
+            value: 0,
+            observed_at_ms: now_ms,
+            valid_for_ms: 20,
+        });
+        signals.memory_headroom_bytes = Signal::Known(SignalSample {
+            value: 10_000,
+            observed_at_ms: now_ms,
+            valid_for_ms: 20,
+        });
+        signals
+    }
+
     fn config() -> HysteresisConfig {
         HysteresisConfig {
             thresholds: PressureThresholds {
@@ -794,6 +978,7 @@ mod tests {
             phase: ExecutionPhase::Fast,
             entered_at_ms: 0,
             clear_since_ms: None,
+            clear_valid_until_ms: None,
             automatic_transitions: 0,
         }
     }
@@ -805,8 +990,8 @@ mod tests {
             coverage: CoverageExactness::Inexact,
             provider: ProviderPermission::Allowed,
             required_proof: RequiredProofStatus::Satisfied,
+            remaining_time_ms: 1_000,
             remaining: ResourceNeed {
-                latency_ms: 1_000,
                 cpu_units: 10,
                 io_bytes: 1_000,
                 memory_bytes: 1_000,
@@ -824,8 +1009,8 @@ mod tests {
             ready: true,
             requires_exact_coverage: false,
             requires_provider: true,
+            estimated_latency_ms: Some(100),
             reservation: ResourceNeed {
-                latency_ms: 100,
                 cpu_units: 1,
                 io_bytes: 0,
                 memory_bytes: 100,
@@ -835,7 +1020,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_or_missing_pressure_never_becomes_zero() -> Result<(), EffortError> {
+    fn stale_or_missing_pressure_never_becomes_zero() -> Result<(), Box<dyn std::error::Error>> {
         let policy = HysteresisPolicy::new(config())?;
         let mut signals = clear_signals(100);
         signals.index_backlog = Signal::Unknown(UnknownReason::Dropped);
@@ -848,17 +1033,18 @@ mod tests {
             useful_refinement: true,
             offers: &offers,
         };
-        let proposal = policy.propose(&frame, state(), &EnvelopeCostEstimator)?;
-        assert_eq!(proposal.target_phase, ExecutionPhase::Fast);
-        assert_eq!(proposal.reason, DecisionReason::UnknownTelemetry);
-        assert_eq!(proposal.optional_stage, None);
-        assert_eq!(known(0_u32, 200).fresh(100), None);
-        assert_eq!(known(0_u32, 0).fresh(1_000), None);
+        let proposal = policy.propose(&frame, state(), &DeclaredCostEstimator)?;
+        check_eq!(proposal.target_phase, ExecutionPhase::Fast);
+        check_eq!(proposal.reason, DecisionReason::UnknownTelemetry);
+        check_eq!(proposal.optional_stage, None);
+        check_eq!(known(0_u32, 200).fresh(100), None);
+        check_eq!(known(0_u32, 0).fresh(1_000), None);
         Ok(())
     }
 
     #[test]
-    fn clear_dwell_and_pressure_demote_without_oscillation() -> Result<(), EffortError> {
+    fn clear_dwell_and_pressure_demote_without_oscillation()
+    -> Result<(), Box<dyn std::error::Error>> {
         let policy = HysteresisPolicy::new(config())?;
         let offers = [optional_offer()];
         let mut first = DecisionFrame {
@@ -869,26 +1055,93 @@ mod tests {
             useful_refinement: true,
             offers: &offers,
         };
-        let waiting = policy.propose(&first, state(), &EnvelopeCostEstimator)?;
-        assert_eq!(waiting.target_phase, ExecutionPhase::Fast);
+        let waiting = policy.propose(&first, state(), &DeclaredCostEstimator)?;
+        check_eq!(waiting.target_phase, ExecutionPhase::Fast);
         first.now_ms = 301;
         first.signals = clear_signals(301);
-        let promoted = policy.propose(&first, waiting.next_state, &EnvelopeCostEstimator)?;
-        assert_eq!(promoted.target_phase, ExecutionPhase::Deep);
-        assert_eq!(promoted.optional_stage, Some(7));
+        let promoted = policy.propose(&first, waiting.next_state, &DeclaredCostEstimator)?;
+        check_eq!(promoted.target_phase, ExecutionPhase::Deep);
+        check_eq!(promoted.optional_stage, Some(7));
         let mut high = first;
         high.now_ms = 302;
         high.signals = clear_signals(302);
         high.signals.interactive_pressure_bps = known(900, 302);
-        let demoted = policy.propose(&high, promoted.next_state, &EnvelopeCostEstimator)?;
-        assert_eq!(demoted.target_phase, ExecutionPhase::Fast);
-        assert_eq!(demoted.next_state.automatic_transitions, 1);
-        assert_eq!(demoted.optional_stage, None);
+        let demoted = policy.propose(&high, promoted.next_state, &DeclaredCostEstimator)?;
+        check_eq!(demoted.target_phase, ExecutionPhase::Fast);
+        check_eq!(demoted.next_state.automatic_transitions, 1);
+        check_eq!(demoted.optional_stage, None);
         Ok(())
     }
 
     #[test]
-    fn governor_keeps_required_progress_and_reservations_independent() -> Result<(), EffortError> {
+    fn clear_dwell_requires_contiguous_fresh_pressure_windows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let policy = HysteresisPolicy::new(config())?;
+        let offers = [optional_offer()];
+        let mut frame = DecisionFrame {
+            now_ms: 0,
+            preference: EffortPreference::Auto,
+            signals: short_clear_signals(0),
+            authority: authority(),
+            useful_refinement: true,
+            offers: &offers,
+        };
+        let initial = state();
+        let first = policy.propose(&frame, initial, &DeclaredCostEstimator)?;
+        check_eq!(first.next_state.clear_since_ms, Some(0));
+        check_eq!(first.next_state.clear_valid_until_ms, Some(20));
+
+        // A sample is expired at its exclusive TTL boundary. Missing its
+        // replacement clears the whole dwell window.
+        frame.now_ms = 20;
+        let expired = policy.propose(&frame, first.next_state, &DeclaredCostEstimator)?;
+        check_eq!(expired.reason, DecisionReason::UnknownTelemetry);
+        check_eq!(expired.next_state.clear_since_ms, None);
+        check_eq!(expired.next_state.clear_valid_until_ms, None);
+
+        // A fresh clear sample after an unobserved gap starts a new dwell.
+        frame.now_ms = 300;
+        frame.signals = short_clear_signals(300);
+        let gap = policy.propose(&frame, first.next_state, &DeclaredCostEstimator)?;
+        check_eq!(gap.target_phase, ExecutionPhase::Fast);
+        check_eq!(gap.next_state.clear_since_ms, Some(300));
+        check_eq!(gap.next_state.clear_valid_until_ms, Some(320));
+
+        // Replacements exactly at each exclusive boundary are contiguous.
+        let mut carry = gap.next_state;
+        for now_ms in [320, 340, 360, 380, 400] {
+            frame.now_ms = now_ms;
+            frame.signals = short_clear_signals(now_ms);
+            let next = policy.propose(&frame, carry, &DeclaredCostEstimator)?;
+            if now_ms < 400 {
+                check_eq!(next.target_phase, ExecutionPhase::Fast);
+            } else {
+                check_eq!(next.target_phase, ExecutionPhase::Deep);
+                check_eq!(next.optional_stage, Some(7));
+            }
+            carry = next.next_state;
+        }
+        check_eq!(carry.clear_since_ms, Some(300));
+        check_eq!(carry.clear_valid_until_ms, Some(420));
+
+        frame.now_ms = 0;
+        check!(matches!(
+            policy.propose(
+                &frame,
+                PolicyState {
+                    entered_at_ms: 1,
+                    ..initial
+                },
+                &DeclaredCostEstimator
+            ),
+            Err(EffortError::InvalidFrame)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn governor_keeps_required_progress_and_reservations_independent()
+    -> Result<(), Box<dyn std::error::Error>> {
         let scheduler = Arc::new(SingleSlot::default());
         let governor = EffortGovernor::new(Arc::clone(&scheduler));
         let required = StageOffer {
@@ -919,18 +1172,18 @@ mod tests {
             },
         };
         let admitted = governor.admit(&frame, state(), proposal)?;
-        assert_eq!(admitted.reason, DecisionReason::RequiredProgress);
-        assert_eq!(admitted.runnable_stage, Some(2));
-        assert_eq!(admitted.next_state.phase, ExecutionPhase::Fast);
-        assert!(scheduler.0.lock().is_ok_and(|held| *held));
+        check_eq!(admitted.reason, DecisionReason::RequiredProgress);
+        check_eq!(admitted.runnable_stage, Some(2));
+        check_eq!(admitted.next_state.phase, ExecutionPhase::Fast);
+        check!(scheduler.0.lock().is_ok_and(|held| *held));
         drop(admitted);
-        assert!(scheduler.0.lock().is_ok_and(|held| !*held));
+        check!(scheduler.0.lock().is_ok_and(|held| !*held));
         Ok(())
     }
 
     #[test]
     fn governor_rejects_foreign_stage_and_provider_metadata_cannot_grant_access()
-    -> Result<(), EffortError> {
+    -> Result<(), Box<dyn std::error::Error>> {
         let scheduler = Arc::new(SingleSlot::default());
         let governor = EffortGovernor::new(scheduler);
         let offers = [optional_offer()];
@@ -952,7 +1205,7 @@ mod tests {
                 ..state()
             },
         };
-        assert!(matches!(
+        check!(matches!(
             governor.admit(&frame, state(), proposal),
             Err(EffortError::InvalidProposal)
         ));
@@ -965,11 +1218,11 @@ mod tests {
                 ..proposal
             },
         )?;
-        assert_eq!(denied.runnable_stage, None);
-        assert_eq!(denied.reason, DecisionReason::ProviderUnavailable);
-        assert!(denied.permit.is_none());
+        check_eq!(denied.runnable_stage, None);
+        check_eq!(denied.reason, DecisionReason::ProviderUnavailable);
+        check!(denied.permit.is_none());
         frame.authority.provider = ProviderPermission::Allowed;
-        frame.authority.remaining.latency_ms = 50;
+        frame.authority.remaining.memory_bytes = 50;
         let budget_denied = governor.admit(
             &frame,
             state(),
@@ -978,7 +1231,7 @@ mod tests {
                 ..proposal
             },
         )?;
-        assert_eq!(budget_denied.reason, DecisionReason::ResourceDenied);
+        check_eq!(budget_denied.reason, DecisionReason::ResourceDenied);
         Ok(())
     }
 
@@ -1037,5 +1290,210 @@ mod tests {
                 && decision.runnable_stage.is_none()
                 && decision.next_state == state()
         }));
+    }
+
+    #[test]
+    fn estimated_stage_time_does_not_consume_reservation_capacity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scheduler = Arc::new(SingleSlot::default());
+        let governor = EffortGovernor::new(Arc::clone(&scheduler));
+        let policy = HysteresisPolicy::new(config())?;
+        let mut owner = authority();
+        // The deadline is still open and all four actual capacity dimensions fit.
+        // This offer's declared time is only a ranking estimate.
+        owner.remaining_time_ms = 1;
+        let offers = [StageOffer {
+            estimated_latency_ms: Some(10_000),
+            reservation: ResourceNeed {
+                cpu_units: 1,
+                io_bytes: 1,
+                memory_bytes: 100,
+                provider_units: 1,
+            },
+            ..optional_offer()
+        }];
+        let frame = DecisionFrame {
+            now_ms: 301,
+            preference: EffortPreference::Deep,
+            signals: clear_signals(301),
+            authority: owner,
+            useful_refinement: true,
+            offers: &offers,
+        };
+        let proposal = policy.propose(&frame, state(), &DeclaredCostEstimator)?;
+        check_eq!(proposal.optional_stage, Some(7));
+        let admitted = governor.admit(&frame, state(), proposal)?;
+        check_eq!(admitted.runnable_stage, Some(7));
+        check_eq!(
+            admitted.permit.as_ref().map(ReservationGuard::need),
+            Some(offers[0].reservation)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_capacity_offer_accepts_unknown_time_estimate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct UnknownCost;
+        impl StageCostEstimator for UnknownCost {
+            fn estimated_latency_ms(&self, _offer: &StageOffer) -> Option<u64> {
+                None
+            }
+        }
+
+        let scheduler = Arc::new(SingleSlot::default());
+        let governor = EffortGovernor::new(scheduler);
+        let policy = HysteresisPolicy::new(config())?;
+        let offers = [StageOffer {
+            estimated_latency_ms: None,
+            reservation: ResourceNeed {
+                cpu_units: 1,
+                io_bytes: 1,
+                memory_bytes: 100,
+                provider_units: 1,
+            },
+            ..optional_offer()
+        }];
+        let frame = DecisionFrame {
+            now_ms: 301,
+            preference: EffortPreference::Deep,
+            signals: clear_signals(301),
+            authority: authority(),
+            useful_refinement: true,
+            offers: &offers,
+        };
+        let proposal = policy.propose(&frame, state(), &UnknownCost)?;
+        check_eq!(proposal.optional_stage, Some(7));
+        let admitted = governor.admit(&frame, state(), proposal)?;
+        check_eq!(admitted.runnable_stage, Some(7));
+        check!(admitted.permit.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn expired_deadline_denies_before_scheduler_reservation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct CountingScheduler(AtomicUsize);
+        impl ResourceScheduler for CountingScheduler {
+            type Token = ();
+
+            fn try_reserve(&self, _need: ResourceNeed) -> Option<Self::Token> {
+                let _prior = self.0.fetch_add(1, Ordering::AcqRel);
+                Some(())
+            }
+
+            fn release(&self, _token: Self::Token) {}
+        }
+
+        let scheduler = Arc::new(CountingScheduler(AtomicUsize::new(0)));
+        let governor = EffortGovernor::new(Arc::clone(&scheduler));
+        let policy = HysteresisPolicy::new(config())?;
+        let offers = [optional_offer()];
+        let mut owner = authority();
+        owner.remaining_time_ms = 0;
+        let frame = DecisionFrame {
+            now_ms: 301,
+            preference: EffortPreference::Deep,
+            signals: clear_signals(301),
+            authority: owner,
+            useful_refinement: true,
+            offers: &offers,
+        };
+        let proposal = policy.propose(&frame, state(), &DeclaredCostEstimator)?;
+        check_eq!(
+            governor.admit(&frame, state(), proposal).err(),
+            Some(EffortError::Deadline)
+        );
+        check_eq!(scheduler.0.load(Ordering::Acquire), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn stage_cost_changes_ordering_not_capacity_admission() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let policy = HysteresisPolicy::new(config())?;
+        for estimate in [None, Some(1), Some(10_000)] {
+            let scheduler = Arc::new(SingleSlot::default());
+            let governor = EffortGovernor::new(Arc::clone(&scheduler));
+            let offers = [StageOffer {
+                estimated_latency_ms: estimate,
+                ..optional_offer()
+            }];
+            let mut owner = authority();
+            owner.remaining_time_ms = 1;
+            let frame = DecisionFrame {
+                now_ms: 301,
+                preference: EffortPreference::Deep,
+                signals: clear_signals(301),
+                authority: owner,
+                useful_refinement: true,
+                offers: &offers,
+            };
+            let proposal = policy.propose(&frame, state(), &DeclaredCostEstimator)?;
+            check_eq!(proposal.optional_stage, Some(7));
+            let admitted = governor.admit(&frame, state(), proposal)?;
+            check_eq!(admitted.runnable_stage, Some(7));
+            check_eq!(
+                admitted.permit.as_ref().map(ReservationGuard::need),
+                Some(offers[0].reservation)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cheap_estimate_cannot_override_capacity_or_invalid_offer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scheduler = Arc::new(SingleSlot::default());
+        let governor = EffortGovernor::new(Arc::clone(&scheduler));
+        let policy = HysteresisPolicy::new(config())?;
+        let offers = [StageOffer {
+            estimated_latency_ms: Some(1),
+            ..optional_offer()
+        }];
+        let mut owner = authority();
+        owner.remaining.memory_bytes = 50;
+        let frame = DecisionFrame {
+            now_ms: 301,
+            preference: EffortPreference::Deep,
+            signals: clear_signals(301),
+            authority: owner,
+            useful_refinement: true,
+            offers: &offers,
+        };
+        let proposal = policy.propose(&frame, state(), &DeclaredCostEstimator)?;
+        let denied = governor.admit(&frame, state(), proposal)?;
+        check_eq!(denied.reason, DecisionReason::ResourceDenied);
+        check!(denied.permit.is_none());
+
+        let zero_estimate = [StageOffer {
+            estimated_latency_ms: Some(0),
+            ..offers[0]
+        }];
+        let invalid_estimate = DecisionFrame {
+            offers: &zero_estimate,
+            ..frame
+        };
+        check_eq!(
+            policy
+                .propose(&invalid_estimate, state(), &DeclaredCostEstimator)
+                .err(),
+            Some(EffortError::InvalidFrame)
+        );
+        let no_capacity = [StageOffer {
+            reservation: ResourceNeed::default(),
+            ..offers[0]
+        }];
+        let invalid_capacity = DecisionFrame {
+            offers: &no_capacity,
+            ..frame
+        };
+        check_eq!(
+            policy
+                .propose(&invalid_capacity, state(), &DeclaredCostEstimator)
+                .err(),
+            Some(EffortError::InvalidFrame)
+        );
+        Ok(())
     }
 }

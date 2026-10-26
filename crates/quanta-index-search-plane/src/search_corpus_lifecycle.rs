@@ -16,6 +16,7 @@ use quanta_index_contract::{
     GenerationSnapshot, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneSearchCorpusRollbackCasAck, SearchPlaneTrackKind, SourcePublicationEvent,
 };
+use quanta_index_core::publication_admission::DurableControlFileAdmissionPort;
 use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_SIDECAR_CORRUPT_CODE,
     IdempotencyCatalogPort, LexicalIndexOpenPort, LexicalSearcher, OperationInspectV1,
@@ -63,6 +64,26 @@ impl SearchCorpusLifecycleOwner {
         retention: crate::readiness::SearchCorpusHistoryRetentionPolicyV1,
         index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
     ) -> Result<Self, CoreError> {
+        Self::open_inner(state_root, retention, index_bytes, None)
+    }
+
+    /// Open the lifecycle with one service-owned Control admission authority
+    /// shared by activation heads and sealed history records.
+    pub fn open_with_durable_file_admission(
+        state_root: impl AsRef<Path>,
+        retention: crate::readiness::SearchCorpusHistoryRetentionPolicyV1,
+        index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
+        admission: Arc<dyn DurableControlFileAdmissionPort>,
+    ) -> Result<Self, CoreError> {
+        Self::open_inner(state_root, retention, index_bytes, Some(admission))
+    }
+
+    fn open_inner(
+        state_root: impl AsRef<Path>,
+        retention: crate::readiness::SearchCorpusHistoryRetentionPolicyV1,
+        index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
+        admission: Option<Arc<dyn DurableControlFileAdmissionPort>>,
+    ) -> Result<Self, CoreError> {
         // Resolve one immutable path identity before deriving either mutable
         // authority root. A symlink retarget between the two opens must not
         // split the activation head and rollback history across state roots.
@@ -70,18 +91,34 @@ impl SearchCorpusLifecycleOwner {
         let activation_root = state_root_identity_v1.join("activations");
         let authority_root = state_root_identity_v1.join("authorities");
         let coordinator = SearchCorpusPairMutationCoordinator::shared();
-        let activation_catalog = Arc::new(ActivationCatalog::open_with_lifecycle_v1(
-            &activation_root,
-            Arc::clone(&coordinator),
-        )?);
+        let activation_catalog = Arc::new(if let Some(admission) = &admission {
+            ActivationCatalog::open_with_lifecycle_and_durable_admission_v1(
+                &activation_root,
+                Arc::clone(&coordinator),
+                Arc::clone(admission),
+            )?
+        } else {
+            ActivationCatalog::open_with_lifecycle_v1(&activation_root, Arc::clone(&coordinator))?
+        });
         let active_pins: Arc<dyn ActiveSearchCorpusPinReadPort> = activation_catalog.clone();
-        let authority_store = Arc::new(AuxiliaryAuthorityStore::open_with_lifecycle_v1(
-            &authority_root,
-            retention,
-            Arc::clone(&coordinator),
-            active_pins,
-            index_bytes,
-        )?);
+        let authority_store = Arc::new(if let Some(admission) = admission {
+            AuxiliaryAuthorityStore::open_with_lifecycle_and_durable_admission_v1(
+                &authority_root,
+                retention,
+                Arc::clone(&coordinator),
+                active_pins,
+                index_bytes,
+                admission,
+            )?
+        } else {
+            AuxiliaryAuthorityStore::open_with_lifecycle_v1(
+                &authority_root,
+                retention,
+                Arc::clone(&coordinator),
+                active_pins,
+                index_bytes,
+            )?
+        });
         Ok(Self {
             state_root_identity_v1,
             activation_catalog,

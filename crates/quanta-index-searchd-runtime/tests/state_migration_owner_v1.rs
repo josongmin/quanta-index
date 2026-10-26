@@ -3,8 +3,8 @@
 //!
 //! One test per frozen fixture: a legacy root refused at boot, a backup-API
 //! catalog freeze that a raw file copy cannot reproduce, a manifest-last
-//! interruption that converges, a crash between the cutover rename and its
-//! parent fsync that leaves the complete new root, the refusal matrix, and
+//! interruption requiring explicit cleanup, a crash between the cutover
+//! rename and its parent fsync that leaves the complete new root, the refusal matrix, and
 //! the tamper/missing/extra object matrix of `verify-state`. Every root here
 //! is a `tempfile` directory: no real or shared state root is ever touched.
 
@@ -13,6 +13,9 @@
     clippy::panic_in_result_fn,
     reason = "the owner matrix asserts fixture and refusal invariants with `assert!`; a violated fixture invariant is not a propagatable error"
 )]
+
+#[path = "state_migration_owner_v1/physical_os_faults.rs"]
+mod physical_os_faults;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,24 +43,26 @@ use quanta_index_search_plane::{
     PairIndexBytesMeasurer, SearchCorpusLifecycleOwner,
     readiness::SearchCorpusHistoryRetentionPolicyV1,
 };
+use quanta_index_searchd::app::config::SearchdConfig;
 use quanta_index_searchd::app::runtime::StateRootLease;
 use quanta_index_searchd::app::state_format::{
     LEGACY_AUXILIARY_SNAPSHOT_RELATIVES, NoStateMigrationFaultsV1, OfflineRootRoleV1,
-    STATE_ROOT_MANIFEST_FILE_NAME, StateMigrationFaultPointV1, StateMigrationFaultPort,
-    StateRootFormatV1, StateRootManifestV1, atomic_cutover_v1, detect_state_root_format_v1,
-    inventory_state_root_v1, read_root_manifest_v1, refuse_broad_offline_target_v1,
-    refuse_legacy_state_root_v1, refuse_non_empty_destination_v1, staging_directory_for_v1,
-    write_root_manifest_last_v1,
+    STATE_ROOT_LEASE_FILE_NAME, STATE_ROOT_MANIFEST_FILE_NAME, StateMigrationFaultPointV1,
+    StateMigrationFaultPort, StateRootFormatV1, StateRootManifestV1, atomic_cutover_v1,
+    detect_state_root_format_v1, inventory_state_root_v1, read_root_manifest_v1,
+    refuse_broad_offline_target_v1, refuse_existing_destination_v1, refuse_legacy_state_root_v1,
+    staging_directory_for_v1, write_root_manifest_last_v1,
 };
 use quanta_index_searchd::app::state_migration::{
-    CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, OfflineSourceSessionV1,
-    OfflineStateCommandV1, OfflineStateOperationV1, OfflineStateVerificationV1,
-    SourceFreezeReceiptV1, StateRootDeepOpenPort, StateRootDeepOpenReceiptV1,
-    run_offline_backup_v1, run_offline_restore_v1, run_offline_verify_v1,
+    CatalogSnapshotPort, CatalogSnapshotV1, OfflineSourceSessionV1, OfflineStateCommandV1,
+    OfflineStateOperationV1, OfflineStateVerificationV1, OfflineTargetFactoryV1,
+    OfflineTargetSessionV1, SourceFreezeReceiptV1, run_offline_backup_v1, run_offline_restore_v1,
+    run_offline_verify_v1,
 };
 use quanta_index_searchd_harness::{E2eQueryResult, E2eRuntime, fixture_source_scope_v1};
 use quanta_index_searchd_runtime::state_migration::{
-    render_offline_outcome_v1, run_offline_state_command_with_v1,
+    OfflineStateCommandOutcomeV1, offline_target_factory_v1, render_offline_outcome_v1,
+    run_offline_state_command_with_v1 as run_qualified_offline_state_command_with_v1,
 };
 use quanta_index_semantic::{SemanticAdapter, semantic_state_root};
 use sha2::{Digest as _, Sha256};
@@ -66,6 +71,22 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const BUSY: Duration = Duration::from_secs(2);
 const INCARNATION: &str = "activations/.activation-root-incarnation-v1";
+
+fn run_offline_state_command_with_v1(
+    command: &OfflineStateCommandV1,
+    fault: &dyn StateMigrationFaultPort,
+) -> anyhow::Result<OfflineStateCommandOutcomeV1> {
+    // This named test constructor supplies explicit fixture-only physical
+    // ceilings. The production offline entry must pass its complete env
+    // profile and never infer these limits from the source's existing size.
+    let config = SearchdConfig::from_test_state_root(command.source_root.clone());
+    run_qualified_offline_state_command_with_v1(
+        command,
+        &config,
+        &RequestBudgetV1::unbounded(),
+        fault,
+    )
+}
 
 fn signed_manifest_fixture(body: &str) -> String {
     format!("{body}root-digest {:x}\n", Sha256::digest(body.as_bytes()))
@@ -531,16 +552,6 @@ impl StateMigrationFaultPort for ScriptedFaultV1 {
 struct CatalogVerifierV1;
 
 impl CatalogSnapshotPort for CatalogVerifierV1 {
-    fn snapshot_into(
-        &self,
-        _live_root: &Path,
-        _destination_file: &Path,
-    ) -> Result<CatalogFreezeV1, CoreError> {
-        Err(CoreError::InvalidContract(
-            "the verification port only re-reads produced snapshots".to_string(),
-        ))
-    }
-
     fn verify_snapshot_at(&self, snapshot_file: &Path) -> Result<CatalogSnapshotV1, CoreError> {
         verify_snapshot(snapshot_file).map(|receipt| CatalogSnapshotV1 {
             content_digest_hex: receipt.content_digest_hex,
@@ -558,14 +569,6 @@ struct PostVerifyMutationV1 {
 }
 
 impl CatalogSnapshotPort for PostVerifyMutationV1 {
-    fn snapshot_into(
-        &self,
-        live_root: &Path,
-        destination_file: &Path,
-    ) -> Result<CatalogFreezeV1, CoreError> {
-        CatalogVerifierV1.snapshot_into(live_root, destination_file)
-    }
-
     fn verify_snapshot_at(&self, snapshot_file: &Path) -> Result<CatalogSnapshotV1, CoreError> {
         let receipt = CatalogVerifierV1.verify_snapshot_at(snapshot_file)?;
         fs::write(&self.path, &self.bytes).map_err(|error| {
@@ -578,19 +581,19 @@ impl CatalogSnapshotPort for PostVerifyMutationV1 {
     }
 }
 
-/// The deep-open port stub the engine-level refusal test needs: it is never
-/// reached, because the refusal happens while planning the targets.
-struct UnreachedDeepOpenV1;
+/// The target constructor must not run for a pre-birth refusal.
+struct UnreachedTargetFactoryV1;
 
-impl quanta_index_searchd::app::state_migration::StateRootDeepOpenPort for UnreachedDeepOpenV1 {
-    fn deep_open(
+impl OfflineTargetFactoryV1 for UnreachedTargetFactoryV1 {
+    fn begin_target(
         &self,
-        root: &Path,
-    ) -> Result<quanta_index_searchd::app::state_migration::StateRootDeepOpenReceiptV1, CoreError>
-    {
+        _source: &OfflineSourceSessionV1,
+        destination: &Path,
+        _budget: &RequestBudgetV1,
+    ) -> Result<Box<dyn OfflineTargetSessionV1>, CoreError> {
         Err(CoreError::InvalidContract(format!(
-            "the deep open must not be reached for {}",
-            root.display()
+            "target creation must not be reached for {}",
+            destination.display()
         )))
     }
 }
@@ -602,7 +605,8 @@ fn typed_code(error: &CoreError) -> Option<SearchPlaneErrorCodeV2> {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_) => None,
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. } => None,
     }
 }
 
@@ -698,6 +702,131 @@ fn make_backup(source: &Path, destination: &Path) -> TestResult {
         &backup_command(source, destination),
         &NoStateMigrationFaultsV1,
     )?;
+    Ok(())
+}
+
+#[test]
+fn offline_missing_physical_profile_refuses_before_source_or_staging_open() -> TestResult {
+    let parent = private_root()?;
+    let source = parent.path().join("unopened-source");
+    let destination = parent.path().join("unopened-destination");
+    let config = SearchdConfig::from_test_state_root(source.clone())
+        .try_with_legacy_publication_physical_policy(None)?;
+    let error = run_qualified_offline_state_command_with_v1(
+        &backup_command(&source, &destination),
+        &config,
+        &RequestBudgetV1::unbounded(),
+        &NoStateMigrationFaultsV1,
+    )
+    .err()
+    .ok_or("missing physical profile was accepted")?;
+    if !matches!(
+        error.downcast_ref::<CoreError>(),
+        Some(CoreError::InvalidContract(_))
+    ) || source.try_exists()?
+        || destination.try_exists()?
+    {
+        return Err(format!("physical preflight touched an unopened root: {error:#}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn offline_cancelled_budget_refuses_before_target_namespace_birth() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let original = fs::read(source.path().join("authorities/history.cbor"))?;
+    let destination = parent.path().join("cancelled-backup");
+    let staging = staging_directory_for_v1(&destination);
+    let config = SearchdConfig::from_test_state_root(source.path().to_path_buf());
+    let budget = RequestBudgetV1::unbounded();
+    budget.cancel_handle().cancel();
+    let error = run_qualified_offline_state_command_with_v1(
+        &backup_command(source.path(), &destination),
+        &config,
+        &budget,
+        &NoStateMigrationFaultsV1,
+    )
+    .err()
+    .ok_or("cancelled offline request created a destination")?;
+    if command_code(&error) != Some(SearchPlaneErrorCodeV2::RequestCancelled)
+        || destination.try_exists()?
+        || staging.try_exists()?
+        || fs::read(source.path().join("authorities/history.cbor"))? != original
+    {
+        return Err(format!("cancelled request changed source or target: {error:#}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn offline_first_copied_object_refuses_tiny_capacity_before_file_birth() -> TestResult {
+    const FIRST_OBJECT_BYTES: usize = 2 * 1024 * 1024;
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let first = source.path().join("activations/000-first.bin");
+    fs::write(&first, vec![b'Z'; FIRST_OBJECT_BYTES])?;
+    let retained = fs::read(&first)?;
+    let destination = parent.path().join("unpublished-backup");
+    let staging = staging_directory_for_v1(&destination);
+    let mut policy = SearchdConfig::from_test_state_root(source.path().to_path_buf())
+        .legacy_publication_physical_policy()
+        .ok_or("named fixture physical policy missing")?;
+    policy.inventory.bytes = 1024 * 1024;
+    policy.maintenance.bytes = 64 * 1024;
+    policy.control.bytes = 64 * 1024;
+    policy.work.bytes = 64 * 1024;
+    policy.history.bytes = 64 * 1024;
+    policy.catalog_parent.bytes = 64 * 1024;
+    policy.repomap_control_file_bytes = 64 * 1024;
+    policy.repomap_candidate_file_bytes = 512 * 1024;
+    let config = SearchdConfig::from_test_state_root(source.path().to_path_buf())
+        .try_with_source_publication_max_bytes(1024)?
+        .try_with_legacy_publication_physical_policy(Some(policy))?;
+    let error = run_qualified_offline_state_command_with_v1(
+        &backup_command(source.path(), &destination),
+        &config,
+        &RequestBudgetV1::unbounded(),
+        &NoStateMigrationFaultsV1,
+    )
+    .err()
+    .ok_or("oversized first copied object was published")?;
+    let mut staging_regular_files = Vec::new();
+    if staging.try_exists()? {
+        let mut directories = vec![staging.clone()];
+        while let Some(directory) = directories.pop() {
+            for entry in fs::read_dir(&directory)? {
+                let entry = entry?;
+                let kind = entry.file_type()?;
+                if kind.is_dir() {
+                    directories.push(entry.path());
+                } else if kind.is_file() {
+                    staging_regular_files.push(entry.path().strip_prefix(&staging)?.to_path_buf());
+                } else {
+                    return Err(format!(
+                        "unexpected staging entry after capacity refusal: {}",
+                        entry.path().display()
+                    )
+                    .into());
+                }
+            }
+        }
+    }
+    staging_regular_files.sort();
+    if command_code(&error) != Some(SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded)
+        || destination.try_exists()?
+        || staging_regular_files
+            .iter()
+            .any(|relative| relative != Path::new(STATE_ROOT_LEASE_FILE_NAME))
+        || fs::read(&first)? != retained
+    {
+        return Err(format!(
+            "first object capacity refusal lost pre-birth/source invariant; staging files {staging_regular_files:?}: {error:#}"
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -1128,8 +1257,23 @@ fn real_search_corpus_backup_refuses_missing_or_corrupt_pooled_native_body() -> 
             "failed staged backup must not publish a manifest"
         );
         fs::write(&body, &original)?;
+        let error = run_offline_state_command_with_v1(
+            &backup_command(source.path(), &backup),
+            &NoStateMigrationFaultsV1,
+        )
+        .expect_err("retry must preserve the interrupted staging entry");
+        assert_eq!(
+            command_code(&error),
+            Some(SearchPlaneErrorCodeV2::InvalidRequest)
+        );
+        assert!(staging.is_dir(), "retry must preserve stale staging");
+        // The fixture owns this staging root; explicit cleanup permits retry.
+        fs::remove_dir_all(&staging)?;
         make_backup(source.path(), &backup)?;
-        assert!(!staging.exists(), "retry must consume stale staging");
+        assert!(
+            !staging.exists(),
+            "cutover consumes its newly created staging"
+        );
     }
     Ok(())
 }
@@ -1548,8 +1692,9 @@ fn backup_manifest_replacement_after_custody_refuses_verify_and_restore() -> Tes
         &session,
         &restored,
         &CatalogVerifierV1,
-        &UnreachedDeepOpenV1,
+        &UnreachedTargetFactoryV1,
         &NoStateMigrationFaultsV1,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )
     .expect_err("restore cannot re-admit a replacement authority");
     assert_eq!(
@@ -1569,14 +1714,6 @@ struct ChangeBackupAuthorityV1 {
 struct CatalogReadSidecarV1;
 
 impl CatalogSnapshotPort for CatalogReadSidecarV1 {
-    fn snapshot_into(
-        &self,
-        live_root: &Path,
-        destination_file: &Path,
-    ) -> Result<CatalogFreezeV1, CoreError> {
-        CatalogVerifierV1.snapshot_into(live_root, destination_file)
-    }
-
     fn verify_snapshot_at(&self, snapshot_file: &Path) -> Result<CatalogSnapshotV1, CoreError> {
         let receipt = CatalogVerifierV1.verify_snapshot_at(snapshot_file)?;
         // A read-only WAL inspection may create/remove this disposable file.
@@ -1599,12 +1736,15 @@ fn restore_admits_catalog_directory_change_from_read_only_sidecars() -> TestResu
     make_backup(source.path(), &backup)?;
     let session = backup_session(&backup)?;
     let restored = restore_parent.path().join("restored");
+    let config = SearchdConfig::from_test_state_root(backup);
+    let targets = offline_target_factory_v1(&config)?;
     let _outcome = run_offline_restore_v1(
         &session,
         &restored,
         &CatalogReadSidecarV1,
-        &StubDeepOpenV1,
+        &targets,
         &NoStateMigrationFaultsV1,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     assert!(restored.exists());
     let _verified = verify_current(&restored)?;
@@ -1625,7 +1765,7 @@ impl StateMigrationFaultPort for ChangeBackupAuthorityV1 {
 }
 
 #[test]
-fn mid_restore_backup_authority_change_discards_sealed_staging() -> TestResult {
+fn mid_restore_backup_authority_change_preserves_unpublished_staging() -> TestResult {
     for mutation in ["replace", "malformed", "remove"] {
         let source = private_root()?;
         let backup_parent = private_root()?;
@@ -1653,8 +1793,52 @@ fn mid_restore_backup_authority_change_discards_sealed_staging() -> TestResult {
                 .expect_err("authority loss after copy cannot publish a restored root");
         assert!(command_code(&error).is_some(), "{mutation}: {error}");
         assert!(!restored.exists(), "{mutation}");
-        assert!(!staging_directory_for_v1(&restored).exists(), "{mutation}");
+        let staging = staging_directory_for_v1(&restored);
+        assert!(
+            staging.is_dir(),
+            "{mutation}: unpublished staging is preserved"
+        );
+        assert!(
+            staging.join(STATE_ROOT_MANIFEST_FILE_NAME).is_file(),
+            "{mutation}: the sealed staging manifest remains for inspection"
+        );
     }
+    Ok(())
+}
+
+fn assert_restore_catalog_image(
+    backup: &Path,
+    restored: &Path,
+    backup_manifest: &StateRootManifestV1,
+    restored_manifest: &StateRootManifestV1,
+) -> TestResult {
+    const CATALOG: &str = "catalog/catalog-v1.sqlite";
+    let original = fs::read(backup.join(CATALOG))?;
+    let produced = fs::read(restored.join(CATALOG))?;
+    assert_eq!(produced.len(), original.len());
+    // SQLite's fixed file format defines the change counter at 24..28
+    // and version-valid-for counter at 92..96. WAL/DELETE normalization
+    // may update those counters; every other byte must remain identical.
+    // See vendored sqlite3.c's database-header table and pager_write_changecounter.
+    for (offset, (before, after)) in original.iter().zip(&produced).enumerate() {
+        if !(24..28).contains(&offset) && !(92..96).contains(&offset) {
+            assert_eq!(after, before, "unexpected Catalog byte change at {offset}");
+        }
+    }
+    for (manifest, bytes) in [(backup_manifest, &original), (restored_manifest, &produced)] {
+        let entry = manifest
+            .objects
+            .iter()
+            .find(|entry| entry.relative_path == CATALOG)
+            .ok_or("manifest has no Catalog image")?;
+        assert_eq!(entry.byte_size, u64::try_from(bytes.len())?);
+        assert_eq!(entry.digest_hex, format!("{:x}", Sha256::digest(bytes)));
+    }
+    assert_eq!(
+        restored_manifest.catalog_digest_hex,
+        backup_manifest.catalog_digest_hex
+    );
+    assert_eq!(restored_manifest.catalog_rows, backup_manifest.catalog_rows);
     Ok(())
 }
 
@@ -1697,13 +1881,25 @@ fn backup_then_restore_reseals_manifest_with_activation_incarnation() -> TestRes
     let restored_other = restored_manifest
         .objects
         .iter()
-        .filter(|entry| entry.relative_path != INCARNATION)
-        .cloned()
+        .filter(|entry| {
+            entry.relative_path != INCARNATION && entry.relative_path != "catalog/catalog-v1.sqlite"
+        })
+        .collect::<Vec<_>>();
+    let backup_other = backup_manifest
+        .objects
+        .iter()
+        .filter(|entry| entry.relative_path != "catalog/catalog-v1.sqlite")
         .collect::<Vec<_>>();
     assert_eq!(
-        restored_other, backup_manifest.objects,
-        "controlled restore may add only its activation incarnation"
+        restored_other, backup_other,
+        "non-Catalog objects must remain bit identical"
     );
+    assert_restore_catalog_image(
+        &restore.source_root,
+        &restored,
+        &backup_manifest,
+        &restored_manifest,
+    )?;
     assert_eq!(
         restored_manifest.catalog_digest_hex, backup_manifest.catalog_digest_hex,
         "the restored catalog identity must equal the backup's exactly"
@@ -1750,14 +1946,19 @@ fn restore_rotates_existing_activation_incarnation_and_reseals_manifest() -> Tes
     let backup_other = backup_manifest
         .objects
         .iter()
-        .filter(|entry| entry.relative_path != INCARNATION)
+        .filter(|entry| {
+            entry.relative_path != INCARNATION && entry.relative_path != "catalog/catalog-v1.sqlite"
+        })
         .collect::<Vec<_>>();
     let restored_other = restored_manifest
         .objects
         .iter()
-        .filter(|entry| entry.relative_path != INCARNATION)
+        .filter(|entry| {
+            entry.relative_path != INCARNATION && entry.relative_path != "catalog/catalog-v1.sqlite"
+        })
         .collect::<Vec<_>>();
     assert_eq!(restored_other, backup_other);
+    assert_restore_catalog_image(&backup, &restored, &backup_manifest, &restored_manifest)?;
     assert_ne!(
         restored_manifest
             .objects
@@ -1830,7 +2031,98 @@ fn backup_carries_committed_rows_a_raw_file_copy_cannot_reproduce() -> TestResul
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_interruption_before_the_manifest_leaves_no_manifest_and_converges_on_retry() -> TestResult {
+fn existing_staging_file_and_directory_are_preserved() -> TestResult {
+    let source = private_root()?;
+    let destination_parent = private_root()?;
+    build_live_root(source.path())?;
+
+    let directory_destination = destination_parent.path().join("directory-victim");
+    let directory_staging = staging_directory_for_v1(&directory_destination);
+    fs::create_dir(&directory_staging)?;
+    let sentinel = directory_staging.join("unrelated-sentinel");
+    fs::write(&sentinel, b"leave this directory intact")?;
+    let error = run_offline_state_command_with_v1(
+        &backup_command(source.path(), &directory_destination),
+        &NoStateMigrationFaultsV1,
+    )
+    .expect_err("a preexisting staging directory must be refused");
+    assert_eq!(
+        command_code(&error),
+        Some(SearchPlaneErrorCodeV2::InvalidRequest)
+    );
+    assert_eq!(fs::read(&sentinel)?, b"leave this directory intact");
+    assert!(!directory_destination.exists());
+
+    let file_destination = destination_parent.path().join("file-victim");
+    let file_staging = staging_directory_for_v1(&file_destination);
+    fs::write(&file_staging, b"leave this file intact")?;
+    let error = run_offline_state_command_with_v1(
+        &backup_command(source.path(), &file_destination),
+        &NoStateMigrationFaultsV1,
+    )
+    .expect_err("a preexisting staging file must be refused");
+    assert_eq!(
+        command_code(&error),
+        Some(SearchPlaneErrorCodeV2::InvalidRequest)
+    );
+    assert_eq!(fs::read(&file_staging)?, b"leave this file intact");
+    assert!(!file_destination.exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_staging_symlinks_preserve_external_and_source_bytes() -> TestResult {
+    use std::os::unix::fs::symlink;
+
+    let source = private_root()?;
+    let destination_parent = private_root()?;
+    let external = private_root()?;
+    build_live_root(source.path())?;
+    let setup = StateRootLease::acquire(source.path())?;
+    drop(setup);
+    let source_names_before = tree_names_outside_catalog(source.path())?;
+    let source_object = source.path().join("authorities/history.cbor");
+    let source_before = fs::read(&source_object)?;
+    let external_sentinel = external.path().join("unrelated-sentinel");
+    fs::write(&external_sentinel, b"leave external bytes intact")?;
+
+    let dangling = destination_parent.path().join("absent");
+    for (name, target) in [
+        ("external-link", external.path()),
+        ("source-link", source.path()),
+        ("dangling-link", dangling.as_path()),
+    ] {
+        let destination = destination_parent.path().join(name);
+        let staging = staging_directory_for_v1(&destination);
+        symlink(target, &staging)?;
+        let error = run_offline_state_command_with_v1(
+            &backup_command(source.path(), &destination),
+            &NoStateMigrationFaultsV1,
+        )
+        .expect_err("a preexisting staging symlink must be refused");
+        assert_eq!(
+            command_code(&error),
+            Some(SearchPlaneErrorCodeV2::InvalidRequest)
+        );
+        assert_eq!(fs::read_link(&staging)?.as_path(), target);
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&source_object)?, source_before);
+        assert_eq!(
+            tree_names_outside_catalog(source.path())?,
+            source_names_before
+        );
+        assert_eq!(
+            fs::read(&external_sentinel)?,
+            b"leave external bytes intact"
+        );
+        assert_eq!(fs::read_dir(external.path())?.count(), 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn an_interruption_before_the_manifest_requires_explicit_cleanup() -> TestResult {
     let source = private_root()?;
     let destination_parent = private_root()?;
     build_live_root(source.path())?;
@@ -1860,7 +2152,23 @@ fn an_interruption_before_the_manifest_leaves_no_manifest_and_converges_on_retry
         "a crash before the manifest write must leave no manifest to mislead"
     );
 
-    // The retry converges: the stale staging directory is not an authority.
+    // A retry cannot prove that a preexisting entry is the staging it made.
+    let error = run_offline_state_command_with_v1(
+        &backup_command(source.path(), &destination),
+        &NoStateMigrationFaultsV1,
+    )
+    .expect_err("an interrupted staging root requires explicit cleanup");
+    assert_eq!(
+        command_code(&error),
+        Some(SearchPlaneErrorCodeV2::InvalidRequest)
+    );
+    assert!(staging.is_dir(), "retry must preserve interrupted staging");
+    assert!(
+        !destination.exists(),
+        "retry must not publish a destination"
+    );
+    // The fixture owns this staging root and can clean it explicitly.
+    fs::remove_dir_all(&staging)?;
     let _outcome = run_offline_state_command_with_v1(
         &backup_command(source.path(), &destination),
         &NoStateMigrationFaultsV1,
@@ -2184,12 +2492,13 @@ fn verify_state_refuses_second_manifest_added_after_catalog_verification() -> Te
 
 #[test]
 fn atomic_cutover_never_replaces_an_existing_root() -> TestResult {
-    let staging = private_root()?;
     let destination_parent = private_root()?;
+    let staging = destination_parent.path().join("staging");
+    fs::create_dir(&staging)?;
     let destination = destination_parent.path().join("occupied");
     fs::create_dir_all(&destination)?;
     fs::write(destination.join("pre-existing"), b"do not clobber")?;
-    let error = atomic_cutover_v1(staging.path(), &destination)
+    let error = atomic_cutover_v1(&staging, &destination)
         .expect_err("a cutover must refuse an existing destination");
     assert_eq!(
         typed_code(&error),
@@ -2199,6 +2508,69 @@ fn atomic_cutover_never_replaces_an_existing_root() -> TestResult {
         fs::read(destination.join("pre-existing"))?,
         b"do not clobber"
     );
+    assert!(staging.is_dir(), "refusal preserves the original staging");
+    Ok(())
+}
+
+#[test]
+fn atomic_cutover_preserves_existing_destination_symlink_and_its_target() -> TestResult {
+    use std::os::unix::fs::symlink;
+
+    let parent = private_root()?;
+    let staging = parent.path().join("staging");
+    fs::create_dir(&staging)?;
+    fs::write(staging.join("new-data"), b"new")?;
+    let foreign = parent.path().join("foreign");
+    fs::create_dir(&foreign)?;
+    fs::write(foreign.join("old-data"), b"old")?;
+    let destination = parent.path().join("destination");
+    symlink(&foreign, &destination)?;
+    let error = atomic_cutover_v1(&staging, &destination)
+        .expect_err("an existing symlink is never replaced");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::InvalidRequest)
+    );
+    assert_eq!(fs::read_link(&destination)?, foreign);
+    assert_eq!(fs::read(foreign.join("old-data"))?, b"old");
+    assert_eq!(fs::read(staging.join("new-data"))?, b"new");
+    Ok(())
+}
+
+#[test]
+fn atomic_cutover_rejects_a_symlink_staging_without_publishing() -> TestResult {
+    use std::os::unix::fs::symlink;
+
+    let parent = private_root()?;
+    let foreign = parent.path().join("foreign");
+    fs::create_dir(&foreign)?;
+    fs::write(foreign.join("old-data"), b"old")?;
+    let staging = parent.path().join("staging");
+    let destination = parent.path().join("destination");
+    symlink(&foreign, &staging)?;
+    let _error = atomic_cutover_v1(&staging, &destination)
+        .expect_err("staging must be a held directory rather than a symlink");
+    assert!(!destination.exists());
+    assert_eq!(fs::read_link(&staging)?, foreign);
+    assert_eq!(fs::read(foreign.join("old-data"))?, b"old");
+    Ok(())
+}
+
+#[test]
+fn atomic_cutover_publishes_the_original_staging_inode() -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let parent = private_root()?;
+    let staging = parent.path().join("staging");
+    let destination = parent.path().join("destination");
+    fs::create_dir(&staging)?;
+    fs::write(staging.join("data"), b"fixed-data")?;
+    let before = fs::metadata(&staging)?;
+    atomic_cutover_v1(&staging, &destination)?;
+    let after = fs::metadata(&destination)?;
+    assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+    assert!(!staging.exists());
+    assert_eq!(fs::read(destination.join("data"))?, b"fixed-data");
     Ok(())
 }
 
@@ -2224,6 +2596,18 @@ fn a_restore_interrupted_before_the_manifest_leaves_the_destination_absent() -> 
         .expect_err("the scripted pre-rename failure must surface");
     assert!(!restored.exists(), "no cutover may have happened");
 
+    let staging = staging_directory_for_v1(&restored);
+    assert!(staging.join(STATE_ROOT_MANIFEST_FILE_NAME).is_file());
+    let error = run_offline_state_command_with_v1(&restore, &NoStateMigrationFaultsV1)
+        .expect_err("the sealed but unpublished staging entry must not be removed on retry");
+    assert_eq!(
+        command_code(&error),
+        Some(SearchPlaneErrorCodeV2::InvalidRequest)
+    );
+    assert!(staging.join(STATE_ROOT_MANIFEST_FILE_NAME).is_file());
+    assert!(!restored.exists());
+    // This fixture owns the interrupted staging tree.
+    fs::remove_dir_all(&staging)?;
     let _outcome = run_offline_state_command_with_v1(&restore, &NoStateMigrationFaultsV1)?;
     assert!(restored.join(STATE_ROOT_MANIFEST_FILE_NAME).is_file());
     let _verified = verify_current(&restored)?;
@@ -2331,13 +2715,30 @@ fn a_non_empty_destination_and_a_self_destination_are_refused() -> TestResult {
     build_live_root(source.path())?;
     let populated = private_root()?;
     fs::write(populated.path().join("occupied"), b"x")?;
-    let error = refuse_non_empty_destination_v1(populated.path(), source.path())
+    let error = refuse_existing_destination_v1(populated.path(), source.path())
         .expect_err("a populated destination must be refused");
     assert_eq!(
         typed_code(&error),
         Some(SearchPlaneErrorCodeV2::InvalidRequest)
     );
-    let error = refuse_non_empty_destination_v1(source.path(), source.path())
+    let empty = private_root()?;
+    let error = refuse_existing_destination_v1(empty.path(), source.path())
+        .expect_err("an existing empty destination cannot be the rename target");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::InvalidRequest)
+    );
+    let error = run_offline_state_command_with_v1(
+        &backup_command(source.path(), empty.path()),
+        &NoStateMigrationFaultsV1,
+    )
+    .expect_err("the command must reject an existing empty destination before staging");
+    assert_eq!(
+        command_code(&error),
+        Some(SearchPlaneErrorCodeV2::InvalidRequest)
+    );
+    assert!(!staging_directory_for_v1(empty.path()).exists());
+    let error = refuse_existing_destination_v1(source.path(), source.path())
         .expect_err("a source that is its own destination must be refused");
     assert_eq!(
         typed_code(&error),
@@ -2546,9 +2947,9 @@ fn the_engine_refuses_a_self_target_before_any_lease() -> TestResult {
     let error = quanta_index_searchd::app::state_migration::run_offline_backup_v1(
         &session,
         current.path(),
-        &CatalogVerifierV1,
-        &UnreachedDeepOpenV1,
+        &UnreachedTargetFactoryV1,
         &NoStateMigrationFaultsV1,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )
     .expect_err("engine-level self-target refusal");
     assert_eq!(
@@ -2565,49 +2966,6 @@ fn the_engine_refuses_a_self_target_before_any_lease() -> TestResult {
 // ---------------------------------------------------------------------------
 // R3 immutable-source custody: freeze, drift gate, read-only sessions
 // ---------------------------------------------------------------------------
-
-/// Stub catalog port for engine-level drift tests: a fixed logical freeze
-/// that never touches the filesystem.
-struct StubCatalogV1;
-
-fn stub_snapshot() -> CatalogSnapshotV1 {
-    CatalogSnapshotV1 {
-        content_digest_hex: "0".repeat(64),
-        byte_size: 8,
-        table_rows: vec![("stub-table".to_string(), 3)],
-    }
-}
-
-fn stub_freeze() -> CatalogFreezeV1 {
-    CatalogFreezeV1 {
-        live: stub_snapshot(),
-        snapshot: stub_snapshot(),
-    }
-}
-
-impl CatalogSnapshotPort for StubCatalogV1 {
-    fn snapshot_into(
-        &self,
-        _live_root: &Path,
-        _destination_file: &Path,
-    ) -> Result<CatalogFreezeV1, CoreError> {
-        Ok(stub_freeze())
-    }
-
-    fn verify_snapshot_at(&self, _snapshot_file: &Path) -> Result<CatalogSnapshotV1, CoreError> {
-        Ok(stub_snapshot())
-    }
-}
-
-/// Stub deep open for engine-level drift tests: the gate under test is the
-/// source freeze, not the produced root.
-struct StubDeepOpenV1;
-
-impl StateRootDeepOpenPort for StubDeepOpenV1 {
-    fn deep_open(&self, _root: &Path) -> Result<StateRootDeepOpenReceiptV1, CoreError> {
-        Ok(StateRootDeepOpenReceiptV1::default())
-    }
-}
 
 /// A current root's byte fingerprint is identical before and after a
 /// successful backup, and no marker, receipt or manifest appears inside the source.
@@ -2774,13 +3132,10 @@ fn verify_state_with_a_live_lease_refuses_state_root_in_use() -> TestResult {
     Ok(())
 }
 
-/// A mid-backup source byte change publishes no destination: the drift
-/// gate recomputes the inventory immediately before the cutover and refuses.
-///
-/// It removes the staging it prepared. Same-length mutation proves the digest
-/// (not just the size) is compared.
+/// A source byte change before backup is refused before staging creation.
+/// Same-length mutation proves the digest (not just the size) is compared.
 #[test]
-fn mid_backup_source_byte_change_publishes_no_destination() -> TestResult {
+fn pre_backup_source_byte_change_refuses_before_staging_birth() -> TestResult {
     let source = private_root()?;
     let destination_parent = private_root()?;
     build_live_root(source.path())?;
@@ -2801,12 +3156,14 @@ fn mid_backup_source_byte_change_publishes_no_destination() -> TestResult {
 
     let destination = destination_parent.path().join("frozen");
     let staging = staging_directory_for_v1(&destination);
+    let config = SearchdConfig::from_test_state_root(source.path().to_path_buf());
+    let targets = offline_target_factory_v1(&config)?;
     let error = run_offline_backup_v1(
         &session,
         &destination,
-        &StubCatalogV1,
-        &StubDeepOpenV1,
+        &targets,
         &NoStateMigrationFaultsV1,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
     )
     .expect_err("source drift must refuse the publish");
     assert_eq!(
@@ -2814,7 +3171,10 @@ fn mid_backup_source_byte_change_publishes_no_destination() -> TestResult {
         Some(SearchPlaneErrorCodeV2::StateRootInsecure)
     );
     assert!(!destination.exists(), "zero destination publish on drift");
-    assert!(!staging.exists(), "the drift refusal removes its staging");
+    assert!(
+        !staging.exists(),
+        "drift refusal must precede staging birth"
+    );
     fs::write(&victim, &original)?;
     Ok(())
 }

@@ -6,8 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
+use std::sync::{Arc, atomic::AtomicBool};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result as AnyResult, ensure};
@@ -22,6 +21,9 @@ use quanta_index_searchd_harness::artifact::{
     LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest,
     corpus_digest, model_revision_of,
 };
+use quanta_index_searchd_harness::offered_load::{
+    self, MAX_TOTAL_REQUESTS, OfferedConfig, OfferedTask, scheduled_count,
+};
 use quanta_index_searchd_harness::scale::{
     DiskObservationMode, ScaleRuntimeConfig, ScaleStageError, ScaleTier, ScopedOracle,
     generate_corpus, generate_scoped_corpus, params_for, preflight_scoped_corpus, repo_query_token,
@@ -35,26 +37,11 @@ use serde_json::{Value, json};
 pub(crate) const DIMENSION: &str = "open-loop";
 const QUERY: &str = "scale_needle_token";
 const TOP_K: u32 = 10;
-const MAX_TOTAL_REQUESTS: u128 = 100_000;
 const MIN_DELIVERY_RATIO: f64 = 0.95;
 
-/// Arrival process used to schedule requests independently of completions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ArrivalModel {
-    /// Legacy fixed-spacing diagnostic schedule.
-    DeterministicPeriodic,
-    /// Seeded exponential inter-arrivals, the qualification default.
-    SeededPoisson,
-}
-
-impl ArrivalModel {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::DeterministicPeriodic => "deterministic_periodic",
-            Self::SeededPoisson => "seeded_poisson",
-        }
-    }
-}
+pub(crate) use quanta_index_searchd_harness::offered_load::ArrivalModel;
+#[cfg(test)]
+use quanta_index_searchd_harness::offered_load::scheduled_offset;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
@@ -74,6 +61,18 @@ pub(crate) struct Config {
 }
 
 impl Config {
+    fn offered_config(&self, rate_qps: u32) -> OfferedConfig {
+        OfferedConfig {
+            seed: self.seed,
+            arrival_model: self.arrival_model,
+            rate_qps,
+            duration: self.duration,
+            workers: self.workers,
+            queue_capacity: self.queue_capacity,
+            request_timeout: self.request_timeout,
+        }
+    }
+
     fn history_config(&self) -> ScaleRuntimeConfig {
         ScaleRuntimeConfig {
             disk_observation: DiskObservationMode::BoundaryOnly,
@@ -156,79 +155,8 @@ impl Config {
     }
 }
 
-fn scheduled_count(duration: Duration, rate: u32) -> AnyResult<u128> {
-    ensure!(rate > 0, "offered QPS must be positive");
-    let scaled = duration
-        .as_nanos()
-        .checked_mul(u128::from(rate))
-        .context("offered request count overflow")?;
-    Ok(scaled.div_ceil(1_000_000_000))
-}
-
-fn scheduled_offset(index: u128, rate: u32) -> AnyResult<Duration> {
-    let scaled = index
-        .checked_mul(1_000_000_000)
-        .context("scheduled offset overflow")?;
-    let nanos = scaled
-        .checked_div(u128::from(rate))
-        .context("offered QPS must be positive")?;
-    Ok(Duration::from_nanos(u64::try_from(nanos)?))
-}
-
-/// Small deterministic PRNG sufficient for schedule generation. It is local to
-/// the benchmark contract so an ambient thread RNG cannot alter a replay.
-fn next_random(state: &mut u64) -> u64 {
-    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    let mut value = *state;
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
-}
-
-fn poisson_offsets(duration: Duration, rate: u32, seed: u64) -> AnyResult<Vec<Duration>> {
-    let expected = scheduled_count(duration, rate)?;
-    let maximum = expected
-        .checked_mul(2)
-        .and_then(|value| value.checked_add(128))
-        .context("Poisson schedule limit overflow")?;
-    let mut state = seed ^ u64::from(rate).rotate_left(17);
-    let mut elapsed_secs = 0.0_f64;
-    let duration_secs = duration.as_secs_f64();
-    let mut offsets = Vec::new();
-    loop {
-        if elapsed_secs >= duration_secs {
-            break;
-        }
-        // Map 53 random bits into (0, 1] so ln is finite and zero intervals
-        // cannot create duplicate scheduled arrivals.
-        let random = next_random(&mut state) >> 11;
-        let high = u32::try_from(random >> 21).context("Poisson random high bits overflow")?;
-        let low = u32::try_from(random & ((1_u64 << 21) - 1))
-            .context("Poisson random low bits overflow")?;
-        let unit = (f64::from(high) * 2_097_152.0 + f64::from(low)) / 9_007_199_254_740_992.0;
-        let open_unit = unit.clamp(f64::MIN_POSITIVE, 1.0);
-        elapsed_secs += -open_unit.ln() / f64::from(rate);
-        if elapsed_secs >= duration_secs {
-            break;
-        }
-        if u128::try_from(offsets.len()).context("Poisson schedule length overflow")? >= maximum {
-            anyhow::bail!("Poisson schedule exceeded its bounded replay limit");
-        }
-        offsets.push(Duration::from_secs_f64(elapsed_secs));
-    }
-    Ok(offsets)
-}
-
 fn scheduled_offsets(config: &Config, rate: u32) -> AnyResult<Vec<Duration>> {
-    match config.arrival_model {
-        ArrivalModel::DeterministicPeriodic => {
-            let count = scheduled_count(config.duration, rate)?;
-            (0..count)
-                .map(|index| scheduled_offset(index, rate))
-                .collect()
-        }
-        ArrivalModel::SeededPoisson => poisson_offsets(config.duration, rate, config.seed),
-    }
+    offered_load::scheduled_offsets(&config.offered_config(rate))
 }
 
 /// One generated chunk per source file carries the planted exact query.
@@ -319,12 +247,6 @@ struct Completion {
     dispatch_lag_ms: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct OfferedRequest {
-    id: u64,
-    scheduled: Instant,
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct LoadPoint {
     pub target_qps: u32,
@@ -397,6 +319,7 @@ fn transport_kind(error: &IpcError) -> String {
         IpcError::Encode(_) => "encode".to_string(),
         IpcError::Decode(_) => "decode".to_string(),
         IpcError::IngressSaturated { .. } => "ingress_saturated".to_string(),
+        IpcError::FrameMemoryLimited { .. } => "frame_memory_limited".to_string(),
         IpcError::ZeroRequestId => "zero_request_id".to_string(),
         IpcError::Timeout { .. }
         | IpcError::InvalidClientIoTimeout
@@ -413,7 +336,7 @@ fn dispatch(
     socket: &Path,
     pin: &GenerationPin,
     expected_rows: &[ExpectedRow],
-    task: OfferedRequest,
+    task: OfferedTask,
     timeout: Duration,
 ) -> Completion {
     let now = Instant::now();
@@ -618,90 +541,26 @@ fn measure_point(
     config: &Config,
     rate: u32,
 ) -> AnyResult<LoadPoint> {
-    let offsets = scheduled_offsets(config, rate)?;
-    let offered = u64::try_from(offsets.len())?;
-    ensure!(
-        offered > 0,
-        "open-loop schedule offered no requests at {rate} QPS"
-    );
-    let (sender, receiver) = mpsc::sync_channel::<OfferedRequest>(config.queue_capacity);
-    let shared_receiver = Arc::new(Mutex::new(receiver));
-    let (results_sender, results_receiver) = mpsc::channel::<Completion>();
-    let mut handles = Vec::with_capacity(config.workers);
-    for _ in 0..config.workers {
-        let shared_receiver = Arc::clone(&shared_receiver);
-        let results_sender = results_sender.clone();
-        let socket = PathBuf::from(socket);
-        let pin = pin.clone();
-        let expected_rows = expected_rows.to_vec();
-        let timeout = config.request_timeout;
-        handles.push(thread::spawn(move || {
-            loop {
-                let next = match shared_receiver.lock() {
-                    Ok(receiver) => receiver.recv(),
-                    Err(_) => return,
-                };
-                match next {
-                    Ok(task) => {
-                        if results_sender
-                            .send(dispatch(&socket, &pin, &expected_rows, task, timeout))
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                    Err(_) => return,
-                }
-            }
-        }));
-    }
-    drop(results_sender);
-    let started = Instant::now();
-    let mut dropped_queue_full = 0_u64;
-    let mut dropped_scheduler_late = 0_u64;
-    for (index, offset) in offsets.into_iter().enumerate() {
-        let scheduled = started
-            .checked_add(offset)
-            .context("scheduled arrival instant overflow")?;
-        if let Some(wait) = scheduled.checked_duration_since(Instant::now()) {
-            thread::sleep(wait);
-        }
-        if Instant::now().saturating_duration_since(scheduled) >= config.request_timeout {
-            // The scheduler itself missed this deadline. No request was sent.
-            increment_count(&mut dropped_scheduler_late, "scheduler-late drop count")?;
-            continue;
-        }
-        match sender.try_send(OfferedRequest {
-            id: u64::try_from(index)?
-                .checked_add(1)
-                .context("request id overflow")?,
-            scheduled,
-        }) {
-            Ok(()) => {}
-            Err(mpsc::TrySendError::Full(_)) => {
-                increment_count(&mut dropped_queue_full, "full-queue drop count")?;
-            }
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                anyhow::bail!("all load workers disconnected during scheduling");
-            }
-        }
-    }
-    drop(sender);
-    for handle in handles {
-        handle
-            .join()
-            .map_err(|panic| anyhow::anyhow!("load worker panicked: {panic:?}"))?;
-    }
-    let drain_secs = started.elapsed().as_secs_f64();
-    let completions: Vec<Completion> = results_receiver.into_iter().collect();
+    let socket = PathBuf::from(socket);
+    let pin = pin.clone();
+    let expected_rows = expected_rows.to_vec();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let run = offered_load::run_point(
+        &config.offered_config(rate),
+        &cancel,
+        move |task, timeout| dispatch(&socket, &pin, &expected_rows, task, timeout),
+    )?;
     summarize(
         rate,
         config.duration,
-        offered,
-        dropped_queue_full,
-        dropped_scheduler_late,
-        completions,
-        drain_secs,
+        run.offered,
+        run.dropped_queue_full,
+        run.dropped_scheduler_late,
+        run.completions
+            .into_iter()
+            .map(|entry| entry.value)
+            .collect(),
+        run.drain_secs,
     )
 }
 

@@ -69,7 +69,11 @@ def _load_module():
 
 def _write_catalog(path: Path, body: str) -> Path:
     # Fixture package identity is independent of the owner supplied by the catalog.
-    for pattern in ("crates/*/tests/*.rs", "benchmarks/*/tests/*.rs"):
+    for pattern in (
+        "crates/*/tests/*.rs",
+        "benchmarks/*/tests/*.rs",
+        "vendor/ciborium-0.2.2/tests/*.rs",
+    ):
         for source in path.glob(pattern):
             manifest = source.parent.parent / "Cargo.toml"
             if not manifest.exists():
@@ -546,6 +550,67 @@ def test_orphan_integration_target_fails_closed(tmp_path: Path):
     violations = module.audit_catalog(tmp_path, catalog)
 
     assert any("orphan integration test target" in violation.message for violation in violations)
+
+
+def test_workspace_owned_ciborium_targets_are_discovered_and_unregistered_targets_fail_closed(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    codec_tests = tmp_path / "vendor" / "ciborium-0.2.2" / "tests"
+    codec_tests.mkdir(parents=True)
+    (codec_tests.parent / "Cargo.toml").write_text(
+        '[package]\nname = "ciborium"\nversion = "0.2.2"\n', encoding="utf-8"
+    )
+    (codec_tests / "canonical.rs").write_text("", encoding="utf-8")
+    (codec_tests / "unregistered.rs").write_text("", encoding="utf-8")
+    unrelated_vendor = tmp_path / "vendor" / "other-crate" / "tests"
+    unrelated_vendor.mkdir(parents=True)
+    (unrelated_vendor / "unowned.rs").write_text("", encoding="utf-8")
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 1
+
+        [rails.pr-workspace]
+        tier = "pr"
+        command = "./scripts/cargow nextest run --workspace --all-features --locked"
+        target_kind = "integration"
+
+        [[integration_targets]]
+        id = "ciborium-canonical"
+        path = "vendor/ciborium-0.2.2/tests/canonical.rs"
+        owner = "ciborium"
+        rail = "pr-workspace"
+        """,
+    )
+    discovered = module._discover_integration_targets(tmp_path)
+    assert "vendor/ciborium-0.2.2/tests/canonical.rs" in discovered
+    assert "vendor/ciborium-0.2.2/tests/unregistered.rs" in discovered
+    assert "vendor/other-crate/tests/unowned.rs" not in discovered
+    violations = module.audit_catalog(tmp_path, catalog)
+    assert any(
+        "orphan integration test target" in violation.message
+        and violation.path == codec_tests / "unregistered.rs"
+        for violation in violations
+    )
+    (codec_tests / "unregistered.rs").unlink()
+    assert module.audit_catalog(tmp_path, catalog) == []
+
+
+def test_live_ciborium_no_std_target_uses_a_separate_disabled_default_feature_rail() -> None:
+    module = _load_module()
+    catalog = module.tomllib.loads((REPO_ROOT / "tools/ci/test-authority.toml").read_text())
+    target = next(
+        entry for entry in catalog["integration_targets"] if entry["id"] == "ciborium-no-std"
+    )
+    rail = catalog["rails"][target["rail"]]
+    assert target["owner"] == "ciborium"
+    assert target["path"] == "vendor/ciborium-0.2.2/tests/no_std.rs"
+    assert rail["command"] == (
+        "./scripts/cargow --lane test-ciborium-no-default-lane test -p ciborium "
+        "--no-default-features --test no_std --locked"
+    )
+    assert "--all-features" not in rail["command"]
 
 
 def test_invalid_target_reference_and_missing_p0_proof_fail_closed(tmp_path: Path):

@@ -10,9 +10,152 @@ use crate::{
 use core::fmt;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, MapAccess, SeqAccess, Visitor},
+    de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor},
     ser::SerializeStruct,
 };
+
+mod admitted;
+pub use admitted::CorpusDecodeLimitsV1;
+use admitted::{CorpusDecodePolicy, Ordinary};
+
+/// Classify a wire map key against its existing schema without creating an
+/// owned String for each known field. The returned key is the schema literal.
+struct CorpusFieldKeySeed {
+    fields: &'static [&'static str],
+}
+
+impl<'de> DeserializeSeed<'de> for CorpusFieldKeySeed {
+    type Value = &'static str;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_identifier(self)
+    }
+}
+
+impl CorpusFieldKeySeed {
+    fn classify<E: de::Error>(self, key: &str) -> Result<&'static str, E> {
+        self.fields
+            .iter()
+            .copied()
+            .find(|field| *field == key)
+            .ok_or_else(|| de::Error::unknown_field(key, self.fields))
+    }
+}
+
+impl Visitor<'_> for CorpusFieldKeySeed {
+    type Value = &'static str;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a corpus field name")
+    }
+
+    fn visit_str<E: de::Error>(self, key: &str) -> Result<Self::Value, E> {
+        self.classify(key)
+    }
+
+    fn visit_string<E: de::Error>(self, key: String) -> Result<Self::Value, E> {
+        self.classify(&key)
+    }
+}
+
+#[cfg(test)]
+mod corpus_field_key_tests {
+    use super::{CorpusFieldKeySeed, SEARCH_SCOPE_KEY_FIELDS, SearchScopeKey, SearchScopeSurface};
+    use crate::RepoRelativePath;
+    use serde::de::{DeserializeSeed, value};
+
+    type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn known_keys_resolve_to_static_schema_literals() -> TestRes {
+        const JSON: &str = "\"doc_surface\"";
+        let expected = SEARCH_SCOPE_KEY_FIELDS
+            .first()
+            .ok_or("missing doc_surface schema field")?;
+
+        let mut json = serde_json::Deserializer::from_str(JSON);
+        let json_key = CorpusFieldKeySeed {
+            fields: SEARCH_SCOPE_KEY_FIELDS,
+        }
+        .deserialize(&mut json)?;
+        if !core::ptr::eq(json_key.as_ptr(), expected.as_ptr()) {
+            return Err("JSON key did not resolve to schema literal".into());
+        }
+
+        let borrowed = value::BorrowedStrDeserializer::<value::Error>::new("doc_surface");
+        let borrowed_key = CorpusFieldKeySeed {
+            fields: SEARCH_SCOPE_KEY_FIELDS,
+        }
+        .deserialize(borrowed)?;
+        if !core::ptr::eq(borrowed_key.as_ptr(), expected.as_ptr()) {
+            return Err("borrowed key did not resolve to schema literal".into());
+        }
+
+        // A deserializer that already owns the key still returns the schema
+        // literal, so the caller never retains a parser-owned String.
+        let owned = value::StringDeserializer::<value::Error>::new("doc_surface".to_owned());
+        let owned_key = CorpusFieldKeySeed {
+            fields: SEARCH_SCOPE_KEY_FIELDS,
+        }
+        .deserialize(owned)?;
+        if !core::ptr::eq(owned_key.as_ptr(), expected.as_ptr()) {
+            return Err("owned key did not resolve to schema literal".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_json_and_cbor_map_wires_preserve_key_behavior() -> TestRes {
+        const JSON_SCOPE: &str = r#"{"doc_surface":"File","repo_relative_path":"src/main.rs"}"#;
+        const CBOR_SCOPE: &[u8] =
+            b"\xa2\x6bdoc_surface\x64File\x72repo_relative_path\x6bsrc/main.rs";
+        let expected = SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        };
+        let json: SearchScopeKey = serde_json::from_str(JSON_SCOPE)?;
+        let cbor: SearchScopeKey = ciborium::from_reader(CBOR_SCOPE)?;
+        if json != expected || cbor != expected {
+            return Err("fixed JSON or CBOR map changed SearchScopeKey".into());
+        }
+
+        let mut json = serde_json::Deserializer::from_str("\"alien\"");
+        if (CorpusFieldKeySeed {
+            fields: SEARCH_SCOPE_KEY_FIELDS,
+        })
+        .deserialize(&mut json)
+        .is_ok()
+        {
+            return Err("unknown JSON key was accepted".into());
+        }
+
+        for wire in [&b"\xa1\x65alien\xf5"[..], &b"\xa1\x01\xf5"[..]] {
+            if ciborium::from_reader::<SearchScopeKey, _>(wire).is_ok() {
+                return Err("unknown or nontext CBOR key was accepted".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn known_noncanonical_cbor_key_forms_are_refused() {
+        // An indefinite text key concatenates to the known "doc_surface"
+        // spelling. Identifier decoding intentionally accepts only finite
+        // text keys, matching the canonical writer's wire form.
+        const INDEFINITE_TEXT_KEY: &[u8] =
+            b"\xa2\x7f\x64doc_\x67surface\xff\x64File\x72repo_relative_path\x6bsrc/main.rs";
+        // CBOR byte strings are not text keys, even if their bytes spell a
+        // known field name.
+        const BYTE_STRING_KEY: &[u8] =
+            b"\xa2\x4bdoc_surface\x64File\x72repo_relative_path\x6bsrc/main.rs";
+        for wire in [INDEFINITE_TEXT_KEY, BYTE_STRING_KEY] {
+            assert!(
+                ciborium::from_reader::<SearchScopeKey, _>(wire).is_err(),
+                "noncanonical CBOR field key was accepted"
+            );
+        }
+    }
+}
 
 // =============================================================================
 // Batch mode
@@ -289,9 +432,9 @@ impl Serialize for SearchScopeKey {
     }
 }
 
-struct SearchScopeKeyVisitor;
+struct SearchScopeKeyVisitor<P>(P);
 
-impl<'de> Visitor<'de> for SearchScopeKeyVisitor {
+impl<'de, P: CorpusDecodePolicy<'de>> Visitor<'de> for SearchScopeKeyVisitor<P> {
     type Value = SearchScopeKey;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -304,8 +447,8 @@ impl<'de> Visitor<'de> for SearchScopeKeyVisitor {
     {
         let mut doc_surface: Option<SearchScopeSurface> = None;
         let mut repo_relative_path: Option<RepoRelativePath> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self.0.next_field(&mut map, SEARCH_SCOPE_KEY_FIELDS)? {
+            match key {
                 "doc_surface" => {
                     if doc_surface.is_some() {
                         return Err(de::Error::duplicate_field("doc_surface"));
@@ -316,7 +459,7 @@ impl<'de> Visitor<'de> for SearchScopeKeyVisitor {
                     if repo_relative_path.is_some() {
                         return Err(de::Error::duplicate_field("repo_relative_path"));
                     }
-                    repo_relative_path = Some(map.next_value()?);
+                    repo_relative_path = Some(self.0.next_path(&mut map)?);
                 }
                 other => return Err(de::Error::unknown_field(other, SEARCH_SCOPE_KEY_FIELDS)),
             }
@@ -337,7 +480,7 @@ impl<'de> Deserialize<'de> for SearchScopeKey {
         deserializer.deserialize_struct(
             "SearchScopeKey",
             SEARCH_SCOPE_KEY_FIELDS,
-            SearchScopeKeyVisitor,
+            SearchScopeKeyVisitor(Ordinary),
         )
     }
 }
@@ -415,9 +558,9 @@ impl Serialize for SearchCorpusReplaceScope {
     }
 }
 
-struct SearchCorpusReplaceScopeVisitor;
+struct SearchCorpusReplaceScopeVisitor<P>(P);
 
-impl<'de> Visitor<'de> for SearchCorpusReplaceScopeVisitor {
+impl<'de, P: CorpusDecodePolicy<'de>> Visitor<'de> for SearchCorpusReplaceScopeVisitor<P> {
     type Value = SearchCorpusReplaceScope;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -432,31 +575,34 @@ impl<'de> Visitor<'de> for SearchCorpusReplaceScopeVisitor {
         let mut source_bytes: Option<Vec<u8>> = None;
         let mut chunks: Option<Vec<ChunkRecord>> = None;
         let mut symbols: Option<Vec<SymbolRecord>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self
+            .0
+            .next_field(&mut map, SEARCH_CORPUS_REPLACE_SCOPE_FIELDS)?
+        {
+            match key {
                 "coverage" => {
                     if coverage.is_some() {
                         return Err(de::Error::duplicate_field("coverage"));
                     }
-                    coverage = Some(map.next_value()?);
+                    coverage = Some(self.0.next_coverage(&mut map)?);
                 }
                 "source_bytes" => {
                     if source_bytes.is_some() {
                         return Err(de::Error::duplicate_field("source_bytes"));
                     }
-                    source_bytes = Some(map.next_value::<SourceBytesBuf>()?.0);
+                    source_bytes = Some(self.0.next_source_bytes(&mut map)?);
                 }
                 "chunks" => {
                     if chunks.is_some() {
                         return Err(de::Error::duplicate_field("chunks"));
                     }
-                    chunks = Some(map.next_value()?);
+                    chunks = Some(self.0.next_chunks(&mut map)?);
                 }
                 "symbols" => {
                     if symbols.is_some() {
                         return Err(de::Error::duplicate_field("symbols"));
                     }
-                    symbols = Some(map.next_value()?);
+                    symbols = Some(self.0.next_symbols(&mut map)?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
@@ -483,7 +629,7 @@ impl<'de> Deserialize<'de> for SearchCorpusReplaceScope {
         deserializer.deserialize_struct(
             "SearchCorpusReplaceScope",
             SEARCH_CORPUS_REPLACE_SCOPE_FIELDS,
-            SearchCorpusReplaceScopeVisitor,
+            SearchCorpusReplaceScopeVisitor(Ordinary),
         )
     }
 }
@@ -506,9 +652,9 @@ impl Serialize for SearchCorpusTombstoneScope {
     }
 }
 
-struct SearchCorpusTombstoneScopeVisitor;
+struct SearchCorpusTombstoneScopeVisitor<P>(P);
 
-impl<'de> Visitor<'de> for SearchCorpusTombstoneScopeVisitor {
+impl<'de, P: CorpusDecodePolicy<'de>> Visitor<'de> for SearchCorpusTombstoneScopeVisitor<P> {
     type Value = SearchCorpusTombstoneScope;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -520,13 +666,16 @@ impl<'de> Visitor<'de> for SearchCorpusTombstoneScopeVisitor {
         A: MapAccess<'de>,
     {
         let mut file: Option<SourceFileKey> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self
+            .0
+            .next_field(&mut map, SEARCH_CORPUS_TOMBSTONE_SCOPE_FIELDS)?
+        {
+            match key {
                 "file" => {
                     if file.is_some() {
                         return Err(de::Error::duplicate_field("file"));
                     }
-                    file = Some(map.next_value()?);
+                    file = Some(self.0.next_file(&mut map)?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
@@ -550,7 +699,7 @@ impl<'de> Deserialize<'de> for SearchCorpusTombstoneScope {
         deserializer.deserialize_struct(
             "SearchCorpusTombstoneScope",
             SEARCH_CORPUS_TOMBSTONE_SCOPE_FIELDS,
-            SearchCorpusTombstoneScopeVisitor,
+            SearchCorpusTombstoneScopeVisitor(Ordinary),
         )
     }
 }
@@ -621,9 +770,9 @@ impl Serialize for SearchCorpusIngestBatch {
     }
 }
 
-struct SearchCorpusIngestBatchVisitor;
+struct SearchCorpusIngestBatchVisitor<P>(P);
 
-impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
+impl<'de, P: CorpusDecodePolicy<'de>> Visitor<'de> for SearchCorpusIngestBatchVisitor<P> {
     type Value = SearchCorpusIngestBatch;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -649,25 +798,28 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
         let mut semantic_replace_scopes: Option<Vec<SemanticSourceReplaceScopeV1>> = None;
         let mut semantic_tombstone_scopes: Option<Vec<SemanticSourceScopeKeyV1>> = None;
         let mut seal: Option<bool> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self
+            .0
+            .next_field(&mut map, SEARCH_CORPUS_INGEST_BATCH_FIELDS)?
+        {
+            match key {
                 "source_event" => {
                     if source_event.is_some() {
                         return Err(de::Error::duplicate_field("source_event"));
                     }
-                    source_event = Some(map.next_value()?);
+                    source_event = Some(self.0.next_event(&mut map)?);
                 }
                 "repo_id" => {
                     if repo_id.is_some() {
                         return Err(de::Error::duplicate_field("repo_id"));
                     }
-                    repo_id = Some(map.next_value()?);
+                    repo_id = Some(self.0.next_repo(&mut map)?);
                 }
                 "revision_id" => {
                     if revision_id.is_some() {
                         return Err(de::Error::duplicate_field("revision_id"));
                     }
-                    revision_id = Some(map.next_value()?);
+                    revision_id = Some(self.0.next_revision(&mut map)?);
                 }
                 "generation" => {
                     if generation.is_some() {
@@ -685,13 +837,13 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
                     if manifest_digest.is_some() {
                         return Err(de::Error::duplicate_field("manifest_digest"));
                     }
-                    manifest_digest = Some(map.next_value()?);
+                    manifest_digest = Some(self.0.next_digest(&mut map)?);
                 }
                 "batch_digest" => {
                     if batch_digest.is_some() {
                         return Err(de::Error::duplicate_field("batch_digest"));
                     }
-                    batch_digest = Some(map.next_value()?);
+                    batch_digest = Some(self.0.next_digest(&mut map)?);
                 }
                 "mode" => {
                     if mode.is_some() {
@@ -703,37 +855,37 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
                     if bundle_payload.is_some() {
                         return Err(de::Error::duplicate_field("bundle_payload"));
                     }
-                    bundle_payload = Some(map.next_value()?);
+                    bundle_payload = Some(self.0.next_bundle(&mut map)?);
                 }
                 "clear_surfaces" => {
                     if clear_surfaces.is_some() {
                         return Err(de::Error::duplicate_field("clear_surfaces"));
                     }
-                    clear_surfaces = Some(map.next_value()?);
+                    clear_surfaces = Some(self.0.next_clear(&mut map)?);
                 }
                 "replace_scopes" => {
                     if replace_scopes.is_some() {
                         return Err(de::Error::duplicate_field("replace_scopes"));
                     }
-                    replace_scopes = Some(map.next_value()?);
+                    replace_scopes = Some(self.0.next_replace(&mut map)?);
                 }
                 "tombstone_scopes" => {
                     if tombstone_scopes.is_some() {
                         return Err(de::Error::duplicate_field("tombstone_scopes"));
                     }
-                    tombstone_scopes = Some(map.next_value()?);
+                    tombstone_scopes = Some(self.0.next_tombstone(&mut map)?);
                 }
                 "semantic_replace_scopes" => {
                     if semantic_replace_scopes.is_some() {
                         return Err(de::Error::duplicate_field("semantic_replace_scopes"));
                     }
-                    semantic_replace_scopes = Some(map.next_value()?);
+                    semantic_replace_scopes = Some(self.0.next_semantic_replace(&mut map)?);
                 }
                 "semantic_tombstone_scopes" => {
                     if semantic_tombstone_scopes.is_some() {
                         return Err(de::Error::duplicate_field("semantic_tombstone_scopes"));
                     }
-                    semantic_tombstone_scopes = Some(map.next_value()?);
+                    semantic_tombstone_scopes = Some(self.0.next_semantic_tombstone(&mut map)?);
                 }
                 "seal" => {
                     if seal.is_some() {
@@ -785,7 +937,7 @@ impl<'de> Deserialize<'de> for SearchCorpusIngestBatch {
         deserializer.deserialize_struct(
             "SearchCorpusIngestBatch",
             SEARCH_CORPUS_INGEST_BATCH_FIELDS,
-            SearchCorpusIngestBatchVisitor,
+            SearchCorpusIngestBatchVisitor(Ordinary),
         )
     }
 }

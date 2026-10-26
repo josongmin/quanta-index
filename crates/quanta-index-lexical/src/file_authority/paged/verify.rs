@@ -4,16 +4,31 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use quanta_index_contract::SourceFileKey;
+use quanta_index_core::lexical_maintenance::LexicalMaintenancePolicy;
 use quanta_index_core::{CoreError, RequestBudgetV1};
 use quanta_index_lq_trigram::trigrams_of;
 use sha2::{Digest as _, Sha256};
 
 use crate::lexical_allocation::DocVersionReservation;
+use crate::lexical_runs::{
+    RunCandidate, RunRegistry, RunScanWindow, RunScrubCursor, RunSelectionProgress, SegmentInput,
+    SegmentRemoval, bounded_candidate_scan_limit, segment_index_encoded_bytes,
+};
+use crate::lexical_store::{
+    Authority as ScanAuthority, CandidateWitness, EligibilityWitness, IneligibleReason, ScanLane,
+    WindowWitness,
+};
 use crate::lexical_store::{BlobRef, MapCursor, MapRoot, ObjectKind, ObjectRef, ObjectStore};
+use crate::maintenance_merge_facts::FileRunMergeFacts;
 
 use super::producer::{FileAuthorityMutation, FileSourceEdit};
+use super::run_postings::{
+    RunGramCount, RunPostingPage, RunPostingRoot, run_merge_stage_bytes, run_page_key,
+    run_route_key,
+};
+use super::run_verify::{verify_changed_run, verify_clean_run_union, verify_global_run_routes};
 use super::{
-    AuthorityRoot, LiveDoc, PostingPage, Segment, SourceHead, doc_key, membership_key, route_key,
+    AuthorityRoot, LiveDoc, PostingPage, Segment, SourceHead, doc_key, membership_key,
     source_key_digest,
 };
 
@@ -39,8 +54,8 @@ fn index_usize(value: u32) -> Result<usize, CoreError> {
     usize::try_from(value).map_err(|_width_error| corrupt("local ID exceeds usize"))
 }
 
-fn route_parts(key: &[u8], surface: u8) -> Result<([u8; 3], u32, [u8; 32]), CoreError> {
-    if key.len() != 40 || key.first() != Some(&surface) {
+fn route_parts(key: &[u8], surface: u8) -> Result<([u8; 3], u64, u64), CoreError> {
+    if key.len() != 20 || key.first() != Some(&surface) {
         return Err(corrupt("route key shape differs"));
     }
     let gram = key
@@ -48,17 +63,21 @@ fn route_parts(key: &[u8], surface: u8) -> Result<([u8; 3], u32, [u8; 32]), Core
         .ok_or_else(|| corrupt("route gram absent"))?
         .try_into()
         .map_err(|_width_error| corrupt("route gram width differs"))?;
-    let count_bytes: [u8; 4] = key
-        .get(4..8)
+    let count_bytes: [u8; 8] = key
+        .get(4..12)
         .ok_or_else(|| corrupt("route count absent"))?
         .try_into()
         .map_err(|_width_error| corrupt("route count width differs"))?;
-    let digest = key
-        .get(8..)
-        .ok_or_else(|| corrupt("route segment absent"))?
+    let run_bytes: [u8; 8] = key
+        .get(12..20)
+        .ok_or_else(|| corrupt("route run absent"))?
         .try_into()
-        .map_err(|_width_error| corrupt("route segment width differs"))?;
-    Ok((gram, u32::from_be_bytes(count_bytes), digest))
+        .map_err(|_width_error| corrupt("route run width differs"))?;
+    Ok((
+        gram,
+        u64::from_be_bytes(count_bytes),
+        u64::from_be_bytes(run_bytes),
+    ))
 }
 
 fn source_head(
@@ -265,85 +284,6 @@ impl<'a> ExpectedTerms<'a> {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct RouteCommitment {
-    count: u64,
-    sha256: [u8; 32],
-}
-
-struct RouteHasher {
-    hasher: Sha256,
-    count: u64,
-}
-
-struct RouteWitness {
-    reference: BlobRef,
-    expected: [RouteCommitment; 2],
-    actual: [RouteHasher; 2],
-}
-
-impl RouteWitness {
-    fn new(reference: BlobRef, expected: [RouteCommitment; 2]) -> Self {
-        let digest = reference.root.sha256;
-        Self {
-            reference,
-            expected,
-            actual: [RouteHasher::new(1, digest), RouteHasher::new(2, digest)],
-        }
-    }
-
-    fn record(&mut self, surface: u8, key: &[u8], reference: &BlobRef) -> Result<(), CoreError> {
-        if *reference != self.reference {
-            return Err(corrupt("route value differs from segment descriptor"));
-        }
-        let index = usize::from(surface)
-            .checked_sub(1)
-            .ok_or_else(|| corrupt("route surface underflows"))?;
-        self.actual
-            .get_mut(index)
-            .ok_or_else(|| corrupt("route surface exceeds two surfaces"))?
-            .push(key)
-    }
-
-    fn verify(self) -> Result<(), CoreError> {
-        for (expected, actual) in self.expected.into_iter().zip(self.actual) {
-            if expected != actual.finish() {
-                return Err(corrupt("segment route inventory differs from term pages"));
-            }
-        }
-        Ok(())
-    }
-}
-
-impl RouteHasher {
-    fn new(surface: u8, segment: [u8; 32]) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(b"quanta-file-route-stream-v17\0");
-        hasher.update([surface]);
-        hasher.update(segment);
-        Self { hasher, count: 0 }
-    }
-
-    fn push(&mut self, key: &[u8]) -> Result<(), CoreError> {
-        if key.len() != 40 {
-            return Err(corrupt("route commitment key width differs"));
-        }
-        self.count = self
-            .count
-            .checked_add(1)
-            .ok_or_else(|| corrupt("route commitment count overflows"))?;
-        self.hasher.update(key);
-        Ok(())
-    }
-
-    fn finish(self) -> RouteCommitment {
-        RouteCommitment {
-            count: self.count,
-            sha256: self.hasher.finalize().into(),
-        }
-    }
-}
-
 /// Authenticates each posting page once, including its complete term inventory.
 struct TermPageStream<'a> {
     store: &'a ObjectStore,
@@ -424,15 +364,14 @@ impl<'a> TermPageStream<'a> {
 
 fn verify_term_map(
     store: &ObjectStore,
-    digest: [u8; 32],
-    surface: u8,
+    _digest: [u8; 32],
+    _surface: u8,
     terms: &MapRoot,
     expected_sources: &[Vec<[u8; 3]>],
     doc_count: usize,
-) -> Result<RouteCommitment, CoreError> {
+) -> Result<(), CoreError> {
     let mut stream = TermPageStream::new(store, terms, doc_count)?;
     let mut expected = ExpectedTerms::new(expected_sources)?;
-    let mut routes = RouteHasher::new(surface, digest);
     while let Some((gram, page_mask)) = stream.next_term()? {
         let (expected_gram, expected_mask) = expected
             .next_term()?
@@ -440,27 +379,11 @@ fn verify_term_map(
         if gram != expected_gram || page_mask != expected_mask {
             return Err(corrupt("posting IDs differ from source-body gram oracle"));
         }
-        routes.push(&route_key(surface, gram, page_mask.count_ones(), digest))?;
     }
     if expected.next_term()?.is_some() {
         return Err(corrupt("term map omits a source-body gram"));
     }
-    Ok(routes.finish())
-}
-
-fn inherited_route_commitment(
-    store: &ObjectStore,
-    terms: &MapRoot,
-    doc_count: usize,
-    surface: u8,
-    digest: [u8; 32],
-) -> Result<RouteCommitment, CoreError> {
-    let mut stream = TermPageStream::new(store, terms, doc_count)?;
-    let mut routes = RouteHasher::new(surface, digest);
-    while let Some((gram, mask)) = stream.next_term()? {
-        routes.push(&route_key(surface, gram, mask.count_ones(), digest))?;
-    }
-    Ok(routes.finish())
+    Ok(())
 }
 
 /// Verify one newly produced or compacted segment against its current sources.
@@ -471,7 +394,7 @@ fn verify_segment(
     store: &ObjectStore,
     root: &AuthorityRoot,
     reference: &BlobRef,
-) -> Result<[RouteCommitment; 2], CoreError> {
+) -> Result<(), CoreError> {
     if reference.root.kind != ObjectKind::Segment {
         return Err(corrupt("segment value has wrong kind"));
     }
@@ -587,7 +510,7 @@ fn verify_segment(
             "segment membership count differs from source oracle",
         ));
     }
-    let path_routes = verify_term_map(
+    verify_term_map(
         store,
         digest,
         1,
@@ -595,7 +518,7 @@ fn verify_segment(
         &expected_path,
         segment.doc_ids.len(),
     )?;
-    let content_routes = verify_term_map(
+    verify_term_map(
         store,
         digest,
         2,
@@ -603,7 +526,7 @@ fn verify_segment(
         &expected_content,
         segment.doc_ids.len(),
     )?;
-    Ok([path_routes, content_routes])
+    Ok(())
 }
 
 pub(crate) fn verify_source_absent(
@@ -620,21 +543,38 @@ pub(crate) fn verify_source_absent(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct LiveTermEvidence<'a> {
+    doc_ids: &'a [u64],
+    active: &'a [bool],
+    expected_sources: &'a [Vec<[u8; 3]>],
+}
+
 fn verify_live_term_map(
     store: &ObjectStore,
     root: &AuthorityRoot,
     segment_ref: &BlobRef,
     terms: &MapRoot,
     surface: u8,
-    active: &[bool],
-    expected_sources: &[Vec<[u8; 3]>],
+    evidence: &LiveTermEvidence<'_>,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<(), CoreError> {
-    let routes = if surface == 1 {
-        &root.path_routes
-    } else {
-        &root.content_routes
-    };
+    let doc_ids = evidence.doc_ids;
+    let active = evidence.active;
+    let expected_sources = evidence.expected_sources;
+    if doc_ids.len() != active.len() {
+        return Err(corrupt("scrub segment local census differs"));
+    }
+    let run_id = root
+        .run_registry
+        .owner_run_id(store, segment_ref.root.sha256, budget)?;
+    let run_ref = store
+        .map_get(&root.run_postings, &run_id.to_be_bytes(), budget)?
+        .ok_or_else(|| corrupt("scrub physical leaf has no run postings"))?;
+    let run = RunPostingRoot::load(store, &run_ref, budget)?;
+    if run.run_id != run_id {
+        return Err(corrupt("scrub physical leaf run ID differs"));
+    }
     let mut cursor = store.map_cursor(terms, &[], None, budget)?;
     let mut page_cache: Option<(BlobRef, PostingPage, usize)> = None;
     let mut seen_pages = BTreeSet::new();
@@ -703,21 +643,31 @@ fn verify_live_term_map(
         if (*page_mask & active_mask) != expected_mask {
             return Err(corrupt("live posting differs from source-body oracle"));
         }
-        if store
-            .map_get(
-                routes,
-                &route_key(
-                    surface,
-                    gram,
-                    page_mask.count_ones(),
-                    segment_ref.root.sha256,
-                ),
+        for (local, id) in doc_ids.iter().enumerate() {
+            if *page_mask & (1_u64 << local) == 0 {
+                continue;
+            }
+            let bucket = run_page_key(surface, gram, *id)?;
+            let run_page_ref = store
+                .map_get(&run.pages, &bucket, budget)?
+                .ok_or_else(|| corrupt("physical leaf posting omitted from run page"))?;
+            let run_page = RunPostingPage::decode(&store.read_blob(
+                &run_page_ref,
+                size_u64(super::MAX_POSTING_PAGE_BYTES)?,
                 budget,
-            )?
-            .as_ref()
-            != Some(segment_ref)
-        {
-            return Err(corrupt("scrub segment term route is missing or different"));
+            )?)?;
+            let matching_member = run_page
+                .rows
+                .binary_search_by_key(id, |row| row.logical_id)
+                .is_ok_and(|index| {
+                    run_page
+                        .rows
+                        .get(index)
+                        .is_some_and(|row| row.segment_sha256 == segment_ref.root.sha256)
+                });
+            if run_page.key()? != bucket || !matching_member {
+                return Err(corrupt("physical leaf posting differs from run page"));
+            }
         }
     }
     if expected_next.is_some() {
@@ -729,36 +679,6 @@ fn verify_live_term_map(
         return Err(corrupt("scrub last page contains an unrouted term"));
     }
     Ok(())
-}
-
-// Scrub may select one route independently of a segment-wide seal proof.
-fn posting_count_for_term(
-    store: &ObjectStore,
-    terms: &MapRoot,
-    gram: [u8; 3],
-    doc_count: usize,
-    budget: Option<&RequestBudgetV1>,
-) -> Result<u32, CoreError> {
-    let page_ref = store
-        .map_get(terms, &gram, budget)?
-        .ok_or_else(|| corrupt("route gram absent from segment"))?;
-    if page_ref.root.kind != ObjectKind::FilePostings {
-        return Err(corrupt("route posting page kind differs"));
-    }
-    let page = PostingPage::decode(
-        &store.read_blob(&page_ref, size_u64(super::MAX_POSTING_PAGE_BYTES)?, budget)?,
-        doc_count,
-    )?;
-    let index = page
-        .0
-        .binary_search_by_key(&gram, |row| row.0)
-        .map_err(|_conversion_error| corrupt("route gram absent from posting page"))?;
-    Ok(page
-        .0
-        .get(index)
-        .ok_or_else(|| corrupt("route posting index disappeared"))?
-        .1
-        .count_ones())
 }
 
 fn verify_scrub_segment_row(
@@ -776,6 +696,14 @@ fn verify_scrub_segment_row(
     if reference.root.kind != ObjectKind::Segment || reference.root.sha256 != digest {
         return Err(corrupt("scrub segment reference differs from key"));
     }
+    let physical_index_bytes = segment_index_encoded_bytes(
+        store,
+        std::slice::from_ref(&reference.root),
+        budget,
+        size_u64(crate::lexical_store::MAX_CLOSURE_REFS)?,
+    )?;
+    root.run_registry
+        .verify_segment(store, key, reference, physical_index_bytes, budget)?;
     let segment = Segment::decode(&store.read_blob(
         reference,
         size_u64(super::MAX_RECORD_BYTES)?,
@@ -882,8 +810,11 @@ fn verify_scrub_segment_row(
         reference,
         &segment.path_terms,
         1,
-        &active,
-        &expected_path,
+        &LiveTermEvidence {
+            doc_ids: &segment.doc_ids,
+            active: &active,
+            expected_sources: &expected_path,
+        },
         budget,
     )?;
     verify_live_term_map(
@@ -892,11 +823,344 @@ fn verify_scrub_segment_row(
         reference,
         &segment.content_terms,
         2,
-        &active,
-        &expected_content,
+        &LiveTermEvidence {
+            doc_ids: &segment.doc_ids,
+            active: &active,
+            expected_sources: &expected_content,
+        },
         budget,
     )?;
     Ok(active_count)
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RunScrubPhase {
+    Pages,
+    Counts,
+}
+
+struct ActiveRunScrub {
+    id: u64,
+    reference: BlobRef,
+    root: RunPostingRoot,
+    phase: RunScrubPhase,
+    after_key: Option<Vec<u8>>,
+    current_gram: Option<[u8; 4]>,
+    current_gram_rows: u64,
+    page_rows: [u64; 2],
+    page_bytes: u64,
+    count_bytes: u64,
+    seen_pages: u64,
+    seen_grams: u64,
+    seen_counts: u64,
+}
+
+#[derive(Default)]
+struct RunPostingScrubCursor {
+    after_run: Option<Vec<u8>>,
+    active: Option<ActiveRunScrub>,
+    seen_runs: u64,
+    encoded_bytes: u64,
+}
+
+fn scrub_lower(after: Option<&Vec<u8>>) -> Vec<u8> {
+    after.map_or_else(Vec::new, |key| {
+        let mut lower = key.clone();
+        lower.push(0);
+        lower
+    })
+}
+
+fn scrub_run_page_member(
+    store: &ObjectStore,
+    root: &AuthorityRoot,
+    run_id: u64,
+    page: &RunPostingPage,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<(), CoreError> {
+    for row in &page.rows {
+        checkpoint(budget, "lexical:file-run-page-member")?;
+        if root
+            .run_registry
+            .owner_run_id(store, row.segment_sha256, budget)?
+            != run_id
+        {
+            return Err(corrupt("run posting row belongs to another run"));
+        }
+        let segment_ref = store
+            .map_get(&root.segments, &row.segment_sha256, budget)?
+            .ok_or_else(|| corrupt("run posting row names absent segment"))?;
+        if segment_ref.root.kind != ObjectKind::Segment
+            || segment_ref.root.sha256 != row.segment_sha256
+        {
+            return Err(corrupt("run posting row segment reference differs"));
+        }
+        let segment = Segment::decode(&store.read_blob(
+            &segment_ref,
+            size_u64(super::MAX_RECORD_BYTES)?,
+            budget,
+        )?)?;
+        let local = segment
+            .doc_ids
+            .binary_search(&row.logical_id)
+            .map_err(|_absent| corrupt("run posting ID absent from physical leaf"))?;
+        let terms = if page.surface == 1 {
+            &segment.path_terms
+        } else {
+            &segment.content_terms
+        };
+        let page_ref = store
+            .map_get(terms, &page.gram, budget)?
+            .ok_or_else(|| corrupt("run posting gram absent from physical leaf"))?;
+        if page_ref.root.kind != ObjectKind::FilePostings {
+            return Err(corrupt("physical leaf posting kind differs"));
+        }
+        let leaf = PostingPage::decode(
+            &store.read_blob(&page_ref, size_u64(super::MAX_POSTING_PAGE_BYTES)?, budget)?,
+            segment.doc_ids.len(),
+        )?;
+        let gram_index = leaf
+            .0
+            .binary_search_by_key(&page.gram, |entry| entry.0)
+            .map_err(|_absent| corrupt("physical leaf posting page omits run gram"))?;
+        let mask = leaf
+            .0
+            .get(gram_index)
+            .ok_or_else(|| corrupt("physical posting index disappeared"))?
+            .1;
+        if mask & (1_u64 << local) == 0 {
+            return Err(corrupt("physical leaf lacks run posting member"));
+        }
+    }
+    Ok(())
+}
+
+impl ActiveRunScrub {
+    fn flush_gram(
+        &mut self,
+        store: &ObjectStore,
+        authority: &AuthorityRoot,
+        budget: Option<&RequestBudgetV1>,
+    ) -> Result<(), CoreError> {
+        let Some(key) = self.current_gram else {
+            return Ok(());
+        };
+        let reference = store
+            .map_get(&self.root.gram_counts, &key, budget)?
+            .ok_or_else(|| corrupt("run pages have no gram count"))?;
+        if reference.root.kind != ObjectKind::Record {
+            return Err(corrupt("run gram count kind differs"));
+        }
+        let record = RunGramCount::decode(&store.read_blob(
+            &reference,
+            size_u64(super::MAX_RECORD_BYTES)?,
+            budget,
+        )?)?;
+        if record.key()? != key || record.count != self.current_gram_rows {
+            return Err(corrupt("run page rows differ from gram count"));
+        }
+        let [surface, first, second, third] = key;
+        let route = run_route_key(surface, [first, second, third], record.count, self.id)?;
+        let routes = match surface {
+            1 => &authority.path_routes,
+            2 => &authority.content_routes,
+            _ => return Err(corrupt("run gram surface differs")),
+        };
+        if store.map_get(routes, &route, budget)?.as_ref() != Some(&reference) {
+            return Err(corrupt("run gram count has no exact global route"));
+        }
+        let seen_grams = self
+            .seen_grams
+            .checked_add(1)
+            .ok_or_else(|| corrupt("run gram census overflows"))?;
+        // Commit only after every authenticated read and route check succeeds.
+        // An I/O or budget error must leave this gram available for retry.
+        self.seen_grams = seen_grams;
+        self.current_gram = None;
+        self.current_gram_rows = 0;
+        Ok(())
+    }
+}
+
+impl RunPostingScrubCursor {
+    /// One outer header, one posting page, or one count row per call. The
+    /// page has at most 256 members, so physical leaf checks remain bounded.
+    fn step(
+        &mut self,
+        store: &ObjectStore,
+        authority: &AuthorityRoot,
+        budget: Option<&RequestBudgetV1>,
+    ) -> Result<bool, CoreError> {
+        if self.active.is_none() {
+            let mut rows = store.map_cursor(
+                &authority.run_postings,
+                &scrub_lower(self.after_run.as_ref()),
+                None,
+                budget,
+            )?;
+            let Some((key, reference)) = rows.next()? else {
+                if self.seen_runs != authority.run_postings.entries
+                    || self.encoded_bytes != authority.run_index_encoded_bytes
+                {
+                    return Err(corrupt("run posting scrub census or byte ledger differs"));
+                }
+                return Ok(true);
+            };
+            let raw: [u8; 8] = key
+                .as_slice()
+                .try_into()
+                .map_err(|_width| corrupt("run posting outer key width differs"))?;
+            let id = u64::from_be_bytes(raw);
+            let root = RunPostingRoot::load(store, &reference, budget)?;
+            if root.run_id != id
+                || authority
+                    .run_registry
+                    .candidate_by_id(store, id, budget)?
+                    .is_none()
+            {
+                return Err(corrupt("run posting root has no live registry owner"));
+            }
+            let mut deps = root.object_roots();
+            deps.sort();
+            deps.dedup();
+            if store.object_dependencies(&reference.root, budget)? != deps {
+                return Err(corrupt("run posting root dependencies differ"));
+            }
+            self.active = Some(ActiveRunScrub {
+                id,
+                reference,
+                root,
+                phase: RunScrubPhase::Pages,
+                after_key: None,
+                current_gram: None,
+                current_gram_rows: 0,
+                page_rows: [0, 0],
+                page_bytes: 0,
+                count_bytes: 0,
+                seen_pages: 0,
+                seen_grams: 0,
+                seen_counts: 0,
+            });
+            return Ok(false);
+        }
+        let active = self
+            .active
+            .as_mut()
+            .ok_or_else(|| corrupt("run posting scrub state disappeared"))?;
+        let map = if active.phase == RunScrubPhase::Pages {
+            &active.root.pages
+        } else {
+            &active.root.gram_counts
+        };
+        let mut rows =
+            store.map_cursor(map, &scrub_lower(active.after_key.as_ref()), None, budget)?;
+        if let Some((key, reference)) = rows.next()? {
+            if active.phase == RunScrubPhase::Pages {
+                if reference.root.kind != ObjectKind::Record {
+                    return Err(corrupt("run posting page kind differs"));
+                }
+                let page = RunPostingPage::decode(&store.read_blob(
+                    &reference,
+                    size_u64(super::MAX_POSTING_PAGE_BYTES)?,
+                    budget,
+                )?)?;
+                if page.key()?.as_slice() != key
+                    || !store
+                        .object_dependencies(&reference.root, budget)?
+                        .is_empty()
+                {
+                    return Err(corrupt("run posting page key or dependencies differ"));
+                }
+                let [first, second, third] = page.gram;
+                let gram_key = [page.surface, first, second, third];
+                if active.current_gram.is_some_and(|prior| prior != gram_key) {
+                    active.flush_gram(store, authority, budget)?;
+                }
+                active.current_gram = Some(gram_key);
+                scrub_run_page_member(store, authority, active.id, &page, budget)?;
+                let row_count = size_u64(page.rows.len())?;
+                active.current_gram_rows = active
+                    .current_gram_rows
+                    .checked_add(row_count)
+                    .ok_or_else(|| corrupt("run gram row count overflows"))?;
+                let index = match page.surface {
+                    1 => 0,
+                    2 => 1,
+                    _ => return Err(corrupt("run surface differs")),
+                };
+                let slot = active
+                    .page_rows
+                    .get_mut(index)
+                    .ok_or_else(|| corrupt("run surface slot absent"))?;
+                *slot = slot
+                    .checked_add(row_count)
+                    .ok_or_else(|| corrupt("run surface row count overflows"))?;
+                active.page_bytes = active
+                    .page_bytes
+                    .checked_add(reference.root.bytes)
+                    .ok_or_else(|| corrupt("run page byte ledger overflows"))?;
+                active.seen_pages = active
+                    .seen_pages
+                    .checked_add(1)
+                    .ok_or_else(|| corrupt("run page census overflows"))?;
+            } else {
+                if key.len() != 4 || reference.root.kind != ObjectKind::Record {
+                    return Err(corrupt("run count key or kind differs"));
+                }
+                let count = RunGramCount::decode(&store.read_blob(
+                    &reference,
+                    size_u64(super::MAX_RECORD_BYTES)?,
+                    budget,
+                )?)?;
+                if count.key()?.as_slice() != key
+                    || !store
+                        .object_dependencies(&reference.root, budget)?
+                        .is_empty()
+                {
+                    return Err(corrupt("run count key or dependencies differ"));
+                }
+                active.count_bytes = active
+                    .count_bytes
+                    .checked_add(reference.root.bytes)
+                    .ok_or_else(|| corrupt("run count byte ledger overflows"))?;
+                active.seen_counts = active
+                    .seen_counts
+                    .checked_add(1)
+                    .ok_or_else(|| corrupt("run count census overflows"))?;
+            }
+            active.after_key = Some(key);
+            return Ok(false);
+        }
+        if active.phase == RunScrubPhase::Pages {
+            active.flush_gram(store, authority, budget)?;
+            if active.seen_pages != active.root.pages.entries
+                || active.page_rows != [active.root.path_rows, active.root.content_rows]
+                || active.page_bytes != active.root.page_record_encoded_bytes
+            {
+                return Err(corrupt("run page census or byte ledger differs"));
+            }
+            active.phase = RunScrubPhase::Counts;
+            active.after_key = None;
+            return Ok(false);
+        }
+        if active.seen_counts != active.root.gram_counts.entries
+            || active.seen_counts != active.seen_grams
+            || active.count_bytes != active.root.gram_count_record_encoded_bytes
+        {
+            return Err(corrupt("run count census or byte ledger differs"));
+        }
+        self.encoded_bytes = self
+            .encoded_bytes
+            .checked_add(active.root.bundle_encoded_bytes(&active.reference, store)?)
+            .ok_or_else(|| corrupt("run bundle aggregate overflows"))?;
+        self.seen_runs = self
+            .seen_runs
+            .checked_add(1)
+            .ok_or_else(|| corrupt("run root census overflows"))?;
+        self.after_run = Some(active.id.to_be_bytes().to_vec());
+        self.active = None;
+        Ok(false)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -909,11 +1173,13 @@ enum FileScrubPhase {
     PathRoute,
     ContentRoute,
     Debt,
+    RunPostings,
+    Registry,
     Done,
 }
 
 /// In-process progress across ordered map rows; no corpus-sized source census.
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub(crate) struct FileScrubCursor {
     root_sha256: Option<[u8; 32]>,
     phase: FileScrubPhase,
@@ -924,6 +1190,8 @@ pub(crate) struct FileScrubCursor {
     current_rows: u64,
     membership_rows: u64,
     active_rows: u64,
+    posting_cursor: RunPostingScrubCursor,
+    run_cursor: Option<RunScrubCursor>,
 }
 
 pub(crate) struct FileScrubStep {
@@ -949,6 +1217,48 @@ pub(crate) fn verify_scrub_step(
     let before = store.read_meter_snapshot();
     loop {
         checkpoint(budget, "lexical:file-scrub-step")?;
+        if cursor.phase == FileScrubPhase::RunPostings {
+            if cursor.posting_cursor.step(store, root, budget)? {
+                cursor.phase = FileScrubPhase::Registry;
+            }
+            let after = store.read_meter_snapshot();
+            return Ok(FileScrubStep {
+                done: false,
+                bytes_read: after
+                    .0
+                    .checked_sub(before.0)
+                    .ok_or_else(|| corrupt("scrub byte meter regressed"))?,
+                read_count: after
+                    .1
+                    .checked_sub(before.1)
+                    .ok_or_else(|| corrupt("scrub read meter regressed"))?,
+            });
+        }
+        if cursor.phase == FileScrubPhase::Registry {
+            if cursor.run_cursor.is_none() {
+                cursor.run_cursor = Some(RunScrubCursor::new(&root.run_registry)?);
+            }
+            let registry_done = cursor
+                .run_cursor
+                .as_mut()
+                .ok_or_else(|| corrupt("registry scrub cursor is absent"))?
+                .step(store, budget)?;
+            if registry_done {
+                cursor.phase = FileScrubPhase::Done;
+            }
+            let after = store.read_meter_snapshot();
+            return Ok(FileScrubStep {
+                done: false,
+                bytes_read: after
+                    .0
+                    .checked_sub(before.0)
+                    .ok_or_else(|| corrupt("scrub byte meter regressed"))?,
+                read_count: after
+                    .1
+                    .checked_sub(before.1)
+                    .ok_or_else(|| corrupt("scrub read meter regressed"))?,
+            });
+        }
         let map = match cursor.phase {
             FileScrubPhase::Source => &root.source_heads,
             FileScrubPhase::Current => &root.current_docs,
@@ -957,6 +1267,12 @@ pub(crate) fn verify_scrub_step(
             FileScrubPhase::PathRoute => &root.path_routes,
             FileScrubPhase::ContentRoute => &root.content_routes,
             FileScrubPhase::Debt => &root.compaction_debt,
+            FileScrubPhase::RunPostings => {
+                return Err(corrupt("run posting phase bypassed bounded scrub cursor"));
+            }
+            FileScrubPhase::Registry => {
+                return Err(corrupt("registry phase bypassed bounded scrub cursor"));
+            }
             FileScrubPhase::Done => {
                 let after = store.read_meter_snapshot();
                 return Ok(FileScrubStep {
@@ -1084,28 +1400,28 @@ pub(crate) fn verify_scrub_step(
                     } else {
                         2
                     };
-                    let (gram, count, digest) = route_parts(&key, surface)?;
-                    if reference.root.sha256 != digest
-                        || reference.root.kind != ObjectKind::Segment
-                        || store.map_get(&root.segments, &digest, budget)?.as_ref()
-                            != Some(&reference)
-                    {
-                        return Err(corrupt("scrub route references unknown segment"));
+                    let (gram, count, run_id) = route_parts(&key, surface)?;
+                    let run_ref = store
+                        .map_get(&root.run_postings, &run_id.to_be_bytes(), budget)?
+                        .ok_or_else(|| corrupt("scrub route names absent run"))?;
+                    let run = RunPostingRoot::load(store, &run_ref, budget)?;
+                    if run.run_id != run_id {
+                        return Err(corrupt("scrub route run ID differs"));
                     }
-                    let segment = Segment::decode(&store.read_blob(
+                    let gram_key = [surface, gram[0], gram[1], gram[2]];
+                    let expected_ref = store
+                        .map_get(&run.gram_counts, &gram_key, budget)?
+                        .ok_or_else(|| corrupt("scrub route gram count is absent"))?;
+                    if expected_ref != reference || reference.root.kind != ObjectKind::Record {
+                        return Err(corrupt("scrub route value differs from run count"));
+                    }
+                    let record = RunGramCount::decode(&store.read_blob(
                         &reference,
                         size_u64(super::MAX_RECORD_BYTES)?,
                         budget,
                     )?)?;
-                    let terms = if surface == 1 {
-                        &segment.path_terms
-                    } else {
-                        &segment.content_terms
-                    };
-                    if posting_count_for_term(store, terms, gram, segment.doc_ids.len(), budget)?
-                        != count
-                    {
-                        return Err(corrupt("scrub route count differs from posting page"));
+                    if record.key()? != gram_key || record.count != count {
+                        return Err(corrupt("scrub route count differs"));
                     }
                 }
                 FileScrubPhase::Debt => {
@@ -1117,6 +1433,12 @@ pub(crate) fn verify_scrub_step(
                     {
                         return Err(corrupt("scrub debt references unknown segment"));
                     }
+                }
+                FileScrubPhase::RunPostings => {
+                    return Err(corrupt("run posting phase selected a file map"));
+                }
+                FileScrubPhase::Registry => {
+                    return Err(corrupt("registry phase selected a file map"));
                 }
                 FileScrubPhase::Done => {
                     return Err(corrupt("scrub phase changed after map selection"));
@@ -1166,7 +1488,13 @@ pub(crate) fn verify_scrub_step(
             }
             FileScrubPhase::PathRoute => cursor.phase = FileScrubPhase::ContentRoute,
             FileScrubPhase::ContentRoute => cursor.phase = FileScrubPhase::Debt,
-            FileScrubPhase::Debt => cursor.phase = FileScrubPhase::Done,
+            FileScrubPhase::Debt => cursor.phase = FileScrubPhase::RunPostings,
+            FileScrubPhase::RunPostings => {
+                return Err(corrupt("run posting phase advanced outside its cursor"));
+            }
+            FileScrubPhase::Registry => {
+                return Err(corrupt("registry phase advanced outside its cursor"));
+            }
             FileScrubPhase::Done => return Err(corrupt("scrub terminal phase advanced")),
         }
         cursor.after_key = None;
@@ -1188,6 +1516,592 @@ pub(crate) fn verify_all_for_scrub(
     }
 }
 
+/// Independently select old run cohorts for a clean physical merge.
+///
+/// The verifier reads immutable segment descriptors and live locators; it
+/// never calls the posting producer's selection implementation.
+struct CleanRunSelection {
+    run_ids: Vec<u64>,
+    progress: RunSelectionProgress,
+}
+
+/// Independent read-only File witness over one frozen old-run window. This
+/// never calls producer eligibility or accepts its touched segment set.
+pub(crate) fn replay_hard_scan_window(
+    store: &ObjectStore,
+    base: &AuthorityRoot,
+    mutation: &FileAuthorityMutation,
+    policy: &LexicalMaintenancePolicy,
+    progress: RunSelectionProgress,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<WindowWitness, CoreError> {
+    if mutation.clear_all || progress.pending_run.is_some() {
+        return Err(corrupt("File hard scan requires a non-clear frozen base"));
+    }
+    let high = base
+        .run_registry
+        .next_run_id
+        .checked_sub(1)
+        .ok_or_else(|| corrupt("File hard scan frontier underflows"))?;
+    if high == 0
+        || (progress.scan_high_water_run_id != 0 && progress.scan_high_water_run_id != high)
+    {
+        return Err(corrupt("File hard scan frontier differs"));
+    }
+    let mut touched = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    for edit in &mutation.edits {
+        if let Some(budget) = budget {
+            budget.checkpoint("lexical:file:verify-hard-source")?;
+        }
+        let key = edit.key();
+        let digest = source_key_digest(key)?;
+        if !seen.insert(digest) {
+            return Err(corrupt("File hard scan source digest repeats"));
+        }
+        let Some((_, previous)) = optional_source_head(store, base, key)? else {
+            continue;
+        };
+        let locator = live_doc(store, base, previous.logical_id, budget)?;
+        if locator.source_key_sha256 != digest || locator.logical_id != previous.logical_id {
+            return Err(corrupt("File hard scan prior source locator differs"));
+        }
+        let segment = store
+            .map_get(&base.segments, &locator.segment_sha256, budget)?
+            .ok_or_else(|| corrupt("File hard scan prior segment absent"))?;
+        if segment.root.kind != ObjectKind::Segment || segment.root.sha256 != locator.segment_sha256
+        {
+            return Err(corrupt("File hard scan prior segment differs"));
+        }
+        let changed = match edit {
+            FileSourceEdit::Delete { .. } => true,
+            FileSourceEdit::Upsert { coverage, bytes } => {
+                let encoded = crate::channel_payloads::encode_cbor(
+                    &(super::policy_digest(), coverage),
+                    "file hard scan derived input",
+                )?;
+                let mut hash = Sha256::new();
+                hash.update(b"quanta-file-derived-input-v17\0");
+                hash.update(encoded);
+                previous.derived_input_sha256 != <[u8; 32]>::from(hash.finalize())
+                    || previous.coverage != *coverage
+                    || previous.body.sha256 != <[u8; 32]>::from(Sha256::digest(bytes))
+            }
+        };
+        if changed {
+            let _inserted = touched.insert(locator.segment_sha256);
+        }
+    }
+    let window = base
+        .run_registry
+        .clone()
+        .with_selection_progress(progress)?
+        .scan_hard_window(store, 32, budget)?;
+    if window.scan_high_water_run_id != high {
+        return Err(corrupt("File hard scan window frontier differs"));
+    }
+    let mut candidates = Vec::new();
+    candidates
+        .try_reserve_exact(window.candidates.len())
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "reserve independent File hard scan window: {error}"
+            ))
+        })?;
+    for candidate in &window.candidates {
+        if let Some(budget) = budget {
+            budget.checkpoint("lexical:file:verify-hard-candidate")?;
+        }
+        let key = candidate.run_id.to_be_bytes();
+        let header = store
+            .map_get(&base.run_registry.runs, &key, budget)?
+            .ok_or_else(|| corrupt("File hard scan run header absent"))?;
+        if header.root.kind != ObjectKind::Record {
+            return Err(corrupt("File hard scan run header kind differs"));
+        }
+        let mut header_hash = Sha256::new();
+        header_hash.update(b"lexical-file-hard-scan-header-v1\0");
+        header_hash.update(key);
+        header_hash.update(header.root.sha256);
+        let eligibility = if candidate.index_encoded_bytes > policy.max_merge_input_encoded_bytes()
+        {
+            EligibilityWitness::Ineligible(IneligibleReason::InputCap)
+        } else {
+            let reference = store
+                .map_get(&base.run_postings, &key, budget)?
+                .ok_or_else(|| corrupt("File hard scan posting root absent"))?;
+            let posting = RunPostingRoot::load(store, &reference, budget)?;
+            if posting.run_id != candidate.run_id {
+                return Err(corrupt("File hard scan posting ID differs"));
+            }
+            let bytes = candidate
+                .index_encoded_bytes
+                .checked_add(posting.bundle_encoded_bytes(&reference, store)?)
+                .ok_or_else(|| corrupt("File hard scan input bytes overflow"))?;
+            if bytes > policy.max_merge_input_encoded_bytes() {
+                EligibilityWitness::Ineligible(IneligibleReason::InputCap)
+            } else {
+                let mut eligible = true;
+                base.run_registry.visit_run_members(
+                    store,
+                    candidate,
+                    budget,
+                    &mut |member_key, member_ref, _bytes| {
+                        let digest: [u8; 32] = member_key
+                            .try_into()
+                            .map_err(|_width| corrupt("File hard scan member key width differs"))?;
+                        if touched.contains(&digest)
+                            || store
+                                .map_get(&base.compaction_debt, member_key, budget)?
+                                .is_some()
+                        {
+                            eligible = false;
+                        }
+                        if store.map_get(&base.segments, member_key, budget)?.as_ref()
+                            != Some(member_ref)
+                        {
+                            return Err(corrupt("File hard scan member differs from segment map"));
+                        }
+                        Ok(())
+                    },
+                )?;
+                if eligible {
+                    EligibilityWitness::FileEligible {
+                        effective_input_encoded_bytes: bytes,
+                    }
+                } else {
+                    EligibilityWitness::Ineligible(IneligibleReason::TouchedOrDebt)
+                }
+            }
+        };
+        candidates.push(CandidateWitness {
+            run_id: candidate.run_id,
+            index_encoded_bytes: candidate.index_encoded_bytes,
+            eligibility,
+            header_sha256: header_hash.finalize().into(),
+        });
+    }
+    Ok(WindowWitness {
+        ordinal: 0,
+        prior_chain_sha256: [0; 32],
+        start_run_id: progress.next_scan_run_id,
+        next_run_id: window.next_scan_run_id,
+        frozen_high_water_run_id: high,
+        round_complete: window.round_complete,
+        candidates,
+    })
+}
+
+fn verify_run_posting_transition(
+    store: &ObjectStore,
+    old: &AuthorityRoot,
+    target: &AuthorityRoot,
+    premerge: &RunRegistry,
+    removed: &[SegmentRemoval],
+    added: &[SegmentInput],
+    selected: &[u64],
+) -> Result<FileRunMergeFacts, CoreError> {
+    let mut changed = BTreeMap::<u64, (Vec<SegmentRemoval>, Vec<SegmentInput>)>::new();
+    for row in removed {
+        let digest: [u8; 32] = row
+            .key
+            .as_slice()
+            .try_into()
+            .map_err(|_width| corrupt("removed run leaf digest width differs"))?;
+        let id = old.run_registry.owner_run_id(store, digest, None)?;
+        changed.entry(id).or_default().0.push(row.clone());
+    }
+    for row in added {
+        let digest: [u8; 32] = row
+            .key
+            .as_slice()
+            .try_into()
+            .map_err(|_width| corrupt("added run leaf digest width differs"))?;
+        let id = premerge.owner_run_id(store, digest, None)?;
+        changed.entry(id).or_default().1.push(row.clone());
+    }
+    let mut allowed = BTreeSet::new();
+    for (id, (removed, added)) in &changed {
+        if selected.binary_search(id).is_ok() {
+            return Err(corrupt("changed physical run selected for clean merge"));
+        }
+        let key = id.to_be_bytes();
+        let old_ref = store.map_get(&old.run_postings, &key, None)?;
+        let target_ref = store.map_get(&target.run_postings, &key, None)?;
+        let old_run = old_ref
+            .as_ref()
+            .map(|reference| RunPostingRoot::load(store, reference, None))
+            .transpose()?;
+        let target_run = target_ref
+            .as_ref()
+            .map(|reference| RunPostingRoot::load(store, reference, None))
+            .transpose()?;
+        verify_changed_run(
+            store,
+            *id,
+            old_run.as_ref().zip(old_ref.as_ref()),
+            target_run.as_ref().zip(target_ref.as_ref()),
+            removed,
+            added,
+            None,
+        )?;
+        if !allowed.insert(*id) {
+            return Err(corrupt("changed run ID appears twice"));
+        }
+    }
+    if !selected.is_empty() {
+        if selected.len() < 2
+            || selected.windows(2).any(|pair| {
+                let [left, right] = pair else { return true };
+                left >= right
+            })
+        {
+            return Err(corrupt("selected clean run IDs are not a distinct cohort"));
+        }
+        let mut old_runs = Vec::new();
+        for id in selected {
+            let reference = store
+                .map_get(&old.run_postings, &id.to_be_bytes(), None)?
+                .ok_or_else(|| corrupt("selected clean run posting root absent"))?;
+            let run = RunPostingRoot::load(store, &reference, None)?;
+            old_runs.push((run, reference));
+            if !allowed.insert(*id) {
+                return Err(corrupt("clean run overlaps changed run"));
+            }
+        }
+        let new_id = premerge.next_run_id;
+        let new_ref = store
+            .map_get(&target.run_postings, &new_id.to_be_bytes(), None)?
+            .ok_or_else(|| corrupt("clean merged run posting root absent"))?;
+        let new_run = RunPostingRoot::load(store, &new_ref, None)?;
+        verify_clean_run_union(store, &old_runs, (&new_run, &new_ref), None)?;
+        if !allowed.insert(new_id) {
+            return Err(corrupt("clean output run ID overlaps an input"));
+        }
+    }
+    let mut expected_bytes = old.run_index_encoded_bytes;
+    let mut observed = BTreeSet::new();
+    let mut retired_selected_posting_bytes = 0_u64;
+    let mut created_selected_posting_bytes = 0_u64;
+    store.map_changed_keys(
+        &old.run_postings,
+        &target.run_postings,
+        None,
+        &mut |key, before, after| {
+            let raw: [u8; 8] = key
+                .try_into()
+                .map_err(|_width| corrupt("changed run posting key width differs"))?;
+            let id = u64::from_be_bytes(raw);
+            if !allowed.contains(&id) || !observed.insert(id) {
+                return Err(corrupt("unrelated run posting root changed"));
+            }
+            if let Some(reference) = before {
+                let run = RunPostingRoot::load(store, reference, None)?;
+                if run.run_id != id {
+                    return Err(corrupt("old run posting ID differs"));
+                }
+                let bytes = run.bundle_encoded_bytes(reference, store)?;
+                if selected.binary_search(&id).is_ok() {
+                    retired_selected_posting_bytes = retired_selected_posting_bytes
+                        .checked_add(bytes)
+                        .ok_or_else(|| corrupt("selected input posting bytes overflow"))?;
+                }
+                expected_bytes = expected_bytes
+                    .checked_sub(bytes)
+                    .ok_or_else(|| corrupt("run index byte ledger underflows"))?;
+            }
+            if let Some(reference) = after {
+                let run = RunPostingRoot::load(store, reference, None)?;
+                if run.run_id != id {
+                    return Err(corrupt("target run posting ID differs"));
+                }
+                let bytes = run.bundle_encoded_bytes(reference, store)?;
+                if !selected.is_empty() && id == premerge.next_run_id {
+                    created_selected_posting_bytes = created_selected_posting_bytes
+                        .checked_add(bytes)
+                        .ok_or_else(|| corrupt("selected output posting bytes overflow"))?;
+                }
+                expected_bytes = expected_bytes
+                    .checked_add(bytes)
+                    .ok_or_else(|| corrupt("run index byte ledger overflows"))?;
+            }
+            Ok(())
+        },
+    )?;
+    if selected.iter().any(|id| !observed.contains(id))
+        || (!selected.is_empty() && !observed.contains(&premerge.next_run_id))
+        || expected_bytes != target.run_index_encoded_bytes
+    {
+        return Err(corrupt("run posting edits or aggregate byte ledger differ"));
+    }
+    verify_global_run_routes(
+        store,
+        old,
+        target,
+        &allowed.into_iter().collect::<Vec<_>>(),
+        None,
+    )?;
+    if selected.is_empty() {
+        return Ok(FileRunMergeFacts::default());
+    }
+    // The already-proved cohort transfer retains every segment reference and
+    // byte charge. Only run-posting bundles change logical ownership.
+    let new_run = target
+        .run_registry
+        .candidate_by_id(store, premerge.next_run_id, None)?
+        .ok_or_else(|| corrupt("selected merge output has no run header"))?;
+    FileRunMergeFacts::merged(
+        size_u64(selected.len())?,
+        new_run.members.entries,
+        new_run.index_encoded_bytes,
+        retired_selected_posting_bytes,
+        created_selected_posting_bytes,
+    )
+}
+
+fn selected_clean_merge_runs(
+    store: &ObjectStore,
+    old: &AuthorityRoot,
+    touched: &BTreeSet<[u8; 32]>,
+    policy: &LexicalMaintenancePolicy,
+    mutation: &FileAuthorityMutation,
+    hard_scan: Option<&ScanLane>,
+) -> Result<CleanRunSelection, CoreError> {
+    let prior = old.run_registry.selection_progress();
+    let before = old.maintenance_snapshot(store)?;
+    if !policy.merge_due(before) || run_merge_stage_bytes(2)? > policy.max_staging_bytes() {
+        return Ok(CleanRunSelection {
+            run_ids: Vec::new(),
+            progress: prior,
+        });
+    }
+    let mut selected = Vec::new();
+    let mut input_bytes = 0_u64;
+    let max_fan_in = usize::try_from(policy.max_merge_fan_in())
+        .map_err(|_width| corrupt("merge fan-in width differs"))?;
+    let window = if policy.hard_pressure(before) {
+        let lane = hard_scan.ok_or_else(|| corrupt("File hard recovery checkpoint is absent"))?;
+        let root_sha256: [u8; 32] = Sha256::digest(old.encode()?).into();
+        let high = old
+            .run_registry
+            .next_run_id
+            .checked_sub(1)
+            .ok_or_else(|| corrupt("File hard recovery frontier underflows"))?;
+        if lane.authority != ScanAuthority::File
+            || lane.base_authority_root_sha256 != root_sha256
+            || lane.frozen_high_water_run_id != high
+            || lane.windows.is_empty()
+            || lane.windows.len() > 129
+            || !lane
+                .windows
+                .last()
+                .is_some_and(|window| window.round_complete)
+        {
+            return Err(corrupt(
+                "File hard recovery checkpoint base or completion differs",
+            ));
+        }
+        let mut earlier = Vec::<(u64, u64)>::new();
+        let mut hard_selected = Vec::new();
+        let mut hard_bytes = 0_u64;
+        let mut next = 1_u64;
+        let mut seen = 0_u64;
+        for (ordinal, claimed) in lane.windows.iter().enumerate() {
+            if usize::from(claimed.ordinal) != ordinal
+                || claimed.start_run_id != next
+                || claimed.frozen_high_water_run_id != high
+                || (claimed.round_complete && ordinal.checked_add(1) != Some(lane.windows.len()))
+            {
+                return Err(corrupt("File hard recovery checkpoint cursor differs"));
+            }
+            let progress = RunSelectionProgress {
+                next_scan_run_id: next,
+                scan_high_water_run_id: high,
+                pending_run: None,
+            };
+            let actual = replay_hard_scan_window(store, old, mutation, policy, progress, None)?;
+            if actual.start_run_id != claimed.start_run_id
+                || actual.next_run_id != claimed.next_run_id
+                || actual.frozen_high_water_run_id != claimed.frozen_high_water_run_id
+                || actual.round_complete != claimed.round_complete
+                || actual.candidates != claimed.candidates
+            {
+                return Err(corrupt(
+                    "File hard recovery checkpoint window differs from base",
+                ));
+            }
+            seen = seen
+                .checked_add(
+                    u64::try_from(actual.candidates.len())
+                        .map_err(|_width| corrupt("File hard recovery window count differs"))?,
+                )
+                .ok_or_else(|| corrupt("File hard recovery run count overflows"))?;
+            if seen > quanta_index_core::lexical_maintenance::MAX_HARD_SCAN_RUNS {
+                return Err(corrupt("File hard recovery run bound differs"));
+            }
+            for candidate in &actual.candidates {
+                let bytes = match candidate.eligibility {
+                    EligibilityWitness::FileEligible {
+                        effective_input_encoded_bytes,
+                    } => effective_input_encoded_bytes,
+                    EligibilityWitness::Ineligible(_) => continue,
+                    EligibilityWitness::NativeEligible { .. } => {
+                        return Err(corrupt("Native eligibility in File checkpoint"));
+                    }
+                };
+                if bytes < candidate.index_encoded_bytes
+                    || bytes > policy.max_merge_input_encoded_bytes()
+                {
+                    return Err(corrupt("File hard recovery candidate cost differs"));
+                }
+                if hard_selected.len() >= max_fan_in {
+                    continue;
+                }
+                if !hard_selected.is_empty() {
+                    if let Some(total) = hard_bytes.checked_add(bytes)
+                        && total <= policy.max_merge_input_encoded_bytes()
+                        && run_merge_stage_bytes(
+                            hard_selected
+                                .len()
+                                .checked_add(1)
+                                .ok_or_else(|| corrupt("File hard recovery fan-in overflows"))?,
+                        )? <= policy.max_staging_bytes()
+                    {
+                        hard_bytes = total;
+                        hard_selected.push(candidate.run_id);
+                    }
+                    continue;
+                }
+                for &(run_id, earlier_bytes) in &earlier {
+                    if let Some(total) = earlier_bytes.checked_add(bytes)
+                        && total <= policy.max_merge_input_encoded_bytes()
+                    {
+                        hard_bytes = total;
+                        hard_selected.extend([run_id, candidate.run_id]);
+                        break;
+                    }
+                }
+                if hard_selected.is_empty() {
+                    earlier.push((candidate.run_id, bytes));
+                }
+            }
+            next = claimed.next_run_id;
+        }
+        selected = hard_selected;
+        let last = lane
+            .windows
+            .last()
+            .ok_or_else(|| corrupt("File hard recovery checkpoint ended without window"))?;
+        RunScanWindow {
+            candidates: Vec::new(),
+            next_scan_run_id: last.next_run_id,
+            scan_high_water_run_id: high,
+            round_complete: last.round_complete,
+        }
+    } else {
+        let mut consider = |candidate: &RunCandidate| -> Result<bool, CoreError> {
+            if selected.contains(&candidate.run_id) || selected.len() >= max_fan_in {
+                return Ok(selected.len() >= max_fan_in);
+            }
+            if candidate.index_encoded_bytes > policy.max_merge_input_encoded_bytes() {
+                return Ok(false);
+            }
+            let key = candidate.run_id.to_be_bytes();
+            let reference = store
+                .map_get(&old.run_postings, &key, None)?
+                .ok_or_else(|| corrupt("eligible run has no posting root"))?;
+            let posting = RunPostingRoot::load(store, &reference, None)?;
+            if posting.run_id != candidate.run_id {
+                return Err(corrupt("candidate posting root ID differs"));
+            }
+            let bytes = candidate
+                .index_encoded_bytes
+                .checked_add(posting.bundle_encoded_bytes(&reference, store)?)
+                .ok_or_else(|| corrupt("merge input bytes overflow"))?;
+            if bytes > policy.max_merge_input_encoded_bytes() {
+                return Ok(false);
+            }
+            let mut eligible = true;
+            old.run_registry.visit_run_members(
+                store,
+                candidate,
+                None,
+                &mut |key, reference, _| {
+                    let digest: [u8; 32] = key
+                        .try_into()
+                        .map_err(|_width| corrupt("clean cohort digest width differs"))?;
+                    if touched.contains(&digest)
+                        || store.map_get(&old.compaction_debt, key, None)?.is_some()
+                    {
+                        eligible = false;
+                    }
+                    if store.map_get(&old.segments, key, None)?.as_ref() != Some(reference) {
+                        return Err(corrupt("clean cohort member differs from segment map"));
+                    }
+                    Ok(())
+                },
+            )?;
+            if !eligible {
+                return Ok(false);
+            }
+            let Some(next_bytes) = input_bytes.checked_add(bytes) else {
+                return Ok(false);
+            };
+            if next_bytes > policy.max_merge_input_encoded_bytes()
+                || run_merge_stage_bytes(
+                    selected
+                        .len()
+                        .checked_add(1)
+                        .ok_or_else(|| corrupt("selected run fan-in overflows"))?,
+                )? > policy.max_staging_bytes()
+            {
+                return Ok(false);
+            }
+            input_bytes = next_bytes;
+            selected.push(candidate.run_id);
+            Ok(selected.len() >= max_fan_in)
+        };
+        if let Some(anchor) = prior.pending_run
+            && let Some(candidate) = old.run_registry.candidate_by_id(store, anchor, None)?
+        {
+            let _full = consider(&candidate)?;
+        }
+        let window = old.run_registry.scan_window(
+            store,
+            bounded_candidate_scan_limit(policy.max_merge_fan_in()),
+            None,
+        )?;
+        for candidate in &window.candidates {
+            let _full = consider(candidate)?;
+        }
+        window
+    };
+    let mut progress = RunSelectionProgress {
+        next_scan_run_id: window.next_scan_run_id,
+        scan_high_water_run_id: window.scan_high_water_run_id,
+        pending_run: prior.pending_run,
+    };
+    if selected.len() >= 2 {
+        selected.sort_unstable();
+        progress.pending_run = None;
+        return Ok(CleanRunSelection {
+            run_ids: selected,
+            progress,
+        });
+    }
+    let anchor = selected.first().copied();
+    progress.pending_run = if window.round_complete && prior.pending_run == anchor {
+        None
+    } else {
+        anchor
+    };
+    Ok(CleanRunSelection {
+        run_ids: Vec::new(),
+        progress,
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn verify_for_seal(
     store: &ObjectStore,
     root: &AuthorityRoot,
@@ -1195,6 +2109,41 @@ pub(crate) fn verify_for_seal(
     reservation: &DocVersionReservation,
     mutation: &FileAuthorityMutation,
 ) -> Result<(), CoreError> {
+    verify_for_seal_with_policy(store, root, base, reservation, mutation, None)
+}
+
+#[cfg(test)]
+pub(crate) fn verify_for_seal_with_policy(
+    store: &ObjectStore,
+    root: &AuthorityRoot,
+    base: Option<&AuthorityRoot>,
+    reservation: &DocVersionReservation,
+    mutation: &FileAuthorityMutation,
+    maintenance_policy: Option<&LexicalMaintenancePolicy>,
+) -> Result<(), CoreError> {
+    let _facts = verify_for_seal_with_merge_facts(
+        store,
+        root,
+        base,
+        reservation,
+        mutation,
+        maintenance_policy,
+        None,
+    )?;
+    Ok(())
+}
+
+/// Return merge-only attribution from the independent seal's existing
+/// run-posting byte calculation. No producer receipt or extra posting walk.
+pub(crate) fn verify_for_seal_with_merge_facts(
+    store: &ObjectStore,
+    root: &AuthorityRoot,
+    base: Option<&AuthorityRoot>,
+    reservation: &DocVersionReservation,
+    mutation: &FileAuthorityMutation,
+    maintenance_policy: Option<&LexicalMaintenancePolicy>,
+    hard_scan: Option<&ScanLane>,
+) -> Result<FileRunMergeFacts, CoreError> {
     reservation.validate()?;
     // Reauthenticate in this independent seal pass, then reuse at most the
     // store's fixed map-page cache. Never inherit the producer's read cache.
@@ -1221,6 +2170,10 @@ pub(crate) fn verify_for_seal(
         current_docs: MapRoot::default(),
         memberships: MapRoot::default(),
         segments: MapRoot::default(),
+        run_registry: RunRegistry::empty(),
+        premerge_run_registry: None,
+        run_postings: MapRoot::default(),
+        run_index_encoded_bytes: 0,
         compaction_debt: MapRoot::default(),
         path_routes: MapRoot::default(),
         content_routes: MapRoot::default(),
@@ -1438,6 +2391,15 @@ pub(crate) fn verify_for_seal(
         }
         next
     };
+    let clean_selection = match maintenance_policy {
+        Some(policy) if !mutation.clear_all => {
+            selected_clean_merge_runs(store, old, &retired_segments, policy, mutation, hard_scan)?
+        }
+        _ => CleanRunSelection {
+            run_ids: Vec::new(),
+            progress: old.run_registry.selection_progress(),
+        },
+    };
     let mut compacted_allowed = retired_segments.clone();
     if let Some(digest) = due_segment {
         let _inserted = compacted_allowed.insert(digest);
@@ -1491,6 +2453,8 @@ pub(crate) fn verify_for_seal(
             Ok(())
         },
     )?;
+    let mut removed_registry_segments = Vec::new();
+    let mut added_registry_segments = Vec::new();
     store.map_changed_keys(
         &old.segments,
         &root.segments,
@@ -1509,9 +2473,62 @@ pub(crate) fn verify_for_seal(
             {
                 return Err(corrupt("segment key and reference differ"));
             }
+            if let Some(reference) = before {
+                removed_registry_segments.push(SegmentRemoval {
+                    key: key.to_vec(),
+                    reference: reference.clone(),
+                });
+            }
+            if let Some(reference) = after {
+                let index_encoded_bytes = segment_index_encoded_bytes(
+                    store,
+                    std::slice::from_ref(&reference.root),
+                    None,
+                    size_u64(crate::lexical_store::MAX_CLOSURE_REFS)?,
+                )?;
+                added_registry_segments.push(SegmentInput {
+                    key: key.to_vec(),
+                    reference: reference.clone(),
+                    index_encoded_bytes,
+                });
+            }
             Ok(())
         },
     )?;
+    let premerge = if clean_selection.run_ids.is_empty() {
+        if root.premerge_run_registry.is_some() {
+            return Err(corrupt(
+                "unselected cohort merge carried an intermediate registry",
+            ));
+        }
+        &root.run_registry
+    } else {
+        root.premerge_run_registry
+            .as_ref()
+            .ok_or_else(|| corrupt("cohort merge omitted physical-delta registry witness"))?
+    };
+    let physical_progress = if clean_selection.run_ids.is_empty() {
+        clean_selection.progress
+    } else {
+        old.run_registry.selection_progress()
+    };
+    old.run_registry.verify_transition_with_progress(
+        premerge,
+        store,
+        &removed_registry_segments,
+        &added_registry_segments,
+        None,
+        physical_progress,
+    )?;
+    if !clean_selection.run_ids.is_empty() {
+        premerge.verify_cohort_merge_transition(
+            &root.run_registry,
+            store,
+            &clean_selection.run_ids,
+            clean_selection.progress,
+            None,
+        )?;
+    }
     store.map_changed_keys(
         &old.compaction_debt,
         &root.compaction_debt,
@@ -1537,7 +2554,6 @@ pub(crate) fn verify_for_seal(
         },
     )?;
     let mut removed_segments = BTreeSet::new();
-    let mut removed_routes = BTreeMap::<[u8; 32], RouteWitness>::new();
     for digest in compacted_allowed {
         let reference = store
             .map_get(&old.segments, &digest, None)?
@@ -1550,7 +2566,7 @@ pub(crate) fn verify_for_seal(
         let removed = store.map_get(&root.segments, &digest, None)?.is_none();
         if retired_segments.contains(&digest) && !removed {
             return Err(corrupt(
-                "touched segment was not retired in changed publication",
+                "selected segment was not retired in changed publication",
             ));
         }
         let mut still_current = 0_usize;
@@ -1582,34 +2598,9 @@ pub(crate) fn verify_for_seal(
             return Err(corrupt("partially retired segment lost compaction debt"));
         }
         if removed {
-            let expected = [
-                inherited_route_commitment(
-                    store,
-                    &segment.path_terms,
-                    segment.doc_ids.len(),
-                    1,
-                    digest,
-                )?,
-                inherited_route_commitment(
-                    store,
-                    &segment.content_terms,
-                    segment.doc_ids.len(),
-                    2,
-                    digest,
-                )?,
-            ];
-            if removed_routes
-                .insert(digest, RouteWitness::new(reference, expected))
-                .is_some()
-            {
-                return Err(corrupt("removed segment route witness repeats"));
-            }
-        }
-        if removed {
             let _inserted = removed_segments.insert(digest);
         }
     }
-    let mut created_routes = BTreeMap::<[u8; 32], RouteWitness>::new();
     for digest in created_segments {
         if removed_segments.contains(&digest) {
             return Err(corrupt("segment is both created and removed"));
@@ -1617,43 +2608,19 @@ pub(crate) fn verify_for_seal(
         let reference = store
             .map_get(&root.segments, &digest, None)?
             .ok_or_else(|| corrupt("new current locator segment absent"))?;
-        let expected = verify_segment(store, root, &reference)?;
-        if created_routes
-            .insert(digest, RouteWitness::new(reference, expected))
-            .is_some()
-        {
-            return Err(corrupt("created segment route witness repeats"));
-        }
+        verify_segment(store, root, &reference)?;
     }
-    // The authenticated map diff is ordered by full route key. Its projection
-    // onto one segment and surface is therefore ordered by gram and count.
-    // Fixed-width key commitments compare the complete expected and observed
-    // inventories without retaining one route row per gram.
-    for (surface, old_routes, new_routes) in [
-        (1_u8, &old.path_routes, &root.path_routes),
-        (2_u8, &old.content_routes, &root.content_routes),
-    ] {
-        store.map_changed_keys(old_routes, new_routes, None, &mut |key, before, after| {
-            let (_, _, digest) = route_parts(key, surface)?;
-            if let Some(reference) = before {
-                removed_routes
-                    .get_mut(&digest)
-                    .ok_or_else(|| corrupt("route removed outside compacted segment"))?
-                    .record(surface, key, reference)?;
-            }
-            if let Some(reference) = after {
-                created_routes
-                    .get_mut(&digest)
-                    .ok_or_else(|| corrupt("route added for unrelated segment"))?
-                    .record(surface, key, reference)?;
-            }
-            Ok(())
-        })?;
-    }
-    for (_, witness) in removed_routes.into_iter().chain(created_routes) {
-        witness.verify()?;
-    }
-    Ok(())
+    let facts = verify_run_posting_transition(
+        store,
+        old,
+        root,
+        premerge,
+        &removed_registry_segments,
+        &added_registry_segments,
+        &clean_selection.run_ids,
+    )?;
+    facts.validate()?;
+    Ok(facts)
 }
 
 #[cfg(test)]
@@ -1661,6 +2628,7 @@ mod tests {
     use super::*;
     use crate::file_authority::paged::{
         FileAuthorityMutation, FileSourceEdit, PagedFileAuthority, build_for_seal,
+        build_for_seal_prepared_with_policy,
     };
     use crate::file_authority::{PostingSurface, QueryWork};
     use crate::lexical_store::{AttemptBinding, MapEdit};
@@ -1702,6 +2670,699 @@ mod tests {
             operations_sha256: [4; 32],
             format: 17,
         }
+    }
+
+    #[test]
+    fn hard_pressure_append_finds_pair_after_full_soft_window() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let mut large = String::new();
+        for value in 0_u16..1_024 {
+            std::fmt::Write::write_fmt(&mut large, format_args!("{value:04x}"))
+                .expect("format fixed u16 key");
+        }
+        let large = large.into_bytes();
+        let mut medium = String::new();
+        for value in 0_u16..128 {
+            std::fmt::Write::write_fmt(&mut medium, format_args!("{value:04x}"))
+                .expect("format fixed u16 key");
+        }
+        let medium = medium.into_bytes();
+        let mut base = None;
+        for id in 1_u64..=34 {
+            let body = if id == 1 {
+                medium.clone()
+            } else if id <= 32 {
+                large.clone()
+            } else {
+                format!("tail-{id}").into_bytes()
+            };
+            let mutation = FileAuthorityMutation {
+                edits: vec![FileSourceEdit::Upsert {
+                    coverage: coverage(&format!("file-{id}.rs"), &body),
+                    bytes: body,
+                }],
+                clear_all: false,
+                operations_sha256: [4; 32],
+            };
+            let inherited = base
+                .as_ref()
+                .map_or_else(Vec::new, AuthorityRoot::object_roots);
+            let lease = store
+                .begin_attempt(&binding(id), &inherited)
+                .expect("append attempt");
+            let reservation = DocVersionReservation {
+                first: id,
+                count: 1,
+                scope_sha256: [5; 32],
+            };
+            let built = build_for_seal(&store, &lease, base.as_ref(), &reservation, &mutation)
+                .expect("append one run");
+            lease
+                .finish_published(&built.root.object_roots())
+                .expect("publish append");
+            base = Some(built.root);
+        }
+        let base = base.expect("34 run base");
+        assert_eq!(base.run_registry.runs.entries, 34);
+        let cost = |id: u64| {
+            let candidate = base
+                .run_registry
+                .candidate_by_id(&store, id, None)
+                .expect("candidate read")
+                .expect("candidate exists");
+            let reference = store
+                .map_get(&base.run_postings, &id.to_be_bytes(), None)
+                .expect("posting lookup")
+                .expect("posting exists");
+            let posting = RunPostingRoot::load(&store, &reference, None).expect("posting root");
+            candidate.index_encoded_bytes
+                + posting
+                    .bundle_encoded_bytes(&reference, &store)
+                    .expect("posting cost")
+        };
+        let pair_cap = cost(1).max(cost(33) + cost(34));
+        assert!(cost(1) <= pair_cap, "first anchor is individually eligible");
+        assert!(cost(1) + cost(33) > pair_cap, "first anchor blocks tail");
+        assert!(cost(33) + cost(34) <= pair_cap, "tail pair fits");
+        for id in 2_u64..=32 {
+            assert!(cost(id) > pair_cap, "prefix run {id} must be ineligible");
+        }
+        let policy = LexicalMaintenancePolicy::new(
+            2,
+            34,
+            1,
+            u64::MAX,
+            8, // the soft scan covers exactly 32 old headers
+            pair_cap,
+            64 * 1024 * 1024,
+            60_000,
+        )
+        .expect("policy");
+        let mutation = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Upsert {
+                coverage: coverage("file-35.rs", b"tail-35"),
+                bytes: b"tail-35".to_vec(),
+            }],
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let reservation = DocVersionReservation {
+            first: 35,
+            count: 1,
+            scope_sha256: [5; 32],
+        };
+        let hard_scan =
+            super::super::producer::test_hard_scan_lane(&store, &base, &mutation, &policy)
+                .expect("File hard scan fixture");
+        let lease = store
+            .begin_attempt(&binding(35), &base.object_roots())
+            .expect("ordinary append attempt");
+        let target = build_for_seal_prepared_with_policy(
+            &store,
+            &lease,
+            Some(&base),
+            &reservation,
+            &mutation,
+            None,
+            Some(&policy),
+            hard_scan.as_ref(),
+        )
+        .expect("ordinary append recovers hard pressure");
+        let _seal_facts = verify_for_seal_with_merge_facts(
+            &store,
+            &target.root,
+            Some(&base),
+            &reservation,
+            &mutation,
+            Some(&policy),
+            hard_scan.as_ref(),
+        )
+        .expect("independent seal");
+        assert!(
+            verify_for_seal_with_merge_facts(
+                &store,
+                &target.root,
+                Some(&base),
+                &reservation,
+                &mutation,
+                Some(&policy),
+                None,
+            )
+            .is_err(),
+            "hard seal cannot infer an absent checkpoint"
+        );
+        let mut forged = hard_scan.clone().expect("hard scan lane");
+        forged
+            .windows
+            .first_mut()
+            .expect("first window")
+            .candidates
+            .first_mut()
+            .expect("first candidate")
+            .eligibility = EligibilityWitness::Ineligible(IneligibleReason::InputCap);
+        assert!(
+            verify_for_seal_with_merge_facts(
+                &store,
+                &target.root,
+                Some(&base),
+                &reservation,
+                &mutation,
+                Some(&policy),
+                Some(&forged),
+            )
+            .is_err(),
+            "independent old-base oracle rejects forged eligibility"
+        );
+        let mut skipped = hard_scan.expect("hard scan lane");
+        let later_window = skipped.windows.get_mut(1).expect("later scan window");
+        let _omitted = later_window.candidates.remove(0);
+        assert!(
+            verify_for_seal_with_merge_facts(
+                &store,
+                &target.root,
+                Some(&base),
+                &reservation,
+                &mutation,
+                Some(&policy),
+                Some(&skipped),
+            )
+            .is_err(),
+            "independent old-base oracle rejects a skipped later candidate"
+        );
+        policy
+            .admit_target(
+                base.maintenance_snapshot(&store).expect("base counters"),
+                target
+                    .root
+                    .maintenance_snapshot(&store)
+                    .expect("target counters"),
+            )
+            .expect("ordinary target admission");
+        assert_eq!(target.root.run_registry.runs.entries, 34);
+        assert_eq!(target.root.live_docs, 35);
+        assert!(
+            target
+                .root
+                .run_registry
+                .candidate_by_id(&store, 33, None)
+                .expect("retired run")
+                .is_none()
+        );
+        assert!(
+            target
+                .root
+                .run_registry
+                .candidate_by_id(&store, 34, None)
+                .expect("retired run")
+                .is_none()
+        );
+        let reader =
+            PagedFileAuthority::open(&target.root_bytes, store.clone()).expect("target reader");
+        for id in 1_u64..=35 {
+            let body = if id == 1 {
+                medium.clone()
+            } else if id <= 32 {
+                large.clone()
+            } else {
+                format!("tail-{id}").into_bytes()
+            };
+            let key = coverage(&format!("file-{id}.rs"), &body).source.file;
+            assert_eq!(reader.id_for_key(&key, None).expect("source ID"), Some(id));
+        }
+        verify_all_for_scrub(&store, &target.root, None).expect("target scrub");
+    }
+
+    #[test]
+    fn over_hard_ordinary_append_uses_three_way_tail_merge() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let mut large = String::new();
+        for value in 0_u16..1_024 {
+            std::fmt::Write::write_fmt(&mut large, format_args!("{value:04x}"))
+                .expect("format fixed u16 key");
+        }
+        let large = large.into_bytes();
+        let mut medium = String::new();
+        for value in 0_u16..128 {
+            std::fmt::Write::write_fmt(&mut medium, format_args!("{value:04x}"))
+                .expect("format fixed u16 key");
+        }
+        let medium = medium.into_bytes();
+        let mut base = None;
+        for id in 1_u64..=20 {
+            let body = if id == 1 {
+                medium.clone()
+            } else if id <= 17 {
+                large.clone()
+            } else {
+                format!("tail-{id}").into_bytes()
+            };
+            let mutation = FileAuthorityMutation {
+                edits: vec![FileSourceEdit::Upsert {
+                    coverage: coverage(&format!("file-{id}.rs"), &body),
+                    bytes: body,
+                }],
+                clear_all: false,
+                operations_sha256: [4; 32],
+            };
+            let inherited = base
+                .as_ref()
+                .map_or_else(Vec::new, AuthorityRoot::object_roots);
+            let lease = store
+                .begin_attempt(&binding(id), &inherited)
+                .expect("append attempt");
+            let reservation = DocVersionReservation {
+                first: id,
+                count: 1,
+                scope_sha256: [5; 32],
+            };
+            let built = build_for_seal(&store, &lease, base.as_ref(), &reservation, &mutation)
+                .expect("append one run");
+            lease
+                .finish_published(&built.root.object_roots())
+                .expect("publish append");
+            base = Some(built.root);
+        }
+        let base = base.expect("20 run base");
+        assert_eq!(base.run_registry.runs.entries, 20);
+        let cost = |id: u64| {
+            let candidate = base
+                .run_registry
+                .candidate_by_id(&store, id, None)
+                .expect("candidate read")
+                .expect("candidate exists");
+            let reference = store
+                .map_get(&base.run_postings, &id.to_be_bytes(), None)
+                .expect("posting lookup")
+                .expect("posting exists");
+            let posting = RunPostingRoot::load(&store, &reference, None).expect("posting root");
+            candidate.index_encoded_bytes
+                + posting
+                    .bundle_encoded_bytes(&reference, &store)
+                    .expect("posting cost")
+        };
+        let tail_three = cost(18) + cost(19) + cost(20);
+        let cap = cost(1).max(tail_three);
+        assert!(cost(1) + cost(18) > cap, "first anchor blocks tail");
+        for id in 2_u64..=17 {
+            assert!(cost(id) > cap, "prefix run {id} must be ineligible");
+        }
+        let policy = LexicalMaintenancePolicy::new(
+            2,
+            19, // the existing 20-run root is already over hard
+            1,
+            u64::MAX,
+            3, // the soft scan covers only 12 old headers
+            cap,
+            64 * 1024 * 1024,
+            60_000,
+        )
+        .expect("policy");
+        let mutation = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Upsert {
+                coverage: coverage("file-21.rs", b"tail-21"),
+                bytes: b"tail-21".to_vec(),
+            }],
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let reservation = DocVersionReservation {
+            first: 21,
+            count: 1,
+            scope_sha256: [5; 32],
+        };
+        let hard_scan =
+            super::super::producer::test_hard_scan_lane(&store, &base, &mutation, &policy)
+                .expect("File hard scan fixture");
+        let lease = store
+            .begin_attempt(&binding(21), &base.object_roots())
+            .expect("ordinary append attempt");
+        let target = build_for_seal_prepared_with_policy(
+            &store,
+            &lease,
+            Some(&base),
+            &reservation,
+            &mutation,
+            None,
+            Some(&policy),
+            hard_scan.as_ref(),
+        )
+        .expect("ordinary append strictly improves run count");
+        let _seal_facts = verify_for_seal_with_merge_facts(
+            &store,
+            &target.root,
+            Some(&base),
+            &reservation,
+            &mutation,
+            Some(&policy),
+            hard_scan.as_ref(),
+        )
+        .expect("independent seal");
+        policy
+            .admit_target(
+                base.maintenance_snapshot(&store).expect("base counters"),
+                target
+                    .root
+                    .maintenance_snapshot(&store)
+                    .expect("target counters"),
+            )
+            .expect("over-hard strict improvement");
+        assert_eq!(target.root.run_registry.runs.entries, 19);
+        assert_eq!(target.root.live_docs, 21);
+        for id in 18_u64..=20 {
+            assert!(
+                target
+                    .root
+                    .run_registry
+                    .candidate_by_id(&store, id, None)
+                    .expect("retired run")
+                    .is_none()
+            );
+        }
+        let reader =
+            PagedFileAuthority::open(&target.root_bytes, store.clone()).expect("target reader");
+        for id in 1_u64..=21 {
+            let body = if id == 1 {
+                medium.clone()
+            } else if id <= 17 {
+                large.clone()
+            } else {
+                format!("tail-{id}").into_bytes()
+            };
+            let key = coverage(&format!("file-{id}.rs"), &body).source.file;
+            assert_eq!(reader.id_for_key(&key, None).expect("source ID"), Some(id));
+        }
+        verify_all_for_scrub(&store, &target.root, None).expect("target scrub");
+    }
+
+    #[test]
+    fn clean_append_only_runs_merge_serving_dictionary_and_require_declared_policy() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let scope = [5; 32];
+        let first_mutation = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Upsert {
+                coverage: coverage("a.rs", b"alpha-one"),
+                bytes: b"alpha-one".to_vec(),
+            }],
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let first_lease = store.begin_attempt(&binding(1), &[]).expect("first lease");
+        let first_range = DocVersionReservation {
+            first: 1,
+            count: 1,
+            scope_sha256: scope,
+        };
+        let first = build_for_seal(&store, &first_lease, None, &first_range, &first_mutation)
+            .expect("first run");
+        let first_facts = verify_for_seal_with_merge_facts(
+            &store,
+            &first.root,
+            None,
+            &first_range,
+            &first_mutation,
+            None,
+            None,
+        )
+        .expect("first seal");
+        assert_eq!(first_facts, FileRunMergeFacts::default());
+        let second_mutation = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Upsert {
+                coverage: coverage("b.rs", b"beta-two"),
+                bytes: b"beta-two".to_vec(),
+            }],
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let second_lease = store
+            .begin_attempt(&binding(2), &first.root.object_roots())
+            .expect("second lease");
+        let second_range = DocVersionReservation {
+            first: 2,
+            count: 1,
+            scope_sha256: scope,
+        };
+        let second = build_for_seal(
+            &store,
+            &second_lease,
+            Some(&first.root),
+            &second_range,
+            &second_mutation,
+        )
+        .expect("second run");
+        let append_facts = verify_for_seal_with_merge_facts(
+            &store,
+            &second.root,
+            Some(&first.root),
+            &second_range,
+            &second_mutation,
+            None,
+            None,
+        )
+        .expect("second seal");
+        assert_eq!(append_facts, FileRunMergeFacts::default());
+        assert_eq!(second.root.run_registry.runs.entries, 2);
+        assert_eq!(second.root.segments.entries, 2);
+        let prior_segments = {
+            let mut old_rows = store
+                .map_cursor(&second.root.segments, &[], None, None)
+                .expect("old segments");
+            let mut digests = BTreeSet::new();
+            while let Some((_, reference)) = old_rows.next().expect("old segment row") {
+                let _inserted = digests.insert(reference.root.sha256);
+            }
+            digests
+        };
+
+        let maintenance =
+            LexicalMaintenancePolicy::new(2, 4, 1_000_000, 2_000_000, 2, 10_000_000, 1_000_000, 1)
+                .expect("maintenance policy");
+        let no_changes = FileAuthorityMutation {
+            edits: Vec::new(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let third_lease = store
+            .begin_attempt(&binding(3), &second.root.object_roots())
+            .expect("merge lease");
+        let zero_range = DocVersionReservation {
+            first: 0,
+            count: 0,
+            scope_sha256: scope,
+        };
+        let hard_scan = super::super::producer::test_hard_scan_lane(
+            &store,
+            &second.root,
+            &no_changes,
+            &maintenance,
+        )
+        .expect("File hard scan fixture");
+        let merged = build_for_seal_prepared_with_policy(
+            &store,
+            &third_lease,
+            Some(&second.root),
+            &zero_range,
+            &no_changes,
+            None,
+            Some(&maintenance),
+            hard_scan.as_ref(),
+        )
+        .expect("run dictionary merge");
+        let merge_facts = verify_for_seal_with_merge_facts(
+            &store,
+            &merged.root,
+            Some(&second.root),
+            &zero_range,
+            &no_changes,
+            Some(&maintenance),
+            hard_scan.as_ref(),
+        )
+        .expect("independent merge seal");
+        assert_eq!(merge_facts.input_runs, 2);
+        assert_eq!(merge_facts.output_runs, 1);
+        assert_eq!(merge_facts.transferred_segments, 2);
+        assert_eq!(
+            merge_facts.transferred_segment_attributed_bytes,
+            second
+                .root
+                .run_registry
+                .snapshot()
+                .expect("old segment attribution")
+                .active_encoded_bytes()
+        );
+        assert!(merge_facts.retired_run_posting_attributed_bytes > 0);
+        assert!(merge_facts.created_run_posting_attributed_bytes > 0);
+        assert_eq!(merged.root.run_registry.runs.entries, 1);
+        assert_eq!(merged.root.run_postings.entries, 1);
+        assert_eq!(merged.root.segments, second.root.segments);
+        assert_eq!(merged.root.live_docs, 2);
+        let mut merged_segments = store
+            .map_cursor(&merged.root.segments, &[], None, None)
+            .expect("merged segments");
+        let mut inherited = BTreeSet::new();
+        while let Some((_, reference)) = merged_segments.next().expect("merged row") {
+            let _inserted = inherited.insert(reference.root.sha256);
+        }
+        assert_eq!(inherited, prior_segments);
+        assert!(
+            verify_for_seal(
+                &store,
+                &merged.root,
+                Some(&second.root),
+                &zero_range,
+                &no_changes,
+            )
+            .is_err(),
+            "an undeclared clean-run removal must be rejected"
+        );
+        verify_all_for_scrub(&store, &merged.root, None).expect("merged scrub");
+        let authority = PagedFileAuthority::open(&merged.root_bytes, store).expect("merged reader");
+        for (gram, id) in [(*b"alp", 1_u64), (*b"bet", 2_u64)] {
+            let mut work = QueryWork::default();
+            assert_eq!(
+                authority
+                    .necessary_candidates(
+                        PostingSurface::Content,
+                        &NecessaryGramExpr::Gram(gram),
+                        &mut work,
+                        &RequestBudgetV1::unbounded(),
+                    )
+                    .expect("merged query"),
+                Some(vec![id])
+            );
+        }
+    }
+
+    #[test]
+    fn seal_rejects_metadata_only_run_merge_that_omits_one_cohort() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let scope = [5; 32];
+        let append = |base: Option<&AuthorityRoot>, generation, id, path, body: &[u8]| {
+            let mutation = FileAuthorityMutation {
+                edits: vec![FileSourceEdit::Upsert {
+                    coverage: coverage(path, body),
+                    bytes: body.to_vec(),
+                }],
+                clear_all: false,
+                operations_sha256: [4; 32],
+            };
+            let lease = store
+                .begin_attempt(
+                    &binding(generation),
+                    &base.map_or_else(Vec::new, AuthorityRoot::object_roots),
+                )
+                .expect("append lease");
+            build_for_seal(
+                &store,
+                &lease,
+                base,
+                &DocVersionReservation {
+                    first: id,
+                    count: 1,
+                    scope_sha256: scope,
+                },
+                &mutation,
+            )
+            .expect("append source")
+            .root
+        };
+        let first = append(None, 1, 1, "a.rs", b"alpha-one");
+        let base = append(Some(&first), 2, 2, "b.rs", b"beta-two");
+        let policy =
+            LexicalMaintenancePolicy::new(2, 8, 1_000_000, 2_000_000, 2, 10_000_000, 1_000_000, 1)
+                .expect("pair policy");
+        let no_changes = FileAuthorityMutation {
+            edits: Vec::new(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let hard_scan =
+            super::super::producer::test_hard_scan_lane(&store, &base, &no_changes, &policy)
+                .expect("File hard scan fixture");
+        let selection = selected_clean_merge_runs(
+            &store,
+            &base,
+            &BTreeSet::new(),
+            &policy,
+            &no_changes,
+            hard_scan.as_ref(),
+        )
+        .expect("eligible full cohorts");
+        assert_eq!(selection.run_ids.len(), 2);
+        let new_id = base.run_registry.next_run_id;
+        let lease = store
+            .begin_attempt(&binding(3), &base.object_roots())
+            .expect("forgery lease");
+        let first_ref = store
+            .map_get(
+                &base.run_postings,
+                &selection
+                    .run_ids
+                    .first()
+                    .expect("first selected run")
+                    .to_be_bytes(),
+                None,
+            )
+            .expect("first run lookup")
+            .expect("first run root");
+        let mut omitted =
+            RunPostingRoot::load(&store, &first_ref, None).expect("first run posting");
+        omitted.run_id = new_id;
+        let omitted_ref = store
+            .put_blob(
+                &lease,
+                ObjectKind::Record,
+                &omitted.object_roots(),
+                &omitted.encode().expect("omitted root encode"),
+            )
+            .expect("omitted root");
+        let mut forged = base.clone();
+        forged.premerge_run_registry = Some(base.run_registry.clone());
+        forged.run_registry = base
+            .run_registry
+            .merge_cohorts(&store, &lease, &selection.run_ids, selection.progress)
+            .expect("forged cohort ownership");
+        let mut edits = selection
+            .run_ids
+            .iter()
+            .map(|id| MapEdit {
+                key: id.to_be_bytes().to_vec(),
+                value: None,
+            })
+            .collect::<Vec<_>>();
+        edits.push(MapEdit {
+            key: new_id.to_be_bytes().to_vec(),
+            value: Some(omitted_ref.clone()),
+        });
+        edits.sort_by(|left, right| left.key.cmp(&right.key));
+        forged.run_postings = store
+            .map_apply(&lease, &base.run_postings, edits.into_iter().map(Ok))
+            .expect("forged run posting map");
+        forged.run_index_encoded_bytes = omitted
+            .bundle_encoded_bytes(&omitted_ref, &store)
+            .expect("forged ledger");
+
+        let reservation = DocVersionReservation {
+            first: 0,
+            count: 0,
+            scope_sha256: scope,
+        };
+        assert!(
+            verify_for_seal_with_merge_facts(
+                &store,
+                &forged,
+                Some(&base),
+                &reservation,
+                &no_changes,
+                Some(&policy),
+                hard_scan.as_ref(),
+            )
+            .is_err(),
+            "independent seal must reject omitted cohort postings"
+        );
     }
 
     #[test]
@@ -2059,6 +3720,210 @@ mod tests {
     }
 
     #[test]
+    fn run_scrub_retries_final_gram_after_transient_count_read_failure() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let mutation = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Upsert {
+                coverage: coverage("retry.rs", b"abcabc"),
+                bytes: b"abcabc".to_vec(),
+            }],
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let lease = store.begin_attempt(&binding(1), &[]).expect("attempt");
+        let reservation = DocVersionReservation {
+            first: 1,
+            count: 1,
+            scope_sha256: [5; 32],
+        };
+        let built = build_for_seal(&store, &lease, None, &reservation, &mutation)
+            .expect("valid run fixture");
+        let mut cursor = RunPostingScrubCursor::default();
+        let mut at_final_flush = false;
+        for _ in 0..1024 {
+            if cursor.active.as_ref().is_some_and(|run| {
+                run.phase == RunScrubPhase::Pages
+                    && run.seen_pages == run.root.pages.entries
+                    && run.current_gram.is_some()
+            }) {
+                at_final_flush = true;
+                break;
+            }
+            assert!(
+                !cursor
+                    .step(&store, &built.root, None)
+                    .expect("prefix scrub")
+            );
+        }
+        assert!(at_final_flush, "fixture did not reach final gram flush");
+        let run = cursor.active.as_ref().expect("active run");
+        let gram = run.current_gram.expect("final gram");
+        let count_ref = store
+            .map_get(&run.root.gram_counts, &gram, None)
+            .expect("count lookup")
+            .expect("final count");
+        let hex = count_ref
+            .root
+            .sha256
+            .iter()
+            .fold(String::new(), |mut text, byte| {
+                use std::fmt::Write as _;
+                write!(&mut text, "{byte:02x}").expect("digest hex");
+                text
+            });
+        let count_path = directory
+            .path()
+            .join("lexical-object-pool")
+            .join("objects")
+            .join(hex.get(..2).expect("shard name"))
+            .join(&hex);
+        let hidden_path = directory.path().join("temporarily-hidden-count");
+        let original_bytes = std::fs::read(&count_path).expect("count object bytes");
+        std::fs::rename(&count_path, &hidden_path).expect("inject missing count object");
+        assert!(cursor.step(&store, &built.root, None).is_err());
+        std::fs::rename(&hidden_path, &count_path).expect("restore count object");
+        assert_eq!(
+            std::fs::read(&count_path).expect("restored bytes"),
+            original_bytes
+        );
+        let mut completed = false;
+        for _ in 0..1024 {
+            if cursor
+                .step(&store, &built.root, None)
+                .expect("resume scrub")
+            {
+                completed = true;
+                break;
+            }
+        }
+        assert!(completed, "resumed scrub did not complete");
+        assert_eq!(cursor.seen_runs, built.root.run_postings.entries);
+        assert_eq!(cursor.encoded_bytes, built.root.run_index_encoded_bytes);
+    }
+
+    #[test]
+    fn seal_and_full_scrub_reject_forged_run_root_accounting() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let mutation = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Upsert {
+                coverage: coverage("accounting.rs", b"abcabc"),
+                bytes: b"abcabc".to_vec(),
+            }],
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let reservation = DocVersionReservation {
+            first: 1,
+            count: 1,
+            scope_sha256: [5; 32],
+        };
+        let lease = store.begin_attempt(&binding(1), &[]).expect("attempt");
+        let built = build_for_seal(&store, &lease, None, &reservation, &mutation)
+            .expect("valid one-source fixture");
+        verify_for_seal(&store, &built.root, None, &reservation, &mutation)
+            .expect("unmodified transition seal");
+        verify_all_for_scrub(&store, &built.root, None).expect("unmodified full scrub");
+
+        let mut forged_run_bytes = built.root.clone();
+        forged_run_bytes.run_index_encoded_bytes = forged_run_bytes
+            .run_index_encoded_bytes
+            .checked_add(1)
+            .expect("fixture byte headroom");
+        let mut forged_outer_entries = built.root;
+        forged_outer_entries.run_postings.entries = forged_outer_entries
+            .run_postings
+            .entries
+            .checked_add(1)
+            .expect("fixture entry headroom");
+        for (name, forged) in [
+            ("run byte ledger", forged_run_bytes),
+            ("outer run count", forged_outer_entries),
+        ] {
+            assert!(
+                verify_for_seal(&store, &forged, None, &reservation, &mutation).is_err(),
+                "transition seal accepted forged {name}"
+            );
+            assert!(
+                verify_all_for_scrub(&store, &forged, None).is_err(),
+                "full scrub accepted forged {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_scrub_rejects_self_consistent_forged_run_member_width() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let mutation = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Upsert {
+                coverage: coverage("width.rs", b"abcabc"),
+                bytes: b"abcabc".to_vec(),
+            }],
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let reservation = DocVersionReservation {
+            first: 1,
+            count: 1,
+            scope_sha256: [5; 32],
+        };
+        let lease = store.begin_attempt(&binding(1), &[]).expect("attempt");
+        let built = build_for_seal(&store, &lease, None, &reservation, &mutation)
+            .expect("valid one-source fixture");
+        verify_all_for_scrub(&store, &built.root, None).expect("unmodified full scrub");
+
+        let (segment_key, segment_reference) = {
+            let mut rows = store
+                .map_cursor(&built.root.segments, &[], None, None)
+                .expect("segment cursor");
+            let first = rows.next().expect("segment row read").expect("one segment");
+            assert!(rows.next().expect("segment cursor end").is_none());
+            first
+        };
+        let false_width = built
+            .root
+            .run_registry
+            .active_index_encoded_bytes
+            .checked_add(1)
+            .expect("fixture byte headroom");
+        let mut forged = built.root.clone();
+        forged.run_registry = RunRegistry::empty()
+            .apply(
+                &store,
+                &lease,
+                &[],
+                &[SegmentInput {
+                    key: segment_key,
+                    reference: segment_reference,
+                    index_encoded_bytes: false_width,
+                }],
+            )
+            .expect("internally consistent forged run");
+        forged
+            .run_registry
+            .validate()
+            .expect("valid registry shape");
+        forged
+            .run_registry
+            .verify_all(&store, None)
+            .expect("member, header, and total agree");
+        let _encoded_root = forged.encode().expect("valid root control shape");
+        let mut restored = forged.clone();
+        restored.run_registry = built.root.run_registry.clone();
+        assert_eq!(restored, built.root, "only run registry was forged");
+        let error = verify_all_for_scrub(&store, &forged, None)
+            .expect_err("physical segment index width must reject the forged registry");
+        assert!(
+            matches!(&error, CoreError::Typed { code, message }
+                if *code == quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE
+                    && message == "lexical run registry corrupt: segment index byte witness differs"),
+            "unexpected scrub refusal: {error:?}"
+        );
+    }
+
+    #[test]
     fn seal_route_inventory_rejects_missing_extra_count_and_value() {
         let directory = tempfile::tempdir().expect("state root");
         let store = ObjectStore::open(directory.path()).expect("object store");
@@ -2082,58 +3947,36 @@ mod tests {
             .expect("valid route build");
         verify_for_seal(&store, &built.root, None, &reservation, &initial)
             .expect("valid route seal");
+        let mut forged_run_bytes = built.root.clone();
+        forged_run_bytes.run_registry.active_index_encoded_bytes = forged_run_bytes
+            .run_registry
+            .active_index_encoded_bytes
+            .checked_add(1)
+            .expect("fixture byte headroom");
+        assert!(
+            verify_for_seal(&store, &forged_run_bytes, None, &reservation, &initial).is_err(),
+            "seal oracle must reject a forged run byte total"
+        );
+        assert!(
+            verify_all_for_scrub(&store, &forged_run_bytes, None).is_err(),
+            "bounded scrub must reject a forged run byte total"
+        );
 
-        let (correct_key, segment_ref) = store
+        let (correct_key, count_ref) = store
             .map_cursor(&built.root.content_routes, &[], None, None)
             .expect("content route cursor")
             .next()
             .expect("content route read")
             .expect("content route exists");
-        let (_, count, digest) = route_parts(&correct_key, 2).expect("route shape");
-        let segment = Segment::decode(
-            &store
-                .read_blob(
-                    &segment_ref,
-                    size_u64(super::super::MAX_RECORD_BYTES).expect("record bound"),
-                    None,
-                )
-                .expect("segment bytes"),
-        )
-        .expect("segment record");
-        let source_grams = vec![derive_grams(b"abcabc").expect("fixed source grams")];
-        let source_meter = store.metered_clone();
-        let source_commitment = verify_term_map(
-            &source_meter,
-            digest,
-            2,
-            &segment.content_terms,
-            &source_grams,
-            1,
-        )
-        .expect("source-backed routes");
-        assert_eq!(source_commitment.count, 3);
-        assert_eq!(source_meter.read_meter_snapshot().1, 2);
-        let inherited_meter = store.metered_clone();
-        let inherited_commitment =
-            inherited_route_commitment(&inherited_meter, &segment.content_terms, 1, 2, digest)
-                .expect("inherited routes");
-        assert_eq!(inherited_commitment, source_commitment);
-        assert_eq!(inherited_meter.read_meter_snapshot().1, 2);
+        let (gram, count, run_id) = route_parts(&correct_key, 2).expect("run route shape");
         let source_digest = source_key_digest(initial.edits.first().expect("one edit").key())
             .expect("source digest");
         let (head_ref, _) =
             source_head(&store, &built.root, source_digest, None).expect("source head");
-        let extra_key = route_key(2, [0, 0, 0], 1, digest);
-        let wrong_count_key = route_key(
-            2,
-            correct_key
-                .get(1..4)
-                .expect("gram bytes")
-                .try_into()
-                .expect("gram width"),
-            count.checked_add(1).expect("count room"),
-            digest,
-        );
+        let extra_key = run_route_key(2, [0, 0, 0], 1, run_id).expect("extra route key");
+        let wrong_count_key =
+            run_route_key(2, gram, count.checked_add(1).expect("count room"), run_id)
+                .expect("wrong count route key");
         for (name, edits) in [
             (
                 "missing",
@@ -2146,7 +3989,7 @@ mod tests {
                 "extra",
                 vec![MapEdit {
                     key: extra_key.to_vec(),
-                    value: Some(segment_ref.clone()),
+                    value: Some(count_ref.clone()),
                 }],
             ),
             (
@@ -2158,7 +4001,7 @@ mod tests {
                     },
                     MapEdit {
                         key: wrong_count_key.to_vec(),
-                        value: Some(segment_ref),
+                        value: Some(count_ref),
                     },
                 ],
             ),

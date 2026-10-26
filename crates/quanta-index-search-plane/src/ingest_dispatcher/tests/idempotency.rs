@@ -116,7 +116,7 @@ impl HistoryIngestPort for Unreachable {
     fn publish_batch(
         &self,
         _batch: &HistoryIngestBatch,
-        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+        _budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<BatchPublishReceipt, CoreError> {
         Err(unreachable_route("history"))
     }
@@ -1342,8 +1342,8 @@ fn a_resumed_sealed_batch_finalizes_without_re_embedding() -> TestRes {
 
     // The crash left the record begun under the body's digest and never
     // finalized, while the tracks and the authority are already exact.
-    let mut batch = fixture_search_corpus_batch()?;
-    let body_sha256 = canonical_batch_digest_v1(&mut batch)?;
+    let batch = fixture_search_corpus_batch()?;
+    let body_sha256 = canonical_batch_digest_v1(&batch)?;
     catalog.seed_in_progress(
         IdempotencyKeyV1 {
             kind: IngestOperationKindV1::SearchCorpus,

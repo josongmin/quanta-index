@@ -17,7 +17,10 @@ exclude the run from an unrestricted orphan=0 claim.
 
 from __future__ import annotations
 
+import errno
+import math
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -30,6 +33,57 @@ from pathlib import Path
 
 class ProcessError(RuntimeError):
     """Ownership, sampling, or cleanup evidence was incomplete."""
+
+
+_SMAPS_ROLLUP_MAX_BYTES = 32 * 1024
+_PROC_STATUS_MAX_BYTES = 64 * 1024
+_U64_MAX = (1 << 64) - 1
+# include/linux/sched.h: set by exit_signals() before exit_mm() drops task->mm.
+_PF_EXITING = 0x00000004
+_SMAPS_RSS_LINE = re.compile(rb"Rss:[ \t]+([0-9]+)[ \t]+kB")
+
+
+def _read_smaps_rollup_rss_bytes(pid: int, proc_root: Path = Path("/proc")) -> int:
+    """Read one bounded, unambiguous Linux smaps_rollup RSS value."""
+    path = proc_root / str(pid) / "smaps_rollup"
+    with path.open("rb") as stream:
+        raw = stream.read(_SMAPS_ROLLUP_MAX_BYTES + 1)
+    if len(raw) > _SMAPS_ROLLUP_MAX_BYTES:
+        raise ProcessError(f"oversized smaps_rollup for PID {pid}")
+    rss_lines = [line for line in raw.splitlines() if line.startswith(b"Rss:")]
+    if len(rss_lines) != 1:
+        raise ProcessError(f"missing or duplicate smaps_rollup Rss for PID {pid}")
+    matched = _SMAPS_RSS_LINE.fullmatch(rss_lines[0])
+    if matched is None:
+        raise ProcessError(f"invalid smaps_rollup Rss for PID {pid}")
+    digits = matched.group(1).lstrip(b"0") or b"0"
+    if len(digits) > 20:
+        raise ProcessError(f"smaps_rollup Rss overflow for PID {pid}")
+    rss_kib = int(digits)
+    if rss_kib > _U64_MAX // 1024:
+        raise ProcessError(f"smaps_rollup Rss overflow for PID {pid}")
+    return rss_kib * 1024
+
+
+def _read_thread_tgid(tid: int, proc_root: Path = Path("/proc")) -> int:
+    """Read the kernel thread-group ID without trusting an unbounded status file."""
+    with (proc_root / str(tid) / "status").open("rb") as stream:
+        raw = stream.read(_PROC_STATUS_MAX_BYTES + 1)
+    if len(raw) > _PROC_STATUS_MAX_BYTES:
+        raise ProcessError(f"oversized /proc status for TID {tid}")
+    values = [line.split() for line in raw.splitlines() if line.startswith(b"Tgid:")]
+    if len(values) != 1 or len(values[0]) != 2 or values[0][0] != b"Tgid:":
+        raise ProcessError(f"missing or duplicate Tgid for TID {tid}")
+    value = values[0][1]
+    if re.fullmatch(rb"[0-9]+", value) is None:
+        raise ProcessError(f"invalid Tgid for TID {tid}")
+    digits = value.lstrip(b"0") or b"0"
+    if len(digits) > 20:
+        raise ProcessError(f"invalid Tgid for TID {tid}")
+    tgid = int(digits)
+    if tgid <= 0 or tgid > _U64_MAX:
+        raise ProcessError(f"invalid Tgid for TID {tid}")
+    return tgid
 
 
 def _validate_pass_fds(pass_fds: tuple[int, ...]) -> tuple[int, ...]:
@@ -70,6 +124,8 @@ class ProcessStat:
     user_ticks: int
     kernel_ticks: int
     rss_pages: int
+    task_flags: int
+    num_threads: int
 
     @property
     def live(self) -> bool:
@@ -88,9 +144,11 @@ class ProcessEvidence:
 class ProcessResult:
     """Cgroup CPU is kernel-accounted; cgroup memory peak is not RSS.
 
-    ``peak_tree_rss_bytes`` is the maximum sampled sum of process RSS and can
-    miss short-lived members. ``ownership_complete`` covers the dedicated
-    cgroup subtree, subject to the migration boundary described above.
+    Qualified ``peak_tree_rss_bytes`` sums live members' smaps_rollup Rss at
+    each sample; the diagnostic process-group path uses stat RSS pages. Both
+    can miss short-lived members and count shared resident pages repeatedly.
+    ``ownership_complete`` covers the dedicated cgroup subtree, subject to
+    the migration boundary described above.
     """
 
     root: ProcessIdentity
@@ -116,6 +174,15 @@ class ProcessResult:
     @property
     def total_cpu_ns(self) -> int:
         return self.total_user_cpu_ns + self.total_kernel_cpu_ns
+
+    @property
+    def rss_method(self) -> str:
+        """Bind a reported RSS number to its actual process sampling method."""
+        if self.backend == "cgroup-v2":
+            return "sampled_smaps_rollup_rss_sum_shared_pages_may_repeat"
+        if self.backend == "process-group":
+            return "sampled_proc_stat_rss_sum_shared_pages_may_repeat"
+        raise ProcessError(f"unsupported process backend for RSS method: {self.backend}")
 
     @property
     def ownership_complete(self) -> bool:
@@ -145,6 +212,7 @@ def parse_proc_stat(raw: str, *, expected_pid: int | None = None) -> ProcessStat
         if expected_pid is not None and pid != expected_pid:
             raise ValueError("PID mismatch")
         ppid, pgid = int(fields[1]), int(fields[2])
+        flags, num_threads = int(fields[6]), int(fields[17])
         user, kernel = int(fields[11]), int(fields[12])
         start, rss = int(fields[19]), int(fields[21])
         # Linux can report pgrp=-1 while an exited task is being torn down.
@@ -157,12 +225,14 @@ def parse_proc_stat(raw: str, *, expected_pid: int | None = None) -> ProcessStat
             or ppid < 0
             or (pgid < 0 and not missing_dead_group)
             or start <= 0
-            or min(user, kernel, rss) < 0
+            or min(flags, num_threads, user, kernel, rss) < 0
         ):
             raise ValueError("negative or invalid stat field")
     except (IndexError, TypeError, ValueError) as exc:
         raise ProcessError(f"invalid /proc stat for PID {expected_pid}: {exc}") from exc
-    return ProcessStat(ProcessIdentity(pid, start), ppid, pgid, fields[0], user, kernel, rss)
+    return ProcessStat(
+        ProcessIdentity(pid, start), ppid, pgid, fields[0], user, kernel, rss, flags, num_threads
+    )
 
 
 def _read_snapshot(proc_root: Path) -> dict[int, ProcessStat]:
@@ -371,7 +441,10 @@ class _CgroupOwner:
             owner = cls(parent, path)
             if (path / "cgroup.type").read_text().strip() != "domain":
                 raise ProcessError("dedicated cgroup is not a domain cgroup")
-            for name in ("cgroup.procs", "cgroup.events", "cgroup.kill", "cpu.stat", "memory.peak"):
+            for name in (
+                "cgroup.procs", "cgroup.threads", "cgroup.events", "cgroup.kill",
+                "cpu.stat", "memory.peak",
+            ):
                 if not (path / name).is_file():
                     raise ProcessError(f"required cgroup v2 file unavailable: {name}")
             owner.accounting()
@@ -421,19 +494,25 @@ class _CgroupOwner:
         )
         return peak, cpu["user_usec"] * 1000, cpu["system_usec"] * 1000, cpu["usage_usec"] * 1000
 
-    def members(self) -> set[int]:
+    def _ids(self, name: str) -> set[int]:
         self._verify()
-        members: set[int] = set()
+        ids: set[int] = set()
 
         def fail_walk(exc: OSError) -> None:
             raise ProcessError(f"cannot enumerate dedicated cgroup: {exc}") from exc
 
         for root, _dirs, _files in os.walk(self.path, onerror=fail_walk, followlinks=False):
-            for line in (Path(root) / "cgroup.procs").read_text().splitlines():
+            for line in (Path(root) / name).read_text().splitlines():
                 if not line.isdecimal() or int(line) <= 0:
-                    raise ProcessError("invalid cgroup.procs PID")
-                members.add(int(line))
-        return members
+                    raise ProcessError(f"invalid {name} ID")
+                ids.add(int(line))
+        return ids
+
+    def members(self) -> set[int]:
+        return self._ids("cgroup.procs")
+
+    def threads(self) -> set[int]:
+        return self._ids("cgroup.threads")
 
     def kill(self) -> None:
         self._verify()
@@ -515,6 +594,14 @@ def _spawn_cgroup_shim(
     )
 
 
+def _release_cgroup_workload(write_fd: int, absolute_deadline: float | None) -> float:
+    """Do not release the pre-exec gate after the caller's original deadline."""
+    if absolute_deadline is not None and time.monotonic() >= absolute_deadline:
+        raise ProcessError("producer deadline expired before cgroup workload launch")
+    os.write(write_fd, b"1")
+    return time.monotonic()
+
+
 class _CgroupTracker:
     def __init__(
         self,
@@ -542,8 +629,134 @@ class _CgroupTracker:
     def _inside(self, path: str) -> bool:
         return path == self.membership_path or path.startswith(self.membership_path + "/")
 
+    def _revalidate_smaps_member(self, identity: ProcessIdentity) -> ProcessStat | None:
+        """Validate identity and membership, including an exited group leader."""
+        pid = identity.pid
+        try:
+            row = parse_proc_stat(Path(f"/proc/{pid}/stat").read_text(), expected_pid=pid)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise ProcessError(f"cannot revalidate /proc stat for PID {pid}: {exc}") from exc
+        if row.identity != identity:
+            raise ProcessError(f"PID {pid} changed start time during RSS sample")
+        try:
+            membership = _proc_cgroup_path(pid)
+        except FileNotFoundError as exc:
+            # /proc can vanish between the stat and cgroup reads. A still-live
+            # identity with unreadable membership is not valid evidence.
+            try:
+                current = parse_proc_stat(Path(f"/proc/{pid}/stat").read_text(), expected_pid=pid)
+            except FileNotFoundError:
+                return None
+            if current.identity != identity:
+                raise ProcessError(f"PID {pid} changed start time during RSS sample") from exc
+            raise ProcessError(f"cannot revalidate cgroup membership for live PID {pid}") from exc
+        except OSError as exc:
+            raise ProcessError(f"cannot revalidate cgroup membership for PID {pid}: {exc}") from exc
+        if not self._inside(membership):
+            self.escaped.add(identity)
+            raise ProcessError(f"PID {pid} migrated outside dedicated cgroup")
+        return row
+
+    def _validated_thread_row(
+        self, tid: int, group: ProcessIdentity, *, permit_other_group: bool = False
+    ) -> ProcessStat | None:
+        """Validate one cgroup thread against its TGID, identity, and membership."""
+        path = Path(f"/proc/{tid}/stat")
+        try:
+            row = parse_proc_stat(path.read_text(), expected_pid=tid)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise ProcessError(f"cannot read /proc stat for TID {tid}: {exc}") from exc
+        if not row.live:
+            return None
+        try:
+            tgid = _read_thread_tgid(tid)
+        except FileNotFoundError as exc:
+            try:
+                current = parse_proc_stat(path.read_text(), expected_pid=tid)
+            except FileNotFoundError:
+                return None
+            if not current.live:
+                return None
+            raise ProcessError(f"cannot read Tgid for live TID {tid}") from exc
+        except OSError as exc:
+            raise ProcessError(f"cannot read Tgid for TID {tid}: {exc}") from exc
+        if tgid != group.pid:
+            if permit_other_group:
+                return None
+            raise ProcessError(f"TID {tid} changed Tgid during RSS sample")
+        try:
+            membership = _proc_cgroup_path(tid)
+        except FileNotFoundError as exc:
+            try:
+                current = parse_proc_stat(path.read_text(), expected_pid=tid)
+            except FileNotFoundError:
+                return None
+            if not current.live:
+                return None
+            raise ProcessError(f"cannot read cgroup for live TID {tid}") from exc
+        except OSError as exc:
+            raise ProcessError(f"cannot read cgroup for TID {tid}: {exc}") from exc
+        if not self._inside(membership):
+            self.escaped.add(group)
+            raise ProcessError(f"TID {tid} migrated outside dedicated cgroup")
+        return row
+
+    def _surviving_thread_rss(
+        self, owner: _CgroupOwner, group: ProcessIdentity, thread_ids: set[int]
+    ) -> tuple[int, ProcessStat] | None:
+        """Sample one validated live mm when the TGID leader has lost its mm."""
+        leader = self._revalidate_smaps_member(group)
+        if leader is None:
+            return None
+        census = thread_ids
+        for attempt in range(2):
+            for tid in sorted(census - {group.pid}):
+                before = self._validated_thread_row(tid, group, permit_other_group=True)
+                if before is None:
+                    continue
+                try:
+                    rss = _read_smaps_rollup_rss_bytes(tid)
+                except (OSError, ProcessError) as exc:
+                    # An exiting representative may lose its mm before the
+                    # read; another thread can still represent the group.
+                    after = self._validated_thread_row(tid, group)
+                    if after is not None and after.identity != before.identity:
+                        raise ProcessError(f"TID {tid} changed start time during RSS sample") from exc
+                    if (
+                        isinstance(exc, OSError)
+                        and exc.errno in (errno.ESRCH, errno.ENOENT)
+                        and (after is None or after.task_flags & _PF_EXITING)
+                    ):
+                        continue
+                    raise ProcessError(
+                        f"cannot sample smaps_rollup for live TID {tid}: {exc}"
+                    ) from exc
+                after = self._validated_thread_row(tid, group)
+                if after is None:
+                    continue
+                if after.identity != before.identity:
+                    raise ProcessError(f"TID {tid} changed start time during RSS sample")
+                leader = self._revalidate_smaps_member(group)
+                if leader is None:
+                    return None
+                return rss, leader
+            if attempt == 0:
+                # A second bounded census can find a newly created worker.
+                census = owner.threads()
+        leader = self._revalidate_smaps_member(group)
+        if leader is None or group.pid not in owner.members():
+            return None
+        if leader.live and leader.task_flags & _PF_EXITING and leader.num_threads == 1:
+            return None
+        raise ProcessError(f"no readable live RSS representative for TGID {group.pid}")
+
     def sample(self, owner: _CgroupOwner, *, include_process_metrics: bool = True) -> None:
         members = owner.members()
+        thread_ids: set[int] | None = None
         live_rss = 0
         live_seen = False
         for pid in members:
@@ -570,14 +783,61 @@ class _CgroupTracker:
                     raise ProcessError(f"cannot pin cgroup member PID {pid}: {exc}") from exc
                 self.pidfds[identity] = fd
             if include_process_metrics:
-                rss = row.rss_pages * self.page_bytes
+                rss: int | None = 0
+                measured_live = False
+                if row.live:
+                    try:
+                        rss = _read_smaps_rollup_rss_bytes(pid)
+                    except (OSError, ProcessError) as exc:
+                        post = self._revalidate_smaps_member(identity)
+                        if post is None:
+                            continue
+                        if not (
+                            isinstance(exc, OSError)
+                            and exc.errno == errno.ESRCH
+                            and (not post.live or post.task_flags & _PF_EXITING)
+                        ):
+                            raise ProcessError(
+                                f"cannot sample smaps_rollup for live PID {pid}: {exc}"
+                            ) from exc
+                        # A leader can have exited its mm while worker TIDs
+                        # keep the group's address space resident.
+                        if thread_ids is None:
+                            thread_ids = owner.threads()
+                        representative = self._surviving_thread_rss(owner, identity, thread_ids)
+                        if representative is not None:
+                            rss, row = representative
+                            measured_live = True
+                        elif post.live and post.task_flags & _PF_EXITING and post.num_threads == 1:
+                            # Single final thread in exit_mm(): no smaps value
+                            # exists. This is an omission, not a zero RSS read.
+                            rss = None
+                            row = post
+                        else:
+                            continue
+                    else:
+                        post = self._revalidate_smaps_member(identity)
+                        if post is None:
+                            continue
+                        row = post
+                        measured_live = True
+                else:
+                    if thread_ids is None:
+                        thread_ids = owner.threads()
+                    representative = self._surviving_thread_rss(owner, identity, thread_ids)
+                    if representative is None:
+                        continue
+                    rss, row = representative
+                    measured_live = True
                 old = self.peaks.get(identity, (0, 0, 0))
                 self.peaks[identity] = (
-                    max(old[0], rss),
+                    max(old[0], rss or 0),
                     max(old[1], row.user_ticks),
                     max(old[2], row.kernel_ticks),
                 )
-                if row.live:
+                if measured_live and rss is not None:
+                    if live_rss > _U64_MAX - rss:
+                        raise ProcessError("sampled process RSS sum overflow")
                     live_rss += rss
                     live_seen = True
         # Membership is authoritative for current members. Recheck previously
@@ -663,6 +923,7 @@ def _run_cgroup(
     stderr_path: str | None,
     cgroup_parent: str | None,
     pass_fds: tuple[int, ...],
+    absolute_deadline: float | None = None,
 ) -> ProcessResult:
     if sys.platform != "linux":
         raise ProcessError("native Linux host required for cgroup v2")
@@ -709,24 +970,27 @@ def _run_cgroup(
         baseline_user = tracker.user_cpu_ns
         baseline_kernel = tracker.kernel_cpu_ns
         baseline_usage = tracker.cpu_usage_ns
-        os.write(write_fd, b"1")
+        started = _release_cgroup_workload(write_fd, absolute_deadline)
         os.close(write_fd)
         write_fd = None
-        started = time.monotonic()
         deadline = started + timeout_secs
+        if absolute_deadline is not None:
+            deadline = min(deadline, absolute_deadline)
         timed_out = False
         while True:
             tracker.sample(owner)
-            if not owner.populated():
-                break
+            populated = owner.populated()
             now = time.monotonic()
             if now >= deadline:
                 timed_out = True
                 break
+            if not populated:
+                break
             time.sleep(min(sample_interval_ms / 1000, deadline - now))
-        stopped = time.monotonic()
+        stopped = now
         if timed_out:
-            owner.kill()
+            if populated:
+                owner.kill()
             tracker.kill_escapes()
         if not owner.wait_empty(cleanup_timeout_secs):
             raise ProcessError(f"dedicated cgroup remained populated: {owner.path}")
@@ -820,6 +1084,7 @@ def run(
     qualified: bool = False,
     cgroup_parent: str | None = None,
     pass_fds: tuple[int, ...] = (),
+    absolute_deadline: float | None = None,
 ) -> ProcessResult:
     """Run a qualified cgroup owner or a diagnostic process-group fallback.
 
@@ -843,8 +1108,15 @@ def run(
         raise ProcessError("invalid command or timeout/sample interval")
     if type(qualified) is not bool:
         raise ProcessError("qualified must be a boolean")
+    if absolute_deadline is not None and (
+        type(absolute_deadline) not in (int, float)
+        or not math.isfinite(absolute_deadline)
+        or not qualified
+    ):
+        raise ProcessError("absolute deadline requires a finite qualified Linux run")
     pass_fds = _validate_pass_fds(pass_fds)
     if qualified:
+        options = {"absolute_deadline": absolute_deadline} if absolute_deadline is not None else {}
         return _run_cgroup(
             command,
             timeout_secs=timeout_secs,
@@ -856,6 +1128,7 @@ def run(
             stderr_path=stderr_path,
             cgroup_parent=cgroup_parent,
             pass_fds=pass_fds,
+            **options,
         )
     if cgroup_parent is not None:
         raise ProcessError("cgroup_parent requires qualified=True")
@@ -892,14 +1165,15 @@ def run(
         timed_out = False
         while True:
             selected = tracker.observe(_read_snapshot(proc_root))
-            if not any(row.live for row in selected.values()):
-                break
+            live = any(row.live for row in selected.values())
             now = time.monotonic()
             if now >= deadline:
                 timed_out = True
                 break
+            if not live:
+                break
             time.sleep(min(sample_interval_ms / 1000, deadline - now))
-        stopped = time.monotonic()
+        stopped = now
         cleanup_complete = _cleanup(tracker, proc_root, cleanup_timeout_secs)
         if not cleanup_complete:
             raise ProcessError("owned process survived cleanup deadline")

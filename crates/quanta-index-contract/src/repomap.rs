@@ -13,9 +13,9 @@ use core::fmt;
 use std::collections::BTreeMap;
 
 use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, VariantAccess, Visitor},
     ser::SerializeStruct,
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 use crate::lex::{LanguageCode, SymbolKindCode};
@@ -24,6 +24,8 @@ use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
 
 mod canonical_v3;
 pub use canonical_v3::*;
+mod admitted_v3;
+pub use admitted_v3::RepoMapDecodeLimitsV3;
 mod terminal_receipt_v2;
 pub use terminal_receipt_v2::*;
 
@@ -2084,9 +2086,57 @@ impl Serialize for RepoMapMutationAck {
     }
 }
 
-struct RepoMapMutationAckV1Visitor;
+trait RepoMapMutationAckDecodePolicyV3<'de> {
+    fn next_field<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Option<&'static str>, M::Error>;
+    fn next_repo_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoId, M::Error>;
+    fn next_revision_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RevisionId, M::Error>;
+    fn next_text<M: MapAccess<'de>>(&self, map: &mut M) -> Result<String, M::Error>;
+    fn next_optional_text<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<String>, M::Error>;
+}
 
-impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
+struct OrdinaryRepoMapMutationAckPolicyV3;
+
+impl<'de> RepoMapMutationAckDecodePolicyV3<'de> for OrdinaryRepoMapMutationAckPolicyV3 {
+    fn next_field<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Option<&'static str>, M::Error> {
+        map.next_key::<String>()?
+            .map(|key| {
+                REPOMAP_MUTATION_ACK_V1_FIELDS
+                    .iter()
+                    .copied()
+                    .find(|field| *field == key)
+                    .ok_or_else(|| de::Error::unknown_field(&key, REPOMAP_MUTATION_ACK_V1_FIELDS))
+            })
+            .transpose()
+    }
+
+    fn next_repo_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoId, M::Error> {
+        map.next_value()
+    }
+
+    fn next_revision_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RevisionId, M::Error> {
+        map.next_value()
+    }
+
+    fn next_text<M: MapAccess<'de>>(&self, map: &mut M) -> Result<String, M::Error> {
+        map.next_value()
+    }
+
+    fn next_optional_text<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<String>, M::Error> {
+        map.next_value()
+    }
+}
+
+struct RepoMapMutationAckV1Visitor<P>(P);
+
+impl<'de, P: RepoMapMutationAckDecodePolicyV3<'de>> Visitor<'de>
+    for RepoMapMutationAckV1Visitor<P>
+{
     type Value = RepoMapMutationAck;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -2105,19 +2155,19 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
         let mut activation_epoch: Option<u64> = None;
         let mut terminal_sequence: Option<u64> = None;
         let mut replayed: Option<bool> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self.0.next_field(&mut map)? {
+            match key {
                 "repo_id" => {
                     if repo_id.is_some() {
                         return Err(de::Error::duplicate_field("repo_id"));
                     }
-                    repo_id = Some(map.next_value()?);
+                    repo_id = Some(self.0.next_repo_id(&mut map)?);
                 }
                 "revision_id" => {
                     if revision_id.is_some() {
                         return Err(de::Error::duplicate_field("revision_id"));
                     }
-                    revision_id = Some(map.next_value()?);
+                    revision_id = Some(self.0.next_revision_id(&mut map)?);
                 }
                 "manifest_generation" => {
                     if manifest_generation.is_some() {
@@ -2129,13 +2179,13 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
                     if prior_candidate_commitment.is_some() {
                         return Err(de::Error::duplicate_field("prior_candidate_commitment"));
                     }
-                    prior_candidate_commitment = Some(map.next_value()?);
+                    prior_candidate_commitment = Some(self.0.next_optional_text(&mut map)?);
                 }
                 "new_candidate_commitment" => {
                     if new_candidate_commitment.is_some() {
                         return Err(de::Error::duplicate_field("new_candidate_commitment"));
                     }
-                    new_candidate_commitment = Some(map.next_value()?);
+                    new_candidate_commitment = Some(self.0.next_text(&mut map)?);
                 }
                 "activation_epoch" => {
                     if activation_epoch.is_some() {
@@ -2196,7 +2246,7 @@ impl<'de> Deserialize<'de> for RepoMapMutationAck {
         deserializer.deserialize_struct(
             "RepoMapMutationAck",
             REPOMAP_MUTATION_ACK_V1_FIELDS,
-            RepoMapMutationAckV1Visitor,
+            RepoMapMutationAckV1Visitor(OrdinaryRepoMapMutationAckPolicyV3),
         )
     }
 }
@@ -3499,10 +3549,9 @@ mod tests {
             assert!(false, "empty focus subject identity must fail closed");
             std::process::abort();
         };
-        assert!(
-            err.to_string()
-                .contains("subject_identity must not be empty")
-        );
+        assert!(err
+            .to_string()
+            .contains("subject_identity must not be empty"));
     }
 
     #[test]
@@ -3536,10 +3585,9 @@ mod tests {
             assert!(false, "empty projection status must fail closed");
             std::process::abort();
         };
-        assert!(
-            err.to_string()
-                .contains("projection_status must not be empty")
-        );
+        assert!(err
+            .to_string()
+            .contains("projection_status must not be empty"));
     }
 
     #[test]

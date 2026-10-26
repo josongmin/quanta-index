@@ -6,7 +6,7 @@ use std::error::Error;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,14 +16,10 @@ pub(super) const SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) struct SearchdBinaryProcess {
     state_root: PathBuf,
-    child: Option<Child>,
+    child: Child,
 }
 
 impl SearchdBinaryProcess {
-    pub(super) fn start(state_root: &Path) -> Result<Self, Box<dyn Error>> {
-        Self::start_with_history_max_generations(state_root, 8)
-    }
-
     pub(super) fn start_with_history_max_generations(
         state_root: &Path,
         max_generations: usize,
@@ -48,12 +44,12 @@ impl SearchdBinaryProcess {
         mut command: Command,
         socket_timeout: Duration,
     ) -> Result<Self, Box<dyn Error>> {
-        let mut child = command.spawn()?;
-        wait_for_sockets_with_timeout(state_root, &mut child, socket_timeout)?;
-        Ok(Self {
+        let mut process = Self {
             state_root: state_root.to_path_buf(),
-            child: Some(child),
-        })
+            child: command.spawn()?,
+        };
+        wait_for_sockets_with_timeout(state_root, &mut process.child, socket_timeout)?;
+        Ok(process)
     }
 
     pub(super) fn connect(&self) -> Result<QuantaIndex, Box<dyn Error>> {
@@ -63,19 +59,27 @@ impl SearchdBinaryProcess {
     }
 
     pub(super) fn stop(mut self) -> Result<(), Box<dyn Error>> {
-        if let Some(mut child) = self.child.take() {
-            terminate_child(&mut child)?;
-        }
-        remove_socket_files(&self.state_root)?;
+        terminate_child(&mut self.child)?;
+        let _status = self.wait_for_exit()?;
         Ok(())
+    }
+
+    pub(super) fn wait_for_exit(mut self) -> Result<ExitStatus, Box<dyn Error>> {
+        let start = Instant::now();
+        while start.elapsed() < SOCKET_TIMEOUT {
+            if let Some(status) = self.child.try_wait()? {
+                remove_socket_files(&self.state_root)?;
+                return Ok(status);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Err("searchd binary did not exit within the process deadline".into())
     }
 }
 
 impl Drop for SearchdBinaryProcess {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _result = terminate_child(&mut child);
-        }
+        let _result = terminate_child(&mut self.child);
         let _cleanup = remove_socket_files(&self.state_root);
     }
 }
@@ -157,29 +161,9 @@ pub(super) fn searchd_binary_path() -> &'static Path {
     Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
 }
 
-/// The env a daemon under test boots with: the deterministic embedder
-/// and the required history retention. Shared by the direct spawn and
-/// the umask wrapper so the two never disagree (TOPT-03).
-pub(super) fn apply_searchd_env(command: &mut Command, max_generations: usize) {
-    let _configured = command
-        .env("QUANTA_INDEX_EMBEDDER", "hash-dev")
-        .env(
-            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
-            max_generations.to_string(),
-        )
-        .env(
-            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
-            (16 * 1024 * 1024).to_string(),
-        )
-        .env(
-            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS",
-            "128",
-        )
-        .env(
-            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
-            (256 * 1024 * 1024).to_string(),
-        );
-}
+#[path = "searchd_fixture_env.rs"]
+mod searchd_fixture_env;
+pub(super) use searchd_fixture_env::apply_searchd_env;
 
 /// The three sockets a daemon over `state_root` binds, in
 /// (query, control, ingest) order: the one spelling of the
@@ -212,11 +196,115 @@ pub(super) fn remove_socket_files(state_root: &Path) -> std::io::Result<()> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::collections::BTreeMap;
     use std::process::Command;
 
     use super::{
-        remove_socket_files, socket_accepts_connection, terminate_child, wait_for_sockets,
+        apply_searchd_env, remove_socket_files, socket_accepts_connection, terminate_child,
+        wait_for_sockets,
     };
+
+    #[test]
+    fn child_command_carries_all_explicit_physical_fixture_limits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut command = Command::new("unused-searchd-test-child");
+        apply_searchd_env(&mut command, 8);
+        let actual = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                key.to_str()
+                    .filter(|key| key.starts_with("QUANTA_INDEX_LEGACY_PHYSICAL_"))
+                    .map(|key| (key.to_owned(), value))
+            })
+            .map(|(key, value)| {
+                let value = value.ok_or("physical fixture env was removed")?;
+                Ok((
+                    key,
+                    value
+                        .to_str()
+                        .ok_or("physical env is not UTF-8")?
+                        .to_owned(),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, Box<dyn std::error::Error>>>()?;
+        let expected = [
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_BYTES", "17179869184"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_FILES", "200000"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_PENDING", "100000"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_ENTRIES", "400000"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_DEPTH", "64"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_PENDING_FRAMES", "4096"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_READER_HANDLES", "4096"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_TRACKED_ENTRIES", "100000"),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_MAX_PROCESS_ROOTS", "256"),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_GLOBAL_MAX_SQLITE_HANDLES",
+                "8192",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_MAINTENANCE_RESERVED_BYTES",
+                "1073741824",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_MAINTENANCE_RESERVED_FILES",
+                "1000",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_CONTROL_RESERVED_BYTES",
+                "1073741824",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_CONTROL_RESERVED_FILES",
+                "10000",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_WORK_RESERVED_BYTES",
+                "4294967296",
+            ),
+            ("QUANTA_INDEX_LEGACY_PHYSICAL_WORK_RESERVED_FILES", "30000"),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_HISTORY_RESERVED_BYTES",
+                "1073741824",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_HISTORY_RESERVED_FILES",
+                "10000",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_DURABLE_CONTROL_FILE_MAX_BYTES",
+                "1048576",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_REPOMAP_CONTROL_FILE_MAX_BYTES",
+                "67108864",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_REPOMAP_CANDIDATE_FILE_MAX_BYTES",
+                "536870912",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_CATALOG_PARENT_RESERVED_BYTES",
+                "2147483648",
+            ),
+            (
+                "QUANTA_INDEX_LEGACY_PHYSICAL_CATALOG_PARENT_RESERVED_FILES",
+                "10000",
+            ),
+        ];
+        if actual.len() != expected.len() {
+            return Err(format!(
+                "expected 23 physical child env values, got {}",
+                actual.len()
+            )
+            .into());
+        }
+        for (key, value) in expected {
+            if actual.get(key).map(String::as_str) != Some(value) {
+                return Err(format!("physical child env differs at {key}").into());
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn regular_file_does_not_satisfy_searchd_socket_readiness() {
@@ -225,6 +313,49 @@ mod tests {
         std::fs::write(&path, b"not-a-socket").expect("regular readiness sentinel");
 
         assert!(!socket_accepts_connection(&path));
+    }
+
+    #[test]
+    fn dropping_process_owner_reaps_child_without_explicit_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::net::UnixListener;
+        use std::process::Stdio;
+
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("search-plane"))?;
+        let _listeners = super::daemon_socket_paths(root.path())
+            .map(UnixListener::bind)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut command = Command::new("sleep");
+        let _configured = command
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let process = super::SearchdBinaryProcess::start_with_command(root.path(), command)?;
+        let pid = process.child.id();
+        drop(process);
+
+        let alive = Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if alive.success() {
+            return Err(format!("dropped process owner left child {pid} running").into());
+        }
+        let remaining = super::daemon_socket_paths(root.path())
+            .into_iter()
+            .filter(|path| path.exists())
+            .collect::<Vec<_>>();
+        if !remaining.is_empty() {
+            return Err(
+                format!("dropped process owner retained socket entries: {remaining:?}").into(),
+            );
+        }
+        Ok(())
     }
 
     #[test]

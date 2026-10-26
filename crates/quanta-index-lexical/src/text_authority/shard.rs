@@ -309,6 +309,41 @@ fn phrase_term_positions(text: &str, case: CaseMode) -> Result<Vec<(String, Posi
         .collect()
 }
 
+#[derive(Clone, Copy)]
+enum PositionWriteMode {
+    Append,
+    #[cfg(test)]
+    Replace,
+}
+
+fn write_positions(
+    builder: &mut PositionsBuilder,
+    doc_id: PositionsDocId,
+    pairs: &[(String, Position)],
+    mode: PositionWriteMode,
+    what: &str,
+) -> Result<(), CoreError> {
+    match mode {
+        PositionWriteMode::Append => {
+            for (term, position) in pairs {
+                builder
+                    .add_token(doc_id, term, *position)
+                    .map_err(|err| map_positions_error(what, &err))?;
+            }
+            Ok(())
+        }
+        #[cfg(test)]
+        PositionWriteMode::Replace => builder
+            .upsert_doc(
+                doc_id,
+                pairs
+                    .iter()
+                    .map(|(term, position)| (term.as_str(), *position)),
+            )
+            .map_err(|err| map_positions_error(what, &err)),
+    }
+}
+
 /// One shard's four derived indexes plus its doc table, under construction.
 ///
 /// The embedded generation stamp is the generation that writes the shard;
@@ -359,11 +394,50 @@ impl ShardBuilders {
     /// stored Tantivy field or a chunk straight from the batch), and the
     /// folded copy the `case:no` trigram and raw-substring paths read is the
     /// shared [`normalize::fold`].
+    #[cfg(test)]
     pub(crate) fn upsert(
         &mut self,
         doc_id: u64,
         candidate_id: String,
         indexed_text: &str,
+    ) -> Result<(), CoreError> {
+        self.write_doc(
+            doc_id,
+            candidate_id,
+            indexed_text,
+            PositionWriteMode::Replace,
+        )
+    }
+
+    /// Append a document to a freshly built segment. Local IDs are unique;
+    /// replacement's all-term removal is unnecessary and would rescan the
+    /// growing dictionary for every document.
+    pub(crate) fn append(
+        &mut self,
+        doc_id: u64,
+        candidate_id: String,
+        indexed_text: &str,
+    ) -> Result<(), CoreError> {
+        self.ensure_in_range(doc_id)?;
+        if self.table.contains_key(&doc_id) {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical: duplicate fresh text authority local ID {doc_id}"
+            )));
+        }
+        self.write_doc(
+            doc_id,
+            candidate_id,
+            indexed_text,
+            PositionWriteMode::Append,
+        )
+    }
+
+    fn write_doc(
+        &mut self,
+        doc_id: u64,
+        candidate_id: String,
+        indexed_text: &str,
+        mode: PositionWriteMode,
     ) -> Result<(), CoreError> {
         self.ensure_in_range(doc_id)?;
         let indexed_text = normalize::nfc(indexed_text).into_owned();
@@ -375,21 +449,21 @@ impl ShardBuilders {
             .upsert_doc(TrigramDocId(doc_id), folded_indexed_text.as_bytes())
             .map_err(|err| map_trigram_error("build folded trigram sidecar", &err))?;
         let sensitive_pairs = phrase_term_positions(&indexed_text, CaseMode::Sensitive)?;
-        self.positions
-            .upsert_doc(
-                PositionsDocId(doc_id),
-                sensitive_pairs
-                    .iter()
-                    .map(|(term, pos)| (term.as_str(), *pos)),
-            )
-            .map_err(|err| map_positions_error("build positions sidecar", &err))?;
+        write_positions(
+            &mut self.positions,
+            PositionsDocId(doc_id),
+            &sensitive_pairs,
+            mode,
+            "build positions sidecar",
+        )?;
         let folded_pairs = phrase_term_positions(&indexed_text, CaseMode::Folded)?;
-        self.positions_folded
-            .upsert_doc(
-                PositionsDocId(doc_id),
-                folded_pairs.iter().map(|(term, pos)| (term.as_str(), *pos)),
-            )
-            .map_err(|err| map_positions_error("build folded positions sidecar", &err))?;
+        write_positions(
+            &mut self.positions_folded,
+            PositionsDocId(doc_id),
+            &folded_pairs,
+            mode,
+            "build folded positions sidecar",
+        )?;
         let _prior = self.table.insert(
             doc_id,
             TextAuthorityDoc {
@@ -467,6 +541,102 @@ mod tests {
             .upsert(2, "two".to_string(), "é")
             .expect("short text");
         let body = builders.finish().expect("finish");
+        assert!(verify_fixture(&body));
+    }
+
+    #[test]
+    fn fresh_append_has_fixed_unicode_and_repeated_term_postings() {
+        let mut builders = ShardBuilders::empty(0, ManifestGeneration::new(1)).expect("empty");
+        builders
+            .append(0, "first".into(), "CAFÉ cafe\u{301} red red")
+            .expect("first fresh document");
+        builders
+            .append(1, "second".into(), "café RED")
+            .expect("second fresh document");
+        builders
+            .append(2, "empty".into(), "")
+            .expect("empty fresh document");
+        let body = builders.finish().expect("finish fresh segment");
+        assert_eq!(body.docs_by_id.len(), 3);
+        assert_eq!(
+            body.docs_by_id.get(&0).map(|doc| doc.indexed_text.as_str()),
+            Some("CAFÉ café red red")
+        );
+        assert!(verify_fixture(&body));
+
+        // Fixed canonical varints: doc count, ascending doc gaps, then
+        // position counts and gaps. These bytes do not come from either
+        // posting builder or its tokenizer.
+        assert_eq!(body.positions.raw_postings("CAFÉ"), Some(&[1, 0, 1, 0][..]));
+        assert_eq!(
+            body.positions.raw_postings("café"),
+            Some(&[2, 0, 1, 1, 1, 1, 0][..])
+        );
+        assert_eq!(
+            body.positions.raw_postings("red"),
+            Some(&[1, 0, 2, 2, 1][..])
+        );
+        assert_eq!(body.positions.raw_postings("RED"), Some(&[1, 1, 1, 1][..]));
+        assert_eq!(
+            body.positions_folded.raw_postings("café"),
+            Some(&[2, 0, 2, 0, 1, 1, 1, 0][..])
+        );
+        assert_eq!(
+            body.positions_folded.raw_postings("red"),
+            Some(&[2, 0, 2, 2, 1, 1, 1, 1][..])
+        );
+        assert!(body.positions_folded.raw_postings("CAFÉ").is_none());
+    }
+
+    #[test]
+    fn fresh_append_rejects_duplicate_local_id_before_changing_any_index() {
+        let mut builders = ShardBuilders::empty(0, ManifestGeneration::new(1)).expect("empty");
+        builders
+            .append(7, "first".into(), "café alpha")
+            .expect("first fresh document");
+        assert!(matches!(
+            builders.append(7, "replacement".into(), "other term"),
+            Err(quanta_index_core::CoreError::InvalidContract(_))
+        ));
+        let body = builders.finish().expect("finish unchanged segment");
+        assert_eq!(body.docs_by_id.len(), 1);
+        assert_eq!(
+            body.docs_by_id.get(&7).map(|doc| doc.candidate_id.as_str()),
+            Some("first")
+        );
+        assert_eq!(body.positions.raw_postings("café"), Some(&[1, 7, 1, 0][..]));
+        assert!(body.positions.raw_postings("other").is_none());
+        assert!(verify_fixture(&body));
+    }
+
+    #[test]
+    fn replacement_keeps_empty_and_replayed_nonempty_document_semantics() {
+        let mut builders = ShardBuilders::empty(0, ManifestGeneration::new(1)).expect("empty");
+        builders
+            .upsert(3, "old".into(), "obsolete")
+            .expect("initial document");
+        builders
+            .upsert(3, "blank".into(), "")
+            .expect("clear tokens");
+        builders
+            .upsert(3, "current".into(), "CAFÉ café")
+            .expect("replace empty document");
+        builders
+            .upsert(3, "current".into(), "CAFÉ café")
+            .expect("idempotent replay");
+        let body = builders.finish().expect("finish replacement segment");
+        assert_eq!(body.docs_by_id.len(), 1);
+        assert_eq!(
+            body.docs_by_id.get(&3).map(|doc| doc.candidate_id.as_str()),
+            Some("current")
+        );
+        assert!(body.positions.raw_postings("obsolete").is_none());
+        assert_eq!(body.positions.raw_postings("CAFÉ"), Some(&[1, 3, 1, 0][..]));
+        assert_eq!(body.positions.raw_postings("café"), Some(&[1, 3, 1, 1][..]));
+        assert_eq!(
+            body.positions_folded.raw_postings("café"),
+            Some(&[1, 3, 2, 0, 1][..])
+        );
         assert!(verify_fixture(&body));
     }
 

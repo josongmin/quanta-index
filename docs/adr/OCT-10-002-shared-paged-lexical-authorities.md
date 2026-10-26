@@ -1,6 +1,6 @@
 # OCT-10-002 — Shared paged lexical authorities
 
-Status: `Integrated; local regression and SDK acceptance verified; XL and operational acceptance pending`
+Status: `Legacy contract integrated; scoped regression/SDK and later XL lifecycle passes recorded; full operational/performance acceptance remains open`
 
 Decided: 2026-10-10
 
@@ -8,13 +8,32 @@ Supersedes the storage and admission details of
 [OCT-10-001](OCT-10-001-seal-owned-lexical-serving-metadata.md) for the new format.
 Historical F16 measurements remain evidence for F16 only.
 Current execution and exclusions are recorded in the
-[closeout validation](../plans/oct-10-index-closeout/VALIDATION.md).
+[closeout validation](../plans/oct-22-finalizing/VALIDATION.md).
+
+Scope: the legacy Tantivy-coupled paged Native/File authorities. "One current
+contract" below means one reader/format in that legacy family; it does not claim
+that the new opt-in native engine is absent. Native authority format 6 below is
+not the native service's independently versioned state marker. The new
+NativeLiteral/NativeTextIndex, SQLite Catalog and physical GC follow the
+[Native RFC](../rfc/oct-10-native-incremental-vnext.md#11-reading-order-and-decision-boundaries).
+Legacy GC/XL proofs do not qualify them. R35/R36 retire the legacy authority only
+after the RFC's switch gates; no two writable engines may share one state root.
+
+Current resource/operational integration status and active ownership follow only
+the [Oct-22 SSOT](../plans/oct-22-finalizing/README.md).
+The [legacy discussion](../history/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md#1037-최종-잔여-작업과-native-분업-2026-10-12)
+remains historical context, not another assignment list.
+Prepared merge/local pool quotas are not complete production boot/writer/WAL/FD
+admission. Active native object/profile memory leases neither cancel that legacy
+obligation nor qualify RSS or sustained disk growth. No format change is made by
+this status reconciliation.
 
 ## Decision
 
 1. One current contract couples sealed manifest 19, compact File authority 18,
    Native authority 6 and activation repository envelope 4. Older artifacts
-   require a producer rebuild; no parallel legacy backend remains.
+   require a producer rebuild; no older-format fallback reader remains within
+   this legacy path. Separate-store native experiments are governed by the RFC.
    Native bodies persist only the NFC surface and reconstruct folding through
    the existing normalizer. The prior two-surface admission bound remains in
    force; the reader already computed folding to check its stored duplicate.
@@ -180,4 +199,4 @@ oracles, delta/no-op/tombstone/reopen, original range retry, real SIGKILL recove
 shared corruption fanout, partial receipt fences, held-reader retention, GC
 progress/staleness, offline backup/restore and consumer integration. Compilation
 and historical F16 benchmarks do not satisfy these requirements. Execution status
-belongs in the [implementation ledger](../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md).
+belongs in the [validation summary](../plans/oct-22-finalizing/VALIDATION.md).

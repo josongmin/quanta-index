@@ -1,11 +1,11 @@
 //! One canonical visitor family; ordinary callers own local DATA, native
 //! callers loan physical DATA retained outside their highest Source.
 use super::{
-    Deserialize, Deserializer, GENERATION_SNAPSHOT_FIELDS, GenerationSnapshot, ManifestGeneration,
-    MapAccess, RepoId, RevisionId, SEARCH_CORPUS_ACTIVE_HEAD_V1_FIELDS,
+    de, fmt, Deserialize, Deserializer, GenerationSnapshot, ManifestGeneration, MapAccess, RepoId,
+    RevisionId, SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1,
+    SearchCorpusGenerationIdentityV1, SearchPlaneTrackKind, SemanticContentRootsV1, Visitor,
+    GENERATION_SNAPSHOT_FIELDS, SEARCH_CORPUS_ACTIVE_HEAD_V1_FIELDS,
     SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS, SEMANTIC_CONTENT_ROOTS_V1_FIELDS,
-    SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
-    SearchPlaneTrackKind, SemanticContentRootsV1, Visitor, de, fmt,
 };
 use core::{convert::Infallible, marker::PhantomData};
 #[cfg(feature = "quanta-native-identity-v1")]
@@ -21,6 +21,11 @@ use serde::de::DeserializeSeed;
 
 mod borrowed_validation_v1;
 pub(super) use borrowed_validation_v1::validate_expected_active_scope_v1;
+
+#[cfg(feature = "quanta-native-identity-v1")]
+mod admitted_cbor_v3;
+#[cfg(feature = "quanta-native-identity-v1")]
+pub use admitted_cbor_v3::AdmittedCorpusHeadRefusalV3;
 
 macro_rules! corpus_data_failure_v1 {
     ($visibility:vis) => { #[derive(Clone, Copy, Debug, Eq, PartialEq)]

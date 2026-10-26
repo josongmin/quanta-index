@@ -277,31 +277,23 @@ fn native_corpus_seed_uses_wire_bound_producers_and_canonical_validation() {
     assert_eq!(admission.owned, 0);
     assert!(admission.work > 0);
     let invalid = wire.replacen("\"repo\"", "\"e\\u0301\"", 1);
-    assert!(
-        decode_native(&invalid, &mut Admission::default())
-            .unwrap_err()
-            .to_string()
-            .contains("Identity(NonCanonical)")
-    );
+    assert!(decode_native(&invalid, &mut Admission::default())
+        .unwrap_err()
+        .to_string()
+        .contains("Identity(NonCanonical)"));
     let invalid = wire.replacen("\"Lexical\"", "\"Unknown\"", 1);
-    assert!(
-        decode_native(&invalid, &mut Admission::default())
-            .unwrap_err()
-            .to_string()
-            .contains("InvalidData(Semantic, None)")
-    );
-    assert!(
-        serde_json::from_str::<SearchPlaneTrackKind>("\"Unknown\"")
-            .unwrap_err()
-            .to_string()
-            .contains("unknown variant `Unknown`")
-    );
-    assert!(
-        decode_native("{\"unknown\":1}", &mut Admission::default())
-            .unwrap_err()
-            .to_string()
-            .contains("UnknownField")
-    );
+    assert!(decode_native(&invalid, &mut Admission::default())
+        .unwrap_err()
+        .to_string()
+        .contains("InvalidData(Semantic, None)"));
+    assert!(serde_json::from_str::<SearchPlaneTrackKind>("\"Unknown\"")
+        .unwrap_err()
+        .to_string()
+        .contains("unknown variant `Unknown`"));
+    assert!(decode_native("{\"unknown\":1}", &mut Admission::default())
+        .unwrap_err()
+        .to_string()
+        .contains("UnknownField"));
 }
 
 #[test]
@@ -507,12 +499,10 @@ fn all_schema_levels_keep_owned_unknown_keys_and_reject_missing_fields() {
         r#"{"generation":{"lexical":{}}}"#,
         r#"{"generation":{"semantic_content":{}}}"#,
     ] {
-        assert!(
-            decode_native(wire, &mut Admission::default())
-                .unwrap_err()
-                .to_string()
-                .contains("MissingField")
-        );
+        assert!(decode_native(wire, &mut Admission::default())
+            .unwrap_err()
+            .to_string()
+            .contains("MissingField"));
     }
 }
 #[test]
@@ -587,11 +577,9 @@ fn identity_owned_input_keeps_exact_pointer_and_unit_data_blocks_decoder_repoll(
     assert_eq!(admission.copies, 0);
     assert!(admission.alive.get() > 0);
     let polls = Rc::new(Cell::new(0));
-    assert!(
-        RepoId::native_decode_seed_v1(&mut admission, &mut data)
-            .deserialize(PollDeserializer(Rc::clone(&polls)))
-            .is_err()
-    );
+    assert!(RepoId::native_decode_seed_v1(&mut admission, &mut data)
+        .deserialize(PollDeserializer(Rc::clone(&polls)))
+        .is_err());
     assert_eq!(polls.get(), 0);
     assert_eq!(admission.owned, 1);
     let mut output = None;
@@ -700,23 +688,19 @@ fn field_order_and_escaped_wire_preserve_canonical_parity_v1() {
     let mut error = None;
     let mut admission = Admission::default();
     let mut decoder = serde_json::Deserializer::from_str(&invalid);
-    assert!(
-        SearchCorpusActiveHeadV1::try_decode_into_v1(
-            &mut decoder,
-            &mut admission,
-            &mut data,
-            &mut error
-        )
-        .is_err()
-    );
+    assert!(SearchCorpusActiveHeadV1::try_decode_into_v1(
+        &mut decoder,
+        &mut admission,
+        &mut data,
+        &mut error
+    )
+    .is_err());
     assert!(data.state.output.is_some());
-    assert!(
-        error
-            .as_ref()
-            .expect("semantic error")
-            .to_string()
-            .contains("Semantic")
-    );
+    assert!(error
+        .as_ref()
+        .expect("semantic error")
+        .to_string()
+        .contains("Semantic"));
     let mut output = None;
     assert!(data.complete_into_slot_v1(&mut output).is_err());
 }
@@ -729,22 +713,18 @@ fn adapter_cannot_report_success_without_the_canonical_producer_v1() {
     };
     let mut data = quanta_index_contract_base::NativeIdentityDecodeDataV1::new_v1();
     let mut error = None;
-    assert!(
-        RepoId::try_decode_into_v1(
-            serde::de::value::BorrowedStrDeserializer::<serde_json::Error>::new("repo"),
-            &mut admission,
-            &mut data,
-            &mut error
-        )
-        .is_err()
-    );
-    assert!(
-        error
-            .as_ref()
-            .expect("producer refusal")
-            .to_string()
-            .contains("did not fill")
-    );
+    assert!(RepoId::try_decode_into_v1(
+        serde::de::value::BorrowedStrDeserializer::<serde_json::Error>::new("repo"),
+        &mut admission,
+        &mut data,
+        &mut error
+    )
+    .is_err());
+    assert!(error
+        .as_ref()
+        .expect("producer refusal")
+        .to_string()
+        .contains("did not fill"));
     let mut output = None;
     assert!(data.complete_into_slot_v1(&mut output).is_err());
     assert_eq!(admission.copies, 0);
@@ -761,15 +741,13 @@ fn wrong_owned_map_and_track_input_remain_in_external_data_v1() {
         let mut admission = Admission::default();
         let mut failure = None;
         let value: serde_json::Value = serde_json::from_str(wire).expect("fixture");
-        assert!(
-            SearchCorpusActiveHeadV1::try_decode_into_v1(
-                value,
-                &mut admission,
-                &mut data,
-                &mut failure
-            )
-            .is_err()
-        );
+        assert!(SearchCorpusActiveHeadV1::try_decode_into_v1(
+            value,
+            &mut admission,
+            &mut data,
+            &mut failure
+        )
+        .is_err());
         let owned = match depth {
             0 => &data.state.keys.refused_map,
             1 => &data.state.generation.keys.refused_map,
@@ -781,15 +759,13 @@ fn wrong_owned_map_and_track_input_remain_in_external_data_v1() {
     let mut data = NativeCorpusDecodeDataV1::new_v1();
     let mut admission = Admission::default();
     let mut failure = None;
-    assert!(
-        SearchCorpusActiveHeadV1::try_decode_into_v1(
-            value,
-            &mut admission,
-            &mut data,
-            &mut failure
-        )
-        .is_err()
-    );
+    assert!(SearchCorpusActiveHeadV1::try_decode_into_v1(
+        value,
+        &mut admission,
+        &mut data,
+        &mut failure
+    )
+    .is_err());
     assert_eq!(
         data.state.generation.lexical.track.owned.as_deref(),
         Some("owned-track-refusal")

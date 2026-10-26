@@ -27,6 +27,11 @@ use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
     StructuralQueryRequest as DomainStructuralQueryRequest,
 };
+use quanta_index_core::publication_admission::{
+    DurableControlFileAdmissionPort, PublicationResourceAdmissionPort,
+};
+#[cfg(unix)]
+use quanta_index_core::publication_capacity::InodeKey;
 use quanta_index_core::{
     AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, AuxiliaryAuthorityCatalogPort, CoreError,
     DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1, DoorFindingQuarantinePort,
@@ -99,7 +104,10 @@ use crate::app::server::{
 };
 use crate::app::socket_access::SocketRole;
 use crate::app::supervisor::SupervisorStatus;
+mod retirement;
 use crate::app::trace_recorder::DiagnosticCaptureLeaseV1;
+use retirement::RuntimeRetirementGuard;
+pub use retirement::RuntimeRetirementPort;
 
 const BENCH_DISABLE_QUERY_OBS_ENV: &str = "QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS";
 
@@ -138,7 +146,18 @@ pub struct SearchdRuntimeParts {
     /// An explicit process capture lease, created before any state-root open.
     pub diagnostic_capture: Option<DiagnosticCaptureLeaseV1>,
     pub state_root_lease: StateRootLease,
+    pub physical_retirement: Arc<dyn RuntimeRetirementPort>,
     pub search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+    /// One required authority shared by journal and materialization admission.
+    pub publication_admission: Arc<dyn PublicationResourceAdmissionPort>,
+    /// Service-owned Control custody for the persistent cursor signing key.
+    pub durable_control_file_admission: Arc<dyn DurableControlFileAdmissionPort>,
+    /// Service custody for upload bodies admitted before publication events.
+    pub source_upload_file_admission:
+        Arc<dyn quanta_index_core::SourcePublicationUploadFileAdmissionPort>,
+    /// Catalog event writes reuse their already-held publication parent.
+    pub catalog_publication_funding:
+        Arc<dyn quanta_index_core::publication_admission::CatalogPublicationFundingPort>,
     pub lexical_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync>,
     pub lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     pub lexical_identity_probe: Arc<dyn SealedGenerationIdentityProbePort>,
@@ -210,12 +229,59 @@ pub struct SearchdRuntimeParts {
 /// Exclusive process-lifetime ownership of one daemon state root.
 ///
 /// The lock file is intentionally persistent; the OS lock, not file presence,
-/// owns liveness. Dropping the file handle releases the lease after crashes and
-/// normal shutdown without stale-file recovery heuristics.
-#[derive(Debug)]
+/// owns liveness. Clones share the same locked open-file description: the last
+/// owner releases the lease after crashes or normal shutdown without stale-file
+/// recovery heuristics. Output custody may therefore outlive runtime shutdown
+/// without admitting a second writer to still-owned files.
+#[derive(Clone, Debug)]
 pub struct StateRootLease {
-    _file: File,
+    // This owner keeps the locked open-file description alive through clones.
+    _lock_file: Arc<File>,
+    #[cfg(unix)]
+    root_directory: Arc<File>,
+    // Type/device/inode cannot change while these original FDs remain owned.
+    // Live pathname permissions and lock security are never cached here.
+    #[cfg(unix)]
+    root_inode_v1: InodeKey,
+    #[cfg(unix)]
+    lock_inode_v1: InodeKey,
     state_root_identity_v1: PathBuf,
+}
+
+/// Owned root-directory custody that keeps the process lease live.
+///
+/// I/O borrows its directory FD through [`std::os::fd::AsFd`]. Writers retain
+/// this guard until their child files and pending operations are retired; a
+/// duplicated child FD alone is not a substitute for the guard. Field order
+/// closes this directory FD before releasing its lease owner.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct StateRootDirectoryV1 {
+    directory: File,
+    lease: StateRootLease,
+}
+
+#[cfg(unix)]
+impl StateRootDirectoryV1 {
+    /// Revalidate the root and held lock before a filesystem transition.
+    pub fn require_current_v1(&self) -> Result<(), CoreError> {
+        // This private FD is created only by duplicating this lease's root.
+        self.lease.require_current_root_at_v1(&self.directory)
+    }
+}
+
+#[cfg(unix)]
+impl std::os::fd::AsFd for StateRootDirectoryV1 {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.directory)
+    }
+}
+
+#[cfg(unix)]
+impl quanta_index_ipc::SourcePublicationUploadParent for StateRootDirectoryV1 {
+    fn require_current_v1(&self) -> Result<(), CoreError> {
+        StateRootDirectoryV1::require_current_v1(self)
+    }
 }
 
 impl StateRootLease {
@@ -230,24 +296,76 @@ impl StateRootLease {
         state_root: &Path,
         access: StateRootAccessV1,
     ) -> Result<Self, CoreError> {
+        Self::acquire_root(state_root, access, true)
+    }
+
+    /// Take exclusive custody of an existing private root and lock. Missing
+    /// entries refuse; verification never creates a root or lock as a side effect.
+    pub fn acquire_existing(state_root: &Path) -> Result<Self, CoreError> {
+        Self::acquire_existing_with_access(state_root, StateRootAccessV1::Private)
+    }
+
+    /// Existing-only custody under the selected access policy; no entry creation.
+    pub fn acquire_existing_with_access(
+        state_root: &Path,
+        access: StateRootAccessV1,
+    ) -> Result<Self, CoreError> {
+        Self::acquire_root(state_root, access, false)
+    }
+
+    fn acquire_root(
+        state_root: &Path,
+        access: StateRootAccessV1,
+        create: bool,
+    ) -> Result<Self, CoreError> {
         #[cfg(not(unix))]
         ensure_state_root_security_supported_v1(state_root)?;
-        ensure_durable_state_root_v1(state_root)?;
+        if create {
+            ensure_durable_state_root_v1(state_root)?;
+        }
         let state_root_identity_v1 = canonical_state_root_identity_v1(state_root)?;
         ensure_private_state_root_v1(&state_root_identity_v1, access)?;
+        #[cfg(unix)]
+        let root_directory = open_state_root_directory_nofollow_v1(&state_root_identity_v1)
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "searchd state-root lease: open root directory {}: {error}",
+                    state_root_identity_v1.display()
+                ))
+            })?;
         let path =
             state_root_identity_v1.join(crate::app::state_format::STATE_ROOT_LEASE_FILE_NAME);
-        let file = open_state_root_lock_nofollow_v1(&path).map_err(|error| {
+        #[cfg(unix)]
+        let opened = open_state_root_lock_nofollow_v1(&root_directory, &path, create);
+        #[cfg(not(unix))]
+        let opened = open_state_root_lock_nofollow_v1(&path, create);
+        let file = opened.map_err(|error| {
             CoreError::Storage(format!(
                 "searchd state-root lease: open {}: {error}",
                 path.display()
             ))
         })?;
         match file.try_lock_exclusive() {
-            Ok(()) => Ok(Self {
-                _file: file,
-                state_root_identity_v1,
-            }),
+            Ok(()) => {
+                #[cfg(unix)]
+                let (root_inode_v1, lock_inode_v1) =
+                    pinned_state_root_inodes_v1(&root_directory, &file)?;
+                let lease = Self {
+                    _lock_file: Arc::new(file),
+                    #[cfg(unix)]
+                    root_directory: Arc::new(root_directory),
+                    #[cfg(unix)]
+                    root_inode_v1,
+                    #[cfg(unix)]
+                    lock_inode_v1,
+                    state_root_identity_v1,
+                };
+                // A rename/replacement during acquisition cannot return a
+                // lease for a different pathname root than the held lock.
+                ensure_private_state_root_v1(&lease.state_root_identity_v1, access)?;
+                lease.require_state_root_v1(state_root)?;
+                Ok(lease)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInUse,
                 message: format!(
@@ -264,14 +382,102 @@ impl StateRootLease {
 
     pub fn require_state_root_v1(&self, state_root: &Path) -> Result<(), CoreError> {
         let observed = canonical_state_root_identity_v1(state_root)?;
-        if observed == self.state_root_identity_v1 {
-            return Ok(());
+        if observed != self.state_root_identity_v1 {
+            return Err(CoreError::InvalidContract(format!(
+                "searchd state-root lease: identity mismatch: lease={} requested={}",
+                self.state_root_identity_v1.display(),
+                observed.display(),
+            )));
         }
-        Err(CoreError::InvalidContract(format!(
-            "searchd state-root lease: identity mismatch: lease={} requested={}",
-            self.state_root_identity_v1.display(),
-            observed.display(),
-        )))
+        #[cfg(unix)]
+        {
+            let current = open_state_root_directory_nofollow_v1(&observed).map_err(|error| {
+                CoreError::Storage(format!(
+                    "searchd state-root lease: reopen root {}: {error}",
+                    observed.display()
+                ))
+            })?;
+            self.require_opened_state_root_v1(&current)
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(())
+        }
+    }
+
+    /// Prove a caller's opened root directory is the directory pinned by this
+    /// lease, and that its current lock entry is still the held lock inode.
+    pub fn require_opened_state_root_v1(&self, opened: &File) -> Result<(), CoreError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+
+            let candidate = opened.metadata().map_err(|error| {
+                CoreError::Storage(format!(
+                    "searchd state-root lease: stat opened root: {error}"
+                ))
+            })?;
+            if !candidate.is_dir()
+                || candidate.dev() != self.root_inode_v1.device
+                || candidate.ino() != self.root_inode_v1.inode
+            {
+                return Err(CoreError::InvalidContract(
+                    "searchd state-root lease: opened root directory identity mismatch".into(),
+                ));
+            }
+            self.require_current_root_at_v1(opened)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = opened;
+            ensure_state_root_security_supported_v1(&self.state_root_identity_v1)
+        }
+    }
+
+    /// The caller either checked this FD's identity or owns a private duplicate
+    /// created by this lease. Every call still reopens both live names.
+    #[cfg(unix)]
+    fn require_current_root_at_v1(&self, opened: &File) -> Result<(), CoreError> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        require_held_state_root_lock_entry_v1(opened, self.lock_inode_v1)?;
+        // Bind current read permission and pathname identity to the same FD.
+        let current = open_state_root_directory_nofollow_v1(&self.state_root_identity_v1).map_err(
+            |error| {
+                CoreError::Storage(format!(
+                    "searchd state-root lease: reopen canonical root: {error}"
+                ))
+            },
+        )?;
+        let current = current.metadata().map_err(|error| {
+            CoreError::Storage(format!(
+                "searchd state-root lease: stat canonical root: {error}"
+            ))
+        })?;
+        if current.dev() != self.root_inode_v1.device || current.ino() != self.root_inode_v1.inode {
+            return Err(CoreError::InvalidContract(
+                "searchd state-root lease: canonical root directory identity mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Duplicate the pinned directory FD together with a shared lease owner.
+    /// This validates the current root and lock identities before handing out
+    /// directory custody; it does not create another lease or expose a File
+    /// that could normally outlive its lock owner.
+    #[cfg(unix)]
+    pub fn try_clone_root_directory_v1(&self) -> Result<StateRootDirectoryV1, CoreError> {
+        self.require_current_root_at_v1(&self.root_directory)?;
+        let directory = self.root_directory.try_clone().map_err(|error| {
+            CoreError::Storage(format!(
+                "searchd state-root lease: clone pinned root directory: {error}"
+            ))
+        })?;
+        Ok(StateRootDirectoryV1 {
+            directory,
+            lease: self.clone(),
+        })
     }
 
     #[must_use]
@@ -292,13 +498,67 @@ fn ensure_state_root_security_supported_v1(state_root: &Path) -> Result<(), Core
 }
 
 #[cfg(unix)]
-fn open_state_root_lock_nofollow_v1(path: &Path) -> std::io::Result<File> {
+fn pinned_state_root_inodes_v1(
+    root: &File,
+    lock: &File,
+) -> Result<(InodeKey, InodeKey), CoreError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let root = root.metadata().map_err(|error| {
+        CoreError::Storage(format!(
+            "searchd state-root lease: stat pinned root: {error}"
+        ))
+    })?;
+    let lock = lock.metadata().map_err(|error| {
+        CoreError::Storage(format!("searchd state-root lease: stat held lock: {error}"))
+    })?;
+    if !root.is_dir() || !lock.is_file() {
+        return Err(CoreError::InvalidContract(
+            "searchd state-root lease: pinned root or lock descriptor kind differs".into(),
+        ));
+    }
+    Ok((
+        InodeKey {
+            device: root.dev(),
+            inode: root.ino(),
+        },
+        InodeKey {
+            device: lock.dev(),
+            inode: lock.ino(),
+        },
+    ))
+}
+
+#[cfg(unix)]
+fn open_state_root_directory_nofollow_v1(path: &Path) -> std::io::Result<File> {
     use rustix::fs::{Mode, OFlags, open};
+
+    open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))
+}
+
+#[cfg(unix)]
+fn open_state_root_lock_nofollow_v1(
+    root: &File,
+    path: &Path,
+    create: bool,
+) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags, openat};
     use std::os::unix::fs::MetadataExt;
 
-    let file = open(
-        path,
-        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::CREATE,
+    let mut flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    if create {
+        flags |= OFlags::CREATE;
+    }
+    let file = openat(
+        root,
+        Path::new(crate::app::state_format::STATE_ROOT_LEASE_FILE_NAME),
+        flags,
         Mode::from_raw_mode(0o600),
     )
     .map(File::from)
@@ -335,8 +595,44 @@ fn open_state_root_lock_nofollow_v1(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
+#[cfg(unix)]
+fn require_held_state_root_lock_entry_v1(root: &File, held: InodeKey) -> Result<(), CoreError> {
+    use rustix::fs::{Mode, OFlags, openat};
+    use std::os::unix::fs::MetadataExt as _;
+
+    let current = openat(
+        root,
+        Path::new(crate::app::state_format::STATE_ROOT_LEASE_FILE_NAME),
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|error| {
+        CoreError::Storage(format!(
+            "searchd state-root lease: reopen held lock entry: {error}"
+        ))
+    })?;
+    let current = current.metadata().map_err(|error| {
+        CoreError::Storage(format!(
+            "searchd state-root lease: stat current lock: {error}"
+        ))
+    })?;
+    if !current.is_file()
+        || current.dev() != held.device
+        || current.ino() != held.inode
+        || current.uid() != rustix::process::geteuid().as_raw()
+        || current.mode() & 0o7777 != 0o600
+        || current.nlink() != 1
+    {
+        return Err(CoreError::InvalidContract(
+            "searchd state-root lease: held lock entry identity or security changed".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(not(unix))]
-fn open_state_root_lock_nofollow_v1(path: &Path) -> std::io::Result<File> {
+fn open_state_root_lock_nofollow_v1(path: &Path, create: bool) -> std::io::Result<File> {
     if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(std::io::Error::other(format!(
             "state-root lock is a symlink: {}",
@@ -346,7 +642,7 @@ fn open_state_root_lock_nofollow_v1(path: &Path) -> std::io::Result<File> {
     OpenOptions::new()
         .read(true)
         .write(true)
-        .create(true)
+        .create(create)
         .truncate(false)
         .open(path)
 }
@@ -581,6 +877,7 @@ impl QueryTextEmbedderPort for QueryEmbedderAdapter {
     ) -> Result<Vec<f32>, CoreError> {
         self.0
             .embed_batch_within(&[query_text], budget)?
+            .into_unscoped()?
             .into_iter()
             .next()
             .ok_or_else(|| {
@@ -1020,7 +1317,8 @@ fn map_structural_read_error(err: CoreError) -> StructuralError {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => StructuralError::ProducerExecution(format!(
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => StructuralError::ProducerExecution(format!(
             "structural ledger read at the pinned epoch failed: {other}"
         )),
     }
@@ -1302,6 +1600,7 @@ pub struct SearchdRuntime {
     /// is never a detached thread and never torn down after the lease.
     _maintenance: MaintenanceTimer,
     _search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
+    _physical_retirement: RuntimeRetirementGuard,
     // Rust drops fields in declaration order. Keep the state-root lease last
     // so every adapter, server, and authority handle is gone before ownership
     // of the shared root is released. The serving path moves these three
@@ -1344,8 +1643,26 @@ pub struct RuntimeGuards {
     pub diagnostic_capture: Option<DiagnosticCaptureLeaseV1>,
     /// The search-corpus lifecycle owner (readiness/GC authority).
     pub search_corpus_lifecycle: Arc<SearchCorpusLifecycleOwner>,
+    physical_retirement: RuntimeRetirementGuard,
     /// The state-root lease; released last, after everything else.
     pub state_root_lease: StateRootLease,
+}
+
+impl crate::app::supervisor::SupervisorGuards for RuntimeGuards {
+    fn retire(self) -> Result<(), CoreError> {
+        let Self {
+            diagnostic_capture,
+            search_corpus_lifecycle,
+            mut physical_retirement,
+            state_root_lease,
+        } = self;
+        drop(search_corpus_lifecycle);
+        let result = physical_retirement.retire_checked();
+        drop(physical_retirement);
+        drop(state_root_lease);
+        drop(diagnostic_capture);
+        result
+    }
 }
 
 impl SearchdRuntime {
@@ -1382,7 +1699,12 @@ impl SearchdRuntime {
         let SearchdRuntimeParts {
             diagnostic_capture,
             state_root_lease,
+            physical_retirement,
             search_corpus_build_port,
+            publication_admission,
+            durable_control_file_admission,
+            source_upload_file_admission,
+            catalog_publication_funding,
             lexical_generation_scanner,
             lexical_generation_validator,
             lexical_identity_probe,
@@ -1645,7 +1967,7 @@ impl SearchdRuntime {
             aux_authority_store.clone();
         let authority_inspect_port: Arc<dyn SearchCorpusAuthorityInspectPort + Send + Sync> =
             aux_authority_store;
-        let search_corpus_materializer: Arc<DirectSearchCorpusMaterializer> = Arc::new(
+        let search_corpus_materializer =
             DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
                 SearchCorpusMaterializerParts {
                     source_publication: activation_catalog.clone(),
@@ -1670,7 +1992,10 @@ impl SearchdRuntime {
                     auxiliary_coordinator: Arc::clone(&auxiliary_parts.coordinator),
                 },
             )
-            .with_history_text(history_text.clone()),
+            .with_history_text(history_text.clone());
+        let search_corpus_materializer: Arc<DirectSearchCorpusMaterializer> = Arc::new(
+            search_corpus_materializer
+                .with_publication_resource_admission(Arc::clone(&publication_admission)),
         );
         let direct_search_corpus_ingest_port: Arc<dyn SearchCorpusIngestPort + Send + Sync> =
             search_corpus_materializer.clone();
@@ -1766,7 +2091,11 @@ impl SearchdRuntime {
             Arc::clone(&query_obs_store),
             metric_sources,
         ));
-        let cursor_keys = CursorKeyStore::open(&leased_state_root).map_err(anyhow::Error::from)?;
+        let cursor_keys = CursorKeyStore::open_with_durable_file_admission(
+            &leased_state_root,
+            durable_control_file_admission.as_ref(),
+        )
+        .map_err(anyhow::Error::from)?;
         let query_dispatcher = Arc::new(
             SearchPlaneDispatcher::new_with_obs(
                 Arc::clone(&lex_open_port),
@@ -1844,30 +2173,34 @@ impl SearchdRuntime {
                 request_events: Some(request_events),
             },
         ));
-        let ingest_dispatcher = Arc::new(
-            SearchPlaneIngestDispatcher::new(
-                direct_search_corpus_ingest_port,
-                direct_history_ingest_port,
-                repo_commit_recency_ingest_port,
-                repo_topic_ingest_port,
-                repo_description_ingest_port,
-                file_ownership_ingest_port,
-                file_contributor_ingest_port,
-                repo_meta_ingest_port,
-                direct_runtime_ingest_port,
-                direct_structural_ingest_port,
-                repo_map_bundle_ingest_port,
-                idempotency,
-                activation_catalog,
-                authority_inspect_port,
-            )
-            .with_source_upload(Arc::new(
-                quanta_index_ipc::SourcePublicationUploadStore::open(
-                    config.state_root().join("source-publication-uploads"),
-                    config.source_publication_max_bytes(),
-                )?,
-            )),
-        );
+        let upload_parent = state_root_lease.try_clone_root_directory_v1()?;
+        let upload = quanta_index_ipc::SourcePublicationUploadStore::open_at_with_file_admission(
+            upload_parent,
+            state_root_lease.state_root_identity_v1(),
+            std::ffi::OsStr::new("source-publication-uploads"),
+            config.source_publication_max_bytes(),
+            source_upload_file_admission,
+        )?;
+        let ingest_dispatcher = SearchPlaneIngestDispatcher::new(
+            direct_search_corpus_ingest_port,
+            direct_history_ingest_port,
+            repo_commit_recency_ingest_port,
+            repo_topic_ingest_port,
+            repo_description_ingest_port,
+            file_ownership_ingest_port,
+            file_contributor_ingest_port,
+            repo_meta_ingest_port,
+            direct_runtime_ingest_port,
+            direct_structural_ingest_port,
+            repo_map_bundle_ingest_port,
+            idempotency,
+            activation_catalog,
+            authority_inspect_port,
+        )
+        .with_source_upload(Arc::new(upload))
+        .with_publication_resource_admission(publication_admission)
+        .with_catalog_publication_funding(catalog_publication_funding);
+        let ingest_dispatcher = Arc::new(ingest_dispatcher);
         let query_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,
         > = Arc::new(SearchPlaneQueryIpcAdapter::new(query_dispatcher));
@@ -1963,6 +2296,10 @@ impl SearchdRuntime {
             boot_notices,
             _maintenance: maintenance,
             _search_corpus_lifecycle: search_corpus_lifecycle,
+            _physical_retirement: RuntimeRetirementGuard::new(
+                physical_retirement,
+                state_root_lease.clone(),
+            ),
             _state_root_lease: state_root_lease,
         })
     }
@@ -1985,6 +2322,7 @@ impl SearchdRuntime {
             boot_notices,
             _maintenance: maintenance,
             _search_corpus_lifecycle: search_corpus_lifecycle,
+            _physical_retirement: physical_retirement,
             _state_root_lease: state_root_lease,
             ..
         } = self;
@@ -1998,6 +2336,7 @@ impl SearchdRuntime {
             RuntimeGuards {
                 diagnostic_capture,
                 search_corpus_lifecycle,
+                physical_retirement,
                 state_root_lease,
             },
             boot_notices,
@@ -2998,6 +3337,188 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn state_root_lease_remains_exclusive_until_last_custody_clone_drops_v1() -> TestRes {
+        let owned_root = private_tempdir()?;
+        let lease = super::StateRootLease::acquire(owned_root.path())?;
+        let output_custody = lease.clone();
+        let opened = output_custody.try_clone_root_directory_v1()?;
+        opened.require_current_v1()?;
+        drop(lease);
+        drop(output_custody);
+
+        let refused = super::StateRootLease::acquire(owned_root.path());
+        assert!(matches!(
+            refused,
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInUse,
+                ..
+            })
+        ));
+        drop(opened);
+
+        let reacquired = super::StateRootLease::acquire(owned_root.path())?;
+        reacquired.require_state_root_v1(owned_root.path())?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_lease_source_upload_keeps_last_owner_live_v1() -> TestRes {
+        let owned_root = private_tempdir()?;
+        let lease = super::StateRootLease::acquire(owned_root.path())?;
+        let store = quanta_index_ipc::SourcePublicationUploadStore::open_at(
+            lease.try_clone_root_directory_v1()?,
+            lease.state_root_identity_v1(),
+            std::ffi::OsStr::new("source-publication-uploads"),
+            16,
+        )?;
+        drop(lease);
+        let refused = super::StateRootLease::acquire(owned_root.path());
+        if !matches!(
+            refused,
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInUse,
+                ..
+            })
+        ) {
+            return Err("source upload store released its parent root lease".into());
+        }
+        drop(store);
+        let reacquired = super::StateRootLease::acquire(owned_root.path())?;
+        reacquired.require_state_root_v1(owned_root.path())?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_lease_source_upload_refuses_replaced_lock_before_io_v1() -> TestRes {
+        use quanta_index_core::SourcePublicationUploadPort as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let owned_root = private_tempdir()?;
+        let lease = super::StateRootLease::acquire(owned_root.path())?;
+        let store = quanta_index_ipc::SourcePublicationUploadStore::open_at(
+            lease.try_clone_root_directory_v1()?,
+            lease.state_root_identity_v1(),
+            std::ffi::OsStr::new("source-publication-uploads"),
+            4096,
+        )?;
+        let batch = quanta_index_contract::SearchCorpusIngestBatch {
+            source_event: quanta_index_contract::SourcePublicationEvent {
+                stream_id: "lease-upload".into(),
+                event_id: "event-1".into(),
+                expected_base_event_id: None,
+                payload_sha256: [0; 32],
+            },
+            repo_id: quanta_index_contract::RepoId::new("repo")?,
+            revision_id: quanta_index_contract::RevisionId::new("revision")?,
+            generation: quanta_index_contract::ManifestGeneration::new(1),
+            base_generation: None,
+            manifest_digest: "manifest".into(),
+            batch_digest: String::new(),
+            mode: quanta_index_contract::BatchIngestMode::ReplaceGeneration,
+            bundle_payload: None,
+            clear_surfaces: Vec::new(),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
+            seal: true,
+        };
+        let identity = quanta_index_ipc::source_publication_upload_identity(&batch)?;
+        let part = quanta_index_contract::SourcePublicationUploadPart {
+            identity,
+            offset: 0,
+            bytes: quanta_index_ipc::encode_cbor_payload(&batch)?,
+        };
+        let budget = RequestBudgetV1::unbounded();
+        let _ack = store.stage(&part, &budget)?;
+        let _loaded = store.load(identity, &budget)?;
+        let uploads = owned_root.path().join("source-publication-uploads");
+        let before = std::fs::read_dir(&uploads)?
+            .map(|entry| entry.and_then(|entry| std::fs::read(entry.path())))
+            .collect::<Result<Vec<_>, _>>()?;
+        let lock = owned_root
+            .path()
+            .join(crate::app::state_format::STATE_ROOT_LEASE_FILE_NAME);
+        std::fs::rename(&lock, owned_root.path().join("original-lock"))?;
+        std::fs::write(&lock, b"")?;
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600))?;
+        let replacement_owner = super::StateRootLease::acquire(owned_root.path())?;
+        replacement_owner.require_state_root_v1(owned_root.path())?;
+        if store.stage(&part, &budget).is_ok()
+            || store.load(identity, &budget).is_ok()
+            || store.discard(identity).is_ok()
+        {
+            return Err("upload I/O continued after the held lock entry was replaced".into());
+        }
+        let after = std::fs::read_dir(&uploads)?
+            .map(|entry| entry.and_then(|entry| std::fs::read(entry.path())))
+            .collect::<Result<Vec<_>, _>>()?;
+        if before.len() != 1 || after != before {
+            return Err("replaced lock refusal changed the staged upload".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_existing_lease_refuses_missing_entries_without_creation() -> TestRes {
+        let parent = private_tempdir()?;
+        let missing = parent.path().join("missing-root");
+        assert!(super::StateRootLease::acquire_existing(&missing).is_err());
+        assert!(!missing.exists());
+        let existing = private_tempdir()?;
+        let marker = existing.path().join("preserved");
+        std::fs::write(&marker, b"unchanged")?;
+        assert!(super::StateRootLease::acquire_existing(existing.path()).is_err());
+        assert!(
+            !existing
+                .path()
+                .join(crate::app::state_format::STATE_ROOT_LEASE_FILE_NAME)
+                .exists()
+        );
+        assert_eq!(std::fs::read(&marker)?, b"unchanged");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_existing_lease_preserves_identity_bytes_and_live_owner_refusal() -> TestRes {
+        use std::os::unix::fs::MetadataExt as _;
+        let root = private_tempdir()?;
+        let original = super::StateRootLease::acquire(root.path())?;
+        assert!(matches!(
+            super::StateRootLease::acquire_existing(root.path()),
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInUse,
+                ..
+            })
+        ));
+        drop(original);
+        let lock = root
+            .path()
+            .join(crate::app::state_format::STATE_ROOT_LEASE_FILE_NAME);
+        std::fs::write(&lock, b"unchanged-lock")?;
+        let before = std::fs::metadata(&lock)?;
+        let lease = super::StateRootLease::acquire_existing(root.path())?;
+        let after = std::fs::metadata(&lock)?;
+        assert_eq!(
+            (before.dev(), before.ino(), before.mode()),
+            (after.dev(), after.ino(), after.mode())
+        );
+        assert_eq!(std::fs::read(&lock)?, b"unchanged-lock");
+        lease.require_state_root_v1(root.path())?;
+        let pinned = lease.try_clone_root_directory_v1()?;
+        drop(lease);
+        assert!(super::StateRootLease::acquire_existing(root.path()).is_err());
+        drop(pinned);
+        drop(super::StateRootLease::acquire_existing(root.path())?);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn state_root_lease_refuses_symlink_lock_file_v1() -> TestRes {
         use std::os::unix::fs::symlink;
 
@@ -3013,6 +3534,164 @@ mod tests {
             return Err("state-root lease followed a symlink lock file".into());
         };
         assert!(message.contains(".searchd-state-root.lock"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_lease_accepts_canonical_alias_and_its_opened_directory() -> TestRes {
+        use std::os::unix::fs::symlink;
+
+        let parent = private_tempdir()?;
+        let root = parent.path().join("state");
+        let alias = parent.path().join("alias");
+        let lease = super::StateRootLease::acquire(&root)?;
+        symlink(&root, &alias)?;
+        lease.require_state_root_v1(&alias)?;
+        lease.require_opened_state_root_v1(&std::fs::File::open(&root)?)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_lease_refuses_foreign_opened_directory() -> TestRes {
+        let owned = private_tempdir()?;
+        let foreign = private_tempdir()?;
+        let lease = super::StateRootLease::acquire(owned.path())?;
+        let opened = std::fs::File::open(foreign.path())?;
+        assert!(lease.require_opened_state_root_v1(&opened).is_err());
+        lease.require_opened_state_root_v1(&std::fs::File::open(owned.path())?)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_lease_refuses_same_path_directory_replacement() -> TestRes {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let parent = private_tempdir()?;
+        let root = parent.path().join("state");
+        let moved = parent.path().join("moved-state");
+        let lease = super::StateRootLease::acquire(&root)?;
+        std::fs::rename(&root, &moved)?;
+        std::fs::create_dir(&root)?;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        assert!(lease.require_state_root_v1(&root).is_err());
+        assert!(
+            lease
+                .require_opened_state_root_v1(&std::fs::File::open(&root)?)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_lease_refuses_lock_entry_replacement_while_held() -> TestRes {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let owned = private_tempdir()?;
+        let lease = super::StateRootLease::acquire(owned.path())?;
+        let lock = owned.path().join(".searchd-state-root.lock");
+        let moved = owned.path().join("old-lock");
+        std::fs::rename(&lock, &moved)?;
+        std::fs::write(&lock, b"")?;
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600))?;
+        assert!(lease.require_state_root_v1(owned.path()).is_err());
+        assert!(
+            lease
+                .require_opened_state_root_v1(&std::fs::File::open(owned.path())?)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_directory_rechecks_lock_mode_without_cached_success() -> TestRes {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = private_tempdir()?;
+        let lease = super::StateRootLease::acquire(root.path())?;
+        let directory = lease.try_clone_root_directory_v1()?;
+        let lock = root.path().join(".searchd-state-root.lock");
+        directory.require_current_v1()?;
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o640))?;
+        assert!(matches!(
+            directory.require_current_v1(),
+            Err(quanta_index_core::CoreError::InvalidContract(_))
+        ));
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600))?;
+        directory.require_current_v1()?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_directory_rechecks_effective_root_read_permission() -> TestRes {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = private_tempdir()?;
+        let lease = super::StateRootLease::acquire(root.path())?;
+        let directory = lease.try_clone_root_directory_v1()?;
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o300))?;
+        let refused = directory.require_current_v1();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+        // The privileged Unix user can read this inode despite its mode;
+        // ordinary owners must preserve O_RDONLY's read-access refusal.
+        if rustix::process::geteuid().as_raw() == 0 {
+            assert!(refused.is_ok());
+        } else {
+            assert!(matches!(
+                refused,
+                Err(quanta_index_core::CoreError::Storage(_))
+            ));
+        }
+        directory.require_current_v1()?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_directory_refuses_canonical_name_symlink_to_held_root() -> TestRes {
+        use std::os::unix::fs::symlink;
+
+        let parent = private_tempdir()?;
+        let root = parent.path().join("state");
+        let moved = parent.path().join("moved-state");
+        let lease = super::StateRootLease::acquire(&root)?;
+        let directory = lease.try_clone_root_directory_v1()?;
+        std::fs::rename(&root, &moved)?;
+        symlink(&moved, &root)?;
+        assert!(matches!(
+            directory.require_current_v1(),
+            Err(quanta_index_core::CoreError::Storage(_))
+        ));
+        std::fs::remove_file(&root)?;
+        std::fs::rename(&moved, &root)?;
+        directory.require_current_v1()?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_directory_refuses_symlink_to_held_lock() -> TestRes {
+        use std::os::unix::fs::symlink;
+
+        let root = private_tempdir()?;
+        let lease = super::StateRootLease::acquire(root.path())?;
+        let directory = lease.try_clone_root_directory_v1()?;
+        let lock = root.path().join(".searchd-state-root.lock");
+        let moved = root.path().join("moved-lock");
+        std::fs::rename(&lock, &moved)?;
+        symlink(&moved, &lock)?;
+        assert!(matches!(
+            directory.require_current_v1(),
+            Err(quanta_index_core::CoreError::Storage(_))
+        ));
+        std::fs::remove_file(&lock)?;
+        std::fs::rename(&moved, &lock)?;
+        directory.require_current_v1()?;
         Ok(())
     }
 }

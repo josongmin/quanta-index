@@ -19,6 +19,7 @@
 
 use std::fs::File;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::receipts::{
     LEXICAL_SCRUB_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION, MAX_RECEIPT_BYTES,
@@ -32,6 +33,7 @@ use crate::lexical_store::{ObjectRef, ObjectStore};
 use crate::sealed_generation::manifest::read_bound_manifest_at;
 use crate::text_authority::{NativeRoot, NativeScrubCursor};
 use quanta_index_contract::GenerationSnapshot;
+use quanta_index_core::publication_admission::PublicationObjectLifetimePort;
 use quanta_index_core::{
     CoreError, IntegrityScrubBudgetV1, IntegrityScrubCursorV1, IntegrityScrubOutcomeV1,
     IntegrityScrubReportV1, QuarantinedGenerationV1, SealedArtifactCommitmentV1,
@@ -97,7 +99,12 @@ impl SharedScrubProgress {
         Ok(())
     }
 
-    fn begin_objects(&mut self, state_root: &Path, generation_dir: &Path) -> Result<(), CoreError> {
+    fn begin_objects(
+        &mut self,
+        state_root: &Path,
+        generation_dir: &Path,
+        object_lifetime: Option<Arc<dyn PublicationObjectLifetimePort>>,
+    ) -> Result<(), CoreError> {
         let (file_root, native_root) = crate::lexical_gc::protected_authorities(generation_dir)?;
         let mut roots = file_root.object_roots();
         roots.extend(native_root.root_objects());
@@ -106,7 +113,9 @@ impl SharedScrubProgress {
         })?;
         self.pending
             .extend(roots.into_iter().rev().map(|root| (root, 0)));
-        self.store = Some(ObjectStore::open_existing(state_root)?.metered_clone());
+        self.store = Some(
+            ObjectStore::open_existing_with_lifetime(state_root, object_lifetime)?.metered_clone(),
+        );
         self.file_root = Some(file_root);
         self.native_root = Some(native_root);
         self.phase = SharedScrubPhase::Objects;
@@ -114,6 +123,19 @@ impl SharedScrubProgress {
     }
 
     fn advance_shared(&mut self, max_bytes: u64) -> Result<(u64, u64, bool), CoreError> {
+        self.advance_shared_with(max_bytes, &mut |store, reference| {
+            store.object_dependencies(reference, None)
+        })
+    }
+
+    fn advance_shared_with<F>(
+        &mut self,
+        max_bytes: u64,
+        read_dependencies: &mut F,
+    ) -> Result<(u64, u64, bool), CoreError>
+    where
+        F: FnMut(&ObjectStore, &ObjectRef) -> Result<Vec<ObjectRef>, CoreError>,
+    {
         let store = self
             .store
             .as_ref()
@@ -136,7 +158,7 @@ impl SharedScrubProgress {
             }
             match self.phase {
                 SharedScrubPhase::Objects => {
-                    let Some((reference, depth)) = self.pending.pop() else {
+                    let Some((reference, depth)) = self.pending.last().cloned() else {
                         self.phase = SharedScrubPhase::File;
                         continue;
                     };
@@ -146,29 +168,30 @@ impl SharedScrubProgress {
                         ));
                     }
                     let before = store.read_meter_snapshot();
-                    let children = store.object_dependencies(&reference, None)?;
+                    let children = read_dependencies(&store, &reference)?;
                     let after = store.read_meter_snapshot();
-                    bytes = bytes
+                    let next_bytes = bytes
                         .checked_add(after.0.checked_sub(before.0).ok_or_else(|| {
                             CoreError::InvalidContract("lexical scrub byte meter regressed".into())
                         })?)
                         .ok_or_else(|| {
                             CoreError::InvalidContract("lexical scrub bytes overflow".into())
                         })?;
-                    reads = reads
+                    let next_reads = reads
                         .checked_add(after.1.checked_sub(before.1).ok_or_else(|| {
                             CoreError::InvalidContract("lexical scrub read meter regressed".into())
                         })?)
                         .ok_or_else(|| {
                             CoreError::InvalidContract("lexical scrub reads overflow".into())
                         })?;
-                    self.object_count = self.object_count.checked_add(1).ok_or_else(|| {
+                    let next_object_count = self.object_count.checked_add(1).ok_or_else(|| {
                         CoreError::InvalidContract("lexical scrub object count overflow".into())
                     })?;
                     if self
                         .pending
                         .len()
-                        .checked_add(children.len())
+                        .checked_sub(1)
+                        .and_then(|count| count.checked_add(children.len()))
                         .is_none_or(|count| count > MAX_SHARED_FRONTIER)
                     {
                         return Err(CoreError::InvalidContract(
@@ -181,9 +204,19 @@ impl SharedScrubProgress {
                     let next_depth = depth.checked_add(1).ok_or_else(|| {
                         CoreError::InvalidContract("lexical scrub depth overflow".into())
                     })?;
+                    let next_token = self.token.checked_add(1).ok_or_else(|| {
+                        CoreError::InvalidContract("lexical scrub cursor exhausted".into())
+                    })?;
+                    // Commit the row only after its authenticated read and all
+                    // bounds/allocation checks succeed. A retry after an I/O
+                    // refusal must still encounter this exact reference.
+                    let _removed = self.pending.pop();
                     self.pending
                         .extend(children.into_iter().rev().map(|child| (child, next_depth)));
-                    self.advance_token()?;
+                    bytes = next_bytes;
+                    reads = next_reads;
+                    self.object_count = next_object_count;
+                    self.token = next_token;
                 }
                 SharedScrubPhase::File => {
                     let root = self.file_root.as_ref().ok_or_else(|| {
@@ -317,6 +350,7 @@ pub(crate) fn scrub_step(
     identity: &GenerationSnapshot,
     start_artifact: u64,
     budget: IntegrityScrubBudgetV1,
+    object_lifetime: Option<&Arc<dyn PublicationObjectLifetimePort>>,
     before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
     shared: &mut SharedScrubProgress,
 ) -> Result<ScrubStepResult, CoreError> {
@@ -457,7 +491,9 @@ pub(crate) fn scrub_step(
             }
             TreeScrubVerdictV1::Completed => {
                 shared.token = crate::channel_payloads::count_from_len(committed.len())?;
-                if let Err(error) = shared.begin_objects(state_root, generation_dir) {
+                if let Err(error) =
+                    shared.begin_objects(state_root, generation_dir, object_lifetime.cloned())
+                {
                     if let Some(reason) = seal_failure_quarantine_reason(&error) {
                         before_quarantine(identity)?;
                         return Ok(IntegrityScrubReportV1 {
@@ -593,7 +629,127 @@ pub(crate) fn scrub_step(
 
 #[cfg(test)]
 mod tests {
+    use quanta_index_contract::{
+        GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    };
+    use quanta_index_core::domains::integrity::IntegrityScrubProgressV1;
+    use quanta_index_core::{CoreError, IntegrityScrubCursorV1, IntegrityScrubOutcomeV1};
     use sha2::Digest as _;
+
+    use crate::lexical_store::{AttemptBinding, ObjectKind, ObjectStore};
+
+    #[test]
+    fn paused_shared_scrub_retries_the_same_object_after_transient_read_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        macro_rules! check {
+            ($condition:expr $(,)?) => {{
+                if !$condition { return Err(CoreError::Storage(format!("test oracle failed at {}:{}: {}", file!(), line!(), stringify!($condition))).into()); }
+            }};
+            ($condition:expr, $($message:tt)+) => {{
+                if !$condition { return Err(CoreError::Storage(format!($($message)+)).into()); }
+            }};
+        }
+        macro_rules! check_eq {
+            ($actual:expr, $expected:expr $(,)?) => {{
+                let (left, right) = (&$actual, &$expected);
+                if *left != *right { return Err(CoreError::Storage(format!("test oracle failed at {}:{}: actual={left:?}, expected={right:?}", file!(), line!())).into()); }
+            }};
+            ($actual:expr, $expected:expr, $($message:tt)+) => {{
+                let (left, right) = (&$actual, &$expected);
+                if *left != *right { return Err(CoreError::Storage(format!("{}; actual={left:?}, expected={right:?}", format!($($message)+))).into()); }
+            }};
+        }
+
+        let directory = tempfile::tempdir()?;
+        let store = ObjectStore::open(directory.path())?;
+        let lease = store.begin_attempt(
+            &AttemptBinding {
+                root_incarnation: [1; 16],
+                repository_sha256: [2; 32],
+                revision_sha256: [3; 32],
+                source_event_sha256: [4; 32],
+                target_generation: 1,
+                base_root_sha256: None,
+                operations_sha256: [5; 32],
+                format: 1,
+            },
+            &[],
+        )?;
+        let first = store.put_blob(&lease, ObjectKind::Record, &[], b"first")?;
+        let second = store.put_blob(&lease, ObjectKind::Record, &[], b"second")?;
+        let generation = GenerationSnapshot {
+            repo_id: RepoId::new("repo")?,
+            revision_id: RevisionId::new("revision")?,
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: ManifestGeneration::new(1),
+            manifest_digest: "fixed-manifest".into(),
+        };
+        let mut shared = super::SharedScrubProgress {
+            generation: Some(generation.clone()),
+            phase: super::SharedScrubPhase::Objects,
+            // The first successful step pops `first`, leaving `second` for
+            // the exact issued continuation cursor.
+            pending: vec![(second.root.clone(), 0), (first.root, 0)],
+            store: Some(store.metered_clone()),
+            ..super::SharedScrubProgress::default()
+        };
+        let (bytes, reads, done) = shared.advance_shared(1)?;
+        check!(!done && bytes > 0 && reads > 0);
+        let cursor = IntegrityScrubCursorV1 {
+            next_artifact: shared.token,
+        };
+        check_eq!(cursor.next_artifact, 1);
+        let mut progress = IntegrityScrubProgressV1::default();
+        progress.record(&generation, &IntegrityScrubOutcomeV1::Paused { cursor })?;
+        check_eq!(
+            progress.start_or_resume(&generation, Some(cursor))?,
+            cursor.next_artifact
+        );
+        shared.bind(&generation, cursor.next_artifact)?;
+
+        let mut failed_once = false;
+        let failed = shared.advance_shared_with(1, &mut |store, reference| {
+            if !failed_once {
+                failed_once = true;
+                return Err(CoreError::Storage("transient object read refusal".into()));
+            }
+            store.object_dependencies(reference, None)
+        });
+        check!(matches!(failed, Err(CoreError::Storage(_))));
+        check!(failed_once);
+        check_eq!(shared.token, cursor.next_artifact);
+        check_eq!(shared.object_count, 1);
+        check_eq!(shared.pending, vec![(second.root.clone(), 0)]);
+
+        // Damage the still-unread object. A retry of the issued cursor must
+        // re-read this exact reference and refuse it, never complete a pass.
+        let mut name = String::new();
+        for byte in &second.root.sha256 {
+            std::fmt::Write::write_fmt(&mut name, format_args!("{byte:02x}"))?;
+        }
+        let digest_prefix = name.get(..2).ok_or("object digest prefix absent")?;
+        let object = directory
+            .path()
+            .join("lexical-object-pool")
+            .join("objects")
+            .join(digest_prefix)
+            .join(name);
+        std::fs::write(object, b"tampered")?;
+        check_eq!(
+            progress.start_or_resume(&generation, Some(cursor))?,
+            cursor.next_artifact
+        );
+        shared.bind(&generation, cursor.next_artifact)?;
+        check!(matches!(
+            shared.advance_shared(1),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ));
+        check_eq!(shared.pending, vec![(second.root, 0)]);
+        Ok(())
+    }
 
     #[test]
     fn completed_receipt_rejects_trailing_cbor() -> Result<(), Box<dyn std::error::Error>> {

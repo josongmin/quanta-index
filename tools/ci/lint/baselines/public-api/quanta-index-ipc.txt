@@ -1,0 +1,906 @@
+pub mod quanta_index_ipc
+pub use quanta_index_ipc::BudgetInterruptionV1
+pub use quanta_index_ipc::CancelHandleV1
+pub use quanta_index_ipc::IndexError
+pub use quanta_index_ipc::IngestBatchBodyV1
+pub use quanta_index_ipc::MemoryLease
+pub use quanta_index_ipc::MemoryLeaseOwner
+pub use quanta_index_ipc::MemoryLifetime
+pub use quanta_index_ipc::MemoryScope
+pub use quanta_index_ipc::MemoryScopePort
+pub use quanta_index_ipc::REQUEST_CANCELLED_CODE
+pub use quanta_index_ipc::REQUEST_DEADLINE_EXCEEDED_CODE
+pub use quanta_index_ipc::RequestBudgetV1
+pub use quanta_index_ipc::RequestExecutionObserverV1
+pub enum quanta_index_ipc::AdmittedCborDecodeErrorV1<E>
+pub quanta_index_ipc::AdmittedCborDecodeErrorV1::Frame(quanta_index_ipc::IpcError)
+pub quanta_index_ipc::AdmittedCborDecodeErrorV1::InputTooLarge
+pub quanta_index_ipc::AdmittedCborDecodeErrorV1::InputTooLarge::actual: usize
+pub quanta_index_ipc::AdmittedCborDecodeErrorV1::InputTooLarge::maximum: usize
+pub quanta_index_ipc::AdmittedCborDecodeErrorV1::Parser(ciborium::de::error::Error<ciborium::de::FiniteReadErrorV3<E>, ciborium::de::error::FiniteSemanticReasonV3>)
+pub quanta_index_ipc::AdmittedCborDecodeErrorV1::ScratchTooSmall
+pub quanta_index_ipc::AdmittedCborDecodeErrorV1::ScratchTooSmall::actual: usize
+pub quanta_index_ipc::AdmittedCborDecodeErrorV1::Work(E)
+impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_ipc::AdmittedCborDecodeErrorV1<E>
+pub fn quanta_index_ipc::AdmittedCborDecodeErrorV1<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E> core::marker::Freeze for quanta_index_ipc::AdmittedCborDecodeErrorV1<E> where E: core::marker::Freeze
+impl<E> core::marker::Send for quanta_index_ipc::AdmittedCborDecodeErrorV1<E> where E: core::marker::Send
+impl<E> core::marker::Sync for quanta_index_ipc::AdmittedCborDecodeErrorV1<E> where E: core::marker::Sync
+impl<E> core::marker::Unpin for quanta_index_ipc::AdmittedCborDecodeErrorV1<E> where E: core::marker::Unpin
+impl<E> core::marker::UnsafeUnpin for quanta_index_ipc::AdmittedCborDecodeErrorV1<E> where E: core::marker::UnsafeUnpin
+impl<E> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::AdmittedCborDecodeErrorV1<E>
+impl<E> !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::AdmittedCborDecodeErrorV1<E>
+pub enum quanta_index_ipc::BatchDigestVerdictV1
+pub quanta_index_ipc::BatchDigestVerdictV1::Mismatch
+pub quanta_index_ipc::BatchDigestVerdictV1::Mismatch::carried: alloc::string::String
+pub quanta_index_ipc::BatchDigestVerdictV1::Mismatch::expected: alloc::string::String
+pub quanta_index_ipc::BatchDigestVerdictV1::Verified([u8; 32])
+impl core::clone::Clone for quanta_index_ipc::BatchDigestVerdictV1
+pub fn quanta_index_ipc::BatchDigestVerdictV1::clone(&self) -> quanta_index_ipc::BatchDigestVerdictV1
+impl core::cmp::Eq for quanta_index_ipc::BatchDigestVerdictV1
+impl core::cmp::PartialEq for quanta_index_ipc::BatchDigestVerdictV1
+pub fn quanta_index_ipc::BatchDigestVerdictV1::eq(&self, other: &quanta_index_ipc::BatchDigestVerdictV1) -> bool
+impl core::fmt::Debug for quanta_index_ipc::BatchDigestVerdictV1
+pub fn quanta_index_ipc::BatchDigestVerdictV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_ipc::BatchDigestVerdictV1
+impl core::marker::Freeze for quanta_index_ipc::BatchDigestVerdictV1
+impl core::marker::Send for quanta_index_ipc::BatchDigestVerdictV1
+impl core::marker::Sync for quanta_index_ipc::BatchDigestVerdictV1
+impl core::marker::Unpin for quanta_index_ipc::BatchDigestVerdictV1
+impl core::marker::UnsafeUnpin for quanta_index_ipc::BatchDigestVerdictV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::BatchDigestVerdictV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::BatchDigestVerdictV1
+pub enum quanta_index_ipc::CborPayloadAdmissionErrorV1<E>
+pub quanta_index_ipc::CborPayloadAdmissionErrorV1::Admission(quanta_index_core::index::error::IndexError)
+pub quanta_index_ipc::CborPayloadAdmissionErrorV1::Codec(quanta_index_ipc::IpcError)
+pub quanta_index_ipc::CborPayloadAdmissionErrorV1::Progress(E)
+impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_ipc::CborPayloadAdmissionErrorV1<E>
+pub fn quanta_index_ipc::CborPayloadAdmissionErrorV1<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E> core::marker::Freeze for quanta_index_ipc::CborPayloadAdmissionErrorV1<E> where E: core::marker::Freeze
+impl<E> core::marker::Send for quanta_index_ipc::CborPayloadAdmissionErrorV1<E> where E: core::marker::Send
+impl<E> core::marker::Sync for quanta_index_ipc::CborPayloadAdmissionErrorV1<E> where E: core::marker::Sync
+impl<E> core::marker::Unpin for quanta_index_ipc::CborPayloadAdmissionErrorV1<E> where E: core::marker::Unpin
+impl<E> core::marker::UnsafeUnpin for quanta_index_ipc::CborPayloadAdmissionErrorV1<E> where E: core::marker::UnsafeUnpin
+impl<E> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::CborPayloadAdmissionErrorV1<E>
+impl<E> !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::CborPayloadAdmissionErrorV1<E>
+pub enum quanta_index_ipc::CborPayloadMatchProgressError<E>
+pub quanta_index_ipc::CborPayloadMatchProgressError::Encode(quanta_index_ipc::IpcError)
+pub quanta_index_ipc::CborPayloadMatchProgressError::Progress(E)
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_ipc::CborPayloadMatchProgressError<E>
+pub fn quanta_index_ipc::CborPayloadMatchProgressError<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_ipc::CborPayloadMatchProgressError<E>
+pub fn quanta_index_ipc::CborPayloadMatchProgressError<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_ipc::CborPayloadMatchProgressError<E>
+pub fn quanta_index_ipc::CborPayloadMatchProgressError<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E> core::marker::Freeze for quanta_index_ipc::CborPayloadMatchProgressError<E> where E: core::marker::Freeze
+impl<E> core::marker::Send for quanta_index_ipc::CborPayloadMatchProgressError<E> where E: core::marker::Send
+impl<E> core::marker::Sync for quanta_index_ipc::CborPayloadMatchProgressError<E> where E: core::marker::Sync
+impl<E> core::marker::Unpin for quanta_index_ipc::CborPayloadMatchProgressError<E> where E: core::marker::Unpin
+impl<E> core::marker::UnsafeUnpin for quanta_index_ipc::CborPayloadMatchProgressError<E> where E: core::marker::UnsafeUnpin
+impl<E> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::CborPayloadMatchProgressError<E>
+impl<E> !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::CborPayloadMatchProgressError<E>
+pub enum quanta_index_ipc::IpcError
+pub quanta_index_ipc::IpcError::ClientIoDeadlineElapsed
+pub quanta_index_ipc::IpcError::Decode(alloc::string::String)
+pub quanta_index_ipc::IpcError::EmptyFrame
+pub quanta_index_ipc::IpcError::Encode(alloc::string::String)
+pub quanta_index_ipc::IpcError::FrameMemoryLimited
+pub quanta_index_ipc::IpcError::FrameMemoryLimited::bytes: u64
+pub quanta_index_ipc::IpcError::IngressSaturated
+pub quanta_index_ipc::IpcError::IngressSaturated::bytes: usize
+pub quanta_index_ipc::IpcError::IngressSaturated::requests: usize
+pub quanta_index_ipc::IpcError::InvalidAdmissionPolicy
+pub quanta_index_ipc::IpcError::InvalidClientIoTimeout
+pub quanta_index_ipc::IpcError::Io(core::io::error::Error)
+pub quanta_index_ipc::IpcError::Oversized(u64)
+pub quanta_index_ipc::IpcError::ReadinessTimeout
+pub quanta_index_ipc::IpcError::ReadinessTimeout::attempts: u64
+pub quanta_index_ipc::IpcError::ReadinessTimeout::last: alloc::string::String
+pub quanta_index_ipc::IpcError::ReadinessTimeout::timeout: core::time::Duration
+pub quanta_index_ipc::IpcError::SocketAccessUnsatisfiable
+pub quanta_index_ipc::IpcError::SocketAccessUnsatisfiable::path: std::path::PathBuf
+pub quanta_index_ipc::IpcError::SocketAccessUnsatisfiable::reason: alloc::string::String
+pub quanta_index_ipc::IpcError::SocketInUse(std::path::PathBuf)
+pub quanta_index_ipc::IpcError::SocketPathInsecure
+pub quanta_index_ipc::IpcError::SocketPathInsecure::path: std::path::PathBuf
+pub quanta_index_ipc::IpcError::SocketPathInsecure::reason: alloc::string::String
+pub quanta_index_ipc::IpcError::Timeout
+pub quanta_index_ipc::IpcError::Timeout::operation: quanta_index_ipc::IpcIoOperation
+pub quanta_index_ipc::IpcError::Timeout::timeout: core::time::Duration
+pub quanta_index_ipc::IpcError::Truncated
+pub quanta_index_ipc::IpcError::ZeroRequestId
+impl core::error::Error for quanta_index_ipc::IpcError
+pub fn quanta_index_ipc::IpcError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for quanta_index_ipc::IpcError
+pub fn quanta_index_ipc::IpcError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_ipc::IpcError
+pub fn quanta_index_ipc::IpcError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_ipc::IpcError
+impl core::marker::Send for quanta_index_ipc::IpcError
+impl core::marker::Sync for quanta_index_ipc::IpcError
+impl core::marker::Unpin for quanta_index_ipc::IpcError
+impl core::marker::UnsafeUnpin for quanta_index_ipc::IpcError
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::IpcError
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::IpcError
+pub enum quanta_index_ipc::IpcIoOperation
+pub quanta_index_ipc::IpcIoOperation::Connect
+pub quanta_index_ipc::IpcIoOperation::Read
+pub quanta_index_ipc::IpcIoOperation::Write
+impl core::clone::Clone for quanta_index_ipc::IpcIoOperation
+pub fn quanta_index_ipc::IpcIoOperation::clone(&self) -> quanta_index_ipc::IpcIoOperation
+impl core::cmp::Eq for quanta_index_ipc::IpcIoOperation
+impl core::cmp::PartialEq for quanta_index_ipc::IpcIoOperation
+pub fn quanta_index_ipc::IpcIoOperation::eq(&self, other: &quanta_index_ipc::IpcIoOperation) -> bool
+impl core::fmt::Debug for quanta_index_ipc::IpcIoOperation
+pub fn quanta_index_ipc::IpcIoOperation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::IpcIoOperation
+impl core::marker::StructuralPartialEq for quanta_index_ipc::IpcIoOperation
+impl core::marker::Freeze for quanta_index_ipc::IpcIoOperation
+impl core::marker::Send for quanta_index_ipc::IpcIoOperation
+impl core::marker::Sync for quanta_index_ipc::IpcIoOperation
+impl core::marker::Unpin for quanta_index_ipc::IpcIoOperation
+impl core::marker::UnsafeUnpin for quanta_index_ipc::IpcIoOperation
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::IpcIoOperation
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::IpcIoOperation
+pub enum quanta_index_ipc::IpcPlane
+pub quanta_index_ipc::IpcPlane::Control
+pub quanta_index_ipc::IpcPlane::Ingest
+pub quanta_index_ipc::IpcPlane::Query
+impl core::clone::Clone for quanta_index_ipc::IpcPlane
+pub fn quanta_index_ipc::IpcPlane::clone(&self) -> quanta_index_ipc::IpcPlane
+impl core::cmp::Eq for quanta_index_ipc::IpcPlane
+impl core::cmp::PartialEq for quanta_index_ipc::IpcPlane
+pub fn quanta_index_ipc::IpcPlane::eq(&self, other: &quanta_index_ipc::IpcPlane) -> bool
+impl core::fmt::Debug for quanta_index_ipc::IpcPlane
+pub fn quanta_index_ipc::IpcPlane::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::IpcPlane
+impl core::marker::StructuralPartialEq for quanta_index_ipc::IpcPlane
+impl core::marker::Freeze for quanta_index_ipc::IpcPlane
+impl core::marker::Send for quanta_index_ipc::IpcPlane
+impl core::marker::Sync for quanta_index_ipc::IpcPlane
+impl core::marker::Unpin for quanta_index_ipc::IpcPlane
+impl core::marker::UnsafeUnpin for quanta_index_ipc::IpcPlane
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::IpcPlane
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::IpcPlane
+pub enum quanta_index_ipc::PeerRefusal
+pub quanta_index_ipc::PeerRefusal::NotAdmitted
+pub quanta_index_ipc::PeerRefusal::NotAdmitted::peer: quanta_index_ipc::PeerCredentials
+impl core::clone::Clone for quanta_index_ipc::PeerRefusal
+pub fn quanta_index_ipc::PeerRefusal::clone(&self) -> quanta_index_ipc::PeerRefusal
+impl core::cmp::Eq for quanta_index_ipc::PeerRefusal
+impl core::cmp::PartialEq for quanta_index_ipc::PeerRefusal
+pub fn quanta_index_ipc::PeerRefusal::eq(&self, other: &quanta_index_ipc::PeerRefusal) -> bool
+impl core::error::Error for quanta_index_ipc::PeerRefusal
+impl core::fmt::Debug for quanta_index_ipc::PeerRefusal
+pub fn quanta_index_ipc::PeerRefusal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_ipc::PeerRefusal
+pub fn quanta_index_ipc::PeerRefusal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::PeerRefusal
+impl core::marker::StructuralPartialEq for quanta_index_ipc::PeerRefusal
+impl core::marker::Freeze for quanta_index_ipc::PeerRefusal
+impl core::marker::Send for quanta_index_ipc::PeerRefusal
+impl core::marker::Sync for quanta_index_ipc::PeerRefusal
+impl core::marker::Unpin for quanta_index_ipc::PeerRefusal
+impl core::marker::UnsafeUnpin for quanta_index_ipc::PeerRefusal
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::PeerRefusal
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::PeerRefusal
+pub enum quanta_index_ipc::RequestEventStageV1
+pub quanta_index_ipc::RequestEventStageV1::Aborted
+pub quanta_index_ipc::RequestEventStageV1::BackendOutcome
+pub quanta_index_ipc::RequestEventStageV1::BackendOutcome::error: core::option::Option<quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2>
+pub quanta_index_ipc::RequestEventStageV1::BackendOutcome::route: &'static str
+pub quanta_index_ipc::RequestEventStageV1::BackendReturned
+pub quanta_index_ipc::RequestEventStageV1::BackendStarted
+pub quanta_index_ipc::RequestEventStageV1::DispatchReturned
+pub quanta_index_ipc::RequestEventStageV1::DispatchStarted
+pub quanta_index_ipc::RequestEventStageV1::IngestWindowReturned
+pub quanta_index_ipc::RequestEventStageV1::IngestWindowReturned::window_ordinal: u64
+pub quanta_index_ipc::RequestEventStageV1::IngestWindowStarted
+pub quanta_index_ipc::RequestEventStageV1::IngestWindowStarted::window_ordinal: u64
+pub quanta_index_ipc::RequestEventStageV1::Panicked
+pub quanta_index_ipc::RequestEventStageV1::PeerCancelled
+pub quanta_index_ipc::RequestEventStageV1::PeerWatchFailed
+pub quanta_index_ipc::RequestEventStageV1::ProviderReturned
+pub quanta_index_ipc::RequestEventStageV1::ProviderReturned::ticket_id: u64
+pub quanta_index_ipc::RequestEventStageV1::ProviderStarted
+pub quanta_index_ipc::RequestEventStageV1::ProviderStarted::ticket_id: u64
+pub quanta_index_ipc::RequestEventStageV1::QueueAdmitted
+pub quanta_index_ipc::RequestEventStageV1::QueueRefusedGlobal
+pub quanta_index_ipc::RequestEventStageV1::QueueRefusedRepository
+pub quanta_index_ipc::RequestEventStageV1::ResponseEncodeFailed
+pub quanta_index_ipc::RequestEventStageV1::ResponseWriteFailed
+pub quanta_index_ipc::RequestEventStageV1::ResponseWritten
+pub quanta_index_ipc::RequestEventStageV1::ShuttingDown
+pub quanta_index_ipc::RequestEventStageV1::Validated
+impl core::clone::Clone for quanta_index_ipc::RequestEventStageV1
+pub fn quanta_index_ipc::RequestEventStageV1::clone(&self) -> quanta_index_ipc::RequestEventStageV1
+impl core::cmp::Eq for quanta_index_ipc::RequestEventStageV1
+impl core::cmp::PartialEq for quanta_index_ipc::RequestEventStageV1
+pub fn quanta_index_ipc::RequestEventStageV1::eq(&self, other: &quanta_index_ipc::RequestEventStageV1) -> bool
+impl core::fmt::Debug for quanta_index_ipc::RequestEventStageV1
+pub fn quanta_index_ipc::RequestEventStageV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::RequestEventStageV1
+impl core::marker::StructuralPartialEq for quanta_index_ipc::RequestEventStageV1
+impl core::marker::Freeze for quanta_index_ipc::RequestEventStageV1
+impl core::marker::Send for quanta_index_ipc::RequestEventStageV1
+impl core::marker::Sync for quanta_index_ipc::RequestEventStageV1
+impl core::marker::Unpin for quanta_index_ipc::RequestEventStageV1
+impl core::marker::UnsafeUnpin for quanta_index_ipc::RequestEventStageV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::RequestEventStageV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::RequestEventStageV1
+pub enum quanta_index_ipc::RequestSizeDecisionV1
+pub quanta_index_ipc::RequestSizeDecisionV1::ExceedsDecodedCap
+pub quanta_index_ipc::RequestSizeDecisionV1::ExceedsDecodedCap::cap_bytes: u64
+pub quanta_index_ipc::RequestSizeDecisionV1::ExceedsDecodedCap::decoded_bytes: u64
+pub quanta_index_ipc::RequestSizeDecisionV1::Fits
+pub quanta_index_ipc::RequestSizeDecisionV1::Fits::decoded_bytes: u64
+impl core::clone::Clone for quanta_index_ipc::RequestSizeDecisionV1
+pub fn quanta_index_ipc::RequestSizeDecisionV1::clone(&self) -> quanta_index_ipc::RequestSizeDecisionV1
+impl core::cmp::Eq for quanta_index_ipc::RequestSizeDecisionV1
+impl core::cmp::PartialEq for quanta_index_ipc::RequestSizeDecisionV1
+pub fn quanta_index_ipc::RequestSizeDecisionV1::eq(&self, other: &quanta_index_ipc::RequestSizeDecisionV1) -> bool
+impl core::fmt::Debug for quanta_index_ipc::RequestSizeDecisionV1
+pub fn quanta_index_ipc::RequestSizeDecisionV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::RequestSizeDecisionV1
+impl core::marker::StructuralPartialEq for quanta_index_ipc::RequestSizeDecisionV1
+impl core::marker::Freeze for quanta_index_ipc::RequestSizeDecisionV1
+impl core::marker::Send for quanta_index_ipc::RequestSizeDecisionV1
+impl core::marker::Sync for quanta_index_ipc::RequestSizeDecisionV1
+impl core::marker::Unpin for quanta_index_ipc::RequestSizeDecisionV1
+impl core::marker::UnsafeUnpin for quanta_index_ipc::RequestSizeDecisionV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::RequestSizeDecisionV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::RequestSizeDecisionV1
+pub enum quanta_index_ipc::SlotRefusal
+pub quanta_index_ipc::SlotRefusal::QueueWaitExceeded
+pub quanta_index_ipc::SlotRefusal::QueueWaitExceeded::slots: usize
+pub quanta_index_ipc::SlotRefusal::QueueWaitExceeded::waited: core::time::Duration
+pub quanta_index_ipc::SlotRefusal::RepoInFlightExceeded
+pub quanta_index_ipc::SlotRefusal::RepoInFlightExceeded::per_repo: usize
+pub quanta_index_ipc::SlotRefusal::RepoInFlightExceeded::repo: alloc::string::String
+pub quanta_index_ipc::SlotRefusal::RepoInFlightExceeded::waited: core::time::Duration
+impl quanta_index_ipc::SlotRefusal
+pub fn quanta_index_ipc::SlotRefusal::ipc_error(&self) -> quanta_index_contract::ipc::error::SearchPlaneIpcError
+pub const fn quanta_index_ipc::SlotRefusal::is_repo_scoped(&self) -> bool
+pub const fn quanta_index_ipc::SlotRefusal::waited(&self) -> core::time::Duration
+impl core::clone::Clone for quanta_index_ipc::SlotRefusal
+pub fn quanta_index_ipc::SlotRefusal::clone(&self) -> quanta_index_ipc::SlotRefusal
+impl core::cmp::Eq for quanta_index_ipc::SlotRefusal
+impl core::cmp::PartialEq for quanta_index_ipc::SlotRefusal
+pub fn quanta_index_ipc::SlotRefusal::eq(&self, other: &quanta_index_ipc::SlotRefusal) -> bool
+impl core::fmt::Debug for quanta_index_ipc::SlotRefusal
+pub fn quanta_index_ipc::SlotRefusal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_ipc::SlotRefusal
+impl core::marker::Freeze for quanta_index_ipc::SlotRefusal
+impl core::marker::Send for quanta_index_ipc::SlotRefusal
+impl core::marker::Sync for quanta_index_ipc::SlotRefusal
+impl core::marker::Unpin for quanta_index_ipc::SlotRefusal
+impl core::marker::UnsafeUnpin for quanta_index_ipc::SlotRefusal
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::SlotRefusal
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::SlotRefusal
+pub enum quanta_index_ipc::SocketAccessPolicy
+pub quanta_index_ipc::SocketAccessPolicy::Private
+pub quanta_index_ipc::SocketAccessPolicy::Shared(quanta_index_ipc::SharedSocketAccess)
+impl quanta_index_ipc::SocketAccessPolicy
+pub fn quanta_index_ipc::SocketAccessPolicy::admits_others(&self) -> bool
+pub fn quanta_index_ipc::SocketAccessPolicy::directory_mode(&self) -> u32
+pub const fn quanta_index_ipc::SocketAccessPolicy::group(&self) -> core::option::Option<u32>
+pub fn quanta_index_ipc::SocketAccessPolicy::socket_mode(&self) -> u32
+pub fn quanta_index_ipc::SocketAccessPolicy::widest<'a>(policies: impl core::iter::traits::collect::IntoIterator<Item = &'a Self>) -> Self
+impl core::clone::Clone for quanta_index_ipc::SocketAccessPolicy
+pub fn quanta_index_ipc::SocketAccessPolicy::clone(&self) -> quanta_index_ipc::SocketAccessPolicy
+impl core::cmp::Eq for quanta_index_ipc::SocketAccessPolicy
+impl core::cmp::PartialEq for quanta_index_ipc::SocketAccessPolicy
+pub fn quanta_index_ipc::SocketAccessPolicy::eq(&self, other: &quanta_index_ipc::SocketAccessPolicy) -> bool
+impl core::fmt::Debug for quanta_index_ipc::SocketAccessPolicy
+pub fn quanta_index_ipc::SocketAccessPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_ipc::SocketAccessPolicy
+impl core::marker::Freeze for quanta_index_ipc::SocketAccessPolicy
+impl core::marker::Send for quanta_index_ipc::SocketAccessPolicy
+impl core::marker::Sync for quanta_index_ipc::SocketAccessPolicy
+impl core::marker::Unpin for quanta_index_ipc::SocketAccessPolicy
+impl core::marker::UnsafeUnpin for quanta_index_ipc::SocketAccessPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::SocketAccessPolicy
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::SocketAccessPolicy
+pub enum quanta_index_ipc::SourcePublicationUploadError<E>
+pub quanta_index_ipc::SourcePublicationUploadError::Encoding(quanta_index_ipc::IpcError)
+pub quanta_index_ipc::SourcePublicationUploadError::Transport(E)
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_ipc::SourcePublicationUploadError<E>
+pub fn quanta_index_ipc::SourcePublicationUploadError<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_ipc::SourcePublicationUploadError<E>
+pub fn quanta_index_ipc::SourcePublicationUploadError<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_ipc::SourcePublicationUploadError<E>
+pub fn quanta_index_ipc::SourcePublicationUploadError<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E> core::marker::Freeze for quanta_index_ipc::SourcePublicationUploadError<E> where E: core::marker::Freeze
+impl<E> core::marker::Send for quanta_index_ipc::SourcePublicationUploadError<E> where E: core::marker::Send
+impl<E> core::marker::Sync for quanta_index_ipc::SourcePublicationUploadError<E> where E: core::marker::Sync
+impl<E> core::marker::Unpin for quanta_index_ipc::SourcePublicationUploadError<E> where E: core::marker::Unpin
+impl<E> core::marker::UnsafeUnpin for quanta_index_ipc::SourcePublicationUploadError<E> where E: core::marker::UnsafeUnpin
+impl<E> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::SourcePublicationUploadError<E>
+impl<E> !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::SourcePublicationUploadError<E>
+pub enum quanta_index_ipc::StreamDispatch<Response>
+pub quanta_index_ipc::StreamDispatch::EmittedTerminal
+pub quanta_index_ipc::StreamDispatch::Terminal(Response)
+pub quanta_index_ipc::StreamDispatch::Unsupported
+impl<Response> core::marker::Freeze for quanta_index_ipc::StreamDispatch<Response> where Response: core::marker::Freeze
+impl<Response> core::marker::Send for quanta_index_ipc::StreamDispatch<Response> where Response: core::marker::Send
+impl<Response> core::marker::Sync for quanta_index_ipc::StreamDispatch<Response> where Response: core::marker::Sync
+impl<Response> core::marker::Unpin for quanta_index_ipc::StreamDispatch<Response> where Response: core::marker::Unpin
+impl<Response> core::marker::UnsafeUnpin for quanta_index_ipc::StreamDispatch<Response> where Response: core::marker::UnsafeUnpin
+impl<Response> core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::StreamDispatch<Response> where Response: core::panic::unwind_safe::RefUnwindSafe
+impl<Response> core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::StreamDispatch<Response> where Response: core::panic::unwind_safe::UnwindSafe
+pub struct quanta_index_ipc::AdmittedClientRequestFrame(_)
+impl core::fmt::Debug for quanta_index_ipc::AdmittedClientRequestFrame
+pub fn quanta_index_ipc::AdmittedClientRequestFrame::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::deref::Deref for quanta_index_ipc::AdmittedClientRequestFrame
+pub type quanta_index_ipc::AdmittedClientRequestFrame::Target = [u8]
+pub fn quanta_index_ipc::AdmittedClientRequestFrame::deref(&self) -> &[u8]
+impl core::marker::Freeze for quanta_index_ipc::AdmittedClientRequestFrame
+impl core::marker::Send for quanta_index_ipc::AdmittedClientRequestFrame
+impl core::marker::Sync for quanta_index_ipc::AdmittedClientRequestFrame
+impl core::marker::Unpin for quanta_index_ipc::AdmittedClientRequestFrame
+impl core::marker::UnsafeUnpin for quanta_index_ipc::AdmittedClientRequestFrame
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::AdmittedClientRequestFrame
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::AdmittedClientRequestFrame
+pub struct quanta_index_ipc::AdmittedClientResponseBody
+impl quanta_index_ipc::AdmittedClientResponseBody
+pub fn quanta_index_ipc::AdmittedClientResponseBody::as_slice(&self) -> &[u8]
+impl core::fmt::Debug for quanta_index_ipc::AdmittedClientResponseBody
+pub fn quanta_index_ipc::AdmittedClientResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_ipc::AdmittedClientResponseBody
+impl core::marker::Send for quanta_index_ipc::AdmittedClientResponseBody
+impl core::marker::Sync for quanta_index_ipc::AdmittedClientResponseBody
+impl core::marker::Unpin for quanta_index_ipc::AdmittedClientResponseBody
+impl core::marker::UnsafeUnpin for quanta_index_ipc::AdmittedClientResponseBody
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::AdmittedClientResponseBody
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::AdmittedClientResponseBody
+pub struct quanta_index_ipc::AdmittedDecodedCborV1<T, O>
+impl<T, O> quanta_index_ipc::AdmittedDecodedCborV1<T, O>
+pub fn quanta_index_ipc::AdmittedDecodedCborV1<T, O>::owner(&self) -> &O
+pub fn quanta_index_ipc::AdmittedDecodedCborV1<T, O>::value(&self) -> &T
+impl<T, O> core::marker::Freeze for quanta_index_ipc::AdmittedDecodedCborV1<T, O> where T: core::marker::Freeze, O: core::marker::Freeze
+impl<T, O> core::marker::Send for quanta_index_ipc::AdmittedDecodedCborV1<T, O> where T: core::marker::Send, O: core::marker::Send
+impl<T, O> core::marker::Sync for quanta_index_ipc::AdmittedDecodedCborV1<T, O> where T: core::marker::Sync, O: core::marker::Sync
+impl<T, O> core::marker::Unpin for quanta_index_ipc::AdmittedDecodedCborV1<T, O> where T: core::marker::Unpin, O: core::marker::Unpin
+impl<T, O> core::marker::UnsafeUnpin for quanta_index_ipc::AdmittedDecodedCborV1<T, O> where T: core::marker::UnsafeUnpin, O: core::marker::UnsafeUnpin
+impl<T, O> core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::AdmittedDecodedCborV1<T, O> where T: core::panic::unwind_safe::RefUnwindSafe, O: core::panic::unwind_safe::RefUnwindSafe
+impl<T, O> core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::AdmittedDecodedCborV1<T, O> where T: core::panic::unwind_safe::UnwindSafe, O: core::panic::unwind_safe::UnwindSafe
+pub struct quanta_index_ipc::BoundSocketPathProbe
+impl quanta_index_ipc::BoundSocketPathProbe
+pub fn quanta_index_ipc::BoundSocketPathProbe::is_current(&self) -> core::io::error::Result<bool>
+impl core::clone::Clone for quanta_index_ipc::BoundSocketPathProbe
+pub fn quanta_index_ipc::BoundSocketPathProbe::clone(&self) -> quanta_index_ipc::BoundSocketPathProbe
+impl core::fmt::Debug for quanta_index_ipc::BoundSocketPathProbe
+pub fn quanta_index_ipc::BoundSocketPathProbe::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_ipc::BoundSocketPathProbe
+impl core::marker::Send for quanta_index_ipc::BoundSocketPathProbe
+impl core::marker::Sync for quanta_index_ipc::BoundSocketPathProbe
+impl core::marker::Unpin for quanta_index_ipc::BoundSocketPathProbe
+impl core::marker::UnsafeUnpin for quanta_index_ipc::BoundSocketPathProbe
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::BoundSocketPathProbe
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::BoundSocketPathProbe
+pub struct quanta_index_ipc::ClientIoPolicy
+impl quanta_index_ipc::ClientIoPolicy
+pub const fn quanta_index_ipc::ClientIoPolicy::absolute_deadline(self) -> core::option::Option<std::time::Instant>
+pub const fn quanta_index_ipc::ClientIoPolicy::request_timeout(self) -> core::time::Duration
+pub fn quanta_index_ipc::ClientIoPolicy::try_new(request_timeout: core::time::Duration) -> core::result::Result<Self, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::ClientIoPolicy::try_with_deadline(absolute_deadline: std::time::Instant) -> core::result::Result<Self, quanta_index_ipc::IpcError>
+impl core::clone::Clone for quanta_index_ipc::ClientIoPolicy
+pub fn quanta_index_ipc::ClientIoPolicy::clone(&self) -> quanta_index_ipc::ClientIoPolicy
+impl core::cmp::Eq for quanta_index_ipc::ClientIoPolicy
+impl core::cmp::PartialEq for quanta_index_ipc::ClientIoPolicy
+pub fn quanta_index_ipc::ClientIoPolicy::eq(&self, other: &quanta_index_ipc::ClientIoPolicy) -> bool
+impl core::default::Default for quanta_index_ipc::ClientIoPolicy
+pub fn quanta_index_ipc::ClientIoPolicy::default() -> Self
+impl core::fmt::Debug for quanta_index_ipc::ClientIoPolicy
+pub fn quanta_index_ipc::ClientIoPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::ClientIoPolicy
+impl core::marker::StructuralPartialEq for quanta_index_ipc::ClientIoPolicy
+impl core::marker::Freeze for quanta_index_ipc::ClientIoPolicy
+impl core::marker::Send for quanta_index_ipc::ClientIoPolicy
+impl core::marker::Sync for quanta_index_ipc::ClientIoPolicy
+impl core::marker::Unpin for quanta_index_ipc::ClientIoPolicy
+impl core::marker::UnsafeUnpin for quanta_index_ipc::ClientIoPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::ClientIoPolicy
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::ClientIoPolicy
+pub struct quanta_index_ipc::ClientIpcTimingV1
+pub quanta_index_ipc::ClientIpcTimingV1::connect: u64
+pub quanta_index_ipc::ClientIpcTimingV1::decode_call: u64
+pub quanta_index_ipc::ClientIpcTimingV1::encode: u64
+pub quanta_index_ipc::ClientIpcTimingV1::read_io: u64
+pub quanta_index_ipc::ClientIpcTimingV1::total: u64
+pub quanta_index_ipc::ClientIpcTimingV1::write: u64
+impl core::clone::Clone for quanta_index_ipc::ClientIpcTimingV1
+pub fn quanta_index_ipc::ClientIpcTimingV1::clone(&self) -> quanta_index_ipc::ClientIpcTimingV1
+impl core::cmp::Eq for quanta_index_ipc::ClientIpcTimingV1
+impl core::cmp::PartialEq for quanta_index_ipc::ClientIpcTimingV1
+pub fn quanta_index_ipc::ClientIpcTimingV1::eq(&self, other: &quanta_index_ipc::ClientIpcTimingV1) -> bool
+impl core::default::Default for quanta_index_ipc::ClientIpcTimingV1
+pub fn quanta_index_ipc::ClientIpcTimingV1::default() -> quanta_index_ipc::ClientIpcTimingV1
+impl core::fmt::Debug for quanta_index_ipc::ClientIpcTimingV1
+pub fn quanta_index_ipc::ClientIpcTimingV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::ClientIpcTimingV1
+impl core::marker::StructuralPartialEq for quanta_index_ipc::ClientIpcTimingV1
+impl core::marker::Freeze for quanta_index_ipc::ClientIpcTimingV1
+impl core::marker::Send for quanta_index_ipc::ClientIpcTimingV1
+impl core::marker::Sync for quanta_index_ipc::ClientIpcTimingV1
+impl core::marker::Unpin for quanta_index_ipc::ClientIpcTimingV1
+impl core::marker::UnsafeUnpin for quanta_index_ipc::ClientIpcTimingV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::ClientIpcTimingV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::ClientIpcTimingV1
+pub struct quanta_index_ipc::ClientResponseStream
+impl quanta_index_ipc::ClientResponseStream
+pub fn quanta_index_ipc::ClientResponseStream::next_response<ResponseEnvelopeT: serde_core::de::DeserializeOwned>(&mut self) -> core::result::Result<ResponseEnvelopeT, quanta_index_ipc::IpcError>
+impl core::marker::Freeze for quanta_index_ipc::ClientResponseStream
+impl core::marker::Send for quanta_index_ipc::ClientResponseStream
+impl core::marker::Sync for quanta_index_ipc::ClientResponseStream
+impl core::marker::Unpin for quanta_index_ipc::ClientResponseStream
+impl core::marker::UnsafeUnpin for quanta_index_ipc::ClientResponseStream
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::ClientResponseStream
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::ClientResponseStream
+pub struct quanta_index_ipc::DispatchContextV1
+pub quanta_index_ipc::DispatchContextV1::cancellation: quanta_index_core::request_budget::CancelHandleV1
+pub quanta_index_ipc::DispatchContextV1::connection_id: u64
+pub quanta_index_ipc::DispatchContextV1::deadline: std::time::Instant
+pub quanta_index_ipc::DispatchContextV1::diagnostic_backend_error: alloc::sync::Arc<core::sync::atomic::AtomicBool>
+pub quanta_index_ipc::DispatchContextV1::diagnostic_context: core::option::Option<quanta_index_core::diagnostic_trace::DiagnosticContextV1>
+pub quanta_index_ipc::DispatchContextV1::events: alloc::sync::Arc<dyn quanta_index_ipc::RequestEventSinkV1>
+pub quanta_index_ipc::DispatchContextV1::owner_uid: u32
+pub quanta_index_ipc::DispatchContextV1::plane: quanta_index_ipc::IpcPlane
+pub quanta_index_ipc::DispatchContextV1::principal: core::option::Option<quanta_index_ipc::PeerCredentials>
+pub quanta_index_ipc::DispatchContextV1::request_id: core::num::nonzero::NonZeroU64
+pub quanta_index_ipc::DispatchContextV1::request_started: std::time::Instant
+impl quanta_index_ipc::DispatchContextV1
+pub fn quanta_index_ipc::DispatchContextV1::record_event_v1(&self, stage: quanta_index_ipc::RequestEventStageV1)
+impl core::clone::Clone for quanta_index_ipc::DispatchContextV1
+pub fn quanta_index_ipc::DispatchContextV1::clone(&self) -> quanta_index_ipc::DispatchContextV1
+impl core::fmt::Debug for quanta_index_ipc::DispatchContextV1
+pub fn quanta_index_ipc::DispatchContextV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_ipc::DispatchContextV1
+impl core::marker::Send for quanta_index_ipc::DispatchContextV1
+impl core::marker::Sync for quanta_index_ipc::DispatchContextV1
+impl core::marker::Unpin for quanta_index_ipc::DispatchContextV1
+impl core::marker::UnsafeUnpin for quanta_index_ipc::DispatchContextV1
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::DispatchContextV1
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::DispatchContextV1
+pub struct quanta_index_ipc::DispatchPermit<'a>
+impl quanta_index_ipc::DispatchPermit<'_>
+pub const fn quanta_index_ipc::DispatchPermit<'_>::waited(&self) -> bool
+impl core::ops::drop::Drop for quanta_index_ipc::DispatchPermit<'_>
+pub fn quanta_index_ipc::DispatchPermit<'_>::drop(&mut self)
+impl<'a> core::fmt::Debug for quanta_index_ipc::DispatchPermit<'a>
+pub fn quanta_index_ipc::DispatchPermit<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Freeze for quanta_index_ipc::DispatchPermit<'a>
+impl<'a> core::marker::Send for quanta_index_ipc::DispatchPermit<'a>
+impl<'a> core::marker::Sync for quanta_index_ipc::DispatchPermit<'a>
+impl<'a> core::marker::Unpin for quanta_index_ipc::DispatchPermit<'a>
+impl<'a> core::marker::UnsafeUnpin for quanta_index_ipc::DispatchPermit<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::DispatchPermit<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::DispatchPermit<'a>
+pub struct quanta_index_ipc::DispatchSlots
+impl quanta_index_ipc::DispatchSlots
+pub fn quanta_index_ipc::DispatchSlots::acquire(&self, queue_wait: core::time::Duration, repo: core::option::Option<&str>) -> core::result::Result<quanta_index_ipc::DispatchPermit<'_>, quanta_index_ipc::SlotRefusal>
+pub fn quanta_index_ipc::DispatchSlots::available(&self) -> usize
+pub const fn quanta_index_ipc::DispatchSlots::capacity(&self) -> usize
+pub fn quanta_index_ipc::DispatchSlots::for_policy(policy: quanta_index_ipc::ServerAdmissionPolicy) -> Self
+pub fn quanta_index_ipc::DispatchSlots::in_flight(&self) -> usize
+pub fn quanta_index_ipc::DispatchSlots::in_flight_for_repo(&self, repo: &str) -> usize
+pub fn quanta_index_ipc::DispatchSlots::new(capacity: usize, per_repo_capacity: usize) -> Self
+pub const fn quanta_index_ipc::DispatchSlots::per_repo_capacity(&self) -> usize
+impl core::fmt::Debug for quanta_index_ipc::DispatchSlots
+pub fn quanta_index_ipc::DispatchSlots::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl !core::marker::Freeze for quanta_index_ipc::DispatchSlots
+impl core::marker::Send for quanta_index_ipc::DispatchSlots
+impl core::marker::Sync for quanta_index_ipc::DispatchSlots
+impl core::marker::Unpin for quanta_index_ipc::DispatchSlots
+impl core::marker::UnsafeUnpin for quanta_index_ipc::DispatchSlots
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::DispatchSlots
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::DispatchSlots
+pub struct quanta_index_ipc::IngressBudget
+impl quanta_index_ipc::IngressBudget
+pub const fn quanta_index_ipc::IngressBudget::for_process() -> Self
+impl core::fmt::Debug for quanta_index_ipc::IngressBudget
+pub fn quanta_index_ipc::IngressBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl !core::marker::Freeze for quanta_index_ipc::IngressBudget
+impl core::marker::Send for quanta_index_ipc::IngressBudget
+impl core::marker::Sync for quanta_index_ipc::IngressBudget
+impl core::marker::Unpin for quanta_index_ipc::IngressBudget
+impl core::marker::UnsafeUnpin for quanta_index_ipc::IngressBudget
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::IngressBudget
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::IngressBudget
+pub struct quanta_index_ipc::IpcServerCounters
+impl quanta_index_ipc::IpcServerCounters
+pub const fn quanta_index_ipc::IpcServerCounters::for_plane(plane: &'static str) -> Self
+pub const fn quanta_index_ipc::IpcServerCounters::for_plane_with_instance(plane: &'static str, process_instance: core::num::nonzero::NonZeroU128) -> Self
+pub const fn quanta_index_ipc::IpcServerCounters::plane(&self) -> &'static str
+pub fn quanta_index_ipc::IpcServerCounters::recent_request_events_v1(&self) -> core::result::Result<alloc::vec::Vec<quanta_index_ipc::RequestEventV1>, quanta_index_core::error::CoreError>
+pub fn quanta_index_ipc::IpcServerCounters::request_event_window_v1(&self, max_events: usize) -> core::result::Result<quanta_index_ipc::RequestEventWindowV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_ipc::IpcServerCounters::snapshot(&self) -> quanta_index_ipc::IpcServerCountersSnapshot
+impl core::fmt::Debug for quanta_index_ipc::IpcServerCounters
+pub fn quanta_index_ipc::IpcServerCounters::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl quanta_index_core::domains::observability::MetricSourcePort for quanta_index_ipc::IpcServerCounters
+pub fn quanta_index_ipc::IpcServerCounters::scrape(&self) -> core::result::Result<alloc::vec::Vec<quanta_index_core::domains::observability::MetricPointV1>, quanta_index_core::error::CoreError>
+impl quanta_index_ipc::RequestEventSinkV1 for quanta_index_ipc::IpcServerCounters
+pub fn quanta_index_ipc::IpcServerCounters::record_request_event_v1(&self, event: quanta_index_ipc::RequestEventV1)
+impl !core::marker::Freeze for quanta_index_ipc::IpcServerCounters
+impl core::marker::Send for quanta_index_ipc::IpcServerCounters
+impl core::marker::Sync for quanta_index_ipc::IpcServerCounters
+impl core::marker::Unpin for quanta_index_ipc::IpcServerCounters
+impl core::marker::UnsafeUnpin for quanta_index_ipc::IpcServerCounters
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::IpcServerCounters
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::IpcServerCounters
+pub struct quanta_index_ipc::IpcServerCountersSnapshot
+pub quanta_index_ipc::IpcServerCountersSnapshot::connections_accepted: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::connections_live: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::connections_refused: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::dispatch_in_flight: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::dispatch_queue_waits: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::ingress_admission_refusals: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::peer_credentials_unreadable: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::peer_hangup_detected: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::peer_hangups: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::peers_refused: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::request_decode_failures: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::request_events_dropped: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::requests_dispatched: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::requests_overloaded: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::requests_overloaded_repo: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::requests_refused_shutting_down: u64
+pub quanta_index_ipc::IpcServerCountersSnapshot::response_bytes: u64
+impl core::clone::Clone for quanta_index_ipc::IpcServerCountersSnapshot
+pub fn quanta_index_ipc::IpcServerCountersSnapshot::clone(&self) -> quanta_index_ipc::IpcServerCountersSnapshot
+impl core::cmp::Eq for quanta_index_ipc::IpcServerCountersSnapshot
+impl core::cmp::PartialEq for quanta_index_ipc::IpcServerCountersSnapshot
+pub fn quanta_index_ipc::IpcServerCountersSnapshot::eq(&self, other: &quanta_index_ipc::IpcServerCountersSnapshot) -> bool
+impl core::default::Default for quanta_index_ipc::IpcServerCountersSnapshot
+pub fn quanta_index_ipc::IpcServerCountersSnapshot::default() -> quanta_index_ipc::IpcServerCountersSnapshot
+impl core::fmt::Debug for quanta_index_ipc::IpcServerCountersSnapshot
+pub fn quanta_index_ipc::IpcServerCountersSnapshot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::IpcServerCountersSnapshot
+impl core::marker::StructuralPartialEq for quanta_index_ipc::IpcServerCountersSnapshot
+impl core::marker::Freeze for quanta_index_ipc::IpcServerCountersSnapshot
+impl core::marker::Send for quanta_index_ipc::IpcServerCountersSnapshot
+impl core::marker::Sync for quanta_index_ipc::IpcServerCountersSnapshot
+impl core::marker::Unpin for quanta_index_ipc::IpcServerCountersSnapshot
+impl core::marker::UnsafeUnpin for quanta_index_ipc::IpcServerCountersSnapshot
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::IpcServerCountersSnapshot
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::IpcServerCountersSnapshot
+pub struct quanta_index_ipc::KernelPeerCredentials
+impl core::clone::Clone for quanta_index_ipc::KernelPeerCredentials
+pub fn quanta_index_ipc::KernelPeerCredentials::clone(&self) -> quanta_index_ipc::KernelPeerCredentials
+impl core::cmp::Eq for quanta_index_ipc::KernelPeerCredentials
+impl core::cmp::PartialEq for quanta_index_ipc::KernelPeerCredentials
+pub fn quanta_index_ipc::KernelPeerCredentials::eq(&self, other: &quanta_index_ipc::KernelPeerCredentials) -> bool
+impl core::default::Default for quanta_index_ipc::KernelPeerCredentials
+pub fn quanta_index_ipc::KernelPeerCredentials::default() -> quanta_index_ipc::KernelPeerCredentials
+impl core::fmt::Debug for quanta_index_ipc::KernelPeerCredentials
+pub fn quanta_index_ipc::KernelPeerCredentials::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::KernelPeerCredentials
+impl core::marker::StructuralPartialEq for quanta_index_ipc::KernelPeerCredentials
+impl quanta_index_ipc::PeerCredentialsSource for quanta_index_ipc::KernelPeerCredentials
+pub fn quanta_index_ipc::KernelPeerCredentials::peer_credentials(&self, stream: &std::os::unix::net::stream::UnixStream) -> core::io::error::Result<quanta_index_ipc::PeerCredentials>
+impl core::marker::Freeze for quanta_index_ipc::KernelPeerCredentials
+impl core::marker::Send for quanta_index_ipc::KernelPeerCredentials
+impl core::marker::Sync for quanta_index_ipc::KernelPeerCredentials
+impl core::marker::Unpin for quanta_index_ipc::KernelPeerCredentials
+impl core::marker::UnsafeUnpin for quanta_index_ipc::KernelPeerCredentials
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::KernelPeerCredentials
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::KernelPeerCredentials
+pub struct quanta_index_ipc::PeerCredentials
+pub quanta_index_ipc::PeerCredentials::gid: u32
+pub quanta_index_ipc::PeerCredentials::pid: core::option::Option<u32>
+pub quanta_index_ipc::PeerCredentials::uid: u32
+impl core::clone::Clone for quanta_index_ipc::PeerCredentials
+pub fn quanta_index_ipc::PeerCredentials::clone(&self) -> quanta_index_ipc::PeerCredentials
+impl core::cmp::Eq for quanta_index_ipc::PeerCredentials
+impl core::cmp::PartialEq for quanta_index_ipc::PeerCredentials
+pub fn quanta_index_ipc::PeerCredentials::eq(&self, other: &quanta_index_ipc::PeerCredentials) -> bool
+impl core::fmt::Debug for quanta_index_ipc::PeerCredentials
+pub fn quanta_index_ipc::PeerCredentials::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::PeerCredentials
+impl core::marker::StructuralPartialEq for quanta_index_ipc::PeerCredentials
+impl core::marker::Freeze for quanta_index_ipc::PeerCredentials
+impl core::marker::Send for quanta_index_ipc::PeerCredentials
+impl core::marker::Sync for quanta_index_ipc::PeerCredentials
+impl core::marker::Unpin for quanta_index_ipc::PeerCredentials
+impl core::marker::UnsafeUnpin for quanta_index_ipc::PeerCredentials
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::PeerCredentials
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::PeerCredentials
+pub struct quanta_index_ipc::RequestEventV1
+pub quanta_index_ipc::RequestEventV1::connection_id: u64
+pub quanta_index_ipc::RequestEventV1::elapsed_micros: u64
+pub quanta_index_ipc::RequestEventV1::request_id: core::num::nonzero::NonZeroU64
+pub quanta_index_ipc::RequestEventV1::stage: quanta_index_ipc::RequestEventStageV1
+impl core::clone::Clone for quanta_index_ipc::RequestEventV1
+pub fn quanta_index_ipc::RequestEventV1::clone(&self) -> quanta_index_ipc::RequestEventV1
+impl core::cmp::Eq for quanta_index_ipc::RequestEventV1
+impl core::cmp::PartialEq for quanta_index_ipc::RequestEventV1
+pub fn quanta_index_ipc::RequestEventV1::eq(&self, other: &quanta_index_ipc::RequestEventV1) -> bool
+impl core::fmt::Debug for quanta_index_ipc::RequestEventV1
+pub fn quanta_index_ipc::RequestEventV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::RequestEventV1
+impl core::marker::StructuralPartialEq for quanta_index_ipc::RequestEventV1
+impl core::marker::Freeze for quanta_index_ipc::RequestEventV1
+impl core::marker::Send for quanta_index_ipc::RequestEventV1
+impl core::marker::Sync for quanta_index_ipc::RequestEventV1
+impl core::marker::Unpin for quanta_index_ipc::RequestEventV1
+impl core::marker::UnsafeUnpin for quanta_index_ipc::RequestEventV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::RequestEventV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::RequestEventV1
+pub struct quanta_index_ipc::RequestEventWindowV1
+pub quanta_index_ipc::RequestEventWindowV1::dropped_after: u64
+pub quanta_index_ipc::RequestEventWindowV1::dropped_before: u64
+pub quanta_index_ipc::RequestEventWindowV1::events: alloc::vec::Vec<quanta_index_ipc::SequencedRequestEventV1>
+pub quanta_index_ipc::RequestEventWindowV1::next_sequence: u64
+pub quanta_index_ipc::RequestEventWindowV1::oldest_retained_sequence: core::option::Option<u64>
+pub quanta_index_ipc::RequestEventWindowV1::omitted_before_window: bool
+pub quanta_index_ipc::RequestEventWindowV1::plane: &'static str
+pub quanta_index_ipc::RequestEventWindowV1::process_instance: core::num::nonzero::NonZeroU128
+pub quanta_index_ipc::RequestEventWindowV1::sequence_exhausted: bool
+impl core::clone::Clone for quanta_index_ipc::RequestEventWindowV1
+pub fn quanta_index_ipc::RequestEventWindowV1::clone(&self) -> quanta_index_ipc::RequestEventWindowV1
+impl core::cmp::Eq for quanta_index_ipc::RequestEventWindowV1
+impl core::cmp::PartialEq for quanta_index_ipc::RequestEventWindowV1
+pub fn quanta_index_ipc::RequestEventWindowV1::eq(&self, other: &quanta_index_ipc::RequestEventWindowV1) -> bool
+impl core::fmt::Debug for quanta_index_ipc::RequestEventWindowV1
+pub fn quanta_index_ipc::RequestEventWindowV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_ipc::RequestEventWindowV1
+impl core::marker::Freeze for quanta_index_ipc::RequestEventWindowV1
+impl core::marker::Send for quanta_index_ipc::RequestEventWindowV1
+impl core::marker::Sync for quanta_index_ipc::RequestEventWindowV1
+impl core::marker::Unpin for quanta_index_ipc::RequestEventWindowV1
+impl core::marker::UnsafeUnpin for quanta_index_ipc::RequestEventWindowV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::RequestEventWindowV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::RequestEventWindowV1
+pub struct quanta_index_ipc::ResponseFrame
+impl core::fmt::Debug for quanta_index_ipc::ResponseFrame
+pub fn quanta_index_ipc::ResponseFrame::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::deref::Deref for quanta_index_ipc::ResponseFrame
+pub type quanta_index_ipc::ResponseFrame::Target = [u8]
+pub fn quanta_index_ipc::ResponseFrame::deref(&self) -> &[u8]
+impl core::marker::Freeze for quanta_index_ipc::ResponseFrame
+impl core::marker::Send for quanta_index_ipc::ResponseFrame
+impl core::marker::Sync for quanta_index_ipc::ResponseFrame
+impl core::marker::Unpin for quanta_index_ipc::ResponseFrame
+impl core::marker::UnsafeUnpin for quanta_index_ipc::ResponseFrame
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::ResponseFrame
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::ResponseFrame
+pub struct quanta_index_ipc::SequencedRequestEventV1
+pub quanta_index_ipc::SequencedRequestEventV1::event: quanta_index_ipc::RequestEventV1
+pub quanta_index_ipc::SequencedRequestEventV1::sequence: u64
+impl core::clone::Clone for quanta_index_ipc::SequencedRequestEventV1
+pub fn quanta_index_ipc::SequencedRequestEventV1::clone(&self) -> quanta_index_ipc::SequencedRequestEventV1
+impl core::cmp::Eq for quanta_index_ipc::SequencedRequestEventV1
+impl core::cmp::PartialEq for quanta_index_ipc::SequencedRequestEventV1
+pub fn quanta_index_ipc::SequencedRequestEventV1::eq(&self, other: &quanta_index_ipc::SequencedRequestEventV1) -> bool
+impl core::fmt::Debug for quanta_index_ipc::SequencedRequestEventV1
+pub fn quanta_index_ipc::SequencedRequestEventV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::SequencedRequestEventV1
+impl core::marker::StructuralPartialEq for quanta_index_ipc::SequencedRequestEventV1
+impl core::marker::Freeze for quanta_index_ipc::SequencedRequestEventV1
+impl core::marker::Send for quanta_index_ipc::SequencedRequestEventV1
+impl core::marker::Sync for quanta_index_ipc::SequencedRequestEventV1
+impl core::marker::Unpin for quanta_index_ipc::SequencedRequestEventV1
+impl core::marker::UnsafeUnpin for quanta_index_ipc::SequencedRequestEventV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::SequencedRequestEventV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::SequencedRequestEventV1
+pub struct quanta_index_ipc::ServerAdmissionPolicy
+impl quanta_index_ipc::ServerAdmissionPolicy
+pub const quanta_index_ipc::ServerAdmissionPolicy::DEFAULT: Self
+pub const quanta_index_ipc::ServerAdmissionPolicy::SERIAL_DISPATCH: Self
+pub const fn quanta_index_ipc::ServerAdmissionPolicy::dispatch_budget(self) -> core::time::Duration
+pub const fn quanta_index_ipc::ServerAdmissionPolicy::dispatch_slots(self) -> usize
+pub const fn quanta_index_ipc::ServerAdmissionPolicy::io_timeout(self) -> core::time::Duration
+pub const fn quanta_index_ipc::ServerAdmissionPolicy::max_connections(self) -> usize
+pub const fn quanta_index_ipc::ServerAdmissionPolicy::max_in_flight_per_repo(self) -> usize
+pub fn quanta_index_ipc::ServerAdmissionPolicy::new(max_connections: usize, dispatch_slots: usize, max_in_flight_per_repo: usize, queue_wait: core::time::Duration, dispatch_budget: core::time::Duration, io_timeout: core::time::Duration) -> core::result::Result<Self, quanta_index_ipc::IpcError>
+pub const fn quanta_index_ipc::ServerAdmissionPolicy::queue_wait(self) -> core::time::Duration
+impl core::clone::Clone for quanta_index_ipc::ServerAdmissionPolicy
+pub fn quanta_index_ipc::ServerAdmissionPolicy::clone(&self) -> quanta_index_ipc::ServerAdmissionPolicy
+impl core::cmp::Eq for quanta_index_ipc::ServerAdmissionPolicy
+impl core::cmp::PartialEq for quanta_index_ipc::ServerAdmissionPolicy
+pub fn quanta_index_ipc::ServerAdmissionPolicy::eq(&self, other: &quanta_index_ipc::ServerAdmissionPolicy) -> bool
+impl core::fmt::Debug for quanta_index_ipc::ServerAdmissionPolicy
+pub fn quanta_index_ipc::ServerAdmissionPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_ipc::ServerAdmissionPolicy
+impl core::marker::StructuralPartialEq for quanta_index_ipc::ServerAdmissionPolicy
+impl core::marker::Freeze for quanta_index_ipc::ServerAdmissionPolicy
+impl core::marker::Send for quanta_index_ipc::ServerAdmissionPolicy
+impl core::marker::Sync for quanta_index_ipc::ServerAdmissionPolicy
+impl core::marker::Unpin for quanta_index_ipc::ServerAdmissionPolicy
+impl core::marker::UnsafeUnpin for quanta_index_ipc::ServerAdmissionPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::ServerAdmissionPolicy
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::ServerAdmissionPolicy
+pub struct quanta_index_ipc::SharedSocketAccess
+impl quanta_index_ipc::SharedSocketAccess
+pub fn quanta_index_ipc::SharedSocketAccess::admits_others(&self) -> bool
+pub const fn quanta_index_ipc::SharedSocketAccess::allowed_uids(&self) -> &alloc::collections::btree::set::BTreeSet<u32>
+pub const fn quanta_index_ipc::SharedSocketAccess::group(&self) -> core::option::Option<u32>
+pub const fn quanta_index_ipc::SharedSocketAccess::new(group: core::option::Option<u32>, allowed_uids: alloc::collections::btree::set::BTreeSet<u32>) -> Self
+impl core::clone::Clone for quanta_index_ipc::SharedSocketAccess
+pub fn quanta_index_ipc::SharedSocketAccess::clone(&self) -> quanta_index_ipc::SharedSocketAccess
+impl core::cmp::Eq for quanta_index_ipc::SharedSocketAccess
+impl core::cmp::PartialEq for quanta_index_ipc::SharedSocketAccess
+pub fn quanta_index_ipc::SharedSocketAccess::eq(&self, other: &quanta_index_ipc::SharedSocketAccess) -> bool
+impl core::fmt::Debug for quanta_index_ipc::SharedSocketAccess
+pub fn quanta_index_ipc::SharedSocketAccess::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_ipc::SharedSocketAccess
+impl core::marker::Freeze for quanta_index_ipc::SharedSocketAccess
+impl core::marker::Send for quanta_index_ipc::SharedSocketAccess
+impl core::marker::Sync for quanta_index_ipc::SharedSocketAccess
+impl core::marker::Unpin for quanta_index_ipc::SharedSocketAccess
+impl core::marker::UnsafeUnpin for quanta_index_ipc::SharedSocketAccess
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::SharedSocketAccess
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::SharedSocketAccess
+pub struct quanta_index_ipc::ShutdownHandle
+impl quanta_index_ipc::ShutdownHandle
+pub fn quanta_index_ipc::ShutdownHandle::trigger(&self)
+impl core::clone::Clone for quanta_index_ipc::ShutdownHandle
+pub fn quanta_index_ipc::ShutdownHandle::clone(&self) -> quanta_index_ipc::ShutdownHandle
+impl core::marker::Freeze for quanta_index_ipc::ShutdownHandle
+impl core::marker::Send for quanta_index_ipc::ShutdownHandle
+impl core::marker::Sync for quanta_index_ipc::ShutdownHandle
+impl core::marker::Unpin for quanta_index_ipc::ShutdownHandle
+impl core::marker::UnsafeUnpin for quanta_index_ipc::ShutdownHandle
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::ShutdownHandle
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::ShutdownHandle
+pub struct quanta_index_ipc::SourcePublicationUploadStore
+impl quanta_index_ipc::SourcePublicationUploadStore
+pub fn quanta_index_ipc::SourcePublicationUploadStore::open(root: impl core::convert::Into<std::path::PathBuf>, max_body_bytes: u64) -> core::result::Result<Self, quanta_index_core::error::CoreError>
+pub fn quanta_index_ipc::SourcePublicationUploadStore::open_at<P: quanta_index_ipc::SourcePublicationUploadParent + 'static>(parent: P, parent_path: &std::path::Path, component: &std::ffi::os_str::OsStr, max_body_bytes: u64) -> core::result::Result<Self, quanta_index_core::error::CoreError>
+impl quanta_index_core::source_upload::SourcePublicationUploadPort for quanta_index_ipc::SourcePublicationUploadStore
+pub fn quanta_index_ipc::SourcePublicationUploadStore::discard(&self, identity: quanta_index_contract::ipc::ingest::source_upload::SourcePublicationUploadIdentity) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_ipc::SourcePublicationUploadStore::load(&self, identity: quanta_index_contract::ipc::ingest::source_upload::SourcePublicationUploadIdentity, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::ipc::ingest::corpus_wire::SearchCorpusIngestBatch, quanta_index_core::error::CoreError>
+pub fn quanta_index_ipc::SourcePublicationUploadStore::stage(&self, part: &quanta_index_contract::ipc::ingest::source_upload::SourcePublicationUploadPart, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::ipc::ingest::source_upload::SourcePublicationUploadAck, quanta_index_core::error::CoreError>
+impl !core::marker::Freeze for quanta_index_ipc::SourcePublicationUploadStore
+impl core::marker::Send for quanta_index_ipc::SourcePublicationUploadStore
+impl core::marker::Sync for quanta_index_ipc::SourcePublicationUploadStore
+impl core::marker::Unpin for quanta_index_ipc::SourcePublicationUploadStore
+impl core::marker::UnsafeUnpin for quanta_index_ipc::SourcePublicationUploadStore
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::SourcePublicationUploadStore
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::SourcePublicationUploadStore
+pub struct quanta_index_ipc::UdsServer
+impl quanta_index_ipc::UdsServer
+pub const fn quanta_index_ipc::UdsServer::admission_policy(&self) -> quanta_index_ipc::ServerAdmissionPolicy
+pub fn quanta_index_ipc::UdsServer::bind(path: &std::path::Path) -> core::result::Result<Self, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::UdsServer::bind_observed(path: &std::path::Path, policy: quanta_index_ipc::ServerAdmissionPolicy, access: quanta_index_ipc::SocketAccessPolicy, counters: alloc::sync::Arc<quanta_index_ipc::IpcServerCounters>) -> core::result::Result<Self, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::UdsServer::bind_observed_in(path: &std::path::Path, policy: quanta_index_ipc::ServerAdmissionPolicy, access: quanta_index_ipc::SocketAccessPolicy, directory_access: &quanta_index_ipc::SocketAccessPolicy, counters: alloc::sync::Arc<quanta_index_ipc::IpcServerCounters>) -> core::result::Result<Self, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::UdsServer::bind_with_peer_source(path: &std::path::Path, policy: quanta_index_ipc::ServerAdmissionPolicy, access: quanta_index_ipc::SocketAccessPolicy, directory_access: &quanta_index_ipc::SocketAccessPolicy, counters: alloc::sync::Arc<quanta_index_ipc::IpcServerCounters>, peer_source: alloc::sync::Arc<dyn quanta_index_ipc::PeerCredentialsSource>) -> core::result::Result<Self, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::UdsServer::bind_with_policy(path: &std::path::Path, policy: quanta_index_ipc::ServerAdmissionPolicy) -> core::result::Result<Self, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::UdsServer::bound_socket_path_probe(&self) -> quanta_index_ipc::BoundSocketPathProbe
+pub fn quanta_index_ipc::UdsServer::counters(&self) -> alloc::sync::Arc<quanta_index_ipc::IpcServerCounters>
+pub fn quanta_index_ipc::UdsServer::refused_connections(&self) -> u64
+pub fn quanta_index_ipc::UdsServer::run<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(&self, dispatcher: &alloc::sync::Arc<D>, plane: quanta_index_ipc::IpcPlane, accept_idle: core::time::Duration) -> core::result::Result<(), quanta_index_ipc::IpcError> where RequestEnvelopeT: quanta_index_ipc::RequestEnvelope<Request>, ResponseEnvelopeT: quanta_index_ipc::ResponseEnvelope<Response>, D: quanta_index_ipc::IpcDispatcher<Request, Response> + ?core::marker::Sized + 'static
+pub fn quanta_index_ipc::UdsServer::shutdown_handle(&self) -> quanta_index_ipc::ShutdownHandle
+pub const fn quanta_index_ipc::UdsServer::socket_access_policy(&self) -> &quanta_index_ipc::SocketAccessPolicy
+pub fn quanta_index_ipc::UdsServer::socket_path(&self) -> &std::path::Path
+pub fn quanta_index_ipc::UdsServer::with_diagnostic_context(self, context: quanta_index_core::diagnostic_trace::DiagnosticContextV1) -> Self
+pub fn quanta_index_ipc::UdsServer::with_ingress_budget(self, ingress: alloc::sync::Arc<quanta_index_ipc::IngressBudget>) -> Self
+impl core::ops::drop::Drop for quanta_index_ipc::UdsServer
+pub fn quanta_index_ipc::UdsServer::drop(&mut self)
+impl !core::marker::Freeze for quanta_index_ipc::UdsServer
+impl core::marker::Send for quanta_index_ipc::UdsServer
+impl core::marker::Sync for quanta_index_ipc::UdsServer
+impl core::marker::Unpin for quanta_index_ipc::UdsServer
+impl core::marker::UnsafeUnpin for quanta_index_ipc::UdsServer
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_ipc::UdsServer
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_ipc::UdsServer
+pub const quanta_index_ipc::DEFAULT_CLIENT_IO_TIMEOUT: core::time::Duration
+pub const quanta_index_ipc::GROUP_DIRECTORY_MODE: u32
+pub const quanta_index_ipc::GROUP_SOCKET_MODE: u32
+pub const quanta_index_ipc::MAX_FRAME_BODY_BYTES: usize
+pub const quanta_index_ipc::MAX_MULTIFRAME_REQUEST_BODY_BYTES: usize
+pub const quanta_index_ipc::PRIVATE_DIRECTORY_MODE: u32
+pub const quanta_index_ipc::PRIVATE_SOCKET_MODE: u32
+pub const quanta_index_ipc::SOURCE_PUBLICATION_INLINE_BYTES: u64
+pub const quanta_index_ipc::WORLD_DIRECTORY_MODE: u32
+pub const quanta_index_ipc::WORLD_SOCKET_MODE: u32
+pub trait quanta_index_ipc::IpcDispatcher<Request, Response>: core::marker::Send + core::marker::Sync
+pub fn quanta_index_ipc::IpcDispatcher::dispatch(&self, context: &quanta_index_ipc::DispatchContextV1, request: Request, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> Response
+pub fn quanta_index_ipc::IpcDispatcher::dispatch_stream(&self, _context: &quanta_index_ipc::DispatchContextV1, _request: Request, _budget: &quanta_index_core::request_budget::RequestBudgetV1, _emit: &mut dyn core::ops::function::FnMut(Response) -> core::result::Result<(), quanta_index_ipc::IpcError>) -> quanta_index_ipc::StreamDispatch<Response>
+pub fn quanta_index_ipc::IpcDispatcher::reserve_response_memory(&self, _budget: &quanta_index_core::request_budget::RequestBudgetV1, _bytes: u64) -> core::result::Result<core::option::Option<quanta_index_core::index::memory::MemoryLease>, quanta_index_ipc::IpcError>
+pub trait quanta_index_ipc::PeerCredentialsSource: core::marker::Send + core::marker::Sync
+pub fn quanta_index_ipc::PeerCredentialsSource::peer_credentials(&self, stream: &std::os::unix::net::stream::UnixStream) -> core::io::error::Result<quanta_index_ipc::PeerCredentials>
+impl quanta_index_ipc::PeerCredentialsSource for quanta_index_ipc::KernelPeerCredentials
+pub fn quanta_index_ipc::KernelPeerCredentials::peer_credentials(&self, stream: &std::os::unix::net::stream::UnixStream) -> core::io::error::Result<quanta_index_ipc::PeerCredentials>
+pub trait quanta_index_ipc::RequestEnvelope<Request>: serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
+pub fn quanta_index_ipc::RequestEnvelope::into_parts(self) -> (u64, Request, quanta_index_contract::ipc::diagnostic_context::DiagnosticAttemptFieldV1)
+pub fn quanta_index_ipc::RequestEnvelope::repo_scope(request: &Request) -> core::option::Option<alloc::string::String>
+pub fn quanta_index_ipc::RequestEnvelope::streaming(_request: &Request) -> bool
+pub fn quanta_index_ipc::RequestEnvelope::validated(self) -> core::result::Result<(core::num::nonzero::NonZeroU64, Request, quanta_index_contract::ipc::diagnostic_context::DiagnosticAttemptFieldV1), quanta_index_ipc::IpcError>
+impl quanta_index_ipc::RequestEnvelope<quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcRequest> for quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcRequestEnvelope
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcRequestEnvelope::into_parts(self) -> (u64, quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcRequest, quanta_index_contract::ipc::diagnostic_context::DiagnosticAttemptFieldV1)
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcRequestEnvelope::repo_scope(_request: &quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcRequest) -> core::option::Option<alloc::string::String>
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcRequestEnvelope::streaming(_request: &Request) -> bool
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcRequestEnvelope::validated(self) -> core::result::Result<(core::num::nonzero::NonZeroU64, Request, quanta_index_contract::ipc::diagnostic_context::DiagnosticAttemptFieldV1), quanta_index_ipc::IpcError>
+impl quanta_index_ipc::RequestEnvelope<quanta_index_contract::ipc::split::SearchPlaneControlIpcRequest> for quanta_index_contract::ipc::split::SearchPlaneControlIpcRequestEnvelope
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcRequestEnvelope::into_parts(self) -> (u64, quanta_index_contract::ipc::split::SearchPlaneControlIpcRequest, quanta_index_contract::ipc::diagnostic_context::DiagnosticAttemptFieldV1)
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcRequestEnvelope::repo_scope(_request: &quanta_index_contract::ipc::split::SearchPlaneControlIpcRequest) -> core::option::Option<alloc::string::String>
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcRequestEnvelope::streaming(_request: &Request) -> bool
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcRequestEnvelope::validated(self) -> core::result::Result<(core::num::nonzero::NonZeroU64, Request, quanta_index_contract::ipc::diagnostic_context::DiagnosticAttemptFieldV1), quanta_index_ipc::IpcError>
+impl quanta_index_ipc::RequestEnvelope<quanta_index_contract::ipc::split::SearchPlaneQueryIpcRequest> for quanta_index_contract::ipc::split::SearchPlaneQueryIpcRequestEnvelope
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcRequestEnvelope::into_parts(self) -> (u64, quanta_index_contract::ipc::split::SearchPlaneQueryIpcRequest, quanta_index_contract::ipc::diagnostic_context::DiagnosticAttemptFieldV1)
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcRequestEnvelope::repo_scope(request: &quanta_index_contract::ipc::split::SearchPlaneQueryIpcRequest) -> core::option::Option<alloc::string::String>
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcRequestEnvelope::streaming(_request: &Request) -> bool
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcRequestEnvelope::validated(self) -> core::result::Result<(core::num::nonzero::NonZeroU64, Request, quanta_index_contract::ipc::diagnostic_context::DiagnosticAttemptFieldV1), quanta_index_ipc::IpcError>
+impl quanta_index_ipc::RequestEnvelope<quanta_index_contract::native_protocol::NativeIndexRequest> for quanta_index_contract::native_protocol::NativeIndexRequestEnvelope
+pub fn quanta_index_contract::native_protocol::NativeIndexRequestEnvelope::into_parts(self) -> (u64, quanta_index_contract::native_protocol::NativeIndexRequest, quanta_index_contract::ipc::diagnostic_context::DiagnosticAttemptFieldV1)
+pub fn quanta_index_contract::native_protocol::NativeIndexRequestEnvelope::repo_scope(_request: &quanta_index_contract::native_protocol::NativeIndexRequest) -> core::option::Option<alloc::string::String>
+pub fn quanta_index_contract::native_protocol::NativeIndexRequestEnvelope::streaming(request: &quanta_index_contract::native_protocol::NativeIndexRequest) -> bool
+pub fn quanta_index_contract::native_protocol::NativeIndexRequestEnvelope::validated(self) -> core::result::Result<(core::num::nonzero::NonZeroU64, Request, quanta_index_contract::ipc::diagnostic_context::DiagnosticAttemptFieldV1), quanta_index_ipc::IpcError>
+pub trait quanta_index_ipc::RequestEventSinkV1: core::fmt::Debug + core::marker::Send + core::marker::Sync
+pub fn quanta_index_ipc::RequestEventSinkV1::record_request_event_v1(&self, event: quanta_index_ipc::RequestEventV1)
+impl quanta_index_ipc::RequestEventSinkV1 for quanta_index_ipc::IpcServerCounters
+pub fn quanta_index_ipc::IpcServerCounters::record_request_event_v1(&self, event: quanta_index_ipc::RequestEventV1)
+pub trait quanta_index_ipc::ResponseEnvelope<Response>: serde_core::ser::Serialize + core::marker::Send + core::marker::Sync + 'static
+pub fn quanta_index_ipc::ResponseEnvelope::from_parts(request_id: u64, payload: Response) -> Self
+pub fn quanta_index_ipc::ResponseEnvelope::overloaded(request_id: u64, refusal: &quanta_index_ipc::SlotRefusal) -> core::option::Option<Self> where Self: core::marker::Sized
+pub fn quanta_index_ipc::ResponseEnvelope::result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> core::option::Option<Self> where Self: core::marker::Sized
+pub fn quanta_index_ipc::ResponseEnvelope::stream_stage(_payload: &Response) -> bool
+pub fn quanta_index_ipc::ResponseEnvelope::stream_terminal(_payload: &Response) -> bool
+pub fn quanta_index_ipc::ResponseEnvelope::stream_unsupported(_request_id: u64) -> core::option::Option<Self> where Self: core::marker::Sized
+pub fn quanta_index_ipc::ResponseEnvelope::terminal_reply_phase(&self) -> bool
+impl quanta_index_ipc::ResponseEnvelope<quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcResponse> for quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcResponseEnvelope
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcResponseEnvelope::from_parts(request_id: u64, payload: quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcResponse) -> Self
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcResponseEnvelope::overloaded(request_id: u64, refusal: &quanta_index_ipc::SlotRefusal) -> core::option::Option<Self>
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcResponseEnvelope::result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> core::option::Option<Self>
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcResponseEnvelope::stream_stage(_payload: &Response) -> bool
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcResponseEnvelope::stream_terminal(_payload: &Response) -> bool
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcResponseEnvelope::stream_unsupported(_request_id: u64) -> core::option::Option<Self> where Self: core::marker::Sized
+pub fn quanta_index_contract::ipc::ingest::envelope::SearchPlaneIngestIpcResponseEnvelope::terminal_reply_phase(&self) -> bool
+impl quanta_index_ipc::ResponseEnvelope<quanta_index_contract::ipc::split::SearchPlaneControlIpcResponse> for quanta_index_contract::ipc::split::SearchPlaneControlIpcResponseEnvelope
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcResponseEnvelope::from_parts(request_id: u64, payload: quanta_index_contract::ipc::split::SearchPlaneControlIpcResponse) -> Self
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcResponseEnvelope::overloaded(request_id: u64, refusal: &quanta_index_ipc::SlotRefusal) -> core::option::Option<Self>
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcResponseEnvelope::result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> core::option::Option<Self>
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcResponseEnvelope::stream_stage(_payload: &Response) -> bool
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcResponseEnvelope::stream_terminal(_payload: &Response) -> bool
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcResponseEnvelope::stream_unsupported(_request_id: u64) -> core::option::Option<Self> where Self: core::marker::Sized
+pub fn quanta_index_contract::ipc::split::SearchPlaneControlIpcResponseEnvelope::terminal_reply_phase(&self) -> bool
+impl quanta_index_ipc::ResponseEnvelope<quanta_index_contract::ipc::split::SearchPlaneQueryIpcResponse> for quanta_index_contract::ipc::split::SearchPlaneQueryIpcResponseEnvelope
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcResponseEnvelope::from_parts(request_id: u64, payload: quanta_index_contract::ipc::split::SearchPlaneQueryIpcResponse) -> Self
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcResponseEnvelope::overloaded(request_id: u64, refusal: &quanta_index_ipc::SlotRefusal) -> core::option::Option<Self>
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcResponseEnvelope::result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> core::option::Option<Self>
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcResponseEnvelope::stream_stage(_payload: &Response) -> bool
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcResponseEnvelope::stream_terminal(_payload: &Response) -> bool
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcResponseEnvelope::stream_unsupported(_request_id: u64) -> core::option::Option<Self> where Self: core::marker::Sized
+pub fn quanta_index_contract::ipc::split::SearchPlaneQueryIpcResponseEnvelope::terminal_reply_phase(&self) -> bool
+impl quanta_index_ipc::ResponseEnvelope<quanta_index_contract::native_protocol::NativeIndexResponse> for quanta_index_contract::native_protocol::NativeIndexResponseEnvelope
+pub fn quanta_index_contract::native_protocol::NativeIndexResponseEnvelope::from_parts(request_id: u64, payload: quanta_index_contract::native_protocol::NativeIndexResponse) -> Self
+pub fn quanta_index_contract::native_protocol::NativeIndexResponseEnvelope::overloaded(request_id: u64, _refusal: &quanta_index_ipc::SlotRefusal) -> core::option::Option<Self>
+pub fn quanta_index_contract::native_protocol::NativeIndexResponseEnvelope::result_too_large(request_id: u64, encoded_bytes: u64, limit_bytes: u64) -> core::option::Option<Self>
+pub fn quanta_index_contract::native_protocol::NativeIndexResponseEnvelope::stream_stage(payload: &quanta_index_contract::native_protocol::NativeIndexResponse) -> bool
+pub fn quanta_index_contract::native_protocol::NativeIndexResponseEnvelope::stream_terminal(payload: &quanta_index_contract::native_protocol::NativeIndexResponse) -> bool
+pub fn quanta_index_contract::native_protocol::NativeIndexResponseEnvelope::stream_unsupported(request_id: u64) -> core::option::Option<Self>
+pub fn quanta_index_contract::native_protocol::NativeIndexResponseEnvelope::terminal_reply_phase(&self) -> bool
+pub trait quanta_index_ipc::SourcePublicationUploadParent: std::os::fd::owned::AsFd + core::marker::Send + core::marker::Sync
+pub fn quanta_index_ipc::SourcePublicationUploadParent::require_current_v1(&self) -> core::result::Result<(), quanta_index_core::error::CoreError>
+impl quanta_index_ipc::SourcePublicationUploadParent for std::fs::File
+pub fn std::fs::File::require_current_v1(&self) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_ipc::admit_peer(policy: &quanta_index_ipc::SocketAccessPolicy, peer: quanta_index_ipc::PeerCredentials, self_euid: u32) -> core::result::Result<(), quanta_index_ipc::PeerRefusal>
+pub fn quanta_index_ipc::canonical_batch_digest_v1<B: quanta_index_core::domains::ingest_body::IngestBatchBodyV1 + serde_core::ser::Serialize>(body: &B) -> core::result::Result<[u8; 32], quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::cbor_payload_len<T: serde_core::ser::Serialize>(value: &T) -> core::result::Result<u64, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::cbor_payload_matches<T: serde_core::ser::Serialize>(value: &T, expected: &[u8]) -> core::result::Result<bool, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::cbor_payload_matches_with_progress<T, E, F>(value: &T, expected: &[u8], progress: &mut F) -> core::result::Result<bool, quanta_index_ipc::CborPayloadMatchProgressError<E>> where T: serde_core::ser::Serialize, F: core::ops::function::FnMut() -> core::result::Result<(), E>
+pub fn quanta_index_ipc::decode_cbor_payload<T>(bytes: &[u8]) -> core::result::Result<T, quanta_index_ipc::IpcError> where T: serde_core::de::DeserializeOwned
+pub fn quanta_index_ipc::decode_cbor_seed_admitted_v1<'de, S, E, F, O>(bytes: &'de [u8], scratch: &mut [u8], seed: S, work: &mut F, max_input_bytes: usize, parser_owner: O) -> core::result::Result<quanta_index_ipc::AdmittedDecodedCborV1<<S as serde_core::de::DeserializeSeed>::Value, O>, quanta_index_ipc::AdmittedCborDecodeErrorV1<E>> where S: serde_core::de::DeserializeSeed<'de>, E: core::fmt::Debug, F: core::ops::function::FnMut(usize) -> core::result::Result<(), E>, O: ciborium::de::FiniteParserAllocationAdmissionV3
+pub fn quanta_index_ipc::decode_request<T, R>(reader: &mut R) -> core::result::Result<T, quanta_index_ipc::IpcError> where T: serde_core::de::DeserializeOwned, R: alloc::io::read::Read
+pub fn quanta_index_ipc::decode_response<T, R>(reader: &mut R) -> core::result::Result<T, quanta_index_ipc::IpcError> where T: serde_core::de::DeserializeOwned, R: alloc::io::read::Read
+pub fn quanta_index_ipc::encode_cbor_payload<T: serde_core::ser::Serialize>(value: &T) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::encode_cbor_payload_admitted_v1<T, E, F>(value: &T, memory: &quanta_index_core::index::memory::MemoryScope, max_payload_bytes: u64, progress: &mut F) -> core::result::Result<(alloc::vec::Vec<u8>, quanta_index_core::index::memory::MemoryLease), quanta_index_ipc::CborPayloadAdmissionErrorV1<E>> where T: serde_core::ser::Serialize, F: core::ops::function::FnMut() -> core::result::Result<(), E>
+pub fn quanta_index_ipc::encode_request<T: serde_core::ser::Serialize>(envelope: &T) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::encode_request_single_frame_admitted<T: serde_core::ser::Serialize>(envelope: &T, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_ipc::AdmittedClientRequestFrame, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::encode_response<T: serde_core::ser::Serialize>(envelope: &T) -> core::result::Result<alloc::vec::Vec<u8>, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::encode_response_admitted<T: serde_core::ser::Serialize>(value: &T, budget: &quanta_index_core::request_budget::RequestBudgetV1, admit: impl core::ops::function::FnOnce(u64) -> core::result::Result<core::option::Option<quanta_index_core::index::memory::MemoryLease>, quanta_index_ipc::IpcError>) -> core::result::Result<quanta_index_ipc::ResponseFrame, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::for_each_source_publication_upload_part<F, E>(batch: &quanta_index_contract::ipc::ingest::corpus_wire::SearchCorpusIngestBatch, identity: quanta_index_contract::ipc::ingest::source_upload::SourcePublicationUploadIdentity, emit: F) -> core::result::Result<(), quanta_index_ipc::SourcePublicationUploadError<E>> where F: core::ops::function::FnMut(quanta_index_contract::ipc::ingest::source_upload::SourcePublicationUploadPart) -> core::result::Result<(), E>
+pub fn quanta_index_ipc::matches_batch_digest_token_v1(carried: &str, digest: &[u8; 32]) -> bool
+pub fn quanta_index_ipc::read_response_body_admitted<R: alloc::io::read::Read>(reader: &mut R, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_ipc::AdmittedClientResponseBody, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::request_size_decision_v1<T: serde_core::ser::Serialize>(envelope: &T) -> core::result::Result<quanta_index_ipc::RequestSizeDecisionV1, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::send_request<RequestEnvelopeT, ResponseEnvelopeT>(socket: &std::path::Path, request: &RequestEnvelopeT, io_policy: quanta_index_ipc::ClientIoPolicy) -> core::result::Result<ResponseEnvelopeT, quanta_index_ipc::IpcError> where RequestEnvelopeT: serde_core::ser::Serialize, ResponseEnvelopeT: serde_core::de::DeserializeOwned
+pub fn quanta_index_ipc::send_request_body_with_budget_admitted<RequestEnvelopeT: serde_core::ser::Serialize>(socket: &std::path::Path, request: &RequestEnvelopeT, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_ipc::AdmittedClientResponseBody, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::send_request_negotiated<RequestEnvelopeT, LinkedEnvelopeT, ResponseEnvelopeT>(socket: &std::path::Path, plain_request: &RequestEnvelopeT, linked_request: &LinkedEnvelopeT, capture_id: [u8; 16], io_policy: quanta_index_ipc::ClientIoPolicy) -> core::result::Result<ResponseEnvelopeT, quanta_index_ipc::IpcError> where RequestEnvelopeT: serde_core::ser::Serialize, LinkedEnvelopeT: serde_core::ser::Serialize, ResponseEnvelopeT: serde_core::de::DeserializeOwned
+pub fn quanta_index_ipc::send_request_observed<RequestEnvelopeT, ResponseEnvelopeT>(socket: &std::path::Path, request: &RequestEnvelopeT, io_policy: quanta_index_ipc::ClientIoPolicy) -> core::result::Result<(ResponseEnvelopeT, quanta_index_ipc::ClientIpcTimingV1), quanta_index_ipc::IpcError> where RequestEnvelopeT: serde_core::ser::Serialize, ResponseEnvelopeT: serde_core::de::DeserializeOwned
+pub fn quanta_index_ipc::send_request_observed_negotiated<RequestEnvelopeT, LinkedEnvelopeT, ResponseEnvelopeT>(socket: &std::path::Path, plain_request: &RequestEnvelopeT, linked_request: &LinkedEnvelopeT, capture_id: [u8; 16], io_policy: quanta_index_ipc::ClientIoPolicy) -> core::result::Result<(ResponseEnvelopeT, quanta_index_ipc::ClientIpcTimingV1), quanta_index_ipc::IpcError> where RequestEnvelopeT: serde_core::ser::Serialize, LinkedEnvelopeT: serde_core::ser::Serialize, ResponseEnvelopeT: serde_core::de::DeserializeOwned
+pub fn quanta_index_ipc::send_request_with_budget<RequestEnvelopeT, ResponseEnvelopeT>(socket: &std::path::Path, request: &RequestEnvelopeT, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<ResponseEnvelopeT, quanta_index_ipc::IpcError> where RequestEnvelopeT: serde_core::ser::Serialize, ResponseEnvelopeT: serde_core::de::DeserializeOwned
+pub fn quanta_index_ipc::send_stream_request<RequestEnvelopeT: serde_core::ser::Serialize>(socket: &std::path::Path, request: &RequestEnvelopeT, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_ipc::ClientResponseStream, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::source_publication_upload_identity(batch: &quanta_index_contract::ipc::ingest::corpus_wire::SearchCorpusIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::source_upload::SourcePublicationUploadIdentity, quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::stamp_batch_digest_v1<B: quanta_index_core::domains::ingest_body::IngestBatchBodyV1 + serde_core::ser::Serialize>(body: &mut B) -> core::result::Result<(), quanta_index_ipc::IpcError>
+pub fn quanta_index_ipc::verify_batch_digest_v1<B: quanta_index_core::domains::ingest_body::IngestBatchBodyV1 + serde_core::ser::Serialize>(body: &B) -> core::result::Result<quanta_index_ipc::BatchDigestVerdictV1, quanta_index_ipc::IpcError>

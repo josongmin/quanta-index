@@ -8,11 +8,16 @@ mod codec;
 mod map;
 mod store;
 
+#[cfg(test)]
+pub(crate) use store::fake_gc_delete_ticket;
+
 pub(crate) use codec::{BlobRef, MapEdit, MapRoot, ObjectKind, ObjectRef};
 pub(crate) use map::{MAX_MAP_HEIGHT, MapCursor};
 pub(crate) use store::{
-    AdoptedRootAdvance, AdoptedRootCursor, AttemptBinding, AttemptLease, BlobCursor,
-    ObjectInventoryAdvance, ObjectInventoryCursor, ObjectStore,
+    AdoptedRootAdvance, AdoptedRootCursor, AttemptBinding, AttemptLease, AttemptWriteCost,
+    Authority, BlobCursor, CandidateWitness, CheckpointPayload, EligibilityWitness, Gate,
+    GcDeleteCustody, IndependentWindowOracle, IneligibleReason, MAX_CLOSURE_REFS,
+    ObjectInventoryAdvance, ObjectInventoryCursor, ObjectStore, ScanLane, WindowWitness,
 };
 
 #[cfg(test)]

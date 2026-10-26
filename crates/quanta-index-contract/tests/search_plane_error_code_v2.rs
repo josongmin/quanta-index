@@ -20,6 +20,23 @@ fn all_is_unique_and_every_wire_code_roundtrips_exactly() {
 }
 
 #[test]
+fn retention_measurement_busy_is_distinct_from_retention_exhaustion() {
+    let busy = SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy;
+    assert_ne!(
+        busy,
+        SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted
+    );
+    assert_eq!(
+        busy.as_wire_str(),
+        "SEARCH_CORPUS_RETENTION_MEASUREMENT_BUSY"
+    );
+    assert_eq!(
+        SearchPlaneErrorCodeV2::from_wire_str(busy.as_wire_str()),
+        Some(busy)
+    );
+}
+
+#[test]
 fn lexical_codes_are_nested_in_memory_and_flat_on_wire() {
     for lexical in LexicalErrorCode::ALL {
         let code = SearchPlaneErrorCodeV2::Lexical(*lexical);

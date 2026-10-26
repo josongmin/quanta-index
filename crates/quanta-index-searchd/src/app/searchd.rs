@@ -243,14 +243,21 @@ fn spawn_provider_child(
                     }
                     let report = pool.drain(hard_deadline);
                     let overdue = !report.unfinished.is_empty();
+                    let mut panicked = !report.panicked.is_empty();
                     // A deadline miss is non-green, but this child must
                     // keep custody of live attempts until they really
                     // exit. The supervisor escalates this child and keeps
                     // the state-root lease in its reaper meanwhile.
                     if overdue {
-                        while !pool.drain(hard_deadline).unfinished.is_empty() {}
+                        loop {
+                            let report = pool.drain(hard_deadline);
+                            panicked |= !report.panicked.is_empty();
+                            if report.unfinished.is_empty() {
+                                break;
+                            }
+                        }
                     }
-                    let kind = if overdue {
+                    let kind = if overdue || panicked {
                         ChildExitKind::Failed
                     } else {
                         ChildExitKind::Completed

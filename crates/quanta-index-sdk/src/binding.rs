@@ -21,14 +21,15 @@
 
 use crate::error::ResponseBindingAxis;
 use quanta_index_contract::{
-    BatchPublishReceipt, ClusterMembershipBatchReadRequestV1, CurrentGenerationRequest,
-    FileOwnerProjectionErrorV1, FileOwnerProjectionRow, GenerationPin, GenerationSelector,
-    HistoryQueryRequest, HybridCandidatePolicyErrorV1, HybridQueryRequest, HybridSeedQueryRequest,
-    LexicalCandidate, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
-    RepoMapActiveHeadRequestV2, RepoMapMutationAck, RepoMapMutationPhaseV2,
-    RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapQueryResponse,
-    RepoMapTerminalReceiptV2, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1,
-    SearchCorpusGenerationReservationRequestV1,
+    BatchPublishReceipt, BorrowedAuxiliaryIngestIpcRequestV1,
+    BorrowedRepoMapPublishBundleRequestV3, ClusterMembershipBatchReadRequestV1,
+    CurrentGenerationRequest, FileOwnerProjectionErrorV1, FileOwnerProjectionRow, GenerationPin,
+    GenerationSelector, HistoryQueryRequest, HybridCandidatePolicyErrorV1, HybridQueryRequest,
+    HybridSeedQueryRequest, LexicalCandidate, ManifestGeneration, RepoId,
+    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RepoMapMutationAck,
+    RepoMapMutationPhaseV2, RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
+    RepoMapQueryResponse, RepoMapTerminalReceiptV2, RevisionId, RuntimeMetadataQueryRequest,
+    SearchCorpusActiveHeadV1, SearchCorpusGenerationReservationRequestV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
@@ -1214,7 +1215,7 @@ fn check_sequence(ack: &RepoMapMutationAck) -> Result<(), SdkError> {
 }
 
 enum RepoMapV2RequestRef<'a> {
-    Publish(&'a RepoMapPublishBundleRequestV2),
+    Publish(BorrowedRepoMapPublishBundleRequestV3<'a>),
     Activate(&'a RepoMapActivateGenerationRequestV2),
 }
 
@@ -1225,7 +1226,7 @@ fn check_repo_map_v2_receipt(
     let (phase, identity, snapshot_id, projection_version, authority_digest, source_digest) =
         match request {
             RepoMapV2RequestRef::Publish(request) => {
-                let bundle = &request.bundle;
+                let bundle = request.bundle;
                 (
                     RepoMapMutationPhaseV2::Publish,
                     (
@@ -1237,7 +1238,7 @@ fn check_repo_map_v2_receipt(
                     bundle.snapshot_id.as_str(),
                     bundle.projection_version,
                     bundle.authority_digest.as_str(),
-                    request.source_bundle_digest.as_str(),
+                    request.source_bundle_digest,
                 )
             }
             RepoMapV2RequestRef::Activate(request) => (
@@ -1273,10 +1274,14 @@ fn check_repo_map_v2_receipt(
     }
     check_sequence(&receipt.mutation)?;
     if let RepoMapV2RequestRef::Activate(request) = request {
-        let expected_prior = request
-            .expected_active
-            .as_ref()
-            .map(|head| head.candidate_commitment().to_wire_string());
+        let prior_matches = match (
+            request.expected_active.as_ref(),
+            receipt.mutation.prior_candidate_commitment.as_deref(),
+        ) {
+            (None, None) => true,
+            (Some(head), Some(actual)) => head.candidate_commitment_wire_matches_v3(actual),
+            _ => false,
+        };
         let expected_epoch = request.expected_active.as_ref().map_or(Ok(1), |head| {
             head.epoch().get().checked_add(1).ok_or_else(|| {
                 binding_error(
@@ -1287,8 +1292,7 @@ fn check_repo_map_v2_receipt(
                 )
             })
         })?;
-        if receipt.mutation.prior_candidate_commitment != expected_prior
-            || receipt.mutation.activation_epoch != expected_epoch
+        if !prior_matches || receipt.mutation.activation_epoch != expected_epoch
         {
             return Err(binding_error(
                 "repomap_terminal_receipt_v2",
@@ -1299,6 +1303,20 @@ fn check_repo_map_v2_receipt(
         }
     }
     Ok(())
+}
+
+pub(crate) fn check_repo_map_publish_receipt_v3(
+    receipt: &RepoMapTerminalReceiptV2,
+    request: BorrowedRepoMapPublishBundleRequestV3<'_>,
+) -> Result<(), SdkError> {
+    check_repo_map_v2_receipt(receipt, &RepoMapV2RequestRef::Publish(request))
+}
+
+pub(crate) fn check_repo_map_activate_receipt_v3(
+    receipt: &RepoMapTerminalReceiptV2,
+    request: &RepoMapActivateGenerationRequestV2,
+) -> Result<(), SdkError> {
+    check_repo_map_v2_receipt(receipt, &RepoMapV2RequestRef::Activate(request))
 }
 
 fn check_activation_token_advance_v1(
@@ -1568,6 +1586,55 @@ pub(crate) struct IngestCallBinding {
 }
 
 impl IngestCallBinding {
+    fn auxiliary_commitment_v1(
+        request: &BorrowedAuxiliaryIngestIpcRequestV1<'_>,
+    ) -> (
+        ExpectedIngestResponseV1,
+        Option<(ManifestGeneration, String)>,
+    ) {
+        match request {
+            BorrowedAuxiliaryIngestIpcRequestV1::History(batch) => (
+                ExpectedIngestResponseV1::HistoryReceipt,
+                Some((batch.generation, batch.batch_digest.clone())),
+            ),
+            BorrowedAuxiliaryIngestIpcRequestV1::RepoCommitRecency(batch) => (
+                ExpectedIngestResponseV1::RepoCommitRecencyReceipt,
+                Some((batch.generation, batch.batch_digest.clone())),
+            ),
+            BorrowedAuxiliaryIngestIpcRequestV1::FileContributor(batch) => (
+                ExpectedIngestResponseV1::FileContributorReceipt,
+                Some((batch.generation, batch.batch_digest.clone())),
+            ),
+            BorrowedAuxiliaryIngestIpcRequestV1::Dirty(batch) => (
+                ExpectedIngestResponseV1::DirtyReceipt,
+                Some((batch.generation, batch.batch_digest.clone())),
+            ),
+            BorrowedAuxiliaryIngestIpcRequestV1::Structural(batch) => (
+                ExpectedIngestResponseV1::StructuralReceipt,
+                Some((batch.generation, batch.batch_digest.clone())),
+            ),
+            BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(_) => (
+                ExpectedIngestResponseV1::RepoMapTerminalReceiptV2,
+                None,
+            ),
+        }
+    }
+
+    pub(crate) fn from_borrowed_auxiliary_v1(
+        request: &BorrowedAuxiliaryIngestIpcRequestV1<'_>,
+    ) -> Self {
+        let (expected, commitment) = Self::auxiliary_commitment_v1(request);
+        Self {
+            expected,
+            commitment,
+            // The admitted RepoMap caller binds against its borrowed request
+            // after decoding; retaining an owned request here would copy DATA.
+            repo_map_v2: None,
+            search_corpus: None,
+            source_upload: None,
+        }
+    }
+
     /// Extract the binding from an ingest request payload. Exhaustive
     /// over the closed request enum.
     pub(crate) fn from_request(request: &SearchPlaneIngestIpcRequest) -> Result<Self, SdkError> {
@@ -1580,14 +1647,14 @@ impl IngestCallBinding {
             | SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_) => {
                 (ExpectedIngestResponseV1::SearchCorpusReceipt, None)
             }
-            SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => (
-                ExpectedIngestResponseV1::HistoryReceipt,
-                Some((batch.generation, batch.batch_digest.clone())),
-            ),
-            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => (
-                ExpectedIngestResponseV1::RepoCommitRecencyReceipt,
-                Some((batch.generation, batch.batch_digest.clone())),
-            ),
+            SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => {
+                Self::auxiliary_commitment_v1(&BorrowedAuxiliaryIngestIpcRequestV1::History(batch))
+            }
+            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => {
+                Self::auxiliary_commitment_v1(
+                    &BorrowedAuxiliaryIngestIpcRequestV1::RepoCommitRecency(batch),
+                )
+            }
             SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch) => (
                 ExpectedIngestResponseV1::RepoTopicReceipt,
                 Some((batch.generation, batch.batch_digest.clone())),
@@ -1596,10 +1663,11 @@ impl IngestCallBinding {
                 ExpectedIngestResponseV1::FileOwnershipReceipt,
                 Some((batch.generation, batch.batch_digest.clone())),
             ),
-            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch) => (
-                ExpectedIngestResponseV1::FileContributorReceipt,
-                Some((batch.generation, batch.batch_digest.clone())),
-            ),
+            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch) => {
+                Self::auxiliary_commitment_v1(
+                    &BorrowedAuxiliaryIngestIpcRequestV1::FileContributor(batch),
+                )
+            }
             SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(batch) => (
                 ExpectedIngestResponseV1::RepoMetaReceipt,
                 Some((batch.generation, batch.batch_digest.clone())),
@@ -1608,18 +1676,18 @@ impl IngestCallBinding {
                 ExpectedIngestResponseV1::RepoDescriptionReceipt,
                 Some((batch.generation, batch.batch_digest.clone())),
             ),
-            SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => (
-                ExpectedIngestResponseV1::DirtyReceipt,
-                Some((batch.generation, batch.batch_digest.clone())),
-            ),
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => {
+                Self::auxiliary_commitment_v1(&BorrowedAuxiliaryIngestIpcRequestV1::Dirty(batch))
+            }
             SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => (
                 ExpectedIngestResponseV1::RuntimeCatalogReceipt,
                 Some((batch.generation, batch.batch_digest.clone())),
             ),
-            SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => (
-                ExpectedIngestResponseV1::StructuralReceipt,
-                Some((batch.generation, batch.batch_digest.clone())),
-            ),
+            SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => {
+                Self::auxiliary_commitment_v1(&BorrowedAuxiliaryIngestIpcRequestV1::Structural(
+                    batch,
+                ))
+            }
             SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => {
                 (ExpectedIngestResponseV1::RepoMapTerminalReceiptV2, None)
             }
@@ -1757,7 +1825,13 @@ pub(crate) fn bind_ingest_response(
         SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(receipt) => {
             ("repomap_terminal_receipt_v2", {
                 if let Some(request) = &binding.repo_map_v2 {
-                    check_repo_map_v2_receipt(receipt, &RepoMapV2RequestRef::Publish(request))?;
+                    check_repo_map_publish_receipt_v3(
+                        receipt,
+                        BorrowedRepoMapPublishBundleRequestV3 {
+                            source_bundle_digest: &request.source_bundle_digest,
+                            bundle: &request.bundle,
+                        },
+                    )?;
                 }
                 None
             })
@@ -1818,7 +1892,7 @@ pub(crate) fn bind_ingest_response(
             })?;
     }
     if let (Some((generation, digest)), Some(receipt)) = (&binding.commitment, receipt)
-        && (&receipt.generation != generation || &receipt.batch_digest != digest)
+        && !auxiliary_receipt_matches_v1(*generation, digest, receipt)
     {
         return Err(binding_error(
             route,
@@ -1828,6 +1902,17 @@ pub(crate) fn bind_ingest_response(
         ));
     }
     Ok(())
+}
+
+/// The same generation/idempotency predicate for owned and admitted auxiliary
+/// completion. The admitted caller borrows the request digest, avoiding an
+/// uncharged binding String clone.
+pub(crate) fn auxiliary_receipt_matches_v1(
+    generation: ManifestGeneration,
+    digest: &str,
+    receipt: &BatchPublishReceipt,
+) -> bool {
+    receipt.generation == generation && receipt.batch_digest == digest
 }
 
 /// One row of the SDK wire-entrypoint coverage inventory (S21-07).

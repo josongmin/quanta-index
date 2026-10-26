@@ -87,7 +87,7 @@ pub(super) fn classify_error_metric_name(err: &CoreError) -> &'static str {
     match err {
         CoreError::Typed { code, .. } => classify_typed_error_metric_name(*code),
         CoreError::NotReady(_) => "lq_typed_error_not_ready_total",
-        CoreError::Storage(_) => "lq_typed_error_internal_total",
+        CoreError::Storage(_) | CoreError::StorageIo { .. } => "lq_typed_error_internal_total",
         CoreError::InvalidContract(_) => "lq_typed_error_invalid_request_total",
         CoreError::NotImplemented(_) | CoreError::NotFound(_) => "lq_typed_error_unavailable_total",
     }

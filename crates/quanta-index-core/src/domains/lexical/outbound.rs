@@ -54,6 +54,18 @@ pub enum SearchCorpusPreflightPhaseV1 {
 /// Implementations may internally lower into legacy op handlers, but callers
 /// do not construct or route channel ops on the hot path.
 pub trait SearchCorpusBatchBuildPort: Send + Sync {
+    /// Finish resumable hard-pressure scans before semantic or source writes.
+    ///
+    /// Cancellation preserves the exact durable attempt and its original
+    /// source-event reservation. A new request may resume the same batch.
+    fn prepare_hard_recovery_scan_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut crate::PublicationValidationOwner,
+        budget: &RequestBudgetV1,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<(), CoreError>;
+
     /// Refuse invalid or colliding file mutations against the pinned base
     /// before embedding, target creation, or any index/sidecar mutation.
     fn preflight_batch(

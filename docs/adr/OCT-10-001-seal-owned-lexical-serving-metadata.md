@@ -1,8 +1,21 @@
 # OCT-10-001 — Seal-owned lexical serving metadata
 
-Status: `Implemented; verification in progress`
+Status: `Historical F16 decision; storage/admission details superseded by OCT-10-002`
 
 Decided: 2026-10-10
+
+Scope: the legacy Tantivy-coupled lexical generation. Its Native authority is
+`text_authority/*`, not the new NativeTextIndex. The formats below are the F16
+decision-time formats, not current native formats. [OCT-10-002](OCT-10-002-shared-paged-lexical-authorities.md)
+owns the later legacy storage/admission contract; [closeout validation](../plans/oct-22-finalizing/VALIDATION.md)
+owns source-specific runtime results. The [Native RFC](../rfc/oct-10-native-incremental-vnext.md#11-reading-order-and-decision-boundaries)
+owns the new Catalog/Kernel architecture and qualified legacy retirement.
+
+Current remaining work and owners are maintained only in the
+[Oct-22 SSOT](../plans/oct-22-finalizing/README.md).
+This historical ADR does not reopen accepted A/D/C5 repairs, select a NativeText
+run compactor, or qualify current native resources/product routing. Subsequent
+functional passes keep their executed-source boundaries.
 
 ## Problem
 
@@ -69,5 +82,5 @@ Required oracles cover full versus delta/no-op/tombstone/reopen, forged metadata
 and derived postings, exact inherited object identities, selected-read refusal,
 control-file refusal, scrub quarantine and interrupted publication. Executed
 commands and their current scope are recorded in
-[the implementation ledger](../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md#101-이전-f16-검색-핵심-경로-구현과-검증).
+[the validation summary](../plans/oct-22-finalizing/VALIDATION.md).
 No XL latency improvement or competitor ranking follows from compilation or tests.

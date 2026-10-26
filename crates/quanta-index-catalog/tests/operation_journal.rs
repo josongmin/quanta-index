@@ -60,7 +60,8 @@ fn typed_code(error: &CoreError) -> Option<SearchPlaneErrorCodeV2> {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_) => None,
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. } => None,
     }
 }
 

@@ -156,7 +156,8 @@ fn typed_code(
             | CoreError::NotReady(_)
             | CoreError::NotImplemented(_)
             | CoreError::NotFound(_)
-            | CoreError::Storage(_),
+            | CoreError::Storage(_)
+            | CoreError::StorageIo { .. },
         )
         | Ok(_) => None,
     }
@@ -466,6 +467,9 @@ impl SemanticScopeStreamBuildPort for DrainingPort {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        _publication: Option<
+            quanta_index_core::publication_admission::PublicationOutputAdmission<'_>,
+        >,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<
         (

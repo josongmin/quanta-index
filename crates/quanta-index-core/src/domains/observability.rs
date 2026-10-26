@@ -324,6 +324,9 @@ pub trait WriterIdleSweepPort: Send + Sync {
 /// from it on the maintenance timer, never inside a scrape.
 pub trait TrackDiskUsagePort: Send + Sync {
     /// Regular-file bytes under every generation directory of the track.
+    /// This is a bounded live observation, not admission or retention proof.
+    /// Concurrent mutation can make a walk fail; the timer retains the previous
+    /// gauge and measurement time rather than publishing an ambiguous total.
     fn track_disk_bytes(&self, budget: &crate::RequestBudgetV1) -> Result<u64, CoreError>;
 }
 

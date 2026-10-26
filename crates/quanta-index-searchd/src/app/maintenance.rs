@@ -180,6 +180,7 @@ pub struct MaintenanceTallies {
     disk_refreshes: AtomicU64,
     disk_refresh_failures: AtomicU64,
     disk_refresh_skipped: AtomicU64,
+    last_disk_refresh_errors: Mutex<DiskRefreshErrors>,
     disk_meter_fatal: AtomicBool,
     lexical_generation_disk_bytes: AtomicU64,
     semantic_generation_disk_bytes: AtomicU64,
@@ -189,6 +190,18 @@ pub struct MaintenanceTallies {
     /// panicked with the scheduler locked; the scrub stays stopped and the
     /// count says so instead of resuming from a torn state.
     scrub_poisoned: AtomicU64,
+}
+
+#[derive(Debug, Default)]
+struct DiskRefreshErrors {
+    lexical: Option<CoreError>,
+    semantic: Option<CoreError>,
+}
+
+#[derive(Clone, Copy)]
+enum DiskTrack {
+    Lexical,
+    Semantic,
 }
 
 #[derive(Debug)]
@@ -273,6 +286,19 @@ impl MaintenanceTallies {
     #[must_use]
     pub fn semantic_generation_disk_bytes(&self) -> u64 {
         self.semantic_generation_disk_bytes.load(Ordering::Acquire)
+    }
+
+    /// The most recent disk measurement error for each track,
+    /// lexical then semantic. Successful retries do not erase diagnostics.
+    pub fn last_disk_refresh_errors(
+        &self,
+    ) -> Result<(Option<CoreError>, Option<CoreError>), CoreError> {
+        self.last_disk_refresh_errors
+            .lock()
+            .map(|errors| (errors.lexical.clone(), errors.semantic.clone()))
+            .map_err(|error| {
+                CoreError::Storage(format!("disk refresh error lock poisoned: {error}"))
+            })
     }
 
     fn disk_measurement_ages(&self) -> Result<(u64, u64), CoreError> {
@@ -416,8 +442,8 @@ fn reconcile_inventory(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
     }
 }
 
-/// Measure both tracks; a track whose walk fails keeps its last value and
-/// counts the failure.
+/// Measure both tracks. A failed walk keeps its last value and retains its
+/// error for diagnostic inspection.
 fn refresh_disk_usage(
     lexical: &Arc<dyn TrackDiskUsagePort>,
     semantic: &Arc<dyn TrackDiskUsagePort>,
@@ -425,13 +451,15 @@ fn refresh_disk_usage(
     budget: &RequestBudgetV1,
 ) {
     let _prior = tallies.disk_refreshes.fetch_add(1, Ordering::AcqRel);
-    for (port, gauge, measured_at) in [
+    for (track, port, gauge, measured_at) in [
         (
+            DiskTrack::Lexical,
             lexical,
             &tallies.lexical_generation_disk_bytes,
             &tallies.lexical_disk_measured_at,
         ),
         (
+            DiskTrack::Semantic,
             semantic,
             &tallies.semantic_generation_disk_bytes,
             &tallies.semantic_disk_measured_at,
@@ -444,7 +472,16 @@ fn refresh_disk_usage(
                     *last = Some(Instant::now());
                 }
             }
-            Err(_failed) => {
+            Err(failed) => {
+                let mut errors = match tallies.last_disk_refresh_errors.lock() {
+                    Ok(errors) => errors,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                match track {
+                    DiskTrack::Lexical => errors.lexical = Some(failed),
+                    DiskTrack::Semantic => errors.semantic = Some(failed),
+                }
+                drop(errors);
                 let _prior = tallies.disk_refresh_failures.fetch_add(1, Ordering::AcqRel);
             }
         }
@@ -761,6 +798,11 @@ impl MetricSourcePort for MaintenanceMetricSource {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::error::Error;
+
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+
     use super::{
         ChildExitKind, DiskMeterStop, MaintenanceParts, MaintenanceTallies, MaintenanceTimer,
         refresh_disk_usage, take_disk_meter,
@@ -773,6 +815,35 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Condvar, Mutex, mpsc};
     use std::time::{Duration, Instant};
+
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    fn check(condition: bool, detail: &str) -> TestResult {
+        if condition {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(detail).into())
+        }
+    }
+
+    struct SequenceDisk(Mutex<VecDeque<Result<u64, CoreError>>>);
+
+    impl SequenceDisk {
+        fn new(results: impl IntoIterator<Item = Result<u64, CoreError>>) -> Self {
+            Self(Mutex::new(results.into_iter().collect()))
+        }
+    }
+
+    impl TrackDiskUsagePort for SequenceDisk {
+        fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
+            budget.checkpoint("sequence-disk:measure")?;
+            self.0
+                .lock()
+                .map_err(|error| CoreError::Storage(format!("sequence disk lock: {error}")))?
+                .pop_front()
+                .ok_or_else(|| CoreError::Storage("sequence disk exhausted".to_string()))?
+        }
+    }
 
     #[test]
     fn maintenance_heartbeat_rejects_stale_or_unknown_tick() {
@@ -1366,6 +1437,69 @@ mod tests {
         assert_eq!(tallies.semantic_generation_disk_bytes(), 40);
         assert_eq!(tallies.disk_refreshes.load(Ordering::Acquire), 3);
         assert_eq!(tallies.disk_refresh_failures.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn actual_disk_errors_retain_typed_code_and_message_per_track() -> TestResult {
+        let lexical: Arc<dyn TrackDiskUsagePort> = Arc::new(SequenceDisk::new([
+            Ok(10),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                message: "lexical census page limit".to_string(),
+            }),
+            Ok(30),
+        ]));
+        let semantic: Arc<dyn TrackDiskUsagePort> = Arc::new(SequenceDisk::new([
+            Ok(20),
+            Err(CoreError::Storage(
+                "semantic directory vanished".to_string(),
+            )),
+            Ok(40),
+        ]));
+        let tallies = MaintenanceTallies::default();
+        let budget = RequestBudgetV1::unbounded();
+        refresh_disk_usage(&lexical, &semantic, &tallies, &budget);
+        refresh_disk_usage(&lexical, &semantic, &tallies, &budget);
+        let (lexical_error, semantic_error) = tallies.last_disk_refresh_errors()?;
+        check(
+            matches!(
+                lexical_error.as_ref(),
+                Some(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                    message,
+                }) if message == "lexical census page limit"
+            ) && matches!(
+                semantic_error.as_ref(),
+                Some(CoreError::Storage(message)) if message == "semantic directory vanished"
+            ),
+            "each track must retain its original error type and message",
+        )?;
+        check(
+            tallies.lexical_generation_disk_bytes() == 10
+                && tallies.semantic_generation_disk_bytes() == 20
+                && tallies.disk_refresh_failures.load(Ordering::Acquire) == 2,
+            "failed scans must preserve gauges and increment failures",
+        )?;
+        refresh_disk_usage(&lexical, &semantic, &tallies, &budget);
+        check(
+            tallies.lexical_generation_disk_bytes() == 30
+                && tallies.semantic_generation_disk_bytes() == 40,
+            "both tracks must recover",
+        )?;
+        let (lexical_error, semantic_error) = tallies.last_disk_refresh_errors()?;
+        check(
+            matches!(
+                lexical_error.as_ref(),
+                Some(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                    message,
+                }) if message == "lexical census page limit"
+            ) && matches!(
+                semantic_error.as_ref(),
+                Some(CoreError::Storage(message)) if message == "semantic directory vanished"
+            ),
+            "successful retries must not erase the last actual errors",
+        )
     }
 
     /// The timer measures once at start, sweeps and re-measures on every

@@ -1,6 +1,6 @@
 # Agent Core Protocol
 
-Read this file for implementation or verification work.
+Implementation and verification protocol.
 
 ## Execution Defaults
 
@@ -12,7 +12,7 @@ Read this file for implementation or verification work.
 - Propagate errors with context. Do not replace them with defaults or quiet partial success.
 - Prefer an explicit typed failure or `NotImplemented` over an unproved fallback.
 - Do not promote a focused green rail to repository-wide qualification.
-- Examples: owner tests passed, full suite unrun -> `NOT_RUN` for full suite; compilation passed, tests unrun -> `NOT_RUN` for tests.
+- Indexing SSOT: `docs/plans/oct-22-finalizing/README.md`; exit: `docs/plans/oct-22-finalizing/DOD.md`. Update epic rows; reuse completed work.
 
 ## Design Defaults
 
@@ -39,10 +39,4 @@ Read this file for implementation or verification work.
 
 ## Required Closeout
 
-Every verification closeout must report:
-
-- command used
-- covered surface
-- excluded surface or remaining seam
-- final status
-- failure class if failed
+Report the command, covered scope, exclusions/remaining seam, final status, and failure class for failed checks.

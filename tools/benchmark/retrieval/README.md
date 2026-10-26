@@ -9,9 +9,36 @@ Permanent scoring, custody and qualification rules live in
 [SEP-26-003](../../../docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md),
 [review/unit contracts](../../../docs/adr/OCT-05-001-review-admission-and-result-identity.md#review-completion-and-diagnostic-units)
 and [response verification](../../../docs/adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-response-verification).
-Open work is in the [single residual ledger](../../../docs/plans/oct-10-index-closeout/README.md).
+Open work is in the [single residual ledger](../../../docs/plans/oct-22-finalizing/README.md).
 This guide declares no
 current capture, quality, speed or default-policy result.
+
+## Worker RCA without repeated trace decoding
+
+Build a worker index once from a complete, lossless schema-v4 daemon capture.
+Use an external output path. The optional stderr input joins bounded refusal
+records by the exact capture/span reference; no timestamp matching is used.
+
+```sh
+python3 -m tools.benchmark.retrieval.causal_cost_diagnostic build \
+  --input /absolute/ann-initial.qtrace --stderr /absolute/product.stderr \
+  --max-capture-bytes 1073741824 --out /absolute/worker-index.json
+
+python3 -m tools.benchmark.retrieval.causal_cost_diagnostic query \
+  --index /absolute/worker-index.json --worker-span-id 123
+
+python3 -m tools.benchmark.retrieval.causal_cost_diagnostic query \
+  --index /absolute/worker-index.json --stage sqlite_work --lane 11 \
+  --refusals-only
+```
+
+Queries read the index without reopening the qtrace. Groups retain the nearest
+daemon worker phase, inclusive interval unions and direct counters. Nested groups
+can overlap; their durations are not additive CPU. SQLite lane22 bytes are
+requested bytes, not device writes. Zero sampled refusals are explicitly N/A.
+The index is `UNBOUND_DIAGNOSTIC_ONLY`: capture integrity is not source/binary
+qualification, worker terminal is not public completion, and these queries do
+not establish tracing overhead or an Off/Record performance comparison.
 
 ## Native Quanta capture and recorded evaluation
 

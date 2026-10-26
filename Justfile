@@ -233,6 +233,11 @@ rust-clippy:
 rust-test:
     {{cargo}} --lane test-workspace-lane test --workspace --all-features --locked
 
+# The codec's no_std integration binary must run without its default std feature;
+# the all-features workspace rail does not exercise that configuration.
+rust-test-ciborium-no-default:
+    {{cargo}} --lane test-ciborium-no-default-lane test -p ciborium --no-default-features --test no_std --locked
+
 # Local test loop that keeps unit and binary coverage but skips integration/E2E.
 rust-test-fast:
     {{cargo}} --lane test-fast-lane test --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime
@@ -288,6 +293,10 @@ rust-test-provider-boundary-owner lane="test-provider-boundary-owner-lane":
 rust-test-runtime-supervisor-owner lane="test-runtime-supervisor-owner-lane":
     python3 tools/ci/run-local-test-scope.py runtime-supervisor-owner --lane {{lane}}
 
+# Real outstanding SQLite VM close/retry without changing production unsafe policy.
+rust-test-catalog-checked-close lane="test-integration-lane":
+    {{cargo}} --lane {{lane}} test --manifest-path tools/testing/catalog-checked-close/Cargo.toml --locked --offline --all-targets
+
 rust-test-integration-fast lane="test-integration-lane":
     python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
 
@@ -305,10 +314,10 @@ rust-test-integration lane="test-integration-lane":
 # Native contract checkpoint. Keep shared Cargo admission serial; this focused
 # rail does not replace daemon, workspace, or performance qualification.
 rust-test-native-index:
-    {{cargo}} nextest run --locked --lib --test native_lifecycle --test native_projection --test native_semantic_projection --test native_source_batch --test native_index_uds \
-        -p quanta-index-contract-base -p quanta-index-core -p quanta-index-storage -p quanta-index-kernel -p quanta-index-lexical -p quanta-index-repomap -p quanta-index-catalog -p quanta-index-semantic -p quanta-index-sdk -p quanta-index-ipc -p quanta-index-searchd-runtime \
+    {{cargo}} nextest run --locked --lib --test native_lifecycle --test native_bootstrap --test native_projection --test native_semantic_projection --test native_source_batch --test native_source_rebase --test native_source_resync --test native_index_uds --test native_source_owner_lookup --test native_producer_source_recovery --test native_owned_pump --test native_effort --test native_product_process --test native_fault_edges --test native_query_session --test native_query_session_real --test native_semantic_rebind --test native_noop_cost --test native_object_namespace --test native_object_namespace_process \
+        -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-lq-text-normalizer -p quanta-index-core -p quanta-index-storage -p quanta-index-scratch-sqlite -p quanta-index-kernel -p quanta-index-lexical -p quanta-index-repomap -p quanta-index-catalog -p quanta-index-semantic -p quanta-index-sdk -p quanta-index-ipc -p quanta-index-searchd-runtime -p quanta-index-searchctl \
         --test-threads 2 --no-tests fail --no-fail-fast \
-        -E 'package(=quanta-index-kernel) | package(=quanta-index-storage) | (package(=quanta-index-contract-base) & test(/^native_serde::tests/)) | (package(=quanta-index-core) & test(/^index::/)) | (package(=quanta-index-sdk) & test(/^native_uds::tests/)) | (package(=quanta-index-ipc) & test(/owned_connection_threads/)) | (package(=quanta-index-searchd-runtime) & (test(/^native_worker::tests/) | binary(=native_index_uds))) | ((package(=quanta-index-lexical) | package(=quanta-index-repomap) | package(=quanta-index-catalog) | package(=quanta-index-semantic)) & test(/^native::/))'
+        -E 'package(=quanta-index-contract) | package(=quanta-index-lq-text-normalizer) | package(=quanta-index-kernel) | package(=quanta-index-storage) | package(=quanta-index-scratch-sqlite) | (package(=quanta-index-contract-base) & test(/^native_serde::tests/)) | (package(=quanta-index-core) & test(/^index::/)) | (package(=quanta-index-sdk) & test(/^native_uds::tests/)) | (package(=quanta-index-ipc) & test(/owned_connection_threads|^native_protocol::tests::|^server::tests::.*deadline|^server::tests::cancelled_stream_read_and_write_escape_codec_retry/)) | (package(=quanta-index-searchd-runtime) & (test(/^native(_|::)/) | binary(=native_index_uds) | binary(=native_source_owner_lookup) | binary(=native_producer_source_recovery) | binary(=native_owned_pump) | binary(=native_effort) | binary(=native_product_process))) | (package(=quanta-index-searchctl) & test(/^tests::native::/)) | ((package(=quanta-index-lexical) | package(=quanta-index-repomap) | package(=quanta-index-catalog) | package(=quanta-index-semantic)) & test(/^native::/))'
 
 # W0 decision-gate probes (G0-L / G0-S / G0-R). Vendor- and transport-capability
 # evidence for the structural remediation gates; `--nocapture` so the

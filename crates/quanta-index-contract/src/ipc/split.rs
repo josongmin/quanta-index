@@ -328,6 +328,28 @@ pub struct SearchPlaneControlIpcRequestEnvelope {
     pub diagnostic_attempt: DiagnosticAttemptFieldV1,
 }
 
+/// Borrowed view of the existing `RepoMap` activation control wire.
+#[derive(Clone, Copy, Debug)]
+pub struct BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'a> {
+    pub request_id: u64,
+    pub payload: BorrowedRepoMapActivateControlIpcRequestV3<'a>,
+    pub diagnostic_attempt: DiagnosticAttemptFieldV1,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BorrowedRepoMapActivateControlIpcRequestV3<'a>(pub &'a RepoMapActivateGenerationRequestV2);
+
+impl Serialize for BorrowedRepoMapActivateControlIpcRequestV3<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_adjacent_tagged(
+            "SearchPlaneControlIpcRequest",
+            "RepoMapActivateV2",
+            self.0,
+            serializer,
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneControlIpcRequest {
     /// Durable number reservation before final publication body construction.
@@ -1034,6 +1056,18 @@ impl Serialize for SearchPlaneControlIpcRequestEnvelope {
     }
 }
 
+impl Serialize for BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_request_envelope(
+            "SearchPlaneControlIpcRequestEnvelope",
+            self.request_id,
+            &self.payload,
+            self.diagnostic_attempt,
+            serializer,
+        )
+    }
+}
+
 struct SearchPlaneControlIpcRequestEnvelopeVisitor;
 
 impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestEnvelopeVisitor {
@@ -1093,12 +1127,9 @@ impl Serialize for SearchPlaneControlIpcRequest {
                 payload,
                 serializer,
             ),
-            Self::RepoMapActivateV2(payload) => serialize_adjacent_tagged(
-                "SearchPlaneControlIpcRequest",
-                "RepoMapActivateV2",
-                payload,
-                serializer,
-            ),
+            Self::RepoMapActivateV2(payload) => {
+                BorrowedRepoMapActivateControlIpcRequestV3(payload).serialize(serializer)
+            }
             Self::RepoMapActiveHeadV2(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcRequest",
                 "RepoMapActiveHeadV2",
@@ -1320,6 +1351,25 @@ impl<'de> Deserialize<'de> for SearchPlaneControlIpcResponseEnvelope {
             SearchPlaneControlIpcResponseEnvelopeVisitor,
         )
     }
+}
+
+#[path = "split/admitted_repo_map_control_v3.rs"]
+mod admitted_repo_map_control_v3;
+
+/// Decode the existing `RepoMap` activation receipt or control refusal under
+/// the caller's retained admission owner.
+pub fn admitted_repo_map_control_response_seed_v3<
+    'a,
+    A: crate::SourceIdentityDecodeAdmissionV1 + ?Sized,
+>(
+    admission: &'a A,
+    max_text_bytes: usize,
+) -> impl for<'de> serde::de::DeserializeSeed<'de, Value = SearchPlaneControlIpcResponseEnvelope> + 'a
+{
+    admitted_repo_map_control_v3::RepoMapControlResponseEnvelopeSeedV3::new(
+        admission,
+        max_text_bytes,
+    )
 }
 
 impl Serialize for SearchPlaneControlIpcResponse {

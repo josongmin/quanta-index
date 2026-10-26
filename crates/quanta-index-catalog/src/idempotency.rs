@@ -690,7 +690,8 @@ fn refusal_of(error: &CoreError) -> Result<(String, String), CoreError> {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => Err(CoreError::InvalidContract(format!(
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => Err(CoreError::InvalidContract(format!(
             "catalog: record_refused takes a frozen-policy typed refusal, got {other:?}"
         ))),
     }

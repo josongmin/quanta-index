@@ -653,7 +653,7 @@ mod tests {
         );
         anyhow::ensure!(
             matches!(
-                quanta_index_ipc::verify_batch_digest_v1(&mut batch.clone())?,
+                quanta_index_ipc::verify_batch_digest_v1(&batch)?,
                 BatchDigestVerdictV1::Verified(_)
             ),
             "batch digest is unverified"

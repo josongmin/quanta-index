@@ -29,9 +29,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         PotionCodeEmbeddingProvider::from_local_dir_with_policy(Path::new(model_dir), policy)?,
     )?;
     let texts = inputs.iter().map(String::as_str).collect::<Vec<_>>();
-    let vectors = provider.embed_batch(&texts)?;
+    let vectors = provider.embed_batch(&texts)?.into_unscoped()?;
     let reverse = texts.iter().copied().rev().collect::<Vec<_>>();
-    let reversed_vectors = provider.embed_batch(&reverse)?;
+    let reversed_vectors = provider.embed_batch(&reverse)?.into_unscoped()?;
     let payload = serde_json::json!({
         "schema_version": 1,
         "model_id": provider.model_id(),

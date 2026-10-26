@@ -1,0 +1,16 @@
+[package]
+name = "quanta-index-scratch-sqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Shared main-database admission for disposable native SQLite scratch"
+
+[lints]
+workspace = true
+
+[dependencies]
+quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+rusqlite = { workspace = true, features = ["cache"] }
+tempfile.workspace = true

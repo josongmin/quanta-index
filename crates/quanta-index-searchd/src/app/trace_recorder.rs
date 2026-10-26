@@ -15,8 +15,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use quanta_index_core::diagnostic_trace::{
-    DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1,
-    DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticRootKindV1, DiagnosticTerminalV1,
+    DiagnosticAnnIndexKindV1, DiagnosticAnnRegionPhaseV1, DiagnosticCaptureIdV1, DiagnosticClockV1,
+    DiagnosticContextV1, DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1,
+    DiagnosticRootKindV1, DiagnosticTerminalV1,
 };
 use serde_json::{Map, Value, json};
 
@@ -41,11 +42,19 @@ impl Default for DiagnosticCaptureLimitsV1 {
 }
 
 impl DiagnosticCaptureLimitsV1 {
+    pub const MAX_OUTPUT_BYTES: u64 = 1_073_741_824;
+
+    pub fn with_max_output_bytes(mut self, max_output_bytes: u64) -> io::Result<Self> {
+        self.max_output_bytes = max_output_bytes;
+        self.validate()
+    }
+
     fn validate(self) -> io::Result<Self> {
         if self.queue_records == 0
             || self.queue_records > 1_048_576
             || self.max_record_bytes < 512
             || self.max_record_bytes > 1_048_576
+            || self.max_output_bytes > Self::MAX_OUTPUT_BYTES
             || self.max_output_bytes
                 < match u64::try_from(self.max_record_bytes) {
                     Ok(record_bytes) => record_bytes.saturating_add(2048),
@@ -465,7 +474,7 @@ struct WriterSummary {
     unwritten: u64,
 }
 
-const TIMELINE_SCHEMA_VERSION: u64 = 2;
+const TIMELINE_SCHEMA_VERSION: u64 = 4;
 
 fn write_capture(
     file: File,
@@ -505,6 +514,9 @@ fn write_capture(
     // A counter may be emitted more than once for one owner span. The number
     // of keys is bounded by the number of written records under the output cap.
     let mut counter_totals = BTreeMap::new();
+    // The writer alone owns this buffer. Keep the exact serialized bytes until
+    // the per-record and total-output caps have been checked.
+    let mut encoded = Vec::new();
     let mut sealed = false;
     let mut invalid = false;
     // Make accepted records visible during a long, quiet capture. This is a
@@ -538,7 +550,8 @@ fn write_capture(
             unwritten = unwritten.saturating_add(1);
             continue;
         };
-        let encoded = serde_json::to_vec(&record).map_err(io::Error::other)?;
+        encoded.clear();
+        serde_json::to_writer(&mut encoded, &record).map_err(io::Error::other)?;
         let record_bytes = encoded.len().saturating_add(1);
         let size = match u64::try_from(record_bytes) {
             Ok(size) => size,
@@ -589,6 +602,8 @@ fn write_capture(
             }
             DiagnosticEventKindV1::RequestIdentity { .. }
             | DiagnosticEventKindV1::PhaseIdentity { .. }
+            | DiagnosticEventKindV1::AnnRegionObservation { .. }
+            | DiagnosticEventKindV1::SqliteSyncObservation { .. }
             | DiagnosticEventKindV1::SyncAggregate { .. }
             | DiagnosticEventKindV1::ObjectKindAggregate { .. }
             | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
@@ -729,6 +744,32 @@ fn event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
                 DiagnosticPhaseV1::DeleteSeal => "delete_seal",
                 DiagnosticPhaseV1::DeleteActivate => "delete_activate",
                 DiagnosticPhaseV1::SameProcessReopen => "same_process_reopen",
+                DiagnosticPhaseV1::NativeCorpusGeneration => "native_corpus_generation",
+                DiagnosticPhaseV1::NativeConfigSetup => "native_config_setup",
+                DiagnosticPhaseV1::NativeStartup => "native_startup",
+                DiagnosticPhaseV1::NativeWorkspaceCreate => "native_workspace_create",
+                DiagnosticPhaseV1::NativeProfileConfigure => "native_profile_configure",
+                DiagnosticPhaseV1::NativeFullBeginInput => "native_full_begin_input",
+                DiagnosticPhaseV1::NativeFullStageSources => "native_full_stage_sources",
+                DiagnosticPhaseV1::NativeFullEventAck => "native_full_event_ack",
+                DiagnosticPhaseV1::NativeFirstSearch => "native_first_search",
+                DiagnosticPhaseV1::NativeDeltaStageSource => "native_delta_stage_source",
+                DiagnosticPhaseV1::NativeDeltaEventAck => "native_delta_event_ack",
+                DiagnosticPhaseV1::NativeDeltaSearch => "native_delta_search",
+                DiagnosticPhaseV1::NativeNoopEventAck => "native_noop_event_ack",
+                DiagnosticPhaseV1::NativeNoopStableSearch => "native_noop_stable_search",
+                DiagnosticPhaseV1::NativeDeleteEventAck => "native_delete_event_ack",
+                DiagnosticPhaseV1::NativeDeletedSearch => "native_deleted_search",
+                DiagnosticPhaseV1::NativeOldPinSearch => "native_old_pin_search",
+                DiagnosticPhaseV1::NativeChurnCycles => "native_churn_cycles",
+                DiagnosticPhaseV1::NativeChurnOldViewSearch => "native_churn_old_view_search",
+                DiagnosticPhaseV1::NativeDrain => "native_drain",
+                DiagnosticPhaseV1::NativeReopen => "native_reopen",
+                DiagnosticPhaseV1::NativeReopenReadHead => "native_reopen_read_head",
+                DiagnosticPhaseV1::NativeReopenDeletedSearch => "native_reopen_deleted_search",
+                DiagnosticPhaseV1::NativeReopenChurnSearch => "native_reopen_churn_search",
+                DiagnosticPhaseV1::NativeReopenSearch => "native_reopen_search",
+                DiagnosticPhaseV1::NativeFinalDrain => "native_final_drain",
             };
             json!({"type":"phase_identity", "span_id":span_id.get(), "phase":name})
         }
@@ -739,6 +780,49 @@ fn event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
         } => {
             json!({"type":"counter", "span_id":span_id.get(), "key":known_counter_name(key)?, "value":value})
         }
+        DiagnosticEventKindV1::AnnRegionObservation {
+            span_id,
+            observation,
+        } => {
+            if !(1..=8192).contains(&observation.rows)
+                || !(1..=256).contains(&observation.files)
+                || !(1..=288).contains(&observation.chunks)
+                || observation.chunks < observation.files
+            {
+                return None;
+            }
+            let (phase, descriptor_ref) = match (observation.phase, observation.descriptor_ref) {
+                (DiagnosticAnnRegionPhaseV1::Installed, None) => ("installed", None),
+                (DiagnosticAnnRegionPhaseV1::SelectedQuery, Some(reference)) => {
+                    ("selected_query", Some(hex_ref(reference)))
+                }
+                _ => return None,
+            };
+            let index_kind = match observation.index_kind {
+                DiagnosticAnnIndexKindV1::Flat => "flat",
+                DiagnosticAnnIndexKindV1::IvfHnswSq => "ivf_hnsw_sq",
+            };
+            json!({"type":"ann_region_observation", "span_id":span_id.get(),
+                "phase":phase, "fileset_ref":hex_ref(observation.fileset_ref),
+                "descriptor_ref":descriptor_ref, "ordinal":observation.ordinal,
+                "rows":observation.rows, "index_kind":index_kind,
+                "files":observation.files, "chunks":observation.chunks})
+        }
+        DiagnosticEventKindV1::SqliteSyncObservation {
+            span_id,
+            observation,
+        } => json!({"type":"sqlite_sync_observation", "span_id":span_id.get(),
+        "observation": {
+            "observed":observation.observed,
+            "same_native_fd":observation.same_native_fd,
+            "ambiguous":observation.ambiguous,
+            "full_requested":observation.full_requested,
+            "full_default_syscall":observation.full_default_syscall,
+            "full_result":observation.full_result,
+            "full_errno":observation.full_errno,
+            "posix_result":observation.posix_result,
+            "posix_errno":observation.posix_errno,
+        }}),
         DiagnosticEventKindV1::SyncAggregate {
             span_id,
             label,
@@ -851,137 +935,179 @@ fn event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
     )
 }
 
-fn known_stage_name(stage: quanta_index_core::DiagnosticStageV1) -> Option<String> {
-    const NAMES: &[&str] = &[
-        "request",
-        "operation",
-        "client_attempt",
-        "ingress",
-        "queue_wait",
-        "dispatch",
-        "backend",
-        "encode",
-        "write",
-        "build_preflight",
-        "build_prepare",
-        "semantic_prepare",
-        "semantic_stream",
-        "semantic_delete",
-        "semantic_append",
-        "semantic_seal",
-        "semantic_promote",
-        "semantic_build",
-        "lexical_build",
-        "bm25_census_build",
-        "bm25_live_build",
-        "bm25_boundary",
-        "finalize",
-        "activate",
-        "retention_pair_lock_wait",
-        "retention_pair_lock_hold",
-        "retention_root_lock_wait",
-        "retention_root_lock_hold",
-        "retention_root_snapshot",
-        "source_transaction_one",
-        "source_transaction_two",
-        "retention_plan",
-        "retention_measure",
-        "retention_write",
-        "retention_reap",
-        "closure_read",
-        "closure_hash",
-        "closure_decode",
-        "sqlite_work",
-        "physical_inode_census",
-        "native_publish",
-        "file_publish",
-        "lexical_seal",
-        "lexical_proof",
-        "compaction",
-        "query_parse",
-        "query_plan",
-        "query_read_view",
-        "query_candidate",
-        "query_verify",
-        "query_rank",
-        "query_project",
-        "harness_phase",
-        "observer_setup",
-        "observer_sample",
-        "observer_teardown",
-        "artifact_write",
-        "runtime_boot",
-        "boot_restore",
-        "boot_reclaim",
-        "boot_inventory",
-        "boot_active_proof",
-        "runtime_maintenance",
-        "runtime_stop",
-        "runtime_join",
-    ];
-    let name = snake_name(&format!("{stage:?}"));
-    NAMES.contains(&name.as_str()).then_some(name)
+fn known_stage_name(stage: quanta_index_core::DiagnosticStageV1) -> Option<&'static str> {
+    use quanta_index_core::DiagnosticStageV1;
+    match stage {
+        DiagnosticStageV1::Request => Some("request"),
+        DiagnosticStageV1::Operation => Some("operation"),
+        DiagnosticStageV1::ClientAttempt => Some("client_attempt"),
+        DiagnosticStageV1::Ingress => Some("ingress"),
+        DiagnosticStageV1::QueueWait => Some("queue_wait"),
+        DiagnosticStageV1::Dispatch => Some("dispatch"),
+        DiagnosticStageV1::Backend => Some("backend"),
+        DiagnosticStageV1::Encode => Some("encode"),
+        DiagnosticStageV1::Write => Some("write"),
+        DiagnosticStageV1::BuildPreflight => Some("build_preflight"),
+        DiagnosticStageV1::BuildPrepare => Some("build_prepare"),
+        DiagnosticStageV1::SemanticPrepare => Some("semantic_prepare"),
+        DiagnosticStageV1::SemanticStream => Some("semantic_stream"),
+        DiagnosticStageV1::SemanticDelete => Some("semantic_delete"),
+        DiagnosticStageV1::SemanticAppend => Some("semantic_append"),
+        DiagnosticStageV1::SemanticSeal => Some("semantic_seal"),
+        DiagnosticStageV1::SemanticPromote => Some("semantic_promote"),
+        DiagnosticStageV1::SemanticBuild => Some("semantic_build"),
+        DiagnosticStageV1::LexicalBuild => Some("lexical_build"),
+        DiagnosticStageV1::NativeTextPostings => Some("native_text_postings"),
+        DiagnosticStageV1::NativeTextRoot => Some("native_text_root"),
+        DiagnosticStageV1::NativeCoverageScan => Some("native_coverage_scan"),
+        DiagnosticStageV1::NativeCoverageMapApply => Some("native_coverage_map_apply"),
+        DiagnosticStageV1::NativeSearchablePrepare => Some("native_searchable_prepare"),
+        DiagnosticStageV1::NativeCoverageSave => Some("native_coverage_save"),
+        DiagnosticStageV1::NativeMemberAssemble => Some("native_member_assemble"),
+        DiagnosticStageV1::Bm25CensusBuild => Some("bm25_census_build"),
+        DiagnosticStageV1::Bm25LiveBuild => Some("bm25_live_build"),
+        DiagnosticStageV1::Bm25Boundary => Some("bm25_boundary"),
+        DiagnosticStageV1::Finalize => Some("finalize"),
+        DiagnosticStageV1::Activate => Some("activate"),
+        DiagnosticStageV1::CatalogLockWait => Some("catalog_lock_wait"),
+        DiagnosticStageV1::CatalogLockHold => Some("catalog_lock_hold"),
+        DiagnosticStageV1::RetentionPairLockWait => Some("retention_pair_lock_wait"),
+        DiagnosticStageV1::RetentionPairLockHold => Some("retention_pair_lock_hold"),
+        DiagnosticStageV1::RetentionRootLockWait => Some("retention_root_lock_wait"),
+        DiagnosticStageV1::RetentionRootLockHold => Some("retention_root_lock_hold"),
+        DiagnosticStageV1::RetentionRootSnapshot => Some("retention_root_snapshot"),
+        DiagnosticStageV1::SourceTransactionOne => Some("source_transaction_one"),
+        DiagnosticStageV1::SourceTransactionTwo => Some("source_transaction_two"),
+        DiagnosticStageV1::NativeSourceApply => Some("native_source_apply"),
+        DiagnosticStageV1::NativeSourcePathInstall => Some("native_source_path_install"),
+        DiagnosticStageV1::NativeSourceMapApply => Some("native_source_map_apply"),
+        DiagnosticStageV1::RetentionPlan => Some("retention_plan"),
+        DiagnosticStageV1::RetentionMeasure => Some("retention_measure"),
+        DiagnosticStageV1::RetentionWrite => Some("retention_write"),
+        DiagnosticStageV1::RetentionReap => Some("retention_reap"),
+        DiagnosticStageV1::ClosureRead => Some("closure_read"),
+        DiagnosticStageV1::ClosureHash => Some("closure_hash"),
+        DiagnosticStageV1::ClosureDecode => Some("closure_decode"),
+        DiagnosticStageV1::SqliteWork => Some("sqlite_work"),
+        DiagnosticStageV1::PhysicalInodeCensus => Some("physical_inode_census"),
+        DiagnosticStageV1::ManagedObjectReserve => Some("managed_object_reserve"),
+        DiagnosticStageV1::ManagedObjectConfirm => Some("managed_object_confirm"),
+        DiagnosticStageV1::NativePublish => Some("native_publish"),
+        DiagnosticStageV1::FilePublish => Some("file_publish"),
+        DiagnosticStageV1::LexicalSeal => Some("lexical_seal"),
+        DiagnosticStageV1::LexicalProof => Some("lexical_proof"),
+        DiagnosticStageV1::Compaction => Some("compaction"),
+        DiagnosticStageV1::QueryParse => Some("query_parse"),
+        DiagnosticStageV1::QueryPlan => Some("query_plan"),
+        DiagnosticStageV1::QueryReadView => Some("query_read_view"),
+        DiagnosticStageV1::QueryOverlaySnapshot => Some("query_overlay_snapshot"),
+        DiagnosticStageV1::QueryFast => Some("query_fast"),
+        DiagnosticStageV1::QueryDeep => Some("query_deep"),
+        DiagnosticStageV1::QueryLexical => Some("query_lexical"),
+        DiagnosticStageV1::QueryEmbedding => Some("query_embedding"),
+        DiagnosticStageV1::QueryOverlayEmbedding => Some("query_overlay_embedding"),
+        DiagnosticStageV1::QueryCandidate => Some("query_candidate"),
+        DiagnosticStageV1::QueryVerify => Some("query_verify"),
+        DiagnosticStageV1::QueryRank => Some("query_rank"),
+        DiagnosticStageV1::QueryProject => Some("query_project"),
+        DiagnosticStageV1::HarnessPhase => Some("harness_phase"),
+        DiagnosticStageV1::ObserverSetup => Some("observer_setup"),
+        DiagnosticStageV1::ObserverSample => Some("observer_sample"),
+        DiagnosticStageV1::ObserverTeardown => Some("observer_teardown"),
+        DiagnosticStageV1::ArtifactWrite => Some("artifact_write"),
+        DiagnosticStageV1::RuntimeBoot => Some("runtime_boot"),
+        DiagnosticStageV1::BootRestore => Some("boot_restore"),
+        DiagnosticStageV1::BootReclaim => Some("boot_reclaim"),
+        DiagnosticStageV1::BootInventory => Some("boot_inventory"),
+        DiagnosticStageV1::BootActiveProof => Some("boot_active_proof"),
+        DiagnosticStageV1::RuntimeMaintenance => Some("runtime_maintenance"),
+        DiagnosticStageV1::RuntimeStop => Some("runtime_stop"),
+        DiagnosticStageV1::RuntimeJoin => Some("runtime_join"),
+        _ => None,
+    }
 }
 
-fn known_counter_name(counter: quanta_index_core::DiagnosticCounterV1) -> Option<String> {
-    const NAMES: &[&str] = &[
-        "files_visited",
-        "files_read",
-        "files_hashed",
-        "files_decoded",
-        "inodes_visited",
-        "unique_inodes",
-        "bytes_read",
-        "bytes_hashed",
-        "bytes_decoded",
-        "sqlite_rows",
-        "sqlite_batches",
-        "sqlite_elapsed_ns",
-        "candidates",
-        "candidates_verified",
-        "matches",
-        "rejected_at_guard",
-        "sync_calls",
-        "sync_failures",
-        "sync_elapsed_ns",
-        "new_objects",
-        "reused_objects",
-        "compacted_documents",
-        "compacted_segments",
-        "compacted_bytes",
-        "posting_mutations",
-        "map_page_mutations",
-        "invalid_attempt_tokens",
-        "unique_closure_refs",
-        "closure_dependency_edges",
-        "closure_authenticated_bytes",
-        "physical_bytes_measured",
-        "retained_pairs",
-        "measure_calls",
-        "removed_roots",
-        "semantic_windows",
-        "semantic_owner_scopes",
-        "semantic_delete_calls",
-        "semantic_append_calls",
-        "semantic_rows_appended",
-        "semantic_rows_deleted",
-        "semantic_vector_bytes",
-        "query_admitted_limit",
-        "query_read_limit",
-        "query_byte_limit",
-        "regex_literal_count",
-        "regex_alternative_count",
-        "regex_necessary_gram_count",
-        "closure_read_elapsed_ns",
-        "closure_hash_elapsed_ns",
-        "closure_decode_elapsed_ns",
-        "queue_dropped",
-        "queue_accepted",
-        "output_written",
-        "output_unwritten",
-    ];
-    let name = snake_name(&format!("{counter:?}"));
-    NAMES.contains(&name.as_str()).then_some(name)
+fn known_counter_name(counter: quanta_index_core::DiagnosticCounterV1) -> Option<&'static str> {
+    use quanta_index_core::DiagnosticCounterV1;
+    match counter {
+        DiagnosticCounterV1::FilesVisited => Some("files_visited"),
+        DiagnosticCounterV1::FilesRead => Some("files_read"),
+        DiagnosticCounterV1::FilesHashed => Some("files_hashed"),
+        DiagnosticCounterV1::FilesDecoded => Some("files_decoded"),
+        DiagnosticCounterV1::InodesVisited => Some("inodes_visited"),
+        DiagnosticCounterV1::UniqueInodes => Some("unique_inodes"),
+        DiagnosticCounterV1::BytesRead => Some("bytes_read"),
+        DiagnosticCounterV1::BytesHashed => Some("bytes_hashed"),
+        DiagnosticCounterV1::BytesDecoded => Some("bytes_decoded"),
+        DiagnosticCounterV1::WorkReads => Some("work_reads"),
+        DiagnosticCounterV1::WorkWrites => Some("work_writes"),
+        DiagnosticCounterV1::WorkBytes => Some("work_bytes"),
+        DiagnosticCounterV1::WorkMutations => Some("work_mutations"),
+        DiagnosticCounterV1::SqliteRows => Some("sqlite_rows"),
+        DiagnosticCounterV1::SqliteBatches => Some("sqlite_batches"),
+        DiagnosticCounterV1::SqliteWriteCalls => Some("sqlite_write_calls"),
+        DiagnosticCounterV1::SqliteWriteRequestedBytes => Some("sqlite_write_requested_bytes"),
+        DiagnosticCounterV1::SqliteWriteFailures => Some("sqlite_write_failures"),
+        DiagnosticCounterV1::SqliteWalWriteCalls => Some("sqlite_wal_write_calls"),
+        DiagnosticCounterV1::SqliteMainWriteCalls => Some("sqlite_main_write_calls"),
+        DiagnosticCounterV1::SqliteOtherWriteCalls => Some("sqlite_other_write_calls"),
+        DiagnosticCounterV1::SqliteElapsedNs => Some("sqlite_elapsed_ns"),
+        DiagnosticCounterV1::QueryPostingCalls => Some("query_posting_calls"),
+        DiagnosticCounterV1::QueryPostingHits => Some("query_posting_hits"),
+        DiagnosticCounterV1::QueryPostingElapsedNs => Some("query_posting_elapsed_ns"),
+        DiagnosticCounterV1::QueryPhraseChecks => Some("query_phrase_checks"),
+        DiagnosticCounterV1::QueryPhraseElapsedNs => Some("query_phrase_elapsed_ns"),
+        DiagnosticCounterV1::Candidates => Some("candidates"),
+        DiagnosticCounterV1::CandidatesVerified => Some("candidates_verified"),
+        DiagnosticCounterV1::Matches => Some("matches"),
+        DiagnosticCounterV1::RejectedAtGuard => Some("rejected_at_guard"),
+        DiagnosticCounterV1::SyncCalls => Some("sync_calls"),
+        DiagnosticCounterV1::SyncFailures => Some("sync_failures"),
+        DiagnosticCounterV1::SyncElapsedNs => Some("sync_elapsed_ns"),
+        DiagnosticCounterV1::SqliteSyncOverwrite => Some("sqlite_sync_overwrite"),
+        DiagnosticCounterV1::SqliteSyncGrowth => Some("sqlite_sync_growth"),
+        DiagnosticCounterV1::SqliteSyncTruncate => Some("sqlite_sync_truncate"),
+        DiagnosticCounterV1::SqliteSyncCreate => Some("sqlite_sync_create"),
+        DiagnosticCounterV1::SqliteSyncNoMutation => Some("sqlite_sync_no_mutation"),
+        DiagnosticCounterV1::SqliteSyncUnclassified => Some("sqlite_sync_unclassified"),
+        DiagnosticCounterV1::NewObjects => Some("new_objects"),
+        DiagnosticCounterV1::ReusedObjects => Some("reused_objects"),
+        DiagnosticCounterV1::CompactedDocuments => Some("compacted_documents"),
+        DiagnosticCounterV1::CompactedSegments => Some("compacted_segments"),
+        DiagnosticCounterV1::CompactedBytes => Some("compacted_bytes"),
+        DiagnosticCounterV1::PostingMutations => Some("posting_mutations"),
+        DiagnosticCounterV1::MapPageMutations => Some("map_page_mutations"),
+        DiagnosticCounterV1::ManagedObjectInputs => Some("managed_object_inputs"),
+        DiagnosticCounterV1::InvalidAttemptTokens => Some("invalid_attempt_tokens"),
+        DiagnosticCounterV1::UniqueClosureRefs => Some("unique_closure_refs"),
+        DiagnosticCounterV1::ClosureDependencyEdges => Some("closure_dependency_edges"),
+        DiagnosticCounterV1::ClosureAuthenticatedBytes => Some("closure_authenticated_bytes"),
+        DiagnosticCounterV1::PhysicalBytesMeasured => Some("physical_bytes_measured"),
+        DiagnosticCounterV1::RetainedPairs => Some("retained_pairs"),
+        DiagnosticCounterV1::MeasureCalls => Some("measure_calls"),
+        DiagnosticCounterV1::RemovedRoots => Some("removed_roots"),
+        DiagnosticCounterV1::SemanticWindows => Some("semantic_windows"),
+        DiagnosticCounterV1::SemanticOwnerScopes => Some("semantic_owner_scopes"),
+        DiagnosticCounterV1::SemanticDeleteCalls => Some("semantic_delete_calls"),
+        DiagnosticCounterV1::SemanticAppendCalls => Some("semantic_append_calls"),
+        DiagnosticCounterV1::SemanticRowsAppended => Some("semantic_rows_appended"),
+        DiagnosticCounterV1::SemanticRowsDeleted => Some("semantic_rows_deleted"),
+        DiagnosticCounterV1::SemanticVectorBytes => Some("semantic_vector_bytes"),
+        DiagnosticCounterV1::QueryAdmittedLimit => Some("query_admitted_limit"),
+        DiagnosticCounterV1::QueryReadLimit => Some("query_read_limit"),
+        DiagnosticCounterV1::QueryByteLimit => Some("query_byte_limit"),
+        DiagnosticCounterV1::RegexLiteralCount => Some("regex_literal_count"),
+        DiagnosticCounterV1::RegexAlternativeCount => Some("regex_alternative_count"),
+        DiagnosticCounterV1::RegexNecessaryGramCount => Some("regex_necessary_gram_count"),
+        DiagnosticCounterV1::ClosureReadElapsedNs => Some("closure_read_elapsed_ns"),
+        DiagnosticCounterV1::ClosureHashElapsedNs => Some("closure_hash_elapsed_ns"),
+        DiagnosticCounterV1::ClosureDecodeElapsedNs => Some("closure_decode_elapsed_ns"),
+        DiagnosticCounterV1::QueueDropped => Some("queue_dropped"),
+        DiagnosticCounterV1::QueueAccepted => Some("queue_accepted"),
+        DiagnosticCounterV1::OutputWritten => Some("output_written"),
+        DiagnosticCounterV1::OutputUnwritten => Some("output_unwritten"),
+        _ => None,
+    }
 }
 
 const fn occupancy_bucket_name(
@@ -998,20 +1124,18 @@ const fn occupancy_bucket_name(
     }
 }
 
-fn snake_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len().saturating_add(8));
-    for (index, ch) in name.chars().enumerate() {
-        if ch.is_ascii_uppercase() && index != 0 {
-            out.push('_');
-        }
-        out.push(ch.to_ascii_lowercase());
+fn hex_id(id: [u8; 16]) -> String {
+    let mut out = String::with_capacity(32);
+    for byte in id {
+        use std::fmt::Write as _;
+        let _written = write!(out, "{byte:02x}");
     }
     out
 }
 
-fn hex_id(id: [u8; 16]) -> String {
-    let mut out = String::with_capacity(32);
-    for byte in id {
+fn hex_ref(reference: [u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in reference {
         use std::fmt::Write as _;
         let _written = write!(out, "{byte:02x}");
     }
@@ -1022,14 +1146,505 @@ fn hex_id(id: [u8; 16]) -> String {
 mod tests {
     use super::*;
     use quanta_index_core::diagnostic_trace::{
-        DiagnosticAdoptionFlushReasonV1, DiagnosticBm25BoundaryLabelV1, DiagnosticHealthCodeV1,
-        DiagnosticObjectKindV1, DiagnosticOccupancyBucketV1, DiagnosticSyncLabelV1,
+        DiagnosticAdoptionFlushReasonV1, DiagnosticAnnRegionObservationV1,
+        DiagnosticBm25BoundaryLabelV1, DiagnosticHealthCodeV1, DiagnosticObjectKindV1,
+        DiagnosticOccupancyBucketV1, DiagnosticSqliteSyncObservationV1, DiagnosticSyncLabelV1,
     };
     use quanta_index_core::{
         DiagnosticCounterV1, DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticSpanIdV1,
         DiagnosticStageV1, DiagnosticTerminalV1,
     };
     use std::num::NonZeroU64;
+
+    #[test]
+    fn stage_and_counter_names_match_complete_prechange_vocabulary() {
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../tools/benchmark/retrieval/causal_timeline.schema.json"
+        ))
+        .expect("timeline schema");
+        let stage_golden = [
+            (DiagnosticStageV1::Request, "request"),
+            (DiagnosticStageV1::Operation, "operation"),
+            (DiagnosticStageV1::ClientAttempt, "client_attempt"),
+            (DiagnosticStageV1::Ingress, "ingress"),
+            (DiagnosticStageV1::QueueWait, "queue_wait"),
+            (DiagnosticStageV1::Dispatch, "dispatch"),
+            (DiagnosticStageV1::Backend, "backend"),
+            (DiagnosticStageV1::Encode, "encode"),
+            (DiagnosticStageV1::Write, "write"),
+            (DiagnosticStageV1::BuildPreflight, "build_preflight"),
+            (DiagnosticStageV1::BuildPrepare, "build_prepare"),
+            (DiagnosticStageV1::SemanticPrepare, "semantic_prepare"),
+            (DiagnosticStageV1::SemanticStream, "semantic_stream"),
+            (DiagnosticStageV1::SemanticDelete, "semantic_delete"),
+            (DiagnosticStageV1::SemanticAppend, "semantic_append"),
+            (DiagnosticStageV1::SemanticSeal, "semantic_seal"),
+            (DiagnosticStageV1::SemanticPromote, "semantic_promote"),
+            (DiagnosticStageV1::SemanticBuild, "semantic_build"),
+            (DiagnosticStageV1::LexicalBuild, "lexical_build"),
+            (
+                DiagnosticStageV1::NativeTextPostings,
+                "native_text_postings",
+            ),
+            (DiagnosticStageV1::NativeTextRoot, "native_text_root"),
+            (
+                DiagnosticStageV1::NativeCoverageScan,
+                "native_coverage_scan",
+            ),
+            (
+                DiagnosticStageV1::NativeCoverageMapApply,
+                "native_coverage_map_apply",
+            ),
+            (
+                DiagnosticStageV1::NativeSearchablePrepare,
+                "native_searchable_prepare",
+            ),
+            (
+                DiagnosticStageV1::NativeCoverageSave,
+                "native_coverage_save",
+            ),
+            (
+                DiagnosticStageV1::NativeMemberAssemble,
+                "native_member_assemble",
+            ),
+            (DiagnosticStageV1::Bm25CensusBuild, "bm25_census_build"),
+            (DiagnosticStageV1::Bm25LiveBuild, "bm25_live_build"),
+            (DiagnosticStageV1::Bm25Boundary, "bm25_boundary"),
+            (DiagnosticStageV1::Finalize, "finalize"),
+            (DiagnosticStageV1::Activate, "activate"),
+            (DiagnosticStageV1::CatalogLockWait, "catalog_lock_wait"),
+            (DiagnosticStageV1::CatalogLockHold, "catalog_lock_hold"),
+            (
+                DiagnosticStageV1::RetentionPairLockWait,
+                "retention_pair_lock_wait",
+            ),
+            (
+                DiagnosticStageV1::RetentionPairLockHold,
+                "retention_pair_lock_hold",
+            ),
+            (
+                DiagnosticStageV1::RetentionRootLockWait,
+                "retention_root_lock_wait",
+            ),
+            (
+                DiagnosticStageV1::RetentionRootLockHold,
+                "retention_root_lock_hold",
+            ),
+            (
+                DiagnosticStageV1::RetentionRootSnapshot,
+                "retention_root_snapshot",
+            ),
+            (
+                DiagnosticStageV1::SourceTransactionOne,
+                "source_transaction_one",
+            ),
+            (
+                DiagnosticStageV1::SourceTransactionTwo,
+                "source_transaction_two",
+            ),
+            (DiagnosticStageV1::NativeSourceApply, "native_source_apply"),
+            (
+                DiagnosticStageV1::NativeSourcePathInstall,
+                "native_source_path_install",
+            ),
+            (
+                DiagnosticStageV1::NativeSourceMapApply,
+                "native_source_map_apply",
+            ),
+            (DiagnosticStageV1::RetentionPlan, "retention_plan"),
+            (DiagnosticStageV1::RetentionMeasure, "retention_measure"),
+            (DiagnosticStageV1::RetentionWrite, "retention_write"),
+            (DiagnosticStageV1::RetentionReap, "retention_reap"),
+            (DiagnosticStageV1::ClosureRead, "closure_read"),
+            (DiagnosticStageV1::ClosureHash, "closure_hash"),
+            (DiagnosticStageV1::ClosureDecode, "closure_decode"),
+            (DiagnosticStageV1::SqliteWork, "sqlite_work"),
+            (
+                DiagnosticStageV1::PhysicalInodeCensus,
+                "physical_inode_census",
+            ),
+            (
+                DiagnosticStageV1::ManagedObjectReserve,
+                "managed_object_reserve",
+            ),
+            (
+                DiagnosticStageV1::ManagedObjectConfirm,
+                "managed_object_confirm",
+            ),
+            (DiagnosticStageV1::NativePublish, "native_publish"),
+            (DiagnosticStageV1::FilePublish, "file_publish"),
+            (DiagnosticStageV1::LexicalSeal, "lexical_seal"),
+            (DiagnosticStageV1::LexicalProof, "lexical_proof"),
+            (DiagnosticStageV1::Compaction, "compaction"),
+            (DiagnosticStageV1::QueryParse, "query_parse"),
+            (DiagnosticStageV1::QueryPlan, "query_plan"),
+            (DiagnosticStageV1::QueryReadView, "query_read_view"),
+            (
+                DiagnosticStageV1::QueryOverlaySnapshot,
+                "query_overlay_snapshot",
+            ),
+            (DiagnosticStageV1::QueryFast, "query_fast"),
+            (DiagnosticStageV1::QueryDeep, "query_deep"),
+            (DiagnosticStageV1::QueryLexical, "query_lexical"),
+            (DiagnosticStageV1::QueryEmbedding, "query_embedding"),
+            (
+                DiagnosticStageV1::QueryOverlayEmbedding,
+                "query_overlay_embedding",
+            ),
+            (DiagnosticStageV1::QueryCandidate, "query_candidate"),
+            (DiagnosticStageV1::QueryVerify, "query_verify"),
+            (DiagnosticStageV1::QueryRank, "query_rank"),
+            (DiagnosticStageV1::QueryProject, "query_project"),
+            (DiagnosticStageV1::HarnessPhase, "harness_phase"),
+            (DiagnosticStageV1::ObserverSetup, "observer_setup"),
+            (DiagnosticStageV1::ObserverSample, "observer_sample"),
+            (DiagnosticStageV1::ObserverTeardown, "observer_teardown"),
+            (DiagnosticStageV1::ArtifactWrite, "artifact_write"),
+            (DiagnosticStageV1::RuntimeBoot, "runtime_boot"),
+            (DiagnosticStageV1::BootRestore, "boot_restore"),
+            (DiagnosticStageV1::BootReclaim, "boot_reclaim"),
+            (DiagnosticStageV1::BootInventory, "boot_inventory"),
+            (DiagnosticStageV1::BootActiveProof, "boot_active_proof"),
+            (DiagnosticStageV1::RuntimeMaintenance, "runtime_maintenance"),
+            (DiagnosticStageV1::RuntimeStop, "runtime_stop"),
+            (DiagnosticStageV1::RuntimeJoin, "runtime_join"),
+        ];
+        for (variant, name) in stage_golden {
+            assert_eq!(known_stage_name(variant), Some(name));
+        }
+        let mut actual: Vec<_> = stage_golden.into_iter().map(|(_, name)| name).collect();
+        actual.sort_unstable();
+        let mut expected: Vec<_> = json_path(
+            &schema,
+            &["$defs", "spanBegin", "properties", "stage", "enum"],
+        )
+        .as_array()
+        .expect("closed vocabulary")
+        .iter()
+        .map(|name| name.as_str().expect("name"))
+        .collect();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+        let counter_golden = [
+            (DiagnosticCounterV1::FilesVisited, "files_visited"),
+            (DiagnosticCounterV1::FilesRead, "files_read"),
+            (DiagnosticCounterV1::FilesHashed, "files_hashed"),
+            (DiagnosticCounterV1::FilesDecoded, "files_decoded"),
+            (DiagnosticCounterV1::InodesVisited, "inodes_visited"),
+            (DiagnosticCounterV1::UniqueInodes, "unique_inodes"),
+            (DiagnosticCounterV1::BytesRead, "bytes_read"),
+            (DiagnosticCounterV1::BytesHashed, "bytes_hashed"),
+            (DiagnosticCounterV1::BytesDecoded, "bytes_decoded"),
+            (DiagnosticCounterV1::WorkReads, "work_reads"),
+            (DiagnosticCounterV1::WorkWrites, "work_writes"),
+            (DiagnosticCounterV1::WorkBytes, "work_bytes"),
+            (DiagnosticCounterV1::WorkMutations, "work_mutations"),
+            (DiagnosticCounterV1::SqliteRows, "sqlite_rows"),
+            (DiagnosticCounterV1::SqliteBatches, "sqlite_batches"),
+            (DiagnosticCounterV1::SqliteWriteCalls, "sqlite_write_calls"),
+            (
+                DiagnosticCounterV1::SqliteWriteRequestedBytes,
+                "sqlite_write_requested_bytes",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWriteFailures,
+                "sqlite_write_failures",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWalWriteCalls,
+                "sqlite_wal_write_calls",
+            ),
+            (
+                DiagnosticCounterV1::SqliteMainWriteCalls,
+                "sqlite_main_write_calls",
+            ),
+            (
+                DiagnosticCounterV1::SqliteOtherWriteCalls,
+                "sqlite_other_write_calls",
+            ),
+            (DiagnosticCounterV1::SqliteElapsedNs, "sqlite_elapsed_ns"),
+            (
+                DiagnosticCounterV1::QueryPostingCalls,
+                "query_posting_calls",
+            ),
+            (DiagnosticCounterV1::QueryPostingHits, "query_posting_hits"),
+            (
+                DiagnosticCounterV1::QueryPostingElapsedNs,
+                "query_posting_elapsed_ns",
+            ),
+            (
+                DiagnosticCounterV1::QueryPhraseChecks,
+                "query_phrase_checks",
+            ),
+            (
+                DiagnosticCounterV1::QueryPhraseElapsedNs,
+                "query_phrase_elapsed_ns",
+            ),
+            (DiagnosticCounterV1::Candidates, "candidates"),
+            (
+                DiagnosticCounterV1::CandidatesVerified,
+                "candidates_verified",
+            ),
+            (DiagnosticCounterV1::Matches, "matches"),
+            (DiagnosticCounterV1::RejectedAtGuard, "rejected_at_guard"),
+            (DiagnosticCounterV1::SyncCalls, "sync_calls"),
+            (DiagnosticCounterV1::SyncFailures, "sync_failures"),
+            (DiagnosticCounterV1::SyncElapsedNs, "sync_elapsed_ns"),
+            (
+                DiagnosticCounterV1::SqliteSyncOverwrite,
+                "sqlite_sync_overwrite",
+            ),
+            (DiagnosticCounterV1::SqliteSyncGrowth, "sqlite_sync_growth"),
+            (
+                DiagnosticCounterV1::SqliteSyncTruncate,
+                "sqlite_sync_truncate",
+            ),
+            (DiagnosticCounterV1::SqliteSyncCreate, "sqlite_sync_create"),
+            (
+                DiagnosticCounterV1::SqliteSyncNoMutation,
+                "sqlite_sync_no_mutation",
+            ),
+            (
+                DiagnosticCounterV1::SqliteSyncUnclassified,
+                "sqlite_sync_unclassified",
+            ),
+            (DiagnosticCounterV1::NewObjects, "new_objects"),
+            (DiagnosticCounterV1::ReusedObjects, "reused_objects"),
+            (
+                DiagnosticCounterV1::CompactedDocuments,
+                "compacted_documents",
+            ),
+            (DiagnosticCounterV1::CompactedSegments, "compacted_segments"),
+            (DiagnosticCounterV1::CompactedBytes, "compacted_bytes"),
+            (DiagnosticCounterV1::PostingMutations, "posting_mutations"),
+            (DiagnosticCounterV1::MapPageMutations, "map_page_mutations"),
+            (
+                DiagnosticCounterV1::ManagedObjectInputs,
+                "managed_object_inputs",
+            ),
+            (
+                DiagnosticCounterV1::InvalidAttemptTokens,
+                "invalid_attempt_tokens",
+            ),
+            (
+                DiagnosticCounterV1::UniqueClosureRefs,
+                "unique_closure_refs",
+            ),
+            (
+                DiagnosticCounterV1::ClosureDependencyEdges,
+                "closure_dependency_edges",
+            ),
+            (
+                DiagnosticCounterV1::ClosureAuthenticatedBytes,
+                "closure_authenticated_bytes",
+            ),
+            (
+                DiagnosticCounterV1::PhysicalBytesMeasured,
+                "physical_bytes_measured",
+            ),
+            (DiagnosticCounterV1::RetainedPairs, "retained_pairs"),
+            (DiagnosticCounterV1::MeasureCalls, "measure_calls"),
+            (DiagnosticCounterV1::RemovedRoots, "removed_roots"),
+            (DiagnosticCounterV1::SemanticWindows, "semantic_windows"),
+            (
+                DiagnosticCounterV1::SemanticOwnerScopes,
+                "semantic_owner_scopes",
+            ),
+            (
+                DiagnosticCounterV1::SemanticDeleteCalls,
+                "semantic_delete_calls",
+            ),
+            (
+                DiagnosticCounterV1::SemanticAppendCalls,
+                "semantic_append_calls",
+            ),
+            (
+                DiagnosticCounterV1::SemanticRowsAppended,
+                "semantic_rows_appended",
+            ),
+            (
+                DiagnosticCounterV1::SemanticRowsDeleted,
+                "semantic_rows_deleted",
+            ),
+            (
+                DiagnosticCounterV1::SemanticVectorBytes,
+                "semantic_vector_bytes",
+            ),
+            (
+                DiagnosticCounterV1::QueryAdmittedLimit,
+                "query_admitted_limit",
+            ),
+            (DiagnosticCounterV1::QueryReadLimit, "query_read_limit"),
+            (DiagnosticCounterV1::QueryByteLimit, "query_byte_limit"),
+            (
+                DiagnosticCounterV1::RegexLiteralCount,
+                "regex_literal_count",
+            ),
+            (
+                DiagnosticCounterV1::RegexAlternativeCount,
+                "regex_alternative_count",
+            ),
+            (
+                DiagnosticCounterV1::RegexNecessaryGramCount,
+                "regex_necessary_gram_count",
+            ),
+            (
+                DiagnosticCounterV1::ClosureReadElapsedNs,
+                "closure_read_elapsed_ns",
+            ),
+            (
+                DiagnosticCounterV1::ClosureHashElapsedNs,
+                "closure_hash_elapsed_ns",
+            ),
+            (
+                DiagnosticCounterV1::ClosureDecodeElapsedNs,
+                "closure_decode_elapsed_ns",
+            ),
+            (DiagnosticCounterV1::QueueDropped, "queue_dropped"),
+            (DiagnosticCounterV1::QueueAccepted, "queue_accepted"),
+            (DiagnosticCounterV1::OutputWritten, "output_written"),
+            (DiagnosticCounterV1::OutputUnwritten, "output_unwritten"),
+        ];
+        for (variant, name) in counter_golden {
+            assert_eq!(known_counter_name(variant), Some(name));
+        }
+        let mut actual: Vec<_> = counter_golden.into_iter().map(|(_, name)| name).collect();
+        actual.sort_unstable();
+        let mut expected: Vec<_> = json_path(&schema, &["$defs", "counterKey", "enum"])
+            .as_array()
+            .expect("closed vocabulary")
+            .iter()
+            .map(|name| name.as_str().expect("name"))
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn reused_writer_buffer_preserves_fixed_event_wire_bytes() {
+        let span_id = DiagnosticSpanIdV1::from_nonzero(NonZeroU64::new(7).expect("span"));
+        let mut encoded = Vec::new();
+        for (kind, output_seq, expected) in [
+            (
+                DiagnosticEventKindV1::SpanBegin {
+                    span_id,
+                    parent_span_id: None,
+                    root_kind: None,
+                    stage: DiagnosticStageV1::ManagedObjectReserve,
+                    lane: DiagnosticLaneV1(3),
+                },
+                1,
+                br#"{"capture_id":"03030303030303030303030303030303","kind":{"lane_id":3,"span_id":7,"stage":"managed_object_reserve","type":"span_begin"},"output_seq":1,"record_type":"event","ts_ns":11}"#.as_slice(),
+            ),
+            (
+                DiagnosticEventKindV1::Counter {
+                    span_id,
+                    key: DiagnosticCounterV1::ManagedObjectInputs,
+                    value: 9,
+                },
+                2,
+                br#"{"capture_id":"03030303030303030303030303030303","kind":{"key":"managed_object_inputs","span_id":7,"type":"counter","value":9},"output_seq":2,"record_type":"event","ts_ns":11}"#.as_slice(),
+            ),
+        ] {
+            let record = event_json(
+                DiagnosticEmitV1 {
+                    capture_id: DiagnosticCaptureIdV1([3; 16]),
+                    ts_ns: 11,
+                    kind,
+                },
+                output_seq,
+            )
+            .expect("closed event");
+            encoded.clear();
+            serde_json::to_writer(&mut encoded, &record).expect("encode event");
+            assert_eq!(encoded.as_slice(), expected);
+        }
+    }
+    #[test]
+    fn output_cap_preserves_default_and_rejects_out_of_range_values() {
+        let default = DiagnosticCaptureLimitsV1::default();
+        assert_eq!(default.max_output_bytes, 67_108_864);
+        assert!(default.with_max_output_bytes(6144).is_ok());
+        assert!(default.with_max_output_bytes(1_073_741_824).is_ok());
+        assert!(default.with_max_output_bytes(6143).is_err());
+        assert!(default.with_max_output_bytes(1_073_741_825).is_err());
+    }
+
+    #[test]
+    fn native_source_phase_names_record_errors_in_a_complete_capture() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("trace.jsonl");
+        let mut capture =
+            DiagnosticCaptureV1::start(path.clone(), DiagnosticCaptureLimitsV1::default())
+                .expect("start");
+        let lease = capture.lease().expect("lease");
+        let root = lease
+            .context()
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(3))
+            .expect("root");
+        let context = lease.context().child_context(&root);
+        for (stage, outcome) in [
+            (
+                DiagnosticStageV1::NativeSourceApply,
+                DiagnosticTerminalV1::Error { code: 1 },
+            ),
+            (
+                DiagnosticStageV1::NativeSourcePathInstall,
+                DiagnosticTerminalV1::Ok,
+            ),
+            (
+                DiagnosticStageV1::NativeSourceMapApply,
+                DiagnosticTerminalV1::Error { code: 1 },
+            ),
+        ] {
+            context
+                .enter(stage, DiagnosticLaneV1(3))
+                .expect("phase")
+                .finish(outcome)
+                .expect("finish phase");
+        }
+        root.finish(DiagnosticTerminalV1::Error { code: 1 })
+            .expect("finish root");
+        drop(context);
+        drop(lease);
+        let closed = capture.close(Duration::from_secs(2)).expect("close");
+        assert_eq!(closed.status, DiagnosticCaptureStatusV1::Complete);
+        assert_eq!(closed.events_written, 8);
+        assert_eq!(closed.events_attempted, 8);
+        let text = std::fs::read_to_string(path).expect("read");
+        let records: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("json"))
+            .collect();
+        let stages: Vec<&str> = records
+            .iter()
+            .filter_map(|row| {
+                row.get("kind")
+                    .and_then(|kind| kind.get("stage"))
+                    .and_then(Value::as_str)
+            })
+            .collect();
+        assert_eq!(
+            stages,
+            [
+                "operation",
+                "native_source_apply",
+                "native_source_path_install",
+                "native_source_map_apply"
+            ]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|row| row
+                    .get("kind")
+                    .and_then(|kind| kind.get("outcome"))
+                    .and_then(Value::as_str)
+                    == Some("error"))
+                .count(),
+            3
+        );
+    }
 
     fn json_path<'a>(value: &'a Value, keys: &[&str]) -> &'a Value {
         keys.iter()
@@ -1067,6 +1682,252 @@ mod tests {
     }
 
     #[test]
+    fn native_phase_identity_wire_names_match_closed_schema() {
+        use quanta_index_core::DiagnosticPhaseV1;
+
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../tools/benchmark/retrieval/causal_timeline.schema.json"
+        ))
+        .expect("timeline schema");
+        let admitted = json_path(
+            &schema,
+            &["$defs", "phaseIdentity", "properties", "phase", "enum"],
+        )
+        .as_array()
+        .expect("closed phase names");
+        let span_id = DiagnosticSpanIdV1::from_nonzero(NonZeroU64::new(7).expect("span"));
+        let names = [
+            (
+                DiagnosticPhaseV1::NativeCorpusGeneration,
+                "native_corpus_generation",
+            ),
+            (DiagnosticPhaseV1::NativeConfigSetup, "native_config_setup"),
+            (DiagnosticPhaseV1::NativeStartup, "native_startup"),
+            (
+                DiagnosticPhaseV1::NativeWorkspaceCreate,
+                "native_workspace_create",
+            ),
+            (
+                DiagnosticPhaseV1::NativeProfileConfigure,
+                "native_profile_configure",
+            ),
+            (
+                DiagnosticPhaseV1::NativeFullBeginInput,
+                "native_full_begin_input",
+            ),
+            (
+                DiagnosticPhaseV1::NativeFullStageSources,
+                "native_full_stage_sources",
+            ),
+            (
+                DiagnosticPhaseV1::NativeFullEventAck,
+                "native_full_event_ack",
+            ),
+            (DiagnosticPhaseV1::NativeFirstSearch, "native_first_search"),
+            (
+                DiagnosticPhaseV1::NativeDeltaStageSource,
+                "native_delta_stage_source",
+            ),
+            (
+                DiagnosticPhaseV1::NativeDeltaEventAck,
+                "native_delta_event_ack",
+            ),
+            (DiagnosticPhaseV1::NativeDeltaSearch, "native_delta_search"),
+            (
+                DiagnosticPhaseV1::NativeNoopEventAck,
+                "native_noop_event_ack",
+            ),
+            (
+                DiagnosticPhaseV1::NativeNoopStableSearch,
+                "native_noop_stable_search",
+            ),
+            (
+                DiagnosticPhaseV1::NativeDeleteEventAck,
+                "native_delete_event_ack",
+            ),
+            (
+                DiagnosticPhaseV1::NativeDeletedSearch,
+                "native_deleted_search",
+            ),
+            (
+                DiagnosticPhaseV1::NativeOldPinSearch,
+                "native_old_pin_search",
+            ),
+            (DiagnosticPhaseV1::NativeChurnCycles, "native_churn_cycles"),
+            (
+                DiagnosticPhaseV1::NativeChurnOldViewSearch,
+                "native_churn_old_view_search",
+            ),
+            (DiagnosticPhaseV1::NativeDrain, "native_drain"),
+            (DiagnosticPhaseV1::NativeReopen, "native_reopen"),
+            (
+                DiagnosticPhaseV1::NativeReopenReadHead,
+                "native_reopen_read_head",
+            ),
+            (
+                DiagnosticPhaseV1::NativeReopenDeletedSearch,
+                "native_reopen_deleted_search",
+            ),
+            (
+                DiagnosticPhaseV1::NativeReopenChurnSearch,
+                "native_reopen_churn_search",
+            ),
+            (
+                DiagnosticPhaseV1::NativeReopenSearch,
+                "native_reopen_search",
+            ),
+            (DiagnosticPhaseV1::NativeFinalDrain, "native_final_drain"),
+        ];
+        assert_eq!(names.len(), 26);
+        for (phase, expected) in names {
+            let record = event_json(
+                DiagnosticEmitV1 {
+                    capture_id: DiagnosticCaptureIdV1([3; 16]),
+                    ts_ns: 11,
+                    kind: DiagnosticEventKindV1::PhaseIdentity { span_id, phase },
+                },
+                1,
+            )
+            .expect("native phase event");
+            assert_eq!(
+                record.get("kind"),
+                Some(&json!({"type":"phase_identity", "span_id":7, "phase":expected}))
+            );
+            assert!(
+                admitted.contains(&json!(expected)),
+                "schema omits {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn ann_region_observation_has_closed_schema_three_identity_fields() {
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../tools/benchmark/retrieval/causal_timeline.schema.json"
+        ))
+        .expect("timeline schema");
+        assert_eq!(
+            *json_path(
+                &schema,
+                &["$defs", "header", "properties", "schema_version", "const"]
+            ),
+            json!(4)
+        );
+        let span_id = DiagnosticSpanIdV1::from_nonzero(NonZeroU64::new(7).expect("span"));
+        let emit = |observation| {
+            event_json(
+                DiagnosticEmitV1 {
+                    capture_id: DiagnosticCaptureIdV1([3; 16]),
+                    ts_ns: 11,
+                    kind: DiagnosticEventKindV1::AnnRegionObservation {
+                        span_id,
+                        observation,
+                    },
+                },
+                1,
+            )
+        };
+        let installed = DiagnosticAnnRegionObservationV1 {
+            phase: DiagnosticAnnRegionPhaseV1::Installed,
+            fileset_ref: [0xab; 32],
+            descriptor_ref: None,
+            ordinal: 7,
+            rows: 256,
+            index_kind: DiagnosticAnnIndexKindV1::IvfHnswSq,
+            files: 2,
+            chunks: 3,
+        };
+        assert_eq!(
+            *json_path(&emit(installed).expect("installed event"), &["kind"]),
+            json!({"type":"ann_region_observation", "span_id":7,
+                "phase":"installed", "fileset_ref":"ab".repeat(32),
+                "descriptor_ref":null, "ordinal":7, "rows":256,
+                "index_kind":"ivf_hnsw_sq", "files":2, "chunks":3})
+        );
+        let selected = DiagnosticAnnRegionObservationV1 {
+            phase: DiagnosticAnnRegionPhaseV1::SelectedQuery,
+            descriptor_ref: Some([0xcd; 32]),
+            index_kind: DiagnosticAnnIndexKindV1::Flat,
+            ..installed
+        };
+        assert_eq!(
+            *json_path(&emit(selected).expect("query event"), &["kind"]),
+            json!({"type":"ann_region_observation", "span_id":7,
+                "phase":"selected_query", "fileset_ref":"ab".repeat(32),
+                "descriptor_ref":"cd".repeat(32), "ordinal":7, "rows":256,
+                "index_kind":"flat", "files":2, "chunks":3})
+        );
+        assert!(
+            emit(DiagnosticAnnRegionObservationV1 {
+                descriptor_ref: Some([0xcd; 32]),
+                ..installed
+            })
+            .is_none()
+        );
+        assert!(
+            emit(DiagnosticAnnRegionObservationV1 {
+                chunks: 1,
+                ..installed
+            })
+            .is_none()
+        );
+        assert!(
+            json_path(&schema, &["$defs", "event", "properties", "kind", "oneOf"])
+                .as_array()
+                .expect("closed event variants")
+                .contains(&json!({"$ref":"#/$defs/annRegionObservation"}))
+        );
+    }
+
+    #[test]
+    fn sqlite_sync_observation_records_unknown_and_syscall_options() {
+        let span_id = DiagnosticSpanIdV1::from_nonzero(NonZeroU64::new(7).expect("span"));
+        let emit = |observation| {
+            event_json(
+                DiagnosticEmitV1 {
+                    capture_id: DiagnosticCaptureIdV1([3; 16]),
+                    ts_ns: 11,
+                    kind: DiagnosticEventKindV1::SqliteSyncObservation {
+                        span_id,
+                        observation,
+                    },
+                },
+                1,
+            )
+            .expect("SQLite sync event")
+        };
+        let unknown = DiagnosticSqliteSyncObservationV1::default();
+        assert_eq!(
+            *json_path(&emit(unknown), &["kind", "observation"]),
+            json!({"observed":false, "same_native_fd":false, "ambiguous":false,
+                "full_requested":false, "full_default_syscall":false,
+                "full_result":null, "full_errno":null,
+                "posix_result":null, "posix_errno":null})
+        );
+        assert_eq!(
+            *json_path(
+                &emit(DiagnosticSqliteSyncObservationV1 {
+                    observed: true,
+                    same_native_fd: true,
+                    full_requested: true,
+                    full_default_syscall: true,
+                    full_result: Some(-1),
+                    full_errno: Some(45),
+                    posix_result: Some(0),
+                    posix_errno: Some(0),
+                    ..unknown
+                }),
+                &["kind"]
+            ),
+            json!({"type":"sqlite_sync_observation", "span_id":7,
+                "observation":{"observed":true, "same_native_fd":true,
+                    "ambiguous":false, "full_requested":true,
+                    "full_default_syscall":true, "full_result":-1,
+                    "full_errno":45, "posix_result":0, "posix_errno":0}})
+        );
+    }
+
+    #[test]
     fn aggregate_event_values_match_the_closed_timeline_schema() {
         let schema: Value = serde_json::from_str(include_str!(
             "../../../../tools/benchmark/retrieval/causal_timeline.schema.json"
@@ -1079,11 +1940,46 @@ mod tests {
             kind,
         };
         for (stage, name) in [
+            (
+                DiagnosticStageV1::NativeTextPostings,
+                "native_text_postings",
+            ),
+            (DiagnosticStageV1::NativeTextRoot, "native_text_root"),
+            (
+                DiagnosticStageV1::NativeCoverageScan,
+                "native_coverage_scan",
+            ),
+            (
+                DiagnosticStageV1::NativeCoverageMapApply,
+                "native_coverage_map_apply",
+            ),
+            (
+                DiagnosticStageV1::NativeSearchablePrepare,
+                "native_searchable_prepare",
+            ),
+            (
+                DiagnosticStageV1::NativeCoverageSave,
+                "native_coverage_save",
+            ),
+            (
+                DiagnosticStageV1::NativeMemberAssemble,
+                "native_member_assemble",
+            ),
+            (
+                DiagnosticStageV1::ManagedObjectReserve,
+                "managed_object_reserve",
+            ),
+            (
+                DiagnosticStageV1::ManagedObjectConfirm,
+                "managed_object_confirm",
+            ),
             (DiagnosticStageV1::LexicalSeal, "lexical_seal"),
             (DiagnosticStageV1::LexicalProof, "lexical_proof"),
             (DiagnosticStageV1::Bm25CensusBuild, "bm25_census_build"),
             (DiagnosticStageV1::Bm25LiveBuild, "bm25_live_build"),
             (DiagnosticStageV1::Bm25Boundary, "bm25_boundary"),
+            (DiagnosticStageV1::CatalogLockWait, "catalog_lock_wait"),
+            (DiagnosticStageV1::CatalogLockHold, "catalog_lock_hold"),
             (DiagnosticStageV1::ArtifactWrite, "artifact_write"),
         ] {
             let record = event_json(
@@ -1325,6 +2221,53 @@ mod tests {
             }
         }
         for (key, name) in [
+            (DiagnosticCounterV1::WorkReads, "work_reads"),
+            (DiagnosticCounterV1::WorkWrites, "work_writes"),
+            (DiagnosticCounterV1::WorkBytes, "work_bytes"),
+            (DiagnosticCounterV1::WorkMutations, "work_mutations"),
+            (DiagnosticCounterV1::SqliteWriteCalls, "sqlite_write_calls"),
+            (
+                DiagnosticCounterV1::SqliteWriteRequestedBytes,
+                "sqlite_write_requested_bytes",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWriteFailures,
+                "sqlite_write_failures",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWalWriteCalls,
+                "sqlite_wal_write_calls",
+            ),
+            (
+                DiagnosticCounterV1::SqliteMainWriteCalls,
+                "sqlite_main_write_calls",
+            ),
+            (
+                DiagnosticCounterV1::SqliteOtherWriteCalls,
+                "sqlite_other_write_calls",
+            ),
+            (
+                DiagnosticCounterV1::SqliteSyncOverwrite,
+                "sqlite_sync_overwrite",
+            ),
+            (DiagnosticCounterV1::SqliteSyncGrowth, "sqlite_sync_growth"),
+            (
+                DiagnosticCounterV1::SqliteSyncTruncate,
+                "sqlite_sync_truncate",
+            ),
+            (DiagnosticCounterV1::SqliteSyncCreate, "sqlite_sync_create"),
+            (
+                DiagnosticCounterV1::SqliteSyncNoMutation,
+                "sqlite_sync_no_mutation",
+            ),
+            (
+                DiagnosticCounterV1::SqliteSyncUnclassified,
+                "sqlite_sync_unclassified",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectInputs,
+                "managed_object_inputs",
+            ),
             (DiagnosticCounterV1::CompactedSegments, "compacted_segments"),
             (
                 DiagnosticCounterV1::UniqueClosureRefs,

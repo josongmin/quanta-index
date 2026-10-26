@@ -2,4 +2,8 @@
 
 mod authority;
 
-pub(crate) use authority::initialize;
+pub use authority::{
+    NativeBootCatalogCandidate, NativeBootCatalogSnapshot, NativeBootManifest,
+    verify_native_boot_candidate, verify_native_boot_catalog,
+};
+pub(crate) use authority::{initialize, preflight_capture_format};

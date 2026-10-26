@@ -42,10 +42,12 @@ pub use error::SdkError;
 pub use error::{PublishedBatchEvidence, PublishedBatchFailureStage};
 pub use generations::GenerationNamespace;
 pub use history::{
+    AdmittedAuxiliaryBatchReceiptV1, AdmittedAuxiliaryRemoteErrorV1, AdmittedAuxiliaryResponseOwnerV1,
     DiffHunkMutation, FileContributorBatch, FileContributorMutation, FileOwnershipBatch,
-    FileOwnershipMutation, HistoryBatch, HistoryNamespace, HistoryQueryBuilder, RefMutation,
-    RepoCommitRecencyBatch, RepoCommitRecencyMutation, RepoDescriptionBatch,
-    RepoDescriptionMutation, RepoMetaBatch, RepoMetaMutation, RepoTopicBatch, RepoTopicMutation,
+    FileOwnershipMutation, AuxiliaryAdmittedPublishErrorV1, HistoryBatch, HistoryNamespace,
+    HistoryQueryBuilder, RefMutation, RepoCommitRecencyBatch, RepoCommitRecencyMutation,
+    RepoDescriptionBatch, RepoDescriptionMutation, RepoMetaBatch, RepoMetaMutation, RepoTopicBatch,
+    RepoTopicMutation,
 };
 pub use lexical::{
     LexicalNamespace, LexicalQueryBuilder, SdkPublishActivateDurationsV1, SearchCorpusBatch,
@@ -64,7 +66,7 @@ pub use quanta_index_ipc::{
     ClientIpcTimingV1, IngestBatchBodyV1, canonical_batch_digest_v1, stamp_batch_digest_v1,
 };
 pub use quarantine::QuarantineNamespace;
-pub use repomap::RepoMapNamespace;
+pub use repomap::{AdmittedRepoMapTerminalReceiptV3, RepoMapAdmittedPublishErrorV3, RepoMapNamespace};
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
 pub use search::{HybridQueryBuilder, HybridSeedQueryBuilder, SearchNamespace};
 pub use semantic::{SemanticNamespace, SemanticQueryBuilder};

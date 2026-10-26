@@ -1,17 +1,20 @@
 //! The [`HistoryTextIndexPort`] implementation rooted at one directory.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use quanta_index_contract::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
+use quanta_index_core::HistoryTextFileAdmissionFactory;
 use quanta_index_core::{
     AuxiliaryGenerationKeyV1, CoreError, DiagnosticContextV1, DiagnosticStageV1,
     HistoryTextBuildV1, HistoryTextDiscardOutcomeV1, HistoryTextEpochReceiptV1,
     HistoryTextEpochStatusV1, HistoryTextIndexPort, HistoryTextSearcher,
-    LEXICAL_WRITER_HEAP_BYTES_MIN,
+    LEXICAL_WRITER_HEAP_BYTES_MIN, RequestBudgetV1,
 };
 
 use crate::history_text_index::layout::{
-    epoch_dir, fsync_parent_observed, generation_dir, list_epochs, list_generations, tree_bytes,
+    epoch_dir, fsync_parent_observed, generation_dir, list_epochs, list_epochs_admitted,
+    list_generations, list_generations_admitted, tree_bytes,
 };
 use crate::history_text_index::manifest;
 use crate::history_text_index::publish;
@@ -22,6 +25,7 @@ use crate::history_text_index::searcher::EpochSearcher;
 pub struct HistoryTextIndexAdapter {
     root: PathBuf,
     writer_heap_bytes: usize,
+    physical: Option<Arc<dyn HistoryTextFileAdmissionFactory>>,
 }
 
 impl HistoryTextIndexAdapter {
@@ -40,7 +44,20 @@ impl HistoryTextIndexAdapter {
         Ok(Self {
             root,
             writer_heap_bytes,
+            physical: None,
         })
+    }
+
+    /// Install the canonical physical authority before any history operation.
+    pub fn with_file_admission(
+        root: PathBuf,
+        physical: Arc<dyn HistoryTextFileAdmissionFactory>,
+    ) -> Result<Self, CoreError> {
+        let read = physical.for_read()?;
+        read.validate_root(&root)?;
+        let mut adapter = Self::with_root(root)?;
+        adapter.physical = Some(physical);
+        Ok(adapter)
     }
 
     fn discard_tree(
@@ -68,7 +85,14 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
     ) -> Result<HistoryTextEpochStatusV1, CoreError> {
-        manifest::epoch_status(&epoch_dir(&self.root, generation, epoch), epoch)
+        let dir = epoch_dir(&self.root, generation, epoch);
+        if let Some(physical) = &self.physical {
+            let io = physical.for_read()?;
+            io.validate_root(&self.root)?;
+            manifest::epoch_status_admitted(&dir, epoch, io.as_ref())
+        } else {
+            manifest::epoch_status(&dir, epoch)
+        }
     }
 
     fn publish_epoch(
@@ -76,20 +100,45 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
         generation: &AuxiliaryGenerationKeyV1,
         epoch: AuxEpochV1,
         build: HistoryTextBuildV1,
-        diagnostic: Option<&DiagnosticContextV1>,
+        budget: &RequestBudgetV1,
     ) -> Result<HistoryTextEpochReceiptV1, CoreError> {
         crate::causal_profile::observe_result_with_sync(
-            diagnostic,
+            budget.diagnostic_context(),
             DiagnosticStageV1::Finalize,
             |_diagnostic, sync| {
-                publish::publish_epoch(
-                    &self.root,
-                    generation,
-                    epoch,
-                    build,
-                    self.writer_heap_bytes,
-                    sync.as_deref(),
-                )
+                if let Some(physical) = &self.physical {
+                    let retirement = physical.for_retirement()?;
+                    if let Some(receipt) = publish::recover_epoch_admitted(
+                        &self.root,
+                        generation,
+                        epoch,
+                        &build,
+                        retirement.as_ref(),
+                    )? {
+                        return Ok(receipt);
+                    }
+                    budget.checkpoint("history text: before publication reserve")?;
+                    let io = physical.for_publication(budget)?;
+                    publish::publish_epoch_admitted(
+                        &self.root,
+                        generation,
+                        epoch,
+                        build,
+                        self.writer_heap_bytes,
+                        &io,
+                        budget,
+                    )
+                } else {
+                    publish::publish_epoch(
+                        &self.root,
+                        generation,
+                        epoch,
+                        build,
+                        self.writer_heap_bytes,
+                        sync.as_deref(),
+                        budget,
+                    )
+                }
             },
         )
     }
@@ -100,7 +149,18 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
         epoch: AuxEpochV1,
     ) -> Result<Box<dyn HistoryTextSearcher>, CoreError> {
         let dir = epoch_dir(&self.root, generation, epoch);
-        match manifest::epoch_status(&dir, epoch)? {
+        let admitted = self
+            .physical
+            .as_ref()
+            .map(|physical| physical.for_read())
+            .transpose()?;
+        let status = if let Some(io) = &admitted {
+            io.validate_root(&self.root)?;
+            manifest::epoch_status_admitted(&dir, epoch, io.as_ref())?
+        } else {
+            manifest::epoch_status(&dir, epoch)?
+        };
+        match status {
             HistoryTextEpochStatusV1::Servable => {}
             HistoryTextEpochStatusV1::Absent => {
                 return Err(CoreError::Typed {
@@ -122,14 +182,24 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
                 });
             }
         }
-        Ok(Box::new(EpochSearcher::open(&dir)?))
+        Ok(Box::new(if let Some(io) = admitted {
+            EpochSearcher::open_admitted(&dir, &io)?
+        } else {
+            EpochSearcher::open(&dir)?
+        }))
     }
 
     fn durable_epochs(
         &self,
         generation: &AuxiliaryGenerationKeyV1,
     ) -> Result<Vec<AuxEpochV1>, CoreError> {
-        list_epochs(&self.root, generation)
+        if let Some(physical) = &self.physical {
+            let io = physical.for_read()?;
+            io.validate_root(&self.root)?;
+            list_epochs_admitted(&self.root, generation, io.as_ref())
+        } else {
+            list_epochs(&self.root, generation)
+        }
     }
 
     fn durable_generations(
@@ -137,7 +207,13 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Result<Vec<ManifestGeneration>, CoreError> {
-        list_generations(&self.root, repo_id, revision_id)
+        if let Some(physical) = &self.physical {
+            let io = physical.for_read()?;
+            io.validate_root(&self.root)?;
+            list_generations_admitted(&self.root, repo_id, revision_id, io.as_ref())
+        } else {
+            list_generations(&self.root, repo_id, revision_id)
+        }
     }
 
     fn discard_epoch(
@@ -150,7 +226,19 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
             diagnostic,
             DiagnosticStageV1::Finalize,
             |_diagnostic, sync| {
-                Self::discard_tree(&epoch_dir(&self.root, generation, epoch), sync.as_deref())
+                if let Some(physical) = &self.physical {
+                    let io = physical.for_retirement()?;
+                    io.validate_root(&self.root)?;
+                    let path = epoch_dir(&self.root, generation, epoch);
+                    let removed = io
+                        .recover_tree_delete(&path)?
+                        .map_or_else(|| io.remove_tree(&path), |bytes| Ok(Some(bytes)))?;
+                    removed.map_or(Ok(HistoryTextDiscardOutcomeV1::Absent), |bytes| {
+                        Ok(HistoryTextDiscardOutcomeV1::Discarded { bytes })
+                    })
+                } else {
+                    Self::discard_tree(&epoch_dir(&self.root, generation, epoch), sync.as_deref())
+                }
             },
         )
     }
@@ -164,7 +252,19 @@ impl HistoryTextIndexPort for HistoryTextIndexAdapter {
             diagnostic,
             DiagnosticStageV1::Finalize,
             |_diagnostic, sync| {
-                Self::discard_tree(&generation_dir(&self.root, generation), sync.as_deref())
+                if let Some(physical) = &self.physical {
+                    let io = physical.for_retirement()?;
+                    io.validate_root(&self.root)?;
+                    let path = generation_dir(&self.root, generation);
+                    let removed = io
+                        .recover_tree_delete(&path)?
+                        .map_or_else(|| io.remove_tree(&path), |bytes| Ok(Some(bytes)))?;
+                    removed.map_or(Ok(HistoryTextDiscardOutcomeV1::Absent), |bytes| {
+                        Ok(HistoryTextDiscardOutcomeV1::Discarded { bytes })
+                    })
+                } else {
+                    Self::discard_tree(&generation_dir(&self.root, generation), sync.as_deref())
+                }
             },
         )
     }

@@ -12,6 +12,7 @@ use crate::domains::semantic::stream::{
     SemanticGenerationContractV1, SemanticIngestHeaderV1, SemanticScopeSource,
 };
 use crate::error::CoreError;
+use crate::publication_admission::PublicationOutputAdmission;
 use crate::request_budget::RequestBudgetV1;
 
 /// Ingest one semantic batch into the direct authority path, streamed one
@@ -43,6 +44,7 @@ pub trait SemanticIngestPort: Send + Sync {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        publication: Option<PublicationOutputAdmission<'_>>,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<
         (
@@ -56,6 +58,114 @@ pub trait SemanticIngestPort: Send + Sync {
 /// The checkpoint every budget-observing embedder names when the budget
 /// interrupts it (QI-BB-002).
 pub const EMBED_CHECKPOINT: &str = "semantic:embed";
+
+/// Provider output owns its allocation separately from execution capacity.
+/// Moving the vectors requires moving their lease; read access cannot grow them.
+#[derive(Debug)]
+pub struct TextEmbeddingBatch {
+    vectors: Vec<Vec<f32>>,
+    memory: Option<crate::index::MemoryLease>,
+}
+
+impl TextEmbeddingBatch {
+    /// Explicit standalone output without a Native service allocation envelope.
+    #[must_use]
+    pub fn unscoped(vectors: Vec<Vec<f32>>) -> Self {
+        Self::from_parts(vectors, None)
+    }
+
+    #[must_use]
+    pub fn from_parts(vectors: Vec<Vec<f32>>, memory: Option<crate::index::MemoryLease>) -> Self {
+        Self { vectors, memory }
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<Vec<f32>>, Option<crate::index::MemoryLease>) {
+        (self.vectors, self.memory)
+    }
+
+    /// Legacy unscoped consumers cannot discard Native allocation custody.
+    pub fn into_unscoped(self) -> Result<Vec<Vec<f32>>, CoreError> {
+        if self.memory.is_some() {
+            return Err(CoreError::InvalidContract(
+                "semantic: consumer cannot discard admitted embedding custody".into(),
+            ));
+        }
+        Ok(self.vectors)
+    }
+
+    /// Normalization changes values in place, never dimensions or backing.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut [f32]> {
+        self.vectors.iter_mut().map(Vec::as_mut_slice)
+    }
+
+    /// Covers vector coordinates and both batch/final array backing during merge.
+    pub fn output_bytes(text_count: usize, dimension: usize) -> Result<u64, CoreError> {
+        let bytes = dimension
+            .checked_mul(std::mem::size_of::<f32>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<[Vec<f32>; 2]>()))
+            .and_then(|bytes| bytes.checked_mul(text_count))
+            .ok_or_else(|| {
+                CoreError::InvalidContract("semantic: output capacity overflows".into())
+            })?;
+        u64::try_from(bytes).map_err(|error| {
+            CoreError::InvalidContract(format!("semantic: output capacity exceeds u64: {error}"))
+        })
+    }
+
+    pub fn reserve_output(
+        text_count: usize,
+        dimension: usize,
+        budget: &RequestBudgetV1,
+    ) -> Result<Option<crate::index::MemoryLease>, CoreError> {
+        let bytes = Self::output_bytes(text_count, dimension)?;
+        if bytes == 0 {
+            return Ok(None);
+        }
+        budget.reserve_provider_memory_v1(bytes, crate::index::MemoryLifetime::Retained)
+    }
+}
+
+impl std::ops::Deref for TextEmbeddingBatch {
+    type Target = [Vec<f32>];
+    fn deref(&self) -> &Self::Target {
+        &self.vectors
+    }
+}
+
+impl<'a> IntoIterator for &'a TextEmbeddingBatch {
+    type Item = &'a Vec<f32>;
+    type IntoIter = std::slice::Iter<'a, Vec<f32>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.vectors.iter()
+    }
+}
+
+impl serde::Serialize for TextEmbeddingBatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Borrowed diagnostic serialization preserves the existing matrix shape
+        // while this owner still holds the data's allocation charge.
+        serde::Serialize::serialize(&self.vectors, serializer)
+    }
+}
+
+impl PartialEq for TextEmbeddingBatch {
+    fn eq(&self, other: &Self) -> bool {
+        self.vectors == other.vectors
+    }
+}
+
+impl PartialEq<Vec<Vec<f32>>> for TextEmbeddingBatch {
+    fn eq(&self, other: &Vec<Vec<f32>>) -> bool {
+        self.vectors == *other
+    }
+}
+
+impl FromIterator<Vec<f32>> for TextEmbeddingBatch {
+    fn from_iter<T: IntoIterator<Item = Vec<f32>>>(iter: T) -> Self {
+        Self::unscoped(iter.into_iter().collect())
+    }
+}
 
 /// Produces embedding vectors for text.
 ///
@@ -74,7 +184,7 @@ pub const EMBED_CHECKPOINT: &str = "semantic:embed";
 /// same code (QI-BB-031).
 pub trait TextEmbeddingProvider: Send + Sync {
     /// Embed `texts` into one vector each, in input order. Errors fail closed.
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError>;
+    fn embed_batch(&self, texts: &[&str]) -> Result<TextEmbeddingBatch, CoreError>;
 
     /// Embed `texts` under a request budget (QI-BB-002).
     ///
@@ -88,9 +198,18 @@ pub trait TextEmbeddingProvider: Send + Sync {
         &self,
         texts: &[&str],
         budget: &RequestBudgetV1,
-    ) -> Result<Vec<Vec<f32>>, CoreError> {
+    ) -> Result<TextEmbeddingBatch, CoreError> {
         budget.checkpoint(EMBED_CHECKPOINT)?;
-        self.embed_batch(texts)
+        let memory = TextEmbeddingBatch::reserve_output(texts.len(), self.dimension(), budget)?;
+        let mut output = self.embed_batch(texts)?;
+        if output.memory.is_some() {
+            return Err(CoreError::InvalidContract(
+                "semantic: plain provider returned scoped output".into(),
+            ));
+        }
+        output.memory = memory;
+        budget.checkpoint(EMBED_CHECKPOINT)?;
+        Ok(output)
     }
 
     /// Stable identity of the model these vectors come from.
@@ -108,6 +227,19 @@ pub trait TextEmbeddingProvider: Send + Sync {
 
     /// What every returned vector's bytes promise.
     fn normalization(&self) -> EmbeddingNormalization;
+
+    /// Certifies deterministic text-only output under the declared model revision.
+    ///
+    /// Successful vectors depend solely on the exact input text and declared
+    /// immutable model revision/output configuration.
+    /// Repeated inputs must produce identical values, independent of request,
+    /// source metadata, time, randomness, or mutable provider state. Any output
+    /// configuration change must change the declared identity. This capability
+    /// is a local declaration and must not perform external I/O.
+    /// Providers without that guarantee retain normal derivation on rebind.
+    fn supports_deterministic_payload_reuse(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -28,7 +28,7 @@
 
 mod corpus_wire;
 pub use corpus_wire::{
-    BatchIngestMode, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    BatchIngestMode, CorpusDecodeLimitsV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
     SearchCorpusSurfaceMutationConflictV1, SearchCorpusTombstoneScope, SearchScopeKey,
     SearchScopeSurface,
 };
@@ -42,11 +42,11 @@ pub use semantic_wire::{
 mod history_wire;
 pub use history_wire::{
     FileContributorEntry, FileContributorIdentityEntry, FileContributorIngestBatch,
-    FileOwnershipEntry, FileOwnershipIngestBatch, HistoryDiffHunkUpsert, HistoryIngestBatch,
-    HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert, HistoryTagDelete, HistoryTagMutation,
-    HistoryTagUpsert, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
-    RepoDescriptionIngestBatch, RepoMetaEntry, RepoMetaIngestBatch, RepoTopicEntry,
-    RepoTopicIngestBatch,
+    FileOwnershipEntry, FileOwnershipIngestBatch, HistoryDecodeLimitsV1, HistoryDiffHunkUpsert,
+    HistoryIngestBatch, HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert, HistoryTagDelete,
+    HistoryTagMutation, HistoryTagUpsert, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
+    RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoMetaEntry, RepoMetaIngestBatch,
+    RepoTopicEntry, RepoTopicIngestBatch,
 };
 
 mod runtime_wire;
@@ -57,7 +57,7 @@ pub use runtime_wire::{
 };
 
 mod payload_digest;
-pub use payload_digest::source_event_payload_sha256;
+pub use payload_digest::{source_event_payload_sha256, source_event_payload_sha256_with_progress, source_event_payload_sha256_with_work_v3};
 
 mod source_upload;
 pub use source_upload::{
@@ -67,7 +67,10 @@ pub use source_upload::{
 };
 
 mod validation;
-pub use validation::{SearchCorpusBatchShapeErrorV1, validate_lexical_file_mutations_v1};
+pub use validation::{CorpusSurfaceOrderScratchV3,
+    SearchCorpusBatchShapeErrorV1, SearchCorpusValidationProgressError,
+    validate_lexical_file_mutations_v1, validate_lexical_file_mutations_with_progress_v1,
+};
 
 mod envelope;
 pub use envelope::*;

@@ -1,0 +1,9 @@
+
+crate quanta_index_scratch_sqlite
+├── mod connection: pub(crate)
+│   ├── struct OperationScope: pub(self)
+│   ├── struct ScratchConnection: pub
+│   └── struct ScratchConnectionScope: pub
+├── mod physical: pub
+└── mod retention: pub
+    └── struct RetainedInodeMembership: pub

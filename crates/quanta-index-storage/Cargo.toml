@@ -10,8 +10,12 @@ description = "Bounded immutable object storage and persistent maps for native i
 workspace = true
 
 [dependencies]
+quanta-index-scratch-sqlite = { version = "0.1.0", path = "../quanta-index-scratch-sqlite" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 sha2.workspace = true
 rustix = { workspace = true, features = ["process"] }
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["cache"] }
 tempfile.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libsqlite3-sys = { version = "=0.38.2", features = ["quanta-capacity-vfs"] }

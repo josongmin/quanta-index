@@ -674,6 +674,9 @@ macro_rules! validated_identity {
         pub struct $name(String);
 
         impl $name {
+            /// The same raw UTF-8 limit used by the identity predicate.
+            pub const MAX_UTF8_BYTES_V1: usize = IDENTITY_MAX_UTF8_BYTES;
+
             /// Construct only from an already-canonical identity. This never normalizes input.
             pub fn new(value: impl Into<String>) -> Result<Self, IdentityValidationErrorV1> {
                 let value = value.into();

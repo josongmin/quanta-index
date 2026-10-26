@@ -412,3 +412,68 @@ fn an_unresolved_focus_subject_is_a_typed_refusal() {
         other => panic!("expected FocusSubjectNotFound typed refusal, got {other:?}"),
     }
 }
+
+#[test]
+fn unicode_match_and_budget_skip_widen_the_rank_prefix_without_changing_diagnostics() -> TestResult
+{
+    let mut rng = Lcg(0xCAFE_0001);
+    let mut snap = snapshot(&mut rng, 0);
+    for (position, (score, hint)) in [(400, 2), (300, 5), (200, 2), (100, 2)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut row = entry(&mut rng, u64::try_from(position)?);
+        row.subject_identity = format!("subject-{position}");
+        row.owner_path = "src/shared.rs".to_string();
+        row.search_text = "CAFÉ".to_string();
+        row.final_score_millis = score;
+        row.token_budget_hint = hint;
+        snap.entries.push(row);
+    }
+    let request = RepoMapQueryRequest {
+        repo_id: snap.repo_id.clone(),
+        revision_id: snap.revision_id.clone(),
+        manifest_generation: snap.manifest_generation,
+        query_text: "cafe\u{301}".to_string(),
+        top_k: 2,
+        token_budget: 5,
+        focus_subjects: vec![RepoMapFocusSubjectDto {
+            subject_identity: "subject-0".to_string(),
+            subject_doc_type: snap
+                .entries
+                .first()
+                .ok_or("missing focus fixture")?
+                .subject_doc_type,
+        }],
+    };
+    let response = RepoMapQueryEngine::query(&RepoMapIndexedSnapshot::new(snap.clone()), &request)?;
+    let actual = Page {
+        rows: response
+            .entries
+            .iter()
+            .map(|row| (row.subject_identity.clone(), row.rank))
+            .collect(),
+        dropped: response.dropped_entries_count,
+        drop_reasons: response.drop_reason_codes,
+        degraded_reasons: response.degraded_reason_codes,
+    };
+    let expected = Page {
+        rows: vec![("subject-0".to_string(), 1), ("subject-2".to_string(), 2)],
+        dropped: 2,
+        drop_reasons: vec![
+            "token_budget_exhausted".to_string(),
+            "top_k_exhausted".to_string(),
+        ],
+        degraded_reasons: Vec::new(),
+    };
+    if actual != expected {
+        return Err(
+            format!("fixed Unicode/budget gold: expected {expected:?}, got {actual:?}").into(),
+        );
+    }
+    let reference = reference_query(&snap, &request);
+    if actual != reference {
+        return Err(format!("full-sort reference: expected {reference:?}, got {actual:?}").into());
+    }
+    Ok(())
+}

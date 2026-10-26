@@ -13,8 +13,11 @@ use core::fmt;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
-    ser::SerializeStruct,
+    ser::{Error as _, SerializeStruct},
 };
+
+mod admitted;
+use admitted::{CommitDecodePolicy, Ordinary};
 
 const COMMIT_SHA_HEX_LEN: usize = 40;
 const COMMIT_SHA_BYTE_LEN: usize = 20;
@@ -130,23 +133,30 @@ impl CommitSha {
     #[must_use]
     pub fn to_hex(self) -> String {
         let mut out = String::with_capacity(COMMIT_SHA_HEX_LEN);
-        for byte in self.0 {
-            // `byte >> 4` masks to `< 16`; `byte & 0x0f` masks to `< 16`.
-            // Both indices are guaranteed in-range for the HEX table.
-            let hi = usize::from(byte >> 4);
-            let lo = usize::from(byte & 0x0f);
-            if let Some(&hi_c) = HEX_LOWER.get(hi) {
-                out.push(char::from(hi_c));
-            }
-            if let Some(&lo_c) = HEX_LOWER.get(lo) {
-                out.push(char::from(lo_c));
-            }
+        for byte in self.lower_hex_bytes() {
+            out.push(char::from(byte));
         }
         out
     }
+
+    fn lower_hex_bytes(&self) -> [u8; COMMIT_SHA_HEX_LEN] {
+        let mut hex = [0u8; COMMIT_SHA_HEX_LEN];
+        for (pair, byte) in hex.chunks_exact_mut(2).zip(self.0.iter().copied()) {
+            for (digit, nibble) in pair.iter_mut().zip([byte >> 4, byte & 0x0f]) {
+                *digit = encode_nibble(nibble);
+            }
+        }
+        hex
+    }
 }
 
-const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
+fn encode_nibble(nibble: u8) -> u8 {
+    if nibble < 10 {
+        b'0'.saturating_add(nibble)
+    } else {
+        b'a'.saturating_add(nibble.saturating_sub(10))
+    }
+}
 
 fn decode_nibble(byte: u8) -> Option<u8> {
     match byte {
@@ -159,7 +169,9 @@ fn decode_nibble(byte: u8) -> Option<u8> {
 
 impl fmt::Display for CommitSha {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.to_hex().as_str())
+        let hex = self.lower_hex_bytes();
+        let text = core::str::from_utf8(&hex).map_err(|_error| fmt::Error)?;
+        formatter.write_str(text)
     }
 }
 
@@ -168,7 +180,10 @@ impl Serialize for CommitSha {
     where
         S: Serializer,
     {
-        serializer.serialize_str(self.to_hex().as_str())
+        let hex = self.lower_hex_bytes();
+        let text = core::str::from_utf8(&hex)
+            .map_err(|_error| S::Error::custom("CommitSha hex formatter produced non-UTF-8"))?;
+        serializer.serialize_str(text)
     }
 }
 
@@ -292,9 +307,9 @@ impl Serialize for CommitRecord {
     }
 }
 
-struct CommitRecordVisitor;
+struct CommitRecordVisitor<P>(P);
 
-impl<'de> Visitor<'de> for CommitRecordVisitor {
+impl<'de, P: CommitDecodePolicy<'de>> Visitor<'de> for CommitRecordVisitor<P> {
     type Value = CommitRecord;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -311,17 +326,17 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
         let mut author_time_ms: Option<u64> = None;
         let mut committer_time_ms: Option<u64> = None;
         let mut applied_at_ms: Option<u64> = None;
-        let mut author: Option<String> = None;
-        let mut author_name: Option<Option<String>> = None;
-        let mut author_email: Option<Option<String>> = None;
-        let mut committer: Option<String> = None;
-        let mut committer_name: Option<Option<String>> = None;
-        let mut committer_email: Option<Option<String>> = None;
-        let mut message: Option<String> = None;
+        let mut author: Option<Box<str>> = None;
+        let mut author_name: Option<Option<Box<str>>> = None;
+        let mut author_email: Option<Option<Box<str>>> = None;
+        let mut committer: Option<Box<str>> = None;
+        let mut committer_name: Option<Option<Box<str>>> = None;
+        let mut committer_email: Option<Option<Box<str>>> = None;
+        let mut message: Option<Box<str>> = None;
         let mut is_merge: Option<bool> = None;
-        let mut tags: Option<Vec<String>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        let mut tags: Option<Vec<Box<str>>> = None;
+        while let Some(key) = self.0.next_field(&mut map)? {
+            match key {
                 "wire_version" => {
                     if wire_version.is_some() {
                         return Err(de::Error::duplicate_field("wire_version"));
@@ -332,13 +347,13 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
                     if sha.is_some() {
                         return Err(de::Error::duplicate_field("sha"));
                     }
-                    sha = Some(map.next_value()?);
+                    sha = Some(self.0.next_sha(&mut map)?);
                 }
                 "parents" => {
                     if parents.is_some() {
                         return Err(de::Error::duplicate_field("parents"));
                     }
-                    parents = Some(map.next_value()?);
+                    parents = Some(self.0.next_parents(&mut map)?);
                 }
                 "author_time_ms" => {
                     if author_time_ms.is_some() {
@@ -362,43 +377,43 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
                     if author.is_some() {
                         return Err(de::Error::duplicate_field("author"));
                     }
-                    author = Some(map.next_value()?);
+                    author = Some(self.0.next_text(&mut map)?);
                 }
                 "author_name" => {
                     if author_name.is_some() {
                         return Err(de::Error::duplicate_field("author_name"));
                     }
-                    author_name = Some(map.next_value()?);
+                    author_name = Some(self.0.next_optional_text(&mut map)?);
                 }
                 "author_email" => {
                     if author_email.is_some() {
                         return Err(de::Error::duplicate_field("author_email"));
                     }
-                    author_email = Some(map.next_value()?);
+                    author_email = Some(self.0.next_optional_text(&mut map)?);
                 }
                 "committer" => {
                     if committer.is_some() {
                         return Err(de::Error::duplicate_field("committer"));
                     }
-                    committer = Some(map.next_value()?);
+                    committer = Some(self.0.next_text(&mut map)?);
                 }
                 "committer_name" => {
                     if committer_name.is_some() {
                         return Err(de::Error::duplicate_field("committer_name"));
                     }
-                    committer_name = Some(map.next_value()?);
+                    committer_name = Some(self.0.next_optional_text(&mut map)?);
                 }
                 "committer_email" => {
                     if committer_email.is_some() {
                         return Err(de::Error::duplicate_field("committer_email"));
                     }
-                    committer_email = Some(map.next_value()?);
+                    committer_email = Some(self.0.next_optional_text(&mut map)?);
                 }
                 "message" => {
                     if message.is_some() {
                         return Err(de::Error::duplicate_field("message"));
                     }
-                    message = Some(map.next_value()?);
+                    message = Some(self.0.next_text(&mut map)?);
                 }
                 "is_merge" => {
                     if is_merge.is_some() {
@@ -410,7 +425,7 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
                     if tags.is_some() {
                         return Err(de::Error::duplicate_field("tags"));
                     }
-                    tags = Some(map.next_value()?);
+                    tags = Some(self.0.next_tags(&mut map)?);
                 }
                 other => return Err(de::Error::unknown_field(other, COMMIT_RECORD_FIELDS)),
             }
@@ -436,23 +451,17 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
             author_time_ms,
             committer_time_ms,
             applied_at_ms,
-            author: author.into_boxed_str(),
-            author_name: author_name
-                .ok_or_else(|| de::Error::missing_field("author_name"))?
-                .map(String::into_boxed_str),
-            author_email: author_email
-                .ok_or_else(|| de::Error::missing_field("author_email"))?
-                .map(String::into_boxed_str),
-            committer: committer.into_boxed_str(),
+            author,
+            author_name: author_name.ok_or_else(|| de::Error::missing_field("author_name"))?,
+            author_email: author_email.ok_or_else(|| de::Error::missing_field("author_email"))?,
+            committer,
             committer_name: committer_name
-                .ok_or_else(|| de::Error::missing_field("committer_name"))?
-                .map(String::into_boxed_str),
+                .ok_or_else(|| de::Error::missing_field("committer_name"))?,
             committer_email: committer_email
-                .ok_or_else(|| de::Error::missing_field("committer_email"))?
-                .map(String::into_boxed_str),
-            message: message.into_boxed_str(),
+                .ok_or_else(|| de::Error::missing_field("committer_email"))?,
+            message,
             is_merge,
-            tags: tags.into_iter().map(String::into_boxed_str).collect(),
+            tags,
         })
     }
 }
@@ -462,6 +471,35 @@ impl<'de> Deserialize<'de> for CommitRecord {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_struct("CommitRecord", COMMIT_RECORD_FIELDS, CommitRecordVisitor)
+        deserializer.deserialize_struct(
+            "CommitRecord",
+            COMMIT_RECORD_FIELDS,
+            CommitRecordVisitor(Ordinary),
+        )
+    }
+}
+
+#[cfg(test)]
+mod fixed_sha_wire_tests {
+    use super::CommitSha;
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "fixed contract gold and typed refusal assertions are independent test oracles"
+    )]
+    fn fixed_sha_json_and_cbor_are_exact_lower_hex() -> Result<(), Box<dyn std::error::Error>> {
+        const LOWER: &str = "abababababababababababababababababababab";
+        let sha = CommitSha::from_bytes([0xab; 20]);
+        assert_eq!(sha.to_hex(), LOWER);
+        assert_eq!(format!("{sha}"), LOWER);
+        assert_eq!(serde_json::to_string(&sha)?, format!("\"{LOWER}\""));
+
+        let mut encoded = Vec::new();
+        ciborium::into_writer(&sha, &mut encoded)?;
+        let mut expected = vec![0x78, 0x28]; // definite CBOR text length 40
+        expected.extend_from_slice(LOWER.as_bytes());
+        assert_eq!(encoded, expected);
+        Ok(())
     }
 }

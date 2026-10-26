@@ -176,6 +176,21 @@ pub struct NativeIdentityDecodeRunnerV1<'data, 'input, T, E> {
 }
 
 impl<T, E> NativeIdentityDecodeRunnerV1<'_, '_, T, E> {
+    /// Inspect the canonical parser's owned String before construction.
+    /// The callback may only borrow it; it cannot replace the wire input or
+    /// take custody from external DATA. Borrowed input has no owned backing.
+    pub fn observe_owned_backing_v1(&self, inspect: impl FnOnce(&String)) -> bool {
+        if !matches!(self.input, NativeIdentityDecodeInputV1::Owned)
+            || self.state.construction_attempted
+            || self.state.output.is_some()
+            || self.state.failure.is_some()
+        {
+            return false;
+        }
+        inspect(&self.state.backing);
+        true
+    }
+
     /// Inspect the exact retained cause for a finite Serde-facing marker.
     #[must_use]
     pub fn failure_v1(&self) -> Option<&NativeIdentityConstructionErrorV1<E>> {
@@ -222,6 +237,37 @@ impl<T, E> NativeIdentityDecodeRunnerV1<'_, '_, T, E> {
 mod tests {
     use super::*;
     use crate::RepoId;
+    #[test]
+    fn owned_backing_observer_preserves_exact_parser_storage_and_phase() {
+        let mut data = NativeIdentityDecodeDataV1::<RepoId, u8, ()>::new_v1();
+        assert!(data.begin_v1());
+        data.state.backing = String::from("repo/storage");
+        let expected_pointer = data.state.backing.as_ptr();
+        let expected_capacity = data.state.backing.capacity();
+        let mut observed = None;
+        data.loan_v1(NativeIdentityDecodeInputV1::Owned)
+            .with_funding_v1(|runner, _| {
+                assert!(runner.observe_owned_backing_v1(|value| {
+                    assert_eq!(value.as_str(), "repo/storage");
+                    observed = Some((value.as_ptr(), value.capacity()));
+                }));
+                let mut cause = Some(7_u8);
+                assert!(runner.refuse_admission_v1(&mut cause).is_err());
+                assert!(!runner.observe_owned_backing_v1(|_| panic!("used backing observed")));
+            })
+            .expect("fresh DATA loan");
+        assert_eq!(observed, Some((expected_pointer, expected_capacity)));
+        assert_eq!(data.state.backing.as_ptr(), expected_pointer);
+
+        let mut borrowed = NativeIdentityDecodeDataV1::<RepoId, u8, ()>::new_v1();
+        assert!(borrowed.begin_v1());
+        borrowed
+            .loan_v1(NativeIdentityDecodeInputV1::Borrowed("repo/borrowed"))
+            .with_funding_v1(|runner, _| {
+                assert!(!runner.observe_owned_backing_v1(|_| panic!("borrowed input observed")));
+            })
+            .expect("fresh borrowed DATA loan");
+    }
     #[test]
     fn loan_and_runner_are_one_attempt_and_preserve_full_refused_error_v1() {
         let mut data = NativeIdentityDecodeDataV1::<RepoId, Box<u8>, ()>::new_v1();

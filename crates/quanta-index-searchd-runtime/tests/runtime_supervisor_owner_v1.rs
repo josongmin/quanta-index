@@ -19,6 +19,9 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use quanta_index_core::CoreError;
+use quanta_index_searchd::app::runtime::StateRootLease;
+use quanta_index_searchd::app::supervisor::SupervisorGuards;
 use quanta_index_searchd::{
     CancelRoot, ChildContext, ChildExitKind, SearchdSupervisor, SupervisionOutcome,
 };
@@ -39,6 +42,76 @@ impl Drop for RecordedGuards {
     fn drop(&mut self) {
         let mut log = self.log.lock().expect("drop log is not poisoned");
         log.push("guards-dropped");
+    }
+}
+
+impl SupervisorGuards for RecordedGuards {
+    fn retire(self) -> Result<(), CoreError> {
+        drop(self);
+        Ok(())
+    }
+}
+
+enum LeaseRetirementMode {
+    FailAndRetain(Arc<Mutex<Option<StateRootLease>>>),
+    Succeed,
+}
+
+struct LeaseRetirementGuard {
+    lease: StateRootLease,
+    log: DropLog,
+    mode: LeaseRetirementMode,
+}
+
+struct BlockingLeaseRetirementGuard {
+    lease: StateRootLease,
+    entered: mpsc::Sender<()>,
+    release: mpsc::Receiver<()>,
+    finished: mpsc::Sender<()>,
+}
+
+impl SupervisorGuards for BlockingLeaseRetirementGuard {
+    fn retire(self) -> Result<(), CoreError> {
+        let Self {
+            lease,
+            entered,
+            release,
+            finished,
+        } = self;
+        let _entered = entered.send(());
+        let _released = release.recv();
+        drop(lease);
+        let _finished = finished.send(());
+        Ok(())
+    }
+}
+
+impl SupervisorGuards for LeaseRetirementGuard {
+    fn retire(self) -> Result<(), CoreError> {
+        let Self { lease, log, mode } = self;
+        match mode {
+            LeaseRetirementMode::FailAndRetain(retained) => {
+                let mut slot = match retained.lock() {
+                    Ok(slot) => slot,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                *slot = Some(lease);
+                drop(slot);
+                if let Ok(mut entries) = log.lock() {
+                    entries.push("guard-retirement-failed");
+                }
+                Err(CoreError::Storage(
+                    "fixed checked retirement failure".into(),
+                ))
+            }
+            LeaseRetirementMode::Succeed => {
+                drop(lease);
+                if let Ok(mut entries) = log.lock() {
+                    entries.push("guard-retired");
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -142,6 +215,337 @@ fn clean_drain_returns_zero_and_drops_guards_last() {
     );
     observed.sort_unstable();
     assert_eq!(observed, vec!["child-a", "child-b"]);
+}
+
+#[test]
+fn checked_guard_retirement_failure_keeps_lease_and_original_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let state_root = directory.path().join("state");
+    let retained = Arc::new(Mutex::new(None));
+    let log: DropLog = Arc::new(Mutex::new(Vec::new()));
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+        LeaseRetirementGuard {
+            lease: StateRootLease::acquire(&state_root)?,
+            log: Arc::clone(&log),
+            mode: LeaseRetirementMode::FailAndRetain(Arc::clone(&retained)),
+        },
+        CancelRoot::clone(&root),
+    );
+    supervisor.spawn_child(
+        "child-before-close",
+        no_stop(),
+        well_behaved_child("child-before-close", &log),
+    )?;
+    let trigger = {
+        let root = CancelRoot::clone(&root);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            root.request_shutdown();
+        })
+    };
+    let outcome = supervisor.run(&root);
+    trigger
+        .join()
+        .map_err(|_panic| "shutdown trigger panicked")?;
+    if !matches!(&outcome, SupervisionOutcome::GuardRetirementFailed {
+        error: CoreError::Storage(message),
+        primary: None,
+    } if message == "fixed checked retirement failure")
+        || outcome.exit_code() != 70
+        || outcome.is_stopped_clean()
+    {
+        return Err(format!(
+            "retirement failure was not the original non-clean result: {outcome:?}"
+        )
+        .into());
+    }
+    if log
+        .lock()
+        .map_err(|_poisoned| "drop log poisoned")?
+        .as_slice()
+        != ["child-before-close", "guard-retirement-failed"]
+    {
+        return Err("guard retirement ran before the child joined".into());
+    }
+    if !matches!(
+        StateRootLease::acquire(&state_root),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInUse,
+            ..
+        })
+    ) {
+        return Err("failed retirement released the original root lease".into());
+    }
+    let original = retained
+        .lock()
+        .map_err(|_poisoned| "retained lease slot poisoned")?
+        .take()
+        .ok_or("failed guard did not retain its original lease")?;
+    drop(original);
+
+    let clean_log: DropLog = Arc::new(Mutex::new(Vec::new()));
+    let clean_root = CancelRoot::new();
+    let mut clean = SearchdSupervisor::new(
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+        LeaseRetirementGuard {
+            lease: StateRootLease::acquire(&state_root)?,
+            log: Arc::clone(&clean_log),
+            mode: LeaseRetirementMode::Succeed,
+        },
+        CancelRoot::clone(&clean_root),
+    );
+    clean.spawn_child(
+        "clean-child",
+        no_stop(),
+        well_behaved_child("clean-child", &clean_log),
+    )?;
+    let clean_trigger = {
+        let root = CancelRoot::clone(&clean_root);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            root.request_shutdown();
+        })
+    };
+    let clean_outcome = clean.run(&clean_root);
+    clean_trigger
+        .join()
+        .map_err(|_panic| "clean shutdown trigger panicked")?;
+    if !clean_outcome.is_stopped_clean() || clean_outcome.exit_code() != 0 {
+        return Err(format!("clean retirement was not successful: {clean_outcome:?}").into());
+    }
+    if clean_log
+        .lock()
+        .map_err(|_poisoned| "clean drop log poisoned")?
+        .as_slice()
+        != ["clean-child", "guard-retired"]
+    {
+        return Err("clean guard retirement preceded child join".into());
+    }
+    let reacquired = StateRootLease::acquire(&state_root)?;
+    drop(reacquired);
+    Ok(())
+}
+
+#[test]
+fn failed_child_and_guard_retirement_preserve_both_causes_and_lease()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let state_root = directory.path().join("state");
+    let retained = Arc::new(Mutex::new(None));
+    let log: DropLog = Arc::new(Mutex::new(Vec::new()));
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+        LeaseRetirementGuard {
+            lease: StateRootLease::acquire(&state_root)?,
+            log: Arc::clone(&log),
+            mode: LeaseRetirementMode::FailAndRetain(Arc::clone(&retained)),
+        },
+        CancelRoot::clone(&root),
+    );
+    let child_log = Arc::clone(&log);
+    let (stop_tx, stop_rx) = mpsc::channel();
+    supervisor.spawn_child(
+        "failed-child",
+        Box::new(move || {
+            let _sent = stop_tx.send(());
+        }),
+        move |context: ChildContext| {
+            let handle = std::thread::Builder::new()
+                .name("child-failed-before-retirement".into())
+                .spawn(move || {
+                    let _stopped = stop_rx.recv();
+                    child_log
+                        .lock()
+                        .expect("drop log is not poisoned")
+                        .push("failed-child-joined");
+                    context.report_exit(ChildExitKind::Failed);
+                })?;
+            Ok(handle)
+        },
+    )?;
+    let trigger = {
+        let root = CancelRoot::clone(&root);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            root.request_shutdown();
+        })
+    };
+    let outcome = supervisor.run(&root);
+    trigger
+        .join()
+        .map_err(|_panic| "shutdown trigger panicked")?;
+    if !matches!(
+        &outcome,
+        SupervisionOutcome::GuardRetirementFailed {
+            error: CoreError::Storage(message),
+            primary: Some(primary),
+        } if message == "fixed checked retirement failure"
+            && matches!(primary.as_ref(), SupervisionOutcome::DrainFailed { failed }
+                if failed == &[("failed-child", ChildExitKind::Failed)])
+    ) || outcome.exit_code() != 70
+        || outcome.is_stopped_clean()
+    {
+        return Err(format!("combined failure lost a cause: {outcome:?}").into());
+    }
+    if log
+        .lock()
+        .map_err(|_poisoned| "drop log poisoned")?
+        .as_slice()
+        != ["failed-child-joined", "guard-retirement-failed"]
+    {
+        return Err("guard retirement preceded the failed child join".into());
+    }
+    if !matches!(
+        StateRootLease::acquire(&state_root),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInUse,
+            ..
+        })
+    ) {
+        return Err("combined failure released the original root lease".into());
+    }
+    let original = retained
+        .lock()
+        .map_err(|_poisoned| "retained lease slot poisoned")?
+        .take()
+        .ok_or("failed guard did not retain its original lease")?;
+    drop(original);
+    let reacquired = StateRootLease::acquire(&state_root)?;
+    drop(reacquired);
+    Ok(())
+}
+
+fn blocked_retirement_obeys_supervisor_boundary(
+    abort: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let state_root = directory.path().join("state");
+    let log: DropLog = Arc::new(Mutex::new(Vec::new()));
+    let root = CancelRoot::new();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let hard_deadline = if abort {
+        Duration::from_secs(3)
+    } else {
+        Duration::from_millis(250)
+    };
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(50),
+        hard_deadline,
+        BlockingLeaseRetirementGuard {
+            lease: StateRootLease::acquire(&state_root)?,
+            entered: entered_tx,
+            release: release_rx,
+            finished: finished_tx,
+        },
+        CancelRoot::clone(&root),
+    );
+    supervisor.spawn_child(
+        "child-before-blocked-retirement",
+        no_stop(),
+        well_behaved_child("child-before-blocked-retirement", &log),
+    )?;
+    let (outcome_tx, outcome_rx) = mpsc::channel();
+    let runner_root = CancelRoot::clone(&root);
+    let runner = std::thread::spawn(move || {
+        let outcome = supervisor.run(&runner_root);
+        let _sent = outcome_tx.send(outcome);
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    let shutdown_at = std::time::Instant::now();
+    root.request_shutdown();
+    // Always release the blocked original guard, including after a failed
+    // oracle, so this test does not strand its lease or a worker thread.
+    let observation = (|| -> Result<(), Box<dyn std::error::Error>> {
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("guard never entered retirement: {error}"))?;
+        if log
+            .lock()
+            .map_err(|_poisoned| "drop log poisoned")?
+            .as_slice()
+            != ["child-before-blocked-retirement"]
+        {
+            return Err("guard retirement entered before child join".into());
+        }
+        let signal_at = if abort {
+            let now = std::time::Instant::now();
+            root.request_abort(15);
+            Some(now)
+        } else {
+            None
+        };
+        let outcome = outcome_rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("blocked retirement held supervisor: {error}"))?;
+        let elapsed = signal_at.unwrap_or(shutdown_at).elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            return Err(
+                format!("retirement exceeded the bounded shutdown window: {elapsed:?}").into(),
+            );
+        }
+        let expected = if abort {
+            matches!(&outcome, SupervisionOutcome::SignalAbort { signum: 15 })
+                && outcome.exit_code() == 143
+        } else {
+            matches!(
+                &outcome,
+                SupervisionOutcome::GuardRetirementPending { primary: None }
+            ) && outcome.exit_code() == 70
+        };
+        if !expected || outcome.is_stopped_clean() {
+            return Err(format!("wrong blocked retirement outcome: {outcome:?}").into());
+        }
+        if !matches!(
+            StateRootLease::acquire(&state_root),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::StateRootInUse,
+                ..
+            })
+        ) {
+            return Err("blocked original retirement released the root lease".into());
+        }
+        Ok(())
+    })();
+    let _released = release_tx.send(());
+    let finished = finished_rx.recv_timeout(Duration::from_secs(2));
+    let joined_before = std::time::Instant::now()
+        .checked_add(Duration::from_secs(2))
+        .ok_or("supervisor join deadline cannot be represented")?;
+    while !runner.is_finished() && std::time::Instant::now() < joined_before {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let joined = if runner.is_finished() {
+        runner.join().map_err(|_panic| "supervisor runner panicked")
+    } else {
+        Err("supervisor runner remained blocked after guard release")
+    };
+    observation?;
+    finished.map_err(|error| format!("original guard did not retire: {error}"))?;
+    joined?;
+    let reacquired = StateRootLease::acquire(&state_root)?;
+    drop(reacquired);
+    Ok(())
+}
+
+#[test]
+fn blocked_guard_retirement_obeys_original_hard_deadline_and_retains_lease()
+-> Result<(), Box<dyn std::error::Error>> {
+    blocked_retirement_obeys_supervisor_boundary(false)
+}
+
+#[test]
+fn abort_during_blocked_guard_retirement_returns_signal_and_retains_lease()
+-> Result<(), Box<dyn std::error::Error>> {
+    blocked_retirement_obeys_supervisor_boundary(true)
 }
 
 /// A spawn failure during startup rolls back exactly what was started,
@@ -697,6 +1101,13 @@ impl Drop for DeadlineGuard {
     }
 }
 
+impl SupervisorGuards for DeadlineGuard {
+    fn retire(self) -> Result<(), CoreError> {
+        drop(self);
+        Ok(())
+    }
+}
+
 /// Cooperative and hard deadlines share one drain origin. The cooperative
 /// checkpoint cannot buy an extra hard-deadline interval for any child kind.
 #[test]
@@ -844,6 +1255,8 @@ fn stop_callback_time_consumes_every_shutdown_phase_budget() {
             | SupervisionOutcome::StartupRollback { .. }
             | SupervisionOutcome::RequiredChildLost { .. }
             | SupervisionOutcome::DrainFailed { .. }
+            | SupervisionOutcome::GuardRetirementFailed { .. }
+            | SupervisionOutcome::GuardRetirementPending { .. }
             | SupervisionOutcome::HardDeadlineEscalated { .. }
             | SupervisionOutcome::SignalAbort { .. }) => {
                 panic!("{phase}: deadline must escalate its live child: {other:?}");
@@ -906,6 +1319,12 @@ fn escalated_child_retains_guards_until_it_actually_exits() {
             self.0.send(()).expect("drop receiver is alive");
         }
     }
+    impl SupervisorGuards for NotifyingGuard {
+        fn retire(self) -> Result<(), CoreError> {
+            drop(self);
+            Ok(())
+        }
+    }
 
     let (release_tx, release_rx) = mpsc::channel();
     let (drop_tx, drop_rx) = mpsc::channel();
@@ -949,6 +1368,12 @@ fn reported_but_unfinished_child_is_bounded_and_retains_guards() {
     impl Drop for NotifyingGuard {
         fn drop(&mut self) {
             let _sent = self.0.send(());
+        }
+    }
+    impl SupervisorGuards for NotifyingGuard {
+        fn retire(self) -> Result<(), CoreError> {
+            drop(self);
+            Ok(())
         }
     }
 
@@ -996,6 +1421,12 @@ fn early_supervisor_drop_retains_guard_until_child_exit() {
     impl Drop for NotifyingGuard {
         fn drop(&mut self) {
             let _sent = self.0.send(());
+        }
+    }
+    impl SupervisorGuards for NotifyingGuard {
+        fn retire(self) -> Result<(), CoreError> {
+            drop(self);
+            Ok(())
         }
     }
 

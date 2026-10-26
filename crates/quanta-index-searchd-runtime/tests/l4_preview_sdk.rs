@@ -360,7 +360,11 @@ fn l4_sdk_preview_survives_daemon_process_restart() -> TestResult {
         if round == 1 {
             std::fs::remove_file(&checkout_file)?;
         }
-        let daemon = searchd_binary_process::SearchdBinaryProcess::start(state.path())
+        let daemon =
+            searchd_binary_process::SearchdBinaryProcess::start_with_history_max_generations(
+                state.path(),
+                8,
+            )
             .map_err(|error| format!("daemon start {round} failed: {error}"))?;
         let client = daemon.connect()?;
         assert_preview(

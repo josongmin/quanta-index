@@ -17,5 +17,6 @@ use quanta_index_sdk::ConnectOptions;
 
 mod control;
 mod hybrid_paging;
+mod native;
 mod query_parse;
 mod query_render;

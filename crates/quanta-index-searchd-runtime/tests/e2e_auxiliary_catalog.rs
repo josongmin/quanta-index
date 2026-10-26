@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::time::Duration;
 
+use anyhow::Context as _;
+
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::TextQuerySyntax;
 use quanta_index_core::{AuxiliaryAuthorityCatalogPort, AuxiliaryDomainV1};
@@ -124,7 +126,8 @@ fn retention_forgets_the_reaped_generations_auxiliary_rows() -> TestResult {
     for index in 0..SEALED {
         let path = format!("src/aux_gc_{index}.rs");
         let content = format!("fn aux_gc_{index}() {{ aux_gc_needle_{index} }}");
-        rt.ingest_text("repo", &path, &content)?;
+        rt.ingest_text("repo", &path, &content)
+            .with_context(|| format!("auxiliary retention generation {index}: text ingest"))?;
         rt.ingest_history_fixture_spec(&e2e_harness::E2eHistoryFixtureSpec {
             commit_sha: &format!("{index:0>40}"),
             file_path: &path,
@@ -139,10 +142,16 @@ fn retention_forgets_the_reaped_generations_auxiliary_rows() -> TestResult {
             added_text: "added",
             removed_text: "",
             touched_text: "touched",
-        })?;
-        rt.ingest_dirty_for_path(&path, 5)?;
-        sealed.push(rt.seal()?);
-        rt.activate_last_sealed_generation()?;
+        })
+        .with_context(|| format!("auxiliary retention generation {index}: history ingest"))?;
+        rt.ingest_dirty_for_path(&path, 5)
+            .with_context(|| format!("auxiliary retention generation {index}: dirty ingest"))?;
+        sealed.push(
+            rt.seal()
+                .with_context(|| format!("auxiliary retention generation {index}: seal"))?,
+        );
+        rt.activate_last_sealed_generation()
+            .with_context(|| format!("auxiliary retention generation {index}: activate"))?;
     }
     let retained: std::collections::BTreeSet<u64> = sealed
         .iter()

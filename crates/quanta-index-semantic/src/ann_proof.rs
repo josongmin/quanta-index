@@ -495,7 +495,7 @@ pub fn exact_vs_served_v1(bytes: &[u8], state: &Path) -> Result<Vec<u8>, CoreErr
         &plan.batch.replace_scopes,
         adapter.window_policy(),
     )?;
-    let (tally, stages) = adapter.build_stream(&header, &mut source, None)?;
+    let (tally, stages) = adapter.build_stream(&header, &mut source, None, None)?;
     let stored = run_blocking(
         &adapter.runtime,
         crate::search::proof_rows_v1(state, &plan.batch),

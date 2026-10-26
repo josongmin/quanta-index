@@ -98,6 +98,7 @@ fn expect_sidecar_corrupt(err: CoreError, expected_file: &str) -> TestResult {
         }
         other @ (CoreError::Typed { .. }
         | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }
         | CoreError::InvalidContract(_)
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
@@ -737,7 +738,8 @@ fn unsealed_generation_open_fails_closed() -> TestResult {
         | CoreError::Typed { .. }
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected NotReady, got {other:?}").into());
         }
     }
@@ -786,7 +788,8 @@ fn build_rejects_contract_dimension_mismatch() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected SEM_INVALID_VECTOR, got {other:?}").into());
         }
     }
@@ -833,7 +836,8 @@ fn query_dimension_mismatch_fails_closed() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected typed SemDimMismatch, got {other:?}").into());
         }
     }
@@ -1392,7 +1396,8 @@ fn delta_with_missing_base_fails_closed() -> TestResult {
         | CoreError::Typed { .. }
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected NotReady, got {other:?}").into());
         }
     }
@@ -1429,7 +1434,8 @@ fn replace_generation_with_base_fails_closed() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected InvalidContract, got {other:?}").into());
         }
     }
@@ -1467,7 +1473,8 @@ fn delta_without_base_fails_closed() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected InvalidContract, got {other:?}").into());
         }
     }
@@ -1571,7 +1578,8 @@ fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected InvalidContract, got {other:?}").into());
         }
     }
@@ -1605,7 +1613,8 @@ fn build_rejects_unsupported_distance_metric() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected InvalidContract, got {other:?}").into());
         }
     }
@@ -1760,7 +1769,8 @@ fn delta_with_unsealed_base_fails_closed() -> TestResult {
         | CoreError::Typed { .. }
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected NotReady, got {other:?}").into());
         }
     }
@@ -2142,7 +2152,8 @@ fn cross_batch_dimension_mismatch_on_unsealed_generation_fails_closed() -> TestR
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_)) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. }) => {
             return Err(format!("expected InvalidContract, got {other:?}").into());
         }
     }
@@ -2487,7 +2498,7 @@ fn delta_model_and_policy_mismatches_refuse_before_first_window() -> TestResult 
     for (case, batch) in cases {
         let header = SemanticIngestHeaderV1::of_batch(&batch);
         let mut source = WindowMustNotRun { calls: 0 };
-        let result = adapter.build_stream(&header, &mut source, None);
+        let result = adapter.build_stream(&header, &mut source, None, None);
         match result {
             Err(CoreError::Typed { code, .. })
                 if code
@@ -2528,7 +2539,7 @@ fn delta_refuses_base_with_unknown_revision_before_first_window() -> TestResult 
     delta.base_generation = Some(base_generation);
     let header = SemanticIngestHeaderV1::of_batch(&delta);
     let mut source = WindowMustNotRun { calls: 0 };
-    let result = adapter.build_stream(&header, &mut source, None);
+    let result = adapter.build_stream(&header, &mut source, None, None);
     match result {
         Err(CoreError::Typed { code, .. })
             if code == quanta_index_contract::lex::LexicalErrorCode::SemModelMismatch.into() => {}
@@ -2607,7 +2618,7 @@ fn in_progress_target_policy_mismatch_refuses_before_first_window() -> TestResul
     second.model_contract.policy_digest = "changed-policy".into();
     let header = SemanticIngestHeaderV1::of_batch(&second);
     let mut source = WindowMustNotRun { calls: 0 };
-    let result = adapter.build_stream(&header, &mut source, None);
+    let result = adapter.build_stream(&header, &mut source, None, None);
     match result {
         Err(CoreError::InvalidContract(_)) => {}
         other => return Err(format!("target policy mismatch was not refused: {other:?}").into()),
@@ -2645,7 +2656,7 @@ fn forged_embedding_policy_in_sealed_manifest_fails_closed() -> TestResult {
     delta.base_generation = Some(generation);
     let header = SemanticIngestHeaderV1::of_batch(&delta);
     let mut source = WindowMustNotRun { calls: 0 };
-    let Err(preflight_error) = adapter.build_stream(&header, &mut source, None) else {
+    let Err(preflight_error) = adapter.build_stream(&header, &mut source, None, None) else {
         return Err("forged base policy must fail before its first delta window".into());
     };
     expect_sidecar_corrupt(preflight_error, "semantic-manifest.cbor")?;

@@ -47,6 +47,7 @@ crate quanta_index_search_plane
 │       ├── struct DirectSemanticMaterializer: pub
 │       └── struct SemanticIngestStreamStats: pub
 ├── mod lowering: pub(crate)
+│   ├── struct CodeSearchWord: pub(self)
 │   ├── enum SourcegraphLoweringRoute: pub(self)
 │   └── enum StructuralLeafVerdict: pub(crate)
 ├── mod observability: pub(crate)
@@ -149,7 +150,9 @@ crate quanta_index_search_plane
 │   │       ├── mod route: pub(self)
 │   │       │   └── struct StructuralPage: pub(self)
 │   │       └── mod universe: pub(self)
+│   │           └── struct CompiledFileFilter: pub(self)
 │   ├── mod selection: pub(self)
+│   │   ├── struct SelectedGeneration: pub(super)
 │   │   └── struct SemanticSelection: pub(super)
 │   ├── mod semantic_query: pub(self)
 │   │   ├── struct HybridFilterTraceV1: pub(super)
@@ -175,7 +178,20 @@ crate quanta_index_search_plane
 │   │   ├── struct ActivationKey: pub(super)
 │   │   ├── struct ActiveGenerationRecord: pub
 │   │   ├── type ActiveRoots: pub(self)
-│   │   └── struct ActiveSearchCorpusHeadV1: pub(self)
+│   │   ├── struct ActiveSearchCorpusHeadV1: pub(self)
+│   │   ├── struct CatalogState: pub(self)
+│   │   ├── struct GenerationNamespaceReadersV1: pub(self)
+│   │   ├── mod repository_envelope: pub(self)
+│   │   │   ├── type BoundRow: pub(self)
+│   │   │   ├── struct ByteCounter: pub(self)
+│   │   │   ├── type EnvelopeRow: pub(self)
+│   │   │   ├── struct EventHistory: pub(super)
+│   │   │   ├── type EventRow: pub(self)
+│   │   │   ├── type LexicalRangesRow: pub(self)
+│   │   │   ├── struct Rows: pub(self)
+│   │   │   ├── struct StreamHead: pub(super)
+│   │   │   └── type StreamRow: pub(self)
+│   │   └── mod source_events: pub(self)
 │   ├── mod aux_epoch: pub(self)
 │   │   ├── enum AuxEpochRefusedError: pub
 │   │   ├── struct AuxRead: pub
@@ -223,6 +239,7 @@ crate quanta_index_search_plane
 │   │   └── struct SearchCorpusGenerationV1: pub
 │   ├── mod search_corpus_history: pub(self)
 │   │   ├── struct EnforcedSearchCorpusHistoryRetentionV1: pub(super)
+│   │   ├── struct ObservedRootLock: pub(self)
 │   │   ├── enum SealedSearchCorpusAuthorityStateV1: pub
 │   │   ├── struct SearchCorpusAuthorityFileV1: pub(super)
 │   │   ├── struct SearchCorpusAuthorityRecordV1: pub(super)
@@ -247,12 +264,16 @@ crate quanta_index_search_plane
 │   └── mod pair_lock: pub(self)
 │       ├── trait ActiveSearchCorpusPinReadPort: pub(crate)
 │       ├── struct SearchCorpusPairMutationCoordinator: pub(crate)
-│       └── struct SearchCorpusPairMutationGuard: pub(crate)
+│       ├── struct SearchCorpusPairMutationGuard: pub(crate)
+│       └── enum UnresolvedSourceTargetV1: pub(crate)
 ├── mod search_corpus_retention: pub(crate)
+│   ├── struct DirectSearchCorpusIndexByteSession: pub(self)
+│   ├── struct PairIndexByteSession: pub(self)
 │   ├── struct PairIndexBytesMeasurer: pub
 │   ├── struct SearchCorpusHistoryRetentionItemV1: pub(crate)
 │   ├── struct SearchCorpusHistoryRetentionPlanV1: pub(crate)
 │   ├── struct SearchCorpusHistoryRetentionPolicyV1: pub
+│   ├── trait SearchCorpusIndexByteSession: pub
 │   └── trait SearchCorpusIndexBytesPort: pub
 ├── mod semantic_derive: pub(crate)
 │   ├── struct DerivedSemanticScopeSource: pub(crate)
@@ -264,16 +285,25 @@ crate quanta_index_search_plane
 │   ├── struct Flight: pub(crate)
 │   ├── type FlightOutcome: pub(self)
 │   └── struct LiveHandleTracker: pub(crate)
-└── mod snapshot_registry: pub(crate)
-    ├── struct Entry: pub(self)
-    ├── struct OpenedSnapshot: pub
-    ├── struct RegistryState: pub(self)
-    ├── enum SnapshotAcquireOutcome: pub
-    ├── struct SnapshotAcquired: pub
-    ├── struct SnapshotKey: pub
-    ├── enum SnapshotPromoteOutcome: pub
-    ├── struct SnapshotRegistries: pub
-    ├── struct SnapshotRegistry: pub
-    ├── struct SnapshotRegistryPolicy: pub
-    ├── struct SnapshotRegistryStats: pub
-    └── enum SnapshotRetireOutcome: pub
+├── mod snapshot_inventory_admission: pub(crate)
+│   └── struct SnapshotInventoryAdmission: pub
+├── mod snapshot_registry: pub(crate)
+│   ├── struct Entry: pub(self)
+│   ├── struct OpenedSnapshot: pub
+│   ├── struct RegistryState: pub(self)
+│   ├── enum SnapshotAcquireOutcome: pub
+│   ├── struct SnapshotAcquired: pub
+│   ├── struct SnapshotKey: pub
+│   ├── enum SnapshotPromoteOutcome: pub
+│   ├── struct SnapshotPromotionPermit: pub(crate)
+│   ├── struct SnapshotPublicationPairPermit: pub(crate)
+│   ├── struct SnapshotPublicationPermit: pub(crate)
+│   ├── struct SnapshotRegistries: pub
+│   ├── struct SnapshotRegistry: pub
+│   ├── struct SnapshotRegistryPolicy: pub
+│   ├── struct SnapshotRegistryStats: pub
+│   ├── enum SnapshotRetireOutcome: pub
+│   └── enum SnapshotRetirementOwner: pub
+└── mod test_runtime_barriers: pub #[cfg(feature = "test-runtime-barriers")]
+    ├── struct LexicalActiveBeforeViewGuard: pub
+    └── type LexicalGate: pub(self)

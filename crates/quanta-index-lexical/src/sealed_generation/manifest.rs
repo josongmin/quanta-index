@@ -741,10 +741,12 @@ mod tests {
 
     #[test]
     fn compact_forged_commitment_count_refuses_before_materialization() {
-        // Fixed format-19 prefix followed by a million one-byte scalar rows.
+        // Current format prefix followed by a million one-byte scalar rows.
         // The old generic Value path materialized these rows before typed
         // shape validation; the new reader refuses at the count header.
-        let mut bytes = vec![0x8c, 0x13];
+        let mut bytes = vec![0x8c];
+        ciborium::into_writer(&LEXICAL_SEALED_MANIFEST_FORMAT_VERSION, &mut bytes)
+            .expect("format field");
         ciborium::into_writer(&"digest", &mut bytes).expect("digest field");
         ciborium::into_writer(
             &(

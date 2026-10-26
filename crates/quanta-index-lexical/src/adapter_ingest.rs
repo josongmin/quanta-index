@@ -32,7 +32,7 @@ use quanta_index_core::{
     LexicalIndexBuildPort, MetricPointV1, MetricSourcePort, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1,
     SearchCorpusBatchBuildPort, SearchCorpusPreflightPhaseV1, TrackDiskUsagePort,
-    WriterIdleSweepPort, count_from_usize, unique_inode_tree_bytes_in_track,
+    WriterIdleSweepPort, count_from_usize,
 };
 
 /// The writer envelope and the regex match cache as scrape points,
@@ -47,19 +47,72 @@ impl WriterIdleSweepPort for LexicalAdapter {
 /// the same walker a reclaim and an open use (QI-BB-015).
 impl TrackDiskUsagePort for LexicalAdapter {
     /// Bytes the lexical state root occupies on disk, by unique inode (a
-    /// delta's hard-linked base segments count once), measured while
-    /// ingest, seals and reclaims keep running.
+    /// delta's hard-linked base segments count once), observed while writers
+    /// continue. Exact admission and retention use the separate snapshot port.
     fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
         budget.checkpoint("lexical-disk-usage:entry")?;
-        if !self.state_root.exists() {
-            return Ok(0);
-        }
-        unique_inode_tree_bytes_in_track(
+        quanta_index_scratch_sqlite::physical::measure_live_inode_tree_bytes(
             &self.state_root,
             &is_writer_lock_entry,
+            self.retention_measurement_policy.max_main_file_bytes(),
             budget,
             budget.diagnostic_context(),
         )
+    }
+}
+
+fn append_merge_observation(
+    points: &mut Vec<MetricPointV1>,
+    observation: crate::LexicalMaintenanceObservation,
+) {
+    let file = observation.file_merge;
+    for (suffix, value) in [
+        ("input_runs", file.input_runs),
+        ("output_runs", file.output_runs),
+        ("transferred_segments", file.transferred_segments),
+        (
+            "transferred_segment_attributed_bytes",
+            file.transferred_segment_attributed_bytes,
+        ),
+        (
+            "retired_run_posting_attributed_bytes",
+            file.retired_run_posting_attributed_bytes,
+        ),
+        (
+            "created_run_posting_attributed_bytes",
+            file.created_run_posting_attributed_bytes,
+        ),
+    ] {
+        points.push(MetricPointV1::gauge_count(
+            format!("lexical_maintenance_last_sealed_file_merge_{suffix}"),
+            value,
+        ));
+    }
+    let native = observation.native_merge;
+    for (suffix, value) in [
+        ("input_runs", native.input_runs),
+        ("input_segments", native.input_segments),
+        (
+            "input_attributed_index_bytes",
+            native.input_index_encoded_bytes,
+        ),
+        ("output_available", u64::from(native.output.is_some())),
+    ] {
+        points.push(MetricPointV1::gauge_count(
+            format!("lexical_maintenance_last_sealed_native_merge_{suffix}"),
+            value,
+        ));
+    }
+    if let Some(output) = native.output {
+        for (suffix, value) in [
+            ("output_segments", output.segments),
+            ("output_attributed_index_bytes", output.index_encoded_bytes),
+        ] {
+            points.push(MetricPointV1::gauge_count(
+                format!("lexical_maintenance_last_sealed_native_merge_{suffix}"),
+                value,
+            ));
+        }
     }
 }
 
@@ -68,12 +121,34 @@ impl MetricSourcePort for LexicalAdapter {
         let writers = self.writer_cache_stats()?;
         let regex = self.regex_match_cache_stats()?;
         let text_authority = self.text_authority_update_stats()?;
+        let write_cost = self.publication_write_stats()?;
+        let maintenance = self.maintenance_stats()?;
         let seals = self.seal_commitment_stats()?;
         let phase = self.coverage_read_by_phase_stats()?;
         // Total and phase counters must describe the same instant while
         // publication can record another read concurrently with this scrape.
         let coverage = phase.total;
-        Ok(vec![
+        let mut points = vec![
+            MetricPointV1::counter(
+                "lexical_completed_builds_with_pool_write_cost_total",
+                write_cost.completed_builds,
+            ),
+            MetricPointV1::counter(
+                "lexical_completed_build_pool_new_objects_total",
+                write_cost.new_objects,
+            ),
+            MetricPointV1::counter(
+                "lexical_completed_build_pool_new_encoded_bytes_total",
+                write_cost.new_encoded_bytes,
+            ),
+            MetricPointV1::counter(
+                "lexical_completed_build_pool_reused_objects_total",
+                write_cost.reused_objects,
+            ),
+            MetricPointV1::counter(
+                "lexical_completed_build_pool_reused_encoded_bytes_total",
+                write_cost.reused_encoded_bytes,
+            ),
             MetricPointV1::counter("lexical_seals_total", seals.seals),
             MetricPointV1::counter("lexical_seal_files_hashed_total", seals.files_hashed),
             MetricPointV1::counter("lexical_seal_bytes_hashed_total", seals.bytes_hashed),
@@ -241,11 +316,159 @@ impl MetricSourcePort for LexicalAdapter {
                 "lexical_regex_match_set_bytes_built_total",
                 regex.bytes_built,
             ),
-        ])
+        ];
+        points.push(MetricPointV1::counter(
+            "lexical_maintenance_observed_sealed_publications_total",
+            maintenance.sealed_publications,
+        ));
+        points.push(MetricPointV1::gauge_count(
+            "lexical_maintenance_last_sealed_observation_available",
+            u64::from(maintenance.last_observation.is_some()),
+        ));
+        if let Some(observation) = maintenance.last_observation {
+            append_merge_observation(&mut points, observation);
+            for (prefix, before, after, debt) in [
+                (
+                    "file",
+                    observation.file_before,
+                    observation.file_after,
+                    observation.file_debt_entries,
+                ),
+                (
+                    "native",
+                    observation.native_before,
+                    observation.native_after,
+                    observation.native_debt_entries,
+                ),
+            ] {
+                for (suffix, value) in [
+                    ("base_runs", before.runs()),
+                    ("base_segments", before.segments()),
+                    ("base_attributed_index_bytes", before.active_encoded_bytes()),
+                    ("target_runs", after.runs()),
+                    ("target_segments", after.segments()),
+                    (
+                        "target_attributed_index_bytes",
+                        after.active_encoded_bytes(),
+                    ),
+                    ("target_debt_entries", debt),
+                ] {
+                    points.push(MetricPointV1::gauge_count(
+                        format!("lexical_maintenance_last_sealed_{prefix}_{suffix}"),
+                        value,
+                    ));
+                }
+            }
+        }
+        points.push(MetricPointV1::gauge_count(
+            "lexical_pool_quota_enabled",
+            u64::from(self.pool_write_admission.is_some()),
+        ));
+        if let Some(admission) = &self.pool_write_admission {
+            // One ledger snapshot keeps the occupancy partitions consistent.
+            // A damaged ledger makes the scrape fail, rather than publishing
+            // plausible zero occupancy or headroom.
+            let usage = admission.snapshot()?;
+            let available = usage
+                .ceiling_bytes
+                .checked_sub(usage.total_charged_bytes)
+                .ok_or_else(|| {
+                    CoreError::Storage("lexical pool quota exceeds its ceiling".into())
+                })?;
+            points.extend([
+                MetricPointV1::gauge_count("lexical_pool_quota_file_limit", usage.file_limit),
+                MetricPointV1::gauge_count("lexical_pool_quota_charged_files", usage.charged_files),
+                MetricPointV1::gauge_count("lexical_pool_quota_ceiling_bytes", usage.ceiling_bytes),
+                MetricPointV1::gauge_count(
+                    "lexical_pool_quota_canonical_bytes",
+                    usage.canonical_bytes,
+                ),
+                MetricPointV1::gauge_count(
+                    "lexical_pool_quota_in_flight_bytes",
+                    usage.in_flight_bytes,
+                ),
+                MetricPointV1::gauge_count("lexical_pool_quota_orphan_bytes", usage.orphan_bytes),
+                MetricPointV1::gauge_count(
+                    "lexical_pool_quota_charged_bytes",
+                    usage.total_charged_bytes,
+                ),
+                MetricPointV1::gauge_count("lexical_pool_quota_available_bytes", available),
+            ]);
+        }
+        Ok(points)
     }
 }
 
 impl SearchCorpusBatchBuildPort for LexicalAdapter {
+    fn prepare_hard_recovery_scan_with_owner(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+        budget: &RequestBudgetV1,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        owner.bind_batch(batch)?;
+        if self.maintenance_policy.is_none() || batch.base_generation.is_none() {
+            return Ok(());
+        }
+        let scan_budget = budget.child();
+        let key = GenKey {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        };
+        let _mutation = self.generation_build_guards(&key, batch.base_generation)?;
+        let _lifecycle = self.directory_lifecycle_read_guard()?;
+        let base_directory = batch.base_generation.map(|generation| {
+            self.index_path(&GenKey {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation,
+            })
+        });
+        let reservation = owner.lexical_reservation().ok_or_else(|| {
+            CoreError::InvalidContract(
+                "hard scan requires catalog-owned document reservations".into(),
+            )
+        })?;
+        let mut publication = crate::lexical_publication::PublicationContext::begin(
+            &self.state_root,
+            batch,
+            reservation,
+            base_directory.as_deref(),
+            None,
+            diagnostic,
+            crate::lexical_publication::PublicationAdmission {
+                maintenance_policy: self.maintenance_policy,
+                pool_write: self.pool_write_admission.clone(),
+                object_lifetime: self.object_lifetime.clone(),
+                control_output: if owner.has_publication_control_permit() {
+                    owner.output_admission().owned_control_admission()?
+                } else {
+                    None
+                },
+                work_output: owner.output_admission().owned_work_admission()?,
+            },
+        )?;
+        let ops = legacy_ops_for_batch(batch, batch.seal)?;
+        let source_directory = base_directory.as_deref().ok_or_else(|| {
+            CoreError::InvalidContract("hard scan delta base directory is absent".into())
+        })?;
+        let mutation = crate::file_authority::plan_ops(source_directory, &ops)?;
+        let native_plan = crate::text_authority_plan::plan_text_authority_delta(
+            &publication.store,
+            publication.native_base.as_ref(),
+            &ops,
+            &publication.reservation.native_text,
+        )?;
+        publication.prepare_or_load_hard_scan(
+            &mutation,
+            &native_plan,
+            Some(&scan_budget),
+            crate::lexical_hard_scan::HardScanStage::Prepare,
+        )
+    }
+
     fn preflight_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
@@ -317,7 +540,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     )?,
                 None,
                 diagnostic,
-                &crate::lexical_store::ObjectStore::open_existing(&self.state_root)?,
+                &self.open_existing_store()?,
             ) {
                 Ok(proved) => proved,
                 Err(CoreError::Typed {
@@ -420,7 +643,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     )?,
                 None,
                 diagnostic,
-                &crate::lexical_store::ObjectStore::open_existing(&self.state_root)?,
+                &self.open_existing_store()?,
             )?;
                     self.record_coverage_read(
                         CoverageReadPhase::Build,
@@ -465,6 +688,17 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     base_directory.as_deref(),
                     sync_totals.clone(),
                     diagnostic,
+                    crate::lexical_publication::PublicationAdmission {
+                        maintenance_policy: self.maintenance_policy,
+                        pool_write: self.pool_write_admission.clone(),
+                        object_lifetime: self.object_lifetime.clone(),
+                        control_output: if owner.has_publication_control_permit() {
+                            owner.output_admission().owned_control_admission()?
+                        } else {
+                            None
+                        },
+                        work_output: owner.output_admission().owned_work_admission()?,
+                    },
                 )?;
                 let native_plan = crate::text_authority_plan::plan_text_authority_delta(
                     &publication.store,
@@ -472,6 +706,16 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     &ops,
                     &publication.reservation.native_text,
                 )?;
+                if publication.maintenance_policy.is_some() {
+                    let source_directory = base_directory.as_deref().unwrap_or(&generation_dir);
+                    let mutation = crate::file_authority::plan_ops(source_directory, &ops)?;
+                    publication.prepare_or_load_hard_scan(
+                        &mutation,
+                        &native_plan,
+                        None,
+                        crate::lexical_hard_scan::HardScanStage::UsePrepared,
+                    )?;
+                }
                 let (clear_all, retired, prepare_file) = match &native_plan.write {
                     crate::TextAuthorityWrite::None => (false, &[][..], true),
                     crate::TextAuthorityWrite::Delta {
@@ -486,6 +730,8 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                             publication.native_base.as_ref(),
                             retired,
                             diagnostic,
+                            owner.prepare_request_budget(),
+                            publication.maintenance_policy.as_ref(),
                         )?;
                 }
                 publication.native_plan = Some(native_plan);
@@ -528,6 +774,9 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                         )
                     },
                 )?;
+                if let Some(policy) = &publication.maintenance_policy {
+                    publication.admit_maintenance_target(policy)?;
+                }
                 let mut stages = LexicalBuildStageDurationsV1 {
                     preparation_ns,
                     prep_file_authority_preflight_ns: Some(prep_file_authority_preflight_ns),
@@ -541,8 +790,8 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     file_authority_source_write_ns: mutation.file_authority_source_write_ns,
                     ..LexicalBuildStageDurationsV1::default()
                 };
-                if batch.seal {
-                    let (writer_timings, commitment_ns, file_admission_ns, seal_ns) =
+                let completed_write_cost = if batch.seal {
+                    let (writer_timings, commitment_ns, file_admission_ns, seal_ns, write_cost) =
                         crate::causal_profile::observe_result(
                             diagnostic,
                             quanta_index_core::DiagnosticStageV1::Finalize,
@@ -563,36 +812,46 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                                         })
                                     });
                                 let commitment_started = Instant::now();
-                                let (measured, file_admission_ns) =
-                                    crate::causal_profile::observe_result(
-                                        finalize_diagnostic,
-                                        quanta_index_core::DiagnosticStageV1::LexicalSeal,
-                                        |seal_diagnostic| {
-                                            seal_generation(
-                                                &generation_dir,
-                                                &self.fields,
-                                                &candidate,
-                                                base_dir.as_deref(),
-                                                &coverage_root,
-                                                &publication,
-                                                sync_totals.as_deref(),
-                                                seal_diagnostic,
-                                            )
-                                        },
-                                    )?;
+                                let sealed = crate::causal_profile::observe_result(
+                                    finalize_diagnostic,
+                                    quanta_index_core::DiagnosticStageV1::LexicalSeal,
+                                    |seal_diagnostic| {
+                                        seal_generation(
+                                            &generation_dir,
+                                            &self.fields,
+                                            &candidate,
+                                            base_dir.as_deref(),
+                                            &coverage_root,
+                                            &publication,
+                                            sync_totals.as_deref(),
+                                            seal_diagnostic,
+                                        )
+                                    },
+                                )?;
                                 let commitment_ns = elapsed_stage_ns(commitment_started)?;
-                                self.record_seal_measurement(measured)?;
+                                let file_admission_ns = sealed.file_admission_ns;
+                                self.record_seal_measurement(sealed.measurement)?;
                                 crate::index_store::persist_lexical_sealed_identity_observed(
                                     &generation_dir,
                                     &candidate,
                                     sync_totals.as_deref(),
                                 )?;
-                                publication.finish()?;
+                                // The sealed identity is already durable. Later attempt
+                                // retirement can fail and be repaired by replay without
+                                // rebuilding, so record the seal at this boundary.
+                                self.record_maintenance_observation(
+                                    publication.maintenance_observation(
+                                        sealed.file_merge,
+                                        sealed.native_merge,
+                                    )?,
+                                )?;
+                                let write_cost = publication.finish()?;
                                 Ok::<_, CoreError>((
                                     writer_timings,
                                     commitment_ns,
                                     file_admission_ns,
                                     elapsed_stage_ns(seal_started)?,
+                                    write_cost,
                                 ))
                             },
                         )?;
@@ -601,10 +860,14 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     stages.seal_merge_wait_ns = Some(writer_timings.merge_wait_ns);
                     stages.seal_commitment_ns = Some(commitment_ns);
                     stages.seal_file_admission_ns = Some(file_admission_ns);
-                }
+                    write_cost
+                } else {
+                    publication.write_cost_snapshot()?
+                };
                 // Every batch is a chance to give an abandoned generation's heap back
                 // to the envelope (QI-BB-016).
-                let _released = self.release_idle_writers()?;
+                let _released = self.release_idle_writers_under_lifecycle()?;
+                self.record_publication_write_cost(completed_write_cost)?;
                 Ok(Some(stages))
             },
         )
@@ -815,7 +1078,7 @@ impl LexicalAdapter {
                             owner.proof_state::<crate::sealed_generation::publication_proof::PublicationProofs>(SearchPlaneTrackKind::Lexical)?,
                             None,
                             diagnostic,
-                         &crate::lexical_store::ObjectStore::open_existing(&self.state_root)?)?;
+                         &self.open_existing_store()?)?;
                     *self.coverage_decode_cache.lock().map_err(|error| {
                         CoreError::Storage(format!(
                             "lexical: coverage decode cache poisoned: {error}"

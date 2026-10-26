@@ -16,8 +16,10 @@
 pub mod macros;
 
 mod native_serde;
+pub use native_serde::ClosedFieldKeySeedV1;
 
 mod activation_token;
+pub mod admitted_decode;
 pub mod ids;
 pub mod index_refs;
 pub mod query;
@@ -25,6 +27,12 @@ pub mod results;
 mod retained_scalar_decode_v1;
 mod source_file;
 
+pub use admitted_decode::{
+    AdmittedBoxedTextSeedV1, AdmittedByteStringSeedV1, AdmittedOptionalSeedV1,
+    AdmittedSequenceSeedV1, AdmittedTextSeedV1, DecodeAttemptStateV1, DecodeBackingAdmissionV1,
+    DecodeBackingRefusalV1, DecodeFieldGuardV1, DecodeFieldKindV1, DecodeFieldTokenV1,
+    ParserTextInputErrorV1, SourceIdentityDecodeAdmissionV1,
+};
 pub use source_file::{SourceFileKey, SourceFileRevision};
 
 pub use activation_token::{

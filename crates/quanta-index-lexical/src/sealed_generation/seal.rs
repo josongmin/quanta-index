@@ -382,6 +382,13 @@ fn read_bm25_base(
     }))
 }
 
+pub(crate) struct SealGenerationResult {
+    pub(crate) measurement: LexicalSealCommitmentStats,
+    pub(crate) file_admission_ns: u64,
+    pub(crate) file_merge: crate::FileRunMergeFacts,
+    pub(crate) native_merge: crate::NativeRunMergeFacts,
+}
+
 /// Measure `generation_dir` as sealed and write its manifest.
 ///
 /// `base_dir` is the delta base the generation was carried forward from,
@@ -395,7 +402,7 @@ pub(crate) fn seal_generation(
     publication: &crate::lexical_publication::PublicationContext,
     sync: Option<&crate::causal_profile::SyncTotalsV1>,
     diagnostic: Option<&DiagnosticContextV1>,
-) -> Result<(LexicalSealCommitmentStats, u64), CoreError> {
+) -> Result<SealGenerationResult, CoreError> {
     crate::index_store::remove_publish_leftovers(
         generation_dir,
         quanta_index_core::DiagnosticSyncLabelV1::SealedLeftoverDirectory,
@@ -464,8 +471,9 @@ pub(crate) fn seal_generation(
         .native_mutation
         .as_ref()
         .ok_or_else(|| CoreError::InvalidContract("Native publication witness missing".into()))?;
-    crate::causal_profile::timed_work("seal_native_transition", || {
-        crate::text_authority::verify_transition_for_seal(
+    publication.verify_hard_scan_for_seal()?;
+    let native_merge_proof = crate::causal_profile::timed_work("seal_native_transition", || {
+        crate::text_authority::verify_transition_for_seal_with_policy(
             &publication.store,
             &native,
             publication.native_base.as_ref(),
@@ -479,16 +487,22 @@ pub(crate) fn seal_generation(
                 .as_ref()
                 .map_or(1, |root| root.next_segment_id),
             None,
+            publication.maintenance_policy.as_ref(),
+            crate::lexical_hard_scan::lane(
+                publication.hard_scan.as_ref(),
+                crate::lexical_store::Authority::Native,
+            ),
         )
     })?;
-    crate::causal_profile::timed_work("seal_native_changed_segments", || {
-        crate::text_authority::verify_changed_segments_for_seal(
+    let native_merge = crate::causal_profile::timed_work("seal_native_changed_segments", || {
+        crate::text_authority::verify_changed_segments_for_seal_with_merge_facts(
             &publication.store,
             &native,
             publication
                 .native_base
                 .as_ref()
                 .map_or(1, |root| root.next_segment_id),
+            native_merge_proof,
         )
     })?;
     crate::causal_profile::timed_work("seal_native_index_coverage", || {
@@ -515,15 +529,21 @@ pub(crate) fn seal_generation(
             "root or mutation differs from publication witness",
         ));
     }
-    crate::causal_profile::timed_work("seal_file_transition_and_segments", || {
-        file_authority::paged::verify_for_seal(
-            &publication.store,
-            &file_root,
-            publication.file_base.as_ref(),
-            &publication.reservation.file,
-            mutation,
-        )
-    })?;
+    let file_merge =
+        crate::causal_profile::timed_work("seal_file_transition_and_segments", || {
+            file_authority::paged::verify_for_seal_with_merge_facts(
+                &publication.store,
+                &file_root,
+                publication.file_base.as_ref(),
+                &publication.reservation.file,
+                mutation,
+                publication.maintenance_policy.as_ref(),
+                crate::lexical_hard_scan::lane(
+                    publication.hard_scan.as_ref(),
+                    crate::lexical_store::Authority::File,
+                ),
+            )
+        })?;
     for edit in &mutation.edits {
         if let file_authority::paged::FileSourceEdit::Upsert { bytes, .. } = edit {
             measurer.stats.file_admission_sources_verified = measurer
@@ -632,7 +652,12 @@ pub(crate) fn seal_generation(
         source_coverage,
     };
     write_manifest(generation_dir, &manifest, sync)?;
-    Ok((measurer.stats, file_admission_ns))
+    Ok(SealGenerationResult {
+        measurement: measurer.stats,
+        file_admission_ns,
+        file_merge,
+        native_merge,
+    })
 }
 
 /// Build only new segment tables.

@@ -2,28 +2,52 @@
 //! generation publication; this module only prepares immutable store roots.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use quanta_index_contract::{SourceFileCoverage, SourceFileKey};
+use quanta_index_core::lexical_maintenance::{
+    LexicalMaintenancePolicy, StagedPacketBounds, StagedPacketIdentity,
+};
 use quanta_index_core::{CoreError, RequestBudgetV1};
 use quanta_index_lq_trigram::trigrams_of;
 use sha2::{Digest as _, Sha256};
 
 use crate::lexical_allocation::DocVersionReservation;
+use crate::lexical_runs::{
+    RunCandidate, RunRegistry, RunScanWindow, RunSelectionProgress, SegmentInput, SegmentRemoval,
+    bounded_candidate_scan_limit, segment_index_encoded_bytes,
+};
+#[cfg(test)]
+use crate::lexical_store::MapCursor;
 use crate::lexical_store::{
-    AttemptLease, BlobRef, MapCursor, MapEdit, MapRoot, ObjectKind, ObjectRef, ObjectStore,
+    AttemptLease, Authority as ScanAuthority, BlobRef, CandidateWitness, EligibilityWitness,
+    IneligibleReason, MapEdit, MapRoot, ObjectKind, ObjectRef, ObjectStore, ScanLane,
+    WindowWitness,
 };
 
+#[cfg(test)]
+use super::route_key;
+use super::run_postings;
+use super::run_postings::{
+    RunGramCount, RunPostingPage, RunPostingPageEdit, RunPostingRoot, RunPostingRow,
+    apply_page_delta, apply_run_page_edits, bootstrap_new_run_postings, merge_run_posting_roots,
+    run_page_key, run_route_key,
+};
 use super::{
     AuthorityRoot, LiveDoc, MAX_POSTING_PAGE_BYTES, MAX_POSTING_PAGE_TERMS, MAX_SEGMENT_DOCS,
-    PostingPage, Segment, SourceHead, doc_key, membership_key, policy_digest, route_key,
-    source_key_digest,
+    PostingPage, Segment, SourceHead, doc_key, membership_key, policy_digest, source_key_digest,
 };
 
 // Leaves room within the existing 128 MiB scratch admission for the source
 // vectors, physical page descriptors, and map builder's bounded page stack.
-const MAX_SEGMENT_GRAM_BYTES: usize = 32 * 1024 * 1024;
+pub(super) const MAX_SEGMENT_GRAM_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SINGLE_SOURCE_GRAM_BYTES: usize = 80 * 1024 * 1024;
 const ADOPTION_CPU_FLUSH_BYTES: usize = 2_097_152;
+// Each run edit now holds both the authenticated prior page and its target.
+// Two worst-case pages per key keep the batch within the former target-only
+// 1024-page scratch envelope; physical leaf page width remains unchanged.
+const MAX_RUN_EDIT_BATCH_PAGES: usize = MAX_POSTING_PAGE_TERMS.div_euclid(2);
+const _: () = assert!(MAX_RUN_EDIT_BATCH_PAGES > 0);
 
 #[derive(Debug)]
 pub(crate) enum FileSourceEdit {
@@ -65,11 +89,18 @@ struct Prepared {
     content_grams: Vec<[u8; 3]>,
 }
 
+#[cfg(test)]
 struct CreatedSegment {
     segment: Segment,
     reference: BlobRef,
 }
 
+struct CleanRunSelection {
+    run_ids: Vec<u64>,
+    progress: RunSelectionProgress,
+}
+
+#[cfg(test)]
 struct RouteStream<'a> {
     store: &'a ObjectStore,
     surface: u8,
@@ -83,6 +114,7 @@ struct RouteStream<'a> {
     failed: bool,
 }
 
+#[cfg(test)]
 impl<'a> RouteStream<'a> {
     fn new(
         store: &'a ObjectStore,
@@ -187,6 +219,7 @@ impl<'a> RouteStream<'a> {
     }
 }
 
+#[cfg(test)]
 impl Iterator for RouteStream<'_> {
     type Item = Result<MapEdit, CoreError>;
 
@@ -232,56 +265,6 @@ impl Iterator for RouteStream<'_> {
             key: route_key(self.surface, gram, count, digest).to_vec(),
             value: if self.delete { None } else { Some(reference) },
         }))
-    }
-}
-
-struct MergedRoutes<'a> {
-    deletions: RouteStream<'a>,
-    additions: RouteStream<'a>,
-    pending_delete: Option<Result<MapEdit, CoreError>>,
-    pending_add: Option<Result<MapEdit, CoreError>>,
-}
-
-impl<'a> MergedRoutes<'a> {
-    fn new(deletions: RouteStream<'a>, additions: RouteStream<'a>) -> Self {
-        Self {
-            deletions,
-            additions,
-            pending_delete: None,
-            pending_add: None,
-        }
-    }
-}
-
-impl Iterator for MergedRoutes<'_> {
-    type Item = Result<MapEdit, CoreError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.pending_delete.is_none() {
-            self.pending_delete = self.deletions.next();
-        }
-        if self.pending_add.is_none() {
-            self.pending_add = self.additions.next();
-        }
-        if self.pending_delete.as_ref().is_some_and(Result::is_err) {
-            return self.pending_delete.take();
-        }
-        if self.pending_add.as_ref().is_some_and(Result::is_err) {
-            return self.pending_add.take();
-        }
-        match (self.pending_delete.as_ref(), self.pending_add.as_ref()) {
-            (None, None) => None,
-            (Some(_), None) | (Some(Err(_)), _) => self.pending_delete.take(),
-            (None, Some(_)) | (_, Some(Err(_))) => self.pending_add.take(),
-            (Some(Ok(old)), Some(Ok(add))) => match old.key.cmp(&add.key) {
-                std::cmp::Ordering::Less => self.pending_delete.take(),
-                std::cmp::Ordering::Equal => {
-                    let _old = self.pending_delete.take();
-                    self.pending_add.take()
-                }
-                std::cmp::Ordering::Greater => self.pending_add.take(),
-            },
-        }
     }
 }
 
@@ -819,17 +802,212 @@ fn map_update(
     }
 }
 
-fn route_update(
+/// Replays one changed physical leaf into its owning run.
+///
+/// At most one physical posting page plus the existing map's bounded edit
+/// batch is live, even for a large source.
+fn apply_segment_to_run(
     store: &ObjectStore,
     lease: &AttemptLease,
-    base: &MapRoot,
-    stream: MergedRoutes<'_>,
-) -> Result<MapRoot, CoreError> {
-    if base.entries == 0 {
-        store.map_bootstrap(lease, stream)
-    } else {
-        store.map_apply(lease, base, stream)
+    mut run: Option<RunPostingRoot>,
+    run_id: u64,
+    segment: &Segment,
+    digest: [u8; 32],
+    remove: bool,
+) -> Result<RunPostingRoot, CoreError> {
+    for (surface, terms) in [(1_u8, &segment.path_terms), (2_u8, &segment.content_terms)] {
+        let mut cursor = store.map_cursor(terms, &[], None, None)?;
+        let mut cached: Option<(BlobRef, PostingPage)> = None;
+        let mut edits = BTreeMap::<Vec<u8>, RunPostingPageEdit>::new();
+        while let Some((term_key, page_ref)) = cursor.next()? {
+            let gram: [u8; 3] = term_key
+                .as_slice()
+                .try_into()
+                .map_err(|_width| corrupt("run leaf term key width differs"))?;
+            if cached
+                .as_ref()
+                .is_none_or(|(reference, _)| *reference != page_ref)
+            {
+                if page_ref.root.kind != ObjectKind::FilePostings {
+                    return Err(corrupt("run leaf page object kind differs"));
+                }
+                cached = Some((
+                    page_ref.clone(),
+                    PostingPage::decode(
+                        &store.read_blob(&page_ref, size_u64(MAX_POSTING_PAGE_BYTES)?, None)?,
+                        segment.doc_ids.len(),
+                    )?,
+                ));
+            }
+            let page = &cached
+                .as_ref()
+                .ok_or_else(|| corrupt("run leaf page absent"))?
+                .1;
+            let position = page
+                .0
+                .binary_search_by_key(&gram, |entry| entry.0)
+                .map_err(|_position| corrupt("run leaf page omits routed gram"))?;
+            let mask = page
+                .0
+                .get(position)
+                .ok_or_else(|| corrupt("run leaf page gram position disappeared"))?
+                .1;
+            let mut buckets = BTreeMap::<u64, Vec<RunPostingRow>>::new();
+            for (local, logical_id) in segment.doc_ids.iter().copied().enumerate() {
+                if mask & (1_u64 << local) != 0 {
+                    buckets
+                        .entry(logical_id >> 8)
+                        .or_default()
+                        .push(RunPostingRow {
+                            logical_id,
+                            segment_sha256: digest,
+                        });
+                }
+            }
+            if buckets.is_empty() {
+                return Err(corrupt("run leaf term has no posting IDs"));
+            }
+            for (_bucket, rows) in buckets {
+                let first_id = rows
+                    .first()
+                    .ok_or_else(|| corrupt("run leaf bucket has no posting rows"))?
+                    .logical_id;
+                let key = run_page_key(surface, gram, first_id)?.to_vec();
+                let prior_ref = run
+                    .as_ref()
+                    .map(|root| store.map_get(&root.pages, &key, None))
+                    .transpose()?
+                    .flatten();
+                let prior = prior_ref
+                    .as_ref()
+                    .map(|reference| {
+                        if reference.root.kind != ObjectKind::Record {
+                            return Err(corrupt("run page object kind differs"));
+                        }
+                        RunPostingPage::decode(&store.read_blob(
+                            reference,
+                            size_u64(MAX_POSTING_PAGE_BYTES)?,
+                            None,
+                        )?)
+                    })
+                    .transpose()?;
+                let next = apply_page_delta(
+                    surface,
+                    gram,
+                    first_id >> 8,
+                    prior.as_ref(),
+                    if remove { &rows } else { &[] },
+                    if remove { &[] } else { &rows },
+                )?;
+                if edits
+                    .insert(
+                        key,
+                        RunPostingPageEdit {
+                            prior: prior_ref.zip(prior),
+                            next,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(corrupt("run leaf emits duplicate bucket"));
+                }
+            }
+            if edits.len() >= MAX_RUN_EDIT_BATCH_PAGES {
+                let (next, _intermediate) = apply_run_page_edits(
+                    store,
+                    lease,
+                    run.as_ref(),
+                    run_id,
+                    std::mem::take(&mut edits),
+                )?;
+                run = Some(next);
+            }
+        }
+        if !edits.is_empty() {
+            let (next, _intermediate) =
+                apply_run_page_edits(store, lease, run.as_ref(), run_id, edits)?;
+            run = Some(next);
+        }
     }
+    if let Some(run) = run {
+        Ok(run)
+    } else {
+        let (empty, _reference) =
+            apply_run_page_edits(store, lease, None, run_id, BTreeMap::new())?;
+        Ok(empty)
+    }
+}
+
+fn update_run_routes(
+    store: &ObjectStore,
+    lease: &AttemptLease,
+    path_routes: &mut MapRoot,
+    content_routes: &mut MapRoot,
+    run_id: u64,
+    prior: Option<&RunPostingRoot>,
+    target: Option<&RunPostingRoot>,
+) -> Result<(), CoreError> {
+    let empty = MapRoot::default();
+    let prior_counts = prior.map_or(&empty, |root| &root.gram_counts);
+    let target_counts = target.map_or(&empty, |root| &root.gram_counts);
+    let mut path_edits = BTreeMap::new();
+    let mut content_edits = BTreeMap::new();
+    store.map_changed_keys(
+        prior_counts,
+        target_counts,
+        None,
+        &mut |key, before, after| {
+            let gram_key: [u8; 4] = key
+                .try_into()
+                .map_err(|_width| corrupt("run gram-count map key width differs"))?;
+            let edits = match gram_key[0] {
+                1 => &mut path_edits,
+                2 => &mut content_edits,
+                _ => return Err(corrupt("run gram-count surface differs")),
+            };
+            for (reference, addition) in [(before, false), (after, true)] {
+                let Some(reference) = reference else { continue };
+                if reference.root.kind != ObjectKind::Record {
+                    return Err(corrupt("run gram-count object kind differs"));
+                }
+                let count = RunGramCount::decode(&store.read_blob(
+                    reference,
+                    size_u64(super::MAX_RECORD_BYTES)?,
+                    None,
+                )?)?;
+                if count.key()? != gram_key {
+                    return Err(corrupt("run gram-count key differs"));
+                }
+                let route = run_route_key(count.surface, count.gram, count.count, run_id)?;
+                if edits
+                    .insert(route.to_vec(), addition.then(|| reference.clone()))
+                    .is_some()
+                {
+                    return Err(corrupt("duplicate run route edit"));
+                }
+            }
+            if path_edits.len() >= MAX_POSTING_PAGE_TERMS {
+                *path_routes =
+                    map_update(store, lease, path_routes, std::mem::take(&mut path_edits))?;
+            }
+            if content_edits.len() >= MAX_POSTING_PAGE_TERMS {
+                *content_routes = map_update(
+                    store,
+                    lease,
+                    content_routes,
+                    std::mem::take(&mut content_edits),
+                )?;
+            }
+            Ok(())
+        },
+    )?;
+    if !path_edits.is_empty() {
+        *path_routes = map_update(store, lease, path_routes, path_edits)?;
+    }
+    if !content_edits.is_empty() {
+        *content_routes = map_update(store, lease, content_routes, content_edits)?;
+    }
+    Ok(())
 }
 
 fn flush_segment(
@@ -838,7 +1016,6 @@ fn flush_segment(
     group: &[Prepared],
     segment_edits: &mut BTreeMap<Vec<u8>, Option<BlobRef>>,
     current_edits: &mut BTreeMap<Vec<u8>, Option<BlobRef>>,
-    created: &mut Vec<CreatedSegment>,
 ) -> Result<(), CoreError> {
     if group.is_empty() {
         return Ok(());
@@ -877,7 +1054,7 @@ fn flush_segment(
         &segment.encode()?,
     )?;
     let digest = reference.root.sha256;
-    let _previous = segment_edits.insert(digest.to_vec(), Some(reference.clone()));
+    let _previous = segment_edits.insert(digest.to_vec(), Some(reference));
     for (local, item) in group.iter().enumerate() {
         let locator = LiveDoc {
             source_key_sha256: item.key_digest,
@@ -890,12 +1067,6 @@ fn flush_segment(
         let _previous =
             current_edits.insert(doc_key(item.head.logical_id).to_vec(), Some(locator_blob));
     }
-    created.try_reserve(1).map_err(|error| {
-        CoreError::Storage(format!(
-            "file authority v17: reserve created segment: {error}"
-        ))
-    })?;
-    created.push(CreatedSegment { segment, reference });
     Ok(())
 }
 
@@ -1001,6 +1172,13 @@ pub(crate) struct PreparedFileCompaction {
     segment: Segment,
     current_refs: Vec<Option<BlobRef>>,
     survivors: Vec<Prepared>,
+    policy_binding: Option<FilePacketBinding>,
+}
+
+struct FilePacketBinding {
+    identity: StagedPacketIdentity,
+    bounds: StagedPacketBounds,
+    created_at: Instant,
 }
 
 fn compaction_preparation_budget(
@@ -1050,6 +1228,7 @@ fn compaction_survivors(
     digest: [u8; 32],
     segment: &Segment,
     current_edits: &BTreeMap<Vec<u8>, Option<BlobRef>>,
+    force_rewrite: bool,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<Vec<Prepared>, CoreError> {
     compaction_checkpoint(budget, "file-compaction:survivors-entry")?;
@@ -1093,7 +1272,7 @@ fn compaction_survivors(
             survivors.push((local, locator));
         }
     }
-    let rewrite = survivors.len() != segment.doc_ids.len();
+    let rewrite = force_rewrite || survivors.len() != segment.doc_ids.len();
     let mut path = rewrite
         .then(|| {
             inverted_grams(
@@ -1140,7 +1319,7 @@ fn compaction_survivors(
         {
             return Err(corrupt("compaction survivor head and locator differ"));
         }
-        prepared.push(Prepared {
+        let mut row = Prepared {
             key_digest: locator.source_key_sha256,
             head,
             head_blob: head_ref,
@@ -1159,7 +1338,14 @@ fn compaction_survivors(
                 ),
                 None => Vec::new(),
             },
-        });
+        };
+        if force_rewrite {
+            // Keep the physical scratch charge identical to the authenticated
+            // membership count used by clean-run selection and its verifier.
+            row.path_grams = row.path_grams.into_boxed_slice().into_vec();
+            row.content_grams = row.content_grams.into_boxed_slice().into_vec();
+        }
+        prepared.push(row);
     }
     Ok(prepared)
 }
@@ -1211,7 +1397,15 @@ pub(crate) fn prepare_compaction(
         compaction_checkpoint(budget, "file-compaction:current-witness")?;
         current_refs.push(store.map_get(&base.current_docs, &doc_key(*id), budget)?);
     }
-    let survivors = compaction_survivors(store, base, digest, &segment, &BTreeMap::new(), budget)?;
+    let survivors = compaction_survivors(
+        store,
+        base,
+        digest,
+        &segment,
+        &BTreeMap::new(),
+        false,
+        budget,
+    )?;
     compaction_checkpoint(budget, "file-compaction:prepare-complete")?;
     Ok(Some(PreparedFileCompaction {
         digest,
@@ -1219,10 +1413,55 @@ pub(crate) fn prepare_compaction(
         segment,
         current_refs,
         survivors,
+        policy_binding: None,
     }))
 }
 
 impl PreparedFileCompaction {
+    pub(crate) fn bind_policy(
+        mut self,
+        base: &AuthorityRoot,
+        policy: &LexicalMaintenancePolicy,
+        encoded_bytes: u64,
+    ) -> Result<Self, CoreError> {
+        self.policy_binding = Some(FilePacketBinding {
+            identity: StagedPacketIdentity::new(
+                Sha256::digest(base.encode()?).into(),
+                policy.policy_sha256(),
+            )?,
+            bounds: StagedPacketBounds {
+                encoded_bytes,
+                created_at_monotonic_millis: 0,
+                input_runs: 1,
+            },
+            created_at: Instant::now(),
+        });
+        Ok(self)
+    }
+
+    pub(crate) fn policy_valid(
+        &self,
+        base: Option<&AuthorityRoot>,
+        policy: Option<&LexicalMaintenancePolicy>,
+    ) -> Result<bool, CoreError> {
+        match (self.policy_binding.as_ref(), base, policy) {
+            (None, Some(_), None) => Ok(true),
+            (Some(binding), Some(base), Some(policy)) => {
+                let age = u64::try_from(binding.created_at.elapsed().as_millis())
+                    .map_err(|_width| invalid("File staged packet age exceeds u64"))?;
+                Ok(policy
+                    .check_staged_packet(
+                        binding.identity,
+                        Sha256::digest(base.encode()?).into(),
+                        binding.bounds,
+                        age,
+                    )
+                    .is_ok())
+            }
+            _ => Ok(false),
+        }
+    }
+
     fn still_matches(
         &self,
         store: &ObjectStore,
@@ -1262,16 +1501,15 @@ struct CompactionWork<'a> {
     current_edits: &'a mut BTreeMap<Vec<u8>, Option<BlobRef>>,
     segment_edits: &'a mut BTreeMap<Vec<u8>, Option<BlobRef>>,
     debt_edits: &'a mut BTreeMap<Vec<u8>, Option<BlobRef>>,
-    retired: &'a mut Vec<CreatedSegment>,
     pending: &'a mut Vec<Prepared>,
-    created: &'a mut Vec<CreatedSegment>,
 }
 
 fn compact_segment(
     work: CompactionWork<'_>,
     digest: [u8; 32],
-    reference: BlobRef,
+    reference: &BlobRef,
     prepared_compaction: Option<PreparedFileCompaction>,
+    maintenance_policy: Option<&LexicalMaintenancePolicy>,
 ) -> Result<(), CoreError> {
     let CompactionWork {
         store,
@@ -1280,19 +1518,20 @@ fn compact_segment(
         current_edits,
         segment_edits,
         debt_edits,
-        retired,
         pending,
-        created,
     } = work;
     // Inversion and survivor validation are bounded, but can be much more
     // expensive than an object write. They do not require the adoption gate.
     store.flush_adoption_batch()?;
     let committed = read_segment_ref(store, &original.segments, digest)?;
-    if committed != reference {
+    if &committed != reference {
         return Err(corrupt("compaction debt and segment references differ"));
     }
     let selected = match prepared_compaction {
-        Some(plan) if plan.still_matches(store, original, current_edits, digest, &reference)? => {
+        Some(plan)
+            if plan.policy_valid(Some(original), maintenance_policy)?
+                && plan.still_matches(store, original, current_edits, digest, reference)? =>
+        {
             Some(plan)
         }
         _ => None,
@@ -1301,12 +1540,19 @@ fn compact_segment(
         (plan.segment, plan.survivors)
     } else {
         let segment = Segment::decode(&store.read_blob(
-            &reference,
+            reference,
             size_u64(super::MAX_RECORD_BYTES)?,
             None,
         )?)?;
-        let prepared =
-            compaction_survivors(store, original, digest, &segment, current_edits, None)?;
+        let prepared = compaction_survivors(
+            store,
+            original,
+            digest,
+            &segment,
+            current_edits,
+            false,
+            None,
+        )?;
         (segment, prepared)
     };
     let _previous = debt_edits.insert(digest.to_vec(), None);
@@ -1321,12 +1567,6 @@ fn compact_segment(
     })?;
     store.record_compaction(1, compacted_documents, compacted_bytes);
     let _previous = segment_edits.insert(digest.to_vec(), None);
-    retired.try_reserve(1).map_err(|error| {
-        CoreError::Storage(format!(
-            "file authority v17: reserve retired segment: {error}"
-        ))
-    })?;
-    retired.push(CreatedSegment { segment, reference });
     // New versions may fill the retired segment's vacant slots. This keeps
     // repeated one-file replacements from creating an extra run each time.
     let free = MAX_SEGMENT_DOCS
@@ -1348,19 +1588,544 @@ fn compact_segment(
     }
     prepared.extend(pending.drain(..take));
     prepared.sort_by_key(|item| item.head.logical_id);
-    flush_segment(
+    flush_segment(store, lease, &prepared, segment_edits, current_edits)?;
+    Ok(())
+}
+
+/// Authenticate one complete old cohort before selecting it for run-level
+/// posting merge. A candidate touching an edit or inherited debt is skipped;
+/// no segment is reclassified as a run.
+fn eligible_clean_run(
+    store: &ObjectStore,
+    original: &AuthorityRoot,
+    touched: &BTreeMap<[u8; 32], BlobRef>,
+    candidate: &RunCandidate,
+    policy: &LexicalMaintenancePolicy,
+) -> Result<Option<u64>, CoreError> {
+    match probe_clean_run(store, original, touched, candidate, policy, None)? {
+        EligibilityWitness::FileEligible {
+            effective_input_encoded_bytes,
+        } => Ok(Some(effective_input_encoded_bytes)),
+        EligibilityWitness::Ineligible(_) => Ok(None),
+        EligibilityWitness::NativeEligible { .. } => Err(corrupt("Native eligibility in File run")),
+    }
+}
+
+fn probe_clean_run(
+    store: &ObjectStore,
+    original: &AuthorityRoot,
+    touched: &BTreeMap<[u8; 32], BlobRef>,
+    candidate: &RunCandidate,
+    policy: &LexicalMaintenancePolicy,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<EligibilityWitness, CoreError> {
+    if candidate.index_encoded_bytes > policy.max_merge_input_encoded_bytes() {
+        return Ok(EligibilityWitness::Ineligible(IneligibleReason::InputCap));
+    }
+    let run_key = candidate.run_id.to_be_bytes();
+    let reference = store
+        .map_get(&original.run_postings, &run_key, budget)?
+        .ok_or_else(|| corrupt("clean run has no posting root"))?;
+    let postings = RunPostingRoot::load(store, &reference, budget)?;
+    if postings.run_id != candidate.run_id {
+        return Err(corrupt("clean run posting ID differs"));
+    }
+    let input_bytes = candidate
+        .index_encoded_bytes
+        .checked_add(postings.bundle_encoded_bytes(&reference, store)?)
+        .ok_or_else(|| invalid("clean run input bytes overflow"))?;
+    if input_bytes > policy.max_merge_input_encoded_bytes() {
+        return Ok(EligibilityWitness::Ineligible(IneligibleReason::InputCap));
+    }
+    let mut eligible = true;
+    original.run_registry.visit_run_members(
+        store,
+        candidate,
+        budget,
+        &mut |key, segment_ref, _bytes| {
+            if let Some(budget) = budget {
+                budget.checkpoint("lexical:file:hard-scan-member")?;
+            }
+            let digest: [u8; 32] = key
+                .try_into()
+                .map_err(|_width| corrupt("clean run member digest width differs"))?;
+            if touched.contains_key(&digest)
+                || store
+                    .map_get(&original.compaction_debt, key, budget)?
+                    .is_some()
+            {
+                eligible = false;
+            }
+            if store.map_get(&original.segments, key, budget)?.as_ref() != Some(segment_ref) {
+                return Err(corrupt("clean run member differs from segment map"));
+            }
+            Ok(())
+        },
+    )?;
+    Ok(if eligible {
+        EligibilityWitness::FileEligible {
+            effective_input_encoded_bytes: input_bytes,
+        }
+    } else {
+        EligibilityWitness::Ineligible(IneligibleReason::TouchedOrDebt)
+    })
+}
+
+/// Derive the old segment exclusions before any target/source object write.
+///
+/// This must agree with `build_for_seal_inner`'s touched set; the build checks
+/// that equality again before using a completed hard-scan selection.
+pub(crate) fn preflight_touched_segments(
+    store: &ObjectStore,
+    original: &AuthorityRoot,
+    mutation: &FileAuthorityMutation,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<BTreeMap<[u8; 32], BlobRef>, CoreError> {
+    if mutation.clear_all {
+        return Ok(BTreeMap::new());
+    }
+    let mut touched = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    for edit in &mutation.edits {
+        if let Some(budget) = budget {
+            budget.checkpoint("lexical:file:hard-scan:changed-source")?;
+        }
+        let key = edit.key();
+        key.validate().map_err(invalid)?;
+        let source_digest = source_key_digest(key)?;
+        if !seen.insert(source_digest) {
+            return Err(invalid("duplicate or colliding changed source digest"));
+        }
+        let Some((_, old)) = read_head(store, &original.source_heads, key)? else {
+            continue;
+        };
+        let locator = read_live(store, &original.current_docs, old.logical_id)?;
+        if locator.source_key_sha256 != source_digest || locator.logical_id != old.logical_id {
+            return Err(corrupt("source and current locator differ"));
+        }
+        let reference = read_segment_ref(store, &original.segments, locator.segment_sha256)?;
+        let changed = match edit {
+            FileSourceEdit::Delete { .. } => true,
+            FileSourceEdit::Upsert { coverage, bytes } => {
+                old.derived_input_sha256 != derived_digest(coverage)?
+                    || old.coverage != *coverage
+                    || old.body.sha256 != <[u8; 32]>::from(Sha256::digest(bytes))
+            }
+        };
+        if changed {
+            let _previous = touched.insert(locator.segment_sha256, reference);
+        }
+    }
+    Ok(touched)
+}
+
+fn file_header_sha256(
+    store: &ObjectStore,
+    original: &AuthorityRoot,
+    candidate: &RunCandidate,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<[u8; 32], CoreError> {
+    let key = candidate.run_id.to_be_bytes();
+    let reference = store
+        .map_get(&original.run_registry.runs, &key, budget)?
+        .ok_or_else(|| corrupt("hard scan run header disappeared"))?;
+    if reference.root.kind != ObjectKind::Record {
+        return Err(corrupt("hard scan run header kind differs"));
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"lexical-file-hard-scan-header-v1\0");
+    hash.update(key);
+    hash.update(reference.root.sha256);
+    Ok(hash.finalize().into())
+}
+
+/// Probe at most 32 immutable old headers and persist no target mutation.
+/// The caller owns checkpoint append and independent replay.
+pub(crate) fn prepare_hard_scan_window(
+    store: &ObjectStore,
+    base: &AuthorityRoot,
+    mutation: &FileAuthorityMutation,
+    policy: &LexicalMaintenancePolicy,
+    progress: RunSelectionProgress,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<WindowWitness, CoreError> {
+    if mutation.clear_all || progress.pending_run.is_some() {
+        return Err(invalid("hard scan requires a non-clear frozen base"));
+    }
+    let high = base
+        .run_registry
+        .next_run_id
+        .checked_sub(1)
+        .ok_or_else(|| corrupt("hard scan frontier underflows"))?;
+    if high == 0
+        || (progress.scan_high_water_run_id != 0 && progress.scan_high_water_run_id != high)
+    {
+        return Err(invalid("hard scan frontier differs from immutable base"));
+    }
+    let touched = preflight_touched_segments(store, base, mutation, budget)?;
+    let window = base
+        .run_registry
+        .clone()
+        .with_selection_progress(progress)?
+        .scan_hard_window(store, 32, budget)?;
+    if window.scan_high_water_run_id != high {
+        return Err(corrupt("hard scan window changed frozen frontier"));
+    }
+    let mut candidates = Vec::new();
+    candidates
+        .try_reserve_exact(window.candidates.len())
+        .map_err(|error| CoreError::Storage(format!("reserve File hard scan window: {error}")))?;
+    for candidate in &window.candidates {
+        if let Some(budget) = budget {
+            budget.checkpoint("lexical:file:hard-scan-candidate")?;
+        }
+        candidates.push(CandidateWitness {
+            run_id: candidate.run_id,
+            index_encoded_bytes: candidate.index_encoded_bytes,
+            eligibility: probe_clean_run(store, base, &touched, candidate, policy, budget)?,
+            header_sha256: file_header_sha256(store, base, candidate, budget)?,
+        });
+    }
+    Ok(WindowWitness {
+        ordinal: 0,
+        prior_chain_sha256: [0; 32],
+        start_run_id: progress.next_scan_run_id,
+        next_run_id: window.next_scan_run_id,
+        frozen_high_water_run_id: high,
+        round_complete: window.round_complete,
+        candidates,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn test_hard_scan_lane(
+    store: &ObjectStore,
+    base: &AuthorityRoot,
+    mutation: &FileAuthorityMutation,
+    policy: &LexicalMaintenancePolicy,
+) -> Result<Option<ScanLane>, CoreError> {
+    let before = base.maintenance_snapshot(store)?;
+    if !policy.merge_due(before) || !policy.hard_pressure(before) {
+        return Ok(None);
+    }
+    let high = base
+        .run_registry
+        .next_run_id
+        .checked_sub(1)
+        .ok_or_else(|| corrupt("test File hard scan frontier underflows"))?;
+    let mut progress = RunSelectionProgress::default();
+    let mut windows = Vec::new();
+    loop {
+        let mut window = prepare_hard_scan_window(store, base, mutation, policy, progress, None)?;
+        window.ordinal = u16::try_from(windows.len())
+            .map_err(|_width| corrupt("test File hard scan window count differs"))?;
+        progress = RunSelectionProgress {
+            next_scan_run_id: window.next_run_id,
+            scan_high_water_run_id: high,
+            pending_run: None,
+        };
+        let done = window.round_complete;
+        windows.push(window);
+        if done {
+            break;
+        }
+    }
+    Ok(Some(ScanLane {
+        authority: ScanAuthority::File,
+        base_authority_root_sha256: Sha256::digest(base.encode()?).into(),
+        frozen_high_water_run_id: high,
+        windows,
+    }))
+}
+
+fn select_clean_runs(
+    store: &ObjectStore,
+    original: &AuthorityRoot,
+    touched: &BTreeMap<[u8; 32], BlobRef>,
+    policy: &LexicalMaintenancePolicy,
+    hard_scan: Option<&ScanLane>,
+) -> Result<CleanRunSelection, CoreError> {
+    let prior = original.run_registry.selection_progress();
+    let before = original.maintenance_snapshot(store)?;
+    if !policy.merge_due(before)
+        || run_postings::run_merge_stage_bytes(2)? > policy.max_staging_bytes()
+    {
+        return Ok(CleanRunSelection {
+            run_ids: Vec::new(),
+            progress: prior,
+        });
+    }
+    let mut selected = Vec::new();
+    let mut input_bytes = 0_u64;
+    let max_fan_in = usize::try_from(policy.max_merge_fan_in())
+        .map_err(|_width| invalid("run fan-in width differs"))?;
+    let hard = policy.hard_pressure(before);
+    let window = if hard {
+        let lane = hard_scan.ok_or_else(|| invalid("hard recovery checkpoint is absent"))?;
+        let root_sha256: [u8; 32] = Sha256::digest(original.encode()?).into();
+        let high = original
+            .run_registry
+            .next_run_id
+            .checked_sub(1)
+            .ok_or_else(|| corrupt("hard recovery frontier underflows"))?;
+        if lane.authority != ScanAuthority::File
+            || lane.base_authority_root_sha256 != root_sha256
+            || lane.frozen_high_water_run_id != high
+            || lane.windows.is_empty()
+            || lane.windows.len() > 129
+            || !lane
+                .windows
+                .last()
+                .is_some_and(|window| window.round_complete)
+        {
+            return Err(invalid(
+                "hard recovery checkpoint base or completion differs",
+            ));
+        }
+        // The checkpoint's independent oracle has authenticated each old
+        // candidate. Derive the same first feasible pair and subsequent
+        // followers from its bounded scalar witnesses, without rescanning
+        // every old posting body after source mutation.
+        let mut earlier = Vec::<(u64, u64)>::new();
+        let mut hard_selected = Vec::new();
+        let mut hard_bytes = 0_u64;
+        let mut next = 1_u64;
+        let mut seen = 0_u64;
+        let mut costs = BTreeMap::new();
+        for (ordinal, witnessed) in lane.windows.iter().enumerate() {
+            if usize::from(witnessed.ordinal) != ordinal
+                || witnessed.start_run_id != next
+                || witnessed.frozen_high_water_run_id != high
+                || witnessed.candidates.len() > 32
+                || (witnessed.round_complete && ordinal.checked_add(1) != Some(lane.windows.len()))
+                || (!witnessed.round_complete && witnessed.next_run_id <= next)
+                || (witnessed.round_complete && witnessed.next_run_id != 1)
+            {
+                return Err(corrupt("hard recovery checkpoint cursor differs"));
+            }
+            let mut last_id = next.saturating_sub(1);
+            for candidate in &witnessed.candidates {
+                if candidate.run_id <= last_id
+                    || candidate.run_id > high
+                    || (!witnessed.round_complete && candidate.run_id >= witnessed.next_run_id)
+                    || candidate.header_sha256 == [0; 32]
+                {
+                    return Err(corrupt("hard recovery checkpoint candidate order differs"));
+                }
+                last_id = candidate.run_id;
+                seen = seen
+                    .checked_add(1)
+                    .ok_or_else(|| corrupt("hard recovery count overflows"))?;
+                if seen > quanta_index_core::lexical_maintenance::MAX_HARD_SCAN_RUNS {
+                    return Err(corrupt("hard recovery candidate bound differs"));
+                }
+                let bytes = match candidate.eligibility {
+                    EligibilityWitness::FileEligible {
+                        effective_input_encoded_bytes,
+                    } => effective_input_encoded_bytes,
+                    EligibilityWitness::Ineligible(_) => continue,
+                    EligibilityWitness::NativeEligible { .. } => {
+                        return Err(corrupt("Native eligibility in File checkpoint"));
+                    }
+                };
+                if bytes < candidate.index_encoded_bytes
+                    || bytes > policy.max_merge_input_encoded_bytes()
+                {
+                    return Err(corrupt("hard recovery candidate cost differs"));
+                }
+                let _prior = costs.insert(candidate.run_id, bytes);
+                if hard_selected.len() >= max_fan_in {
+                    continue;
+                }
+                if !hard_selected.is_empty() {
+                    if let Some(total) = hard_bytes.checked_add(bytes)
+                        && total <= policy.max_merge_input_encoded_bytes()
+                        && run_postings::run_merge_stage_bytes(
+                            hard_selected.len().checked_add(1).ok_or_else(|| {
+                                invalid("hard recovery selected run fan-in overflows")
+                            })?,
+                        )? <= policy.max_staging_bytes()
+                    {
+                        hard_bytes = total;
+                        hard_selected.push(candidate.run_id);
+                    }
+                    continue;
+                }
+                for &(run_id, earlier_bytes) in &earlier {
+                    if let Some(total) = earlier_bytes.checked_add(bytes)
+                        && total <= policy.max_merge_input_encoded_bytes()
+                    {
+                        hard_bytes = total;
+                        hard_selected.extend([run_id, candidate.run_id]);
+                        break;
+                    }
+                }
+                if hard_selected.is_empty() {
+                    earlier.push((candidate.run_id, bytes));
+                }
+            }
+            next = witnessed.next_run_id;
+        }
+        for &id in &hard_selected {
+            let candidate = original
+                .run_registry
+                .candidate_by_id(store, id, None)?
+                .ok_or_else(|| corrupt("selected hard run disappeared"))?;
+            if eligible_clean_run(store, original, touched, &candidate, policy)?
+                != costs.get(&id).copied()
+            {
+                return Err(corrupt("selected hard run cost or eligibility differs"));
+            }
+        }
+        selected = hard_selected;
+        let last = lane
+            .windows
+            .last()
+            .ok_or_else(|| corrupt("hard recovery checkpoint ended without window"))?;
+        RunScanWindow {
+            candidates: Vec::new(),
+            next_scan_run_id: last.next_run_id,
+            scan_high_water_run_id: high,
+            round_complete: last.round_complete,
+        }
+    } else {
+        let mut consider = |candidate: &RunCandidate| -> Result<bool, CoreError> {
+            if selected.contains(&candidate.run_id) || selected.len() >= max_fan_in {
+                return Ok(selected.len() >= max_fan_in);
+            }
+            let Some(bytes) = eligible_clean_run(store, original, touched, candidate, policy)?
+            else {
+                return Ok(false);
+            };
+            let Some(next_bytes) = input_bytes.checked_add(bytes) else {
+                return Ok(false);
+            };
+            if next_bytes > policy.max_merge_input_encoded_bytes()
+                || run_postings::run_merge_stage_bytes(
+                    selected
+                        .len()
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("selected run fan-in overflows"))?,
+                )? > policy.max_staging_bytes()
+            {
+                return Ok(false);
+            }
+            input_bytes = next_bytes;
+            selected.push(candidate.run_id);
+            Ok(selected.len() >= max_fan_in)
+        };
+        if let Some(pending) = prior.pending_run
+            && let Some(candidate) = original
+                .run_registry
+                .candidate_by_id(store, pending, None)?
+        {
+            let _full = consider(&candidate)?;
+        }
+        let window = original.run_registry.scan_window(
+            store,
+            bounded_candidate_scan_limit(policy.max_merge_fan_in()),
+            None,
+        )?;
+        for candidate in &window.candidates {
+            let _full = consider(candidate)?;
+        }
+        window
+    };
+    let mut progress = RunSelectionProgress {
+        next_scan_run_id: window.next_scan_run_id,
+        scan_high_water_run_id: window.scan_high_water_run_id,
+        pending_run: prior.pending_run,
+    };
+    if selected.len() >= 2 {
+        selected.sort_unstable();
+        progress.pending_run = None;
+        return Ok(CleanRunSelection {
+            run_ids: selected,
+            progress,
+        });
+    }
+    let anchor = selected.first().copied();
+    progress.pending_run = if window.round_complete && prior.pending_run == anchor {
+        None
+    } else {
+        anchor
+    };
+    Ok(CleanRunSelection {
+        run_ids: Vec::new(),
+        progress,
+    })
+}
+
+fn publish_clean_run_merge(
+    store: &ObjectStore,
+    lease: &AttemptLease,
+    output: &mut AuthorityRoot,
+    selection: &CleanRunSelection,
+    policy: &LexicalMaintenancePolicy,
+) -> Result<(), CoreError> {
+    if selection.run_ids.len() < 2 {
+        output.run_registry = output
+            .run_registry
+            .clone()
+            .with_selection_progress(selection.progress)?;
+        return Ok(());
+    }
+    let new_id = output.run_registry.next_run_id;
+    let mut inputs = Vec::new();
+    let mut edits = BTreeMap::new();
+    for id in &selection.run_ids {
+        let key = id.to_be_bytes().to_vec();
+        let reference = store
+            .map_get(&output.run_postings, &key, None)?
+            .ok_or_else(|| corrupt("selected run has no posting root"))?;
+        let run = RunPostingRoot::load(store, &reference, None)?;
+        if run.run_id != *id {
+            return Err(corrupt("selected run posting ID differs"));
+        }
+        output.run_index_encoded_bytes = output
+            .run_index_encoded_bytes
+            .checked_sub(run.bundle_encoded_bytes(&reference, store)?)
+            .ok_or_else(|| corrupt("clean run byte ledger underflows"))?;
+        update_run_routes(
+            store,
+            lease,
+            &mut output.path_routes,
+            &mut output.content_routes,
+            *id,
+            Some(&run),
+            None,
+        )?;
+        let _previous = edits.insert(key, None);
+        inputs.push(run);
+    }
+    let (merged, merged_ref) =
+        merge_run_posting_roots(store, lease, new_id, &inputs, policy.max_staging_bytes())?;
+    output.run_index_encoded_bytes = output
+        .run_index_encoded_bytes
+        .checked_add(merged.bundle_encoded_bytes(&merged_ref, store)?)
+        .ok_or_else(|| invalid("merged run byte ledger overflows"))?;
+    update_run_routes(
         store,
         lease,
-        &prepared,
-        segment_edits,
-        current_edits,
-        created,
+        &mut output.path_routes,
+        &mut output.content_routes,
+        new_id,
+        None,
+        Some(&merged),
     )?;
+    let _previous = edits.insert(new_id.to_be_bytes().to_vec(), Some(merged_ref));
+    output.run_postings = map_update(store, lease, &output.run_postings, edits)?;
+    output.premerge_run_registry = Some(output.run_registry.clone());
+    output.run_registry =
+        output
+            .run_registry
+            .merge_cohorts(store, lease, &selection.run_ids, selection.progress)?;
     Ok(())
 }
 
 /// Only touched source heads are decoded. Inherited map subtrees are retained
 /// by authenticated references, never reconstructed as a full source vector.
+#[cfg(test)]
 pub(crate) fn build_for_seal(
     store: &ObjectStore,
     lease: &AttemptLease,
@@ -1369,10 +2134,20 @@ pub(crate) fn build_for_seal(
     mutation: &FileAuthorityMutation,
 ) -> Result<FileAuthorityBuild, CoreError> {
     store.with_adoption_batch(lease, |batched_store| {
-        build_for_seal_inner(batched_store, lease, base, reservation, mutation, None)
+        build_for_seal_inner(
+            batched_store,
+            lease,
+            base,
+            reservation,
+            mutation,
+            None,
+            None,
+            None,
+        )
     })
 }
 
+#[cfg(test)]
 pub(crate) fn build_for_seal_prepared(
     store: &ObjectStore,
     lease: &AttemptLease,
@@ -1381,9 +2156,28 @@ pub(crate) fn build_for_seal_prepared(
     mutation: &FileAuthorityMutation,
     prepared: Option<PreparedFileCompaction>,
 ) -> Result<FileAuthorityBuild, CoreError> {
-    let Some(prepared) = prepared else {
-        return build_for_seal(store, lease, base, reservation, mutation);
-    };
+    build_for_seal_prepared_with_policy(
+        store,
+        lease,
+        base,
+        reservation,
+        mutation,
+        prepared,
+        None,
+        None,
+    )
+}
+
+pub(crate) fn build_for_seal_prepared_with_policy(
+    store: &ObjectStore,
+    lease: &AttemptLease,
+    base: Option<&AuthorityRoot>,
+    reservation: &DocVersionReservation,
+    mutation: &FileAuthorityMutation,
+    prepared: Option<PreparedFileCompaction>,
+    maintenance_policy: Option<&LexicalMaintenancePolicy>,
+    hard_scan: Option<&ScanLane>,
+) -> Result<FileAuthorityBuild, CoreError> {
     store.with_adoption_batch(lease, |batched_store| {
         build_for_seal_inner(
             batched_store,
@@ -1391,7 +2185,9 @@ pub(crate) fn build_for_seal_prepared(
             base,
             reservation,
             mutation,
-            Some(prepared),
+            prepared,
+            maintenance_policy,
+            hard_scan,
         )
     })
 }
@@ -1403,6 +2199,8 @@ fn build_for_seal_inner(
     reservation: &DocVersionReservation,
     mutation: &FileAuthorityMutation,
     mut prepared_compaction: Option<PreparedFileCompaction>,
+    maintenance_policy: Option<&LexicalMaintenancePolicy>,
+    hard_scan: Option<&ScanLane>,
 ) -> Result<FileAuthorityBuild, CoreError> {
     reservation.validate()?;
     if mutation.operations_sha256 != lease.binding().operations_sha256
@@ -1426,6 +2224,10 @@ fn build_for_seal_inner(
         current_docs: MapRoot::default(),
         memberships: MapRoot::default(),
         segments: MapRoot::default(),
+        run_registry: RunRegistry::empty(),
+        premerge_run_registry: None,
+        run_postings: MapRoot::default(),
+        run_index_encoded_bytes: 0,
         compaction_debt: MapRoot::default(),
         path_routes: MapRoot::default(),
         content_routes: MapRoot::default(),
@@ -1439,16 +2241,20 @@ fn build_for_seal_inner(
     } else {
         base.unwrap_or(&empty)
     };
+    let expected_touched = hard_scan
+        .map(|_lane| preflight_touched_segments(store, original, mutation, None))
+        .transpose()?;
     let mut output = original.clone();
+    // The intermediate registry witnesses this publication only. A later
+    // generation must not inherit an earlier merge's proof state.
+    output.premerge_run_registry = None;
     let mut source_edits = BTreeMap::new();
     let mut current_edits = BTreeMap::new();
     let mut member_edits = BTreeMap::new();
     let mut segment_edits = BTreeMap::new();
     let mut debt_edits = BTreeMap::new();
     let mut touched_segments = BTreeMap::<[u8; 32], BlobRef>::new();
-    let mut retired_segments = Vec::new();
     let mut prepared = Vec::new();
-    let mut created_segments = Vec::new();
     let mut digests = BTreeSet::new();
     let mut allocated = 0_u64;
     for cohort in mutation.edits.chunks(MAX_SEGMENT_DOCS) {
@@ -1589,7 +2395,6 @@ fn build_for_seal_inner(
                             &prepared,
                             &mut segment_edits,
                             &mut current_edits,
-                            &mut created_segments,
                         )?;
                         prepared.clear();
                     }
@@ -1601,7 +2406,6 @@ fn build_for_seal_inner(
                             &prepared,
                             &mut segment_edits,
                             &mut current_edits,
-                            &mut created_segments,
                         )?;
                         prepared.clear();
                     }
@@ -1619,13 +2423,12 @@ fn build_for_seal_inner(
                 current_edits: &mut current_edits,
                 segment_edits: &mut segment_edits,
                 debt_edits: &mut debt_edits,
-                retired: &mut retired_segments,
                 pending: &mut prepared,
-                created: &mut created_segments,
             },
             *digest,
-            reference.clone(),
+            reference,
             None,
+            maintenance_policy,
         )?;
     }
     if !mutation.clear_all {
@@ -1647,13 +2450,12 @@ fn build_for_seal_inner(
                     current_edits: &mut current_edits,
                     segment_edits: &mut segment_edits,
                     debt_edits: &mut debt_edits,
-                    retired: &mut retired_segments,
                     pending: &mut prepared,
-                    created: &mut created_segments,
                 },
                 digest,
-                reference,
+                &reference,
                 prepared_compaction.take(),
+                maintenance_policy,
             )?;
             break;
         }
@@ -1664,31 +2466,202 @@ fn build_for_seal_inner(
         &prepared,
         &mut segment_edits,
         &mut current_edits,
-        &mut created_segments,
     )?;
+    prepared.clear();
+    if expected_touched
+        .as_ref()
+        .is_some_and(|expected| expected != &touched_segments)
+    {
+        return Err(corrupt("hard scan touched source set differs from build"));
+    }
+    let clean_selection = if let Some(policy) = maintenance_policy
+        && !mutation.clear_all
+    {
+        Some(select_clean_runs(
+            store,
+            original,
+            &touched_segments,
+            policy,
+            hard_scan,
+        )?)
+    } else {
+        None
+    };
     output.source_heads = map_update(store, lease, &original.source_heads, source_edits)?;
     output.current_docs = map_update(store, lease, &original.current_docs, current_edits)?;
     output.memberships = map_update(store, lease, &original.memberships, member_edits)?;
     output.segments = map_update(store, lease, &original.segments, segment_edits)?;
     output.compaction_debt = map_update(store, lease, &original.compaction_debt, debt_edits)?;
     store.flush_adoption_batch()?;
-    let path_routes = RouteStream::new(store, 1, &created_segments, false)?;
-    let path_deletions = RouteStream::new(store, 1, &retired_segments, true)?;
-    output.path_routes = route_update(
-        store,
-        lease,
-        &original.path_routes,
-        MergedRoutes::new(path_deletions, path_routes),
+    // Derive the exact changed segment set from authenticated map roots. A
+    // touched segment whose descriptor remains identical does not create a
+    // new logical run or change its attributed index bytes.
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    store.map_changed_keys(
+        &original.segments,
+        &output.segments,
+        None,
+        &mut |key, before, after| {
+            if let Some(reference) = before {
+                removed.push(SegmentRemoval {
+                    key: key.to_vec(),
+                    reference: reference.clone(),
+                });
+            }
+            if let Some(reference) = after {
+                let index_encoded_bytes = segment_index_encoded_bytes(
+                    store,
+                    std::slice::from_ref(&reference.root),
+                    None,
+                    size_u64(crate::lexical_store::MAX_CLOSURE_REFS)?,
+                )?;
+                added.push(SegmentInput {
+                    key: key.to_vec(),
+                    reference: reference.clone(),
+                    index_encoded_bytes,
+                });
+            }
+            Ok(())
+        },
     )?;
-    store.flush_adoption_batch()?;
-    let content_routes = RouteStream::new(store, 2, &created_segments, false)?;
-    let content_deletions = RouteStream::new(store, 2, &retired_segments, true)?;
-    output.content_routes = route_update(
-        store,
-        lease,
-        &original.content_routes,
-        MergedRoutes::new(content_deletions, content_routes),
-    )?;
+    output.run_registry = original
+        .run_registry
+        .apply(store, lease, &removed, &added)?;
+    // A changed physical leaf affects only its old/new owning run. Apply
+    // leaf term deltas in bounded gram batches, then rewrite only changed
+    // run route counts; inherited run posting dictionaries are reused.
+    let mut per_run = BTreeMap::<u64, Vec<(bool, BlobRef)>>::new();
+    for segment in &removed {
+        let digest: [u8; 32] = segment
+            .key
+            .as_slice()
+            .try_into()
+            .map_err(|_width| corrupt("removed run leaf digest width differs"))?;
+        let run_id = original.run_registry.owner_run_id(store, digest, None)?;
+        per_run
+            .entry(run_id)
+            .or_default()
+            .push((true, segment.reference.clone()));
+    }
+    for segment in &added {
+        let digest: [u8; 32] = segment
+            .key
+            .as_slice()
+            .try_into()
+            .map_err(|_width| corrupt("added run leaf digest width differs"))?;
+        let run_id = output.run_registry.owner_run_id(store, digest, None)?;
+        per_run
+            .entry(run_id)
+            .or_default()
+            .push((false, segment.reference.clone()));
+    }
+    let mut run_edits = BTreeMap::new();
+    for (run_id, segments) in per_run {
+        let key = run_id.to_be_bytes().to_vec();
+        let old_ref = store.map_get(&original.run_postings, &key, None)?;
+        let old_run = old_ref
+            .as_ref()
+            .map(|reference| RunPostingRoot::load(store, reference, None))
+            .transpose()?;
+        if old_run.as_ref().is_some_and(|root| root.run_id != run_id) {
+            return Err(corrupt("base run posting root ID differs"));
+        }
+        if let (Some(root), Some(reference)) = (&old_run, &old_ref) {
+            output.run_index_encoded_bytes = output
+                .run_index_encoded_bytes
+                .checked_sub(root.bundle_encoded_bytes(reference, store)?)
+                .ok_or_else(|| corrupt("run bundle ledger underflows"))?;
+        }
+        // Only a genuinely new, addition-only run can use the streaming
+        // bootstrap. Existing runs keep the exact prior subtraction path.
+        // IDs at or above the original next-run boundary cannot belong to
+        // the original registry. Its old-candidate API deliberately rejects
+        // such newly issued IDs instead of returning an absent candidate.
+        let fresh = old_ref.is_none()
+            && run_id >= original.run_registry.next_run_id
+            && segments.iter().all(|(remove, _)| !remove);
+        let (next, prebuilt_ref) = if fresh {
+            let mut references = Vec::new();
+            references
+                .try_reserve_exact(segments.len())
+                .map_err(|error| CoreError::Storage(format!("reserve new run leaves: {error}")))?;
+            references.extend(segments.iter().map(|(_, reference)| reference));
+            let (root, reference) = bootstrap_new_run_postings(
+                store,
+                lease,
+                run_id,
+                &references,
+                super::super::policy().bucket_scratch_bytes,
+            )?;
+            (Some(root), Some(reference))
+        } else {
+            let mut next = old_run.clone();
+            for (remove, reference) in segments {
+                if reference.root.kind != ObjectKind::Segment {
+                    return Err(corrupt("run leaf has wrong object kind"));
+                }
+                let segment = Segment::decode(&store.read_blob(
+                    &reference,
+                    size_u64(super::MAX_RECORD_BYTES)?,
+                    None,
+                )?)?;
+                next = Some(apply_segment_to_run(
+                    store,
+                    lease,
+                    next,
+                    run_id,
+                    &segment,
+                    reference.root.sha256,
+                    remove,
+                )?);
+            }
+            (next, None)
+        };
+        let active = output
+            .run_registry
+            .candidate_by_id(store, run_id, None)?
+            .is_some();
+        if prebuilt_ref.is_some() && !active {
+            return Err(corrupt("new run leaves have no live registry owner"));
+        }
+        let new_ref = if active {
+            let root = next
+                .as_ref()
+                .ok_or_else(|| corrupt("live run has no posting root"))?;
+            let reference = if let Some(reference) = prebuilt_ref {
+                reference
+            } else {
+                store.put_blob(
+                    lease,
+                    ObjectKind::Record,
+                    &root.object_roots(),
+                    &root.encode()?,
+                )?
+            };
+            output.run_index_encoded_bytes = output
+                .run_index_encoded_bytes
+                .checked_add(root.bundle_encoded_bytes(&reference, store)?)
+                .ok_or_else(|| invalid("run bundle ledger overflows"))?;
+            Some(reference)
+        } else {
+            None
+        };
+        update_run_routes(
+            store,
+            lease,
+            &mut output.path_routes,
+            &mut output.content_routes,
+            run_id,
+            old_run.as_ref(),
+            if active { next.as_ref() } else { None },
+        )?;
+        let _previous = run_edits.insert(key, new_ref);
+    }
+    output.run_postings = map_update(store, lease, &original.run_postings, run_edits)?;
+    if let (Some(policy), Some(selection)) = (maintenance_policy, clean_selection) {
+        publish_clean_run_merge(store, lease, &mut output, &selection, policy)?;
+    }
     let root_bytes = output.encode()?;
     Ok(FileAuthorityBuild {
         root: output,
@@ -1702,12 +2675,14 @@ mod prepared_compaction_tests {
     use crate::file_authority::paged::{PagedFileAuthority, verify_all_for_scrub, verify_for_seal};
     use crate::file_authority::{PostingSurface, QueryWork};
     use crate::lexical_store::AttemptBinding;
+    use crate::text_authority::NativeRoot;
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
         RepoId, RepoRelativePath, RevisionId, SourceFileRevision, SymbolCoverage,
         SymbolNameSourcePolicyV1,
     };
     use quanta_index_core::RequestBudgetV1;
+    use quanta_index_core::lexical_maintenance::TargetCounters;
     use quanta_index_lq_trigram::NecessaryGramExpr;
 
     fn coverage(path: &str, body: &[u8]) -> SourceFileCoverage {
@@ -1824,6 +2799,191 @@ mod prepared_compaction_tests {
             )
             .expect("content candidates");
         assert_eq!(candidates, Some(expected.iter().copied().collect()));
+    }
+
+    #[test]
+    fn new_run_bootstrap_preserves_routes_ledger_and_pinned_old_views_through_delta() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let initial_mutation = FileAuthorityMutation {
+            edits: (0_u64..2)
+                .map(|index| FileSourceEdit::Upsert {
+                    coverage: coverage(&format!("file-{index}.rs"), b"abcxyz"),
+                    bytes: b"abcxyz".to_vec(),
+                })
+                .collect(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let initial_reservation = DocVersionReservation {
+            first: 1,
+            count: 2,
+            scope_sha256: [5; 32],
+        };
+        let initial = build_for_seal(
+            &store,
+            &store
+                .begin_attempt(&binding(1), &[])
+                .expect("initial attempt"),
+            None,
+            &initial_reservation,
+            &initial_mutation,
+        )
+        .expect("initial build");
+        verify_for_seal(
+            &store,
+            &initial.root,
+            None,
+            &initial_reservation,
+            &initial_mutation,
+        )
+        .expect("initial independent seal");
+        verify_all_for_scrub(&store, &initial.root, None).expect("initial scrub");
+        assert!(initial.root.path_routes.entries > 0);
+        assert!(initial.root.content_routes.entries > 0);
+        assert!(initial.root.run_index_encoded_bytes > 0);
+        assert_query_ids(
+            &store,
+            &initial.root_bytes,
+            &[1_u64, 2].into_iter().collect(),
+        );
+
+        let append_mutation = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Upsert {
+                coverage: coverage("file-2.rs", b"abcxyz"),
+                bytes: b"abcxyz".to_vec(),
+            }],
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let append_reservation = DocVersionReservation {
+            first: 3,
+            count: 1,
+            scope_sha256: [5; 32],
+        };
+        let appended = build_for_seal(
+            &store,
+            &store
+                .begin_attempt(&binding(2), &[])
+                .expect("append attempt"),
+            Some(&initial.root),
+            &append_reservation,
+            &append_mutation,
+        )
+        .expect("new-run append");
+        verify_for_seal(
+            &store,
+            &appended.root,
+            Some(&initial.root),
+            &append_reservation,
+            &append_mutation,
+        )
+        .expect("append independent seal");
+        verify_all_for_scrub(&store, &appended.root, None).expect("append scrub");
+        assert_query_ids(
+            &store,
+            &appended.root_bytes,
+            &[1_u64, 2, 3].into_iter().collect(),
+        );
+
+        let delete_mutation = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Delete {
+                key: coverage("file-0.rs", b"abcxyz").source.file,
+            }],
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let delete_reservation = DocVersionReservation {
+            first: 0,
+            count: 0,
+            scope_sha256: [5; 32],
+        };
+        let deleted = build_for_seal(
+            &store,
+            &store
+                .begin_attempt(&binding(3), &[])
+                .expect("delete attempt"),
+            Some(&appended.root),
+            &delete_reservation,
+            &delete_mutation,
+        )
+        .expect("old-run deletion");
+        verify_for_seal(
+            &store,
+            &deleted.root,
+            Some(&appended.root),
+            &delete_reservation,
+            &delete_mutation,
+        )
+        .expect("delete independent seal");
+        verify_all_for_scrub(&store, &deleted.root, None).expect("delete scrub");
+        assert_query_ids(
+            &store,
+            &deleted.root_bytes,
+            &[2_u64, 3].into_iter().collect(),
+        );
+        assert_query_ids(
+            &store,
+            &initial.root_bytes,
+            &[1_u64, 2].into_iter().collect(),
+        );
+        assert_query_ids(
+            &store,
+            &appended.root_bytes,
+            &[1_u64, 2, 3].into_iter().collect(),
+        );
+        let clear_mutation = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Upsert {
+                coverage: coverage("file-fresh.rs", b"abcxyz"),
+                bytes: b"abcxyz".to_vec(),
+            }],
+            clear_all: true,
+            operations_sha256: [4; 32],
+        };
+        let clear_reservation = DocVersionReservation {
+            first: 4,
+            count: 1,
+            scope_sha256: [5; 32],
+        };
+        let cleared = build_for_seal(
+            &store,
+            &store
+                .begin_attempt(&binding(4), &[])
+                .expect("clear attempt"),
+            Some(&deleted.root),
+            &clear_reservation,
+            &clear_mutation,
+        )
+        .expect("new-run clear replacement");
+        verify_for_seal(
+            &store,
+            &cleared.root,
+            Some(&deleted.root),
+            &clear_reservation,
+            &clear_mutation,
+        )
+        .expect("clear independent seal");
+        verify_all_for_scrub(&store, &cleared.root, None).expect("clear scrub");
+        assert_query_ids(
+            &store,
+            &cleared.root_bytes,
+            &std::iter::once(4_u64).collect(),
+        );
+        assert_query_ids(
+            &store,
+            &initial.root_bytes,
+            &[1_u64, 2].into_iter().collect(),
+        );
+        assert_query_ids(
+            &store,
+            &appended.root_bytes,
+            &[1_u64, 2, 3].into_iter().collect(),
+        );
+        assert_query_ids(
+            &store,
+            &deleted.root_bytes,
+            &[2_u64, 3].into_iter().collect(),
+        );
     }
 
     #[test]
@@ -2032,5 +3192,239 @@ mod prepared_compaction_tests {
             &prepared.root_bytes,
             &std::iter::once(3_u64).collect(),
         );
+    }
+
+    #[test]
+    fn two_full_leaf_runs_merge_one_serving_dictionary_without_repacking_leaves() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let make_batch = |start: u64| FileAuthorityMutation {
+            edits: (start..start + 64)
+                .map(|index| FileSourceEdit::Upsert {
+                    coverage: coverage(&format!("file-{index:03}.rs"), b"abcxyz"),
+                    bytes: b"abcxyz".to_vec(),
+                })
+                .collect(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let first = build_for_seal(
+            &store,
+            &store
+                .begin_attempt(&binding(1), &[])
+                .expect("first attempt"),
+            None,
+            &DocVersionReservation {
+                first: 1,
+                count: 64,
+                scope_sha256: [5; 32],
+            },
+            &make_batch(0),
+        )
+        .expect("first full leaf run");
+        let second = build_for_seal(
+            &store,
+            &store
+                .begin_attempt(&binding(2), &first.root.object_roots())
+                .expect("second attempt"),
+            Some(&first.root),
+            &DocVersionReservation {
+                first: 65,
+                count: 64,
+                scope_sha256: [5; 32],
+            },
+            &make_batch(64),
+        )
+        .expect("second full leaf run");
+        assert_eq!(second.root.run_registry.runs.entries, 2);
+        assert_eq!(second.root.segments.entries, 2);
+        let held = second.root_bytes.clone();
+        let no_changes = FileAuthorityMutation {
+            edits: Vec::new(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let zero = DocVersionReservation {
+            first: 0,
+            count: 0,
+            scope_sha256: [5; 32],
+        };
+        let policy = LexicalMaintenancePolicy::new(
+            2,
+            4,
+            10_000_000,
+            20_000_000,
+            2,
+            100_000_000,
+            1_000_000,
+            1,
+        )
+        .expect("test policy");
+        let hard_scan = test_hard_scan_lane(&store, &second.root, &no_changes, &policy)
+            .expect("File hard scan fixture");
+        let merged = build_for_seal_prepared_with_policy(
+            &store,
+            &store
+                .begin_attempt(&binding(3), &second.root.object_roots())
+                .expect("merge attempt"),
+            Some(&second.root),
+            &zero,
+            &no_changes,
+            None,
+            Some(&policy),
+            hard_scan.as_ref(),
+        )
+        .expect("run posting merge");
+        assert_eq!(merged.root.run_registry.runs.entries, 1);
+        assert_eq!(merged.root.run_postings.entries, 1);
+        assert_eq!(merged.root.segments, second.root.segments);
+        let expected = (1_u64..=128).collect::<BTreeSet<_>>();
+        assert_query_ids(&store, &held, &expected);
+        assert_query_ids(&store, &merged.root_bytes, &expected);
+        let _merge_facts = crate::file_authority::paged::verify_for_seal_with_merge_facts(
+            &store,
+            &merged.root,
+            Some(&second.root),
+            &zero,
+            &no_changes,
+            Some(&policy),
+            hard_scan.as_ref(),
+        )
+        .expect("independent run merge seal");
+        verify_all_for_scrub(&store, &merged.root, None).expect("merged run scrub");
+        let leaf_only = merged.root.run_registry.active_index_encoded_bytes;
+        let strict_bytes =
+            LexicalMaintenancePolicy::new(1, 2, leaf_only, leaf_only, 2, 100_000_000, 1_000_000, 1)
+                .expect("leaf-only comparison policy");
+        let empty = TargetCounters::new(0, 0, 0).expect("empty counters");
+        strict_bytes
+            .admit_target(
+                empty,
+                TargetCounters::new(1, 2, leaf_only).expect("leaf-only counters"),
+            )
+            .expect("old subset accounting would admit exact boundary");
+        let empty_native = NativeRoot::empty([5; 32]);
+        assert!(
+            crate::lexical_publication::admit_maintenance_roots(
+                &store,
+                &strict_bytes,
+                (None, &merged.root),
+                (None, &empty_native),
+                false,
+            )
+            .is_err(),
+            "actual run dictionary and outer map bytes exceed leaf-only admission"
+        );
+    }
+
+    #[test]
+    fn expired_file_preparation_falls_back_at_compaction_consumption() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let initial = FileAuthorityMutation {
+            edits: (0..3)
+                .map(|index| FileSourceEdit::Upsert {
+                    coverage: coverage(&format!("packet-{index}.rs"), b"abcxyz"),
+                    bytes: b"abcxyz".to_vec(),
+                })
+                .collect(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let initial_root = build_for_seal(
+            &store,
+            &store
+                .begin_attempt(&binding(1), &[])
+                .expect("initial attempt"),
+            None,
+            &DocVersionReservation {
+                first: 1,
+                count: 3,
+                scope_sha256: [5; 32],
+            },
+            &initial,
+        )
+        .expect("initial build")
+        .root;
+        let retiring = coverage("packet-0.rs", b"abcxyz").source.file;
+        let debt = retire_into_debt(
+            &store,
+            &store.begin_attempt(&binding(2), &[]).expect("debt attempt"),
+            &initial_root,
+            &retiring,
+        );
+        let policy = LexicalMaintenancePolicy::new(
+            2,
+            4,
+            1_000_000,
+            2_000_000,
+            2,
+            10_000_000,
+            62 * 1024 * 1024,
+            1,
+        )
+        .expect("packet policy");
+        let mut packet = prepare_compaction(&store, &debt, 62 * 1024 * 1024, None)
+            .expect("bounded preparation")
+            .expect("debt packet")
+            .bind_policy(&debt, &policy, 62 * 1024 * 1024)
+            .expect("packet binding");
+        packet.policy_binding.as_mut().expect("binding").created_at = Instant::now()
+            .checked_sub(std::time::Duration::from_millis(3))
+            .expect("monotonic instant headroom");
+        assert!(
+            !packet
+                .policy_valid(Some(&debt), Some(&policy))
+                .expect("expired packet check")
+        );
+        let no_changes = FileAuthorityMutation {
+            edits: Vec::new(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let zero = DocVersionReservation {
+            first: 0,
+            count: 0,
+            scope_sha256: [5; 32],
+        };
+        let hard_scan = test_hard_scan_lane(&store, &debt, &no_changes, &policy)
+            .expect("File hard scan fixture");
+        let baseline = build_for_seal_prepared_with_policy(
+            &store,
+            &store
+                .begin_attempt(&binding(3), &debt.object_roots())
+                .expect("baseline attempt"),
+            Some(&debt),
+            &zero,
+            &no_changes,
+            None,
+            Some(&policy),
+            hard_scan.as_ref(),
+        )
+        .expect("foreground fallback");
+        let expired = build_for_seal_prepared_with_policy(
+            &store,
+            &store
+                .begin_attempt(&binding(4), &debt.object_roots())
+                .expect("expired attempt"),
+            Some(&debt),
+            &zero,
+            &no_changes,
+            Some(packet),
+            Some(&policy),
+            hard_scan.as_ref(),
+        )
+        .expect("expired packet fallback");
+        assert_eq!(expired.root_bytes, baseline.root_bytes);
+        let _merge_facts = crate::file_authority::paged::verify_for_seal_with_merge_facts(
+            &store,
+            &expired.root,
+            Some(&debt),
+            &zero,
+            &no_changes,
+            Some(&policy),
+            hard_scan.as_ref(),
+        )
+        .expect("independent fallback seal");
     }
 }

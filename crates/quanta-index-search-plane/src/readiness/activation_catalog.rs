@@ -15,6 +15,7 @@ use quanta_index_contract::{
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneTrackKind, SourcePublicationEvent,
 };
+use quanta_index_core::publication_admission::DurableControlFileAdmissionPort;
 use quanta_index_core::{CoreError, GenerationNamespaceReadPort, SourceEventStateV1};
 
 mod repository_envelope;
@@ -25,10 +26,12 @@ mod tests;
 use repository_envelope::EventHistory;
 
 use crate::readiness::durable_fs::{
-    AtomicFileWriteOutcomeV1, FsParentDirectorySyncPort, ParentDirectorySyncPort,
-    atomic_replace_file_from_staging_v1, ensure_durable_directory_v1,
-    read_regular_file_nofollow_v1, reconcile_legacy_atomic_temporaries_v1,
-    reconcile_owned_staging_directory_v1,
+    AtomicFileWriteOutcomeV1, DurableControlAdmissionV1, FsParentDirectorySyncPort,
+    ParentDirectorySyncPort, atomic_create_file_from_staging_admitted_v1,
+    atomic_replace_file_from_staging_admitted_v1, atomic_replace_file_from_staging_v1,
+    ensure_durable_directory_v1, read_regular_file_nofollow_v1,
+    reconcile_legacy_atomic_temporaries_admitted_v1, reconcile_legacy_atomic_temporaries_v1,
+    reconcile_owned_staging_directory_admitted_v1, reconcile_owned_staging_directory_v1,
 };
 use crate::readiness::search_corpus_generation::{
     PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1,
@@ -169,6 +172,7 @@ pub struct ActivationCatalog {
     // canonical root, so this process must not serve its old in-memory head.
     durability_uncertain_v1: AtomicBool,
     parent_sync: Arc<dyn ParentDirectorySyncPort>,
+    durable_control_admission: Option<DurableControlAdmissionV1>,
     generation_namespace_reads: OnceLock<GenerationNamespaceReadersV1>,
 }
 
@@ -203,17 +207,17 @@ impl ActivationCatalog {
                     })?;
                     Ok::<_, CoreError>(found || is_search_corpus_root_path(&entry.path()))
                 })?;
-            let _created =
-                load_or_create_root_incarnation_v1(activations_root, !has_roots, &parent_sync)?;
+            let _created = load_or_create_root_incarnation_v1(
+                activations_root,
+                !has_roots,
+                &activations_root.join(".staging"),
+                &parent_sync,
+                None,
+            )?;
             return Ok(());
         }
         let previous = read_root_incarnation_v1(&path)?;
-        let next = fresh_root_incarnation_v1()?;
-        if next == previous {
-            return Err(CoreError::Storage(
-                "search-plane activation catalog: restore incarnation did not change".to_string(),
-            ));
-        }
+        let next = Self::restore_incarnation_bytes_v1(Some(previous), true)?;
         let staging_dir = activations_root.join(".staging");
         ensure_durable_directory_v1(
             &staging_dir,
@@ -228,8 +232,34 @@ impl ActivationCatalog {
             &parent_sync,
         )? {
             AtomicFileWriteOutcomeV1::Durable => Ok(()),
-            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => Err(error),
+            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error)
+            | AtomicFileWriteOutcomeV1::RenamedButAdmissionCommitFailed(error) => Err(error),
         }
+    }
+
+    /// Plan the next root incarnation without mutating a state-root path.
+    /// The caller must read and publish through its own admitted file owner.
+    pub fn restore_incarnation_bytes_v1(
+        previous: Option<[u8; ACTIVATION_ROOT_INCARNATION_BYTES_V1]>,
+        has_persisted_heads: bool,
+    ) -> Result<[u8; ACTIVATION_ROOT_INCARNATION_BYTES_V1], CoreError> {
+        if has_persisted_heads && previous.is_none() {
+            return Err(CoreError::Storage(
+                "search-plane activation catalog: active roots lack root incarnation".to_string(),
+            ));
+        }
+        if previous.is_some_and(|value| value.iter().all(|byte| *byte == 0)) {
+            return Err(CoreError::Storage(
+                "search-plane activation catalog: root incarnation is zero".to_string(),
+            ));
+        }
+        let next = fresh_root_incarnation_v1()?;
+        if previous == Some(next) {
+            return Err(CoreError::Storage(
+                "search-plane activation catalog: restore incarnation did not change".to_string(),
+            ));
+        }
+        Ok(next)
     }
 
     /// A single catalog snapshot for process readiness. Comparing the
@@ -293,10 +323,32 @@ impl ActivationCatalog {
         )
     }
 
+    pub(crate) fn open_with_lifecycle_and_durable_admission_v1(
+        root: impl AsRef<Path>,
+        lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
+        admission: Arc<dyn DurableControlFileAdmissionPort>,
+    ) -> Result<Self, CoreError> {
+        Self::open_with_parent_sync_and_admission(
+            root,
+            lifecycle_coordinator,
+            Arc::new(FsParentDirectorySyncPort),
+            Some(DurableControlAdmissionV1(admission)),
+        )
+    }
+
     pub(super) fn open_with_parent_sync(
         root: impl AsRef<Path>,
         lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
         parent_sync: Arc<dyn ParentDirectorySyncPort>,
+    ) -> Result<Self, CoreError> {
+        Self::open_with_parent_sync_and_admission(root, lifecycle_coordinator, parent_sync, None)
+    }
+
+    fn open_with_parent_sync_and_admission(
+        root: impl AsRef<Path>,
+        lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
+        parent_sync: Arc<dyn ParentDirectorySyncPort>,
+        durable_control_admission: Option<DurableControlAdmissionV1>,
     ) -> Result<Self, CoreError> {
         let root = root.as_ref();
         ensure_durable_directory_v1(
@@ -310,17 +362,37 @@ impl ActivationCatalog {
             "search-plane activation catalog staging",
             parent_sync.as_ref(),
         )?;
-        reconcile_owned_staging_directory_v1(
-            &staging_dir,
-            "search-plane activation catalog",
-            parent_sync.as_ref(),
-        )?;
-        reconcile_legacy_atomic_temporaries_v1(
-            root,
-            "--corpus.json",
-            "search-plane activation catalog",
-            parent_sync.as_ref(),
-        )?;
+        if let Some(admission) = &durable_control_admission {
+            // A previous unlink may have removed its name before settlement.
+            // Drain that exact retained ticket before a directory scan can
+            // miss the now-absent pathname.
+            admission.0.reconcile_deletions()?;
+            reconcile_owned_staging_directory_admitted_v1(
+                &staging_dir,
+                "search-plane activation catalog",
+                parent_sync.as_ref(),
+                admission.0.as_ref(),
+            )?;
+            reconcile_legacy_atomic_temporaries_admitted_v1(
+                root,
+                "--corpus.json",
+                "search-plane activation catalog",
+                parent_sync.as_ref(),
+                admission.0.as_ref(),
+            )?;
+        } else {
+            reconcile_owned_staging_directory_v1(
+                &staging_dir,
+                "search-plane activation catalog",
+                parent_sync.as_ref(),
+            )?;
+            reconcile_legacy_atomic_temporaries_v1(
+                root,
+                "--corpus.json",
+                "search-plane activation catalog",
+                parent_sync.as_ref(),
+            )?;
+        }
         let mut entries = CatalogState::default();
         let mut loaded_repositories = std::collections::BTreeSet::new();
         let dir_entries = fs::read_dir(root).map_err(|err| {
@@ -377,7 +449,9 @@ impl ActivationCatalog {
         let root_incarnation = load_or_create_root_incarnation_v1(
             root,
             loaded_repositories.is_empty(),
+            &staging_dir,
             parent_sync.as_ref(),
+            durable_control_admission.as_ref(),
         )?;
         Ok(Self {
             activations_dir: root.to_path_buf(),
@@ -388,6 +462,7 @@ impl ActivationCatalog {
             lifecycle_coordinator,
             durability_uncertain_v1: AtomicBool::new(false),
             parent_sync,
+            durable_control_admission,
             generation_namespace_reads: OnceLock::new(),
         })
     }
@@ -760,15 +835,28 @@ impl ActivationCatalog {
         let path = self
             .activations_dir
             .join(repository_envelope::file_name(repo));
-        match atomic_replace_file_from_staging_v1(
-            &path,
-            &bytes,
-            &self.staging_dir,
-            "search-plane activation catalog",
-            self.parent_sync.as_ref(),
-        )? {
+        let outcome = if let Some(admission) = &self.durable_control_admission {
+            atomic_replace_file_from_staging_admitted_v1(
+                &path,
+                &bytes,
+                &self.staging_dir,
+                "search-plane activation catalog",
+                self.parent_sync.as_ref(),
+                admission.0.as_ref(),
+            )?
+        } else {
+            atomic_replace_file_from_staging_v1(
+                &path,
+                &bytes,
+                &self.staging_dir,
+                "search-plane activation catalog",
+                self.parent_sync.as_ref(),
+            )?
+        };
+        match outcome {
             AtomicFileWriteOutcomeV1::Durable => {}
-            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => {
+            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error)
+            | AtomicFileWriteOutcomeV1::RenamedButAdmissionCommitFailed(error) => {
                 self.mark_durability_uncertain_v1();
                 return Err(error);
             }
@@ -927,7 +1015,9 @@ fn is_search_corpus_root_path(path: &Path) -> bool {
 fn load_or_create_root_incarnation_v1(
     root: &Path,
     allow_create: bool,
+    staging_dir: &Path,
     parent_sync: &dyn ParentDirectorySyncPort,
+    admission: Option<&DurableControlAdmissionV1>,
 ) -> Result<[u8; ROOT_INCARNATION_BYTES_V1], CoreError> {
     let path = root.join(ROOT_INCARNATION_FILE_V1);
     match fs::symlink_metadata(&path) {
@@ -947,6 +1037,21 @@ fn load_or_create_root_incarnation_v1(
         )));
     }
     let value = fresh_root_incarnation_v1()?;
+    if let Some(admission) = admission {
+        let outcome = atomic_create_file_from_staging_admitted_v1(
+            &path,
+            &value,
+            staging_dir,
+            "search-plane activation catalog root incarnation",
+            parent_sync,
+            admission.0.as_ref(),
+        )?;
+        return match outcome {
+            AtomicFileWriteOutcomeV1::Durable => read_root_incarnation_v1(&path),
+            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error)
+            | AtomicFileWriteOutcomeV1::RenamedButAdmissionCommitFailed(error) => Err(error),
+        };
+    }
     let mut file = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)

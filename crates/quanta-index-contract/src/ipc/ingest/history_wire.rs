@@ -5,9 +5,13 @@ use crate::{ManifestGeneration, RepoId, RepoRelativePath, RevisionId};
 use core::fmt;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, MapAccess, VariantAccess, Visitor},
+    de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
 };
+
+mod admitted;
+pub use admitted::HistoryDecodeLimitsV1;
+use admitted::{HistoryDecodePolicy, Ordinary};
 
 // =============================================================================
 // History ingest batch
@@ -33,9 +37,9 @@ impl Serialize for HistoryRefUpsert {
     }
 }
 
-struct HistoryRefUpsertVisitor;
+struct HistoryRefUpsertVisitor<P>(P);
 
-impl<'de> Visitor<'de> for HistoryRefUpsertVisitor {
+impl<'de, P: HistoryDecodePolicy<'de>> Visitor<'de> for HistoryRefUpsertVisitor<P> {
     type Value = HistoryRefUpsert;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -46,29 +50,27 @@ impl<'de> Visitor<'de> for HistoryRefUpsertVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut name: Option<String> = None;
+        let mut name: Option<Box<str>> = None;
         let mut sha: Option<CommitSha> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self.0.next_field(&mut map, HISTORY_REF_UPSERT_FIELDS)? {
+            match key {
                 "name" => {
                     if name.is_some() {
                         return Err(de::Error::duplicate_field("name"));
                     }
-                    name = Some(map.next_value()?);
+                    name = Some(self.0.next_boxed(&mut map)?);
                 }
                 "sha" => {
                     if sha.is_some() {
                         return Err(de::Error::duplicate_field("sha"));
                     }
-                    sha = Some(map.next_value()?);
+                    sha = Some(self.0.next_sha(&mut map)?);
                 }
                 other => return Err(de::Error::unknown_field(other, HISTORY_REF_UPSERT_FIELDS)),
             }
         }
         Ok(HistoryRefUpsert {
-            name: name
-                .ok_or_else(|| de::Error::missing_field("name"))?
-                .into_boxed_str(),
+            name: name.ok_or_else(|| de::Error::missing_field("name"))?,
             sha: sha.ok_or_else(|| de::Error::missing_field("sha"))?,
         })
     }
@@ -82,7 +84,7 @@ impl<'de> Deserialize<'de> for HistoryRefUpsert {
         deserializer.deserialize_struct(
             "HistoryRefUpsert",
             HISTORY_REF_UPSERT_FIELDS,
-            HistoryRefUpsertVisitor,
+            HistoryRefUpsertVisitor(Ordinary),
         )
     }
 }
@@ -105,9 +107,9 @@ impl Serialize for HistoryRefDelete {
     }
 }
 
-struct HistoryRefDeleteVisitor;
+struct HistoryRefDeleteVisitor<P>(P);
 
-impl<'de> Visitor<'de> for HistoryRefDeleteVisitor {
+impl<'de, P: HistoryDecodePolicy<'de>> Visitor<'de> for HistoryRefDeleteVisitor<P> {
     type Value = HistoryRefDelete;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -118,22 +120,20 @@ impl<'de> Visitor<'de> for HistoryRefDeleteVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut name: Option<String> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        let mut name: Option<Box<str>> = None;
+        while let Some(key) = self.0.next_field(&mut map, HISTORY_REF_DELETE_FIELDS)? {
+            match key {
                 "name" => {
                     if name.is_some() {
                         return Err(de::Error::duplicate_field("name"));
                     }
-                    name = Some(map.next_value()?);
+                    name = Some(self.0.next_boxed(&mut map)?);
                 }
                 other => return Err(de::Error::unknown_field(other, HISTORY_REF_DELETE_FIELDS)),
             }
         }
         Ok(HistoryRefDelete {
-            name: name
-                .ok_or_else(|| de::Error::missing_field("name"))?
-                .into_boxed_str(),
+            name: name.ok_or_else(|| de::Error::missing_field("name"))?,
         })
     }
 }
@@ -146,7 +146,7 @@ impl<'de> Deserialize<'de> for HistoryRefDelete {
         deserializer.deserialize_struct(
             "HistoryRefDelete",
             HISTORY_REF_DELETE_FIELDS,
-            HistoryRefDeleteVisitor,
+            HistoryRefDeleteVisitor(Ordinary),
         )
     }
 }
@@ -175,9 +175,9 @@ impl Serialize for HistoryRefMutation {
     }
 }
 
-struct HistoryRefMutationVisitor;
+struct HistoryRefMutationVisitor<P>(P);
 
-impl<'de> Visitor<'de> for HistoryRefMutationVisitor {
+impl<'de, P: HistoryDecodePolicy<'de>> Visitor<'de> for HistoryRefMutationVisitor<P> {
     type Value = HistoryRefMutation;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -188,15 +188,7 @@ impl<'de> Visitor<'de> for HistoryRefMutationVisitor {
     where
         A: serde::de::EnumAccess<'de>,
     {
-        let (tag, variant) = data.variant::<String>()?;
-        match tag.as_str() {
-            "Upsert" => Ok(HistoryRefMutation::Upsert(variant.newtype_variant()?)),
-            "Delete" => Ok(HistoryRefMutation::Delete(variant.newtype_variant()?)),
-            other => Err(de::Error::unknown_variant(
-                other,
-                HISTORY_REF_MUTATION_VARIANTS,
-            )),
-        }
+        self.0.next_ref_variant(data)
     }
 }
 
@@ -208,7 +200,7 @@ impl<'de> Deserialize<'de> for HistoryRefMutation {
         deserializer.deserialize_enum(
             "HistoryRefMutation",
             HISTORY_REF_MUTATION_VARIANTS,
-            HistoryRefMutationVisitor,
+            HistoryRefMutationVisitor(Ordinary),
         )
     }
 }
@@ -239,9 +231,9 @@ impl Serialize for HistoryDiffHunkUpsert {
     }
 }
 
-struct HistoryDiffHunkUpsertVisitor;
+struct HistoryDiffHunkUpsertVisitor<P>(P);
 
-impl<'de> Visitor<'de> for HistoryDiffHunkUpsertVisitor {
+impl<'de, P: HistoryDecodePolicy<'de>> Visitor<'de> for HistoryDiffHunkUpsertVisitor<P> {
     type Value = HistoryDiffHunkUpsert;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -253,27 +245,30 @@ impl<'de> Visitor<'de> for HistoryDiffHunkUpsertVisitor {
         A: MapAccess<'de>,
     {
         let mut commit_sha: Option<CommitSha> = None;
-        let mut file_path: Option<String> = None;
+        let mut file_path: Option<Box<str>> = None;
         let mut record: Option<DiffHunkRecord> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
+        while let Some(key) = self
+            .0
+            .next_field(&mut map, HISTORY_DIFF_HUNK_UPSERT_FIELDS)?
+        {
+            match key {
                 "commit_sha" => {
                     if commit_sha.is_some() {
                         return Err(de::Error::duplicate_field("commit_sha"));
                     }
-                    commit_sha = Some(map.next_value()?);
+                    commit_sha = Some(self.0.next_sha(&mut map)?);
                 }
                 "file_path" => {
                     if file_path.is_some() {
                         return Err(de::Error::duplicate_field("file_path"));
                     }
-                    file_path = Some(map.next_value()?);
+                    file_path = Some(self.0.next_boxed(&mut map)?);
                 }
                 "record" => {
                     if record.is_some() {
                         return Err(de::Error::duplicate_field("record"));
                     }
-                    record = Some(map.next_value()?);
+                    record = Some(self.0.next_diff_record(&mut map)?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
@@ -285,9 +280,7 @@ impl<'de> Visitor<'de> for HistoryDiffHunkUpsertVisitor {
         }
         Ok(HistoryDiffHunkUpsert {
             commit_sha: commit_sha.ok_or_else(|| de::Error::missing_field("commit_sha"))?,
-            file_path: file_path
-                .ok_or_else(|| de::Error::missing_field("file_path"))?
-                .into_boxed_str(),
+            file_path: file_path.ok_or_else(|| de::Error::missing_field("file_path"))?,
             record: record.ok_or_else(|| de::Error::missing_field("record"))?,
         })
     }
@@ -301,7 +294,7 @@ impl<'de> Deserialize<'de> for HistoryDiffHunkUpsert {
         deserializer.deserialize_struct(
             "HistoryDiffHunkUpsert",
             HISTORY_DIFF_HUNK_UPSERT_FIELDS,
-            HistoryDiffHunkUpsertVisitor,
+            HistoryDiffHunkUpsertVisitor(Ordinary),
         )
     }
 }
@@ -350,9 +343,9 @@ impl Serialize for HistoryIngestBatch {
     }
 }
 
-struct HistoryIngestBatchVisitor;
+struct HistoryIngestBatchVisitor<P>(P);
 
-impl<'de> Visitor<'de> for HistoryIngestBatchVisitor {
+impl<'de, P: HistoryDecodePolicy<'de>> Visitor<'de> for HistoryIngestBatchVisitor<P> {
     type Value = HistoryIngestBatch;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -372,17 +365,17 @@ impl<'de> Visitor<'de> for HistoryIngestBatchVisitor {
         let mut refs: Option<Vec<HistoryRefMutation>> = None;
         let mut tags: Option<Vec<HistoryTagMutation>> = None;
         let mut diff_hunks: Option<Vec<HistoryDiffHunkUpsert>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "repo_id" => repo_id = Some(map.next_value()?),
-                "revision_id" => revision_id = Some(map.next_value()?),
+        while let Some(key) = self.0.next_field(&mut map, HISTORY_INGEST_BATCH_FIELDS)? {
+            match key {
+                "repo_id" => repo_id = Some(self.0.next_repo(&mut map)?),
+                "revision_id" => revision_id = Some(self.0.next_revision(&mut map)?),
                 "generation" => generation = Some(map.next_value()?),
-                "manifest_digest" => manifest_digest = Some(map.next_value()?),
-                "batch_digest" => batch_digest = Some(map.next_value()?),
-                "commits" => commits = Some(map.next_value()?),
-                "refs" => refs = Some(map.next_value()?),
-                "tags" => tags = Some(map.next_value()?),
-                "diff_hunks" => diff_hunks = Some(map.next_value()?),
+                "manifest_digest" => manifest_digest = Some(self.0.next_optional_text(&mut map)?),
+                "batch_digest" => batch_digest = Some(self.0.next_text(&mut map)?),
+                "commits" => commits = Some(self.0.next_commits(&mut map)?),
+                "refs" => refs = Some(self.0.next_refs(&mut map)?),
+                "tags" => tags = Some(self.0.next_refs(&mut map)?),
+                "diff_hunks" => diff_hunks = Some(self.0.next_hunks(&mut map)?),
                 other => return Err(de::Error::unknown_field(other, HISTORY_INGEST_BATCH_FIELDS)),
             }
         }
@@ -409,7 +402,7 @@ impl<'de> Deserialize<'de> for HistoryIngestBatch {
         deserializer.deserialize_struct(
             "HistoryIngestBatch",
             HISTORY_INGEST_BATCH_FIELDS,
-            HistoryIngestBatchVisitor,
+            HistoryIngestBatchVisitor(Ordinary),
         )
     }
 }
@@ -434,9 +427,9 @@ impl Serialize for RepoCommitRecencyEntry {
     }
 }
 
-struct RepoCommitRecencyEntryVisitor;
+struct RepoCommitRecencyEntryVisitor<P>(P);
 
-impl<'de> Visitor<'de> for RepoCommitRecencyEntryVisitor {
+impl<'de, P: HistoryDecodePolicy<'de>> Visitor<'de> for RepoCommitRecencyEntryVisitor<P> {
     type Value = RepoCommitRecencyEntry;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -449,9 +442,12 @@ impl<'de> Visitor<'de> for RepoCommitRecencyEntryVisitor {
     {
         let mut source_repo_id: Option<RepoId> = None;
         let mut latest_committer_time_ms: Option<u64> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "source_repo_id" => source_repo_id = Some(map.next_value()?),
+        while let Some(key) = self
+            .0
+            .next_field(&mut map, REPO_COMMIT_RECENCY_ENTRY_FIELDS)?
+        {
+            match key {
+                "source_repo_id" => source_repo_id = Some(self.0.next_repo(&mut map)?),
                 "latest_committer_time_ms" => latest_committer_time_ms = Some(map.next_value()?),
                 other => {
                     return Err(de::Error::unknown_field(
@@ -478,7 +474,7 @@ impl<'de> Deserialize<'de> for RepoCommitRecencyEntry {
         deserializer.deserialize_struct(
             "RepoCommitRecencyEntry",
             REPO_COMMIT_RECENCY_ENTRY_FIELDS,
-            RepoCommitRecencyEntryVisitor,
+            RepoCommitRecencyEntryVisitor(Ordinary),
         )
     }
 }
@@ -515,9 +511,9 @@ impl Serialize for RepoCommitRecencyIngestBatch {
     }
 }
 
-struct RepoCommitRecencyIngestBatchVisitor;
+struct RepoCommitRecencyIngestBatchVisitor<P>(P);
 
-impl<'de> Visitor<'de> for RepoCommitRecencyIngestBatchVisitor {
+impl<'de, P: HistoryDecodePolicy<'de>> Visitor<'de> for RepoCommitRecencyIngestBatchVisitor<P> {
     type Value = RepoCommitRecencyIngestBatch;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -533,13 +529,16 @@ impl<'de> Visitor<'de> for RepoCommitRecencyIngestBatchVisitor {
         let mut generation: Option<ManifestGeneration> = None;
         let mut batch_digest: Option<String> = None;
         let mut entries: Option<Vec<RepoCommitRecencyEntry>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "repo_id" => repo_id = Some(map.next_value()?),
-                "revision_id" => revision_id = Some(map.next_value()?),
+        while let Some(key) = self
+            .0
+            .next_field(&mut map, REPO_COMMIT_RECENCY_INGEST_BATCH_FIELDS)?
+        {
+            match key {
+                "repo_id" => repo_id = Some(self.0.next_repo(&mut map)?),
+                "revision_id" => revision_id = Some(self.0.next_revision(&mut map)?),
                 "generation" => generation = Some(map.next_value()?),
-                "batch_digest" => batch_digest = Some(map.next_value()?),
-                "entries" => entries = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(self.0.next_text(&mut map)?),
+                "entries" => entries = Some(self.0.next_recency_entries(&mut map)?),
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -566,7 +565,7 @@ impl<'de> Deserialize<'de> for RepoCommitRecencyIngestBatch {
         deserializer.deserialize_struct(
             "RepoCommitRecencyIngestBatch",
             REPO_COMMIT_RECENCY_INGEST_BATCH_FIELDS,
-            RepoCommitRecencyIngestBatchVisitor,
+            RepoCommitRecencyIngestBatchVisitor(Ordinary),
         )
     }
 }
@@ -1261,9 +1260,9 @@ impl Serialize for FileContributorIdentityEntry {
     }
 }
 
-struct FileContributorIdentityEntryVisitor;
+struct FileContributorIdentityEntryVisitor<P>(P);
 
-impl<'de> Visitor<'de> for FileContributorIdentityEntryVisitor {
+impl<'de, P: HistoryDecodePolicy<'de>> Visitor<'de> for FileContributorIdentityEntryVisitor<P> {
     type Value = FileContributorIdentityEntry;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1277,25 +1276,28 @@ impl<'de> Visitor<'de> for FileContributorIdentityEntryVisitor {
         let mut canonical: Option<String> = None;
         let mut name: Option<Option<String>> = None;
         let mut email: Option<Option<String>> = None;
-        while let Some(field) = map.next_key::<String>()? {
-            match field.as_str() {
+        while let Some(field) = self
+            .0
+            .next_field(&mut map, FILE_CONTRIBUTOR_IDENTITY_ENTRY_FIELDS)?
+        {
+            match field {
                 "canonical" => {
                     if canonical.is_some() {
                         return Err(de::Error::duplicate_field("canonical"));
                     }
-                    canonical = Some(map.next_value()?);
+                    canonical = Some(self.0.next_text(&mut map)?);
                 }
                 "name" => {
                     if name.is_some() {
                         return Err(de::Error::duplicate_field("name"));
                     }
-                    name = Some(map.next_value()?);
+                    name = Some(self.0.next_optional_text(&mut map)?);
                 }
                 "email" => {
                     if email.is_some() {
                         return Err(de::Error::duplicate_field("email"));
                     }
-                    email = Some(map.next_value()?);
+                    email = Some(self.0.next_optional_text(&mut map)?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
@@ -1321,7 +1323,7 @@ impl<'de> Deserialize<'de> for FileContributorIdentityEntry {
         deserializer.deserialize_struct(
             "FileContributorIdentityEntry",
             FILE_CONTRIBUTOR_IDENTITY_ENTRY_FIELDS,
-            FileContributorIdentityEntryVisitor,
+            FileContributorIdentityEntryVisitor(Ordinary),
         )
     }
 }
@@ -1349,9 +1351,9 @@ impl Serialize for FileContributorEntry {
     }
 }
 
-struct FileContributorEntryVisitor;
+struct FileContributorEntryVisitor<P>(P);
 
-impl<'de> Visitor<'de> for FileContributorEntryVisitor {
+impl<'de, P: HistoryDecodePolicy<'de>> Visitor<'de> for FileContributorEntryVisitor<P> {
     type Value = FileContributorEntry;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1365,11 +1367,13 @@ impl<'de> Visitor<'de> for FileContributorEntryVisitor {
         let mut source_repo_id: Option<RepoId> = None;
         let mut repo_relative_path: Option<RepoRelativePath> = None;
         let mut contributors: Option<Vec<FileContributorIdentityEntry>> = None;
-        while let Some(field) = map.next_key::<String>()? {
-            match field.as_str() {
-                "source_repo_id" => source_repo_id = Some(map.next_value()?),
-                "repo_relative_path" => repo_relative_path = Some(map.next_value()?),
-                "contributors" => contributors = Some(map.next_value()?),
+        while let Some(field) = self.0.next_field(&mut map, FILE_CONTRIBUTOR_ENTRY_FIELDS)? {
+            match field {
+                "source_repo_id" => source_repo_id = Some(self.0.next_repo(&mut map)?),
+                "repo_relative_path" => repo_relative_path = Some(self.0.next_path(&mut map)?),
+                "contributors" => {
+                    contributors = Some(self.0.next_contributor_identities(&mut map)?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -1396,7 +1400,7 @@ impl<'de> Deserialize<'de> for FileContributorEntry {
         deserializer.deserialize_struct(
             "FileContributorEntry",
             FILE_CONTRIBUTOR_ENTRY_FIELDS,
-            FileContributorEntryVisitor,
+            FileContributorEntryVisitor(Ordinary),
         )
     }
 }
@@ -1433,9 +1437,9 @@ impl Serialize for FileContributorIngestBatch {
     }
 }
 
-struct FileContributorIngestBatchVisitor;
+struct FileContributorIngestBatchVisitor<P>(P);
 
-impl<'de> Visitor<'de> for FileContributorIngestBatchVisitor {
+impl<'de, P: HistoryDecodePolicy<'de>> Visitor<'de> for FileContributorIngestBatchVisitor<P> {
     type Value = FileContributorIngestBatch;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1451,13 +1455,16 @@ impl<'de> Visitor<'de> for FileContributorIngestBatchVisitor {
         let mut generation: Option<ManifestGeneration> = None;
         let mut batch_digest: Option<String> = None;
         let mut entries: Option<Vec<FileContributorEntry>> = None;
-        while let Some(field) = map.next_key::<String>()? {
-            match field.as_str() {
-                "repo_id" => repo_id = Some(map.next_value()?),
-                "revision_id" => revision_id = Some(map.next_value()?),
+        while let Some(field) = self
+            .0
+            .next_field(&mut map, FILE_CONTRIBUTOR_INGEST_BATCH_FIELDS)?
+        {
+            match field {
+                "repo_id" => repo_id = Some(self.0.next_repo(&mut map)?),
+                "revision_id" => revision_id = Some(self.0.next_revision(&mut map)?),
                 "generation" => generation = Some(map.next_value()?),
-                "batch_digest" => batch_digest = Some(map.next_value()?),
-                "entries" => entries = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(self.0.next_text(&mut map)?),
+                "entries" => entries = Some(self.0.next_contributor_entries(&mut map)?),
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -1484,7 +1491,7 @@ impl<'de> Deserialize<'de> for FileContributorIngestBatch {
         deserializer.deserialize_struct(
             "FileContributorIngestBatch",
             FILE_CONTRIBUTOR_INGEST_BATCH_FIELDS,
-            FileContributorIngestBatchVisitor,
+            FileContributorIngestBatchVisitor(Ordinary),
         )
     }
 }

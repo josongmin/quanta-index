@@ -67,7 +67,7 @@ impl BuiltSegment {
             let local = u64::try_from(local).map_err(|error| {
                 CoreError::InvalidContract(format!("lexical: Native local ID width: {error}"))
             })?;
-            builder.upsert(local, doc.candidate_id.clone(), &doc.text)?;
+            builder.append(local, doc.candidate_id.clone(), &doc.text)?;
         }
         let proved = builder.finish()?;
         // This verifier derives exact gram and position relations from raw

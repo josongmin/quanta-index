@@ -2,6 +2,9 @@
 
 use quanta_index_searchd_harness as e2e_harness;
 
+#[path = "common/searchd_binary_process.rs"]
+mod searchd_binary_process;
+
 #[path = "common/frontdoor_scenarios.rs"]
 mod frontdoor_scenarios;
 
@@ -21,6 +24,9 @@ mod e2e_filter_execution;
 mod e2e_full_corpus;
 #[path = "e2e_generation_activation_concurrency.rs"]
 mod e2e_generation_activation_concurrency;
+#[cfg(debug_assertions)]
+#[path = "e2e_hard_scan_checkpoint_restart.rs"]
+mod e2e_hard_scan_checkpoint_restart;
 #[path = "e2e_history_relevance.rs"]
 mod e2e_history_relevance;
 #[path = "e2e_keyset_cursors.rs"]

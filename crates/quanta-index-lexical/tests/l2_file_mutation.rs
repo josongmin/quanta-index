@@ -1830,7 +1830,7 @@ fn writer_admission_failure_leaves_only_discardable_unsealed_delta() -> TestResu
     );
     assert!(restarted.validate_generation_identity(&identity).is_err());
     assert_eq!(
-        restarted.discard_incomplete_generation(&identity)?,
+        restarted.discard_incomplete_generation(&identity, None)?,
         IncompleteGenerationDiscardOutcomeV1::Discarded
     );
     assert!(!target.exists());

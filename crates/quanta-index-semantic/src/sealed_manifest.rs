@@ -25,6 +25,8 @@
 
 use std::path::{Path, PathBuf};
 
+use lance_io::object_store::file_admission::FileAdmission;
+
 use quanta_index_core::{
     CoreError, GENERATION_SIDECAR_CORRUPT_CODE, SealedArtifactCommitmentV1, TreeScrubVerdictV1,
     commit_tree_inheriting_v1, scrub_tree_commitment_v1, verify_tree_layout_v1,
@@ -109,13 +111,15 @@ impl SemanticSealedManifestV1 {
     }
 }
 
-fn measure(path: &Path, label: &str, max_bytes: usize) -> Result<(u64, [u8; 32]), CoreError> {
-    crate::control_file::measure_bounded(path, max_bytes).map_err(|error| {
-        CoreError::Storage(format!(
-            "semantic: read {label} {} for commitment: {error}",
-            path.display()
-        ))
-    })
+fn measure_with_admission(
+    path: &Path,
+    label: &str,
+    max_bytes: usize,
+    admission: Option<&dyn FileAdmission>,
+) -> Result<(u64, [u8; 32]), CoreError> {
+    crate::control_file::measure_bounded_with_admission(path, max_bytes, admission).map_err(
+        |error| crate::errors::fs_err(&format!("read {label} for commitment"), path, &error),
+    )
 }
 
 /// How much a seal read to commit its dataset tree (QI-BB-006 #4).
@@ -139,19 +143,21 @@ struct InheritableBaseV1 {
 /// The base's sealed commitment: the base must be sealed under a sealed
 /// manifest its own marker vouches for, or the delta cannot be sealed on
 /// it at all.
-fn inheritable_base_v1(base_generation_dir: &Path) -> Result<InheritableBaseV1, CoreError> {
+fn inheritable_base_v1(
+    base_generation_dir: &Path,
+    admission: Option<&dyn FileAdmission>,
+) -> Result<InheritableBaseV1, CoreError> {
     let marker_path = layout::sealed_marker_path(base_generation_dir);
-    let base_digest = crate::control_file::read_string_bounded(
+    let base_digest = crate::control_file::read_string_bounded_with_admission(
         &marker_path,
         crate::control_file::MAX_SEALED_MARKER_BYTES,
+        admission,
     )
     .map_err(|error| {
-        CoreError::Storage(format!(
-            "semantic: read delta base sealed marker {}: {error}",
-            marker_path.display()
-        ))
+        crate::errors::fs_err("read delta base sealed marker", &marker_path, &error)
     })?;
-    let manifest = read_bound_sealed_manifest(base_generation_dir, &base_digest)?;
+    let manifest =
+        read_bound_sealed_manifest_with_admission(base_generation_dir, &base_digest, admission)?;
     Ok(InheritableBaseV1 {
         dataset_dir: layout::dataset_dir(base_generation_dir),
         artifacts: manifest.artifacts,
@@ -166,33 +172,50 @@ fn inheritable_base_v1(base_generation_dir: &Path) -> Result<InheritableBaseV1, 
 /// leaves an unsealed generation (no marker), never a sealed one without a
 /// commitment. With `base_generation_dir`, every dataset file that is still
 /// the base's inode carries the base's digest instead of being read.
+#[cfg(test)]
 pub(crate) fn build_sealed_manifest_bytes(
     generation_dir: &Path,
     manifest_digest: &str,
     base_generation_dir: Option<&Path>,
 ) -> Result<(Vec<u8>, SealMeasurementV1), CoreError> {
-    let scope_manifest = measure(
+    build_sealed_manifest_bytes_with_admission(
+        generation_dir,
+        manifest_digest,
+        base_generation_dir,
+        None,
+    )
+}
+
+pub(crate) fn build_sealed_manifest_bytes_with_admission(
+    generation_dir: &Path,
+    manifest_digest: &str,
+    base_generation_dir: Option<&Path>,
+    admission: Option<&dyn FileAdmission>,
+) -> Result<(Vec<u8>, SealMeasurementV1), CoreError> {
+    let scope_manifest = measure_with_admission(
         &layout::manifest_path(generation_dir),
         "scope manifest",
         crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
+        admission,
     )?;
-    let build_contract = measure(
+    let build_contract = measure_with_admission(
         &layout::build_contract_path(generation_dir),
         "build contract",
         crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
+        admission,
     )?;
-    let base = base_generation_dir.map(inheritable_base_v1).transpose()?;
+    let base = base_generation_dir
+        .map(|base| inheritable_base_v1(base, admission))
+        .transpose()?;
     let commitment = commit_tree_inheriting_v1(
         &layout::dataset_dir(generation_dir),
         DATASET_DIR_NAME,
         base.as_ref()
             .map(|base| (base.dataset_dir.as_path(), base.artifacts.as_slice())),
+        &|path| crate::control_file::open_dataset_reader(path, admission),
     )
     .map_err(|error| {
-        CoreError::Storage(format!(
-            "semantic: commit dataset tree {} at seal: {error}",
-            generation_dir.display()
-        ))
+        crate::errors::fs_err("commit dataset tree at seal", generation_dir, &error)
     })?;
     if commitment.artifacts.is_empty() {
         return Err(CoreError::Storage(format!(
@@ -226,11 +249,15 @@ pub(crate) fn build_sealed_manifest_bytes(
     Ok((bytes, measurement))
 }
 
-fn read_sealed_manifest(generation_dir: &Path) -> Result<SemanticSealedManifestV1, CoreError> {
+fn read_sealed_manifest_with_admission(
+    generation_dir: &Path,
+    admission: Option<&dyn FileAdmission>,
+) -> Result<SemanticSealedManifestV1, CoreError> {
     let path = sealed_manifest_path(generation_dir);
-    let bytes = crate::control_file::read_bounded(
+    let bytes = crate::control_file::read_bounded_with_admission(
         &path,
         crate::control_file::MAX_SEALED_MANIFEST_BYTES,
+        admission,
     ).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             CoreError::Typed {
@@ -243,10 +270,7 @@ fn read_sealed_manifest(generation_dir: &Path) -> Result<SemanticSealedManifestV
         } else if error.kind() == std::io::ErrorKind::InvalidData {
             sidecar_corrupt(generation_dir, &format!("sealed manifest is invalid: {error}"))
         } else {
-            CoreError::Storage(format!(
-                "semantic: read sealed generation manifest {}: {error}",
-                path.display()
-            ))
+            crate::errors::fs_err("read sealed generation manifest", &path, &error)
         }
     })?;
     let mut input = std::io::Cursor::new(bytes.as_slice());
@@ -284,12 +308,12 @@ fn sidecar_corrupt(generation_dir: &Path, detail: &str) -> CoreError {
     }
 }
 
-/// Read the sealed manifest and refuse one written for another identity.
-fn read_bound_sealed_manifest(
+fn read_bound_sealed_manifest_with_admission(
     generation_dir: &Path,
     manifest_digest: &str,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<SemanticSealedManifestV1, CoreError> {
-    let manifest = read_sealed_manifest(generation_dir)?;
+    let manifest = read_sealed_manifest_with_admission(generation_dir, admission)?;
     if manifest.manifest_digest != manifest_digest {
         return Err(CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
@@ -303,20 +327,20 @@ fn read_bound_sealed_manifest(
     Ok(manifest)
 }
 
-/// Admit the sealed manifest's format and identity to a cheap inventory.
-/// Dataset file layout and bytes remain the door's and scrub's proofs.
-pub(crate) fn inspect_sealed_manifest_identity(
+pub(crate) fn inspect_sealed_manifest_identity_with_admission(
     generation_dir: &Path,
     manifest_digest: &str,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<(), CoreError> {
-    let _manifest = read_bound_sealed_manifest(generation_dir, manifest_digest)?;
+    let _manifest =
+        read_bound_sealed_manifest_with_admission(generation_dir, manifest_digest, admission)?;
     Ok(())
 }
 
-/// Hash the two decoded sidecars against their commitments.
-fn verify_sidecars(
+fn verify_sidecars_with_admission(
     generation_dir: &Path,
     manifest: &SemanticSealedManifestV1,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<(), CoreError> {
     for (label, path, committed, max_bytes) in [
         (
@@ -333,19 +357,21 @@ fn verify_sidecars(
         ),
     ] {
         let (bytes, sha256) =
-            crate::control_file::measure_bounded(&path, max_bytes).map_err(|error| {
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
-                ) {
-                    sidecar_corrupt(generation_dir, &format!("{label}: {error}"))
-                } else {
-                    CoreError::Storage(format!(
-                        "semantic: read {label} {} for commitment: {error}",
-                        path.display()
-                    ))
-                }
-            })?;
+            crate::control_file::measure_bounded_with_admission(&path, max_bytes, admission)
+                .map_err(|error| {
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
+                    ) {
+                        sidecar_corrupt(generation_dir, &format!("{label}: {error}"))
+                    } else {
+                        crate::errors::fs_err(
+                            &format!("read {label} for commitment"),
+                            &path,
+                            &error,
+                        )
+                    }
+                })?;
         if bytes != committed.0 {
             return Err(sidecar_corrupt(
                 generation_dir,
@@ -362,14 +388,14 @@ fn verify_sidecars(
     Ok(())
 }
 
-/// Prove the two contract sidecars used by delta compatibility belong to the
-/// sealed base, without walking or hashing its dataset files.
-pub(crate) fn verify_sealed_sidecars(
+pub(crate) fn verify_sealed_sidecars_with_admission(
     generation_dir: &Path,
     manifest_digest: &str,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<(), CoreError> {
-    let manifest = read_bound_sealed_manifest(generation_dir, manifest_digest)?;
-    verify_sidecars(generation_dir, &manifest)
+    let manifest =
+        read_bound_sealed_manifest_with_admission(generation_dir, manifest_digest, admission)?;
+    verify_sidecars_with_admission(generation_dir, &manifest, admission)
 }
 
 /// The cheap door proof: what is on disk has the shape the seal committed
@@ -382,12 +408,14 @@ pub(crate) fn verify_sealed_sidecars(
 /// metadata; it reads no dataset byte. It refuses a missing, extra or
 /// resized file and a manifest whose digest is not the identity's. Byte
 /// integrity of the dataset is the scrub's ([`scrub_sealed_manifest`]).
-pub(crate) fn verify_sealed_manifest(
+pub(crate) fn verify_sealed_manifest_with_admission(
     generation_dir: &Path,
     manifest_digest: &str,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<SemanticSealedManifestV1, CoreError> {
-    let manifest = read_bound_sealed_manifest(generation_dir, manifest_digest)?;
-    verify_sidecars(generation_dir, &manifest)?;
+    let manifest =
+        read_bound_sealed_manifest_with_admission(generation_dir, manifest_digest, admission)?;
+    verify_sidecars_with_admission(generation_dir, &manifest, admission)?;
     let verified = verify_tree_layout_v1(
         &layout::dataset_dir(generation_dir),
         DATASET_DIR_NAME,
@@ -439,24 +467,27 @@ pub(crate) fn scrub_sealed_manifest(
     manifest_digest: &str,
     start_artifact: u64,
     max_bytes: u64,
+    admission: Option<&dyn FileAdmission>,
 ) -> Result<SealedManifestScrubV1, CoreError> {
-    let manifest = match read_bound_sealed_manifest(generation_dir, manifest_digest) {
-        Ok(manifest) => manifest,
-        Err(CoreError::Typed {
-            code:
-                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
-                | quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
-            message,
-        }) => {
-            return Ok(SealedManifestScrubV1 {
-                files_verified: 0,
-                bytes_read: 0,
-                verdict: SealedManifestScrubVerdictV1::Corrupt { detail: message },
-            });
-        }
-        Err(other) => return Err(other),
-    };
-    match verify_sidecars(generation_dir, &manifest) {
+    let manifest =
+        match read_bound_sealed_manifest_with_admission(generation_dir, manifest_digest, admission)
+        {
+            Ok(manifest) => manifest,
+            Err(CoreError::Typed {
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
+                    | quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                message,
+            }) => {
+                return Ok(SealedManifestScrubV1 {
+                    files_verified: 0,
+                    bytes_read: 0,
+                    verdict: SealedManifestScrubVerdictV1::Corrupt { detail: message },
+                });
+            }
+            Err(other) => return Err(other),
+        };
+    match verify_sidecars_with_admission(generation_dir, &manifest, admission) {
         Ok(()) => {}
         Err(CoreError::Typed { code, message }) if code == GENERATION_SIDECAR_CORRUPT_CODE => {
             return Ok(SealedManifestScrubV1 {
@@ -473,13 +504,9 @@ pub(crate) fn scrub_sealed_manifest(
         &manifest.artifacts,
         start_artifact,
         max_bytes,
+        &|path| crate::control_file::open_dataset_reader(path, admission),
     )
-    .map_err(|error| {
-        CoreError::Storage(format!(
-            "semantic: scrub dataset tree {}: {error}",
-            generation_dir.display()
-        ))
-    })?;
+    .map_err(|error| crate::errors::fs_err("scrub dataset tree", generation_dir, &error))?;
     let verdict = match step.verdict {
         TreeScrubVerdictV1::Completed => SealedManifestScrubVerdictV1::Completed(manifest),
         TreeScrubVerdictV1::Paused { next_artifact } => {

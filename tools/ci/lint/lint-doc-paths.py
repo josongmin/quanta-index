@@ -21,6 +21,10 @@ IGNORE_DIRS = {
 }
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
+HTML_TAG_RE = re.compile(r"<([A-Za-z][\w:-]*)\b([^<>]*)>")
+HTML_ANCHOR_ATTR_RE = re.compile(
+    r"""\s(id|name)\s*=\s*(["'])([^"'<>]+)\2""", re.IGNORECASE
+)
 
 
 def is_ignored_doc(path: Path) -> bool:
@@ -47,6 +51,10 @@ def heading_anchors(path: Path) -> frozenset[str]:
     anchors: set[str] = set()
     duplicates: dict[str, int] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
+        for tag in HTML_TAG_RE.finditer(line):
+            for attribute in HTML_ANCHOR_ATTR_RE.finditer(tag.group(2)):
+                if attribute.group(1).lower() == "id" or tag.group(1).lower() == "a":
+                    anchors.add(attribute.group(3))
         match = HEADING_RE.match(line)
         if match is None:
             continue

@@ -18,7 +18,7 @@
 //! Warm mode seeds every fixture into one sealed generation; cold mode seeds
 //! only the one fixture a scenario needs.
 
-use anyhow::Result as AnyResult;
+use anyhow::{Context as _, Result as AnyResult};
 use quanta_index_contract::TextQuerySyntax;
 
 use crate::artifact::{BenchRowV1, BenchSyntax, LatencySummary, ResultShape};
@@ -261,8 +261,9 @@ fn ingest_runtime_catalog_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
 }
 
 fn seal_and_activate(rt: &mut E2eRuntime) -> AnyResult<()> {
-    let _generation = rt.seal()?;
+    let _generation = rt.seal().context("seal fixture generation")?;
     rt.activate_last_sealed_generation()
+        .context("activate fixture generation")
 }
 
 /// The bytes one fixture family ingests, as `(path, content)` pairs in
@@ -385,17 +386,31 @@ pub fn prepare_warm_runtime() -> AnyResult<E2eRuntime> {
 
 /// Boot a fresh runtime for one cold scenario, seeding only its fixture.
 pub fn prepare_cold_runtime(scenario: &DslBenchScenario) -> AnyResult<E2eRuntime> {
-    let mut rt = E2eRuntime::boot()?;
+    let context = |stage: &str| {
+        format!(
+            "cold scenario {} fixture {}: {stage}",
+            scenario.id,
+            scenario.fixture.as_str()
+        )
+    };
+    let mut rt = E2eRuntime::boot().with_context(|| context("boot"))?;
     match scenario.fixture {
-        FixtureKind::LexicalCorpus => ingest_lexical_corpus(&mut rt)?,
-        FixtureKind::StructuralTree => {
-            ingest_lexical_corpus(&mut rt)?;
-            ingest_structural_trees(&mut rt)?;
+        FixtureKind::LexicalCorpus => {
+            ingest_lexical_corpus(&mut rt).with_context(|| context("ingest lexical"))?;
         }
-        FixtureKind::HistoryLedger => ingest_history_ledger(&mut rt)?,
-        FixtureKind::RuntimeCatalog => ingest_runtime_catalog_fixture(&mut rt)?,
+        FixtureKind::StructuralTree => {
+            ingest_lexical_corpus(&mut rt).with_context(|| context("ingest lexical"))?;
+            ingest_structural_trees(&mut rt).with_context(|| context("ingest structural"))?;
+        }
+        FixtureKind::HistoryLedger => {
+            ingest_history_ledger(&mut rt).with_context(|| context("ingest history"))?;
+        }
+        FixtureKind::RuntimeCatalog => {
+            ingest_runtime_catalog_fixture(&mut rt)
+                .with_context(|| context("ingest runtime catalog"))?;
+        }
     }
-    seal_and_activate(&mut rt)?;
+    seal_and_activate(&mut rt).with_context(|| context("publish fixture"))?;
     Ok(rt)
 }
 

@@ -1,3 +1,4 @@
+use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -6,8 +7,12 @@ use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_core::{
     CoreError, EMBED_CHECKPOINT, MAX_EMBEDDING_DIMENSION, RequestBudgetV1, TextEmbeddingProvider,
+    index::{MemoryLease, MemoryLifetime},
 };
-use serde::{Deserialize, Serialize};
+use serde::{
+    Serialize,
+    de::{DeserializeSeed, Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor},
+};
 
 use crate::pool::ProviderAttemptPool;
 use crate::telemetry;
@@ -74,6 +79,26 @@ pub trait EmbeddingTransport: Send + Sync {
         timeout: Duration,
     ) -> Result<HttpResponse, CoreError>;
 
+    /// Native calls transfer the owned body and an explicit decoded-body
+    /// ceiling. A transport must implement the bounded read itself; checking
+    /// length after an unbounded read cannot enforce physical memory admission.
+    /// Only unbounded standalone calls may use the borrowed fallback.
+    fn post_embeddings_owned_bounded(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: String,
+        timeout: Duration,
+        max_response_bytes: Option<u64>,
+    ) -> Result<HttpResponse, CoreError> {
+        if max_response_bytes.is_some() {
+            return Err(CoreError::InvalidContract(
+                "embedding transport does not implement bounded response reading".into(),
+            ));
+        }
+        self.post_embeddings(url, api_key, &body, timeout)
+    }
+
     /// The HTTP timeout this transport's client was built with, when it has one.
     /// Defaults to `None` for transports without a network client (e.g. test
     /// stubs); the real reqwest transport returns its configured value so the
@@ -88,6 +113,35 @@ pub trait EmbeddingTransport: Send + Sync {
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+}
+
+struct ChargedResponse {
+    response: HttpResponse,
+    memory: Option<MemoryLease>,
+}
+
+struct ChargedBody {
+    body: String,
+    _memory: Option<MemoryLease>,
+}
+
+#[derive(Default)]
+struct ByteCounter(u64);
+
+impl Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let length = u64::try_from(bytes.len())
+            .map_err(|_error| std::io::Error::other("serialized provider request is too large"))?;
+        self.0 = self
+            .0
+            .checked_add(length)
+            .ok_or_else(|| std::io::Error::other("serialized provider request is too large"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Budget-aware backoff sleep for the retry loop (TOPT-04 / R2).
@@ -132,6 +186,9 @@ pub struct OpenAiProviderConfig {
     pub max_retries: u32,
     pub timeout: Duration,
     pub concurrency: usize,
+    /// Decoded response-body ceiling. Native product composition supplies
+    /// this explicitly; standalone injected transports may leave it unset.
+    pub max_response_bytes: Option<u64>,
 }
 
 impl OpenAiProviderConfig {
@@ -150,6 +207,7 @@ impl OpenAiProviderConfig {
             max_retries: DEFAULT_MAX_RETRIES,
             timeout: DEFAULT_TIMEOUT,
             concurrency: DEFAULT_CONCURRENCY,
+            max_response_bytes: None,
         }
     }
 
@@ -201,6 +259,82 @@ impl OpenAiProviderConfig {
         self.concurrency = concurrency;
         self
     }
+
+    /// Exact maximum decoded HTTP response bytes for one attempt.
+    #[must_use]
+    pub const fn with_max_response_bytes(mut self, bytes: u64) -> Self {
+        self.max_response_bytes = Some(bytes);
+        self
+    }
+
+    /// Logical admission envelope for one source or query text.
+    ///
+    /// `max_input_bytes` is the source/query owner bound. JSON can escape one
+    /// input byte as six ASCII bytes (`\u0000`). The fixed request frame and
+    /// model name are counted by the same serializer as the actual request.
+    /// The peak includes both owned JSON/URL copies, one reserved response,
+    /// and the parser's bounded vector/metadata/scratch charge. `escaping`
+    /// is the simultaneous retained charge while response and parse state
+    /// overlap. Allocator overcapacity and reqwest internal buffers are not
+    /// measured by this logical envelope.
+    pub fn single_input_memory_envelope(
+        &self,
+        max_input_bytes: u64,
+    ) -> Result<(u64, u64), CoreError> {
+        let response = self
+            .max_response_bytes
+            .filter(|bytes| *bytes != 0)
+            .ok_or_else(|| {
+                invalid("openai: single-input memory envelope needs a response byte ceiling")
+            })?;
+        if self.dimension == 0 || self.dimension > MAX_EMBEDDING_DIMENSION {
+            return Err(invalid(
+                "openai: single-input memory envelope has invalid dimension",
+            ));
+        }
+        let empty = [""];
+        let request = EmbeddingsRequest {
+            model: &self.model,
+            input: &empty,
+            dimensions: self.dimension,
+        };
+        let mut frame = ByteCounter::default();
+        serde_json::to_writer(&mut frame, &request)
+            .map_err(|error| invalid(&format!("openai: request frame count failed: {error}")))?;
+        let escaped_input = max_input_bytes
+            .checked_mul(6)
+            .ok_or_else(|| invalid("openai: escaped input bound overflows"))?;
+        let body = frame
+            .0
+            .checked_add(escaped_input)
+            .ok_or_else(|| invalid("openai: serialized request bound overflows"))?;
+        let url = self
+            .base_url
+            .len()
+            .checked_add(EMBEDDINGS_PATH.len())
+            .ok_or_else(|| invalid("openai: URL bound overflows"))?;
+        let url = u64::try_from(url)
+            .map_err(|_error| invalid("openai: URL bound exceeds platform representation"))?;
+        let output = quanta_index_core::TextEmbeddingBatch::output_bytes(1, self.dimension)?;
+        let metadata = u64::try_from(std::mem::size_of::<EmbeddingItem>())
+            .map_err(|_error| invalid("openai: metadata bound exceeds platform representation"))?;
+        let first_peak = body
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(url.checked_mul(2)?))
+            .and_then(|bytes| bytes.checked_add(response))
+            .and_then(|bytes| bytes.checked_add(output))
+            .ok_or_else(|| invalid("openai: attempt memory peak overflows"))?;
+        let escaping = response
+            .checked_add(output)
+            .ok_or_else(|| invalid("openai: retained output envelope overflows"))?;
+        let parse_peak = body
+            .checked_add(url)
+            .and_then(|bytes| bytes.checked_add(escaping))
+            .and_then(|bytes| bytes.checked_add(metadata))
+            .and_then(|bytes| bytes.checked_add(response))
+            .ok_or_else(|| invalid("openai: parse memory peak overflows"))?;
+        Ok((first_peak.max(parse_peak), escaping))
+    }
 }
 
 /// `OpenAI`-backed [`TextEmbeddingProvider`].
@@ -226,6 +360,11 @@ pub struct OpenAiEmbeddingProvider {
     max_retries: u32,
     timeout: Duration,
     concurrency: usize,
+    max_response_bytes: Option<u64>,
+    /// Native composition requires one actual admitted physical lease for
+    /// every HTTP attempt. Standalone callers keep the explicit off-native
+    /// budget contract.
+    required_execution_custody: bool,
     retry_sleeper: Arc<dyn RetrySleeper>,
 }
 
@@ -277,6 +416,14 @@ impl OpenAiEmbeddingProvider {
         if config.timeout.is_zero() {
             return Err(invalid("openai: timeout must be non-zero"));
         }
+        if config
+            .max_response_bytes
+            .is_some_and(|bytes| bytes == 0 || usize::try_from(bytes).is_err() || bytes == u64::MAX)
+        {
+            return Err(invalid(
+                "openai: max response bytes must fit a nonzero platform buffer",
+            ));
+        }
         let model_id = format!("openai:{}", config.model);
         // Concurrency was validated above, so the pool cap cannot fail;
         // the composition root swaps in the supervised pool anyway.
@@ -296,6 +443,8 @@ impl OpenAiEmbeddingProvider {
             max_retries: config.max_retries,
             timeout: config.timeout,
             concurrency: config.concurrency,
+            max_response_bytes: config.max_response_bytes,
+            required_execution_custody: false,
             retry_sleeper: Arc::new(BudgetPollSleeper),
         })
     }
@@ -306,6 +455,15 @@ impl OpenAiEmbeddingProvider {
     #[must_use]
     pub fn with_attempt_pool(mut self, attempts: Arc<ProviderAttemptPool>) -> Self {
         self.attempts = attempts;
+        self
+    }
+
+    /// Require a Native execution grant at the physical HTTP boundary.
+    /// Product composition enables this before registering the provider so
+    /// a missing or zero-provider reservation cannot run uncharged remote IO.
+    #[must_use]
+    pub fn with_required_execution_custody(mut self) -> Self {
+        self.required_execution_custody = true;
         self
     }
 
@@ -350,12 +508,62 @@ impl OpenAiEmbeddingProvider {
             input: texts,
             dimensions: self.dimension,
         };
-        let body = serde_json::to_string(&request)
+        let mut count = ByteCounter::default();
+        serde_json::to_writer(&mut count, &request)
+            .map_err(|err| invalid(&format!("openai: request size failed: {err}")))?;
+        let url_bytes = self
+            .base_url
+            .len()
+            .checked_add(EMBEDDINGS_PATH.len())
+            .ok_or_else(|| invalid("openai: request URL size overflows"))?;
+        let url_bytes = u64::try_from(url_bytes).map_err(|_error| {
+            invalid("openai: request URL size exceeds platform representation")
+        })?;
+        let request_bytes = count
+            .0
+            .checked_add(url_bytes)
+            .ok_or_else(|| invalid("openai: request allocation size overflows"))?;
+        let _body_memory = reserve_provider_memory(
+            budget,
+            request_bytes,
+            MemoryLifetime::Temporary,
+            self.required_execution_custody,
+        )?;
+        let capacity = usize::try_from(count.0)
+            .map_err(|_error| invalid("openai: request body exceeds platform capacity"))?;
+        let mut encoded = Vec::new();
+        encoded.try_reserve_exact(capacity).map_err(|error| {
+            CoreError::Storage(format!("openai: request reserve failed: {error}"))
+        })?;
+        serde_json::to_writer(&mut encoded, &request)
             .map_err(|err| invalid(&format!("openai: request encode failed: {err}")))?;
+        if encoded.len() != capacity {
+            return Err(invalid("openai: counted and encoded request sizes differ"));
+        }
+        let body = String::from_utf8(encoded)
+            .map_err(|error| invalid(&format!("openai: request UTF-8 failed: {error}")))?;
         let url = format!("{}{EMBEDDINGS_PATH}", self.base_url);
         let raw = self.post_with_retry(&url, &body, texts.len(), estimated_tokens, budget)?;
-        let parsed: EmbeddingsResponse = serde_json::from_str(&raw)
-            .map_err(|err| CoreError::Storage(format!("openai: response decode failed: {err}")))?;
+        let per_item_metadata = std::mem::size_of::<EmbeddingItem>();
+        let metadata_bytes = texts
+            .len()
+            .checked_mul(per_item_metadata)
+            .ok_or_else(|| invalid("openai: decoded vector metadata footprint overflows"))?;
+        let parser_scratch = usize::try_from(self.max_response_bytes.unwrap_or(0))
+            .map_err(|_error| invalid("openai: parser scratch exceeds platform capacity"))?;
+        let decoded_bytes = metadata_bytes
+            .checked_add(parser_scratch)
+            .ok_or_else(|| invalid("openai: decoded parser footprint overflows"))?;
+        let decoded_bytes = u64::try_from(decoded_bytes).map_err(|_error| {
+            invalid("openai: decoded parser footprint exceeds platform representation")
+        })?;
+        let _decoded_memory = reserve_provider_memory(
+            budget,
+            decoded_bytes,
+            MemoryLifetime::Temporary,
+            self.required_execution_custody,
+        )?;
+        let parsed = parse_embeddings_response(&raw.body, texts.len(), self.dimension)?;
         let mut data = parsed.data;
         data.sort_by(|left, right| left.index.cmp(&right.index));
         if data.len() != texts.len() {
@@ -397,18 +605,23 @@ impl OpenAiEmbeddingProvider {
         texts_in_request: usize,
         estimated_tokens: usize,
         budget: &RequestBudgetV1,
-    ) -> Result<String, CoreError> {
+    ) -> Result<ChargedBody, CoreError> {
         let mut last_error: Option<CoreError> = None;
         for attempt in 0..=self.max_retries {
             budget.checkpoint(EMBED_CHECKPOINT)?;
             telemetry::record_http_request(texts_in_request, estimated_tokens);
             match self.post_under_budget(url, body, budget) {
-                Ok(response) => match classify_status(response.status) {
-                    StatusClass::Success => return Ok(response.body),
+                Ok(charged) => match classify_status(charged.response.status) {
+                    StatusClass::Success => {
+                        return Ok(ChargedBody {
+                            body: charged.response.body,
+                            _memory: charged.memory,
+                        });
+                    }
                     StatusClass::Auth => {
                         return Err(typed(
                             LexicalErrorCode::SemProviderAuth,
-                            &format!("openai: auth rejected (status {})", response.status),
+                            &format!("openai: auth rejected (status {})", charged.response.status),
                         ));
                     }
                     StatusClass::Fatal => {
@@ -416,8 +629,8 @@ impl OpenAiEmbeddingProvider {
                             LexicalErrorCode::SemProviderTransport,
                             &format!(
                                 "openai: non-retryable status {} body {}",
-                                response.status,
-                                preview(&response.body)
+                                charged.response.status,
+                                preview(&charged.response.body)
                             ),
                         ));
                     }
@@ -425,7 +638,7 @@ impl OpenAiEmbeddingProvider {
                         telemetry::record_retryable_status();
                         last_error = Some(typed(
                             LexicalErrorCode::SemProviderTransport,
-                            &format!("openai: retryable status {}", response.status),
+                            &format!("openai: retryable status {}", charged.response.status),
                         ));
                     }
                 },
@@ -460,7 +673,7 @@ impl OpenAiEmbeddingProvider {
         url: &str,
         body: &str,
         budget: &RequestBudgetV1,
-    ) -> Result<HttpResponse, CoreError> {
+    ) -> Result<ChargedResponse, CoreError> {
         let timeout = self.timeout.min(budget.remaining());
         if timeout.is_zero() {
             // The deadline passed between the checkpoint and here.
@@ -471,8 +684,48 @@ impl OpenAiEmbeddingProvider {
                 )
             }));
         }
+        // The request may return before a blocking HTTP transport does. This
+        // finite lease retains its original Native admission on the physical
+        // thread, without extending the caller's deadline or cancellation.
+        let custody = budget.begin_provider_attempt_v1()?;
+        if self.required_execution_custody && custody.is_none() {
+            return Err(CoreError::InvalidContract(
+                "openai: physical attempt lacks an admitted execution grant".into(),
+            ));
+        }
+        if self.required_execution_custody && self.max_response_bytes.is_none() {
+            return Err(invalid(
+                "openai: native response byte ceiling is not configured",
+            ));
+        }
+        let copy_bytes = body
+            .len()
+            .checked_add(url.len())
+            .ok_or_else(|| invalid("openai: physical request copy size overflows"))?;
+        let copy_bytes = u64::try_from(copy_bytes).map_err(|_error| {
+            invalid("openai: physical request copy exceeds platform representation")
+        })?;
+        let request_copy_memory = reserve_provider_memory(
+            budget,
+            copy_bytes,
+            MemoryLifetime::Temporary,
+            self.required_execution_custody,
+        )?;
+        let response_memory = self
+            .max_response_bytes
+            .map(|maximum| {
+                reserve_provider_memory(
+                    budget,
+                    maximum,
+                    MemoryLifetime::Retained,
+                    self.required_execution_custody,
+                )
+            })
+            .transpose()?
+            .flatten();
         let transport = Arc::clone(&self.transport);
         let api_key = Arc::clone(&self.api_key);
+        let max_response_bytes = self.max_response_bytes;
         let url = url.to_string();
         let body = body.to_string();
         let (done, outcome) = mpsc::channel();
@@ -480,8 +733,40 @@ impl OpenAiEmbeddingProvider {
         // attempts, refuses past shutdown, and owns the thread until it
         // ends or the supervised drain escalates it by name.
         self.attempts
-            .spawn_tracked("openai-embed-attempt", move || {
-                let result = transport.post_embeddings(&url, &api_key, &body, timeout);
+            .spawn_tracked_with_custody("openai-embed-attempt", custody, move || {
+                let result = transport
+                    .post_embeddings_owned_bounded(
+                        &url,
+                        &api_key,
+                        body,
+                        timeout,
+                        max_response_bytes,
+                    )
+                    .and_then(|response| {
+                        let response_len = u64::try_from(response.body.len()).map_err(|_error| {
+                            CoreError::Typed {
+                                code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                                message: "openai: decoded response length exceeds platform representation".into(),
+                            }
+                        })?;
+                        if max_response_bytes.is_some_and(|maximum| response_len > maximum) {
+                            return Err(CoreError::Typed {
+                                code:
+                                    quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                                message: "openai: decoded response exceeds configured byte ceiling"
+                                    .into(),
+                            });
+                        }
+                        Ok(ChargedResponse {
+                            response,
+                            memory: response_memory,
+                        })
+                    });
+                // The HTTP call has ended. Release the physical request copy
+                // before waking the parser, so its decoded-buffer admission
+                // cannot overlap with the old copy's live charge.
+                drop(url);
+                drop(request_copy_memory);
                 // The requester may have left: a failed send means exactly
                 // that, and the result is dropped with the receiver.
                 let _abandoned = done.send(result);
@@ -583,9 +868,22 @@ fn flatten_batch_results(
     ordered: impl IntoIterator<Item = Result<Vec<Vec<f32>>, CoreError>>,
     text_count: usize,
 ) -> Result<Vec<Vec<f32>>, CoreError> {
-    let mut out: Vec<Vec<f32>> = Vec::with_capacity(text_count);
+    let mut out: Vec<Vec<f32>> = Vec::new();
+    out.try_reserve_exact(text_count)
+        .map_err(|error| invalid(&format!("openai: output reserve failed: {error}")))?;
     for result in ordered {
-        out.extend(result?);
+        let batch = result?;
+        if out
+            .len()
+            .checked_add(batch.len())
+            .is_none_or(|length| length > text_count)
+        {
+            return Err(invalid("openai: output batch exceeds input cardinality"));
+        }
+        out.extend(batch);
+    }
+    if out.len() != text_count {
+        return Err(invalid("openai: output batch omits an input"));
     }
     Ok(out)
 }
@@ -623,7 +921,10 @@ fn request_batch_texts<'a>(
 impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
     /// The corpus path: the same attempts as the budgeted path, under a
     /// budget that never interrupts.
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+    fn embed_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
         self.embed_batch_within(texts, &RequestBudgetV1::unbounded())
     }
 
@@ -631,26 +932,37 @@ impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
         &self,
         texts: &[&str],
         budget: &RequestBudgetV1,
-    ) -> Result<Vec<Vec<f32>>, CoreError> {
+    ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
         budget.checkpoint(EMBED_CHECKPOINT)?;
         if texts.is_empty() {
-            return Ok(Vec::new());
+            return Ok(quanta_index_core::TextEmbeddingBatch::unscoped(Vec::new()));
         }
+        let memory = reserve_provider_memory(
+            budget,
+            quanta_index_core::TextEmbeddingBatch::output_bytes(texts.len(), self.dimension)?,
+            MemoryLifetime::Retained,
+            self.required_execution_custody,
+        )?;
         let batches =
             partition_request_batches(texts, self.max_batch, self.max_estimated_tokens_per_request);
         // Common per-call case (one batch) or concurrency disabled: stay sequential
         // with zero thread/coordination overhead.
-        if batches.len() <= 1 || self.concurrency <= 1 {
-            return flatten_batch_results(
+        let vectors = if batches.len() <= 1 || self.concurrency <= 1 {
+            flatten_batch_results(
                 batches.iter().map(|batch| {
                     request_batch_texts(texts, *batch).and_then(|batch_texts| {
                         self.embed_one_batch(batch_texts, batch.estimated_tokens, budget)
                     })
                 }),
                 texts.len(),
-            );
-        }
-        self.embed_batches_concurrently(texts, &batches, budget)
+            )?
+        } else {
+            self.embed_batches_concurrently(texts, &batches, budget)?
+        };
+        budget.checkpoint(EMBED_CHECKPOINT)?;
+        Ok(quanta_index_core::TextEmbeddingBatch::from_parts(
+            vectors, memory,
+        ))
     }
 
     fn model_id(&self) -> &str {
@@ -685,6 +997,7 @@ impl ReqwestBlockingTransport {
     pub fn new(timeout: Duration) -> Result<Self, CoreError> {
         let client = reqwest::blocking::Client::builder()
             .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|err| {
                 typed(
@@ -696,6 +1009,33 @@ impl ReqwestBlockingTransport {
             client,
             configured_timeout: timeout,
         })
+    }
+
+    fn post_owned(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: String,
+        timeout: Duration,
+        max_response_bytes: Option<u64>,
+    ) -> Result<HttpResponse, CoreError> {
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(api_key)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .timeout(timeout)
+            .send()
+            .map_err(|err| {
+                typed(
+                    LexicalErrorCode::SemProviderTransport,
+                    &format!("openai: request send failed: {err}"),
+                )
+            })?;
+        let status = response.status().as_u16();
+        let text = read_response_body(response, max_response_bytes)?;
+        Ok(HttpResponse { status, body: text })
     }
 }
 
@@ -711,29 +1051,108 @@ impl EmbeddingTransport for ReqwestBlockingTransport {
         body: &str,
         timeout: Duration,
     ) -> Result<HttpResponse, CoreError> {
-        let response = self
-            .client
-            .post(url)
-            .bearer_auth(api_key)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body.to_string())
-            .timeout(timeout)
-            .send()
-            .map_err(|err| {
+        self.post_owned(url, api_key, body.to_string(), timeout, None)
+    }
+
+    fn post_embeddings_owned_bounded(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: String,
+        timeout: Duration,
+        max_response_bytes: Option<u64>,
+    ) -> Result<HttpResponse, CoreError> {
+        self.post_owned(url, api_key, body, timeout, max_response_bytes)
+    }
+}
+
+fn read_response_body(
+    mut response: impl Read,
+    max_response_bytes: Option<u64>,
+) -> Result<String, CoreError> {
+    let mut bytes = Vec::new();
+    match max_response_bytes {
+        Some(maximum) => {
+            if maximum == 0 {
+                return Err(invalid("openai: response ceiling must be nonzero"));
+            }
+            let capacity = usize::try_from(maximum)
+                .map_err(|_error| invalid("openai: response ceiling exceeds platform capacity"))?;
+            bytes.try_reserve_exact(capacity).map_err(|error| {
+                CoreError::Storage(format!("openai: response buffer reserve failed: {error}"))
+            })?;
+            let mut chunk = [0_u8; 8192];
+            while bytes.len() < capacity {
+                let remaining = capacity
+                    .checked_sub(bytes.len())
+                    .ok_or_else(|| invalid("openai: response buffer exceeded ceiling"))?;
+                let requested = remaining.min(chunk.len());
+                let read = loop {
+                    let buffer = chunk.get_mut(..requested).ok_or_else(|| {
+                        invalid("openai: requested response chunk exceeds buffer")
+                    })?;
+                    match response.read(buffer) {
+                        Ok(read) => break read,
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => {
+                            return Err(typed(
+                                LexicalErrorCode::SemProviderTransport,
+                                &format!("openai: response body read failed: {error}"),
+                            ));
+                        }
+                    }
+                };
+                if read == 0 {
+                    break;
+                }
+                if read > requested {
+                    return Err(invalid("openai: response reader exceeded supplied buffer"));
+                }
+                let next_len = bytes
+                    .len()
+                    .checked_add(read)
+                    .ok_or_else(|| invalid("openai: response buffer length overflows"))?;
+                if next_len > capacity || next_len > bytes.capacity() {
+                    return Err(invalid(
+                        "openai: response reader exceeded reserved capacity",
+                    ));
+                }
+                let chunk_bytes = chunk
+                    .get(..read)
+                    .ok_or_else(|| invalid("openai: response reader exceeded supplied buffer"))?;
+                bytes.extend_from_slice(chunk_bytes);
+            }
+            if bytes.len() == capacity {
+                let mut overflow = [0_u8; 1];
+                let read = response.read(&mut overflow).map_err(|error| {
+                    typed(
+                        LexicalErrorCode::SemProviderTransport,
+                        &format!("openai: response overflow probe failed: {error}"),
+                    )
+                })?;
+                if read != 0 {
+                    return Err(CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                        message: "openai: decoded response exceeds configured byte ceiling".into(),
+                    });
+                }
+            }
+        }
+        None => {
+            let _read_bytes = response.read_to_end(&mut bytes).map_err(|error| {
                 typed(
                     LexicalErrorCode::SemProviderTransport,
-                    &format!("openai: request send failed: {err}"),
+                    &format!("openai: response body read failed: {error}"),
                 )
             })?;
-        let status = response.status().as_u16();
-        let text = response.text().map_err(|err| {
-            typed(
-                LexicalErrorCode::SemProviderTransport,
-                &format!("openai: response body read failed: {err}"),
-            )
-        })?;
-        Ok(HttpResponse { status, body: text })
+        }
     }
+    String::from_utf8(bytes).map_err(|error| {
+        typed(
+            LexicalErrorCode::SemProviderTransport,
+            &format!("openai: response is not UTF-8: {error}"),
+        )
+    })
 }
 
 struct EmbeddingsRequest<'a> {
@@ -766,86 +1185,248 @@ struct EmbeddingItem {
     index: usize,
 }
 
-// Implements the provider response object decoder without a serde proc macro.
-// Unknown fields are ignored because OpenAI adds response metadata over time;
-// declared fields remain required and duplicates fail closed.
-macro_rules! impl_openai_response_deserialize {
-    ($ty:ident { $($field:ident : $field_ty:ty => $field_index:literal),+ $(,)? }) => {
-        impl<'de> Deserialize<'de> for $ty {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                struct ResponseVisitor;
-
-                impl<'de> serde::de::Visitor<'de> for ResponseVisitor {
-                    type Value = $ty;
-
-                    fn expecting(
-                        &self,
-                        formatter: &mut core::fmt::Formatter<'_>,
-                    ) -> core::fmt::Result {
-                        formatter.write_str(concat!("struct ", stringify!($ty)))
-                    }
-
-                    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-                    where
-                        A: serde::de::SeqAccess<'de>,
-                    {
-                        $(
-                            let $field: $field_ty = sequence.next_element()?.ok_or_else(|| {
-                                serde::de::Error::invalid_length($field_index, &self)
-                            })?;
-                        )+
-                        Ok($ty { $($field),+ })
-                    }
-
-                    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-                    where
-                        A: serde::de::MapAccess<'de>,
-                    {
-                        $(let mut $field: Option<$field_ty> = None;)+
-                        while let Some(key) = map.next_key::<String>()? {
-                            match key.as_str() {
-                                $(
-                                    stringify!($field) => {
-                                        if $field.is_some() {
-                                            return Err(serde::de::Error::duplicate_field(
-                                                stringify!($field),
-                                            ));
-                                        }
-                                        $field = Some(map.next_value()?);
-                                    }
-                                )+
-                                _ => {
-                                    let _: serde::de::IgnoredAny = map.next_value()?;
-                                }
-                            }
-                        }
-                        Ok($ty {
-                            $(
-                                $field: $field.ok_or_else(|| {
-                                    serde::de::Error::missing_field(stringify!($field))
-                                })?,
-                            )+
-                        })
-                    }
-                }
-
-                const FIELDS: &[&str] = &[$(stringify!($field)),+];
-                deserializer.deserialize_struct(stringify!($ty), FIELDS, ResponseVisitor)
-            }
-        }
-    };
+#[derive(Clone, Copy)]
+struct ResponseSeed {
+    count: usize,
+    dimension: usize,
 }
 
-impl_openai_response_deserialize!(EmbeddingsResponse {
-    data: Vec<EmbeddingItem> => 0,
-});
-impl_openai_response_deserialize!(EmbeddingItem {
-    embedding: Vec<f32> => 0,
-    index: usize => 1,
-});
+impl<'de> DeserializeSeed<'de> for ResponseSeed {
+    type Value = EmbeddingsResponse;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_struct("EmbeddingsResponse", &["data"], ResponseVisitor(self))
+    }
+}
+
+struct ResponseVisitor(ResponseSeed);
+
+impl<'de> Visitor<'de> for ResponseVisitor {
+    type Value = EmbeddingsResponse;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("embedding response object")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let data = sequence
+            .next_element_seed(DataSeed(self.0))?
+            .ok_or_else(|| A::Error::missing_field("data"))?;
+        if sequence.next_element::<IgnoredAny>()?.is_some() {
+            return Err(A::Error::custom(
+                "embedding response has extra positional fields",
+            ));
+        }
+        Ok(EmbeddingsResponse { data })
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut data = None;
+        while let Some(key) = map.next_key::<String>()? {
+            if key == "data" {
+                if data.is_some() {
+                    return Err(A::Error::duplicate_field("data"));
+                }
+                data = Some(map.next_value_seed(DataSeed(self.0))?);
+            } else {
+                let _: IgnoredAny = map.next_value()?;
+            }
+        }
+        Ok(EmbeddingsResponse {
+            data: data.ok_or_else(|| A::Error::missing_field("data"))?,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DataSeed(ResponseSeed);
+
+impl<'de> DeserializeSeed<'de> for DataSeed {
+    type Value = Vec<EmbeddingItem>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(DataVisitor(self.0))
+    }
+}
+
+struct DataVisitor(ResponseSeed);
+
+impl<'de> Visitor<'de> for DataVisitor {
+    type Value = Vec<EmbeddingItem>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("bounded embedding data array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut data = Vec::new();
+        data.try_reserve_exact(self.0.count)
+            .map_err(A::Error::custom)?;
+        for index in 0..self.0.count {
+            let item = sequence
+                .next_element_seed(ItemSeed(self.0.dimension))?
+                .ok_or_else(|| A::Error::invalid_length(index, &self))?;
+            data.push(item);
+        }
+        if sequence.next_element::<IgnoredAny>()?.is_some() {
+            return Err(A::Error::custom(
+                "embedding data count exceeds request batch",
+            ));
+        }
+        Ok(data)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ItemSeed(usize);
+
+impl<'de> DeserializeSeed<'de> for ItemSeed {
+    type Value = EmbeddingItem;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "EmbeddingItem",
+            &["embedding", "index"],
+            ItemVisitor(self.0),
+        )
+    }
+}
+
+struct ItemVisitor(usize);
+
+impl<'de> Visitor<'de> for ItemVisitor {
+    type Value = EmbeddingItem;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("bounded embedding item")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let embedding = sequence
+            .next_element_seed(VectorSeed(self.0))?
+            .ok_or_else(|| A::Error::missing_field("embedding"))?;
+        let index = sequence
+            .next_element()?
+            .ok_or_else(|| A::Error::missing_field("index"))?;
+        if sequence.next_element::<IgnoredAny>()?.is_some() {
+            return Err(A::Error::custom(
+                "embedding item has extra positional fields",
+            ));
+        }
+        Ok(EmbeddingItem { embedding, index })
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut embedding = None;
+        let mut index = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "embedding" => {
+                    if embedding.is_some() {
+                        return Err(A::Error::duplicate_field("embedding"));
+                    }
+                    embedding = Some(map.next_value_seed(VectorSeed(self.0))?);
+                }
+                "index" => {
+                    if index.is_some() {
+                        return Err(A::Error::duplicate_field("index"));
+                    }
+                    index = Some(map.next_value()?);
+                }
+                _ => {
+                    let _: IgnoredAny = map.next_value()?;
+                }
+            }
+        }
+        Ok(EmbeddingItem {
+            embedding: embedding.ok_or_else(|| A::Error::missing_field("embedding"))?,
+            index: index.ok_or_else(|| A::Error::missing_field("index"))?,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct VectorSeed(usize);
+
+impl<'de> DeserializeSeed<'de> for VectorSeed {
+    type Value = Vec<f32>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(VectorVisitor(self.0))
+    }
+}
+
+struct VectorVisitor(usize);
+
+impl<'de> Visitor<'de> for VectorVisitor {
+    type Value = Vec<f32>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("bounded embedding vector")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut vector = Vec::new();
+        vector.try_reserve_exact(self.0).map_err(A::Error::custom)?;
+        for index in 0..self.0 {
+            let value = sequence
+                .next_element()?
+                .ok_or_else(|| A::Error::invalid_length(index, &self))?;
+            vector.push(value);
+        }
+        if sequence.next_element::<IgnoredAny>()?.is_some() {
+            return Err(A::Error::custom(
+                "embedding dimension exceeds configured dimension",
+            ));
+        }
+        Ok(vector)
+    }
+}
+
+fn parse_embeddings_response(
+    body: &str,
+    count: usize,
+    dimension: usize,
+) -> Result<EmbeddingsResponse, CoreError> {
+    let mut deserializer = serde_json::Deserializer::from_str(body);
+    let response = ResponseSeed { count, dimension }
+        .deserialize(&mut deserializer)
+        .map_err(|error| CoreError::Storage(format!("openai: response decode failed: {error}")))?;
+    deserializer
+        .end()
+        .map_err(|error| CoreError::Storage(format!("openai: response trailing data: {error}")))?;
+    Ok(response)
+}
 
 /// A batch's embedding result paired with its batch index, used to reassemble
 /// concurrent worker output back into input order.
@@ -866,11 +1447,27 @@ fn invalid(message: &str) -> CoreError {
     CoreError::InvalidContract(message.to_string())
 }
 
+fn reserve_provider_memory(
+    budget: &RequestBudgetV1,
+    bytes: u64,
+    lifetime: MemoryLifetime,
+    required: bool,
+) -> Result<Option<MemoryLease>, CoreError> {
+    let admitted = budget.reserve_provider_memory_v1(bytes, lifetime)?;
+    if required && admitted.is_none() {
+        return Err(invalid(
+            "openai: physical attempt lacks an admitted execution grant",
+        ));
+    }
+    Ok(admitted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::retry::backoff_bound;
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use quanta_index_core::{ProviderAttemptCustodyPortV1, ProviderAttemptLeaseV1};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
 
     /// Replays a fixed sequence of canned transport results and counts calls, so
@@ -912,6 +1509,28 @@ mod tests {
                 ));
             }
             responses.remove(0)
+        }
+
+        fn post_embeddings_owned_bounded(
+            &self,
+            url: &str,
+            api_key: &str,
+            body: String,
+            timeout: Duration,
+            max_response_bytes: Option<u64>,
+        ) -> Result<HttpResponse, CoreError> {
+            // Fixtures are fixed before dispatch. Production transports must
+            // enforce this limit while reading the response stream.
+            let response = self.post_embeddings(url, api_key, &body, timeout)?;
+            let response_len = u64::try_from(response.body.len())
+                .map_err(|_error| invalid("test response length exceeds u64"))?;
+            if max_response_bytes.is_some_and(|maximum| response_len > maximum) {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                    message: "scripted response exceeds configured byte ceiling".into(),
+                });
+            }
+            Ok(response)
         }
     }
 
@@ -980,6 +1599,207 @@ mod tests {
             .expect("provider builds with a non-empty key/model/dim")
     }
 
+    #[test]
+    fn required_execution_custody_refuses_unbound_remote_io() {
+        let transport = ScriptedTransport::new(vec![Ok(ok_body(&[(0, vec![0.5, 0.5])]))]);
+        let calls = transport.calls_handle();
+        let provider = provider_with(cfg(2).with_max_response_bytes(256), transport)
+            .with_required_execution_custody();
+        let result = provider.embed_batch_within(
+            &["a"],
+            &RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        assert!(matches!(
+            result,
+            Err(CoreError::InvalidContract(message))
+                if message.contains("lacks an admitted execution grant")
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.live_attempts(), 0);
+    }
+
+    #[test]
+    fn bounded_transport_default_refuses_before_borrowed_io() {
+        struct BorrowedOnlyTransport(Arc<AtomicUsize>);
+
+        impl EmbeddingTransport for BorrowedOnlyTransport {
+            fn post_embeddings(
+                &self,
+                _url: &str,
+                _api_key: &str,
+                _body: &str,
+                _timeout: Duration,
+            ) -> Result<HttpResponse, CoreError> {
+                let _previous = self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ok_body(&[(0, vec![0.5, 0.5])]))
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let transport = BorrowedOnlyTransport(Arc::clone(&calls));
+        let outcome = transport.post_embeddings_owned_bounded(
+            "https://example.invalid/v1/embeddings",
+            "test-key",
+            "{}".into(),
+            Duration::from_secs(1),
+            Some(256),
+        );
+        assert!(matches!(
+            outcome,
+            Err(CoreError::InvalidContract(message))
+                if message.contains("does not implement bounded response reading")
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let standalone = transport.post_embeddings_owned_bounded(
+            "https://example.invalid/v1/embeddings",
+            "test-key",
+            "{}".into(),
+            Duration::from_secs(1),
+            None,
+        );
+        assert!(matches!(standalone, Ok(HttpResponse { status: 200, .. })));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn bounded_response_reader_refuses_the_first_excess_byte() {
+        let mut response = std::io::Cursor::new(vec![b'a'; 100]);
+        let result = read_response_body(&mut response, Some(16));
+        assert!(matches!(
+            result,
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                ..
+            })
+        ));
+        assert_eq!(response.position(), 17);
+    }
+
+    #[test]
+    fn bounded_response_reader_accepts_exact_limit() {
+        let response = std::io::Cursor::new(b"bounded".to_vec());
+        let result = read_response_body(response, Some(7));
+        assert!(matches!(result, Ok(body) if body == "bounded"));
+    }
+
+    #[test]
+    fn bounded_response_reader_handles_short_chunks_without_capacity_growth() {
+        struct OneByteReader<'a>(&'a [u8]);
+
+        impl Read for OneByteReader<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.0.len().min(buf.len()).min(1);
+                let (head, tail) = self
+                    .0
+                    .split_at_checked(count)
+                    .ok_or_else(|| std::io::Error::other("invalid short-reader source range"))?;
+                buf.get_mut(..count)
+                    .ok_or_else(|| std::io::Error::other("invalid short-reader output range"))?
+                    .copy_from_slice(head);
+                self.0 = tail;
+                Ok(count)
+            }
+        }
+
+        let short = read_response_body(OneByteReader(b"short"), Some(64));
+        assert!(matches!(short, Ok(body) if body == "short"));
+        let exact = read_response_body(OneByteReader(b"exact"), Some(5));
+        assert!(matches!(exact, Ok(body) if body == "exact"));
+    }
+
+    #[test]
+    fn bounded_response_reader_refuses_zero_ceiling_and_read_errors() {
+        struct FailingReader;
+
+        impl Read for FailingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("injected read failure"))
+            }
+        }
+
+        assert!(matches!(
+            read_response_body(FailingReader, Some(0)),
+            Err(CoreError::InvalidContract(message)) if message.contains("nonzero")
+        ));
+        assert!(matches!(
+            read_response_body(FailingReader, Some(8)),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                    LexicalErrorCode::SemProviderTransport
+                ),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn bounded_response_reader_refuses_overreporting_read_contract() {
+        struct OverreportingReader;
+
+        impl Read for OverreportingReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                Ok(buf.len().saturating_add(1))
+            }
+        }
+
+        assert!(matches!(
+            read_response_body(OverreportingReader, Some(8)),
+            Err(CoreError::InvalidContract(message)) if message.contains("reader exceeded supplied buffer")
+        ));
+    }
+
+    #[test]
+    fn request_body_count_includes_json_escaping_before_memory_admission() {
+        let request = EmbeddingsRequest {
+            model: "model",
+            input: &["quoted \" text", "line\nfeed", "\\"],
+            dimensions: 2,
+        };
+        let mut count = ByteCounter::default();
+        assert!(serde_json::to_writer(&mut count, &request).is_ok());
+        let encoded = serde_json::to_vec(&request);
+        assert!(matches!(
+            encoded,
+            Ok(body) if u64::try_from(body.len()).is_ok_and(|length| length == count.0)
+        ));
+    }
+
+    #[test]
+    fn single_input_memory_envelope_bounds_maximum_json_escape_and_refuses_overflow()
+    -> Result<(), CoreError> {
+        let config = cfg(2).with_max_response_bytes(128);
+        let (peak, escaping) = config.single_input_memory_envelope(1)?;
+        let request = EmbeddingsRequest {
+            model: &config.model,
+            input: &["\u{0000}"],
+            dimensions: config.dimension,
+        };
+        let actual_body = serde_json::to_vec(&request)
+            .map_err(|error| invalid(&format!("test request encode failed: {error}")))?;
+        let body_bytes = u64::try_from(actual_body.len())
+            .map_err(|_error| invalid("test request length cannot fit u64"))?;
+        let url_bytes = u64::try_from(config.base_url.len() + EMBEDDINGS_PATH.len())
+            .map_err(|_error| invalid("test URL length cannot fit u64"))?;
+        let observed_attempt = body_bytes
+            .checked_add(url_bytes)
+            .and_then(|bytes| bytes.checked_mul(2))
+            .and_then(|bytes| bytes.checked_add(128))
+            .ok_or_else(|| invalid("test peak overflows"))?;
+        if peak < observed_attempt || escaping <= 128 {
+            return Err(invalid(
+                "single-input envelope undercounts worst-case escape",
+            ));
+        }
+        if config.single_input_memory_envelope(u64::MAX).is_ok()
+            || cfg(2).single_input_memory_envelope(1).is_ok()
+        {
+            return Err(invalid(
+                "single-input envelope accepted missing or overflowing bounds",
+            ));
+        }
+        Ok(())
+    }
+
     // S21-09: attempts spawn through the supervised pool, so a shut-down
     // pool refuses before any HTTP — zero transport calls, typed refusal.
     #[test]
@@ -1034,7 +1854,7 @@ mod tests {
             "usage": {"prompt_tokens": 2}
         }"#;
 
-        let response = serde_json::from_str::<EmbeddingsResponse>(body);
+        let response = parse_embeddings_response(body, 1, 2);
 
         assert!(matches!(
             response.as_ref(),
@@ -1048,20 +1868,33 @@ mod tests {
 
     #[test]
     fn openai_response_rejects_missing_required_fields() {
-        let missing_data = serde_json::from_str::<EmbeddingsResponse>(r#"{"object":"list"}"#)
+        let missing_data = parse_embeddings_response(r#"{"object":"list"}"#, 1, 1)
             .map_err(|error| error.to_string());
-        let missing_embedding =
-            serde_json::from_str::<EmbeddingsResponse>(r#"{"data":[{"index":0}]}"#)
-                .map_err(|error| error.to_string());
-        let missing_index =
-            serde_json::from_str::<EmbeddingsResponse>(r#"{"data":[{"embedding":[0.25]}]}"#)
-                .map_err(|error| error.to_string());
+        let missing_embedding = parse_embeddings_response(r#"{"data":[{"index":0}]}"#, 1, 1)
+            .map_err(|error| error.to_string());
+        let missing_index = parse_embeddings_response(r#"{"data":[{"embedding":[0.25]}]}"#, 1, 1)
+            .map_err(|error| error.to_string());
 
         assert!(matches!(missing_data, Err(ref error) if error.contains("missing field `data`")));
         assert!(
             matches!(missing_embedding, Err(ref error) if error.contains("missing field `embedding`"))
         );
         assert!(matches!(missing_index, Err(ref error) if error.contains("missing field `index`")));
+    }
+
+    #[test]
+    fn bounded_response_decoder_rejects_excess_items_and_coordinates() {
+        let extra_item =
+            r#"{"data":[{"embedding":[0.25,0.75],"index":0},{"embedding":[0.5,0.5],"index":1}]}"#;
+        let extra_coordinate = r#"{"data":[{"embedding":[0.25,0.5,0.75],"index":0}]}"#;
+        assert!(matches!(
+            parse_embeddings_response(extra_item, 1, 2),
+            Err(CoreError::Storage(message)) if message.contains("count exceeds")
+        ));
+        assert!(matches!(
+            parse_embeddings_response(extra_coordinate, 1, 2),
+            Err(CoreError::Storage(message)) if message.contains("dimension exceeds")
+        ));
     }
 
     #[test]
@@ -1675,7 +2508,7 @@ mod tests {
         let transport = ScriptedTransport::new(vec![Ok(ok_body(&[(0, vec![1.0, 2.0, 3.0])]))]);
         let provider = provider_with(cfg(2), transport); // configured dim 2, response dim 3
         match provider.embed_batch(&["a"]) {
-            Err(CoreError::Storage(message)) => assert!(message.contains("embedding dim")),
+            Err(CoreError::Storage(message)) => assert!(message.contains("embedding dimension")),
             other => panic!("dim mismatch must fail closed, got {other:?}"),
         }
     }
@@ -1819,6 +2652,117 @@ mod tests {
     }
 
     #[test]
+    fn reqwest_embedding_transport_does_not_redirect_payload_or_authorization()
+    -> Result<(), CoreError> {
+        let primary = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|error| CoreError::Storage(format!("primary bind failed: {error}")))?;
+        primary.set_nonblocking(true).map_err(|error| {
+            CoreError::Storage(format!("primary nonblocking setup failed: {error}"))
+        })?;
+        let primary_addr = primary
+            .local_addr()
+            .map_err(|error| CoreError::Storage(format!("primary address failed: {error}")))?;
+        let redirect_target = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|error| CoreError::Storage(format!("redirect target bind failed: {error}")))?;
+        redirect_target.set_nonblocking(true).map_err(|error| {
+            CoreError::Storage(format!("redirect target nonblocking setup failed: {error}"))
+        })?;
+        let target_addr = redirect_target.local_addr().map_err(|error| {
+            CoreError::Storage(format!("redirect target address failed: {error}"))
+        })?;
+        let transport = ReqwestBlockingTransport::new(Duration::from_secs(2))?;
+        let server = std::thread::spawn(move || -> std::io::Result<bool> {
+            let started = std::time::Instant::now();
+            let (mut stream, _peer) = loop {
+                match primary.accept() {
+                    Ok(accepted) => break accepted,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if started.elapsed() >= Duration::from_secs(2) {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "primary server did not receive embedding POST",
+                            ));
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+            let mut request = [0_u8; 4096];
+            let mut filled = 0_usize;
+            loop {
+                let observed = request
+                    .get(..filled)
+                    .ok_or_else(|| std::io::Error::other("invalid request buffer length"))?;
+                if observed
+                    .windows(b"secret-payload".len())
+                    .any(|window| window == b"secret-payload")
+                {
+                    break;
+                }
+                if filled == request.len() {
+                    return Err(std::io::Error::other(
+                        "embedding request exceeded test buffer",
+                    ));
+                }
+                let writable = request
+                    .get_mut(filled..)
+                    .ok_or_else(|| std::io::Error::other("invalid request buffer cursor"))?;
+                let read = stream.read(writable)?;
+                if read == 0 {
+                    return Err(std::io::Error::other(
+                        "embedding request ended before its body",
+                    ));
+                }
+                filled = filled
+                    .checked_add(read)
+                    .filter(|next| *next <= request.len())
+                    .ok_or_else(|| std::io::Error::other("request reader overreported bytes"))?;
+            }
+            let observed = request
+                .get(..filled)
+                .ok_or_else(|| std::io::Error::other("invalid final request buffer length"))?;
+            let request_text = String::from_utf8_lossy(observed);
+            let saw_embedding_post = request_text.starts_with("POST /v1/embeddings HTTP/1.1")
+                && request_text
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer test-key");
+            let redirect = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target_addr}/collect\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(redirect.as_bytes())?;
+            Ok(saw_embedding_post)
+        });
+
+        let response = transport.post_embeddings_owned_bounded(
+            &format!("http://{primary_addr}/v1/embeddings"),
+            "test-key",
+            r#"{"input":["secret-payload"]}"#.into(),
+            Duration::from_secs(2),
+            Some(1024),
+        );
+        let saw_embedding_post = server
+            .join()
+            .map_err(|_panic| CoreError::Storage("primary server panicked".into()))?
+            .map_err(|error| CoreError::Storage(format!("primary server failed: {error}")))?;
+        if !saw_embedding_post || !matches!(response, Ok(HttpResponse { status: 307, .. })) {
+            return Err(invalid(
+                "reqwest did not return the original endpoint's redirect response",
+            ));
+        }
+        match redirect_target.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+            Ok(_) => Err(invalid(
+                "reqwest sent embedding body or authorization to redirect target",
+            )),
+            Err(error) => Err(CoreError::Storage(format!(
+                "redirect target accept failed: {error}"
+            ))),
+        }
+    }
+
+    #[test]
     fn with_reqwest_threads_config_timeout_into_transport() {
         // Closes the end-to-end wire: `with_reqwest(config)` must build the real
         // transport with `config.timeout`, not a hardcoded/default. If the single
@@ -1913,6 +2857,27 @@ mod tests {
             let _released = self.release.wait();
             Ok(ok_body(&[(0, vec![0.5, 0.5])]))
         }
+
+        fn post_embeddings_owned_bounded(
+            &self,
+            url: &str,
+            api_key: &str,
+            body: String,
+            timeout: Duration,
+            max_response_bytes: Option<u64>,
+        ) -> Result<HttpResponse, CoreError> {
+            // The only response is a fixed in-memory fixture.
+            let response = self.post_embeddings(url, api_key, &body, timeout)?;
+            let response_len = u64::try_from(response.body.len())
+                .map_err(|_error| invalid("test response length exceeds u64"))?;
+            if max_response_bytes.is_some_and(|maximum| response_len > maximum) {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                    message: "parked response exceeds configured byte ceiling".into(),
+                });
+            }
+            Ok(response)
+        }
     }
 
     fn parked_provider(
@@ -1933,10 +2898,125 @@ mod tests {
             calls: Arc::clone(&calls),
         };
         let provider = provider_with(
-            cfg(2).with_max_retries(retries).with_timeout(timeout),
+            cfg(2)
+                .with_max_retries(retries)
+                .with_timeout(timeout)
+                .with_max_response_bytes(256),
             transport,
         );
         (provider, entered_rx, release, calls)
+    }
+
+    #[derive(Debug)]
+    struct AttemptCustodyProbe {
+        live_attempts: Arc<AtomicUsize>,
+        live_memory_bytes: Arc<AtomicU64>,
+        max_memory_bytes: u64,
+    }
+
+    struct AttemptMemoryOwner(Arc<AtomicU64>);
+
+    impl quanta_index_core::index::MemoryLeaseOwner for AttemptMemoryOwner {
+        fn release(&self, bytes: u64) {
+            let _previous = self.0.fetch_sub(bytes, Ordering::SeqCst);
+        }
+    }
+
+    struct AttemptLeaseProbe(Arc<AtomicUsize>);
+
+    impl ProviderAttemptLeaseV1 for AttemptLeaseProbe {}
+
+    impl Drop for AttemptLeaseProbe {
+        fn drop(&mut self) {
+            let _previous = self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    impl ProviderAttemptCustodyPortV1 for AttemptCustodyProbe {
+        fn begin_attempt_v1(&self) -> Result<Box<dyn ProviderAttemptLeaseV1>, CoreError> {
+            let _previous = self.live_attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(AttemptLeaseProbe(Arc::clone(&self.live_attempts))))
+        }
+
+        fn reserve_memory_v1(
+            &self,
+            bytes: u64,
+            _lifetime: MemoryLifetime,
+        ) -> Result<MemoryLease, CoreError> {
+            if bytes == 0 {
+                return Err(invalid("test: zero-byte memory reservation"));
+            }
+            let _previous_memory = self
+                .live_memory_bytes
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    current
+                        .checked_add(bytes)
+                        .filter(|next| *next <= self.max_memory_bytes)
+                })
+                .map_err(|_current| CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                    message: "test: provider memory admission exhausted".into(),
+                })?;
+            Ok(MemoryLease::new(
+                bytes,
+                Arc::new(AttemptMemoryOwner(Arc::clone(&self.live_memory_bytes))),
+            ))
+        }
+    }
+
+    #[test]
+    fn cancelled_openai_call_keeps_physical_attempt_lease_until_transport_returns() {
+        let (provider, entered, release, _calls) = parked_provider(0, Duration::from_secs(60));
+        let provider = provider.with_required_execution_custody();
+        let live = Arc::new(AtomicUsize::new(0));
+        let live_memory_bytes = Arc::new(AtomicU64::new(0));
+        let authority: Arc<dyn ProviderAttemptCustodyPortV1> = Arc::new(AttemptCustodyProbe {
+            live_attempts: Arc::clone(&live),
+            live_memory_bytes: Arc::clone(&live_memory_bytes),
+            max_memory_bytes: 1_048_576,
+        });
+        let mut budget = RequestBudgetV1::for_duration(Duration::from_secs(30));
+        assert!(budget.bind_provider_attempt_custody_v1(&authority).is_ok());
+        let cancel = budget.cancel_handle();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let canceller = std::thread::spawn(move || {
+            let started = entered.recv_timeout(Duration::from_secs(10)).is_ok();
+            if started {
+                cancel.cancel();
+            }
+            let _sent = started_tx.send(started);
+        });
+        let result = provider.embed_batch_within(&["a"], &budget);
+        let canceller_joined = canceller.join().is_ok();
+        let started = started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .is_ok_and(std::convert::identity);
+        let live_while_parked = live.load(Ordering::SeqCst);
+        let memory_while_parked = live_memory_bytes.load(Ordering::SeqCst);
+        drop(authority);
+        drop(budget);
+        let live_without_caller = live.load(Ordering::SeqCst);
+        let memory_without_caller = live_memory_bytes.load(Ordering::SeqCst);
+        if started {
+            let _released = release.wait();
+        }
+        let drained = provider.attempts.drain(Duration::from_secs(2));
+        assert!(started);
+        assert!(canceller_joined);
+        assert!(matches!(
+            result,
+            Err(CoreError::Typed {
+                code: quanta_index_core::REQUEST_CANCELLED_CODE,
+                ..
+            })
+        ));
+        assert_eq!(live_while_parked, 1);
+        assert!(memory_while_parked > 0);
+        assert_eq!(live_without_caller, 1);
+        assert!(memory_without_caller > 0);
+        assert!(drained.unfinished.is_empty());
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+        assert_eq!(live_memory_bytes.load(Ordering::SeqCst), 0);
     }
 
     /// A cancelled budget abandons the attempt in flight.
@@ -1966,7 +3046,16 @@ mod tests {
         canceller.join().expect("canceller thread");
         // The attempt is still parked: the provider did not wait for it.
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.attempts.live_attempts(), 1);
+        let draining = provider.attempts.drain(Duration::ZERO);
+        assert_eq!(draining.joined, 0);
+        assert_eq!(draining.unfinished.len(), 1);
+        assert_eq!(provider.attempts.live_attempts(), 1);
         let _released = release.wait();
+        let completed = provider.attempts.drain(Duration::from_secs(2));
+        assert_eq!(completed.joined, 1);
+        assert!(completed.unfinished.is_empty());
+        assert_eq!(provider.attempts.live_attempts(), 0);
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,

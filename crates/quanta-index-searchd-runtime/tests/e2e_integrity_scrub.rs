@@ -587,84 +587,61 @@ fn downgrade_to_format_9(generation_dir: &Path) -> TestResult {
     Ok(())
 }
 
-/// An inactive generation of an earlier manifest format is quarantined at boot.
+/// A retained generation of an unsupported manifest format refuses boot.
 ///
-/// It is set aside under the format reason with the rebuild instruction,
-/// listed live, and absent from readiness; the daemon serves the active
-/// generation beside it.
+/// History restoration must not guess its physical accounting or delete either
+/// generation before the producer rebuilds the old format explicitly. The
+/// semantic inventory's quarantine classification is covered separately.
 #[test]
-fn a_generation_of_an_earlier_format_is_quarantined_at_boot_with_the_format_reason() -> TestResult {
+fn a_retained_earlier_format_refuses_boot_without_deleting_history() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     rt.ingest_text("repo", "src/first.rs", "fn first() { needle_first }")?;
     let inactive = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     rt.ingest_text("repo", "src/second.rs", "fn second() { needle_second }")?;
-    let _active = rt.seal()?;
+    let active = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     let mut rt = rt.reopen();
 
-    let generation_dir = semantic_generation_dir(&rt, inactive)?;
-    downgrade_to_format_9(&generation_dir)?;
-    rt.start()?;
-
-    let report = rt
-        .boot_inventory()
-        .ok_or("the running daemon exposes its boot inventory")?
-        .clone();
-    let quarantined: Vec<(PathBuf, GenerationQuarantineReasonV1, String)> = report
-        .semantic
-        .quarantined
-        .iter()
-        .map(|entry| (entry.path.clone(), entry.reason, entry.detail.clone()))
-        .collect();
-    match quarantined.as_slice() {
-        [(path, GenerationQuarantineReasonV1::FormatUnsupported, detail)]
-            if *path == generation_dir
-                && detail.contains("format version 9")
-                && detail.contains("rebuild") => {}
-        other => {
-            return Err(format!(
-                "boot quarantines the format-9 generation with the format reason and the remedy: {other:?}"
-            )
-            .into());
-        }
+    let inactive_dir = semantic_generation_dir(&rt, inactive)?;
+    let active_dir = semantic_generation_dir(&rt, active)?;
+    downgrade_to_format_9(&inactive_dir)?;
+    let retained_payloads = [payload_files(&inactive_dir)?, payload_files(&active_dir)?];
+    if retained_payloads.iter().any(Vec::is_empty) {
+        return Err("both retained generations must contain dataset payload files".into());
     }
-    if report.semantic.sealed_generations != 1 || report.active_pairs_validated != 1 {
+    let Err(error) = rt.start() else {
+        return Err("unsupported retained format must refuse boot".into());
+    };
+    let rendered = format!("{error:#}");
+    if !rendered.contains("GENERATION_MANIFEST_FORMAT_UNSUPPORTED") {
         return Err(
-            format!("only the current-format generation is seeded and proven: {report:?}").into(),
+            format!("boot must carry the typed unsupported-format code: {rendered}").into(),
         );
     }
-    let listed: Vec<(String, String)> = rt
-        .quarantine_inventory()?
-        .semantic
-        .iter()
-        .map(|entry| (entry.path.clone(), entry.reason.clone()))
-        .collect();
-    if listed
-        != vec![(
-            generation_dir.display().to_string(),
-            "GENERATION_QUARANTINE_FORMAT_UNSUPPORTED".to_string(),
-        )]
-    {
-        return Err(format!("the quarantine listing names the format: {listed:?}").into());
+    if rt.boot_inventory().is_some() {
+        return Err("restore refusal must precede boot inventory publication".into());
     }
-    // Absent from readiness: a query pinned to it meets the semantic
-    // route's readiness refusal, never the generation's content.
-    let pin = GenerationPin::new(rt.repo(), rt.revision(), inactive);
-    let pinned = rt.query_once(|_| semantic_query(Some(pin)))?;
-    match typed_code(&pinned) {
-        Some(("SEMANTIC_GENERATION_NOT_MATERIALIZED", _)) => {}
-        other => {
+    for (directory, before) in [inactive_dir, active_dir]
+        .iter()
+        .zip(retained_payloads.iter())
+    {
+        if payload_files(directory)?.as_slice() != before.as_slice() {
             return Err(format!(
-                "a query pinned to a quarantined generation is refused as not materialized, got {other:?}"
+                "boot refusal changed retained payload set {}",
+                directory.display()
             )
             .into());
         }
-    }
-    // The active generation serves.
-    let served = rt.query_text(TextQuerySyntax::Native, "needle_second", 5);
-    if let Some(error) = served.typed_error {
-        return Err(format!("the active generation serves: {error}").into());
+        if !directory.join(SEMANTIC_MANIFEST).is_file()
+            || !directory.join(SEALED_MANIFEST).is_file()
+        {
+            return Err(format!(
+                "boot refusal deleted retained generation {}",
+                directory.display()
+            )
+            .into());
+        }
     }
     Ok(())
 }

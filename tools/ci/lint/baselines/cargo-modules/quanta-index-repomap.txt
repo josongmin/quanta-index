@@ -1,0 +1,116 @@
+
+crate quanta_index_repomap
+├── mod delta: pub
+│   └── struct RepoMapDeltaApplier: pub
+├── mod layout_v3: pub
+│   ├── struct CandidateObjectAddressV1: pub
+│   ├── enum LayoutV3AddressError: pub
+│   ├── enum ObservedFileKindV1: pub
+│   ├── struct ObservedFileMetadataV1: pub
+│   ├── struct QuarantineIncidentAddressV1: pub
+│   ├── struct QuarantinePayloadAddressV1: pub
+│   ├── struct SecureMetadataPairV1: pub
+│   ├── struct StateRootSecurityContextV1: pub
+│   └── enum StateRootSecurityVerificationErrorV1: pub
+├── mod materializer: pub
+│   ├── struct CandidateProjectionMeta: pub
+│   ├── type ChunkStatsTables: pub(self)
+│   ├── struct ChunkStatsV1: pub(self)
+│   ├── struct CompileCborReader: pub(self)
+│   ├── struct CompileCborWriter: pub(self)
+│   ├── struct FileEntryInput: pub(self)
+│   ├── struct RepoMapGraphCompiler: pub
+│   └── struct SymbolEntryInput: pub(self)
+├── mod model: pub
+│   ├── struct RepoMapEntry: pub
+│   ├── struct RepoMapEntryVisitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── struct RepoMapIndexedSnapshot: pub
+│   ├── struct RepoMapSnapshot: pub
+│   ├── struct RepoMapSnapshotIndex: pub
+│   └── struct RepoMapSnapshotVisitor: pub(self)
+│       └── type Value: pub(self)
+├── mod native: pub
+│   ├── mod file_map: pub(self)
+│   │   ├── struct FileContribution: pub(self)
+│   │   ├── struct FileMapCandidate: pub
+│   │   ├── enum FileMapCapability: pub
+│   │   ├── struct FileMapPlan: pub
+│   │   ├── struct FileMapReadContext: pub
+│   │   ├── struct FileMapRoot: pub(self)
+│   │   ├── struct FilePathEntry: pub
+│   │   ├── struct FilePathPage: pub
+│   │   ├── struct FilePathQuery: pub
+│   │   └── struct NativeFileMap: pub
+│   │       ├── type Candidate: pub(self)
+│   │       ├── type Delta: pub(self)
+│   │       └── type Plan: pub(self)
+│   ├── mod graph: pub
+│   │   ├── struct FundedGraphBytes: pub(super)
+│   │   ├── struct GraphCandidate: pub
+│   │   ├── struct GraphRoot: pub(self)
+│   │   ├── struct NativeGraph: pub
+│   │   │   └── type Candidate: pub(self)
+│   │   ├── mod affected: pub(self)
+│   │   │   ├── struct BootstrapOwners: pub(self)
+│   │   │   └── enum GraphChanges: pub(self)
+│   │   ├── mod contribution: pub(self)
+│   │   │   ├── enum GraphElement: pub(super)
+│   │   │   ├── struct GraphSupport: pub(super)
+│   │   │   ├── struct LoadedGraphOutput: pub(super)
+│   │   │   ├── struct LoadedGraphSupport: pub(super)
+│   │   │   ├── struct LoadedRankProjection: pub(super)
+│   │   │   └── struct OwnerGraphRecord: pub(super)
+│   │   ├── mod query: pub(self)
+│   │   │   ├── struct GraphPage: pub
+│   │   │   ├── struct NativeGraphReader: pub
+│   │   │   └── struct PrefixRefs: pub(self)
+│   │   └── mod rank_query: pub(self)
+│   │       ├── type FocusScope: pub(self)
+│   │       ├── struct FundedPath: pub(self)
+│   │       ├── struct GraphRankScanner: pub(self)
+│   │       │   ├── type Candidate: pub(self)
+│   │       │   ├── type Error: pub(self)
+│   │       │   └── type Grant: pub(self)
+│   │       ├── struct NativeCandidate: pub(self)
+│   │       ├── struct NativeRepoMapRankPage: pub
+│   │       ├── struct NativeRepoMapRankReader: pub
+│   │       ├── struct NodeCursor: pub(self)
+│   │       └── struct PendingNode: pub(self)
+│   ├── mod path_reader: pub(self)
+│   │   ├── struct NativePathReader: pub
+│   │   └── struct PathReadRequest: pub
+│   └── mod scratch: pub(self)
+│       ├── struct InventoryEditCursor: pub(super)
+│       ├── struct InventoryScratch: pub(super)
+│       ├── struct OwnerRow: pub(super)
+│       └── struct PathRow: pub(super)
+├── mod object_store: pub(crate)
+│   ├── struct ObjectVerificationFailureV1: pub(crate)
+│   ├── struct RepoMapObjectStore: pub(crate)
+│   └── struct SealedObjectV1: pub(crate)
+├── mod pinned: pub(crate)
+│   ├── struct PinnedRepoMapSnapshotV1: pub
+│   ├── struct RepoMapPinLease: pub(crate)
+│   ├── type RepoMapPinTable: pub(crate)
+│   └── struct RepoMapStoreKeyV1: pub(crate)
+├── mod query: pub
+│   ├── struct RepoMapQueryEngine: pub
+│   ├── struct SnapshotCandidate: pub(self)
+│   ├── struct SnapshotScanner: pub(self)
+│   │   ├── type Candidate: pub(self)
+│   │   ├── type Error: pub(self)
+│   │   └── type Grant: pub(self)
+│   └── mod ranking: pub(crate)
+│       ├── struct InclusionWalk: pub(self)
+│       ├── trait RankCandidate: pub(crate)
+│       ├── struct RankPlan: pub(crate)
+│       ├── trait RankScanner: pub(crate)
+│       ├── struct RankSelection: pub(crate)
+│       ├── struct Ranked: pub(self)
+│       └── struct RankedPrefix: pub(self)
+└── mod store: pub
+    ├── struct ActivatedHeadV1: pub(self)
+    ├── struct OpenedRepoMapStore: pub
+    ├── struct RepoMapGcOutcomeV1: pub
+    └── struct RepoMapGenerationStore: pub

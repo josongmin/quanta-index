@@ -27,17 +27,37 @@ crate quanta_index_contract
 │   │   ├── struct UpsertRef: pub
 │   │   └── struct UpsertSymbol: pub
 │   └── mod records: pub(self)
+│       ├── struct AdmittedChunkRecordPolicyV1: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct AdmittedChunkStructuralMetadataPolicyV1: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct AdmittedRepoIdSeedV1: pub(self)
+│       │   └── type Value: pub(self)
 │       ├── struct ChunkRecord: pub
+│       ├── trait ChunkRecordDecodePolicyV1: pub(self)
+│       ├── struct ChunkRecordFieldSeedV1: pub(self)
+│       │   ├── type Value: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── enum ChunkRecordFieldV1: pub(self)
 │       ├── struct ChunkRecordVisitor: pub(self)
 │       │   └── type Value: pub(self)
+│       ├── struct ChunkStructuralFieldSeedV1: pub(self)
+│       │   ├── type Value: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── enum ChunkStructuralFieldV1: pub(self)
 │       ├── struct ChunkStructuralMetadata: pub
+│       ├── trait ChunkStructuralMetadataDecodePolicyV1: pub(self)
 │       ├── struct ChunkStructuralMetadataVisitor: pub(self)
 │       │   └── type Value: pub(self)
 │       ├── struct EmbeddingRecord: pub
-│       └── struct EmbeddingRecordVisitor: pub(self)
-│           └── type Value: pub(self)
+│       ├── struct EmbeddingRecordVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct OrdinaryChunkRecordPolicyV1: pub(self)
+│       └── struct OrdinaryChunkStructuralMetadataPolicyV1: pub(self)
 ├── mod index: pub
 │   ├── struct CatalogView: pub
+│   ├── enum CatalogViewDigestErrorV3: pub
+│   ├── struct CatalogViewIdentityRefV3: pub(self)
 │   ├── struct CoverageBinding: pub
 │   ├── enum CoverageStatus: pub
 │   ├── enum GroupActivation: pub
@@ -60,16 +80,21 @@ crate quanta_index_contract
 │   ├── struct ProjectionBinding: pub
 │   ├── struct ProjectionCertificate: pub
 │   ├── struct ProjectionOwnerContribution: pub
+│   ├── enum ProjectionPayloadDigestErrorV3: pub
 │   ├── struct ProjectionTransition: pub
 │   ├── enum Refusal: pub
 │   ├── struct SourceCut: pub
 │   ├── struct SourceEvent: pub
 │   ├── struct SourceInput: pub
+│   ├── enum SourceOperationMode: pub
 │   ├── struct SourceRecord: pub
+│   ├── enum SourceTextAdmission: pub
 │   ├── struct SourceTransition: pub
 │   ├── enum SubmitOutcome: pub
 │   ├── enum UpdateKind: pub
 │   ├── struct UpdateRequest: pub
+│   ├── enum ViewDigestSinkV3: pub(self)
+│   ├── struct ViewDigestWriterV3: pub(self)
 │   ├── enum ViewSelection: pub
 │   ├── struct WorkClaim: pub
 │   ├── struct WorkIntent: pub
@@ -79,6 +104,7 @@ crate quanta_index_contract
 │   ├── mod batch_body: pub(self)
 │   │   └── enum IngestOperationKindV1: pub
 │   ├── mod control: pub(self)
+│   │   ├── trait ActivationAckDecodePolicyV3: pub(self)
 │   │   ├── struct ActiveGenerationResolutionV1: pub
 │   │   ├── struct ActiveGenerationResolutionV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -92,6 +118,7 @@ crate quanta_index_contract
 │   │   ├── struct GenerationStatusRequest: pub
 │   │   ├── struct GenerationStatusRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
+│   │   ├── struct OrdinaryActivationAckPolicyV3: pub(self)
 │   │   ├── struct ProcessComponentsHealthV1: pub
 │   │   ├── struct ProcessComponentsHealthV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -209,8 +236,21 @@ crate quanta_index_contract
 │   │   ├── enum RepairClass: pub
 │   │   ├── enum SearchPlaneErrorCodeV2: pub
 │   │   ├── struct SearchPlaneIpcError: pub
-│   │   └── struct SearchPlaneIpcErrorVisitor: pub(self)
-│   │       └── type Value: pub(self)
+│   │   ├── struct SearchPlaneIpcErrorVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   └── mod admitted_auxiliary_error: pub(self)
+│   │       ├── struct AuxiliaryErrorSeedV1: pub(super)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── struct KnownFieldSeed: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── struct RepairFieldSeed: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       └── struct RepairSeed: pub(self)
+│   │           ├── type Value: pub(self)
+│   │           └── type Value: pub(self)
 │   ├── mod generation_reservation: pub(self)
 │   │   ├── struct SearchCorpusGenerationReservationRequestV1: pub
 │   │   └── struct SearchCorpusGenerationReservationV1: pub
@@ -218,6 +258,9 @@ crate quanta_index_contract
 │   │   ├── mod corpus_wire: pub(self)
 │   │   │   ├── enum BatchIngestMode: pub
 │   │   │   ├── struct BatchIngestModeVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct CorpusFieldKeySeed: pub(self)
+│   │   │   │   ├── type Value: pub(self)
 │   │   │   │   └── type Value: pub(self)
 │   │   │   ├── struct SearchCorpusIngestBatch: pub
 │   │   │   ├── struct SearchCorpusIngestBatchVisitor: pub(self)
@@ -238,8 +281,32 @@ crate quanta_index_contract
 │   │   │   ├── struct SourceBytesBuf: pub(super)
 │   │   │   ├── struct SourceBytesVisitor: pub(self)
 │   │   │   │   └── type Value: pub(self)
-│   │   │   └── struct SourceBytesWire: pub(super)
+│   │   │   ├── struct SourceBytesWire: pub(super)
+│   │   │   └── mod admitted: pub(self)
+│   │   │       ├── struct Admitted: pub(super)
+│   │   │       ├── struct AdmittedFieldKeySeed: pub(self)
+│   │   │       │   ├── type Value: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct CorpusDecodeLimitsV1: pub
+│   │   │       ├── trait CorpusDecodePolicy: pub(super)
+│   │   │       ├── struct Ordinary: pub(super)
+│   │   │       ├── struct RepoSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct RevisionSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct ScalarSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct SearchCorpusIngestBatchSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct SearchCorpusReplaceScopeSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct SearchCorpusTombstoneScopeSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       └── struct SearchScopeKeySeed: pub(self)
+│   │   │           └── type Value: pub(self)
 │   │   ├── mod envelope: pub(self)
+│   │   │   ├── struct BorrowedAuxiliaryIngestIpcRequestEnvelopeV1: pub
+│   │   │   ├── enum BorrowedAuxiliaryIngestIpcRequestV1: pub
 │   │   │   ├── enum SearchPlaneIngestIpcRequest: pub
 │   │   │   ├── struct SearchPlaneIngestIpcRequestEnvelope: pub
 │   │   │   ├── struct SearchPlaneIngestIpcRequestEnvelopeVisitor: pub(self)
@@ -250,8 +317,21 @@ crate quanta_index_contract
 │   │   │   ├── struct SearchPlaneIngestIpcResponseEnvelope: pub
 │   │   │   ├── struct SearchPlaneIngestIpcResponseEnvelopeVisitor: pub(self)
 │   │   │   │   └── type Value: pub(self)
-│   │   │   └── struct SearchPlaneIngestIpcResponseVisitor: pub(self)
-│   │   │       └── type Value: pub(self)
+│   │   │   ├── struct SearchPlaneIngestIpcResponseVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   └── mod admitted_auxiliary_response: pub(self)
+│   │   │       ├── struct AuxiliaryPayloadSeedV1: pub(self)
+│   │   │       │   ├── type Value: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct AuxiliaryResponseEnvelopeSeedV1: pub(super)
+│   │   │       │   ├── type Value: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct AuxiliaryVariantSeed: pub(self)
+│   │   │       │   ├── type Value: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       └── struct KnownFieldSeed: pub(self)
+│   │   │           ├── type Value: pub(self)
+│   │   │           └── type Value: pub(self)
 │   │   ├── mod history_wire: pub(self)
 │   │   │   ├── struct FileContributorEntry: pub
 │   │   │   ├── struct FileContributorEntryVisitor: pub(self)
@@ -308,8 +388,43 @@ crate quanta_index_contract
 │   │   │   ├── struct RepoTopicEntryVisitor: pub(self)
 │   │   │   │   └── type Value: pub(self)
 │   │   │   ├── struct RepoTopicIngestBatch: pub
-│   │   │   └── struct RepoTopicIngestBatchVisitor: pub(self)
-│   │   │       └── type Value: pub(self)
+│   │   │   ├── struct RepoTopicIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   └── mod admitted: pub(self)
+│   │   │       ├── struct Admitted: pub(self)
+│   │   │       ├── struct BatchSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct ContributorBatchSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct ContributorEntrySeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct ContributorIdentitySeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct DiffUpsertSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct FieldSeed: pub(self)
+│   │   │       │   ├── type Value: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct HistoryDecodeLimitsV1: pub
+│   │   │       ├── trait HistoryDecodePolicy: pub(super)
+│   │   │       ├── struct Ordinary: pub(super)
+│   │   │       ├── struct RecencyBatchSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct RecencyEntrySeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct RefDeleteSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct RefMutationSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct RefUpsertSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct RepoSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct RevisionSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       └── struct VariantSeed: pub(self)
+│   │   │           ├── type Value: pub(self)
+│   │   │           └── type Value: pub(self)
 │   │   ├── mod payload_digest: pub(self)
 │   │   ├── mod runtime_wire: pub(self)
 │   │   │   ├── struct DirtyDelete: pub
@@ -346,8 +461,34 @@ crate quanta_index_contract
 │   │   │   ├── struct StructuralTombstoneScopeVisitor: pub(self)
 │   │   │   │   └── type Value: pub(self)
 │   │   │   ├── struct StructuralTreeRecord: pub
-│   │   │   └── struct StructuralTreeRecordVisitor: pub(self)
-│   │   │       └── type Value: pub(self)
+│   │   │   ├── struct StructuralTreeRecordVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   └── mod admitted: pub(self)
+│   │   │       ├── struct AdmittedRuntime: pub(self)
+│   │   │       ├── struct DirtyDeleteSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct DirtyIngestBatchSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct DirtyMutationSeed: pub(self)
+│   │   │       │   ├── type Value: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct OrdinaryRuntime: pub(super)
+│   │   │       ├── struct RepoSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct RevisionSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── trait RuntimeDecodePolicy: pub(super)
+│   │   │       ├── struct RuntimeFieldSeed: pub(self)
+│   │   │       │   ├── type Value: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct StructuralIngestBatchSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct StructuralReplaceScopeSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct StructuralTombstoneScopeSeed: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       └── struct StructuralTreeRecordSeed: pub(self)
+│   │   │           └── type Value: pub(self)
 │   │   ├── mod semantic_wire: pub(self)
 │   │   │   ├── enum EmbeddingDistanceMetric: pub
 │   │   │   ├── struct EmbeddingDistanceMetricVisitor: pub(self)
@@ -373,7 +514,14 @@ crate quanta_index_contract
 │   │   │   ├── struct SourcePublicationUploadIdentity: pub
 │   │   │   └── struct SourcePublicationUploadPart: pub
 │   │   └── mod validation: pub(self)
-│   │       └── enum SearchCorpusBatchShapeErrorV1: pub
+│   │       ├── struct CertifiedMutationSetsV3: pub(self)
+│   │       ├── trait MutationSetPolicyV3: pub(self)
+│   │       ├── struct OrdinaryMutationSetsV3: pub(self)
+│   │       ├── enum SearchCorpusBatchShapeErrorV1: pub
+│   │       ├── enum SearchCorpusValidationProgressError: pub
+│   │       └── mod native_scratch_v3: pub(self)
+│   │           ├── struct CorpusSurfaceOrderScratchV3: pub
+│   │           └── type Failure: pub(self)
 │   ├── mod ingest_observation: pub(self)
 │   │   ├── enum IngestObservationStatus: pub
 │   │   ├── struct IngestStageDurations: pub
@@ -406,8 +554,21 @@ crate quanta_index_contract
 │   │       └── type Value: pub(self)
 │   ├── mod publish_receipt: pub(self)
 │   │   ├── struct BatchPublishReceipt: pub
-│   │   └── struct BatchPublishReceiptVisitor: pub(self)
-│   │       └── type Value: pub(self)
+│   │   ├── struct BatchPublishReceiptVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   └── mod admitted: pub(self)
+│   │       ├── struct AuxiliaryReceiptSeedV1: pub(super)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── struct KnownFieldSeed: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── struct RootsFieldSeed: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       └── struct SemanticRootsSeed: pub(self)
+│   │           ├── type Value: pub(self)
+│   │           └── type Value: pub(self)
 │   ├── mod quarantine: pub(self)
 │   │   ├── struct QuarantineDiscardAck: pub
 │   │   ├── struct QuarantineDiscardAckVisitor: pub(self)
@@ -434,12 +595,44 @@ crate quanta_index_contract
 │   │   └── struct QuarantinedRepoMapFileEntryVisitor: pub(self)
 │   │       └── type Value: pub(self)
 │   ├── mod semantic_source: pub(self)
+│   │   ├── struct AdmittedClusterMembershipPolicyV1: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct AdmittedSemanticRecordPolicyV1: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct AdmittedSemanticReplacePolicyV1: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct AdmittedSemanticScopeKeyPolicyV1: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── trait ClusterMembershipDecodePolicyV1: pub(self)
+│   │   ├── struct ClusterMembershipFieldSeedV1: pub(self)
+│   │   │   ├── type Value: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum ClusterMembershipFieldV1: pub(self)
 │   │   ├── struct ClusterMembershipReplaceV1: pub
 │   │   ├── struct ClusterMembershipReplaceV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
+│   │   ├── struct OrdinaryClusterMembershipPolicyV1: pub(self)
+│   │   ├── struct OrdinarySemanticRecordPolicyV1: pub(self)
+│   │   ├── struct OrdinarySemanticReplacePolicyV1: pub(self)
+│   │   ├── struct OrdinarySemanticScopeKeyPolicyV1: pub(self)
 │   │   ├── enum RawFallbackReasonV1: pub
 │   │   ├── struct RawFallbackReasonV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
+│   │   ├── trait SemanticRecordDecodePolicyV1: pub(self)
+│   │   ├── struct SemanticRecordFieldSeedV1: pub(self)
+│   │   │   ├── type Value: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum SemanticRecordFieldV1: pub(self)
+│   │   ├── trait SemanticReplaceDecodePolicyV1: pub(self)
+│   │   ├── struct SemanticReplaceFieldSeedV1: pub(self)
+│   │   │   ├── type Value: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum SemanticReplaceFieldV1: pub(self)
+│   │   ├── trait SemanticScopeKeyDecodePolicyV1: pub(self)
+│   │   ├── struct SemanticScopeKeyFieldSeedV1: pub(self)
+│   │   │   ├── type Value: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum SemanticScopeKeyFieldV1: pub(self)
 │   │   ├── struct SemanticSourceRecordV1: pub
 │   │   ├── struct SemanticSourceRecordV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -450,6 +643,8 @@ crate quanta_index_contract
 │   │   └── struct SemanticSourceScopeKeyV1Visitor: pub(self)
 │   │       └── type Value: pub(self)
 │   └── mod split: pub(self)
+│       ├── struct BorrowedRepoMapActivateControlIpcRequestEnvelopeV3: pub
+│       ├── struct BorrowedRepoMapActivateControlIpcRequestV3: pub
 │       ├── enum SearchPlaneControlIpcRequest: pub
 │       ├── struct SearchPlaneControlIpcRequestEnvelope: pub
 │       ├── struct SearchPlaneControlIpcRequestEnvelopeVisitor: pub(self)
@@ -478,17 +673,47 @@ crate quanta_index_contract
 │       ├── struct SemanticWorkBoundedQueryRequestVisitorV1: pub(self)
 │       │   └── type Value: pub(self)
 │       ├── struct SemanticWorkBoundedQueryResponseV1: pub
-│       └── struct SemanticWorkBoundedQueryResponseVisitorV1: pub(self)
-│           └── type Value: pub(self)
+│       ├── struct SemanticWorkBoundedQueryResponseVisitorV1: pub(self)
+│       │   └── type Value: pub(self)
+│       └── mod admitted_repo_map_control_v3: pub(self)
+│           ├── struct FieldSeedV3: pub(self)
+│           │   ├── type Value: pub(self)
+│           │   └── type Value: pub(self)
+│           ├── enum FieldV3: pub(self)
+│           ├── struct KindSeedV3: pub(self)
+│           │   ├── type Value: pub(self)
+│           │   └── type Value: pub(self)
+│           ├── struct PayloadSeedV3: pub(self)
+│           │   ├── type Value: pub(self)
+│           │   └── type Value: pub(self)
+│           ├── enum RepoMapControlKindV3: pub(self)
+│           └── struct RepoMapControlResponseEnvelopeSeedV3: pub(super)
+│               ├── type Value: pub(self)
+│               └── type Value: pub(self)
 ├── mod lex: pub
 │   ├── mod diff: pub
 │   │   ├── struct DiffHunkRecord: pub
-│   │   └── struct DiffHunkRecordVisitor: pub(self)
-│   │       └── type Value: pub(self)
+│   │   ├── struct DiffHunkRecordVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   └── mod admitted: pub(self)
+│   │       ├── struct Admitted: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── trait DiffDecodePolicy: pub(super)
+│   │       ├── struct FieldSeed: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       └── struct Ordinary: pub(super)
 │   ├── mod dirty: pub
+│   │   ├── struct AdmittedDirtyRecord: pub(self)
+│   │   │   └── type Value: pub(self)
 │   │   ├── struct DirtyRecord: pub
-│   │   └── struct DirtyRecordVisitor: pub(self)
-│   │       └── type Value: pub(self)
+│   │   ├── trait DirtyRecordDecodePolicy: pub(self)
+│   │   ├── struct DirtyRecordFieldSeed: pub(self)
+│   │   │   ├── type Value: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct DirtyRecordVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   └── struct OrdinaryDirtyRecord: pub(self)
 │   ├── mod error_code: pub
 │   │   ├── enum LexicalErrorCode: pub
 │   │   └── struct LexicalErrorCodeVisitor: pub(self)
@@ -501,7 +726,18 @@ crate quanta_index_contract
 │   │   ├── enum CommitShaParseError: pub
 │   │   ├── struct CommitShaVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   └── struct TagsSer: pub(self)
+│   │   ├── struct TagsSer: pub(self)
+│   │   └── mod admitted: pub(self)
+│   │       ├── struct Admitted: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── trait CommitDecodePolicy: pub(super)
+│   │       ├── struct FieldSeed: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── struct Ordinary: pub(super)
+│   │       └── struct ShaSeed: pub(self)
+│   │           ├── type Value: pub(self)
+│   │           └── type Value: pub(self)
 │   ├── mod parse_tree: pub
 │   │   ├── struct ParseNode: pub
 │   │   ├── struct ParseNodeVisitor: pub(self)
@@ -510,26 +746,62 @@ crate quanta_index_contract
 │   │   ├── struct ParseRoleTagVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct ParseTreeRecord: pub
-│   │   └── struct ParseTreeRecordVisitor: pub(self)
-│   │       └── type Value: pub(self)
+│   │   ├── struct ParseTreeRecordVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   └── mod admitted: pub(self)
+│   │       ├── struct AdmittedParseTree: pub(self)
+│   │       ├── struct OrdinaryParseTree: pub(super)
+│   │       ├── struct ParseNodeSeed: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── struct ParseRoleTagSeed: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── trait ParseTreeDecodePolicy: pub(super)
+│   │       ├── struct ParseTreeFieldSeed: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       └── struct ParseTreeRecordSeed: pub(self)
+│   │           └── type Value: pub(self)
 │   └── mod symbol: pub
+│       ├── struct AdmittedSymbolRecordPolicyV1: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct AdmittedSymbolSpanPolicyV1: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct OrdinarySymbolRecordPolicyV1: pub(self)
+│       ├── struct OrdinarySymbolSpanPolicyV1: pub(self)
 │       ├── struct SymbolKindCode: pub
+│       ├── struct SymbolKindCodeAdmittedSeedV1: pub(self)
+│       │   └── type Value: pub(self)
 │       ├── struct SymbolKindCodeVisitor: pub(self)
 │       │   └── type Value: pub(self)
 │       ├── enum SymbolKindFamily: pub
 │       ├── struct SymbolKindFamilyVisitor: pub(self)
 │       │   └── type Value: pub(self)
 │       ├── struct SymbolRecord: pub
+│       ├── trait SymbolRecordDecodePolicyV1: pub(self)
+│       ├── struct SymbolRecordFieldSeedV1: pub(self)
+│       │   ├── type Value: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── enum SymbolRecordFieldV1: pub(self)
 │       ├── struct SymbolRecordVisitor: pub(self)
 │       │   └── type Value: pub(self)
 │       ├── enum SymbolRelationship: pub
 │       ├── struct SymbolRelationshipVisitor: pub(self)
 │       │   └── type Value: pub(self)
 │       ├── struct SymbolSpan: pub
+│       ├── trait SymbolSpanDecodePolicyV1: pub(self)
+│       ├── struct SymbolSpanFieldSeedV1: pub(self)
+│       │   ├── type Value: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── enum SymbolSpanFieldV1: pub(self)
 │       └── struct SymbolSpanVisitor: pub(self)
 │           └── type Value: pub(self)
 ├── mod macros: pub(crate)
+├── mod native_boot_source_cut_digest: pub(crate)
+│   └── enum NativeBootSourceCutDigestErrorV1: pub
 ├── mod native_protocol: pub
+│   ├── struct NativeEffortDone: pub
+│   ├── enum NativeEffortPreference: pub
+│   ├── enum NativeEffortReason: pub
 │   ├── struct NativeFilePathEntry: pub
 │   ├── enum NativeIndexErrorCode: pub
 │   ├── enum NativeIndexRequest: pub
@@ -537,9 +809,122 @@ crate quanta_index_contract
 │   ├── enum NativeIndexResponse: pub
 │   ├── struct NativeIndexResponseEnvelope: pub
 │   ├── struct NativeIndexWireError: pub
+│   ├── struct NativeInteractionPublisherId: pub
 │   ├── struct NativeLiteralHit: pub
 │   ├── struct NativeLiteralPage: pub
-│   └── struct NativePathPage: pub
+│   ├── struct NativePathPage: pub
+│   ├── struct NativeProducerSourceOwner: pub
+│   ├── struct NativeProducerSourcePage: pub
+│   ├── struct NativeProducerSourcePageWire: pub(self)
+│   ├── struct NativeProducerSourceRows: pub
+│   ├── struct NativeProjectionOwnerBinding: pub
+│   ├── struct NativeProjectionOwnerLookup: pub
+│   ├── struct NativeProjectionOwnerRows: pub
+│   ├── struct NativeProjectionRead: pub
+│   ├── struct NativeSemanticHit: pub
+│   ├── struct NativeSemanticResult: pub
+│   ├── enum NativeSemanticTraversal: pub
+│   ├── struct NativeSourceOwnerBinding: pub
+│   ├── struct NativeSourceOwnerKeys: pub
+│   ├── struct NativeSourceOwnerLookup: pub
+│   ├── struct NativeSourceOwnerRows: pub
+│   ├── enum NativeTextCoverage: pub
+│   ├── struct NativeTextHit: pub
+│   ├── struct NativeTextResult: pub
+│   ├── trait SourceOwnerItem: pub(self)
+│   ├── mod graph: pub(self)
+│   │   ├── struct GraphEdge: pub
+│   │   ├── struct GraphNode: pub
+│   │   ├── struct GraphOwnerOutput: pub
+│   │   ├── struct LimitedEdges: pub(self)
+│   │   ├── struct LimitedNodes: pub(self)
+│   │   ├── struct LimitedProjection: pub(self)
+│   │   ├── enum NativeGraphDirection: pub
+│   │   ├── struct NativeGraphQuery: pub
+│   │   ├── struct NativeGraphResult: pub
+│   │   ├── struct NativeGraphRow: pub
+│   │   └── mod ranking: pub(self)
+│   │       ├── struct GraphProjectionRow: pub
+│   │       ├── struct LimitedFocusSubject: pub(self)
+│   │       ├── struct LimitedFocusSubjects: pub(self)
+│   │       ├── struct LimitedHits: pub(self)
+│   │       ├── struct LimitedReasons: pub(self)
+│   │       ├── struct LimitedText: pub(self)
+│   │       ├── struct NativeRepoMapHit: pub
+│   │       ├── struct NativeRepoMapQuery: pub
+│   │       ├── struct NativeRepoMapResult: pub
+│   │       └── struct NativeRepoMapResultRef: pub
+│   ├── mod headless: pub(self)
+│   │   ├── struct NativeOverlayCorpusStamp: pub
+│   │   ├── struct NativeOverlayDocument: pub
+│   │   ├── struct NativeOverlayEffortContext: pub
+│   │   ├── struct NativeOverlayMask: pub
+│   │   ├── enum NativeOverlayReply: pub
+│   │   ├── enum NativeOverlayRequest: pub
+│   │   ├── struct NativeOverlayRevision: pub
+│   │   ├── struct NativeOverlaySaveIntent: pub
+│   │   ├── struct NativeOverlaySaveReceipt: pub
+│   │   ├── struct NativeOverlaySemanticChunk: pub
+│   │   ├── struct NativeOverlaySemanticHit: pub
+│   │   ├── struct NativeOverlaySemanticHitOrigin: pub
+│   │   ├── struct NativeOverlaySemanticResult: pub
+│   │   ├── struct NativeOverlaySession: pub
+│   │   ├── struct NativeOverlaySnapshot: pub
+│   │   ├── struct NativeOverlayTextHit: pub
+│   │   ├── struct NativeOverlayTextQuery: pub
+│   │   ├── struct NativeOverlayTextResult: pub
+│   │   └── enum NativeOverlayTextSource: pub
+│   ├── mod projection_children: pub(self)
+│   │   ├── struct NativeProjectionOutputChildren: pub
+│   │   └── struct RejectExtra: pub(self)
+│   │       └── type Value: pub(self)
+│   ├── mod read_session: pub(self)
+│   │   ├── struct NativeReadSessionId: pub
+│   │   ├── enum NativeReadSessionReply: pub
+│   │   ├── enum NativeReadSessionRequest: pub
+│   │   ├── struct NativeReadSessionSettlement: pub
+│   │   ├── enum NativeReadSessionState: pub
+│   │   ├── struct NativeReadSessionStatus: pub
+│   │   └── enum NativeReadSettlementState: pub
+│   ├── mod semantic_chunk: pub(self)
+│   │   ├── struct NativeSemanticChunk: pub
+│   │   ├── enum NativeSemanticChunkSpan: pub
+│   │   └── enum NativeSemanticChunkValidationError: pub
+│   ├── mod semantic_chunk_manifest: pub(self)
+│   │   ├── struct NativeSemanticChunkManifest: pub
+│   │   ├── enum NativeSemanticManifestError: pub
+│   │   ├── struct NativeSemanticManifestHeader: pub
+│   │   ├── struct NativeSemanticManifestIter: pub
+│   │   ├── struct NativeSemanticManifestLimits: pub
+│   │   ├── struct NativeSemanticManifestMember: pub
+│   │   ├── struct Reader: pub(self)
+│   │   └── struct Writer: pub(self)
+│   ├── mod source_diff: pub(self)
+│   │   ├── struct NativeProjectionSourceDiff: pub
+│   │   └── struct NativeSourceDiffRows: pub
+│   ├── mod stub: pub(self)
+│   │   ├── struct NativeStubBinding: pub
+│   │   ├── struct NativeStubByteEdit: pub
+│   │   ├── enum NativeStubCoordinateUnit: pub
+│   │   ├── struct NativeStubEdit: pub
+│   │   ├── struct NativeStubItem: pub
+│   │   ├── struct NativeStubPosition: pub
+│   │   ├── struct NativeStubRange: pub
+│   │   ├── enum NativeStubReply: pub
+│   │   ├── enum NativeStubRequest: pub
+│   │   └── mod coordinates: pub(self)
+│   ├── mod stub_certificate: pub(self)
+│   │   ├── struct NativeStubCertificate: pub
+│   │   ├── enum NativeStubCertificateError: pub
+│   │   ├── struct NativeStubCertificateHeader: pub
+│   │   ├── struct NativeStubCertificateItem: pub
+│   │   ├── struct NativeStubCertificateIter: pub
+│   │   ├── struct Reader: pub(self)
+│   │   └── type Result: pub(self)
+│   └── mod stub_schema: pub(self)
+├── mod native_score: pub(crate)
+│   ├── struct FiniteScore: pub
+│   └── struct FiniteScoreError: pub
 ├── mod query: pub
 │   ├── mod aux_epoch: pub(self)
 │   │   ├── struct AuxEpochV1: pub
@@ -569,6 +954,8 @@ crate quanta_index_contract
 │   │   ├── enum HistoryOrderV1: pub
 │   │   └── struct HistoryOrderV1Visitor: pub(self)
 │   │       └── type Value: pub(self)
+│   ├── mod native_content: pub(self)
+│   │   └── struct NativeContentQueryTokens: pub
 │   ├── mod options: pub(self)
 │   ├── mod requests: pub(self)
 │   │   ├── enum ExplainCandidateV1: pub
@@ -609,6 +996,7 @@ crate quanta_index_contract
 │       └── struct StructuralCursorV1Visitor: pub(self)
 │           └── type Value: pub(self)
 ├── mod repomap: pub
+│   ├── struct OrdinaryRepoMapMutationAckPolicyV3: pub(self)
 │   ├── struct RepoMapCallEdge: pub
 │   ├── struct RepoMapCallEdgeVisitor: pub(self)
 │   │   └── type Value: pub(self)
@@ -650,6 +1038,7 @@ crate quanta_index_contract
 │   ├── struct RepoMapModuleNodeVisitor: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── struct RepoMapMutationAck: pub
+│   ├── trait RepoMapMutationAckDecodePolicyV3: pub(self)
 │   ├── struct RepoMapMutationAckV1Visitor: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── enum RepoMapNode: pub
@@ -677,6 +1066,53 @@ crate quanta_index_contract
 │   ├── struct RepoMapSymbolNode: pub
 │   ├── struct RepoMapSymbolNodeVisitor: pub(self)
 │   │   └── type Value: pub(self)
+│   ├── mod admitted_v3: pub(self)
+│   │   ├── struct AdmittedMutationAckPolicyV3: pub(self)
+│   │   ├── struct ExpectedActiveSeed: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct KnownKeySeed: pub(super)
+│   │   │   ├── type Value: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct RepoMapDecodeLimitsV3: pub
+│   │   ├── struct ScalarSeed: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   └── struct Seed: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       ├── type Value: pub(self)
+│   │       └── type Value: pub(self)
 │   ├── mod canonical_v3: pub(self)
 │   │   ├── struct ArtifactContentDigestV1: pub
 │   │   ├── struct ArtifactIdentityCommitmentV1: pub
@@ -713,13 +1149,24 @@ crate quanta_index_contract
 │   │   └── struct RepoMapResourceReceiptVisitor: pub(self)
 │   │       └── type Value: pub(self)
 │   └── mod terminal_receipt_v2: pub(self)
+│       ├── struct AdmittedReceiptPolicy: pub(self)
+│       ├── struct AdmittedReceiptSeed: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct BorrowedRepoMapPublishBundleRequestV3: pub
+│       ├── struct DigestWriterV3: pub(self)
+│       ├── struct OrdinaryReceiptPolicy: pub(self)
+│       ├── trait ReceiptDecodePolicy: pub(self)
+│       ├── struct ReceiptVisitor: pub(self)
+│       │   └── type Value: pub(self)
 │       ├── struct RepoMapActivateGenerationRequestV2: pub
 │       ├── struct RepoMapActiveHeadRequestV2: pub
 │       ├── struct RepoMapActiveHeadResponseV2: pub
 │       ├── struct RepoMapExpectedActiveV2: pub
 │       ├── enum RepoMapMutationPhaseV2: pub
 │       ├── struct RepoMapPublishBundleRequestV2: pub
+│       ├── struct RepoMapSourceBundleDigestEncodeErrorV3: pub
 │       ├── struct RepoMapSourceBundleDigestErrorV2: pub
+│       ├── enum RepoMapSourceBundleDigestWorkErrorV3: pub
 │       └── struct RepoMapTerminalReceiptV2: pub
 ├── mod results: pub
 │   ├── mod cluster_membership: pub(self)
@@ -840,12 +1287,41 @@ crate quanta_index_contract
 │   └── struct SourceRoleV1Visitor: pub(self)
 │       └── type Value: pub(self)
 └── mod source_coverage: pub(crate)
-    ├── struct DigestWriter: pub(self)
+    ├── struct OrderedRecords: pub(self)
     ├── enum SourceCoverageError: pub
+    ├── enum SourceCoverageProgressError: pub
     ├── struct SourceFileCoverage: pub
     ├── struct SourcePublicationEvent: pub
     ├── enum SymbolCoverage: pub
     ├── enum SymbolNameSourcePolicyV1: pub
+    ├── type UnitSetComparisonAdmissionV3: pub(self)
+    ├── type UnitSetComparisonV3: pub(self)
+    ├── type UnitSetSortCallbackV3: pub(self)
+    ├── struct UnitSetSortCallbacksV3: pub(self)
+    ├── mod admitted: pub(self)
+    │   ├── struct Admitted: pub(self)
+    │   │   └── type Value: pub(self)
+    │   ├── struct AdmittedCoverageSeed: pub(self)
+    │   │   └── type Value: pub(self)
+    │   ├── struct AdmittedEventSeed: pub(self)
+    │   │   └── type Value: pub(self)
+    │   ├── trait CoveragePolicy: pub(self)
+    │   ├── struct CoverageVisitor: pub(self)
+    │   │   └── type Value: pub(self)
+    │   ├── trait EventPolicy: pub(self)
+    │   ├── struct EventVisitor: pub(self)
+    │   │   └── type Value: pub(self)
+    │   ├── trait FieldPolicy: pub(self)
+    │   ├── struct FieldSeed: pub(self)
+    │   │   ├── type Value: pub(self)
+    │   │   └── type Value: pub(self)
+    │   ├── struct Ordinary: pub(self)
+    │   ├── trait SymbolPolicy: pub(self)
+    │   ├── struct SymbolStateSeed: pub(self)
+    │   │   ├── type Value: pub(self)
+    │   │   └── type Value: pub(self)
+    │   └── struct SymbolVisitor: pub(self)
+    │       └── type Value: pub(self)
     └── mod snapshot: pub(self)
         ├── struct FileCoverageIter: pub
         ├── struct FileCoverageSnapshot: pub

@@ -8,13 +8,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
-use quanta_index_core::SealedGenerationBytesV1;
+use quanta_index_core::domains::generation::RetentionMeasurementPolicy;
+use quanta_index_core::publication_admission::DurableControlFileAdmissionPort;
 use quanta_index_core::{AuxiliaryAuthorityCatalogPort, CoreError};
+#[cfg(test)]
+use quanta_index_core::{RequestBudgetV1, SealedGenerationBytesV1};
 
 use crate::auxiliary_authority;
 use crate::readiness::durable_fs::{
-    FsParentDirectorySyncPort, ParentDirectorySyncPort, ensure_durable_directory_v1,
-    is_owned_search_corpus_staging_name_v1, reconcile_legacy_atomic_temporaries_v1,
+    DurableControlAdmissionV1, FsParentDirectorySyncPort, ParentDirectorySyncPort,
+    ensure_durable_directory_v1, is_owned_search_corpus_staging_name_v1,
+    reconcile_legacy_atomic_temporaries_admitted_v1, reconcile_legacy_atomic_temporaries_v1,
+    reconcile_owned_staging_directory_admitted_v1,
 };
 use crate::readiness::ledger::Ledger;
 use crate::readiness::pair_digest::search_corpus_pair_digest;
@@ -53,6 +58,7 @@ pub struct AuxiliaryAuthorityStore {
     /// The on-disk index bytes retention measures its byte limits over.
     pub(super) index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
     pub(super) parent_sync: Arc<dyn ParentDirectorySyncPort>,
+    pub(super) durable_control_admission: Option<DurableControlAdmissionV1>,
 }
 
 #[cfg(test)]
@@ -71,11 +77,16 @@ pub(crate) const TEST_INDEX_BYTES_PER_GENERATION: u64 = 100;
 
 #[cfg(test)]
 impl SearchCorpusIndexBytesPort for ScriptedIndexBytesV1 {
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+        RetentionMeasurementPolicy::DEFAULT
+    }
+
     fn measure_index_bytes(
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &std::collections::BTreeSet<quanta_index_contract::ManifestGeneration>,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         Ok(SealedGenerationBytesV1 {
@@ -121,6 +132,25 @@ impl AuxiliaryAuthorityStore {
         )
     }
 
+    pub(crate) fn open_with_lifecycle_and_durable_admission_v1(
+        root: impl AsRef<Path>,
+        search_corpus_history_retention: SearchCorpusHistoryRetentionPolicyV1,
+        lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
+        active_pins: Arc<dyn ActiveSearchCorpusPinReadPort>,
+        index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
+        admission: Arc<dyn DurableControlFileAdmissionPort>,
+    ) -> Result<Self, CoreError> {
+        Self::open_with_parent_sync_and_admission(
+            root,
+            search_corpus_history_retention,
+            lifecycle_coordinator,
+            active_pins,
+            index_bytes,
+            Arc::new(FsParentDirectorySyncPort),
+            Some(DurableControlAdmissionV1(admission)),
+        )
+    }
+
     pub(super) fn open_with_parent_sync(
         root: impl AsRef<Path>,
         search_corpus_history_retention: SearchCorpusHistoryRetentionPolicyV1,
@@ -128,6 +158,26 @@ impl AuxiliaryAuthorityStore {
         active_pins: Arc<dyn ActiveSearchCorpusPinReadPort>,
         index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
         parent_sync: Arc<dyn ParentDirectorySyncPort>,
+    ) -> Result<Self, CoreError> {
+        Self::open_with_parent_sync_and_admission(
+            root,
+            search_corpus_history_retention,
+            lifecycle_coordinator,
+            active_pins,
+            index_bytes,
+            parent_sync,
+            None,
+        )
+    }
+
+    fn open_with_parent_sync_and_admission(
+        root: impl AsRef<Path>,
+        search_corpus_history_retention: SearchCorpusHistoryRetentionPolicyV1,
+        lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
+        active_pins: Arc<dyn ActiveSearchCorpusPinReadPort>,
+        index_bytes: Arc<dyn SearchCorpusIndexBytesPort>,
+        parent_sync: Arc<dyn ParentDirectorySyncPort>,
+        durable_control_admission: Option<DurableControlAdmissionV1>,
     ) -> Result<Self, CoreError> {
         let root = root.as_ref();
         ensure_durable_directory_v1(root, "search-plane authority store", parent_sync.as_ref())?;
@@ -154,6 +204,7 @@ impl AuxiliaryAuthorityStore {
             search_corpus_history_retention,
             index_bytes,
             parent_sync,
+            durable_control_admission,
         };
         store.reconcile_search_corpus_startup_v1()?;
         Ok(store)
@@ -165,6 +216,10 @@ impl AuxiliaryAuthorityStore {
                 "search-corpus authority: startup reconciliation lock poisoned: {error}"
             ))
         })?;
+        if let Some(admission) = &self.durable_control_admission {
+            // A retained deletion can have no pathname left for the scan.
+            admission.0.reconcile_deletions()?;
+        }
         self.reconcile_search_corpus_staging_v1()?;
         let active_pair_names = self.active_search_corpus_pair_names_v1()?;
         let empty_pairs =
@@ -173,6 +228,14 @@ impl AuxiliaryAuthorityStore {
     }
 
     fn reconcile_search_corpus_staging_v1(&self) -> Result<(), CoreError> {
+        if let Some(admission) = &self.durable_control_admission {
+            return reconcile_owned_staging_directory_admitted_v1(
+                &self.search_corpus_staging_dir,
+                "search-corpus authority",
+                self.parent_sync.as_ref(),
+                admission.0.as_ref(),
+            );
+        }
         let mut removed_staging = false;
         for entry in fs::read_dir(&self.search_corpus_staging_dir).map_err(|error| {
             CoreError::Storage(format!(
@@ -278,12 +341,22 @@ impl AuxiliaryAuthorityStore {
                     path.display()
                 )));
             }
-            reconcile_legacy_atomic_temporaries_v1(
-                &path,
-                ".cbor",
-                "search-corpus authority",
-                self.parent_sync.as_ref(),
-            )?;
+            if let Some(admission) = &self.durable_control_admission {
+                reconcile_legacy_atomic_temporaries_admitted_v1(
+                    &path,
+                    ".cbor",
+                    "search-corpus authority",
+                    self.parent_sync.as_ref(),
+                    admission.0.as_ref(),
+                )?;
+            } else {
+                reconcile_legacy_atomic_temporaries_v1(
+                    &path,
+                    ".cbor",
+                    "search-corpus authority",
+                    self.parent_sync.as_ref(),
+                )?;
+            }
             if fs::read_dir(&path)
                 .map_err(|error| {
                     CoreError::Storage(format!(

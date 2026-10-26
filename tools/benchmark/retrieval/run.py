@@ -759,10 +759,11 @@ def _linux_owned_resource(
     if subject_path is not None and subject_path.is_file():
         subject_sha256 = sha_file(subject_path)
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "sampler": "linux-process-owner-v1",
         "capture_scope": capture_scope,
         "owner_backend": result.backend,
+        "rss_method": result.rss_method,
         "sample_interval_ms": result.sample_interval_ms,
         "command_sha256": digest(canonical(actual_command)),
         **(
@@ -6704,6 +6705,7 @@ def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
         "sampler",
         "capture_scope",
         "owner_backend",
+        "rss_method",
         "sample_interval_ms",
         "command_sha256",
         "subject_sha256",
@@ -6733,13 +6735,23 @@ def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
         keys | ({"exec_command_sha256"} if "exec_command_sha256" in payload else set()),
         where,
     )
-    if metrics["schema_version"] != 2 or metrics["sampler"] != "linux-process-owner-v1":
+    if (
+        type(metrics["schema_version"]) is not int
+        or metrics["schema_version"] != 3
+        or metrics["sampler"] != "linux-process-owner-v1"
+    ):
         raise RunError(f"{where} has unknown Linux resource schema/sampler")
     if metrics["capture_scope"] not in ("exploratory", "qualified"):
         raise RunError(f"{where}.capture_scope is invalid")
     backend = metrics["owner_backend"]
-    if backend not in ("cgroup-v2", "process-group"):
+    rss_methods = {
+        "cgroup-v2": "sampled_smaps_rollup_rss_sum_shared_pages_may_repeat",
+        "process-group": "sampled_proc_stat_rss_sum_shared_pages_may_repeat",
+    }
+    if not isinstance(backend, str) or backend not in rss_methods:
         raise RunError(f"{where}.owner_backend is invalid")
+    if metrics["rss_method"] != rss_methods[backend]:
+        raise RunError(f"{where}.rss_method does not match owner_backend")
     if type(metrics["sample_interval_ms"]) is not int or metrics["sample_interval_ms"] < 1:
         raise RunError(f"{where}.sample_interval_ms must be positive")
     for key in ("command_sha256", "subject_sha256"):
@@ -6751,7 +6763,11 @@ def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
     for key in ("total_user_cpu_ns", "total_kernel_cpu_ns"):
         if type(metrics[key]) is not int or metrics[key] < 0:
             raise RunError(f"{where}.{key} must be nonnegative")
-    if metrics["exit_code"] != 0 or metrics["timed_out"] is not False:
+    if (
+        type(metrics["exit_code"]) is not int
+        or metrics["exit_code"] != 0
+        or metrics["timed_out"] is not False
+    ):
         raise RunError(f"{where} does not describe a successful bounded process")
     if not is_finite_json_number(metrics["elapsed_ms"]) or metrics["elapsed_ms"] <= 0:
         raise RunError(f"{where}.elapsed_ms must be finite and positive")
@@ -6783,7 +6799,11 @@ def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
     for index, item in enumerate(escaped):
         row = _exact_keys(item, {"pid", "start_ticks"}, f"{where}.escaped[{index}]")
         identity = (row["pid"], row["start_ticks"])
-        if identity not in identities or identity in escaped_ids:
+        if (
+            any(type(part) is not int or part < 1 for part in identity)
+            or identity not in identities
+            or identity in escaped_ids
+        ):
             raise RunError(f"{where}.escaped[{index}] lacks unique owned identity")
         escaped_ids.add(identity)
     if backend == "cgroup-v2":
@@ -6842,7 +6862,8 @@ def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
             raise RunError(f"{where}.storage.{key} must be positive")
     expected_measurement = {"disk": "filesystem_tree_v1", "memory": "process_peak_rss_delta_v1"}
     if (
-        storage["index_storage"] not in expected_measurement
+        not isinstance(storage["index_storage"], str)
+        or storage["index_storage"] not in expected_measurement
         or storage["index_measurement"] != expected_measurement[storage["index_storage"]]
         or storage["index_bytes"] <= 0
     ):
@@ -6889,7 +6910,10 @@ def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
 
 
 def _validate_resource_metrics(payload: object, where: str) -> dict:
-    if isinstance(payload, dict) and payload.get("schema_version") == 2:
+    if isinstance(payload, dict) and (
+        payload.get("sampler") == "linux-process-owner-v1"
+        or payload.get("schema_version") == 3
+    ):
         return _validate_linux_resource_metrics(payload, where)
     keys = {
         "schema_version",
@@ -7061,7 +7085,7 @@ def _validate_resource_capture_binding(
     protocol_parent: dict | None,
 ) -> None:
     linux_host = host_system == "Linux"
-    if linux_host != (metrics["schema_version"] == 2):
+    if linux_host != (metrics["schema_version"] == 3):
         raise RunError("resource schema does not match capture host")
     if not linux_host:
         if manifest_parent is not None or protocol_parent is not None:

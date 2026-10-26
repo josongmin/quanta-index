@@ -267,7 +267,8 @@ fn retire_wins_refuses_a_new_old_generation_acquire_typed() -> TestResult {
         | CoreError::Typed { .. }
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
-        | CoreError::Storage(_) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. } => {
             unreachable!("a superseded generation is a typed refusal")
         }
     }
@@ -357,7 +358,8 @@ fn a_pinned_generation_cannot_be_republished_underneath_a_view() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)
-        | CoreError::Storage(_) => {
+        | CoreError::Storage(_)
+        | CoreError::StorageIo { .. } => {
             unreachable!("a different request for one immutable candidate must conflict")
         }
     }

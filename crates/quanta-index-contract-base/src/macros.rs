@@ -33,6 +33,42 @@ macro_rules! string_newtype {
             pub fn into_inner(self) -> String {
                 self.0
             }
+
+            /// Decode this same scalar with its retained String backing admitted
+            /// by the caller. The admission owner must outlive the returned ID.
+            pub fn deserialize_seed_with_admission_v1<
+                A: $crate::DecodeBackingAdmissionV1 + ?Sized,
+            >(
+                admission: &A,
+                max_text_bytes: usize,
+            ) -> impl for<'de> serde::de::DeserializeSeed<'de, Value = Self> + '_ {
+                struct NewtypeSeed<'a, A: ?Sized> {
+                    admission: &'a A,
+                    max_text_bytes: usize,
+                }
+
+                impl<'de, A: $crate::DecodeBackingAdmissionV1 + ?Sized>
+                    serde::de::DeserializeSeed<'de> for NewtypeSeed<'_, A>
+                {
+                    type Value = $Name;
+
+                    fn deserialize<D: serde::Deserializer<'de>>(
+                        self,
+                        deserializer: D,
+                    ) -> Result<Self::Value, D::Error> {
+                        let value = serde::de::DeserializeSeed::deserialize(
+                            $crate::AdmittedTextSeedV1::new(self.admission, self.max_text_bytes),
+                            deserializer,
+                        )?;
+                        Ok($Name(value))
+                    }
+                }
+
+                NewtypeSeed {
+                    admission,
+                    max_text_bytes,
+                }
+            }
         }
 
         impl serde::Serialize for $Name {

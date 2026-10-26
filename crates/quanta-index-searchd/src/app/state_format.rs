@@ -28,6 +28,9 @@ use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::CoreError;
 use sha2::{Digest as _, Sha256};
 
+mod cutover;
+pub use cutover::{PreparedStateRootV1, prepare_staging_root_v1};
+
 /// Version of the canonical state-root manifest
 /// (`state-root-manifest-v1.txt`, and the identical backup manifest at the
 /// top of a `state-backup` root).
@@ -186,7 +189,26 @@ pub fn detect_state_root_format_v1(root: &Path) -> Result<StateRootFormatV1, Cor
 pub fn refuse_legacy_state_root_v1(root: &Path) -> Result<(), CoreError> {
     // Native incremental state has a distinct cutover boundary. The default
     // daemon must not silently reinterpret its catalog as an old index root.
-    for marker in [".native-index-v1", ".native-index-v2"] {
+    for marker in [
+        ".native-index-v1",
+        ".native-index-v2",
+        ".native-index-v3",
+        ".native-index-v4",
+        ".native-index-v5",
+        ".native-index-v6",
+        ".native-index-v7",
+        ".native-index-v8",
+        ".native-index-v9",
+        ".native-index-v10",
+        ".native-index-v11",
+        ".native-index-v12",
+        ".native-index-v13",
+        ".native-index-v14",
+        ".native-index-v15",
+        ".native-index-v16",
+        ".native-index-v17",
+        ".native-index-v18",
+    ] {
         match fs::symlink_metadata(root.join(marker)) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             _ => {
@@ -936,12 +958,9 @@ pub fn refuse_non_private_source_root_v1(root: &Path) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// Refuse a destination that is not a fresh, empty, unaliased directory.
-///
-/// An existing **non-empty** destination is refused: an offline operation
-/// that merged into a populated directory could leave a mixture of two
-/// roots that no manifest describes.
-pub fn refuse_non_empty_destination_v1(destination: &Path, source: &Path) -> Result<(), CoreError> {
+/// Refuse a destination that already exists. The one cutover rename cannot
+/// replace even an empty directory, so reject it before staging any bytes.
+pub fn refuse_existing_destination_v1(destination: &Path, source: &Path) -> Result<(), CoreError> {
     if destination == source {
         return Err(refuse(
             SearchPlaneErrorCodeV2::InvalidRequest,
@@ -951,34 +970,17 @@ pub fn refuse_non_empty_destination_v1(destination: &Path, source: &Path) -> Res
             ),
         ));
     }
-    if let Ok(metadata) = fs::symlink_metadata(destination) {
-        if !metadata.is_dir() {
-            return Err(refuse(
-                SearchPlaneErrorCodeV2::InvalidRequest,
-                format!(
-                    "offline state destination {} exists and is not a directory",
-                    destination.display()
-                ),
-            ));
-        }
-        let entries = fs::read_dir(destination)
-            .map_err(|error| storage("read destination", destination, &error))?;
-        let mut count: u64 = 0;
-        for entry in entries {
-            let _entry = entry.map_err(|error| storage("read destination", destination, &error))?;
-            count = count.saturating_add(1);
-        }
-        if count != 0 {
-            return Err(refuse(
-                SearchPlaneErrorCodeV2::InvalidRequest,
-                format!(
-                    "offline state destination {} is non-empty ({count} entries); a cutover target must be fresh",
-                    destination.display()
-                ),
-            ));
-        }
+    match fs::symlink_metadata(destination) {
+        Ok(_) => Err(refuse(
+            SearchPlaneErrorCodeV2::InvalidRequest,
+            format!(
+                "offline state destination {} already exists; a cutover target must be absent",
+                destination.display()
+            ),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(storage("inspect destination", destination, &error)),
     }
-    Ok(())
 }
 
 /// The staging directory an offline operation builds before its one rename.
@@ -992,41 +994,10 @@ pub fn staging_directory_for_v1(destination: &Path) -> PathBuf {
     parent.join(format!("{name}{STAGING_DIRECTORY_SUFFIX}"))
 }
 
-/// One atomic cutover: staging is complete and verified, so a single `rename`
-/// publishes it and the parent directory is fsynced.
-///
-/// There is no intermediate state to observe: after a crash the destination
-/// is either still absent (the old root stands) or the complete new root.
+/// Entry-scope cutover compatibility function. This pins staging only at
+/// entry; creation-to-publication custody uses `PreparedStateRootV1`.
 pub fn atomic_cutover_v1(staging: &Path, destination: &Path) -> Result<(), CoreError> {
-    if !staging.is_dir() {
-        return Err(typed(
-            SearchPlaneErrorCodeV2::NotFound,
-            format!("staging root {} is not a directory", staging.display()),
-        ));
-    }
-    if destination.exists() {
-        return Err(refuse(
-            SearchPlaneErrorCodeV2::InvalidRequest,
-            format!(
-                "cutover destination {} already exists; a cutover never replaces a root",
-                destination.display()
-            ),
-        ));
-    }
-    let parent = destination.parent().ok_or_else(|| {
-        refuse(
-            SearchPlaneErrorCodeV2::InvalidRequest,
-            format!(
-                "cutover destination {} has no parent",
-                destination.display()
-            ),
-        )
-    })?;
-    fs::create_dir_all(parent).map_err(|error| storage("create cutover parent", parent, &error))?;
-    fs::rename(staging, destination)
-        .map_err(|error| storage("cutover rename staging -> destination", staging, &error))?;
-    fsync_directory_v1(parent)?;
-    Ok(())
+    cutover::atomic_cutover_v1(staging, destination)
 }
 
 /// The offline fault points a migration/backup/restore can be interrupted at.

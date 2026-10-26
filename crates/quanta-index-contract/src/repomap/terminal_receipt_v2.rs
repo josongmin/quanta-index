@@ -1,18 +1,21 @@
 //! Exact `RepoMap` V2 publish/activate request and terminal receipt contracts.
 
 use core::fmt;
+use std::io::{self, Write};
 use std::num::NonZeroU64;
 
+use quanta_index_contract_base::{AdmittedTextSeedV1, SourceIdentityDecodeAdmissionV1};
+use serde::de::DeserializeSeed;
 use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    CandidateCommitmentV1, ManifestGeneration, RepoId, RepoMapMutationAck, RepoMapSourceBundle,
-    RevisionId,
+    admitted_v3::KnownKeySeed, CandidateCommitmentV1, ManifestGeneration, RepoId,
+    RepoMapMutationAck, RepoMapSourceBundle, RevisionId,
 };
 
 const SOURCE_BUNDLE_DIGEST_DOMAIN_V2: &[u8] = b"quanta-index/repomap-source-bundle/v2\0";
@@ -30,6 +33,103 @@ pub const REPOMAP_TERMINAL_RECEIPT_FORMAT_VERSION: u32 = 1;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoMapSourceBundleDigestErrorV2 {
     detail: String,
+}
+
+/// Exact source-bundle commitment failed before its work could be admitted.
+/// The work cause remains typed for the Original caller.
+#[derive(Debug)]
+pub enum RepoMapSourceBundleDigestWorkErrorV3<E> {
+    Work(E),
+    Encode(RepoMapSourceBundleDigestEncodeErrorV3),
+}
+
+/// Retains the exact codec failure without formatting it inside an Original
+/// source loan. The caller formats it only after its source has finished.
+#[derive(Debug)]
+pub struct RepoMapSourceBundleDigestEncodeErrorV3 {
+    source: ciborium::ser::Error<io::Error>,
+}
+
+impl fmt::Display for RepoMapSourceBundleDigestEncodeErrorV3 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.source, formatter)
+    }
+}
+
+impl std::error::Error for RepoMapSourceBundleDigestEncodeErrorV3 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+struct DigestWriterV3<'a, F, E> {
+    hasher: &'a mut Sha256,
+    consume_work: &'a mut F,
+    first_work_refusal: &'a mut Option<E>,
+}
+
+impl<F, E> Write for DigestWriterV3<'_, F, E>
+where
+    F: FnMut(usize) -> Result<(), E>,
+{
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Err(cause) = (self.consume_work)(bytes.len()) {
+            if self.first_work_refusal.is_none() {
+                *self.first_work_refusal = Some(cause);
+            }
+            return Err(io::ErrorKind::Other.into());
+        }
+        self.hasher.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Hash the canonical source-bundle wire under caller-supplied work admission.
+///
+/// A Native caller must keep the returned Work or Encode error in exterior
+/// DATA until its highest Source finisher selects the result; this helper does
+/// not own that Source loan or its terminal error selection.
+pub fn source_bundle_digest_bytes_with_work_v3<E>(
+    bundle: &RepoMapSourceBundle,
+    consume_work: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<[u8; 32], RepoMapSourceBundleDigestWorkErrorV3<E>> {
+    consume_work(SOURCE_BUNDLE_DIGEST_DOMAIN_V2.len())
+        .map_err(RepoMapSourceBundleDigestWorkErrorV3::Work)?;
+    let mut hasher = Sha256::new();
+    hasher.update(SOURCE_BUNDLE_DIGEST_DOMAIN_V2);
+    let mut first_work_refusal = None;
+    let encoded = ciborium::ser::into_writer(
+        bundle,
+        DigestWriterV3 {
+            hasher: &mut hasher,
+            consume_work,
+            first_work_refusal: &mut first_work_refusal,
+        },
+    );
+    if let Some(cause) = first_work_refusal {
+        return Err(RepoMapSourceBundleDigestWorkErrorV3::Work(cause));
+    }
+    encoded.map_err(|source| {
+        RepoMapSourceBundleDigestWorkErrorV3::Encode(RepoMapSourceBundleDigestEncodeErrorV3 {
+            source,
+        })
+    })?;
+    Ok(hasher.finalize().into())
+}
+
+/// Compare the borrowed expected wire digest without a source-bundle Vec or
+/// output String. The Original caller must supply actual byte-work admission.
+pub fn canonical_repo_map_source_bundle_digest_matches_v2_with_work_v3<E>(
+    bundle: &RepoMapSourceBundle,
+    expected: &str,
+    consume_work: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<bool, RepoMapSourceBundleDigestWorkErrorV3<E>> {
+    let digest = source_bundle_digest_bytes_with_work_v3(bundle, consume_work)?;
+    Ok(expected.as_bytes() == format_sha256_wire_bytes_v3(&digest).as_slice())
 }
 
 impl fmt::Display for RepoMapSourceBundleDigestErrorV2 {
@@ -52,30 +152,39 @@ impl std::error::Error for RepoMapSourceBundleDigestErrorV2 {}
 pub fn canonical_repo_map_source_bundle_digest_v2(
     bundle: &RepoMapSourceBundle,
 ) -> Result<String, RepoMapSourceBundleDigestErrorV2> {
-    let mut encoded = Vec::new();
-    ciborium::ser::into_writer(bundle, &mut encoded).map_err(|error| {
-        RepoMapSourceBundleDigestErrorV2 {
-            detail: error.to_string(),
-        }
+    let digest = source_bundle_digest_bytes_with_work_v3(bundle, &mut |_| {
+        Ok::<(), core::convert::Infallible>(())
+    })
+    .map_err(|error| match error {
+        RepoMapSourceBundleDigestWorkErrorV3::Work(never) => match never {},
+        RepoMapSourceBundleDigestWorkErrorV3::Encode(cause) => RepoMapSourceBundleDigestErrorV2 {
+            detail: cause.to_string(),
+        },
     })?;
-    let mut hasher = Sha256::new();
-    hasher.update(SOURCE_BUNDLE_DIGEST_DOMAIN_V2);
-    hasher.update(encoded);
-    let digest: [u8; 32] = hasher.finalize().into();
     Ok(format_sha256_wire_v2(&digest))
+}
+
+fn format_sha256_wire_v2(digest: &[u8; 32]) -> String {
+    format_sha256_wire_bytes_v3(digest)
+        .iter()
+        .map(|byte| char::from(*byte))
+        .collect()
 }
 
 #[expect(
     clippy::indexing_slicing,
-    reason = "both indices are masked to four bits and therefore within HEX"
+    reason = "fixed 71-byte SHA-256 wire and masked hex nibbles"
 )]
-fn format_sha256_wire_v2(digest: &[u8; 32]) -> String {
+/// Format a precomputed digest as the existing fixed ASCII `sha256:` wire.
+/// Callers that retain an owned String must admit and birth its backing under
+/// their actual Output owner before copying these bytes.
+#[must_use]
+pub fn format_sha256_wire_bytes_v3(digest: &[u8; 32]) -> [u8; 71] {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut wire = String::with_capacity(71);
-    wire.push_str("sha256:");
-    for byte in digest {
-        wire.push(char::from(HEX[usize::from(byte >> 4)]));
-        wire.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    let mut wire = [0_u8; 71];
+    wire[..7].copy_from_slice(b"sha256:");
+    for (pair, byte) in wire[7..].chunks_exact_mut(2).zip(digest) {
+        pair.copy_from_slice(&[HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 0x0f)]]);
     }
     wire
 }
@@ -156,15 +265,33 @@ impl RepoMapPublishBundleRequestV2 {
 
 const PUBLISH_REQUEST_V2_FIELDS: &[&str] = &["source_bundle_digest", "bundle"];
 
+/// Borrowed projection of the existing publish request wire. The digest must
+/// be checked against `bundle` before this view is sent.
+#[derive(Clone, Copy, Debug)]
+pub struct BorrowedRepoMapPublishBundleRequestV3<'a> {
+    pub source_bundle_digest: &'a str,
+    pub bundle: &'a RepoMapSourceBundle,
+}
+
+impl Serialize for BorrowedRepoMapPublishBundleRequestV3<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("RepoMapPublishBundleRequestV2", 2)?;
+        state.serialize_field("source_bundle_digest", self.source_bundle_digest)?;
+        state.serialize_field("bundle", self.bundle)?;
+        state.end()
+    }
+}
+
 impl Serialize for RepoMapPublishBundleRequestV2 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapPublishBundleRequestV2", 2)?;
-        state.serialize_field("source_bundle_digest", &self.source_bundle_digest)?;
-        state.serialize_field("bundle", &self.bundle)?;
-        state.end()
+        BorrowedRepoMapPublishBundleRequestV3 {
+            source_bundle_digest: &self.source_bundle_digest,
+            bundle: &self.bundle,
+        }
+        .serialize(serializer)
     }
 }
 
@@ -239,6 +366,12 @@ impl RepoMapExpectedActiveV2 {
     pub const fn candidate_commitment(&self) -> CandidateCommitmentV1 {
         self.candidate_commitment
     }
+
+    /// Compare the existing wire spelling without allocating a temporary String.
+    #[must_use]
+    pub fn candidate_commitment_wire_matches_v3(&self, wire: &str) -> bool {
+        wire.as_bytes() == format_sha256_wire_bytes_v3(self.candidate_commitment.as_bytes()).as_slice()
+    }
 }
 
 const EXPECTED_ACTIVE_V2_FIELDS: &[&str] = &["epoch", "candidate_commitment"];
@@ -250,10 +383,9 @@ impl Serialize for RepoMapExpectedActiveV2 {
     {
         let mut state = serializer.serialize_struct("RepoMapExpectedActiveV2", 2)?;
         state.serialize_field("epoch", &self.epoch.get())?;
-        state.serialize_field(
-            "candidate_commitment",
-            &self.candidate_commitment.to_wire_string(),
-        )?;
+        let wire = format_sha256_wire_bytes_v3(self.candidate_commitment.as_bytes());
+        let wire = std::str::from_utf8(&wire).map_err(serde::ser::Error::custom)?;
+        state.serialize_field("candidate_commitment", wire)?;
         state.end()
     }
 }
@@ -648,79 +780,183 @@ impl Serialize for RepoMapTerminalReceiptV2 {
     }
 }
 
+struct ReceiptVisitor<P>(P);
+trait ReceiptDecodePolicy<'de> {
+    fn next_field<A: MapAccess<'de>>(&self, map: &mut A) -> Result<Option<&'static str>, A::Error>;
+    fn next_mutation<A: MapAccess<'de>>(&self, map: &mut A)
+        -> Result<RepoMapMutationAck, A::Error>;
+    fn next_text<A: MapAccess<'de>>(&self, map: &mut A) -> Result<String, A::Error>;
+}
+struct OrdinaryReceiptPolicy;
+impl<'de> ReceiptDecodePolicy<'de> for OrdinaryReceiptPolicy {
+    fn next_field<A: MapAccess<'de>>(&self, map: &mut A) -> Result<Option<&'static str>, A::Error> {
+        map.next_key::<String>()?
+            .map(|key| {
+                TERMINAL_RECEIPT_V2_FIELDS
+                    .iter()
+                    .copied()
+                    .find(|field| *field == key)
+                    .ok_or_else(|| de::Error::unknown_field(&key, TERMINAL_RECEIPT_V2_FIELDS))
+            })
+            .transpose()
+    }
+    fn next_mutation<A: MapAccess<'de>>(
+        &self,
+        map: &mut A,
+    ) -> Result<RepoMapMutationAck, A::Error> {
+        map.next_value()
+    }
+    fn next_text<A: MapAccess<'de>>(&self, map: &mut A) -> Result<String, A::Error> {
+        map.next_value()
+    }
+}
+
+struct AdmittedReceiptPolicy<'a, A: ?Sized> {
+    admission: &'a A,
+    max_text_bytes: usize,
+}
+
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> ReceiptDecodePolicy<'de>
+    for AdmittedReceiptPolicy<'_, A>
+{
+    fn next_field<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Option<&'static str>, M::Error> {
+        map.next_key_seed(KnownKeySeed(TERMINAL_RECEIPT_V2_FIELDS))
+    }
+
+    fn next_mutation<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<RepoMapMutationAck, M::Error> {
+        map.next_value_seed(RepoMapMutationAck::deserialize_seed_with_admission_v3(
+            self.admission,
+            self.max_text_bytes,
+        ))
+    }
+
+    fn next_text<M: MapAccess<'de>>(&self, map: &mut M) -> Result<String, M::Error> {
+        map.next_value_seed(AdmittedTextSeedV1::new(self.admission, self.max_text_bytes))
+    }
+}
+
+struct AdmittedReceiptSeed<'a, A: ?Sized>(AdmittedReceiptPolicy<'a, A>);
+
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> DeserializeSeed<'de>
+    for AdmittedReceiptSeed<'_, A>
+{
+    type Value = RepoMapTerminalReceiptV2;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        decoder.deserialize_struct(
+            "RepoMapTerminalReceiptV2",
+            TERMINAL_RECEIPT_V2_FIELDS,
+            ReceiptVisitor(self.0),
+        )
+    }
+}
+
+impl RepoMapTerminalReceiptV2 {
+    pub fn deserialize_seed_with_admission_v3<'a, A: SourceIdentityDecodeAdmissionV1 + ?Sized>(
+        admission: &'a A,
+        max_text_bytes: usize,
+    ) -> impl for<'de> DeserializeSeed<'de, Value = Self> + 'a {
+        AdmittedReceiptSeed(AdmittedReceiptPolicy {
+            admission,
+            max_text_bytes,
+        })
+    }
+}
+impl<'de, P: ReceiptDecodePolicy<'de>> Visitor<'de> for ReceiptVisitor<P> {
+    type Value = RepoMapTerminalReceiptV2;
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RepoMapTerminalReceiptV2 map")
+    }
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let (
+            mut phase,
+            mut mutation,
+            mut manifest_digest,
+            mut snapshot_id,
+            mut projection_version,
+            mut authority_digest,
+            mut source_bundle_digest,
+        ) = (None, None, None, None, None, None, None);
+        while let Some(key) = self.0.next_field(&mut map)? {
+            macro_rules! read_once {
+                ($slot:ident, $field:literal) => {{
+                    if $slot.is_some() {
+                        return Err(de::Error::duplicate_field($field));
+                    }
+                    $slot = Some(map.next_value()?);
+                }};
+            }
+            match key {
+                "phase" => read_once!(phase, "phase"),
+                "mutation" => {
+                    if mutation.is_some() {
+                        return Err(de::Error::duplicate_field("mutation"));
+                    }
+                    mutation = Some(self.0.next_mutation(&mut map)?);
+                }
+                "manifest_digest" => {
+                    if manifest_digest.is_some() {
+                        return Err(de::Error::duplicate_field("manifest_digest"));
+                    }
+                    manifest_digest = Some(self.0.next_text(&mut map)?);
+                }
+                "snapshot_id" => {
+                    if snapshot_id.is_some() {
+                        return Err(de::Error::duplicate_field("snapshot_id"));
+                    }
+                    snapshot_id = Some(self.0.next_text(&mut map)?);
+                }
+                "projection_version" => {
+                    read_once!(projection_version, "projection_version");
+                }
+                "authority_digest" => {
+                    if authority_digest.is_some() {
+                        return Err(de::Error::duplicate_field("authority_digest"));
+                    }
+                    authority_digest = Some(self.0.next_text(&mut map)?);
+                }
+                "source_bundle_digest" => {
+                    if source_bundle_digest.is_some() {
+                        return Err(de::Error::duplicate_field("source_bundle_digest"));
+                    }
+                    source_bundle_digest = Some(self.0.next_text(&mut map)?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(other, TERMINAL_RECEIPT_V2_FIELDS));
+                }
+            }
+        }
+        Ok(RepoMapTerminalReceiptV2 {
+            phase: phase.ok_or_else(|| de::Error::missing_field("phase"))?,
+            mutation: mutation.ok_or_else(|| de::Error::missing_field("mutation"))?,
+            manifest_digest: manifest_digest
+                .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
+            snapshot_id: snapshot_id.ok_or_else(|| de::Error::missing_field("snapshot_id"))?,
+            projection_version: projection_version
+                .ok_or_else(|| de::Error::missing_field("projection_version"))?,
+            authority_digest: authority_digest
+                .ok_or_else(|| de::Error::missing_field("authority_digest"))?,
+            source_bundle_digest: source_bundle_digest
+                .ok_or_else(|| de::Error::missing_field("source_bundle_digest"))?,
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for RepoMapTerminalReceiptV2 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        struct ReceiptVisitor;
-        impl<'de> Visitor<'de> for ReceiptVisitor {
-            type Value = RepoMapTerminalReceiptV2;
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a RepoMapTerminalReceiptV2 map")
-            }
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let (
-                    mut phase,
-                    mut mutation,
-                    mut manifest_digest,
-                    mut snapshot_id,
-                    mut projection_version,
-                    mut authority_digest,
-                    mut source_bundle_digest,
-                ) = (None, None, None, None, None, None, None);
-                while let Some(key) = map.next_key::<String>()? {
-                    macro_rules! read_once {
-                        ($slot:ident, $field:literal) => {{
-                            if $slot.is_some() {
-                                return Err(de::Error::duplicate_field($field));
-                            }
-                            $slot = Some(map.next_value()?);
-                        }};
-                    }
-                    match key.as_str() {
-                        "phase" => read_once!(phase, "phase"),
-                        "mutation" => read_once!(mutation, "mutation"),
-                        "manifest_digest" => read_once!(manifest_digest, "manifest_digest"),
-                        "snapshot_id" => read_once!(snapshot_id, "snapshot_id"),
-                        "projection_version" => {
-                            read_once!(projection_version, "projection_version");
-                        }
-                        "authority_digest" => read_once!(authority_digest, "authority_digest"),
-                        "source_bundle_digest" => {
-                            read_once!(source_bundle_digest, "source_bundle_digest");
-                        }
-                        other => {
-                            return Err(de::Error::unknown_field(
-                                other,
-                                TERMINAL_RECEIPT_V2_FIELDS,
-                            ));
-                        }
-                    }
-                }
-                Ok(RepoMapTerminalReceiptV2 {
-                    phase: phase.ok_or_else(|| de::Error::missing_field("phase"))?,
-                    mutation: mutation.ok_or_else(|| de::Error::missing_field("mutation"))?,
-                    manifest_digest: manifest_digest
-                        .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
-                    snapshot_id: snapshot_id
-                        .ok_or_else(|| de::Error::missing_field("snapshot_id"))?,
-                    projection_version: projection_version
-                        .ok_or_else(|| de::Error::missing_field("projection_version"))?,
-                    authority_digest: authority_digest
-                        .ok_or_else(|| de::Error::missing_field("authority_digest"))?,
-                    source_bundle_digest: source_bundle_digest
-                        .ok_or_else(|| de::Error::missing_field("source_bundle_digest"))?,
-                })
-            }
-        }
         deserializer.deserialize_struct(
             "RepoMapTerminalReceiptV2",
             TERMINAL_RECEIPT_V2_FIELDS,
-            ReceiptVisitor,
+            ReceiptVisitor(OrdinaryReceiptPolicy),
         )
     }
 }
@@ -755,6 +991,42 @@ mod tests {
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             line_count: 17,
         }))
+    }
+
+    #[test]
+    fn borrowed_publish_and_activation_preserve_existing_cbor_wire() {
+        let bundle = bundle_fixture_v2();
+        let publish = RepoMapPublishBundleRequestV2::new(bundle.clone()).expect("bundle digest");
+        let activation = RepoMapActivateGenerationRequestV2::for_bundle(&bundle)
+            .expect("activation digest");
+        let borrowed_publish = BorrowedRepoMapPublishBundleRequestV3 {
+            source_bundle_digest: &publish.source_bundle_digest,
+            bundle: &bundle,
+        };
+        let mut owned = Vec::new();
+        let mut borrowed = Vec::new();
+        ciborium::ser::into_writer(&publish, &mut owned).expect("owned publish wire");
+        ciborium::ser::into_writer(&borrowed_publish, &mut borrowed)
+            .expect("borrowed publish wire");
+        assert_eq!(owned, borrowed);
+
+        let absent = crate::DiagnosticAttemptFieldV1::Absent;
+        let owned_control = crate::SearchPlaneControlIpcRequestEnvelope {
+            request_id: 41,
+            payload: crate::SearchPlaneControlIpcRequest::RepoMapActivateV2(activation.clone()),
+            diagnostic_attempt: absent,
+        };
+        let borrowed_control = crate::BorrowedRepoMapActivateControlIpcRequestEnvelopeV3 {
+            request_id: 41,
+            payload: crate::BorrowedRepoMapActivateControlIpcRequestV3(&activation),
+            diagnostic_attempt: absent,
+        };
+        owned.clear();
+        borrowed.clear();
+        ciborium::ser::into_writer(&owned_control, &mut owned).expect("owned control wire");
+        ciborium::ser::into_writer(&borrowed_control, &mut borrowed)
+            .expect("borrowed control wire");
+        assert_eq!(owned, borrowed);
     }
 
     #[test]
@@ -882,6 +1154,64 @@ mod tests {
     }
 
     #[test]
+    fn streaming_bundle_digest_preserves_wire_and_reports_actual_work() {
+        let bundle = bundle_fixture_v2();
+        let mut canonical = Vec::new();
+        ciborium::ser::into_writer(&bundle, &mut canonical).expect("independent legacy encoding");
+        let mut expected_hasher = Sha256::new();
+        expected_hasher.update(SOURCE_BUNDLE_DIGEST_DOMAIN_V2);
+        expected_hasher.update(&canonical);
+        let independent_raw: [u8; 32] = expected_hasher.finalize().into();
+        let expected = format_sha256_wire_v2(&independent_raw);
+        let raw = source_bundle_digest_bytes_with_work_v3(&bundle, &mut |_| Ok::<(), ()>(()))
+            .expect("paid raw digest");
+        assert_eq!(raw, independent_raw);
+        assert_eq!(format_sha256_wire_bytes_v3(&[0; 32]), {
+            let mut fixed = [b'0'; 71];
+            fixed[..7].copy_from_slice(b"sha256:");
+            fixed
+        });
+        let mut charged = 0_usize;
+        assert!(
+            canonical_repo_map_source_bundle_digest_matches_v2_with_work_v3(
+                &bundle,
+                &expected,
+                &mut |count| {
+                    charged += count;
+                    Ok::<(), ()>(())
+                },
+            )
+            .expect("streaming commitment")
+        );
+        assert_eq!(
+            charged,
+            SOURCE_BUNDLE_DIGEST_DOMAIN_V2.len() + canonical.len()
+        );
+        assert_eq!(
+            canonical_repo_map_source_bundle_digest_v2(&bundle).expect("ordinary digest"),
+            expected
+        );
+
+        let refused = canonical_repo_map_source_bundle_digest_matches_v2_with_work_v3(
+            &bundle,
+            &expected,
+            &mut |_count| Err::<(), _>("work-refused"),
+        );
+        assert!(matches!(
+            refused,
+            Err(RepoMapSourceBundleDigestWorkErrorV3::Work("work-refused"))
+        ));
+        assert!(matches!(
+            source_bundle_digest_bytes_with_work_v3(&bundle, &mut |_| {
+                Err::<(), _>("raw-work-refused")
+            }),
+            Err(RepoMapSourceBundleDigestWorkErrorV3::Work(
+                "raw-work-refused"
+            ))
+        ));
+    }
+
+    #[test]
     fn publish_request_refuses_duplicate_or_unknown_fields_v2() {
         let duplicate_v2 = serde_json::from_str::<RepoMapPublishBundleRequestV2>(
             r#"{"source_bundle_digest":"a","source_bundle_digest":"b"}"#,
@@ -895,3 +1225,7 @@ mod tests {
         assert!(unknown_v2.to_string().contains("unknown field"));
     }
 }
+
+#[cfg(test)]
+#[path = "terminal_receipt_v2/admitted_tests_v3.rs"]
+mod admitted_tests_v3;

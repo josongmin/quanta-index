@@ -1,0 +1,1292 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The Lance Authors
+
+use std::sync::Arc;
+
+use futures::{FutureExt, TryStreamExt};
+use lance_core::{
+    Error, Result,
+    utils::mask::{RowAddrTreeMap, RowSetOps},
+};
+use lance_index::{
+    INDEX_FILE_NAME, IndexType,
+    metrics::NoOpMetricsCollector,
+    optimize::OptimizeOptions,
+    progress::NoopIndexBuildProgress,
+    scalar::{
+        CreatedIndex, OldIndexDataFilter, inverted::InvertedIndex, lance_format::LanceIndexStore,
+    },
+};
+use lance_table::format::{Fragment, IndexMetadata, list_index_files_with_sizes};
+use roaring::RoaringBitmap;
+use uuid::Uuid;
+
+use super::DatasetIndexInternalExt;
+use super::vector::LogicalVectorIndex;
+use super::vector::ivf::{optimize_vector_indices, select_segment_for_single_rebalance};
+use crate::dataset::Dataset;
+use crate::dataset::index::LanceIndexStoreExt;
+use crate::dataset::rowids::load_row_id_sequences;
+use crate::index::scalar::load_training_data;
+use crate::index::vector_index_details_default;
+
+#[derive(Debug, Clone)]
+pub struct IndexMergeResults<'a> {
+    pub new_uuid: Uuid,
+    pub removed_indices: Vec<&'a IndexMetadata>,
+    pub new_fragment_bitmap: RoaringBitmap,
+    pub new_index_version: i32,
+    pub new_index_details: prost_types::Any,
+    /// List of files and their sizes for the merged index
+    pub files: Option<Vec<lance_table::format::IndexFile>>,
+}
+
+async fn build_stable_row_id_filter(
+    dataset: &Dataset,
+    effective_old_frags: &RoaringBitmap,
+) -> Result<RowAddrTreeMap> {
+    // For stable row IDs we cannot derive fragment ownership from row_id bits.
+    // Instead, we:
+    // 1) keep only fragments still considered "effective" for the old index, and
+    // 2) load their persisted row-id sequences from dataset metadata, then
+    // 3) build one exact allow-list used to retain only still-valid old rows.
+    let retained_frags = dataset
+        .manifest
+        .fragments
+        .iter()
+        .filter(|frag| effective_old_frags.contains(frag.id as u32))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if retained_frags.is_empty() {
+        return Ok(RowAddrTreeMap::new());
+    }
+
+    let row_id_sequences = load_row_id_sequences(dataset, &retained_frags)
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    let row_id_maps = row_id_sequences
+        .iter()
+        .map(|(_, seq)| RowAddrTreeMap::from(seq.as_ref()))
+        .collect::<Vec<_>>();
+    let row_id_map_refs = row_id_maps.iter().collect::<Vec<_>>();
+
+    // Merge all fragment-local row-id sets into one exact membership structure.
+    Ok(<RowAddrTreeMap as RowSetOps>::union_all(&row_id_map_refs))
+}
+
+async fn metadata_is_vector_index(dataset: &Dataset, index: &IndexMetadata) -> Result<bool> {
+    if let Some(files) = &index.files {
+        return Ok(files.iter().any(|file| file.path == INDEX_FILE_NAME));
+    }
+
+    let index_dir = dataset.indice_files_dir(index)?;
+    let index_file = index_dir
+        .clone()
+        .join(index.uuid.to_string())
+        .join(INDEX_FILE_NAME);
+    let object_store = dataset.object_store_for_index(index).await?;
+    object_store.exists(&index_file).await
+}
+
+/// Merge in-inflight unindexed data, with a specific number of previous indices
+/// into a new index, to improve the query performance.
+///
+/// The merge behavior is controlled by [`OptimizeOptions::num_indices_to_merge].
+///
+/// Returns
+/// -------
+/// - the UUID of the new index
+/// - merged indices,
+/// - Bitmap of the fragments that covered in the newly created index.
+pub async fn merge_indices<'a>(
+    dataset: Arc<Dataset>,
+    old_indices: &[&'a IndexMetadata],
+    options: &OptimizeOptions,
+) -> Result<Option<IndexMergeResults<'a>>> {
+    if old_indices.is_empty() {
+        return Err(Error::index(
+            "Append index: no previous index found".to_string(),
+        ));
+    };
+
+    let unindexed = dataset.unindexed_fragments(&old_indices[0].name).await?;
+    Box::pin(merge_indices_with_unindexed_frags(
+        dataset,
+        old_indices,
+        &unindexed,
+        options,
+    ))
+    .await
+}
+
+/// Merge a list of provided unindexed data, with a specific number of previous indices
+/// into a new index, to improve the query performance.
+pub async fn merge_indices_with_unindexed_frags<'a>(
+    dataset: Arc<Dataset>,
+    old_indices: &[&'a IndexMetadata],
+    unindexed: &[Fragment],
+    options: &OptimizeOptions,
+) -> Result<Option<IndexMergeResults<'a>>> {
+    if old_indices.is_empty() {
+        return Err(Error::index(
+            "Append index: no previous index found".to_string(),
+        ));
+    };
+
+    let column = dataset
+        .schema()
+        .field_by_id(old_indices[0].fields[0])
+        .ok_or(Error::index(format!(
+            "Append index: column {} does not exist",
+            old_indices[0].fields[0]
+        )))?;
+
+    let field_path = dataset.schema().field_path(old_indices[0].fields[0])?;
+    let first_is_vector_index = metadata_is_vector_index(dataset.as_ref(), old_indices[0]).await?;
+    for idx in old_indices.iter().skip(1) {
+        let is_vector_index = metadata_is_vector_index(dataset.as_ref(), idx).await?;
+        if is_vector_index != first_is_vector_index {
+            return Err(Error::index(format!(
+                "Append index: invalid mixed index deltas: {:?}",
+                old_indices
+            )));
+        }
+    }
+
+    let mut base_unindexed_bitmap = RoaringBitmap::new();
+    unindexed.iter().for_each(|frag| {
+        base_unindexed_bitmap.insert(frag.id as u32);
+    });
+
+    let (new_uuid, removed_indices, new_fragment_bitmap, created_index) = if first_is_vector_index {
+        let full_logical_index = dataset
+            .open_logical_vector_index(&field_path, &old_indices[0].name)
+            .await?;
+        let mut opened_indices_by_uuid = full_logical_index
+            .iter()
+            .map(|(metadata, index)| (metadata.uuid, (metadata.clone(), index.clone())))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut selected_metadatas = Vec::with_capacity(old_indices.len());
+        let mut selected_indices = Vec::with_capacity(old_indices.len());
+        for metadata in old_indices {
+            let (selected_metadata, selected_index) = opened_indices_by_uuid.remove(&metadata.uuid).ok_or_else(|| {
+                Error::index(format!(
+                    "Append index: logical vector index '{}' does not contain requested segment {}",
+                    old_indices[0].name, metadata.uuid
+                ))
+            })?;
+            selected_metadatas.push(selected_metadata);
+            selected_indices.push(selected_index);
+        }
+        let logical_index = LogicalVectorIndex::try_new(
+            old_indices[0].name.clone(),
+            field_path.clone(),
+            selected_metadatas
+                .into_iter()
+                .zip(selected_indices)
+                .collect(),
+        )?;
+        let ivf_view = logical_index.as_ivf()?;
+
+        // Specialized vector no-op: when there is no new data and the caller
+        // hasn't asked for retrain or an explicit delta merge, the only useful
+        // work is rebalancing. Bail when no segment needs rebalancing so
+        // repeated optimize calls don't keep rewriting the same index. This
+        // matches the scalar gate in `Dataset::optimize_indices`, which also
+        // treats `OptimizeOptions::append()` (num_indices_to_merge=Some(0))
+        // as "no explicit merge requested".
+        if unindexed.is_empty()
+            && !options.retrain
+            && options.num_indices_to_merge.is_none_or(|n| n == 0)
+            && select_segment_for_single_rebalance(&ivf_view)?.is_none()
+        {
+            return Ok(None);
+        }
+
+        let use_single_segment_rebalance = logical_index.num_segments() > 1
+            && options.num_indices_to_merge.is_none_or(|n| n == 0)
+            && !options.retrain
+            && unindexed.is_empty();
+
+        if use_single_segment_rebalance {
+            let Some(selected_segment_id) = select_segment_for_single_rebalance(&ivf_view)? else {
+                return Ok(None);
+            };
+            let removed_segment = old_indices
+                .iter()
+                .copied()
+                .find(|metadata| metadata.uuid == selected_segment_id)
+                .ok_or_else(|| {
+                    Error::index(format!(
+                        "Append index: logical vector index '{}' does not contain selected segment {}",
+                        old_indices[0].name, selected_segment_id
+                    ))
+                })?;
+            let (selected_metadata, selected_index) = logical_index
+                .iter()
+                .find(|(metadata, _)| metadata.uuid == selected_segment_id)
+                .map(|(metadata, index)| (metadata.clone(), index.clone()))
+                .ok_or_else(|| {
+                    Error::index(format!(
+                        "Append index: failed to materialize selected segment {} from logical vector index '{}'",
+                        selected_segment_id, old_indices[0].name
+                    ))
+                })?;
+            let selected_logical_index = LogicalVectorIndex::try_new(
+                old_indices[0].name.clone(),
+                field_path.clone(),
+                vec![(selected_metadata, selected_index)],
+            )?;
+            let selected_ivf_view = selected_logical_index.as_ivf()?;
+            let (new_uuid, indices_merged) = Box::pin(optimize_vector_indices(
+                dataset.as_ref().clone(),
+                Option::<
+                    lance_io::stream::RecordBatchStreamAdapter<
+                        futures::stream::Empty<lance_core::Result<arrow_array::RecordBatch>>,
+                    >,
+                >::None,
+                &field_path,
+                &selected_ivf_view,
+                options,
+            ))
+            .await?;
+            if indices_merged == 0 {
+                return Ok(None);
+            }
+
+            let index_dir = dataset.indices_dir().join(new_uuid.to_string());
+            let files = list_index_files_with_sizes(&dataset.object_store, &index_dir).await?;
+            let new_fragment_bitmap = removed_segment
+                .effective_fragment_bitmap(&dataset.fragment_bitmap)
+                .or_else(|| removed_segment.fragment_bitmap.clone())
+                .unwrap_or_default();
+
+            Ok((
+                new_uuid,
+                vec![removed_segment],
+                new_fragment_bitmap,
+                CreatedIndex {
+                    index_details: vector_index_details_default(),
+                    index_version: lance_index::IndexType::Vector.version() as u32,
+                    files: Some(files),
+                },
+            ))
+        } else {
+            let mut frag_bitmap = base_unindexed_bitmap.clone();
+
+            let new_data_stream = if unindexed.is_empty() {
+                None
+            } else {
+                let mut scanner = dataset.scan();
+                scanner
+                    .with_fragments(unindexed.to_vec())
+                    .with_row_id()
+                    .project(&[&field_path])?;
+                if column.nullable {
+                    let column_expr =
+                        lance_datafusion::logical_expr::field_path_to_expr(&field_path)?;
+                    scanner.filter_expr(column_expr.is_not_null());
+                }
+                Some(scanner.try_into_stream().await?)
+            };
+
+            let (new_uuid, indices_merged) = optimize_vector_indices(
+                dataset.as_ref().clone(),
+                new_data_stream,
+                &field_path,
+                &ivf_view,
+                options,
+            )
+            .boxed()
+            .await?;
+
+            let removed_indices = old_indices[old_indices.len() - indices_merged..].to_vec();
+            removed_indices.iter().for_each(|idx| {
+                frag_bitmap.extend(idx.fragment_bitmap.as_ref().unwrap().iter());
+            });
+            for removed in removed_indices.iter() {
+                if let Some(effective) = removed.effective_fragment_bitmap(&dataset.fragment_bitmap)
+                {
+                    frag_bitmap |= &effective;
+                }
+            }
+
+            // Carry forward existing index details, preferring the first segment
+            // that has populated (non-empty) details.
+            let index_details = old_indices
+                .iter()
+                .rev()
+                .filter_map(|idx| idx.index_details.as_ref())
+                .find(|d| !d.value.is_empty())
+                .map(|d| d.as_ref().clone())
+                .unwrap_or_else(vector_index_details_default);
+
+            let index_dir = dataset.indices_dir().join(new_uuid.to_string());
+            let files = list_index_files_with_sizes(&dataset.object_store, &index_dir).await?;
+
+            Ok((
+                new_uuid,
+                removed_indices,
+                frag_bitmap,
+                CreatedIndex {
+                    index_details,
+                    // retain_supported_indices guarantees all old_indices have
+                    // index_version <= our max supported version, so we can safely
+                    // write the current library's version for this index type.
+                    index_version: lance_index::IndexType::Vector.version() as u32,
+                    files: Some(files),
+                },
+            ))
+        }
+    } else {
+        let mut frag_bitmap = base_unindexed_bitmap.clone();
+        let mut indices = Vec::with_capacity(old_indices.len());
+        for idx in old_indices {
+            match dataset
+                .open_generic_index(&field_path, &idx.uuid.to_string(), &NoOpMetricsCollector)
+                .await
+            {
+                Ok(index) => indices.push(index),
+                Err(e) => {
+                    log::warn!(
+                        "Cannot open index on column '{}': {}. \
+                         Skipping index merge for this column.",
+                        field_path,
+                        e
+                    );
+                    return Ok(None);
+                }
+            }
+        }
+
+        if indices
+            .windows(2)
+            .any(|w| w[0].index_type() != w[1].index_type())
+        {
+            return Err(Error::index(format!(
+                "Append index: invalid index deltas: {:?}",
+                old_indices
+            )));
+        }
+
+        let index_type = indices[0].index_type();
+        match index_type {
+            IndexType::Inverted => {
+                let num_to_merge = options
+                    .num_indices_to_merge
+                    .unwrap_or(1)
+                    .min(old_indices.len());
+                if unindexed.is_empty() && num_to_merge <= 1 {
+                    return Ok(None);
+                }
+
+                let selected_start = old_indices.len().saturating_sub(num_to_merge);
+                let selected_old_indices = &old_indices[selected_start..];
+                let reference_idx = selected_old_indices
+                    .first()
+                    .copied()
+                    .unwrap_or(old_indices[old_indices.len() - 1]);
+                let reference_index = dataset
+                    .open_scalar_index(
+                        &field_path,
+                        &reference_idx.uuid.to_string(),
+                        &NoOpMetricsCollector,
+                    )
+                    .await?;
+                let update_criteria = reference_index.update_criteria();
+                if update_criteria.requires_old_data {
+                    let params = reference_index.derive_index_params()?;
+                    let new_data_stream = load_training_data(
+                        dataset.as_ref(),
+                        &field_path,
+                        &update_criteria.data_criteria,
+                        None,
+                        true,
+                        None,
+                    )
+                    .await?;
+                    let new_uuid = Uuid::new_v4();
+                    let created_index = super::scalar::build_scalar_index(
+                        dataset.as_ref(),
+                        column.name.as_str(),
+                        &new_uuid.to_string(),
+                        &params,
+                        true,
+                        None,
+                        Some(new_data_stream),
+                        Arc::new(NoopIndexBuildProgress),
+                    )
+                    .await?;
+                    return Ok(Some(IndexMergeResults {
+                        new_uuid,
+                        removed_indices: old_indices.to_vec(),
+                        new_fragment_bitmap: dataset.fragment_bitmap.as_ref().clone(),
+                        new_index_version: created_index.index_version as i32,
+                        new_index_details: created_index.index_details,
+                        files: created_index.files,
+                    }));
+                }
+
+                let fragments = Some(unindexed.to_vec());
+                let new_data_stream = load_training_data(
+                    dataset.as_ref(),
+                    &field_path,
+                    &update_criteria.data_criteria,
+                    fragments,
+                    true,
+                    None,
+                )
+                .await?;
+
+                let mut frag_bitmap = base_unindexed_bitmap;
+                let mut effective_old_frags = RoaringBitmap::new();
+                let mut selected_indices = Vec::with_capacity(selected_old_indices.len());
+                for idx in selected_old_indices {
+                    if let Some(effective) = idx.effective_fragment_bitmap(&dataset.fragment_bitmap)
+                    {
+                        frag_bitmap |= &effective;
+                        effective_old_frags |= &effective;
+                    }
+                    let scalar_index = dataset
+                        .open_scalar_index(
+                            &field_path,
+                            &idx.uuid.to_string(),
+                            &NoOpMetricsCollector,
+                        )
+                        .await?;
+                    let inverted_index = scalar_index
+                        .as_any()
+                        .downcast_ref::<InvertedIndex>()
+                        .ok_or_else(|| {
+                            Error::index(format!(
+                                "Append index: expected inverted index segment {}, got {:?}",
+                                idx.uuid,
+                                scalar_index.index_type()
+                            ))
+                        })?;
+                    selected_indices.push(Arc::new(inverted_index.clone()));
+                }
+
+                let old_data_filter = if selected_indices.is_empty() {
+                    None
+                } else if dataset.manifest.uses_stable_row_ids() {
+                    let valid_old_row_ids =
+                        build_stable_row_id_filter(dataset.as_ref(), &effective_old_frags).await?;
+                    Some(OldIndexDataFilter::RowIds(valid_old_row_ids))
+                } else {
+                    Some(OldIndexDataFilter::Fragments {
+                        to_keep: effective_old_frags,
+                        to_remove: RoaringBitmap::new(),
+                    })
+                };
+
+                let new_uuid = Uuid::new_v4();
+                let new_store =
+                    LanceIndexStore::from_dataset_for_new(&dataset, &new_uuid.to_string())?;
+                let created_index = if selected_indices.is_empty() {
+                    let params = reference_index.derive_index_params()?;
+                    super::scalar::build_scalar_index(
+                        dataset.as_ref(),
+                        column.name.as_str(),
+                        &new_uuid.to_string(),
+                        &params,
+                        true,
+                        None,
+                        Some(new_data_stream),
+                        Arc::new(NoopIndexBuildProgress),
+                    )
+                    .await?
+                } else {
+                    InvertedIndex::merge_segments(
+                        &selected_indices,
+                        new_data_stream,
+                        &new_store,
+                        old_data_filter,
+                        options.progress.clone(),
+                    )
+                    .await?
+                };
+
+                Ok((
+                    new_uuid,
+                    selected_old_indices.to_vec(),
+                    frag_bitmap,
+                    created_index,
+                ))
+            }
+            it if it.is_scalar() => {
+                // Use effective bitmap (intersected with existing dataset fragments)
+                // to avoid carrying stale data from pruned indices.
+                let effective_old_frags: RoaringBitmap = old_indices
+                    .iter()
+                    .filter_map(|idx| idx.effective_fragment_bitmap(&dataset.fragment_bitmap))
+                    .fold(RoaringBitmap::new(), |mut acc, b| {
+                        acc |= &b;
+                        acc
+                    });
+                let deleted_old_frags: RoaringBitmap = old_indices
+                    .iter()
+                    .filter_map(|idx| idx.deleted_fragment_bitmap(&dataset.fragment_bitmap))
+                    .fold(RoaringBitmap::new(), |mut acc, b| {
+                        acc |= &b;
+                        acc
+                    });
+                frag_bitmap |= &effective_old_frags;
+
+                let index = dataset
+                    .open_scalar_index(
+                        &field_path,
+                        &old_indices[0].uuid.to_string(),
+                        &NoOpMetricsCollector,
+                    )
+                    .await?;
+
+                let update_criteria = index.update_criteria();
+
+                let fragments = if update_criteria.requires_old_data {
+                    None
+                } else {
+                    Some(unindexed.to_vec())
+                };
+                let new_data_stream = load_training_data(
+                    dataset.as_ref(),
+                    &field_path,
+                    &update_criteria.data_criteria,
+                    fragments,
+                    true,
+                    None,
+                )
+                .await?;
+
+                let new_uuid = Uuid::new_v4();
+
+                let created_index = if effective_old_frags.is_empty() {
+                    // Old data is fully stale (bitmap pruned to empty). Rebuild
+                    // from scratch instead of merging stale entries.
+                    let params = index.derive_index_params()?;
+                    super::scalar::build_scalar_index(
+                        dataset.as_ref(),
+                        column.name.as_str(),
+                        &new_uuid.to_string(),
+                        &params,
+                        true,
+                        None,
+                        Some(new_data_stream),
+                        Arc::new(NoopIndexBuildProgress),
+                    )
+                    .await?
+                } else {
+                    let new_store =
+                        LanceIndexStore::from_dataset_for_new(&dataset, &new_uuid.to_string())?;
+                    let old_data_filter = if dataset.manifest.uses_stable_row_ids() {
+                        // Stable row IDs are opaque IDs, so fragment-bit filtering on
+                        // (row_id >> 32) is invalid. Build an exact allow-list from retained
+                        // fragments' row-id sequences and use precise filtering.
+                        let valid_old_row_ids =
+                            build_stable_row_id_filter(dataset.as_ref(), &effective_old_frags)
+                                .await?;
+                        Some(OldIndexDataFilter::RowIds(valid_old_row_ids))
+                    } else {
+                        // Address-style row IDs encode fragment_id in high 32 bits.
+                        // Fragment bitmap filtering is valid and cheaper in this mode.
+                        Some(OldIndexDataFilter::Fragments {
+                            to_keep: effective_old_frags,
+                            to_remove: deleted_old_frags,
+                        })
+                    };
+                    index
+                        .update(new_data_stream, &new_store, old_data_filter)
+                        .await?
+                };
+
+                // TODO: don't hard-code index version
+                Ok((
+                    new_uuid,
+                    vec![old_indices[old_indices.len() - 1]],
+                    frag_bitmap,
+                    created_index,
+                ))
+            }
+            _ => Err(Error::index(format!(
+                "Append index: invalid index type: {:?}",
+                indices[0].index_type()
+            ))),
+        }
+    }?;
+
+    Ok(Some(IndexMergeResults {
+        new_uuid,
+        removed_indices,
+        new_fragment_bitmap,
+        new_index_version: created_index.index_version as i32,
+        new_index_details: created_index.index_details,
+        files: created_index.files,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::index::DatasetIndexExt;
+    use crate::index::DatasetIndexInternalExt;
+    use arrow::datatypes::{Float32Type, UInt32Type};
+    use arrow_array::cast::AsArray;
+    use arrow_array::{
+        FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray, UInt32Array,
+    };
+    use arrow_schema::{DataType, Field, Schema};
+    use futures::TryStreamExt;
+    use lance_arrow::FixedSizeListArrayExt;
+    use lance_core::utils::tempfile::TempStrDir;
+    use lance_datafusion::utils::reader_to_stream;
+    use lance_datagen::{Dimension, RowCount, array};
+    use lance_index::vector::hnsw::builder::HnswBuildParams;
+    use lance_index::vector::sq::builder::SQBuildParams;
+    use lance_index::{
+        IndexType,
+        scalar::ScalarIndexParams,
+        vector::{ivf::IvfBuildParams, pq::PQBuildParams},
+    };
+    use lance_linalg::distance::MetricType;
+    use lance_testing::datagen::generate_random_array;
+    use rstest::rstest;
+
+    use crate::dataset::builder::DatasetBuilder;
+    use crate::dataset::optimize::compact_files;
+    use crate::dataset::{MergeInsertBuilder, WhenMatched, WhenNotMatched, WriteParams};
+    use crate::index::vector::VectorIndexParams;
+    use crate::utils::test::{DatagenExt, FragmentCount, FragmentRowCount};
+
+    #[tokio::test]
+    async fn test_append_index() {
+        const DIM: usize = 64;
+        const IVF_PARTITIONS: usize = 2;
+
+        let test_dir = TempStrDir::default();
+        let test_uri = test_dir.as_str();
+
+        let vectors = generate_random_array(1000 * DIM);
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            true,
+        )]));
+        let array = Arc::new(FixedSizeListArray::try_new_from_values(vectors, DIM as i32).unwrap());
+        let batch = RecordBatch::try_new(schema.clone(), vec![array.clone()]).unwrap();
+
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema.clone());
+        let mut dataset = Dataset::write(batches, test_uri, None).await.unwrap();
+
+        let ivf_params = IvfBuildParams::new(IVF_PARTITIONS);
+        let pq_params = PQBuildParams {
+            num_sub_vectors: 2,
+            ..Default::default()
+        };
+        let params = VectorIndexParams::with_ivf_pq_params(MetricType::L2, ivf_params, pq_params);
+
+        dataset
+            .create_index(&["vector"], IndexType::Vector, None, &params, true)
+            .await
+            .unwrap();
+
+        let vectors = generate_random_array(1000 * DIM);
+        let array = Arc::new(FixedSizeListArray::try_new_from_values(vectors, DIM as i32).unwrap());
+        let batch = RecordBatch::try_new(schema.clone(), vec![array.clone()]).unwrap();
+
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema.clone());
+        dataset.append(batches, None).await.unwrap();
+
+        let index = &dataset.load_indices().await.unwrap()[0];
+        assert!(
+            !dataset
+                .unindexed_fragments(&index.name)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let q = array.value(5);
+        let mut scanner = dataset.scan();
+        scanner
+            .nearest("vector", q.as_primitive::<Float32Type>(), 10)
+            .unwrap();
+        let results = scanner
+            .try_into_stream()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(results[0].num_rows(), 10); // Flat search.
+
+        dataset
+            .optimize_indices(&OptimizeOptions::append())
+            .await
+            .unwrap();
+        let dataset = DatasetBuilder::from_uri(test_uri).load().await.unwrap();
+        let indices = dataset.load_indices().await.unwrap();
+
+        assert!(
+            dataset
+                .unindexed_fragments(&index.name)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // There should be two indices directories existed.
+        let object_store = dataset.object_store.as_ref();
+        let index_dirs = object_store.read_dir(dataset.indices_dir()).await.unwrap();
+        assert_eq!(index_dirs.len(), 2);
+
+        let mut scanner = dataset.scan();
+        scanner
+            .nearest("vector", q.as_primitive::<Float32Type>(), 10)
+            .unwrap();
+        let results = scanner
+            .try_into_stream()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let vectors = &results[0]["vector"];
+        // Second batch of vectors should be in the index.
+        let contained = vectors.as_fixed_size_list().iter().any(|v| {
+            let vec = v.as_ref().unwrap();
+            array.iter().any(|a| a.as_ref().unwrap() == vec)
+        });
+        assert!(contained);
+
+        // Check that the index has all 2000 rows.
+        let mut num_rows = 0;
+        for index in indices.iter() {
+            let index = dataset
+                .open_vector_index(
+                    "vector",
+                    index.uuid.to_string().as_str(),
+                    &NoOpMetricsCollector,
+                )
+                .await
+                .unwrap();
+            num_rows += index.num_rows();
+        }
+        assert_eq!(num_rows, 2000);
+    }
+
+    /// Regression: a second `OptimizeOptions::append()` call on a steady-state
+    /// vector index used to fall through to `optimize_vector_indices` and write
+    /// a new UUID directory + manifest even though nothing had changed. The
+    /// no-op gate inside `merge_indices_with_unindexed_frags` should bail out
+    /// once `select_segment_for_single_rebalance` returns `None`.
+    #[tokio::test]
+    async fn test_optimize_indices_append_is_noop_on_steady_state() {
+        const DIM: usize = 64;
+
+        let test_dir = TempStrDir::default();
+        let test_uri = test_dir.as_str();
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            true,
+        )]));
+        let make_batch = || {
+            let arr = Arc::new(
+                FixedSizeListArray::try_new_from_values(
+                    generate_random_array(1000 * DIM),
+                    DIM as i32,
+                )
+                .unwrap(),
+            );
+            RecordBatch::try_new(schema.clone(), vec![arr]).unwrap()
+        };
+
+        let batches =
+            RecordBatchIterator::new(vec![make_batch()].into_iter().map(Ok), schema.clone());
+        let mut dataset = Dataset::write(batches, test_uri, None).await.unwrap();
+
+        // num_partitions = 1 so the auto-rebalance heuristic has no join/split
+        // candidate after the initial build — keeps this test focused on the
+        // append-no-op behavior rather than the rebalance path.
+        let params = VectorIndexParams::with_ivf_pq_params(
+            MetricType::L2,
+            IvfBuildParams::new(1),
+            PQBuildParams {
+                num_sub_vectors: 2,
+                ..Default::default()
+            },
+        );
+        dataset
+            .create_index(&["vector"], IndexType::Vector, None, &params, true)
+            .await
+            .unwrap();
+
+        let batches =
+            RecordBatchIterator::new(vec![make_batch()].into_iter().map(Ok), schema.clone());
+        dataset.append(batches, None).await.unwrap();
+
+        // First append: folds the new fragment into a fresh delta segment.
+        dataset
+            .optimize_indices(&OptimizeOptions::append())
+            .await
+            .unwrap();
+        let dataset = DatasetBuilder::from_uri(test_uri).load().await.unwrap();
+        let version_before = dataset.version().version;
+        let object_store = dataset.object_store.as_ref();
+        let dirs_before = object_store
+            .read_dir(dataset.indices_dir())
+            .await
+            .unwrap()
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+
+        // Second append: nothing changed since the previous call. Must not
+        // bump the manifest version or add a new UUID directory.
+        let mut dataset = DatasetBuilder::from_uri(test_uri).load().await.unwrap();
+        dataset
+            .optimize_indices(&OptimizeOptions::append())
+            .await
+            .unwrap();
+        let dataset = DatasetBuilder::from_uri(test_uri).load().await.unwrap();
+        let dirs_after = object_store
+            .read_dir(dataset.indices_dir())
+            .await
+            .unwrap()
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(
+            dataset.version().version,
+            version_before,
+            "second optimize_indices(append()) bumped the dataset version"
+        );
+        assert_eq!(
+            dirs_after, dirs_before,
+            "second optimize_indices(append()) created a new index directory"
+        );
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_query_delta_indices(
+        #[values(
+            VectorIndexParams::ivf_pq(2, 8, 4, MetricType::L2, 2),
+            VectorIndexParams::with_ivf_hnsw_sq_params(
+                MetricType::L2,
+                IvfBuildParams::new(2),
+                HnswBuildParams::default(),
+                SQBuildParams::default()
+            )
+        )]
+        index_params: VectorIndexParams,
+    ) {
+        const DIM: usize = 64;
+        const TOTAL: usize = 1000;
+
+        let test_dir = TempStrDir::default();
+        let test_uri = test_dir.as_str();
+
+        let vectors = generate_random_array(TOTAL * DIM);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    DIM as i32,
+                ),
+                true,
+            ),
+            Field::new("id", DataType::UInt32, false),
+        ]));
+        let array = Arc::new(FixedSizeListArray::try_new_from_values(vectors, DIM as i32).unwrap());
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                array.clone(),
+                Arc::new(UInt32Array::from_iter_values(0..TOTAL as u32)),
+            ],
+        )
+        .unwrap();
+
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema.clone());
+        let mut dataset = Dataset::write(batches, test_uri, None).await.unwrap();
+        dataset
+            .create_index(&["vector"], IndexType::Vector, None, &index_params, true)
+            .await
+            .unwrap();
+        let stats: serde_json::Value =
+            serde_json::from_str(&dataset.index_statistics("vector_idx").await.unwrap()).unwrap();
+        assert_eq!(stats["num_indices"], 1);
+        assert_eq!(stats["num_indexed_fragments"], 1);
+        assert_eq!(stats["num_unindexed_fragments"], 0);
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                array.clone(),
+                Arc::new(UInt32Array::from_iter_values(
+                    TOTAL as u32..(TOTAL * 2) as u32,
+                )),
+            ],
+        )
+        .unwrap();
+
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema.clone());
+        dataset.append(batches, None).await.unwrap();
+        let stats: serde_json::Value =
+            serde_json::from_str(&dataset.index_statistics("vector_idx").await.unwrap()).unwrap();
+        assert_eq!(stats["num_indices"], 1);
+        assert_eq!(stats["num_indexed_fragments"], 1);
+        assert_eq!(stats["num_unindexed_fragments"], 1);
+
+        dataset
+            .optimize_indices(&OptimizeOptions::append())
+            .await
+            .unwrap();
+        let dataset = DatasetBuilder::from_uri(test_uri).load().await.unwrap();
+        let stats: serde_json::Value =
+            serde_json::from_str(&dataset.index_statistics("vector_idx").await.unwrap()).unwrap();
+        assert_eq!(stats["num_indices"], 2);
+        assert_eq!(stats["num_indexed_fragments"], 2);
+        assert_eq!(stats["num_unindexed_fragments"], 0);
+        let logical_index = dataset
+            .open_logical_vector_index("vector", "vector_idx")
+            .await
+            .unwrap();
+        assert_eq!(logical_index.num_segments(), 2);
+        assert_eq!(
+            logical_index
+                .num_rows_per_segment()
+                .into_iter()
+                .map(|(_, num_rows)| num_rows)
+                .sum::<u64>(),
+            2000
+        );
+
+        let results = dataset
+            .scan()
+            .project(&["id"])
+            .unwrap()
+            .nearest("vector", array.value(0).as_primitive::<Float32Type>(), 2)
+            .unwrap()
+            .refine(1)
+            .try_into_batch()
+            .await
+            .unwrap();
+        assert_eq!(results.num_rows(), 2);
+        let mut id_arr = results["id"].as_primitive::<UInt32Type>().values().to_vec();
+        id_arr.sort();
+        assert_eq!(id_arr, vec![0, 1000]);
+    }
+
+    #[tokio::test]
+    async fn test_merge_indices_after_merge_insert() {
+        let test_dir = TempStrDir::default();
+        let test_uri = test_dir.as_str();
+
+        // Create initial dataset using lance_datagen
+        let mut dataset = lance_datagen::gen_batch()
+            .col("id", array::step::<UInt32Type>())
+            .col("value", array::cycle_utf8_literals(&["a", "b", "c"]))
+            .col(
+                "vector",
+                array::rand_vec::<Float32Type>(Dimension::from(64)),
+            )
+            .into_dataset_with_params(
+                test_uri,
+                FragmentCount(1),
+                FragmentRowCount(1000),
+                Some(WriteParams {
+                    max_rows_per_file: 1000,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        // Create initial index
+        let ivf_params = IvfBuildParams::new(2);
+        let pq_params = PQBuildParams {
+            num_sub_vectors: 2,
+            ..Default::default()
+        };
+        let params = VectorIndexParams::with_ivf_pq_params(MetricType::L2, ivf_params, pq_params);
+
+        dataset
+            .create_index(&["vector"], IndexType::Vector, None, &params, true)
+            .await
+            .unwrap();
+
+        // Load initial index metadata
+        let initial_indices = dataset.load_indices().await.unwrap();
+        assert_eq!(initial_indices.len(), 1);
+        let index_name = initial_indices[0].name.clone();
+
+        // Prepare new data for merge insert (updates to existing rows)
+        let new_batch = lance_datagen::gen_batch()
+            .col("id", array::step_custom::<UInt32Type>(500, 1)) // IDs 500-999
+            .col("value", array::cycle_utf8_literals(&["d", "e", "f"])) // Different values
+            .col(
+                "vector",
+                array::rand_vec::<Float32Type>(Dimension::from(64)),
+            )
+            .into_batch_rows(RowCount::from(500))
+            .unwrap();
+
+        // Record the maximum fragment ID before merge insert
+        let max_fragment_id_before = dataset.manifest.max_fragment_id().unwrap_or(0);
+
+        // Execute merge insert operation
+        let merge_job =
+            MergeInsertBuilder::try_new(Arc::new(dataset.clone()), vec!["id".to_string()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .try_build()
+                .unwrap();
+
+        let schema = new_batch.schema();
+        let new_reader = Box::new(RecordBatchIterator::new([Ok(new_batch)], schema.clone()));
+        let new_stream = reader_to_stream(new_reader);
+        let (updated_dataset, merge_stats) = merge_job.execute(new_stream).await.unwrap();
+
+        // Check merge stats
+        assert_eq!(merge_stats.num_updated_rows, 500); // Updates for rows 500-999
+        assert_eq!(merge_stats.num_inserted_rows, 0); // No new inserts in this case
+
+        // Get the newly added fragments by comparing fragment IDs
+        let unindexed_fragments: Vec<Fragment> = updated_dataset
+            .get_fragments()
+            .into_iter()
+            .filter(|f| f.id() as u64 > max_fragment_id_before)
+            .map(|f| f.metadata().clone())
+            .collect();
+
+        // Now run merge with known unindexed fragments
+        let old_indices = updated_dataset
+            .load_indices_by_name(&index_name)
+            .await
+            .unwrap();
+        let old_indices_refs: Vec<&IndexMetadata> = old_indices.iter().collect();
+
+        let merge_result = merge_indices_with_unindexed_frags(
+            updated_dataset.clone(),
+            &old_indices_refs,
+            &unindexed_fragments,
+            &OptimizeOptions::merge(old_indices.len()),
+        )
+        .await
+        .unwrap();
+
+        assert!(merge_result.is_some());
+        let merge_result = merge_result.unwrap();
+
+        // Verify that the new index covers all fragments
+        let new_fragment_bitmap = &merge_result.new_fragment_bitmap;
+
+        // Check that unindexed fragments are now included
+        for fragment in &unindexed_fragments {
+            assert!(new_fragment_bitmap.contains(fragment.id as u32));
+        }
+
+        // Check that old indexed fragments are still included
+        // All fragments with ID <= max_fragment_id_before should be included
+        for frag_id in 0..=max_fragment_id_before as u32 {
+            assert!(new_fragment_bitmap.contains(frag_id));
+        }
+
+        // Verify the index can be used for search
+        let dataset = DatasetBuilder::from_uri(test_uri).load().await.unwrap();
+        let indices = dataset.load_indices().await.unwrap();
+
+        // There should still be indices (old one might be kept plus new one)
+        assert!(!indices.is_empty());
+
+        // Test that search works by querying for nearest neighbors
+        let query_batch = lance_datagen::gen_batch()
+            .col("query", array::rand_vec::<Float32Type>(Dimension::from(64)))
+            .into_batch_rows(RowCount::from(1))
+            .unwrap();
+
+        let q = query_batch.column(0).as_fixed_size_list();
+        let mut scanner = dataset.scan();
+        scanner
+            .nearest("vector", q.value(0).as_primitive::<Float32Type>(), 10)
+            .unwrap();
+        let results = scanner
+            .try_into_stream()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(results[0].num_rows(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_merge_indices_with_unindexed_frags_vector_subset() {
+        const DIM: usize = 64;
+        const TOTAL: usize = 1000;
+
+        let test_dir = TempStrDir::default();
+        let test_uri = test_dir.as_str();
+
+        let vectors = generate_random_array(TOTAL * DIM);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    DIM as i32,
+                ),
+                true,
+            ),
+            Field::new("id", DataType::UInt32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(FixedSizeListArray::try_new_from_values(vectors, DIM as i32).unwrap()),
+                Arc::new(UInt32Array::from_iter_values(0..TOTAL as u32)),
+            ],
+        )
+        .unwrap();
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema.clone());
+        let mut dataset = Dataset::write(batches, test_uri, None).await.unwrap();
+        let index_params = VectorIndexParams::ivf_pq(2, 8, 4, MetricType::L2, 2);
+        dataset
+            .create_index(&["vector"], IndexType::Vector, None, &index_params, true)
+            .await
+            .unwrap();
+
+        let next_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(
+                    FixedSizeListArray::try_new_from_values(
+                        generate_random_array(TOTAL * DIM),
+                        DIM as i32,
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(UInt32Array::from_iter_values(
+                    TOTAL as u32..(TOTAL * 2) as u32,
+                )),
+            ],
+        )
+        .unwrap();
+        let batches = RecordBatchIterator::new(vec![next_batch].into_iter().map(Ok), schema);
+        dataset.append(batches, None).await.unwrap();
+        dataset
+            .optimize_indices(&OptimizeOptions::append())
+            .await
+            .unwrap();
+
+        let indices = dataset.load_indices_by_name("vector_idx").await.unwrap();
+        assert_eq!(indices.len(), 2);
+        let subset = vec![&indices[1]];
+        let merge_result = merge_indices_with_unindexed_frags(
+            Arc::new(dataset),
+            &subset,
+            &[],
+            &OptimizeOptions::merge(1),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            merge_result.is_some(),
+            "subset merges should respect the caller-provided indices"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_optimize_btree_keeps_rows_with_stable_row_ids_after_compaction() {
+        async fn query_id_count(dataset: &Dataset, id: &str) -> usize {
+            dataset
+                .scan()
+                .filter(&format!("id = '{}'", id))
+                .unwrap()
+                .project(&["id"])
+                .unwrap()
+                .try_into_batch()
+                .await
+                .unwrap()
+                .num_rows()
+        }
+
+        let test_dir = TempStrDir::default();
+        let test_uri = test_dir.as_str();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
+        let ids = StringArray::from_iter_values((0..256).map(|i| format!("song-{i}")));
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(ids)]).unwrap();
+        let reader = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+        let mut dataset = Dataset::write(
+            reader,
+            test_uri,
+            Some(WriteParams {
+                max_rows_per_file: 64,
+                enable_stable_row_ids: true,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        dataset
+            .create_index(
+                &["id"],
+                IndexType::BTree,
+                Some("id_idx".into()),
+                &ScalarIndexParams::default(),
+                true,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(query_id_count(&dataset, "song-42").await, 1);
+
+        compact_files(
+            &mut dataset,
+            crate::dataset::optimize::CompactionOptions {
+                target_rows_per_fragment: 512,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let frags = dataset.get_fragments();
+        assert!(!frags.is_empty());
+        assert!(frags.iter().all(|frag| frag.id() > 0));
+        assert!(
+            dataset
+                .unindexed_fragments("id_idx")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        dataset
+            .optimize_indices(&OptimizeOptions::default())
+            .await
+            .unwrap();
+
+        let dataset = DatasetBuilder::from_uri(test_uri).load().await.unwrap();
+        assert_eq!(query_id_count(&dataset, "song-42").await, 1);
+    }
+}

@@ -1,6 +1,285 @@
 use super::*;
 
 #[test]
+fn admitted_borrowed_history_uses_product_uds_and_retains_response_charge() {
+    use std::io::Write;
+    use std::os::unix::net::UnixListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use quanta_index_contract::{
+        BorrowedAuxiliaryIngestIpcRequestEnvelopeV1, BorrowedAuxiliaryIngestIpcRequestV1,
+        DiagnosticAttemptFieldV1, HistoryIngestBatch, SearchPlaneIngestIpcResponseEnvelope,
+    };
+    use quanta_index_ipc::{
+        IndexError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
+        RequestBudgetV1,
+    };
+
+    struct LeaseOwner(Arc<AtomicU64>);
+    impl MemoryLeaseOwner for LeaseOwner {
+        fn release(&self, bytes: u64) {
+            let _previous = self.0.fetch_sub(bytes, Ordering::SeqCst);
+        }
+    }
+    struct Scope(Arc<AtomicU64>);
+    impl MemoryScopePort for Scope {
+        fn reserve(&self, bytes: u64, lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            if lifetime != MemoryLifetime::Retained {
+                return Err(IndexError::ResourceLimited);
+            }
+            let _previous = self.0.fetch_add(bytes, Ordering::SeqCst);
+            Ok(MemoryLease::new(
+                bytes,
+                Arc::new(LeaseOwner(Arc::clone(&self.0))),
+            ))
+        }
+    }
+
+    let mut batch = HistoryIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation: ManifestGeneration::new(9),
+        manifest_digest: None,
+        batch_digest: String::new(),
+        commits: Vec::new(),
+        refs: Vec::new(),
+        tags: Vec::new(),
+        diff_hunks: Vec::new(),
+    };
+    ok_or_fail!(crate::stamp_batch_digest_v1(&mut batch));
+    let socket_dir = ok_or_fail!(tempfile::tempdir());
+    let socket = socket_dir.path().join("admitted-history.sock");
+    let listener = ok_or_fail!(UnixListener::bind(&socket));
+    let peer = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept admitted History request");
+        let request: SearchPlaneIngestIpcRequestEnvelope =
+            quanta_index_ipc::decode_request(&mut stream).expect("decode canonical request");
+        let SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) = request.payload else {
+            panic!("unexpected ingest variant");
+        };
+        let reply =
+            SearchPlaneIngestIpcResponseEnvelope {
+                request_id: request.request_id,
+                payload: SearchPlaneIngestIpcResponse::HistoryReceipt(
+                    BatchPublishReceipt::empty_for(batch.generation, None, batch.batch_digest),
+                ),
+            };
+        stream
+            .write_all(&quanta_index_ipc::encode_response(&reply).expect("encode receipt"))
+            .expect("write receipt");
+    });
+    let active = Arc::new(AtomicU64::new(0));
+    let memory = MemoryScope::new(Arc::new(Scope(Arc::clone(&active))));
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(2));
+    let transport = crate::transport::UdsIngestTransport::new(
+        socket,
+        quanta_index_ipc::ClientIoPolicy::default(),
+    );
+    let mut charged_work = 0_usize;
+    let body = ok_or_fail!(
+        crate::transport::IngestTransport::send_borrowed_auxiliary_admitted_v1(
+            &transport,
+            BorrowedAuxiliaryIngestIpcRequestEnvelopeV1 {
+                request_id: 77,
+                payload: BorrowedAuxiliaryIngestIpcRequestV1::History(&batch),
+                diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
+            },
+            None,
+            &budget,
+            &memory,
+            &mut |bytes| {
+                charged_work = charged_work.saturating_add(bytes);
+                Ok(())
+            },
+        )
+    );
+    peer.join().expect("scripted History peer");
+    let decoded: SearchPlaneIngestIpcResponseEnvelope =
+        ok_or_fail!(quanta_index_ipc::decode_cbor_payload(body.as_slice()));
+    assert_eq!(decoded.request_id, 77);
+    assert!(matches!(
+        decoded.payload,
+        SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+    ));
+    assert_eq!(
+        active.load(Ordering::SeqCst),
+        u64::try_from(body.as_slice().len()).expect("response length fits u64")
+    );
+    assert!(charged_work > 0);
+    drop(body);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn borrowed_history_routes_preserve_canonical_body_and_receipt_binding() {
+    use quanta_index_contract::{
+        FileContributorEntry, FileContributorIdentityEntry, FileContributorIngestBatch,
+        HistoryIngestBatch, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
+    };
+
+    let generation = ManifestGeneration::new(9);
+    let mut history = HistoryIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation,
+        manifest_digest: Some("manifest:history-9".to_string()),
+        batch_digest: String::new(),
+        commits: vec![sample_commit_record()],
+        refs: Vec::new(),
+        tags: Vec::new(),
+        diff_hunks: Vec::new(),
+    };
+    let mut recency = RepoCommitRecencyIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation,
+        batch_digest: String::new(),
+        entries: vec![RepoCommitRecencyEntry {
+            source_repo_id: repo_id(),
+            latest_committer_time_ms: 17,
+        }],
+    };
+    let mut contributor = FileContributorIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation,
+        batch_digest: String::new(),
+        entries: vec![FileContributorEntry {
+            source_repo_id: repo_id(),
+            repo_relative_path: RepoRelativePath::new("src/history.rs"),
+            contributors: vec![FileContributorIdentityEntry {
+                canonical: "alice".to_string(),
+                name: None,
+                email: None,
+            }],
+        }],
+    };
+    ok_or_fail!(crate::stamp_batch_digest_v1(&mut history));
+    ok_or_fail!(crate::stamp_batch_digest_v1(&mut recency));
+    ok_or_fail!(crate::stamp_batch_digest_v1(&mut contributor));
+
+    for (expected, wire) in [
+        (
+            "history_receipt",
+            SearchPlaneIngestIpcRequest::PublishHistoryBatch(history.clone()),
+        ),
+        (
+            "repo_commit_recency_receipt",
+            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(recency.clone()),
+        ),
+        (
+            "file_contributor_receipt",
+            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(contributor.clone()),
+        ),
+    ] {
+        let digest = if let SearchPlaneIngestIpcRequest::PublishHistoryBatch(value) = &wire {
+            value.batch_digest.clone()
+        } else if let SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(value) = &wire {
+            value.batch_digest.clone()
+        } else if let SearchPlaneIngestIpcRequest::PublishFileContributorBatch(value) = &wire {
+            value.batch_digest.clone()
+        } else {
+            panic!("fixed three-route fixture changed");
+        };
+        let receipt = BatchPublishReceipt {
+            generation,
+            manifest_digest: None,
+            batch_digest: String::new(),
+            applied: true,
+            durable_sequence: 1,
+            semantic_content: None,
+            accepted_clear_surfaces: 0,
+            accepted_replace_scopes: 1,
+            accepted_tombstone_scopes: 0,
+            accepted_semantic_replace_scopes: 0,
+            accepted_semantic_tombstone_scopes: 0,
+            sealed: false,
+        };
+        let response = match expected {
+            "history_receipt" => SearchPlaneIngestIpcResponse::HistoryReceipt(receipt),
+            "repo_commit_recency_receipt" => {
+                SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt)
+            }
+            "file_contributor_receipt" => {
+                SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt)
+            }
+            _ => panic!("fixed three-route fixture changed"),
+        };
+        let ingest = Arc::new(StubIngestTransport::new(response));
+        let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+        let observed = if let SearchPlaneIngestIpcRequest::PublishHistoryBatch(value) = &wire {
+            ok_or_fail!(client.history().publish_history_borrowed_v1(value))
+        } else if let SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(value) = &wire {
+            ok_or_fail!(
+                client
+                    .history()
+                    .publish_repo_commit_recency_borrowed_v1(value)
+            )
+        } else if let SearchPlaneIngestIpcRequest::PublishFileContributorBatch(value) = &wire {
+            ok_or_fail!(client.history().publish_file_contributor_borrowed_v1(value))
+        } else {
+            panic!("fixed three-route fixture changed");
+        };
+        assert_eq!(observed.batch_digest, digest);
+        assert_eq!(
+            ok_or_fail!(only_ingest_request(ingest.as_ref())).payload,
+            wire
+        );
+    }
+}
+
+#[test]
+fn borrowed_history_refuses_bad_digest_and_wrong_receipt_identity() {
+    let generation = ManifestGeneration::new(10);
+    let mut batch = quanta_index_contract::HistoryIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation,
+        manifest_digest: None,
+        batch_digest: "forged".to_string(),
+        commits: vec![sample_commit_record()],
+        refs: Vec::new(),
+        tags: Vec::new(),
+        diff_hunks: Vec::new(),
+    };
+    let receipt = BatchPublishReceipt {
+        generation: ManifestGeneration::new(11),
+        manifest_digest: None,
+        batch_digest: String::new(),
+        applied: true,
+        durable_sequence: 1,
+        semantic_content: None,
+        accepted_clear_surfaces: 0,
+        accepted_replace_scopes: 1,
+        accepted_tombstone_scopes: 0,
+        accepted_semantic_replace_scopes: 0,
+        accepted_semantic_tombstone_scopes: 0,
+        sealed: false,
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::HistoryReceipt(receipt),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    assert!(
+        client
+            .history()
+            .publish_history_borrowed_v1(&batch)
+            .is_err()
+    );
+    assert!(ok_or_fail!(ingest.requests.lock()).is_empty());
+    ok_or_fail!(crate::stamp_batch_digest_v1(&mut batch));
+    assert!(
+        client
+            .history()
+            .publish_history_borrowed_v1(&batch)
+            .is_err()
+    );
+    assert_eq!(ok_or_fail!(ingest.requests.lock()).len(), 1);
+}
+
+#[test]
 fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_records() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(3),

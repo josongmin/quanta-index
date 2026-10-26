@@ -103,13 +103,11 @@ fn borrowed_whole_head_preserves_predicate_order_without_birth_or_input_retentio
         assert!(
             matches!(data.failure_v1(), Some(NativeCorpusDecodeFailureV1::Validation(cause)) if *cause == expected)
         );
-        assert!(
-            failure
-                .as_ref()
-                .unwrap()
-                .marker
-                .contains("InvalidData(Semantic")
-        );
+        assert!(failure
+            .as_ref()
+            .unwrap()
+            .marker
+            .contains("InvalidData(Semantic"));
         assert_eq!(admission.invalid_calls.get(), 1);
         assert_eq!(
             (admission.copies, admission.borrowed, admission.owned),
@@ -259,13 +257,11 @@ fn borrowed_native_cas_has_the_same_expected_head_first_scope_and_advance_predic
             assert!(
                 matches!(data.failure_v1(), Some(NativeCorpusDecodeFailureV1::Activation(cause)) if *cause == wanted)
             );
-            assert!(
-                failure
-                    .as_ref()
-                    .unwrap()
-                    .marker
-                    .contains("InvalidData(Semantic")
-            );
+            assert!(failure
+                .as_ref()
+                .unwrap()
+                .marker
+                .contains("InvalidData(Semantic"));
         } else {
             assert!(data.failure_v1().is_none());
             assert!(failure.is_none());
@@ -289,18 +285,16 @@ fn native_cas_preserves_none_and_used_or_occupied_data_without_any_poll() {
         ..Admission::default()
     };
     let mut data = NativeCorpusDecodeDataV1::new_v1();
-    assert!(
-        validate_cas(
-            repo,
-            revision,
-            0,
-            None,
-            &mut admission,
-            &mut data,
-            &mut None
-        )
-        .is_ok()
-    );
+    assert!(validate_cas(
+        repo,
+        revision,
+        0,
+        None,
+        &mut admission,
+        &mut data,
+        &mut None
+    )
+    .is_ok());
     assert_eq!(admission.work_calls, 0);
     assert_eq!(admission.invalid_calls.get(), 0);
     assert!(data.failure_v1().is_none());

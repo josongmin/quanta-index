@@ -8,7 +8,7 @@ use quanta_index_core::{CoreError, RequestBudgetV1};
 use super::codec::{BlobRef, MapEdit, MapRoot, ObjectKind, ObjectRef, PageRef};
 use super::store::{AttemptLease, ObjectStore, Page, corrupt, invalid, storage};
 
-const PAGE_MAGIC: &[u8; 8] = b"QLMAP002";
+const PAGE_MAGIC: &[u8; 8] = b"QLMAP003";
 const LEAF_INLINE: u8 = 0;
 const LEAF_DICTIONARY: u8 = 1;
 const BLOB_REF_WIRE_BYTES: usize = 81;
@@ -297,6 +297,22 @@ fn page_extent(page: &Page) -> Result<PageExtent, CoreError> {
     }
 }
 
+fn page_map_encoded_bytes(page: &Page, own_bytes: u64) -> Result<u64, CoreError> {
+    if own_bytes == 0 {
+        return Err(corrupt("map page encoded width is zero"));
+    }
+    match page {
+        Page::Leaf(_) => Ok(own_bytes),
+        Page::Branch(children) => children.iter().try_fold(own_bytes, |sum, child| {
+            if child.object.bytes == 0 || child.map_encoded_bytes < child.object.bytes {
+                return Err(corrupt("map child encoded summary is invalid"));
+            }
+            sum.checked_add(child.map_encoded_bytes)
+                .ok_or_else(|| corrupt("map encoded subtree width overflows"))
+        }),
+    }
+}
+
 fn encode_page(page: &Page) -> Result<EncodedPage, CoreError> {
     let (first, last, entries, height, dependencies) = page_extent(page)?;
     let mut bytes = Vec::new();
@@ -342,6 +358,7 @@ fn encode_page(page: &Page) -> Result<EncodedPage, CoreError> {
                 add_object_ref(&mut bytes, &child.object);
                 bytes.extend_from_slice(&child.entries.to_be_bytes());
                 bytes.push(child.height);
+                bytes.extend_from_slice(&child.map_encoded_bytes.to_be_bytes());
                 add_key(&mut bytes, &child.first)?;
                 add_key(&mut bytes, &child.last)?;
             }
@@ -532,6 +549,7 @@ fn decode_page(
                 object: cursor.object_ref()?,
                 entries: cursor.u64()?,
                 height: cursor.u8()?,
+                map_encoded_bytes: cursor.u64()?,
                 first: cursor.key()?,
                 last: cursor.key()?,
             });
@@ -541,6 +559,8 @@ fn decode_page(
                 || child.entries == 0
                 || child.first > child.last
                 || child.object.kind != ObjectKind::MapPage
+                || child.object.bytes == 0
+                || child.map_encoded_bytes < child.object.bytes
         }) || children
             .windows(2)
             .any(|pair| match (pair.first(), pair.get(1)) {
@@ -570,6 +590,9 @@ fn decode_page(
         || dependencies != object_deps
     {
         return Err(corrupt("map page fences or dependency inventory differ"));
+    }
+    if page_map_encoded_bytes(&page, reference.object.bytes)? != reference.map_encoded_bytes {
+        return Err(corrupt("map encoded subtree summary differs"));
     }
     Ok(page)
 }
@@ -764,6 +787,8 @@ impl ObjectStore {
     ) -> Result<Page, CoreError> {
         checkpoint(budget)?;
         if reference.object.kind != ObjectKind::MapPage
+            || reference.object.bytes == 0
+            || reference.map_encoded_bytes < reference.object.bytes
             || reference.entries == 0
             || reference.first > reference.last
             || reference.height > MAX_MAP_HEIGHT
@@ -781,6 +806,8 @@ impl ObjectStore {
     ) -> Result<Arc<Page>, CoreError> {
         checkpoint(budget)?;
         if reference.object.kind != ObjectKind::MapPage
+            || reference.object.bytes == 0
+            || reference.map_encoded_bytes < reference.object.bytes
             || reference.entries == 0
             || reference.first > reference.last
             || reference.height > MAX_MAP_HEIGHT
@@ -800,6 +827,7 @@ impl ObjectStore {
         let (payload, dependencies, first, last, entries, height) = encode_page(page)?;
         let object =
             self.put_adopted_object(lease, ObjectKind::MapPage, &dependencies, &payload)?;
+        let map_encoded_bytes = page_map_encoded_bytes(page, object.bytes)?;
         self.record_map_page_mutation();
         Ok(PageRef {
             object,
@@ -807,6 +835,7 @@ impl ObjectStore {
             last,
             entries,
             height,
+            map_encoded_bytes,
         })
     }
 
@@ -816,12 +845,30 @@ impl ObjectStore {
             Some(page)
                 if page.entries == root.entries
                     && root.entries > 0
-                    && page.object.kind == ObjectKind::MapPage =>
+                    && page.object.kind == ObjectKind::MapPage
+                    && page.object.bytes > 0
+                    && page.map_encoded_bytes >= page.object.bytes =>
             {
                 Ok(())
             }
             _ => Err(corrupt("map root count or page reference differs")),
         }
+    }
+
+    /// Authenticates the root `MapPage` and its local subtree summary. Value
+    /// objects are excluded; unchanged descendants are represented by their
+    /// authenticated child descriptors rather than traversed here.
+    pub(crate) fn map_structure_encoded_bytes(
+        &self,
+        root: &MapRoot,
+        budget: Option<&RequestBudgetV1>,
+    ) -> Result<u64, CoreError> {
+        Self::validate_root(root)?;
+        let Some(page) = &root.page else {
+            return Ok(0);
+        };
+        let _authenticated = self.load_page(page, budget)?;
+        Ok(page.map_encoded_bytes)
     }
 
     pub(crate) fn map_get(
@@ -1244,13 +1291,14 @@ mod compact_leaf_wire_tests {
             PageRef {
                 object: ObjectRef {
                     kind: ObjectKind::MapPage,
-                    bytes: 0,
+                    bytes: 1_000,
                     sha256: [99; 32],
                 },
                 first,
                 last,
                 entries,
                 height,
+                map_encoded_bytes: 1_000,
             },
             deps,
         )
@@ -1381,5 +1429,207 @@ mod compact_leaf_wire_tests {
         *dictionary.get_mut(27).expect("leaf mode") = LEAF_DICTIONARY;
         drop(dictionary.splice(28..28, 78_u16.to_be_bytes()));
         refused(&dictionary, &descriptor, &deps);
+    }
+}
+
+#[cfg(test)]
+mod map_encoded_summary_tests {
+    use super::{Page, decode_page, encode_page};
+    use crate::lexical_store::codec::{MapEdit, MapRoot, PageRef};
+    use crate::lexical_store::{AttemptBinding, ObjectKind, ObjectRef, ObjectStore};
+    use quanta_index_core::CoreError;
+
+    fn binding() -> AttemptBinding {
+        AttemptBinding {
+            root_incarnation: [1; 16],
+            repository_sha256: [2; 32],
+            revision_sha256: [5; 32],
+            source_event_sha256: [3; 32],
+            target_generation: 1,
+            base_root_sha256: None,
+            operations_sha256: [4; 32],
+            format: 1,
+        }
+    }
+
+    fn key(number: u32) -> Vec<u8> {
+        number.to_be_bytes().to_vec()
+    }
+
+    // Independent page enumeration; this deliberately does not use the
+    // persisted subtree summaries to calculate the expected number.
+    fn page_oracle(store: &ObjectStore, reference: &PageRef) -> u64 {
+        let page = store
+            .load_page(reference, None)
+            .expect("authenticated page");
+        let children = match page {
+            Page::Leaf(_) => 0,
+            Page::Branch(children) => children.iter().map(|child| page_oracle(store, child)).sum(),
+        };
+        reference
+            .object
+            .bytes
+            .checked_add(children)
+            .expect("bounded oracle")
+    }
+
+    fn root_oracle(store: &ObjectStore, root: &MapRoot) -> u64 {
+        root.page
+            .as_ref()
+            .map_or(0, |page| page_oracle(store, page))
+    }
+
+    #[test]
+    fn map_structure_bytes_match_enumerated_pages_across_metadata_only_edit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ObjectStore::open(dir.path()).expect("store");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let small = store
+            .put_blob(&lease, ObjectKind::Record, &[], b"small")
+            .expect("small value");
+        let large = store
+            .put_blob(&lease, ObjectKind::Record, &[], &vec![b'x'; 200_000])
+            .expect("large value");
+        let base = store
+            .map_bootstrap(
+                &lease,
+                (0..300_u32).map(|number| {
+                    Ok(MapEdit {
+                        key: key(number),
+                        value: Some(small.clone()),
+                    })
+                }),
+            )
+            .expect("base map");
+        let expected = root_oracle(&store, &base);
+        assert!(expected > base.page.as_ref().expect("root").object.bytes);
+        assert_eq!(
+            store
+                .map_structure_encoded_bytes(&base, None)
+                .expect("summary"),
+            expected
+        );
+
+        let edited = store
+            .map_apply(
+                &lease,
+                &base,
+                std::iter::once(Ok(MapEdit {
+                    key: key(123),
+                    value: Some(large),
+                })),
+            )
+            .expect("metadata-only edit");
+        let edited_expected = root_oracle(&store, &edited);
+        assert_eq!(
+            store
+                .map_structure_encoded_bytes(&edited, None)
+                .expect("edited summary"),
+            edited_expected
+        );
+        // A second distinct value adds dictionary/dependency metadata. Compare
+        // the same reference cardinality with a small value; its much larger
+        // payload closure must not change the MapPage structure cost.
+        let tiny = store
+            .put_blob(&lease, ObjectKind::Record, &[], b"other")
+            .expect("tiny alternative value");
+        let tiny_edit = store
+            .map_apply(
+                &lease,
+                &base,
+                std::iter::once(Ok(MapEdit {
+                    key: key(123),
+                    value: Some(tiny),
+                })),
+            )
+            .expect("same-cardinality tiny edit");
+        let tiny_expected = root_oracle(&store, &tiny_edit);
+        assert_eq!(
+            store
+                .map_structure_encoded_bytes(&tiny_edit, None)
+                .expect("tiny summary"),
+            tiny_expected
+        );
+        assert_eq!(edited_expected, tiny_expected);
+        assert_eq!(
+            store
+                .map_structure_encoded_bytes(&MapRoot::default(), None)
+                .expect("empty"),
+            0
+        );
+    }
+
+    #[test]
+    fn forged_root_or_child_subtree_summary_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ObjectStore::open(dir.path()).expect("store");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let value = store
+            .put_blob(&lease, ObjectKind::Record, &[], b"value")
+            .expect("value");
+        let root = store
+            .map_bootstrap(
+                &lease,
+                (0..200_u32).map(|number| {
+                    Ok(MapEdit {
+                        key: key(number),
+                        value: Some(value.clone()),
+                    })
+                }),
+            )
+            .expect("branch map");
+        let mut forged = root;
+        let page = forged.page.as_mut().expect("root page");
+        page.map_encoded_bytes = page
+            .map_encoded_bytes
+            .checked_add(1)
+            .expect("forged summary width headroom");
+        assert!(matches!(
+            store.map_structure_encoded_bytes(&forged, None),
+            Err(CoreError::Typed { .. })
+        ));
+
+        let child = PageRef {
+            object: ObjectRef {
+                kind: ObjectKind::MapPage,
+                bytes: 100,
+                sha256: [7; 32],
+            },
+            first: b"a".to_vec(),
+            last: b"a".to_vec(),
+            entries: 1,
+            height: 0,
+            map_encoded_bytes: 100,
+        };
+        let page = Page::Branch(vec![child]);
+        let (mut payload, mut dependencies, first, last, entries, height) =
+            encode_page(&page).expect("branch wire");
+        dependencies.sort();
+        dependencies.dedup();
+        let descriptor = PageRef {
+            object: ObjectRef {
+                kind: ObjectKind::MapPage,
+                bytes: 1_000,
+                sha256: [8; 32],
+            },
+            first,
+            last,
+            entries,
+            height,
+            map_encoded_bytes: 1_100,
+        };
+        assert!(decode_page(&payload, &descriptor, &dependencies).is_ok());
+        // The branch wire carries the child's summary after its object ref,
+        // entry count and height. Corrupting it changes neither payload size
+        // nor the parent's descriptor, and must fail local validation.
+        let child_summary_offset = 8 + 1 + 2 + 8 + 3 + 3 + 41 + 8 + 1;
+        payload
+            .get_mut(child_summary_offset..child_summary_offset + 8)
+            .expect("fixed child summary window")
+            .copy_from_slice(&101_u64.to_be_bytes());
+        assert!(matches!(
+            decode_page(&payload, &descriptor, &dependencies),
+            Err(CoreError::Typed { .. })
+        ));
     }
 }

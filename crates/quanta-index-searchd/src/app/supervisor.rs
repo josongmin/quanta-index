@@ -57,7 +57,7 @@ pub enum SupervisorPhase {
     Ready,
     /// Cancellation has been fired; children are exiting.
     Draining,
-    /// Every child joined cleanly.
+    /// Every child joined and the original runtime resources retired cleanly.
     Stopped,
     /// A required child was lost, startup rolled back, or the hard
     /// deadline escalated remaining children.
@@ -264,9 +264,22 @@ struct RegisteredChild {
 ///
 /// The exit code is fixed policy: clean operator shutdown `0`;
 /// required-child death, startup rollback, child failure during drain,
-/// or hard-deadline escalation `70`; a latched abort `128 + signum`.
+/// physical retirement failure, or hard-deadline escalation `70`;
+/// a latched abort `128 + signum`.
 #[derive(Debug, Eq, PartialEq)]
 pub enum SupervisionOutcome {
+    /// Checked retirement is still owned by the custody worker at the deadline.
+    GuardRetirementPending {
+        /// A preceding child or startup failure; absent after a clean drain.
+        primary: Option<Box<SupervisionOutcome>>,
+    },
+    /// Original physical resources could not retire after child drain.
+    GuardRetirementFailed {
+        /// The original physical close or custody error.
+        error: quanta_index_core::CoreError,
+        /// A preceding child or startup failure; absent after a clean drain.
+        primary: Option<Box<SupervisionOutcome>>,
+    },
     /// Operator shutdown; every child exited and joined.
     StoppedClean {
         /// Children that exited and joined, in registration order.
@@ -329,6 +342,8 @@ impl SupervisionOutcome {
             Self::StartupRollback { .. }
             | Self::RequiredChildLost { .. }
             | Self::DrainFailed { .. }
+            | Self::GuardRetirementFailed { .. }
+            | Self::GuardRetirementPending { .. }
             | Self::HardDeadlineEscalated { .. } => 70,
             Self::SignalAbort { signum } => (*signum).saturating_add(128),
         }
@@ -339,6 +354,37 @@ impl SupervisionOutcome {
     #[must_use]
     pub fn is_stopped_clean(&self) -> bool {
         matches!(self, Self::StoppedClean { .. })
+    }
+}
+
+enum GuardRetirement {
+    Complete,
+    Failed(quanta_index_core::CoreError),
+    Pending,
+    Aborted(i32),
+}
+
+fn with_guard_retirement(
+    primary: SupervisionOutcome,
+    retirement: GuardRetirement,
+) -> SupervisionOutcome {
+    match retirement {
+        GuardRetirement::Complete => primary,
+        GuardRetirement::Aborted(signum) => SupervisionOutcome::SignalAbort { signum },
+        GuardRetirement::Failed(error) => SupervisionOutcome::GuardRetirementFailed {
+            error,
+            primary: (!primary.is_stopped_clean()).then(|| Box::new(primary)),
+        },
+        GuardRetirement::Pending
+            if matches!(&primary, SupervisionOutcome::HardDeadlineEscalated { .. })
+                || matches!(&primary, SupervisionOutcome::StartupRollback { escalated, .. }
+                    if !escalated.is_empty()) =>
+        {
+            primary
+        }
+        GuardRetirement::Pending => SupervisionOutcome::GuardRetirementPending {
+            primary: (!primary.is_stopped_clean()).then(|| Box::new(primary)),
+        },
     }
 }
 
@@ -371,13 +417,64 @@ struct DrainTally {
     unfinished: Vec<&'static str>,
 }
 
-/// One `SearchdSupervisor`: the single owner of the daemon's child
-/// threads and runtime guards.
+/// Required checked retirement of the runtime's post-child resources.
+pub trait SupervisorGuards: Send + 'static {
+    /// Retire after joins. On error, retain the original uncertain custody.
+    fn retire(self) -> Result<(), quanta_index_core::CoreError>;
+}
+
+fn retire_guards<G: SupervisorGuards>(
+    guards: G,
+    capture: Option<&crate::app::trace_recorder::DiagnosticCaptureLeaseV1>,
+) -> Result<(), quanta_index_core::CoreError> {
+    use quanta_index_core::{
+        DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    };
+    let spans = capture.and_then(|lease| {
+        let context = lease.context();
+        let root = crate::app::trace_recorder::trace_span_or_health(
+            context,
+            context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0)),
+        )?;
+        let child = context.child_context(&root);
+        let span = crate::app::trace_recorder::trace_span_or_health(
+            &child,
+            child.enter(DiagnosticStageV1::RuntimeStop, DiagnosticLaneV1(0)),
+        )?;
+        Some((root, span))
+    });
+    let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guards.retire())) {
+        Ok(result) => result,
+        Err(_panic) => Err(quanta_index_core::CoreError::Storage(
+            "supervisor guard retirement panicked".into(),
+        )),
+    };
+    if let Some((root, span)) = spans {
+        let terminal = DiagnosticTerminalV1::from_result(&result);
+        let _finished = span.finish(terminal);
+        let _finished = root.finish(terminal);
+    }
+    result
+}
+
+impl SupervisorGuards for () {
+    fn retire(self) -> Result<(), quanta_index_core::CoreError> {
+        Ok(())
+    }
+}
+
+impl SupervisorGuards for crate::app::runtime::StateRootLease {
+    fn retire(self) -> Result<(), quanta_index_core::CoreError> {
+        drop(self);
+        Ok(())
+    }
+}
+
+/// The single owner of daemon child threads and runtime guards.
 ///
-/// `G` is the guard payload (the daemon's `RuntimeGuards`; a drop-order
-/// recorder in tests). It is stored in the supervisor until every child
-/// joins, or transferred with unfinished children to the custody reaper.
-pub struct SearchdSupervisor<G: Send + 'static> {
+/// Guards remain here until every child joins, or transfer with unfinished
+/// children to the custody reaper. A clean drain requires checked retirement.
+pub struct SearchdSupervisor<G: SupervisorGuards> {
     diagnostic_capture: Option<crate::app::trace_recorder::DiagnosticCaptureLeaseV1>,
     phase: SupervisorPhase,
     status: Option<Arc<SupervisorStatus>>,
@@ -419,17 +516,17 @@ fn trace_supervision_phase<T>(
     result
 }
 
-impl<G: Send + 'static> Drop for SearchdSupervisor<G> {
+impl<G: SupervisorGuards> Drop for SearchdSupervisor<G> {
     fn drop(&mut self) {
         if self.guards.is_some() {
             self.set_phase(SupervisorPhase::Failed);
             self.cancel.request_shutdown();
-            self.release_guards_after_children();
+            let _retirement = self.release_guards_after_children(None);
         }
     }
 }
 
-impl<G: Send + 'static> SearchdSupervisor<G> {
+impl<G: SupervisorGuards> SearchdSupervisor<G> {
     /// A supervisor with no children yet, holding `guards` until the
     /// end of its lifecycle. `cancel` is the one cancellation tree root
     /// the whole process shares: children poll its flag, `run` observes
@@ -582,12 +679,15 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         if let Some(signum) = self.latched_abort() {
             return self.abort(signum);
         }
-        self.release_guards_after_children();
-        SupervisionOutcome::StartupRollback {
-            failed,
-            torn_down,
-            escalated,
-        }
+        let retirement = self.release_guards_after_children(Some(deadline));
+        with_guard_retirement(
+            SupervisionOutcome::StartupRollback {
+                failed,
+                torn_down,
+                escalated,
+            },
+            retirement,
+        )
     }
 
     /// Serve until the cancellation root fires or a child exits, then
@@ -691,7 +791,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             return self.abort(signum);
         }
         let tally = self.join_children_with_known_exits();
-        self.finish_drain(tally)
+        self.finish_drain(tally, deadline)
     }
 
     /// The abort signum when one is latched on the shared root.
@@ -737,11 +837,14 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             .find(|child| child.name == lost.name)
             .and_then(|child| child.kind)
             .unwrap_or(lost.kind);
-        self.release_guards_after_children();
+        let retirement = self.release_guards_after_children(Some(deadline));
         if !tally.unfinished.is_empty() {
-            return SupervisionOutcome::HardDeadlineEscalated {
-                unfinished: tally.unfinished,
-            };
+            return with_guard_retirement(
+                SupervisionOutcome::HardDeadlineEscalated {
+                    unfinished: tally.unfinished,
+                },
+                retirement,
+            );
         }
         let escalated = tally.escalated();
         // The lost child itself is not a drained peer.
@@ -750,44 +853,61 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             .into_iter()
             .filter(|name| *name != lost.name)
             .collect();
-        SupervisionOutcome::RequiredChildLost {
-            name: lost.name,
-            kind: lost_kind,
-            drained,
-            escalated,
-        }
+        with_guard_retirement(
+            SupervisionOutcome::RequiredChildLost {
+                name: lost.name,
+                kind: lost_kind,
+                drained,
+                escalated,
+            },
+            retirement,
+        )
     }
 
     /// The abort answer to a second signal: nothing is waited for.
     fn abort(mut self, signum: i32) -> SupervisionOutcome {
         self.set_phase(SupervisorPhase::Failed);
-        self.release_guards_after_children();
+        let _retirement = self.release_guards_after_children(None);
         SupervisionOutcome::SignalAbort { signum }
     }
 
     /// Classify the drain tally into the final outcome. Consumes the
     /// guards after every join or escalation.
-    fn finish_drain(mut self, tally: DrainTally) -> SupervisionOutcome {
-        self.set_phase(if tally.unfinished.is_empty() && tally.failed.is_empty() {
-            SupervisorPhase::Stopped
-        } else {
-            SupervisorPhase::Failed
-        });
-        self.release_guards_after_children();
+    fn finish_drain(mut self, tally: DrainTally, deadline: Instant) -> SupervisionOutcome {
+        let retirement = self.release_guards_after_children(Some(deadline));
+        self.set_phase(
+            if tally.unfinished.is_empty()
+                && tally.failed.is_empty()
+                && matches!(retirement, GuardRetirement::Complete)
+            {
+                SupervisorPhase::Stopped
+            } else {
+                SupervisorPhase::Failed
+            },
+        );
         if !tally.unfinished.is_empty() {
-            return SupervisionOutcome::HardDeadlineEscalated {
-                unfinished: tally.unfinished,
-            };
+            return with_guard_retirement(
+                SupervisionOutcome::HardDeadlineEscalated {
+                    unfinished: tally.unfinished,
+                },
+                retirement,
+            );
         }
         if !tally.failed.is_empty() {
-            return SupervisionOutcome::DrainFailed {
-                failed: tally.failed,
-            };
+            return with_guard_retirement(
+                SupervisionOutcome::DrainFailed {
+                    failed: tally.failed,
+                },
+                retirement,
+            );
         }
-        SupervisionOutcome::StoppedClean {
-            drained: tally.drained,
-            cooperative_overdue: std::mem::take(&mut self.cooperative_overdue),
-        }
+        with_guard_retirement(
+            SupervisionOutcome::StoppedClean {
+                drained: tally.drained,
+                cooperative_overdue: std::mem::take(&mut self.cooperative_overdue),
+            },
+            retirement,
+        )
     }
 
     /// Collect terminal events until `deadline` or until every child
@@ -923,20 +1043,18 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     /// as the guards. If the OS refuses to spawn that reaper, deliberately
     /// retain the payload until process exit: dropping the lease early is
     /// less safe than retaining it after an already-failed shutdown.
-    fn release_guards_after_children(&mut self) {
+    fn release_guards_after_children(&mut self, deadline: Option<Instant>) -> GuardRetirement {
         let Some(guards) = self.guards.take() else {
-            return;
+            return GuardRetirement::Complete;
         };
-        if self.children.iter().all(|child| child.join.is_none()) {
-            drop(guards);
-            return;
-        }
+        let may_wait = self.children.iter().all(|child| child.join.is_none());
         let payload = Arc::new(Mutex::new(Some((
             std::mem::take(&mut self.children),
             guards,
         ))));
         let worker = Arc::clone(&payload);
         let diagnostic = self.diagnostic_capture.clone();
+        let (retired_tx, retired_rx) = channel();
         let spawned = std::thread::Builder::new()
             .name("searchd-custody-reaper".to_string())
             .spawn(move || {
@@ -971,13 +1089,52 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
                             }
                         },
                     );
-                    drop(guards);
+                    let result = retire_guards(guards, diagnostic.as_ref());
+                    let _reported = retired_tx.send((Instant::now(), result));
                 }
             });
-        if spawned.is_err() {
+        if let Err(error) = spawned {
             // The failure outcome is already non-green. Preserve custody
             // even under thread exhaustion; the process exit releases it.
             std::mem::forget(payload);
+            return GuardRetirement::Failed(quanta_index_core::CoreError::storage_io(
+                "spawn runtime custody worker",
+                &error,
+            ));
+        }
+        if let Some(signum) = self.latched_abort() {
+            return GuardRetirement::Aborted(signum);
+        }
+        let Some(deadline) = deadline.filter(|_deadline| may_wait) else {
+            return GuardRetirement::Pending;
+        };
+        loop {
+            if let Some(signum) = self.latched_abort() {
+                return GuardRetirement::Aborted(signum);
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return GuardRetirement::Pending;
+            };
+            match retired_rx.recv_timeout(remaining.min(SUPERVISOR_POLL)) {
+                Ok((finished, result)) => {
+                    if let Some(signum) = self.latched_abort() {
+                        return GuardRetirement::Aborted(signum);
+                    }
+                    if finished > deadline {
+                        return GuardRetirement::Pending;
+                    }
+                    return match result {
+                        Ok(()) => GuardRetirement::Complete,
+                        Err(error) => GuardRetirement::Failed(error),
+                    };
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    return GuardRetirement::Failed(quanta_index_core::CoreError::Storage(
+                        "runtime custody worker ended without its checked retirement result".into(),
+                    ));
+                }
+            }
         }
     }
 

@@ -2,6 +2,9 @@
 crate quanta_index_core
 ├── mod diagnostic_trace: pub
 │   ├── enum DiagnosticAdoptionFlushReasonV1: pub
+│   ├── enum DiagnosticAnnIndexKindV1: pub
+│   ├── struct DiagnosticAnnRegionObservationV1: pub
+│   ├── enum DiagnosticAnnRegionPhaseV1: pub
 │   ├── struct DiagnosticAttemptGuardCoreV1: pub
 │   ├── enum DiagnosticBm25BoundaryLabelV1: pub
 │   ├── struct DiagnosticCaptureIdV1: pub
@@ -21,6 +24,7 @@ crate quanta_index_core
 │   ├── enum DiagnosticRootKindV1: pub
 │   ├── struct DiagnosticSpanGuardV1: pub
 │   ├── struct DiagnosticSpanIdV1: pub
+│   ├── struct DiagnosticSqliteSyncObservationV1: pub
 │   ├── enum DiagnosticStageV1: pub
 │   ├── enum DiagnosticSyncLabelV1: pub
 │   ├── enum DiagnosticTerminalV1: pub
@@ -40,6 +44,7 @@ crate quanta_index_core
 │   │   ├── struct AuxiliaryRowV1: pub
 │   │   └── struct AuxiliaryTrackRowV1: pub
 │   ├── mod generation: pub
+│   │   ├── struct DirectSealedGenerationByteSession: pub(self)
 │   │   ├── struct FinishedReclaims: pub
 │   │   ├── trait GenerationIdentityValidatePort: pub
 │   │   ├── trait GenerationNamespaceReadPort: pub
@@ -53,13 +58,16 @@ crate quanta_index_core
 │   │   ├── enum QuarantineDiscardOutcomeV1: pub
 │   │   ├── trait QuarantinedGenerationDiscardPort: pub
 │   │   ├── struct QuarantinedGenerationV1: pub
+│   │   ├── struct RetentionMeasurementPolicy: pub
 │   │   ├── struct SealedArtifactCommitmentV1: pub
+│   │   ├── trait SealedGenerationByteSession: pub
 │   │   ├── struct SealedGenerationBytesV1: pub
 │   │   ├── trait SealedGenerationIdentityProbePort: pub
 │   │   ├── struct SealedGenerationInventoryV1: pub
 │   │   ├── enum SealedGenerationReclaimOutcomeV1: pub
 │   │   ├── trait SealedGenerationReclaimPort: pub
 │   │   ├── trait SealedGenerationScanPort: pub
+│   │   ├── trait TrackPhysicalByteSession: pub
 │   │   ├── enum TreeCommitmentMismatchV1: pub
 │   │   ├── struct TreeCommitmentV1: pub
 │   │   ├── struct TreeEntryV1: pub(self)
@@ -196,7 +204,11 @@ crate quanta_index_core
 │   │       └── enum LexicalPredicateV1: pub
 │   ├── mod reclaim_area: pub
 │   │   ├── struct DirectoryFrame: pub(self)
-│   │   └── struct RemoveFrame: pub(self)
+│   │   ├── enum InodeWalkError: pub(self)
+│   │   ├── struct InodeWalkGuardrails: pub(self)
+│   │   ├── struct RegularFileInodeV1: pub
+│   │   ├── struct RemoveFrame: pub(self)
+│   │   └── struct WalkEnvelope: pub(self)
 │   ├── mod repomap: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   ├── trait PinnedRepoMapSnapshot: pub
@@ -249,6 +261,7 @@ crate quanta_index_core
 │   │   │   ├── struct SemanticReadiness: pub
 │   │   │   ├── struct SemanticSearchHitV1: pub
 │   │   │   ├── trait SemanticSearcher: pub
+│   │   │   ├── struct TextEmbeddingBatch: pub
 │   │   │   └── trait TextEmbeddingProvider: pub
 │   │   ├── mod service: pub(self)
 │   │   │   ├── struct L2UnitEmbeddingProvider: pub
@@ -302,12 +315,20 @@ crate quanta_index_core
 │           └── struct StructuralMatchCandidate: pub
 ├── mod error: pub
 │   └── enum CoreError: pub
+├── mod history_text_file_io: pub(crate)
+│   ├── struct HistoryTextDirectoryEntry: pub
+│   ├── trait HistoryTextFileAdmissionFactory: pub
+│   ├── trait HistoryTextFileIoPort: pub
+│   └── trait HistoryTextPhysicalLock: pub
 ├── mod index: pub
 │   ├── mod attempt: pub(self)
 │   │   └── struct AttemptSink: pub(self)
 │   ├── mod budget: pub
-│   │   ├── enum IndexError: pub
+│   │   ├── struct DeniedCharge: pub(self)
+│   │   ├── struct DeniedMemory: pub(self)
+│   │   ├── struct ExternalResourceRefusal: pub(self)
 │   │   ├── struct WorkBudget: pub
+│   │   ├── enum WorkBudgetDenial: pub
 │   │   ├── struct WorkLimits: pub
 │   │   └── struct WorkUsage: pub
 │   ├── mod effort: pub
@@ -317,13 +338,13 @@ crate quanta_index_core
 │   │   ├── enum CoverageExactness: pub
 │   │   ├── struct DecisionFrame: pub
 │   │   ├── enum DecisionReason: pub
+│   │   ├── struct DeclaredCostEstimator: pub
 │   │   ├── struct EffortAuthority: pub
 │   │   ├── enum EffortError: pub
 │   │   ├── struct EffortGovernor: pub
 │   │   ├── trait EffortPolicy: pub
 │   │   ├── enum EffortPreference: pub
 │   │   ├── struct EffortSignals: pub
-│   │   ├── struct EnvelopeCostEstimator: pub
 │   │   ├── enum ExecutionPhase: pub
 │   │   ├── struct HysteresisConfig: pub
 │   │   ├── struct HysteresisPolicy: pub
@@ -345,70 +366,260 @@ crate quanta_index_core
 │   │   ├── enum StageObligation: pub
 │   │   ├── struct StageOffer: pub
 │   │   └── enum UnknownReason: pub
+│   ├── mod error: pub(self)
+│   │   └── enum IndexError: pub
+│   ├── mod lifetime: pub(self)
+│   │   ├── trait ReadSessionLease: pub
+│   │   ├── struct ReadSessionRecoveryPage: pub
+│   │   ├── struct ReadSessionRef: pub
+│   │   └── struct ReadTicketLease: pub
+│   ├── mod map_roots: pub(self)
+│   │   ├── struct MapRootBuilder: pub
+│   │   ├── struct MapRootData: pub(self)
+│   │   ├── struct StagedMapRootIter: pub
+│   │   └── struct StagedMapRoots: pub
+│   ├── mod map_value: pub(self)
+│   │   ├── struct EncodedMapValue: pub
+│   │   ├── struct InlineMapValue: pub
+│   │   └── enum MapValue: pub
+│   ├── mod memory: pub(self)
+│   │   ├── struct Lease: pub(self)
+│   │   ├── struct MemoryLease: pub
+│   │   ├── trait MemoryLeaseOwner: pub
+│   │   ├── enum MemoryLifetime: pub
+│   │   ├── struct MemoryScope: pub
+│   │   └── trait MemoryScopePort: pub
+│   ├── mod metadata: pub(self)
 │   ├── mod mutations: pub(self)
+│   │   ├── enum MutationPosition: pub(self)
 │   │   ├── struct OwnerMutationCursor: pub
 │   │   ├── struct OwnerMutationDigest: pub
-│   │   └── struct SourceChangeCursor: pub
+│   │   ├── struct SourceChangeCursor: pub
+│   │   ├── struct SourceInputCursor: pub
+│   │   ├── enum SourceInputMode: pub(self)
+│   │   ├── struct SourceSnapshotCursor: pub
+│   │   ├── mod canonical: pub(self)
+│   │   │   ├── enum Target: pub(self)
+│   │   │   └── struct Writer: pub(self)
+│   │   └── mod source_change_diff: pub(self)
+│   │       ├── struct DiffRows: pub(self)
+│   │       └── struct SourceDiffPages: pub(super)
+│   ├── mod owned_work: pub(self)
+│   │   ├── enum OwnedReadyOutcome: pub
+│   │   ├── struct OwnedWorkAssignment: pub
+│   │   ├── enum OwnedWorkBegin: pub
+│   │   ├── enum OwnedWorkDefer: pub
+│   │   ├── struct OwnedWorkGrant: pub
+│   │   ├── struct OwnedWorkPolicy: pub
+│   │   ├── enum OwnedWorkReport: pub
+│   │   └── enum OwnedWorkTerminal: pub
+│   ├── mod owner_coverage: pub(self)
 │   ├── mod ports: pub
 │   │   ├── struct AttemptContext: pub
+│   │   ├── trait CatalogCustodyMaintenancePort: pub
+│   │   ├── trait CatalogDiagnosticPort: pub
+│   │   ├── trait CatalogDiagnosticScope: pub
+│   │   ├── trait CatalogExactHistoryPort: pub
+│   │   ├── trait CatalogGenesisPort: pub
 │   │   ├── trait CatalogPublicationPort: pub
 │   │   ├── trait CatalogReadPort: pub
+│   │   ├── trait CatalogReclaimPort: pub
+│   │   ├── trait CatalogTerminalWorkRetentionPort: pub
 │   │   ├── trait ImmutableObjectPort: pub
 │   │   ├── trait IndexBuildPort: pub
 │   │   ├── type IndexFuture: pub
 │   │   ├── trait IndexOwnerBuildPort: pub
-│   │   ├── trait IndexReadPort: pub
+│   │   ├── trait IndexProjectionBuildPort: pub
 │   │   ├── trait InputStagingPort: pub
+│   │   ├── trait ManagedObjectAuthority: pub
+│   │   ├── trait ManagedObjectInstallPort: pub
+│   │   ├── trait ManagedObjectReclaimPort: pub
+│   │   ├── struct MapDiffRange: pub
+│   │   ├── trait MapDiffVisitor: pub
 │   │   ├── trait MapEditCursor: pub
 │   │   ├── trait ObjectCustodyPort: pub
+│   │   ├── trait ObjectMapBatchPort: pub
+│   │   ├── trait ObjectReadFile: pub
+│   │   ├── trait ObjectReadIoPort: pub
+│   │   ├── trait ObjectWriteIoPort: pub
 │   │   ├── trait ObjectWriteSink: pub
+│   │   ├── trait ObjectWriteTicket: pub
+│   │   ├── enum OperationInspectAccess: pub
 │   │   ├── trait OperationJournalPort: pub
 │   │   ├── trait PersistentMapPort: pub
+│   │   ├── trait PreparedObjectMapBatch: pub
+│   │   ├── trait SourceAuthorityPort: pub
+│   │   ├── struct TerminalCustodyCandidate: pub
+│   │   ├── struct TerminalCustodyPage: pub
+│   │   ├── struct TerminalWorkRetirementPage: pub
+│   │   ├── struct ViewRetirementPage: pub
 │   │   ├── trait WorkActionCursor: pub
-│   │   └── trait WorkClaimPort: pub
+│   │   ├── trait WorkClaimPort: pub
+│   │   └── struct WorkRetirementCursor: pub
+│   ├── mod query: pub(self)
+│   │   ├── trait IndexQueryPort: pub
+│   │   ├── enum NativeTextHitSource: pub
+│   │   ├── enum QueryCoverage: pub
+│   │   ├── struct QueryOutcome: pub
+│   │   └── struct QueryReadContext: pub
+│   ├── mod read_settlement: pub(self)
+│   │   ├── trait CatalogReadSettlementPort: pub
+│   │   ├── struct NativeReadReleaseObservation: pub
+│   │   ├── struct NativeReadSettlement: pub
+│   │   ├── struct NativeReadSettlementScope: pub
+│   │   └── enum NativeReadSettlementStatus: pub
+│   ├── mod reclaim: pub(self)
+│   │   ├── struct ObjectNamespaceBinding: pub
+│   │   ├── trait ObjectUnlinkPort: pub
+│   │   ├── struct PhysicalIncarnation: pub
+│   │   ├── struct ReclaimCandidate: pub
+│   │   ├── struct ReclaimDrainPage: pub
+│   │   ├── enum ReclaimKind: pub
+│   │   ├── struct ReclaimPermit: pub
+│   │   ├── enum ReclaimTarget: pub
+│   │   ├── enum ReclaimWork: pub
+│   │   ├── struct ReclaimWorkPage: pub
+│   │   └── struct RetiringRef: pub
 │   ├── mod records: pub(self)
 │   │   ├── enum AdmissionOutcome: pub
 │   │   ├── enum BaseMember: pub
+│   │   ├── struct BootstrapRef: pub
 │   │   ├── enum DeltaInput: pub
 │   │   ├── struct MapBatchRequest: pub
 │   │   ├── struct MapBatchWrite: pub
 │   │   ├── struct MapEdit: pub
 │   │   ├── struct MapPage: pub
+│   │   ├── struct MapPageCursor: pub
+│   │   ├── struct MapPageData: pub
+│   │   ├── struct MapPageEntry: pub
 │   │   ├── struct MapWrite: pub
 │   │   ├── struct ObjectBatchInput: pub
+│   │   ├── enum ObjectInstallScope: pub
 │   │   ├── struct OrdinalMapEdit: pub
+│   │   ├── struct OrdinalMapEditData: pub
 │   │   ├── struct PlanContext: pub
 │   │   ├── enum PlanDecision: pub
 │   │   ├── struct PreparedPublication: pub
-│   │   ├── struct RegisteredObject: pub
 │   │   ├── struct SourceChange: pub
 │   │   ├── struct SourceDelta: pub
+│   │   ├── struct SourcePathKey: pub
+│   │   ├── struct SourceRecordOwner: pub
+│   │   ├── struct StagedObjectReferenceIter: pub
+│   │   ├── struct StagedObjectReferences: pub
 │   │   ├── struct StoredObject: pub
+│   │   ├── struct StoredObjectData: pub
 │   │   └── struct TicketRecord: pub
-│   ├── mod work: pub(self)
-│   │   ├── enum WorkAction: pub
-│   │   ├── struct WorkActionDigest: pub
-│   │   └── struct WorkActionSet: pub
-│   └── mod work_cursor: pub(self)
-│       └── struct WorkActionManifestCursor: pub
+│   ├── mod registration: pub(self)
+│   │   ├── struct RegisteredObject: pub
+│   │   ├── struct RegisteredObjectBatch: pub
+│   │   ├── struct RegisteredObjectData: pub
+│   │   ├── struct RegisteredObjectIter: pub
+│   │   └── struct RegistrationWire: pub(self)
+│   ├── mod scratch: pub(self)
+│   │   ├── trait ScratchAllocation: pub
+│   │   ├── trait ScratchIoBinding: pub
+│   │   ├── trait ScratchIoScope: pub
+│   │   ├── trait ScratchNamespaceLease: pub
+│   │   ├── struct ScratchRequest: pub
+│   │   └── trait ScratchSpacePort: pub
+│   ├── mod searchable: pub(self)
+│   │   ├── struct SearchableParentPreparation: pub
+│   │   └── struct SearchablePreparation: pub
+│   ├── mod staging_payload: pub(self)
+│   │   ├── struct InputMemory: pub(self)
+│   │   ├── struct JsonWriter: pub(self)
+│   │   ├── struct StagedObjectBatch: pub
+│   │   └── struct StagedPayload: pub
+│   └── mod work: pub(self)
+│       ├── struct CanonicalWorkWriter: pub(self)
+│       ├── enum ObjectChildren: pub
+│       ├── enum WorkAction: pub
+│       ├── struct WorkActionDigest: pub
+│       └── struct WorkActionSet: pub
 ├── mod ingest_resource: pub
 │   ├── struct IngestBatchFootprint: pub
 │   └── struct IngestResourcePolicy: pub
+├── mod lexical_maintenance: pub
+│   ├── struct LexicalMaintenancePolicy: pub
+│   ├── struct RunSummary: pub
+│   ├── struct StagedPacketBounds: pub
+│   ├── struct StagedPacketIdentity: pub
+│   ├── enum StagedPacketRefusal: pub
+│   └── struct TargetCounters: pub
+├── mod pool_write_admission: pub
+│   ├── struct PendingOrphanUnlink: pub
+│   ├── enum PoolInventoryEntry: pub
+│   ├── trait PoolWriteAdmissionPort: pub
+│   ├── struct PoolWriteLimits: pub
+│   ├── trait PoolWritePermit: pub
+│   └── struct PoolWriteUsage: pub
+├── mod publication_admission: pub
+│   ├── trait CatalogPublicationFundingPort: pub
+│   ├── trait CatalogPublicationFundingScope: pub
+│   ├── trait DurableControlFileAdmissionPort: pub
+│   ├── struct OwnedPublicationOutputPermit: pub(self)
+│   ├── struct PublicationAdmissionRequest: pub
+│   ├── enum PublicationBuildWork: pub
+│   ├── trait PublicationControlFileMutation: pub
+│   ├── trait PublicationControlFileUpdatePort: pub
+│   ├── trait PublicationControlOpenTicket: pub
+│   ├── struct PublicationControlOutputAdmission: pub
+│   ├── trait PublicationControlReader: pub
+│   ├── trait PublicationObjectDeleteTicket: pub
+│   ├── trait PublicationObjectLifetimePort: pub
+│   ├── trait PublicationObjectOpenTicket: pub
+│   ├── trait PublicationObjectReader: pub
+│   ├── struct PublicationOutputAdmission: pub
+│   ├── enum PublicationOutputClass: pub
+│   ├── trait PublicationOutputPermit: pub
+│   ├── struct PublicationOutputReservation: pub
+│   ├── trait PublicationResourceAdmissionPort: pub
+│   ├── trait PublicationResourcePermit: pub
+│   └── struct PublicationWorkOutputAdmission: pub
+├── mod publication_capacity: pub
+│   ├── struct AllowanceState: pub(self)
+│   ├── struct AuthorityId: pub(self)
+│   ├── struct CapacitySnapshot: pub
+│   ├── struct InodeKey: pub
+│   ├── struct OutputTicket: pub
+│   ├── struct PendingCharge: pub
+│   ├── enum PendingChargeKind: pub
+│   ├── struct PendingId: pub
+│   ├── struct PublicationAllowance: pub
+│   ├── struct PublicationCapacity: pub
+│   ├── struct PublicationCapacityLedger: pub
+│   ├── struct ResizeTicket: pub
+│   ├── struct Retained: pub(self)
+│   ├── struct RetainedId: pub
+│   ├── struct State: pub(self)
+│   ├── enum TicketKind: pub(self)
+│   ├── enum TicketPhase: pub(self)
+│   └── struct TicketState: pub(self)
 ├── mod publication_validation: pub(crate)
 │   ├── struct PublicationBodyBinding: pub(self)
+│   ├── struct PublicationResourceState: pub(self)
 │   └── struct PublicationValidationOwner: pub
+├── mod repomap_file_admission: pub(crate)
+│   ├── enum RepoMapImmutablePutOutcome: pub
+│   ├── enum RepoMapPhysicalFileClass: pub
+│   └── trait RepoMapPhysicalFilePort: pub
 ├── mod request_budget: pub
 │   ├── enum BudgetInterruptionV1: pub
 │   ├── struct CancelHandleV1: pub
 │   ├── struct CancelSharedV1: pub(self)
 │   ├── struct CancelWaiterGuardV1: pub
 │   ├── struct CancelWaiterSetV1: pub(self)
+│   ├── struct CancellationRelayV1: pub(self)
 │   ├── struct LexicalPreviewRetention: pub(self)
+│   ├── trait ProviderAttemptCustodyPortV1: pub
+│   ├── trait ProviderAttemptLeaseV1: pub
 │   ├── struct RequestBudgetV1: pub
 │   ├── struct RequestCorrelationV1: pub
+│   ├── trait RequestExecutionObserverV1: pub
 │   ├── enum RequestProviderStageV1: pub
 │   ├── trait RequestStageDiagnosticPortV1: pub
 │   └── struct SemanticWorkLedgerV1: pub(self)
 ├── mod source_upload: pub(crate)
+│   ├── trait SourcePublicationUploadFileAdmissionPort: pub
 │   └── trait SourcePublicationUploadPort: pub
 └── mod timeref: pub

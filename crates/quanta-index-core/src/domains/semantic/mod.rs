@@ -7,32 +7,32 @@ mod service;
 mod stream;
 
 pub use admission::{
-    AdmittedSemanticInputV1, EmbeddingOutcomeV1, PROVIDER_AUDIT_RING_CAP,
+    AdmittedSemanticInputV1, EmbeddingOutcomeV1, ProviderAuditEventV1, ProviderBudgetLedger,
+    ProviderBudgetSnapshotV1, ProviderReservationTicketV1, ProviderSettlementKindV1,
+    ProviderSettlementReceiptV1, ProviderSettlementUsageV1, ProviderSupervisorEnrollmentV1,
+    ProviderWorkBudgetV1, ProviderWorkEstimateV1, SemanticAdmissionEngine, SemanticEgressGrantV1,
+    SemanticEgressPolicyV1, SemanticInputClass, PROVIDER_AUDIT_RING_CAP,
     PROVIDER_BUDGET_EXHAUSTED_CODE, PROVIDER_EGRESS_DENIED_CODE, PROVIDER_WORK_CANCELLED_CODE,
-    ProviderAuditEventV1, ProviderBudgetLedger, ProviderBudgetSnapshotV1,
-    ProviderReservationTicketV1, ProviderSettlementKindV1, ProviderSettlementReceiptV1,
-    ProviderSettlementUsageV1, ProviderSupervisorEnrollmentV1, ProviderWorkBudgetV1,
-    ProviderWorkEstimateV1, SemanticAdmissionEngine, SemanticEgressGrantV1, SemanticEgressPolicyV1,
-    SemanticInputClass,
 };
 pub use inbound::SemanticQueryPort;
 pub use outbound::{
     DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1, DenseIndexTrainingV1,
-    DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, EMBED_CHECKPOINT,
-    SEMANTIC_ROW_ROOT_MISMATCH_CODE, SemanticContentRootsPort, SemanticIndexOpenPort,
-    SemanticIngestPort, SemanticReadiness, SemanticSearchHitV1, SemanticSearcher,
-    TextEmbeddingProvider,
+    DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, SemanticContentRootsPort,
+    SemanticIndexOpenPort, SemanticIngestPort, SemanticReadiness, SemanticSearchHitV1,
+    SemanticSearcher, TextEmbeddingBatch, TextEmbeddingProvider, EMBED_CHECKPOINT,
+    SEMANTIC_ROW_ROOT_MISMATCH_CODE,
 };
 pub use service::{
-    L2_UNIT_NORM_TOLERANCE, L2UnitEmbeddingProvider, RawNormTallies, SemanticPolicy,
+    L2UnitEmbeddingProvider, RawNormTallies, SemanticNormalizationFailureV1, SemanticPolicy,
+    L2_UNIT_NORM_TOLERANCE,
 };
 pub use stream::{
-    ResidentScopeSource, SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
+    build_resident_semantic_batch_v1, owner_key_v1, ResidentScopeSource, SemanticBatchIdentityV1,
+    SemanticBatchMutationsV1, SemanticGenerationContractV1, SemanticIngestHeaderV1,
+    SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticScopeWindowV1,
+    SemanticStreamTallyV1, SemanticStreamWindowPolicy, SemanticWindowFillV1,
+    SemanticWindowIssuerV1, SemanticWindowLeaseV1, SemanticWindowPlacementV1,
+    SemanticWindowResidencyV1, SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
     SEMANTIC_STREAM_WINDOW_EXCEEDED_CODE, SEMANTIC_STREAM_WINDOW_SCOPES,
     SEMANTIC_STREAM_WINDOW_STILL_RESIDENT_CODE, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
-    SemanticBatchIdentityV1, SemanticBatchMutationsV1, SemanticGenerationContractV1,
-    SemanticIngestHeaderV1, SemanticScopeSource, SemanticScopeStreamBuildPort,
-    SemanticScopeWindowV1, SemanticStreamTallyV1, SemanticStreamWindowPolicy, SemanticWindowFillV1,
-    SemanticWindowIssuerV1, SemanticWindowLeaseV1, SemanticWindowPlacementV1,
-    SemanticWindowResidencyV1, build_resident_semantic_batch_v1, owner_key_v1,
 };

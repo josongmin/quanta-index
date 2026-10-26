@@ -1,18 +1,419 @@
+use ciborium::de::FiniteParserAllocationAdmissionV3;
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
 use quanta_index_contract::{
-    ContinuationTokenV2, FileContributorEntry, FileContributorIdentityEntry,
-    FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin,
-    GenerationSelector, HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryOrderV1,
-    HistoryQueryRequest, HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert,
-    HistoryTagMutation, ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
-    RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch,
-    RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch, RevisionId,
-    SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, TextQuerySyntax,
+    BatchPublishReceipt, QueryErrorRepair, SearchPlaneErrorCodeV2,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, admitted_auxiliary_response_seed_v1,
+};
+use quanta_index_contract::{
+    BorrowedAuxiliaryIngestIpcRequestV1, ContinuationTokenV2, FileContributorEntry,
+    FileContributorIdentityEntry, FileContributorIngestBatch, FileOwnershipEntry,
+    FileOwnershipIngestBatch, GenerationPin, GenerationSelector, HistoryDiffHunkUpsert,
+    HistoryIngestBatch, HistoryOrderV1, HistoryQueryRequest, HistoryRefDelete, HistoryRefMutation,
+    HistoryRefUpsert, HistoryTagMutation, ManifestGeneration, RepoCommitRecencyEntry,
+    RepoCommitRecencyIngestBatch, RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId,
+    RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch,
+    RevisionId, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    TextQuerySyntax,
+};
+use quanta_index_ipc::{
+    AdmittedCborDecodeErrorV1, AdmittedClientResponseBody, AdmittedDecodedCborV1,
+    CanonicalBatchDigestProgressError, IpcError, MemoryScope, RequestBudgetV1,
+    canonical_batch_digest_with_progress_v1, decode_cbor_seed_admitted_v1,
+    matches_batch_digest_token_v1,
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
 use crate::{BatchReceipt, QuantaIndexClientPayloadV1, SdkError, stamp_batch_digest_v1};
+
+/// Admission capabilities required by the auxiliary response decoder. This
+/// boundary lets callers retain their Original owner without depending on the
+/// SDK's CBOR implementation crate.
+pub trait AdmittedAuxiliaryResponseOwnerV1:
+    Clone + quanta_index_contract::SourceIdentityDecodeAdmissionV1 + FiniteParserAllocationAdmissionV3
+{
+}
+
+impl<T> AdmittedAuxiliaryResponseOwnerV1 for T where
+    T: Clone
+        + quanta_index_contract::SourceIdentityDecodeAdmissionV1
+        + FiniteParserAllocationAdmissionV3
+{
+}
+
+fn verify_history_wire_digest_v1<B>(batch: &B) -> Result<(), SdkError>
+where
+    B: quanta_index_ipc::IngestBatchBodyV1 + serde::Serialize,
+{
+    match quanta_index_ipc::verify_batch_digest_v1(batch)
+        .map_err(|error| SdkError::Serialization(error.to_string()))?
+    {
+        quanta_index_ipc::BatchDigestVerdictV1::Verified(_) => Ok(()),
+        quanta_index_ipc::BatchDigestVerdictV1::Mismatch { carried, expected } => {
+            Err(SdkError::Protocol(format!(
+                "Auxiliary batch_digest {carried} is not the canonical digest {expected}"
+            )))
+        }
+    }
+}
+
+/// A decoded receipt whose text and parser allocations remain under the
+/// caller's Original owner until the wrapper is dropped. The canonical value
+/// drops before the owner and raw response body.
+pub struct AdmittedAuxiliaryBatchReceiptV1<O> {
+    decoded: AdmittedDecodedCborV1<SearchPlaneIngestIpcResponseEnvelope, O>,
+    _body: AdmittedClientResponseBody,
+}
+
+impl<O> AdmittedAuxiliaryBatchReceiptV1<O> {
+    #[must_use]
+    #[expect(
+        clippy::unreachable,
+        reason = "the private constructor admits only the five receipt variants matched here"
+    )]
+    pub fn receipt(&self) -> &BatchPublishReceipt {
+        match &self.decoded.value().payload {
+            SearchPlaneIngestIpcResponse::HistoryReceipt(receipt)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(receipt)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(receipt) => receipt,
+            SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+            | SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_) => {
+                unreachable!("validated auxiliary receipt wrapper has a receipt")
+            }
+        }
+    }
+}
+
+/// The admitted remote error retains its decoded String grant while the
+/// caller examines the code and message. No bare remote message escapes.
+pub struct AdmittedAuxiliaryRemoteErrorV1<O> {
+    decoded: AdmittedDecodedCborV1<SearchPlaneIngestIpcResponseEnvelope, O>,
+    _body: AdmittedClientResponseBody,
+}
+
+impl<O> AdmittedAuxiliaryRemoteErrorV1<O> {
+    #[expect(
+        clippy::unreachable,
+        reason = "the private constructor admits only an Error response after request and variant checks"
+    )]
+    fn error(&self) -> &SearchPlaneIpcError {
+        match &self.decoded.value().payload {
+            SearchPlaneIngestIpcResponse::Error(error) => error,
+            SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+            | SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => {
+                unreachable!("validated auxiliary remote-error wrapper has an error")
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn code(&self) -> SearchPlaneErrorCodeV2 {
+        self.error().code
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.error().message
+    }
+
+    #[must_use]
+    pub fn repair(&self) -> Option<&QueryErrorRepair> {
+        self.error().repair.as_ref()
+    }
+}
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Remote retains the admitted decoded response, owner, and raw body inline; boxing would allocate outside their Original custody"
+)]
+pub enum AuxiliaryAdmittedPublishErrorV1<E, O> {
+    Progress(E),
+    DigestEncode(IpcError),
+    DigestMismatch,
+    Sdk(SdkError),
+    Decode(AdmittedCborDecodeErrorV1<E>),
+    ResponseRequestIdMismatch,
+    ResponseVariantMismatch,
+    ResponseCommitmentMismatch,
+    Remote(AdmittedAuxiliaryRemoteErrorV1<O>),
+}
+
+impl<E: std::fmt::Debug, O> std::fmt::Debug for AuxiliaryAdmittedPublishErrorV1<E, O> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Progress(cause) => formatter.debug_tuple("Progress").field(cause).finish(),
+            Self::DigestEncode(cause) => {
+                formatter.debug_tuple("DigestEncode").field(cause).finish()
+            }
+            Self::DigestMismatch => formatter.write_str("DigestMismatch"),
+            Self::Sdk(cause) => formatter.debug_tuple("Sdk").field(cause).finish(),
+            Self::Decode(cause) => formatter.debug_tuple("Decode").field(cause).finish(),
+            Self::ResponseRequestIdMismatch => formatter.write_str("ResponseRequestIdMismatch"),
+            Self::ResponseVariantMismatch => formatter.write_str("ResponseVariantMismatch"),
+            Self::ResponseCommitmentMismatch => formatter.write_str("ResponseCommitmentMismatch"),
+            Self::Remote(error) => formatter
+                .debug_tuple("Remote")
+                .field(&error.code())
+                .finish(),
+        }
+    }
+}
+
+impl<E: std::fmt::Display, O> std::fmt::Display for AuxiliaryAdmittedPublishErrorV1<E, O> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Progress(cause) => write!(formatter, "Auxiliary publish interrupted: {cause}"),
+            Self::DigestEncode(cause) => write!(formatter, "Auxiliary digest encode: {cause}"),
+            Self::DigestMismatch => formatter.write_str("Auxiliary batch digest mismatch"),
+            Self::Sdk(cause) => write!(formatter, "Auxiliary SDK: {cause}"),
+            Self::Decode(_cause) => formatter.write_str("Auxiliary response decode refused"),
+            Self::ResponseRequestIdMismatch => {
+                formatter.write_str("Auxiliary response request id mismatch")
+            }
+            Self::ResponseVariantMismatch => {
+                formatter.write_str("Auxiliary response variant mismatch")
+            }
+            Self::ResponseCommitmentMismatch => {
+                formatter.write_str("Auxiliary response commitment mismatch")
+            }
+            Self::Remote(error) => write!(
+                formatter,
+                "Auxiliary remote {}: {}",
+                error.code(),
+                error.message()
+            ),
+        }
+    }
+}
+
+impl<E: std::fmt::Debug + std::fmt::Display, O> std::error::Error
+    for AuxiliaryAdmittedPublishErrorV1<E, O>
+{
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "the typed remote refusal retains its admitted decoded body and owner inline without an unfunded box"
+)]
+fn verify_auxiliary_wire_digest_with_progress_v1<B, E, F, O>(
+    batch: &B,
+    work: &mut F,
+) -> Result<(), AuxiliaryAdmittedPublishErrorV1<E, O>>
+where
+    B: quanta_index_ipc::IngestBatchBodyV1 + serde::Serialize,
+    F: FnMut(usize) -> Result<(), E>,
+{
+    let digest =
+        canonical_batch_digest_with_progress_v1(batch, work).map_err(|error| match error {
+            CanonicalBatchDigestProgressError::Encode(cause) => {
+                AuxiliaryAdmittedPublishErrorV1::DigestEncode(cause)
+            }
+            CanonicalBatchDigestProgressError::Progress(cause) => {
+                AuxiliaryAdmittedPublishErrorV1::Progress(cause)
+            }
+        })?;
+    if matches_batch_digest_token_v1(batch.batch_digest(), &digest) {
+        Ok(())
+    } else {
+        Err(AuxiliaryAdmittedPublishErrorV1::DigestMismatch)
+    }
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "the typed remote refusal retains its admitted decoded body and owner inline without an unfunded box"
+)]
+pub(crate) fn publish_borrowed_auxiliary_admitted_v1<E, F, O>(
+    client: &QuantaIndexClientPayloadV1,
+    payload: BorrowedAuxiliaryIngestIpcRequestV1<'_>,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+    owner: O,
+    work: &mut F,
+) -> Result<AdmittedAuxiliaryBatchReceiptV1<O>, AuxiliaryAdmittedPublishErrorV1<E, O>>
+where
+    F: FnMut(usize) -> Result<(), E>,
+    E: std::fmt::Debug,
+    O: AdmittedAuxiliaryResponseOwnerV1,
+{
+    match &payload {
+        BorrowedAuxiliaryIngestIpcRequestV1::History(batch) => {
+            verify_auxiliary_wire_digest_with_progress_v1(*batch, work)?;
+        }
+        BorrowedAuxiliaryIngestIpcRequestV1::RepoCommitRecency(batch) => {
+            verify_auxiliary_wire_digest_with_progress_v1(*batch, work)?;
+        }
+        BorrowedAuxiliaryIngestIpcRequestV1::FileContributor(batch) => {
+            verify_auxiliary_wire_digest_with_progress_v1(*batch, work)?;
+        }
+        BorrowedAuxiliaryIngestIpcRequestV1::Dirty(batch) => {
+            verify_auxiliary_wire_digest_with_progress_v1(*batch, work)?;
+        }
+        BorrowedAuxiliaryIngestIpcRequestV1::Structural(batch) => {
+            verify_auxiliary_wire_digest_with_progress_v1(*batch, work)?;
+        }
+        BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(_) => {
+            return Err(AuxiliaryAdmittedPublishErrorV1::Sdk(SdkError::Protocol(
+                "RepoMap requires its exact source-bundle receipt binding route".to_string(),
+            )));
+        }
+    }
+
+    let mut transport_refusal = None;
+    let sent = client.dispatch_borrowed_auxiliary_ingest_admitted_v1(
+        payload,
+        budget,
+        memory,
+        &mut |bytes| match work(bytes) {
+            Ok(()) => Ok(()),
+            Err(cause) => {
+                transport_refusal = Some(cause);
+                Err(IpcError::Io(std::io::ErrorKind::Interrupted.into()))
+            }
+        },
+    );
+    if let Some(cause) = transport_refusal {
+        return Err(AuxiliaryAdmittedPublishErrorV1::Progress(cause));
+    }
+    let (request_id, body) = sent.map_err(AuxiliaryAdmittedPublishErrorV1::Sdk)?;
+    let visitor_owner = owner.clone();
+    let mut scratch = [0_u8; 128];
+    let decoded = decode_cbor_seed_admitted_v1(
+        body.as_slice(),
+        &mut scratch,
+        admitted_auxiliary_response_seed_v1(&visitor_owner, body.as_slice().len()),
+        work,
+        quanta_index_contract::MAX_IPC_FRAME_BODY_BYTES_V1,
+        owner,
+    )
+    .map_err(|error| match error {
+        AdmittedCborDecodeErrorV1::Work(cause) => AuxiliaryAdmittedPublishErrorV1::Progress(cause),
+        other @ (AdmittedCborDecodeErrorV1::InputTooLarge { .. }
+        | AdmittedCborDecodeErrorV1::ScratchTooSmall { .. }
+        | AdmittedCborDecodeErrorV1::Frame(_)
+        | AdmittedCborDecodeErrorV1::Parser(_)) => AuxiliaryAdmittedPublishErrorV1::Decode(other),
+    })?;
+    if decoded.value().request_id != request_id {
+        return Err(AuxiliaryAdmittedPublishErrorV1::ResponseRequestIdMismatch);
+    }
+    let receipt = match (&payload, &decoded.value().payload) {
+        (
+            BorrowedAuxiliaryIngestIpcRequestV1::History(_),
+            SearchPlaneIngestIpcResponse::HistoryReceipt(receipt),
+        )
+        | (
+            BorrowedAuxiliaryIngestIpcRequestV1::RepoCommitRecency(_),
+            SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt),
+        )
+        | (
+            BorrowedAuxiliaryIngestIpcRequestV1::FileContributor(_),
+            SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt),
+        )
+        | (
+            BorrowedAuxiliaryIngestIpcRequestV1::Dirty(_),
+            SearchPlaneIngestIpcResponse::DirtyReceipt(receipt),
+        )
+        | (
+            BorrowedAuxiliaryIngestIpcRequestV1::Structural(_),
+            SearchPlaneIngestIpcResponse::StructuralReceipt(receipt),
+        ) => receipt,
+        (_, SearchPlaneIngestIpcResponse::Error(_)) => {
+            return Err(AuxiliaryAdmittedPublishErrorV1::Remote(
+                AdmittedAuxiliaryRemoteErrorV1 {
+                    decoded,
+                    _body: body,
+                },
+            ));
+        }
+        _ => return Err(AuxiliaryAdmittedPublishErrorV1::ResponseVariantMismatch),
+    };
+    let (generation, digest) = match payload {
+        BorrowedAuxiliaryIngestIpcRequestV1::History(batch) => {
+            (batch.generation, batch.batch_digest.as_str())
+        }
+        BorrowedAuxiliaryIngestIpcRequestV1::RepoCommitRecency(batch) => {
+            (batch.generation, batch.batch_digest.as_str())
+        }
+        BorrowedAuxiliaryIngestIpcRequestV1::FileContributor(batch) => {
+            (batch.generation, batch.batch_digest.as_str())
+        }
+        BorrowedAuxiliaryIngestIpcRequestV1::Dirty(batch) => {
+            (batch.generation, batch.batch_digest.as_str())
+        }
+        BorrowedAuxiliaryIngestIpcRequestV1::Structural(batch) => {
+            (batch.generation, batch.batch_digest.as_str())
+        }
+        BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(_) => {
+            return Err(AuxiliaryAdmittedPublishErrorV1::Sdk(SdkError::Protocol(
+                "RepoMap requires its exact source-bundle receipt binding route".to_string(),
+            )));
+        }
+    };
+    if !crate::binding::auxiliary_receipt_matches_v1(generation, digest, receipt) {
+        return Err(AuxiliaryAdmittedPublishErrorV1::ResponseCommitmentMismatch);
+    }
+    Ok(AdmittedAuxiliaryBatchReceiptV1 {
+        decoded,
+        _body: body,
+    })
+}
+
+fn history_receipt_v1(response: SearchPlaneIngestIpcResponse) -> Result<BatchReceipt, SdkError> {
+    if let SearchPlaneIngestIpcResponse::HistoryReceipt(receipt) = response {
+        Ok(receipt)
+    } else {
+        Err(SdkError::unexpected_response(
+            "history receipt",
+            QuantaIndexClientPayloadV1::ingest_response_kind(&response),
+        ))
+    }
+}
+
+fn repo_commit_recency_receipt_v1(
+    response: SearchPlaneIngestIpcResponse,
+) -> Result<BatchReceipt, SdkError> {
+    if let SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt) = response {
+        Ok(receipt)
+    } else {
+        Err(SdkError::unexpected_response(
+            "repo commit recency receipt",
+            QuantaIndexClientPayloadV1::ingest_response_kind(&response),
+        ))
+    }
+}
+
+fn file_contributor_receipt_v1(
+    response: SearchPlaneIngestIpcResponse,
+) -> Result<BatchReceipt, SdkError> {
+    if let SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt) = response {
+        Ok(receipt)
+    } else {
+        Err(SdkError::unexpected_response(
+            "file contributor receipt",
+            QuantaIndexClientPayloadV1::ingest_response_kind(&response),
+        ))
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RefMutation {
@@ -582,33 +983,132 @@ impl<'a> HistoryNamespace<'a> {
         <HistoryNs as crate::NamespaceIngest>::publish(self.client, batch)
     }
 
+    /// Publish a caller-retained, canonical History wire batch without copying
+    /// its commit and diff-hunk bodies. The caller must retain its admission
+    /// and memory custody until this synchronous call returns.
+    pub fn publish_history_borrowed_v1(
+        &self,
+        batch: &HistoryIngestBatch,
+    ) -> Result<BatchReceipt, SdkError> {
+        verify_history_wire_digest_v1(batch)?;
+        history_receipt_v1(self.client.dispatch_borrowed_auxiliary_ingest_v1(
+            BorrowedAuxiliaryIngestIpcRequestV1::History(batch),
+        )?)
+    }
+
+    /// Publish a caller-retained History DTO under the same execution budget,
+    /// memory scope and parser/visitor owner as its Original source.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the typed remote refusal retains decoded response, owner, and raw body inline under Original custody"
+    )]
+    pub fn publish_history_borrowed_admitted_v1<E, F, O>(
+        &self,
+        batch: &HistoryIngestBatch,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+        owner: O,
+        work: &mut F,
+    ) -> Result<AdmittedAuxiliaryBatchReceiptV1<O>, AuxiliaryAdmittedPublishErrorV1<E, O>>
+    where
+        F: FnMut(usize) -> Result<(), E>,
+        E: std::fmt::Debug,
+        O: AdmittedAuxiliaryResponseOwnerV1,
+    {
+        publish_borrowed_auxiliary_admitted_v1(
+            self.client,
+            BorrowedAuxiliaryIngestIpcRequestV1::History(batch),
+            budget,
+            memory,
+            owner,
+            work,
+        )
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "the typed remote refusal retains decoded response, owner, and raw body inline under Original custody"
+    )]
+    pub fn publish_repo_commit_recency_borrowed_admitted_v1<E, F, O>(
+        &self,
+        batch: &RepoCommitRecencyIngestBatch,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+        owner: O,
+        work: &mut F,
+    ) -> Result<AdmittedAuxiliaryBatchReceiptV1<O>, AuxiliaryAdmittedPublishErrorV1<E, O>>
+    where
+        F: FnMut(usize) -> Result<(), E>,
+        E: std::fmt::Debug,
+        O: AdmittedAuxiliaryResponseOwnerV1,
+    {
+        publish_borrowed_auxiliary_admitted_v1(
+            self.client,
+            BorrowedAuxiliaryIngestIpcRequestV1::RepoCommitRecency(batch),
+            budget,
+            memory,
+            owner,
+            work,
+        )
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "the typed remote refusal retains decoded response, owner, and raw body inline under Original custody"
+    )]
+    pub fn publish_file_contributor_borrowed_admitted_v1<E, F, O>(
+        &self,
+        batch: &FileContributorIngestBatch,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+        owner: O,
+        work: &mut F,
+    ) -> Result<AdmittedAuxiliaryBatchReceiptV1<O>, AuxiliaryAdmittedPublishErrorV1<E, O>>
+    where
+        F: FnMut(usize) -> Result<(), E>,
+        E: std::fmt::Debug,
+        O: AdmittedAuxiliaryResponseOwnerV1,
+    {
+        publish_borrowed_auxiliary_admitted_v1(
+            self.client,
+            BorrowedAuxiliaryIngestIpcRequestV1::FileContributor(batch),
+            budget,
+            memory,
+            owner,
+            work,
+        )
+    }
+
+    pub fn publish_repo_commit_recency_borrowed_v1(
+        &self,
+        batch: &RepoCommitRecencyIngestBatch,
+    ) -> Result<BatchReceipt, SdkError> {
+        verify_history_wire_digest_v1(batch)?;
+        repo_commit_recency_receipt_v1(self.client.dispatch_borrowed_auxiliary_ingest_v1(
+            BorrowedAuxiliaryIngestIpcRequestV1::RepoCommitRecency(batch),
+        )?)
+    }
+
+    pub fn publish_file_contributor_borrowed_v1(
+        &self,
+        batch: &FileContributorIngestBatch,
+    ) -> Result<BatchReceipt, SdkError> {
+        verify_history_wire_digest_v1(batch)?;
+        file_contributor_receipt_v1(self.client.dispatch_borrowed_auxiliary_ingest_v1(
+            BorrowedAuxiliaryIngestIpcRequestV1::FileContributor(batch),
+        )?)
+    }
+
     pub fn publish_repo_commit_recency(
         &self,
         batch: &RepoCommitRecencyBatch,
     ) -> Result<BatchReceipt, SdkError> {
         let wire = batch.to_wire_batch()?;
+        verify_history_wire_digest_v1(&wire)?;
         let response = self.client.dispatch_ingest(
             SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(wire),
         )?;
-        match response {
-            SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
-            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
-                "repo commit recency receipt",
-                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
-            )),
-        }
+        repo_commit_recency_receipt_v1(response)
     }
 
     pub fn publish_repo_meta(&self, batch: &RepoMetaBatch) -> Result<BatchReceipt, SdkError> {
@@ -726,28 +1226,11 @@ impl<'a> HistoryNamespace<'a> {
         batch: &FileContributorBatch,
     ) -> Result<BatchReceipt, SdkError> {
         let wire = batch.to_wire_batch()?;
+        verify_history_wire_digest_v1(&wire)?;
         let response = self.client.dispatch_ingest(
             SearchPlaneIngestIpcRequest::PublishFileContributorBatch(wire),
         )?;
-        match response {
-            SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
-            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
-                "file contributor receipt",
-                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
-            )),
-        }
+        file_contributor_receipt_v1(response)
     }
 
     /// Contract-exact query replay surface. Accepts the shared wire DTO
@@ -771,27 +1254,10 @@ impl crate::NamespaceIngest for HistoryNs {
         batch: &HistoryBatch,
     ) -> Result<BatchReceipt, SdkError> {
         let wire = batch.to_wire_batch()?;
+        verify_history_wire_digest_v1(&wire)?;
         let response =
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(wire))?;
-        match response {
-            SearchPlaneIngestIpcResponse::HistoryReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
-            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
-                "history receipt",
-                QuantaIndexClientPayloadV1::ingest_response_kind(&other),
-            )),
-        }
+        history_receipt_v1(response)
     }
 }
 

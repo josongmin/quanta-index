@@ -1,9 +1,13 @@
 use quanta_index_core::index::{
-    AttemptContext, Digest, IndexError, MapEdit, MapRoot, ObjectRef, OperationKey, OrdinalMapEdit,
-    OwnerKey, OwnerMutationCursor, OwnerMutationSet, ProducerCompleteness, ProjectionBinding,
-    ProjectionCertificate, ProjectionId, ProjectionOwnerContribution, ProjectionTransition,
-    RegisteredObject, SourceCut, owner_map_key, ports::MapEditCursor,
+    AttemptContext, Digest, IndexError, MapRoot, ObjectChildren, ObjectRef, OperationKey,
+    OrdinalMapEdit, OwnerKey, OwnerMutationCursor, OwnerMutationSet, ProducerCompleteness,
+    ProjectionBinding, ProjectionCertificate, ProjectionId, ProjectionOwnerContribution,
+    ProjectionTransition, RegisteredObject, SourceCut, decode_projection_binding,
+    decode_projection_certificate, decode_projection_owner, owner_map_key,
+    ports::{ImmutableObjectPort, MapEditCursor},
 };
+
+use crate::{binding_metadata, member_staging::PreparedEdit};
 
 pub(crate) struct ProjectionChange {
     pub owner: OwnerKey,
@@ -27,10 +31,10 @@ pub(crate) fn next_change(
         return Ok(None);
     };
     let key = owner_map_key(mutation.owner);
-    let prior = context.maps.lookup(delta.prior, &key, context.budget)?;
+    let prior = context.maps.lookup_object(delta.prior, &key, context.budget)?;
     let next = context
         .maps
-        .lookup(delta.next.owners, &key, context.budget)?;
+        .lookup_object(delta.next.owners, &key, context.budget)?;
     if prior != mutation.expected || next != mutation.next {
         return Err(IndexError::CorruptObject(
             "projection mutation does not match projection roots".into(),
@@ -55,49 +59,93 @@ impl MapEditCursor for ProjectionEditCursor<'_> {
         &mut self,
         budget: &mut quanta_index_core::index::WorkBudget,
     ) -> Result<Option<OrdinalMapEdit>, IndexError> {
-        Ok(self
-            .mutations
+        self.mutations
             .next_mutation(budget)?
-            .map(|mutation| OrdinalMapEdit {
-                root: 0,
-                edit: MapEdit {
-                    key: owner_map_key(mutation.owner),
-                    expected: mutation.expected,
-                    next: mutation.next,
-                },
-            }))
+            .map(|mutation| {
+                OrdinalMapEdit::copy_object_key(
+                    0,
+                    &owner_map_key(mutation.owner),
+                    mutation.expected,
+                    mutation.next,
+                    budget,
+                )
+            })
+            .transpose()
     }
 }
 
-pub(crate) fn projection_key(projection: ProjectionId) -> Vec<u8> {
-    let mut key = b"projection\0".to_vec();
-    key.extend_from_slice(&projection.0);
+pub(crate) fn projection_key(projection: ProjectionId) -> [u8; 27] {
+    let mut key = [0; 27];
+    for (target, byte) in key
+        .iter_mut()
+        .zip(b"projection\0".iter().chain(&projection.0))
+    {
+        *target = *byte;
+    }
     key
 }
 
-fn decode<T: serde::de::DeserializeOwned>(
-    payload: &[u8],
-    name: &'static str,
-) -> Result<T, IndexError> {
-    serde_json::from_slice(payload)
-        .map_err(|error| IndexError::CorruptObject(format!("{name}: {error}")))
+pub(crate) fn contribution_children(contribution: ProjectionOwnerContribution) -> ObjectChildren {
+    ObjectChildren::from_references([contribution.source, contribution.output, None, None])
 }
 
-fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IndexError> {
-    serde_json::to_vec(value)
-        .map_err(|error| IndexError::InvalidInput(format!("projection encoding: {error}")))
+pub(crate) fn certificate_children(certificate: &ProjectionCertificate) -> ObjectChildren {
+    ObjectChildren::from_references([
+        certificate.target_source.owners.0,
+        certificate.target_source.paths.0,
+        certificate.target_source.frontiers.0,
+        certificate.affected.root.0,
+    ])
 }
 
-pub(crate) fn contribution_children(contribution: ProjectionOwnerContribution) -> Vec<ObjectRef> {
-    contribution.object_children()
+pub(crate) enum ProjectionChildren {
+    Small(ObjectChildren),
+    Five([ObjectRef; 5]),
 }
 
-pub(crate) fn certificate_children(certificate: &ProjectionCertificate) -> Vec<ObjectRef> {
-    certificate.object_children()
+impl ProjectionChildren {
+    fn from_references(mut values: [Option<ObjectRef>; 5]) -> Self {
+        values.sort_unstable();
+        let mut previous = None;
+        let unique = values.into_iter().flatten().filter(|reference| {
+            let fresh = previous != Some(*reference);
+            previous = Some(*reference);
+            fresh
+        });
+        let mut references = [ObjectRef(Digest([0; 32])); 5];
+        let mut count = 0usize;
+        // Five input slots bound the output; zip never truncates a unique edge.
+        for (slot, reference) in references.iter_mut().zip(unique) {
+            *slot = reference;
+            count = count.saturating_add(1);
+        }
+        let [first, second, third, fourth, fifth] = references;
+        match count {
+            0 => Self::Small(ObjectChildren::Empty),
+            1 => Self::Small(ObjectChildren::One([first])),
+            2 => Self::Small(ObjectChildren::Two([first, second])),
+            3 => Self::Small(ObjectChildren::Three([first, second, third])),
+            4 => Self::Small(ObjectChildren::Four([first, second, third, fourth])),
+            _ => Self::Five([first, second, third, fourth, fifth]),
+        }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[ObjectRef] {
+        match self {
+            Self::Small(children) => children.as_slice(),
+            Self::Five(children) => children.as_slice(),
+        }
+    }
 }
 
-pub(crate) fn binding_children(binding: &ProjectionBinding) -> Vec<ObjectRef> {
-    binding.object_children()
+pub(crate) fn binding_children(binding: &ProjectionBinding) -> ProjectionChildren {
+    ProjectionChildren::from_references([
+        Some(binding.certificate),
+        binding.owners.0,
+        binding.source.owners.0,
+        binding.source.paths.0,
+        binding.source.frontiers.0,
+    ])
 }
 
 pub(crate) fn read_contribution(
@@ -110,9 +158,8 @@ pub(crate) fn read_contribution(
             "projection contribution reference mismatch".into(),
         ));
     }
-    let contribution: ProjectionOwnerContribution =
-        decode(&stored.payload, "projection contribution")?;
-    if stored.registration.children != contribution_children(contribution)
+    let contribution = decode_projection_owner(&stored.payload, context.budget)?;
+    if stored.registration.children.as_slice() != contribution_children(contribution).as_slice()
         || contribution.source_owner.is_some() != contribution.source.is_some()
     {
         return Err(IndexError::CorruptObject(
@@ -127,15 +174,24 @@ pub(crate) fn read_binding(
     projection: ProjectionId,
     context: &mut AttemptContext<'_>,
 ) -> Result<ProjectionBinding, IndexError> {
-    let stored = context.objects.get(reference, context.budget)?;
+    read_binding_from(reference, projection, context.objects, context.budget)
+}
+
+pub(crate) fn read_binding_from(
+    reference: ObjectRef,
+    projection: ProjectionId,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut quanta_index_core::index::WorkBudget,
+) -> Result<ProjectionBinding, IndexError> {
+    let stored = objects.get(reference, budget)?;
     if stored.registration.reference != reference {
         return Err(IndexError::CorruptObject(
             "projection binding reference mismatch".into(),
         ));
     }
-    let binding: ProjectionBinding = decode(&stored.payload, "projection binding")?;
+    let binding = decode_projection_binding(&stored.payload, budget)?;
     if binding.projection != projection
-        || stored.registration.children != binding_children(&binding)
+        || stored.registration.children.as_slice() != binding_children(&binding).as_slice()
     {
         return Err(IndexError::CorruptObject(
             "projection binding key or edges mismatch".into(),
@@ -151,7 +207,7 @@ pub(crate) fn lookup_binding(
 ) -> Result<Option<(ObjectRef, ProjectionBinding)>, IndexError> {
     context
         .maps
-        .lookup(root, &projection_key(projection), context.budget)?
+        .lookup_object(root, &projection_key(projection), context.budget)?
         .map(|reference| {
             read_binding(reference, projection, context).map(|binding| (reference, binding))
         })
@@ -168,7 +224,7 @@ pub(crate) fn staged_registration(
             "staged projection object reference mismatch".into(),
         ));
     }
-    Ok(stored.registration)
+    Ok(stored.registration.clone())
 }
 
 pub(crate) fn validate_events(
@@ -234,7 +290,7 @@ pub(crate) fn apply_projection(
         return Err(IndexError::RebuildRequired);
     };
     let key = projection_key(transition.projection);
-    let actual_ref = context.maps.lookup(base_root, &key, context.budget)?;
+    let actual_ref = context.maps.lookup_object(base_root, &key, context.budget)?;
     let actual = actual_ref
         .map(|reference| read_binding(reference, transition.projection, context))
         .transpose()?;
@@ -253,8 +309,9 @@ pub(crate) fn apply_projection(
     }
     let registration = staged_registration(certificate, context)?;
     let stored = context.objects.get(certificate, context.budget)?;
-    let attestation: ProjectionCertificate = decode(&stored.payload, "projection certificate")?;
-    if registration.children != certificate_children(&attestation)
+    let attestation = decode_projection_certificate(&stored.payload, context.budget)?;
+    let expected_edges = certificate_children(&attestation);
+    if registration.children.as_slice() != expected_edges.as_slice()
         || attestation.projection != transition.projection
         || attestation.producer != transition.producer
         || attestation.prior != transition.expected
@@ -276,7 +333,7 @@ pub(crate) fn apply_projection(
         let owner_key = owner_map_key(mutation.owner);
         let old = context
             .maps
-            .lookup(prior_owners, &owner_key, context.budget)?;
+            .lookup_object(prior_owners, &owner_key, context.budget)?;
         if old != mutation.expected || (old.is_none() && mutation.next.is_none()) {
             return Err(IndexError::Conflict);
         }
@@ -301,7 +358,7 @@ pub(crate) fn apply_projection(
             && let (Some(source_owner), Some(source_reference)) =
                 (contribution.source_owner, contribution.source)
         {
-            let actual = context.maps.lookup(
+            let actual = context.maps.lookup_object(
                 current_source.owners,
                 &owner_map_key(source_owner),
                 context.budget,
@@ -318,7 +375,7 @@ pub(crate) fn apply_projection(
             mutations: OwnerMutationCursor::new(transition.owners, context.maps, context.objects),
         };
         let roots = context.apply_stream(&[prior_owners], &mut edits)?;
-        let [root]: [MapRoot; 1] = roots.try_into().map_err(|_roots| {
+        let [root]: [MapRoot; 1] = roots.as_slice().try_into().map_err(|_roots| {
             IndexError::BackendViolation("projection map stream lost root".into())
         })?;
         root
@@ -333,15 +390,10 @@ pub(crate) fn apply_projection(
         dependency_context: transition.dependency_context,
         certificate,
     };
-    let reference = context.put(&encode(&next)?, &binding_children(&next))?;
-    let root = context.apply(
-        base_root,
-        &[MapEdit {
-            key,
-            expected: actual_ref,
-            next: Some(reference),
-        }],
-    )?;
+    let payload = binding_metadata::encode_projection_binding(&next, context.budget)?;
+    let reference = context.put(&payload.bytes, binding_children(&next).as_slice())?;
+    let edit = PreparedEdit::new(&key, actual_ref, Some(reference), context.budget)?;
+    let root = context.apply(base_root, edit.as_slice())?;
     Ok(ProjectionDelta {
         root,
         prior: prior_owners,
@@ -356,4 +408,145 @@ pub(crate) fn projection_context(binding: &ProjectionBinding) -> Digest {
 
 pub(crate) fn owner_context(contribution: ProjectionOwnerContribution) -> Digest {
     contribution.materialization_context()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::staging_payload::tests::{require, scoped_budget};
+    use std::collections::BTreeSet;
+
+    fn reference(byte: u8) -> ObjectRef {
+        ObjectRef(Digest([byte; 32]))
+    }
+
+    #[test]
+    fn inline_five_children_match_set_for_all_null_duplicate_and_zero_shapes()
+    -> Result<(), IndexError> {
+        let choices = [
+            None,
+            Some(reference(0)),
+            Some(reference(1)),
+            Some(reference(2)),
+            Some(reference(3)),
+            Some(reference(4)),
+        ];
+        for mut shape in 0..7776 {
+            let mut values = [None; 5];
+            for value in &mut values {
+                *value = *choices
+                    .get(shape % choices.len())
+                    .ok_or_else(|| IndexError::BackendViolation("fixture choice".into()))?;
+                shape /= choices.len();
+            }
+            let gold: BTreeSet<_> = values.into_iter().flatten().collect();
+            let actual = ProjectionChildren::from_references(values);
+            require(actual.as_slice().iter().copied().eq(gold.into_iter()))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn projection_edges_match_old_contract_and_exclude_historical_roots() -> Result<(), IndexError>
+    {
+        use quanta_index_core::index::{ProducerId, SchemaId, StableOwnerId};
+        let source = SourceCut {
+            owners: MapRoot(Some(reference(3))),
+            paths: MapRoot(Some(reference(2))),
+            frontiers: MapRoot(Some(reference(1))),
+        };
+        let mut binding = ProjectionBinding {
+            projection: ProjectionId([1; 16]),
+            producer: ProducerId([2; 16]),
+            owners: MapRoot(Some(reference(4))),
+            source,
+            schema: SchemaId([3; 16]),
+            producer_policy: Digest([4; 32]),
+            dependency_context: Digest([5; 32]),
+            certificate: reference(5),
+        };
+        require(
+            binding_children(&binding).as_slice()
+                == [
+                    reference(1),
+                    reference(2),
+                    reference(3),
+                    reference(4),
+                    reference(5),
+                ],
+        )?;
+        require(binding_children(&binding).as_slice() == binding.object_children())?;
+        binding.owners = source.owners;
+        binding.certificate = reference(1);
+        require(binding_children(&binding).as_slice() == binding.object_children())?;
+        let mut historical = binding;
+        historical.certificate = reference(99);
+        let mut certificate = ProjectionCertificate {
+            projection: binding.projection,
+            producer: binding.producer,
+            prior: Some(historical),
+            target_source: source,
+            schema: binding.schema,
+            producer_policy: binding.producer_policy,
+            dependency_context: binding.dependency_context,
+            affected: OwnerMutationSet {
+                root: MapRoot(Some(reference(4))),
+                count: 1,
+                digest: Digest([6; 32]),
+            },
+        };
+        require(
+            certificate_children(&certificate).as_slice()
+                == [reference(1), reference(2), reference(3), reference(4)],
+        )?;
+        require(certificate_children(&certificate).as_slice() == certificate.object_children())?;
+        certificate.affected.root = source.owners;
+        require(certificate_children(&certificate).as_slice() == certificate.object_children())?;
+        let mut contribution = ProjectionOwnerContribution {
+            projection: binding.projection,
+            producer: binding.producer,
+            owner: OwnerKey {
+                producer: binding.producer,
+                stable_id: StableOwnerId([1; 16]),
+            },
+            source_owner: None,
+            source: Some(reference(2)),
+            dependency_stamp: Digest([7; 32]),
+            output: Some(reference(1)),
+        };
+        require(contribution_children(contribution).as_slice() == [reference(1), reference(2)])?;
+        for (source, output) in [
+            (Some(reference(1)), Some(reference(1))),
+            (None, Some(reference(0))),
+            (None, None),
+        ] {
+            contribution.source = source;
+            contribution.output = output;
+            require(
+                contribution_children(contribution).as_slice() == contribution.object_children(),
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn projection_key_preserves_literal_namespace_and_only_copies_when_admitted()
+    -> Result<(), IndexError> {
+        let key = projection_key(ProjectionId([3; 16]));
+        let gold: &[u8; 27] =
+            b"projection\0\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03";
+        require(&key == gold)?;
+        let (denied, denied_ledger) = scoped_budget(26)?;
+        require(matches!(
+            PreparedEdit::new(&key, None, None, &denied),
+            Err(IndexError::ResourceLimited)
+        ))?;
+        require(denied_ledger.live() == 0)?;
+        let (budget, ledger) = scoped_budget(27)?;
+        let edit = PreparedEdit::new(&key, None, None, &budget)?;
+        require(edit.as_edit().key.as_slice() == gold && ledger.live() == 27)?;
+        drop(edit);
+        require(ledger.live() == 0)?;
+        Ok(())
+    }
 }

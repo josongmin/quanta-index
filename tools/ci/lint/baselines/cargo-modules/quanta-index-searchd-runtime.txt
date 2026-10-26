@@ -1,0 +1,417 @@
+
+crate quanta_index_searchd_runtime
+├── mod canonical_publication_admission: pub #[cfg(unix)]
+│   ├── struct CanonicalPublicationAdmission: pub
+│   ├── struct HeldPublicationPermit: pub(self)
+│   ├── enum ParentClass: pub(self)
+│   └── struct PublicationAllowanceLimit: pub
+├── mod durable_control_admission: pub #[cfg(unix)]
+│   └── struct CanonicalDurableControlFileAdmission: pub
+├── mod history_text_file_io: pub #[cfg(unix)]
+│   ├── struct CanonicalHistoryTextFileAdmissionFactory: pub
+│   ├── struct HistoryIo: pub(self)
+│   ├── struct HistoryLock: pub(self)
+│   ├── struct HistoryReader: pub(self)
+│   ├── struct HistoryWriter: pub(self)
+│   ├── enum Scope: pub(self)
+│   └── struct Shared: pub(self)
+├── mod legacy_physical_assembly: pub(crate) #[cfg(unix)]
+│   ├── struct LegacyPhysicalAssembly: pub(crate)
+│   └── struct LegacyPhysicalAuthority: pub(crate)
+├── mod legacy_retirement: pub(crate) #[cfg(unix)]
+│   ├── struct LegacyRuntimeRetirement: pub(crate)
+│   └── struct RetirementState: pub(self)
+├── mod native: pub
+│   ├── struct NativeAdapterDescriptors: pub
+│   ├── struct NativeBootAuthority: pub(crate)
+│   ├── struct NativeDispatcher: pub(crate)
+│   ├── struct NativeIndexMaintenance: pub
+│   ├── struct NativeIndexService: pub
+│   ├── struct NativePhysicalProfile: pub
+│   ├── struct NativeServiceCapabilities: pub
+│   ├── struct NativeServiceResources: pub
+│   ├── type PageResultBacking: pub(self)
+│   ├── type ScopedNativeLiteralPage: pub(crate)
+│   └── type ScopedNativePathPage: pub(crate)
+├── mod native_auto_signals: pub(crate)
+│   ├── struct NativeAutoSignalConfig: pub
+│   ├── struct NativeAutoSignals: pub
+│   ├── enum NativeInteractionActivity: pub
+│   ├── trait NativeInteractionActivityPort: pub
+│   ├── trait ResourceSource: pub(crate)
+│   └── trait WorkerSource: pub(crate)
+├── mod native_dispatch: pub(crate)
+├── mod native_effort: pub
+│   ├── enum NativeEffortDeepResult: pub
+│   ├── enum NativeEffortFastResult: pub
+│   ├── trait NativeEffortObserver: pub
+│   ├── struct NativeEffortOverlay: pub
+│   ├── struct NativeEffortRequest: pub
+│   ├── struct NativeEffortResult: pub
+│   ├── enum NativeEffortStage: pub
+│   ├── struct NativeEffortSummary: pub
+│   ├── struct NativeIndexEffortHandle: pub
+│   ├── struct NoopNativeEffortObserver: pub(self)
+│   └── struct OverlayExecution: pub(self)
+├── mod native_effort_ports: pub(crate)
+│   ├── struct MonotonicEffortClock: pub(self)
+│   ├── trait NativeEffortClockPort: pub
+│   ├── struct NativeEffortConfiguration: pub
+│   ├── struct NativeEffortControl: pub
+│   ├── struct NativeEffortDocumentContext: pub
+│   ├── struct NativeEffortObservationHistory: pub
+│   ├── trait NativeEffortSignalPort: pub
+│   ├── enum ObservationScope: pub(self)
+│   └── struct ObservationState: pub(self)
+├── mod native_effort_transport: pub(crate)
+│   ├── struct ScopedNativeEffortDone: pub(crate)
+│   └── struct WireObserver: pub(self)
+├── mod native_graph_transport: pub(crate)
+│   ├── struct GraphAnchor: pub(self)
+│   └── type ScopedNativeGraphResult: pub(crate)
+├── mod native_interaction: pub(crate)
+│   ├── trait InteractionClock: pub(crate)
+│   ├── struct MonotonicClock: pub(self)
+│   ├── struct NativeInteractionRecorder: pub
+│   ├── enum PublisherCommand: pub(self)
+│   ├── struct PublisherLease: pub(self)
+│   └── struct RecorderState: pub(self)
+├── mod native_interaction_transport: pub(crate)
+├── mod native_object_read_io: pub #[cfg(unix)]
+│   ├── struct NativeObjectReadIo: pub
+│   └── struct ReadFile: pub(self)
+├── mod native_object_reclaim_io: pub #[cfg(unix)]
+│   ├── struct NativeObjectReclaimIo: pub
+│   └── struct PendingDelete: pub(self)
+├── mod native_object_write_io: pub #[cfg(unix)]
+│   ├── struct NativeObjectWriteIo: pub
+│   └── struct WriteTicket: pub(self)
+├── mod native_overlay: pub(crate)
+│   ├── struct BoundSave: pub(crate)
+│   ├── struct DocumentEntry: pub(self)
+│   ├── struct NativeOverlay: pub(crate)
+│   ├── struct OverlayCorpusDocument: pub(crate)
+│   ├── struct OverlayCorpusSnapshot: pub(crate)
+│   ├── struct OverlayDocumentKey: pub(crate)
+│   ├── struct OverlayLimits: pub(crate)
+│   ├── struct OverlayMaskSnapshot: pub(crate)
+│   ├── trait OverlayPublisherAuthPort: pub(crate)
+│   ├── struct OverlaySessionKey: pub(crate)
+│   ├── struct OverlaySnapshot: pub(crate)
+│   ├── struct SelectedSourceFrontier: pub(crate)
+│   ├── struct Session: pub(self)
+│   ├── trait SourceSaveFrontierPort: pub(crate)
+│   ├── trait SourceSaveIntentPort: pub(crate)
+│   └── struct State: pub(self)
+├── mod native_overlay_query: pub(crate)
+│   └── type ScopedOverlayTextResult: pub
+├── mod native_overlay_transport: pub(crate)
+│   ├── struct SaveAuthority: pub(self)
+│   └── struct ScopedOverlayReply: pub(crate)
+├── mod native_producer_source_lookup: pub(crate)
+│   └── struct ScopedNativeProducerSourcePage: pub(crate)
+├── mod native_product: pub
+│   ├── struct AdmittedTextProvider: pub(self)
+│   ├── struct Bm25Config: pub(self)
+│   ├── struct DescriptorConfig: pub(self)
+│   ├── struct EffortConfig: pub(self)
+│   ├── enum Event: pub(self)
+│   ├── struct ExecutionConfig: pub(self)
+│   ├── enum ForegroundObservationSource: pub(self)
+│   ├── struct GraphConfig: pub(self)
+│   ├── struct MaintenanceConfig: pub(self)
+│   ├── struct NativeComposition: pub(self)
+│   ├── struct NativeServeConfigV1: pub(self)
+│   ├── struct NeedConfig: pub(self)
+│   ├── struct OverlayConfig: pub(self)
+│   ├── struct OwnedWorkConfig: pub(self)
+│   ├── struct PressureThresholdsConfig: pub(self)
+│   ├── struct ReadSessionsConfig: pub(self)
+│   ├── struct ResourcesConfig: pub(self)
+│   ├── struct RetentionConfig: pub(self)
+│   ├── struct ScopeConfig: pub(self)
+│   ├── struct ScopedSemanticOwner: pub(self)
+│   │   └── type Candidate: pub(self)
+│   ├── struct ScopedSemanticReader: pub(self)
+│   ├── struct SemanticConfig: pub(self)
+│   ├── struct SemanticEgressConfig: pub(self)
+│   ├── enum SemanticInputConfig: pub(self)
+│   ├── enum SemanticProviderConfig: pub(self)
+│   ├── struct SemanticReadPolicyConfig: pub(self)
+│   ├── struct SignalWatch: pub(self)
+│   ├── struct StubAstConfig: pub(self)
+│   ├── struct StubGrammarPolicyConfig: pub(self)
+│   ├── struct TextConfig: pub(self)
+│   ├── struct ValidatedConfig: pub(self)
+│   ├── struct ValidatedEffortConfig: pub(self)
+│   ├── struct ValidatedGraphConfig: pub(self)
+│   ├── struct ValidatedSemanticConfig: pub(self)
+│   ├── struct WorkLimitsConfig: pub(self)
+│   ├── mod boot: pub(self)
+│   │   ├── mod catalog_digest: pub(self)
+│   │   │   └── struct FileIdentity: pub(self)
+│   │   └── mod receipt: pub(self)
+│   │       ├── struct Inode: pub(self)
+│   │       ├── struct Receipt: pub(self)
+│   │       └── struct ReceiptTarget: pub(super)
+│   └── mod diagnostic: pub(self)
+│       └── struct NativeCapture: pub(super)
+├── mod native_projection_owner_lookup: pub(crate)
+│   └── struct ScopedNativeProjectionOwnerLookup: pub(crate)
+├── mod native_projection_source_diff: pub(crate)
+│   ├── struct Rows: pub(self)
+│   └── struct ScopedNativeProjectionSourceDiff: pub(crate)
+├── mod native_provider_custody: pub(crate)
+│   ├── struct AttemptLease: pub(self)
+│   ├── struct NativeProviderExecutionCustody: pub(crate)
+│   └── struct Shared: pub(self)
+├── mod native_provider_signals: pub(crate)
+│   ├── struct NativeProviderPoolSignals: pub
+│   └── trait NativeProviderSignalPort: pub
+├── mod native_pump: pub(crate)
+│   ├── struct ActiveReclaimGuard: pub(self)
+│   ├── struct ActiveRuns: pub(self)
+│   ├── struct FixedPumpPolicy: pub
+│   ├── struct NativeOwnedPump: pub(crate)
+│   ├── struct NativePumpConfig: pub
+│   ├── enum NativePumpDecision: pub
+│   ├── struct NativePumpObservation: pub
+│   ├── trait NativePumpPolicy: pub
+│   ├── struct NativePumpScope: pub
+│   ├── struct NativePumpServices: pub(crate)
+│   ├── type OwnedCompletion: pub(self)
+│   └── struct RunFinished: pub(self)
+├── mod native_query_lowering: pub(crate)
+│   └── struct LoweredNativeText: pub(crate)
+├── mod native_read_session_transport: pub(crate)
+├── mod native_read_sessions: pub(crate)
+│   ├── struct Entry: pub(self)
+│   ├── struct EntryState: pub(self)
+│   ├── struct NativeReadSessionConfig: pub
+│   ├── struct NativeReadSessionSweep: pub(crate)
+│   ├── struct NativeReadSessions: pub(crate)
+│   └── struct Table: pub(self)
+├── mod native_reclaim_driver: pub(crate)
+│   ├── enum HeadSweep: pub(self)
+│   ├── struct NativeReclaimConfig: pub
+│   ├── struct NativeReclaimDriver: pub(crate)
+│   ├── struct NativeReclaimRound: pub(crate)
+│   ├── struct NativeReclaimStep: pub
+│   └── enum ReclaimAttempt: pub(crate)
+├── mod native_reply: pub(crate)
+│   ├── struct CanonicalReplySlot: pub(crate)
+│   ├── enum NativeReply: pub(crate)
+│   ├── struct NativeReplyEnvelope: pub(crate)
+│   └── struct ScopedCanonicalReply: pub(crate)
+├── mod native_repomap_transport: pub(crate)
+│   ├── struct RankedPage: pub(self)
+│   └── struct ScopedNativeRepoMapRankResult: pub(crate)
+├── mod native_resources: pub(crate)
+│   ├── struct AllocationState: pub(self)
+│   ├── struct LedgerState: pub(self)
+│   ├── struct NativeClassScheduler: pub(crate)
+│   │   └── type Token: pub(self)
+│   ├── struct NativeClassSnapshot: pub
+│   ├── struct NativeMemoryLease: pub(self)
+│   ├── struct NativeMemoryScope: pub(self)
+│   ├── enum NativeResourceClass: pub(crate)
+│   ├── struct NativeResourceLedger: pub(crate)
+│   ├── struct NativeResourceObservation: pub
+│   ├── struct NativeResourcePlan: pub
+│   ├── struct NativeResourceSnapshot: pub
+│   └── struct NativeResourceToken: pub(crate)
+├── mod native_result: pub(crate)
+│   ├── struct ResultValue: pub(crate)
+│   └── struct ScopedNativeResult: pub
+├── mod native_retention: pub(crate)
+│   ├── struct NativeRetentionConfig: pub
+│   ├── struct NativeRetentionDriver: pub(crate)
+│   ├── struct NativeRetentionScope: pub
+│   ├── enum Phase: pub(self)
+│   ├── struct ScopeState: pub(self)
+│   ├── struct Sweep: pub(self)
+│   └── struct SweepRequest: pub(self)
+├── mod native_scratch_io: pub #[cfg(unix)]
+│   ├── struct MaintenanceFunding: pub(self)
+│   ├── struct NamespaceLease: pub(self)
+│   ├── struct NativeScratchIo: pub
+│   └── struct ScratchScope: pub(self)
+├── mod native_semantic_result: pub(crate)
+│   ├── type ScopedNativeSemanticResult: pub
+│   ├── type ScopedOverlaySemanticResult: pub
+│   └── mod overlay: pub(self)
+├── mod native_source_owner_lookup: pub(crate)
+│   └── struct ScopedNativeSourceOwnerLookup: pub(crate)
+├── mod native_stub_certificate_projection_v1: pub(crate)
+│   ├── struct CertifiedItem: pub(self)
+│   ├── struct PublishedSession: pub(self)
+│   ├── struct PublishedStubAstCertificatePort: pub(crate)
+│   └── struct StubGrammarPolicy: pub
+├── mod native_stub_transport: pub(crate)
+│   └── struct ScopedStubReply: pub(crate)
+├── mod native_text_result: pub(crate)
+│   └── type ScopedNativeTextResult: pub
+├── mod native_work_diagnostic: pub(crate)
+│   ├── enum DiscardFailureStage: pub(crate)
+│   ├── struct DiscardRefusal: pub(self)
+│   ├── struct OwnedWorkRefusal: pub(self)
+│   └── struct WorkRefusal: pub(self)
+├── mod native_worker: pub(crate)
+│   ├── struct DirectEnrichmentAdmission: pub(self)
+│   ├── struct DirectEnrichmentPermit: pub(self)
+│   ├── struct DirectReplyCustody: pub(self)
+│   ├── struct ExecutionScope: pub(self)
+│   ├── enum HeldExecution: pub(self)
+│   ├── enum Lane: pub(self)
+│   ├── struct LaneLoad: pub(self)
+│   ├── struct LaneTaskGuard: pub(self)
+│   ├── enum LeasePhase: pub(self)
+│   ├── type NativeKernel: pub(self)
+│   ├── struct NativeLaneSnapshot: pub
+│   ├── struct NativeOperationWorker: pub(crate)
+│   ├── struct NativeWorkerObservation: pub
+│   ├── struct NativeWorkerSnapshot: pub
+│   ├── enum NativeWorkerStatus: pub
+│   ├── struct OwnedEnrichmentSlot: pub(crate)
+│   ├── struct OwnedRunCancellation: pub(crate)
+│   ├── struct OwnedRunHandle: pub(crate)
+│   ├── struct OwnedRunStarted: pub(crate)
+│   ├── type ProviderOwner: pub(self)
+│   ├── struct QueuedCommand: pub(self)
+│   ├── struct ScopePermit: pub(self)
+│   ├── struct ScopeRegistry: pub(self)
+│   ├── struct TelemetryLease: pub(self)
+│   ├── enum WorkerCommand: pub(self)
+│   ├── struct WorkerLoad: pub(self)
+│   ├── type WorkerReply: pub(self)
+│   ├── struct WorkerShutdown: pub(self)
+│   └── struct WorkerTelemetry: pub(self)
+├── mod offline_target_file_io: pub(crate)
+│   └── struct OfflineTargetFileIo: pub(crate)
+├── mod pool_write_admission: pub(crate)
+│   ├── type Identity: pub(self)
+│   ├── struct LedgerState: pub(self)
+│   ├── struct PendingCharge: pub(self)
+│   ├── enum PermitState: pub(self)
+│   ├── type PoolFileIdentity: pub(crate)
+│   ├── struct PoolWriteQuota: pub(crate)
+│   └── struct QuotaPermit: pub(self)
+├── mod publication_control_files: pub #[cfg(unix)]
+│   ├── struct ControlFileMutation: pub(self)
+│   ├── struct ControlOpen: pub(self)
+│   ├── struct ControlReader: pub(self)
+│   └── struct PublicationControlFiles: pub
+├── mod publication_file_capacity: pub #[cfg(unix)]
+│   ├── struct Anchor: pub(self)
+│   ├── struct ControlCreateClaim: pub(self)
+│   ├── struct ControlCreatePending: pub(self)
+│   ├── enum ControlCreateRecovery: pub
+│   ├── enum ControlOldDisposition: pub(self)
+│   ├── struct DeleteTicket: pub
+│   ├── struct FileMutation: pub
+│   ├── enum FundingMode: pub(self)
+│   ├── struct HeldPath: pub(self)
+│   ├── struct InodeObservation: pub
+│   ├── struct InodeState: pub(self)
+│   ├── struct MaintenanceReserve: pub(self)
+│   ├── enum MissingDisposition: pub(self)
+│   ├── enum MutationMode: pub(self)
+│   ├── enum MutationPhase: pub(self)
+│   ├── enum MutationTicket: pub(self)
+│   ├── struct NativeDeleteTicket: pub
+│   ├── struct NativeOpenGuard: pub
+│   ├── struct NativeReaderLease: pub
+│   ├── struct OpenGuard: pub
+│   ├── enum PathAction: pub
+│   ├── enum PathRecovery: pub
+│   ├── struct PathTicket: pub
+│   ├── enum PendingKind: pub(self)
+│   ├── struct PendingMutation: pub(self)
+│   ├── struct PublicationFileCapacity: pub
+│   ├── struct ReaderLease: pub
+│   ├── struct RootCustody: pub(self)
+│   ├── struct RootCustodyEntry: pub(self)
+│   ├── struct Shared: pub(self)
+│   ├── struct Tracking: pub(self)
+│   └── mod directory: pub(self)
+│       ├── type DeleteAliasPlan: pub(self)
+│       ├── enum DeleteBoundary: pub(self)
+│       ├── struct DirectoryDeleteTicket: pub
+│       ├── enum DirectoryMoveRecovery: pub
+│       ├── struct DirectoryPathTicket: pub
+│       ├── struct PendingUnlink: pub(self)
+│       ├── enum RootDeletePhase: pub(self)
+│       └── struct Scanned: pub(self)
+├── mod publication_file_deletions: pub #[cfg(unix)]
+│   ├── struct PendingDelete: pub(self)
+│   ├── enum PendingOperation: pub(self)
+│   ├── struct PublicationFileDeletions: pub
+│   └── mod namespace: pub(self)
+│       ├── enum Kind: pub(self)
+│       ├── enum NamespaceOperation: pub(self)
+│       ├── enum NamespaceOutcome: pub(self)
+│       ├── struct OwnedNamespaceTicket: pub
+│       ├── struct PendingNamespace: pub(super)
+│       ├── struct StagedCleanup: pub(self)
+│       └── struct StagedSource: pub(self)
+├── mod publication_inventory: pub #[cfg(unix)]
+│   ├── struct Frame: pub(self)
+│   ├── struct Observed: pub(self)
+│   └── struct PublicationBootInventoryLimits: pub
+├── mod publication_lance_io: pub #[cfg(unix)]
+│   ├── enum AdmissionScope: pub(self)
+│   ├── struct DirectoryDeleteCustody: pub(self)
+│   ├── struct DirectoryMoveCustody: pub(self)
+│   ├── struct PathCustody: pub(self)
+│   ├── struct PublicationLanceAdmission: pub
+│   ├── struct ReadLeaseCustody: pub(self)
+│   ├── struct ReadOpenCustody: pub(self)
+│   └── struct WriteCustody: pub(self)
+├── mod publication_lexical_lifetime: pub
+│   ├── struct ObjectDelete: pub(self)
+│   ├── struct ObjectOpen: pub(self)
+│   ├── struct ObjectReader: pub(self)
+│   └── struct PublicationLexicalLifetime: pub
+├── mod publication_sidecar: pub #[cfg(unix)]
+│   └── struct SidecarOutputPermit: pub(self)
+├── mod publication_sqlite_vfs: pub #[cfg(unix)]
+│   ├── struct Adapter: pub(self)
+│   ├── struct AdapterState: pub(self)
+│   ├── struct CatalogSqliteScope: pub(self)
+│   ├── struct CatalogVerificationScope: pub(self)
+│   ├── struct CurrentFunding: pub(self)
+│   ├── struct FundedScopeGuard: pub(self)
+│   ├── enum FundingPolicy: pub(self)
+│   ├── struct Handle: pub(self)
+│   ├── struct Router: pub(self)
+│   ├── struct RouterCallback: pub(self)
+│   ├── struct ScopedAdapter: pub(self)
+│   ├── struct ShmHandle: pub(self)
+│   ├── struct SqliteCapacityVfs: pub
+│   ├── mod diagnostic: pub(self)
+│   │   ├── struct Active: pub(self)
+│   │   └── struct Scope: pub(super)
+│   └── mod service: pub(self)
+│       └── struct ServiceFundedCatalogIo: pub
+├── mod repomap_file_admission: pub #[cfg(unix)]
+│   ├── struct CanonicalRepoMapFileAdmission: pub
+│   └── struct RepoMapReader: pub(self)
+├── mod semantic_file_factory: pub #[cfg(unix)]
+│   ├── struct CanonicalSemanticFileAdmissionFactory: pub
+│   └── struct CanonicalSemanticMaintenanceFileFactory: pub
+├── mod signal: pub
+│   └── struct SignalWatch: pub
+├── mod source_upload_file_admission: pub #[cfg(unix)]
+│   ├── type BodyRegistry: pub(self)
+│   ├── struct BodyRegistryState: pub(self)
+│   ├── struct CanonicalSourceUploadFileAdmission: pub
+│   ├── struct HeldBody: pub(self)
+│   ├── struct UploadMutation: pub(self)
+│   └── enum UploadMutationKind: pub(self)
+└── mod state_migration: pub
+    ├── struct CatalogSnapshotAdapter: pub(self)
+    ├── enum OfflineStateCommandOutcomeV1: pub
+    └── mod target: pub(self)
+        ├── struct OfflineTarget: pub(self)
+        ├── struct OfflineTargetFactory: pub(self)
+        └── struct SourcePin: pub(self)

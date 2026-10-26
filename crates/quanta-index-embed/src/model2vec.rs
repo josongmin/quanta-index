@@ -201,17 +201,29 @@ fn read_verified(dir: &Path, name: &str, expected: &str) -> Result<Vec<u8>, Core
 }
 
 impl TextEmbeddingProvider for PotionCodeEmbeddingProvider {
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+    fn embed_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
         self.encode(texts, None)
+            .map(quanta_index_core::TextEmbeddingBatch::unscoped)
     }
 
     fn embed_batch_within(
         &self,
         texts: &[&str],
         budget: &RequestBudgetV1,
-    ) -> Result<Vec<Vec<f32>>, CoreError> {
+    ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
         budget.checkpoint(EMBED_CHECKPOINT)?;
-        self.encode(texts, Some(budget))
+        let memory = quanta_index_core::TextEmbeddingBatch::reserve_output(
+            texts.len(),
+            self.dimension(),
+            budget,
+        )?;
+        let vectors = self.encode(texts, Some(budget))?;
+        Ok(quanta_index_core::TextEmbeddingBatch::from_parts(
+            vectors, memory,
+        ))
     }
 
     fn model_id(&self) -> &str {

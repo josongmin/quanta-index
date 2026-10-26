@@ -11,6 +11,7 @@
 
 use std::cell::RefCell;
 use std::io;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,14 +20,24 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Cut {
     PoolObjectWrite,
+    PoolObjectWriteCall,
+    PoolObjectPartialWrite,
     PoolObjectFileSync,
+    PoolObjectFileSyncCall,
     PoolObjectRename,
     PoolObjectDirectorySync,
+    PoolGcDirectorySync,
+    PoolOrphanCleanupDirectorySync,
+    PoolUnlinkRecoveryDirectorySync,
     PoolFullBarrier,
     AttemptJournalWrite,
     AttemptJournalFileSync,
     AttemptJournalRename,
     AttemptJournalDirectorySync,
+    HardScanCheckpointWrite,
+    HardScanCheckpointFileSync,
+    HardScanCheckpointRename,
+    HardScanCheckpointDirectorySync,
     AttemptJournalAppendWrite,
     AttemptJournalAppendFileSync,
     InheritedObjectLink,
@@ -55,8 +66,19 @@ struct Case {
 
 enum Mode {
     Error,
+    OsError(i32),
+    PartialWrite {
+        prefix_bytes: usize,
+        failure: PartialWriteFailure,
+    },
     Pause(PathBuf),
     Wait(Arc<WaitPoint>),
+}
+
+#[derive(Clone, Copy)]
+enum PartialWriteFailure {
+    OsError(i32),
+    WriteZero,
 }
 
 #[derive(Default)]
@@ -97,6 +119,11 @@ pub(crate) fn reach(cut: Cut, side: Side) -> io::Result<()> {
             Mode::Error => Err(io::Error::other(format!(
                 "injected publication I/O refusal at {cut:?}/{side:?}"
             ))),
+            Mode::OsError(code) => Err(io::Error::from_raw_os_error(*code)),
+            Mode::PartialWrite { .. } => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "partial-write fault requires the pool writer hook",
+            )),
             Mode::Pause(marker) => {
                 let pending = marker.with_extension("pending");
                 std::fs::write(&pending, format!("{cut:?}/{side:?}"))?;
@@ -114,6 +141,84 @@ pub(crate) fn reach(cut: Cut, side: Side) -> io::Result<()> {
             }
         }
     })
+}
+
+struct PrefixFaultWriter<'a, W> {
+    inner: &'a mut W,
+    remaining: usize,
+    failure: PartialWriteFailure,
+}
+
+impl<W: io::Write> io::Write for PrefixFaultWriter<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.remaining == 0 {
+            return match self.failure {
+                PartialWriteFailure::OsError(code) => Err(io::Error::from_raw_os_error(code)),
+                PartialWriteFailure::WriteZero => Ok(0),
+            };
+        }
+        let admitted = bytes
+            .get(..bytes.len().min(self.remaining))
+            .ok_or_else(|| io::Error::other("partial-write prefix exceeds input"))?;
+        let written = self.inner.write(admitted)?;
+        self.remaining = self
+            .remaining
+            .checked_sub(written)
+            .ok_or_else(|| io::Error::other("partial-write writer exceeded prefix"))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Writes a real prefix to the object temporary, then makes `write_all` see
+/// a deterministic write failure. Production builds call `File::write_all`.
+pub(crate) fn write_pool_object(file: &mut std::fs::File, bytes: &[u8]) -> io::Result<()> {
+    reach(Cut::PoolObjectWriteCall, Side::Before)?;
+    let fault = CONTROL.with(|slot| {
+        let mut borrowed = slot.borrow_mut();
+        let Some(control) = borrowed.as_mut() else {
+            return Ok(None);
+        };
+        if control.case.cut != Cut::PoolObjectPartialWrite || control.case.side != Side::Before {
+            return Ok(None);
+        }
+        control.observed = control
+            .observed
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("publication cut counter overflow"))?;
+        if control.observed != control.case.occurrence {
+            return Ok(None);
+        }
+        control.fired = true;
+        match &control.mode {
+            Mode::PartialWrite {
+                prefix_bytes,
+                failure,
+            } => Ok(Some((*prefix_bytes, *failure))),
+            Mode::Error | Mode::OsError(_) | Mode::Pause(_) | Mode::Wait(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "pool partial-write cut requires a partial-write fault",
+            )),
+        }
+    })?;
+    let Some((prefix_bytes, failure)) = fault else {
+        return file.write_all(bytes);
+    };
+    if prefix_bytes == 0 || prefix_bytes >= bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "partial-write prefix must be nonempty and shorter than the object",
+        ));
+    }
+    PrefixFaultWriter {
+        inner: file,
+        remaining: prefix_bytes,
+        failure,
+    }
+    .write_all(bytes)
 }
 
 pub(crate) fn root_cut(cut: Cut, side: Side, path: &Path) -> io::Result<()> {
@@ -230,6 +335,28 @@ pub(crate) fn with_error_at<T>(
             occurrence,
         },
         Mode::Error,
+    );
+    let outcome = operation();
+    let fired = guard.fired();
+    drop(guard);
+    (outcome, fired)
+}
+
+pub(crate) fn with_pool_partial_write_at<T>(
+    prefix_bytes: usize,
+    occurrence: usize,
+    operation: impl FnOnce() -> T,
+) -> (T, bool) {
+    let guard = Guard::install(
+        Case {
+            cut: Cut::PoolObjectPartialWrite,
+            side: Side::Before,
+            occurrence,
+        },
+        Mode::PartialWrite {
+            prefix_bytes,
+            failure: PartialWriteFailure::WriteZero,
+        },
     );
     let outcome = operation();
     let fired = guard.fired();

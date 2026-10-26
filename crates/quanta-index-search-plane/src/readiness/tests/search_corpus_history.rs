@@ -18,9 +18,12 @@ use quanta_index_core::{
     CoreError, DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticCounterV1,
     DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1,
     DiagnosticRootKindV1, DiagnosticStageV1, DiagnosticTerminalV1, IdempotencyKeyV1,
-    SealedGenerationBytesV1, SourceEventBindingV1, SourcePublicationCatalogPort as _,
+    RequestBudgetV1, SealedGenerationBytesV1, SourceEventBindingV1,
+    SourcePublicationCatalogPort as _,
 };
 use tempfile::tempdir;
+
+use quanta_index_core::domains::generation::RetentionMeasurementPolicy;
 
 use crate::SearchCorpusLifecycleOwner;
 use crate::readiness::TEST_INDEX_BYTES_PER_GENERATION;
@@ -76,11 +79,16 @@ struct CountingRestoreIndexBytes {
 }
 
 impl SearchCorpusIndexBytesPort for CountingRestoreIndexBytes {
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+        RetentionMeasurementPolicy::DEFAULT
+    }
+
     fn measure_index_bytes(
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         self.measured_sets
@@ -100,6 +108,7 @@ impl SearchCorpusIndexBytesPort for CountingRestoreIndexBytes {
 
     fn measure_state_root_index_bytes(
         &self,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<Option<u64>, CoreError> {
         Ok(Some(3 * TEST_INDEX_BYTES_PER_GENERATION))
@@ -107,11 +116,16 @@ impl SearchCorpusIndexBytesPort for CountingRestoreIndexBytes {
 }
 
 impl SearchCorpusIndexBytesPort for SingleCandidateIndexBytes {
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+        RetentionMeasurementPolicy::DEFAULT
+    }
+
     fn measure_index_bytes(
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         if *generations != BTreeSet::from([self.generation]) {
@@ -128,6 +142,7 @@ impl SearchCorpusIndexBytesPort for SingleCandidateIndexBytes {
 
     fn measure_state_root_index_bytes(
         &self,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Option<u64>, CoreError> {
         Ok(Some(10))
@@ -135,11 +150,16 @@ impl SearchCorpusIndexBytesPort for SingleCandidateIndexBytes {
 }
 
 impl SearchCorpusIndexBytesPort for PhysicalIndexBytes {
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+        RetentionMeasurementPolicy::DEFAULT
+    }
+
     fn measure_index_bytes(
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         _generations: &BTreeSet<ManifestGeneration>,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         Ok(SealedGenerationBytesV1 {
@@ -150,6 +170,7 @@ impl SearchCorpusIndexBytesPort for PhysicalIndexBytes {
 
     fn measure_state_root_index_bytes(
         &self,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Option<u64>, CoreError> {
         Ok(Some(self.0.load(Ordering::SeqCst)))
@@ -175,11 +196,16 @@ fn configure_empty_generation_fixture(catalog: &crate::ActivationCatalog) -> Res
 }
 
 impl SearchCorpusIndexBytesPort for AbsentIndexBytes {
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+        RetentionMeasurementPolicy::DEFAULT
+    }
+
     fn measure_index_bytes(
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         Ok(SealedGenerationBytesV1 {
@@ -193,11 +219,16 @@ impl SearchCorpusIndexBytesPort for AbsentIndexBytes {
 struct PresenceIndexBytes(Arc<AtomicBool>);
 
 impl SearchCorpusIndexBytesPort for PresenceIndexBytes {
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+        RetentionMeasurementPolicy::DEFAULT
+    }
+
     fn measure_index_bytes(
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         Ok(SealedGenerationBytesV1 {
@@ -215,11 +246,16 @@ impl SearchCorpusIndexBytesPort for PresenceIndexBytes {
 struct MissingGenerationIndexBytes(Arc<AtomicU64>);
 
 impl SearchCorpusIndexBytesPort for MissingGenerationIndexBytes {
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+        RetentionMeasurementPolicy::DEFAULT
+    }
+
     fn measure_index_bytes(
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         let missing = self.0.load(Ordering::SeqCst);
@@ -249,11 +285,16 @@ struct FaultedRestoreIndexBytes {
 }
 
 impl SearchCorpusIndexBytesPort for FaultedRestoreIndexBytes {
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+        RetentionMeasurementPolicy::DEFAULT
+    }
+
     fn measure_index_bytes(
         &self,
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         _generations: &BTreeSet<ManifestGeneration>,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         let code = match self.fault {
@@ -278,6 +319,7 @@ impl SearchCorpusIndexBytesPort for FaultedRestoreIndexBytes {
 
     fn measure_state_root_index_bytes(
         &self,
+        _budget: &RequestBudgetV1,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<Option<u64>, CoreError> {
         Ok(self.physical)
@@ -2187,5 +2229,716 @@ fn post_delete_fsync_failure_fences_rollback_and_retry_reconciles_authoritative_
         "post-delete restart",
     );
     assert!(matches!(reaped_after_restart, Err(CoreError::Typed { .. })));
+    Ok(())
+}
+
+fn assert_candidate_absent_nofollow_v1(path: &std::path::Path) -> TestResult {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(format!("candidate unexpectedly exists: {}", path.display()).into()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[derive(Debug)]
+enum AdmissionMeasurementFaultV1 {
+    Success,
+    BusyOnce,
+    Quota,
+    Storage,
+    Cancel,
+    BusyForever,
+    WaitForOtherPair {
+        first_thread: thread::ThreadId,
+        trigger: Mutex<Option<mpsc::Sender<()>>>,
+        other_done: Arc<AtomicBool>,
+    },
+}
+
+#[derive(Debug)]
+struct AdmissionRetryIndexBytesV1 {
+    policy: RetentionMeasurementPolicy,
+    fault: AdmissionMeasurementFaultV1,
+    pair_probes: AtomicUsize,
+    root_probes: AtomicUsize,
+    original_budget: Mutex<Option<RequestBudgetV1>>,
+    candidate_path: Mutex<Option<std::path::PathBuf>>,
+}
+
+impl AdmissionRetryIndexBytesV1 {
+    fn new(fault: AdmissionMeasurementFaultV1, duration: Duration) -> Result<Self, CoreError> {
+        Ok(Self {
+            policy: RetentionMeasurementPolicy::DEFAULT
+                .with_max_physical_scan_duration(duration)?,
+            fault,
+            pair_probes: AtomicUsize::new(0),
+            root_probes: AtomicUsize::new(0),
+            original_budget: Mutex::new(None),
+            candidate_path: Mutex::new(None),
+        })
+    }
+
+    fn bind_candidate_path(&self, path: std::path::PathBuf) -> Result<(), CoreError> {
+        let mut candidate = self.candidate_path.lock().map_err(|error| {
+            CoreError::Storage(format!("retry fixture candidate path lock: {error}"))
+        })?;
+        *candidate = Some(path);
+        drop(candidate);
+        Ok(())
+    }
+
+    fn assert_bound_candidate_not_durable(&self) -> Result<(), CoreError> {
+        let path = self
+            .candidate_path
+            .lock()
+            .map_err(|error| {
+                CoreError::Storage(format!("retry fixture candidate path lock: {error}"))
+            })?
+            .clone();
+        let Some(path) = path.as_ref() else {
+            return Ok(());
+        };
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(_) => Err(CoreError::InvalidContract(
+                "retry fixture candidate was durable before measurement completed".into(),
+            )),
+            Err(error) => Err(CoreError::Storage(format!(
+                "retry fixture inspect candidate {}: {error}",
+                path.display()
+            ))),
+        }
+    }
+}
+
+impl SearchCorpusIndexBytesPort for AdmissionRetryIndexBytesV1 {
+    fn measurement_policy(&self) -> RetentionMeasurementPolicy {
+        self.policy
+    }
+
+    fn measure_index_bytes(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        _generations: &BTreeSet<ManifestGeneration>,
+        budget: &RequestBudgetV1,
+        _diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        budget.checkpoint("retry-fixture:pair")?;
+        let _previous = self.pair_probes.fetch_add(1, Ordering::SeqCst);
+        Ok(SealedGenerationBytesV1 {
+            bytes: 10,
+            absent: BTreeSet::new(),
+        })
+    }
+
+    fn measure_state_root_index_bytes(
+        &self,
+        budget: &RequestBudgetV1,
+        _diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<Option<u64>, CoreError> {
+        budget.checkpoint("retry-fixture:root")?;
+        let check_original = !matches!(
+            &self.fault,
+            AdmissionMeasurementFaultV1::WaitForOtherPair { first_thread, .. }
+                if thread::current().id() != *first_thread
+        );
+        if check_original {
+            let mut original = self.original_budget.lock().map_err(|error| {
+                CoreError::Storage(format!("retry fixture original budget lock: {error}"))
+            })?;
+            if let Some(previous) = original.as_ref() {
+                if !previous.same_request_as(budget) || previous.deadline() != budget.deadline() {
+                    return Err(CoreError::InvalidContract(
+                        "retry fixture received a renewed measurement budget".into(),
+                    ));
+                }
+            } else {
+                *original = Some(budget.clone());
+            }
+        }
+        let _previous = self.root_probes.fetch_add(1, Ordering::SeqCst);
+        // Every prewrite physical-root probe must still see no candidate.
+        self.assert_bound_candidate_not_durable()?;
+        let busy = || CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+            message: "injected transient physical measurement contention".into(),
+        };
+        match &self.fault {
+            AdmissionMeasurementFaultV1::Success => Ok(Some(10)),
+            AdmissionMeasurementFaultV1::BusyOnce => {
+                if self.root_probes.load(Ordering::SeqCst) == 1 {
+                    Err(busy())
+                } else {
+                    Ok(Some(10))
+                }
+            }
+            AdmissionMeasurementFaultV1::Quota => Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                message: "injected fixed quota refusal".into(),
+            }),
+            AdmissionMeasurementFaultV1::Storage => {
+                Err(CoreError::Storage("injected physical snapshot failure".into()))
+            }
+            AdmissionMeasurementFaultV1::Cancel => {
+                budget.cancel_handle().cancel();
+                budget.checkpoint("retry-fixture:cancel")?;
+                Err(CoreError::InvalidContract("cancel checkpoint unexpectedly passed".into()))
+            }
+            AdmissionMeasurementFaultV1::BusyForever => Err(busy()),
+            AdmissionMeasurementFaultV1::WaitForOtherPair {
+                first_thread,
+                trigger,
+                other_done,
+            } => {
+                if thread::current().id() != *first_thread {
+                    return Ok(Some(10));
+                }
+                if self.root_probes.load(Ordering::SeqCst) == 1 {
+                    let sender = trigger.lock().map_err(|error| {
+                        CoreError::Storage(format!("retry fixture trigger lock: {error}"))
+                    })?.take().ok_or_else(|| {
+                        CoreError::InvalidContract("retry fixture trigger was already sent".into())
+                    })?;
+                    sender.send(()).map_err(|error| {
+                        CoreError::Storage(format!("retry fixture trigger send: {error}"))
+                    })?;
+                    return Err(busy());
+                }
+                if other_done.load(Ordering::SeqCst) {
+                    Ok(Some(10))
+                } else {
+                    Err(busy())
+                }
+            }
+        }
+    }
+}
+
+fn open_retry_authority_v1(
+    root: &std::path::Path,
+    bytes: Arc<AdmissionRetryIndexBytesV1>,
+) -> Result<Arc<AuxiliaryAuthorityStore>, CoreError> {
+    open_retry_authority_with_policy_v1(root, bytes, search_corpus_retention(2)?)
+}
+
+fn open_retry_authority_with_policy_v1(
+    root: &std::path::Path,
+    bytes: Arc<AdmissionRetryIndexBytesV1>,
+    policy: SearchCorpusHistoryRetentionPolicyV1,
+) -> Result<Arc<AuxiliaryAuthorityStore>, CoreError> {
+    Ok(Arc::new(AuxiliaryAuthorityStore::open_with_lifecycle_v1(
+        root,
+        policy,
+        SearchCorpusPairMutationCoordinator::shared(),
+        Arc::new(crate::readiness::auxiliary_store::NoActiveSearchCorpusPinsV1),
+        bytes,
+    )?))
+}
+
+#[test]
+fn transient_measurement_busy_replans_before_durable_record() -> TestResult {
+    let directory = tempdir()?;
+    let bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+        AdmissionMeasurementFaultV1::BusyOnce,
+        Duration::from_secs(2),
+    )?);
+    let store = open_retry_authority_v1(directory.path(), Arc::clone(&bytes))?;
+    let repo = RepoId::new("retry-busy-once")?;
+    let revision = RevisionId::new("revision")?;
+    let generation = ManifestGeneration::new(1);
+    let path = store.search_corpus_authority_path(&repo, &revision, generation);
+    bytes.bind_candidate_path(path.clone())?;
+    let receipt = store.record_sealed_search_corpus(&repo, &revision, generation, "digest-1")?;
+    assert_eq!(bytes.root_probes.load(Ordering::SeqCst), 2);
+    assert!(bytes.pair_probes.load(Ordering::SeqCst) >= 2);
+    assert!(receipt.retains(generation));
+    assert!(std::fs::symlink_metadata(&path)?.is_file());
+    assert_eq!(
+        std::fs::read_dir(store.search_corpus_pair_dir(&repo, &revision))?.count(),
+        1
+    );
+    let raw: serde_json::Value = quanta_index_ipc::decode_cbor_payload(&std::fs::read(&path)?)?;
+    assert_eq!(
+        raw,
+        serde_json::json!({
+            "schema_version": 1,
+            "repo_id": "retry-busy-once",
+            "revision_id": "revision",
+            "generation": 1,
+            "manifest_digest": "digest-1"
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn existing_record_busy_reconciles_without_replacing_its_inode() -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let directory = tempdir()?;
+    let first_bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+        AdmissionMeasurementFaultV1::Success,
+        Duration::from_secs(2),
+    )?);
+    let first_store = open_retry_authority_v1(directory.path(), first_bytes)?;
+    let repo = RepoId::new("retry-existing-record")?;
+    let revision = RevisionId::new("revision")?;
+    let generation = ManifestGeneration::new(1);
+    let path = first_store.search_corpus_authority_path(&repo, &revision, generation);
+    let _first_receipt =
+        first_store.record_sealed_search_corpus(&repo, &revision, generation, "digest-1")?;
+    let original_bytes = std::fs::read(&path)?;
+    let original: serde_json::Value = quanta_index_ipc::decode_cbor_payload(&original_bytes)?;
+    assert_eq!(
+        original,
+        serde_json::json!({
+            "schema_version": 1,
+            "repo_id": "retry-existing-record",
+            "revision_id": "revision",
+            "generation": 1,
+            "manifest_digest": "digest-1"
+        })
+    );
+    let original_meta = std::fs::symlink_metadata(&path)?;
+    let original_inode = (original_meta.dev(), original_meta.ino());
+    drop(first_store);
+
+    let retry_bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+        AdmissionMeasurementFaultV1::BusyOnce,
+        Duration::from_secs(2),
+    )?);
+    let store = open_retry_authority_v1(directory.path(), Arc::clone(&retry_bytes))?;
+    let receipt = store.record_sealed_search_corpus(&repo, &revision, generation, "digest-1")?;
+    assert!(receipt.retains(generation));
+    assert_eq!(retry_bytes.root_probes.load(Ordering::SeqCst), 2);
+    assert!(retry_bytes.pair_probes.load(Ordering::SeqCst) >= 2);
+    assert!(
+        retry_bytes
+            .original_budget
+            .lock()
+            .map_err(|error| error.to_string())?
+            .as_ref()
+            .is_some_and(|budget| budget.interruption().is_none())
+    );
+    let after_meta = std::fs::symlink_metadata(&path)?;
+    assert_eq!((after_meta.dev(), after_meta.ino()), original_inode);
+    assert_eq!(std::fs::read(&path)?, original_bytes);
+    assert_eq!(
+        std::fs::read_dir(store.search_corpus_pair_dir(&repo, &revision))?.count(),
+        1
+    );
+
+    let conflicting =
+        store.record_sealed_search_corpus(&repo, &revision, generation, "digest-conflict");
+    assert!(matches!(
+        conflicting,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusAuthorityConflict,
+            ..
+        })
+    ));
+    assert_eq!(retry_bytes.root_probes.load(Ordering::SeqCst), 2);
+    let final_meta = std::fs::symlink_metadata(&path)?;
+    assert_eq!((final_meta.dev(), final_meta.ino()), original_inode);
+    assert_eq!(std::fs::read(&path)?, original_bytes);
+    assert_eq!(
+        std::fs::read_dir(store.search_corpus_pair_dir(&repo, &revision))?.count(),
+        1
+    );
+    drop(store);
+
+    let quota_bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+        AdmissionMeasurementFaultV1::Quota,
+        Duration::from_secs(2),
+    )?);
+    let quota_store = open_retry_authority_v1(directory.path(), Arc::clone(&quota_bytes))?;
+    let quota_result =
+        quota_store.record_sealed_search_corpus(&repo, &revision, generation, "digest-1");
+    assert!(matches!(
+        quota_result,
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+            ..
+        })
+    ));
+    assert_eq!(quota_bytes.root_probes.load(Ordering::SeqCst), 1);
+    let quota_meta = std::fs::symlink_metadata(&path)?;
+    assert_eq!((quota_meta.dev(), quota_meta.ino()), original_inode);
+    assert_eq!(std::fs::read(&path)?, original_bytes);
+    assert_eq!(
+        std::fs::read_dir(quota_store.search_corpus_pair_dir(&repo, &revision))?.count(),
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn fixed_retention_quota_is_not_retried() -> TestResult {
+    let directory = tempdir()?;
+    let bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+        AdmissionMeasurementFaultV1::Quota,
+        Duration::from_secs(2),
+    )?);
+    let store = open_retry_authority_v1(directory.path(), Arc::clone(&bytes))?;
+    let repo = RepoId::new("retry-fixed-quota")?;
+    let revision = RevisionId::new("revision")?;
+    let generation = ManifestGeneration::new(1);
+    let path = store.search_corpus_authority_path(&repo, &revision, generation);
+    bytes.bind_candidate_path(path.clone())?;
+    let result = store.record_sealed_search_corpus(&repo, &revision, generation, "digest-1");
+    assert!(matches!(
+        result,
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+            ..
+        })
+    ));
+    assert_eq!(bytes.root_probes.load(Ordering::SeqCst), 1);
+    assert_candidate_absent_nofollow_v1(&path)?;
+    Ok(())
+}
+
+#[test]
+fn persistent_measurement_busy_uses_one_original_deadline() -> TestResult {
+    let directory = tempdir()?;
+    let bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+        AdmissionMeasurementFaultV1::BusyForever,
+        Duration::from_millis(100),
+    )?);
+    let store = open_retry_authority_v1(directory.path(), Arc::clone(&bytes))?;
+    let repo = RepoId::new("retry-original-deadline")?;
+    let revision = RevisionId::new("revision")?;
+    let generation = ManifestGeneration::new(1);
+    let path = store.search_corpus_authority_path(&repo, &revision, generation);
+    bytes.bind_candidate_path(path.clone())?;
+    let result = store.record_sealed_search_corpus(&repo, &revision, generation, "digest-1");
+    assert!(matches!(
+        result,
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+            ..
+        })
+    ));
+    let original_expired = bytes
+        .original_budget
+        .lock()
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        .is_some_and(|budget| budget.interruption().is_some());
+    assert!(original_expired);
+    assert!(bytes.root_probes.load(Ordering::SeqCst) >= 1);
+    assert_candidate_absent_nofollow_v1(&path)?;
+    Ok(())
+}
+
+#[test]
+fn busy_retry_releases_root_guard_before_other_pair_admission() -> TestResult {
+    let directory = tempdir()?;
+    let (trigger_tx, trigger_rx) = mpsc::channel();
+    let other_done = Arc::new(AtomicBool::new(false));
+    let bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+        AdmissionMeasurementFaultV1::WaitForOtherPair {
+            first_thread: thread::current().id(),
+            trigger: Mutex::new(Some(trigger_tx)),
+            other_done: Arc::clone(&other_done),
+        },
+        Duration::from_secs(2),
+    )?);
+    let store = open_retry_authority_v1(directory.path(), Arc::clone(&bytes))?;
+    let worker_store = Arc::clone(&store);
+    let worker_done = Arc::clone(&other_done);
+    let worker = thread::spawn(move || -> Result<(), CoreError> {
+        trigger_rx
+            .recv_timeout(Duration::from_secs(3))
+            .map_err(|error| {
+                CoreError::Storage(format!("retry fixture trigger receive: {error}"))
+            })?;
+        let repo = RepoId::new("retry-other-pair")
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        let revision = RevisionId::new("revision")
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        let _receipt = worker_store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(1),
+            "digest-other",
+        )?;
+        worker_done.store(true, Ordering::SeqCst);
+        Ok(())
+    });
+    let repo = RepoId::new("retry-first-pair")?;
+    let revision = RevisionId::new("revision")?;
+    let first = store.record_sealed_search_corpus(
+        &repo,
+        &revision,
+        ManifestGeneration::new(1),
+        "digest-first",
+    );
+    worker
+        .join()
+        .map_err(|_panic| "retry fixture other-pair worker panicked")??;
+    let _receipt = first?;
+    assert!(other_done.load(Ordering::SeqCst));
+    assert!(bytes.root_probes.load(Ordering::SeqCst) >= 3);
+    Ok(())
+}
+
+#[test]
+fn busy_retry_reloads_root_before_projecting_pair_quota() -> TestResult {
+    let directory = tempdir()?;
+    let (trigger_tx, trigger_rx) = mpsc::channel();
+    let other_done = Arc::new(AtomicBool::new(false));
+    let bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+        AdmissionMeasurementFaultV1::WaitForOtherPair {
+            first_thread: thread::current().id(),
+            trigger: Mutex::new(Some(trigger_tx)),
+            other_done: Arc::clone(&other_done),
+        },
+        Duration::from_secs(5),
+    )?);
+    let policy = SearchCorpusHistoryRetentionPolicyV1::new(2, 1024 * 1024, 1, 64 * 1024 * 1024)?;
+    let store = open_retry_authority_with_policy_v1(directory.path(), Arc::clone(&bytes), policy)?;
+    let first_repo = RepoId::new("retry-first-pair-root-gold")?;
+    let other_repo = RepoId::new("retry-other-pair-root-gold")?;
+    let revision = RevisionId::new("revision")?;
+    let generation = ManifestGeneration::new(1);
+    let first_path = store.search_corpus_authority_path(&first_repo, &revision, generation);
+    let other_path = store.search_corpus_authority_path(&other_repo, &revision, generation);
+    bytes.bind_candidate_path(first_path.clone())?;
+    let worker_store = Arc::clone(&store);
+    let worker_done = Arc::clone(&other_done);
+    let worker_repo = other_repo;
+    let worker_revision = revision.clone();
+    let worker = thread::spawn(move || -> Result<(), CoreError> {
+        trigger_rx
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| {
+                CoreError::Storage(format!("retry fixture trigger receive: {error}"))
+            })?;
+        let _receipt = worker_store.record_sealed_search_corpus(
+            &worker_repo,
+            &worker_revision,
+            generation,
+            "digest-other",
+        )?;
+        worker_done.store(true, Ordering::SeqCst);
+        Ok(())
+    });
+    let first =
+        store.record_sealed_search_corpus(&first_repo, &revision, generation, "digest-first");
+    let worker_done_before_first_return = other_done.load(Ordering::SeqCst);
+    let first_budget_uninterrupted = bytes
+        .original_budget
+        .lock()
+        .map_err(|error| error.to_string())
+        .map(|original| {
+            original
+                .as_ref()
+                .is_some_and(|budget| budget.interruption().is_none())
+        });
+    worker
+        .join()
+        .map_err(|_panic| "retry fixture root-gold worker panicked")??;
+    assert!(worker_done_before_first_return);
+    assert!(first_budget_uninterrupted?);
+    assert!(matches!(
+        first,
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+            message,
+        }) if message.contains("state-root admission requires revision_pairs=2")
+            && message.contains("max_revision_pairs=1")
+    ));
+    assert!(other_done.load(Ordering::SeqCst));
+    assert_candidate_absent_nofollow_v1(&first_path)?;
+    let raw: serde_json::Value =
+        quanta_index_ipc::decode_cbor_payload(&std::fs::read(&other_path)?)?;
+    assert_eq!(
+        raw.get("repo_id").and_then(serde_json::Value::as_str),
+        Some("retry-other-pair-root-gold")
+    );
+    assert_eq!(
+        raw.get("manifest_digest")
+            .and_then(serde_json::Value::as_str),
+        Some("digest-other")
+    );
+    Ok(())
+}
+
+#[test]
+fn busy_retry_reloads_same_pair_before_digest_conflict() -> TestResult {
+    let directory = tempdir()?;
+    let (trigger_tx, trigger_rx) = mpsc::channel();
+    let other_done = Arc::new(AtomicBool::new(false));
+    let bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+        AdmissionMeasurementFaultV1::WaitForOtherPair {
+            first_thread: thread::current().id(),
+            trigger: Mutex::new(Some(trigger_tx)),
+            other_done: Arc::clone(&other_done),
+        },
+        Duration::from_secs(5),
+    )?);
+    let store = open_retry_authority_v1(directory.path(), Arc::clone(&bytes))?;
+    let repo = RepoId::new("retry-same-pair-gold")?;
+    let revision = RevisionId::new("revision")?;
+    let generation = ManifestGeneration::new(1);
+    let path = store.search_corpus_authority_path(&repo, &revision, generation);
+    let worker_store = Arc::clone(&store);
+    let worker_done = Arc::clone(&other_done);
+    let worker_repo = repo.clone();
+    let worker_revision = revision.clone();
+    let worker = thread::spawn(move || -> Result<(), CoreError> {
+        trigger_rx
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| {
+                CoreError::Storage(format!("retry fixture trigger receive: {error}"))
+            })?;
+        let _receipt = worker_store.record_sealed_search_corpus(
+            &worker_repo,
+            &worker_revision,
+            generation,
+            "digest-other",
+        )?;
+        worker_done.store(true, Ordering::SeqCst);
+        Ok(())
+    });
+    let first = store.record_sealed_search_corpus(&repo, &revision, generation, "digest-first");
+    worker
+        .join()
+        .map_err(|_panic| "retry fixture pair-gold worker panicked")??;
+    assert!(matches!(
+        first,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusAuthorityConflict,
+            ..
+        })
+    ));
+    assert!(other_done.load(Ordering::SeqCst));
+    let raw: serde_json::Value = quanta_index_ipc::decode_cbor_payload(&std::fs::read(&path)?)?;
+    assert_eq!(
+        raw.get("repo_id").and_then(serde_json::Value::as_str),
+        Some("retry-same-pair-gold")
+    );
+    assert_eq!(
+        raw.get("manifest_digest")
+            .and_then(serde_json::Value::as_str),
+        Some("digest-other")
+    );
+    assert_eq!(
+        std::fs::read_dir(store.search_corpus_pair_dir(&repo, &revision))?.count(),
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn storage_and_cancel_measurement_faults_are_not_retried() -> TestResult {
+    for (fault, expected_code) in [
+        (AdmissionMeasurementFaultV1::Storage, None),
+        (
+            AdmissionMeasurementFaultV1::Cancel,
+            Some(quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled),
+        ),
+    ] {
+        let directory = tempdir()?;
+        let bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+            fault,
+            Duration::from_secs(2),
+        )?);
+        let store = open_retry_authority_v1(directory.path(), Arc::clone(&bytes))?;
+        let repo = RepoId::new("retry-no-storage-cancel")?;
+        let revision = RevisionId::new("revision")?;
+        let generation = ManifestGeneration::new(1);
+        let path = store.search_corpus_authority_path(&repo, &revision, generation);
+        bytes.bind_candidate_path(path.clone())?;
+        let result = store.record_sealed_search_corpus(&repo, &revision, generation, "digest-1");
+        match expected_code {
+            None => assert!(matches!(result, Err(CoreError::Storage(_)))),
+            Some(code) => assert!(
+                matches!(result, Err(CoreError::Typed { code: actual, .. }) if actual == code)
+            ),
+        }
+        assert_eq!(bytes.root_probes.load(Ordering::SeqCst), 1);
+        assert_candidate_absent_nofollow_v1(&path)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct CancelAfterAuthorityRenameV1 {
+    bytes: Arc<AdmissionRetryIndexBytesV1>,
+    candidate_path: Mutex<Option<std::path::PathBuf>>,
+    cancelled_after_rename: AtomicBool,
+}
+
+impl crate::readiness::durable_fs::ParentDirectorySyncPort for CancelAfterAuthorityRenameV1 {
+    fn sync_parent(&self, parent: &std::path::Path) -> std::io::Result<()> {
+        std::fs::File::open(parent)?.sync_all()?;
+        let candidate = self
+            .candidate_path
+            .lock()
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .clone();
+        let Some(candidate) = candidate.as_ref() else {
+            return Ok(());
+        };
+        if candidate.parent() == Some(parent)
+            && std::fs::symlink_metadata(candidate).is_ok_and(|metadata| metadata.is_file())
+        {
+            let cancel = self
+                .bytes
+                .original_budget
+                .lock()
+                .map_err(|error| std::io::Error::other(error.to_string()))?
+                .as_ref()
+                .ok_or_else(|| {
+                    std::io::Error::other("authority rename happened before measurement budget")
+                })?
+                .cancel_handle();
+            cancel.cancel();
+            self.cancelled_after_rename.store(true, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn late_cancel_after_durable_authority_rename_does_not_clear_receipt() -> TestResult {
+    let directory = tempdir()?;
+    let bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+        AdmissionMeasurementFaultV1::Success,
+        Duration::from_secs(2),
+    )?);
+    let parent_sync = Arc::new(CancelAfterAuthorityRenameV1 {
+        bytes: Arc::clone(&bytes),
+        candidate_path: Mutex::new(None),
+        cancelled_after_rename: AtomicBool::new(false),
+    });
+    let store = AuxiliaryAuthorityStore::open_with_parent_sync(
+        directory.path(),
+        search_corpus_retention(2)?,
+        SearchCorpusPairMutationCoordinator::shared(),
+        Arc::new(crate::readiness::auxiliary_store::NoActiveSearchCorpusPinsV1),
+        bytes,
+        parent_sync.clone(),
+    )?;
+    let repo = RepoId::new("retry-late-cancel")?;
+    let revision = RevisionId::new("revision")?;
+    let generation = ManifestGeneration::new(1);
+    let path = store.search_corpus_authority_path(&repo, &revision, generation);
+    *parent_sync
+        .candidate_path
+        .lock()
+        .map_err(|error| std::io::Error::other(error.to_string()))? = Some(path.clone());
+    let receipt = store.record_sealed_search_corpus(&repo, &revision, generation, "digest-1")?;
+    assert!(receipt.retains(generation));
+    assert!(parent_sync.cancelled_after_rename.load(Ordering::SeqCst));
+    assert!(std::fs::symlink_metadata(path)?.is_file());
     Ok(())
 }

@@ -1,6 +1,10 @@
+use quanta_index_contract_base::{
+    AdmittedBoxedTextSeedV1, AdmittedOptionalSeedV1, DecodeBackingAdmissionV1,
+    SourceIdentityDecodeAdmissionV1,
+};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, MapAccess, Visitor},
+    de::{self, DeserializeSeed, MapAccess, Visitor},
     ser::SerializeStruct,
 };
 
@@ -19,6 +23,23 @@ pub struct ChunkStructuralMetadata {
     pub structural_name: Box<str>,
     pub structural_scope: Box<str>,
     pub structural_matched_node: Box<str>,
+}
+
+impl ChunkStructuralMetadata {
+    /// Decode the existing wire shape while the caller retains the admission
+    /// owner for all six boxed text backings.
+    pub fn deserialize_seed_with_admission_v1<'a, A>(
+        admission: &'a A,
+        max_text_bytes: usize,
+    ) -> impl for<'de> DeserializeSeed<'de, Value = Self> + 'a
+    where
+        A: DecodeBackingAdmissionV1 + ?Sized,
+    {
+        AdmittedChunkStructuralMetadataPolicyV1 {
+            admission,
+            max_text_bytes,
+        }
+    }
 }
 
 const CHUNK_STRUCTURAL_METADATA_FIELDS: &[&str] = &[
@@ -52,9 +73,128 @@ impl Serialize for ChunkStructuralMetadata {
     }
 }
 
-struct ChunkStructuralMetadataVisitor;
+#[derive(Clone, Copy)]
+enum ChunkStructuralFieldV1 {
+    VariantTag,
+    StructuralKindTag,
+    StructuralPatternKind,
+    StructuralName,
+    StructuralScope,
+    StructuralMatchedNode,
+}
 
-impl<'de> Visitor<'de> for ChunkStructuralMetadataVisitor {
+fn chunk_structural_field_v1<E: de::Error>(key: &str) -> Result<ChunkStructuralFieldV1, E> {
+    match key {
+        "variant_tag" => Ok(ChunkStructuralFieldV1::VariantTag),
+        "structural_kind_tag" => Ok(ChunkStructuralFieldV1::StructuralKindTag),
+        "structural_pattern_kind" => Ok(ChunkStructuralFieldV1::StructuralPatternKind),
+        "structural_name" => Ok(ChunkStructuralFieldV1::StructuralName),
+        "structural_scope" => Ok(ChunkStructuralFieldV1::StructuralScope),
+        "structural_matched_node" => Ok(ChunkStructuralFieldV1::StructuralMatchedNode),
+        other => Err(E::unknown_field(other, CHUNK_STRUCTURAL_METADATA_FIELDS)),
+    }
+}
+
+struct ChunkStructuralFieldSeedV1;
+
+impl<'de> DeserializeSeed<'de> for ChunkStructuralFieldSeedV1 {
+    type Value = ChunkStructuralFieldV1;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        decoder.deserialize_identifier(self)
+    }
+}
+
+impl Visitor<'_> for ChunkStructuralFieldSeedV1 {
+    type Value = ChunkStructuralFieldV1;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a borrowed ChunkStructuralMetadata field name")
+    }
+
+    fn visit_str<E: de::Error>(self, key: &str) -> Result<Self::Value, E> {
+        chunk_structural_field_v1(key)
+    }
+
+    fn visit_string<E: de::Error>(self, _key: String) -> Result<Self::Value, E> {
+        Err(E::custom("admitted structural field key must be borrowed"))
+    }
+}
+
+trait ChunkStructuralMetadataDecodePolicyV1<'de> {
+    fn next_field<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkStructuralFieldV1>, M::Error>;
+
+    fn next_boxed_text<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Box<str>, M::Error>;
+}
+
+struct OrdinaryChunkStructuralMetadataPolicyV1;
+
+impl<'de> ChunkStructuralMetadataDecodePolicyV1<'de> for OrdinaryChunkStructuralMetadataPolicyV1 {
+    fn next_field<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkStructuralFieldV1>, M::Error> {
+        map.next_key::<String>()?
+            .map(|key| chunk_structural_field_v1(key.as_str()))
+            .transpose()
+    }
+
+    fn next_boxed_text<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Box<str>, M::Error> {
+        let value: String = map.next_value()?;
+        Ok(value.into_boxed_str())
+    }
+}
+
+struct AdmittedChunkStructuralMetadataPolicyV1<'a, A: ?Sized> {
+    admission: &'a A,
+    max_text_bytes: usize,
+}
+
+impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> ChunkStructuralMetadataDecodePolicyV1<'de>
+    for AdmittedChunkStructuralMetadataPolicyV1<'_, A>
+{
+    fn next_field<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkStructuralFieldV1>, M::Error> {
+        map.next_key_seed(ChunkStructuralFieldSeedV1)
+    }
+
+    fn next_boxed_text<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Box<str>, M::Error> {
+        map.next_value_seed(AdmittedBoxedTextSeedV1::new(
+            self.admission,
+            self.max_text_bytes,
+        ))
+    }
+}
+
+impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> DeserializeSeed<'de>
+    for AdmittedChunkStructuralMetadataPolicyV1<'_, A>
+{
+    type Value = ChunkStructuralMetadata;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        let admission = self.admission;
+        let result = decoder.deserialize_struct(
+            "ChunkStructuralMetadata",
+            CHUNK_STRUCTURAL_METADATA_FIELDS,
+            ChunkStructuralMetadataVisitor(self),
+        );
+        if result.is_err() {
+            admission.abort_decode();
+        }
+        result
+    }
+}
+
+struct ChunkStructuralMetadataVisitor<P>(P);
+
+impl<'de, P: ChunkStructuralMetadataDecodePolicyV1<'de>> Visitor<'de>
+    for ChunkStructuralMetadataVisitor<P>
+{
     type Value = ChunkStructuralMetadata;
 
     fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -65,77 +205,64 @@ impl<'de> Visitor<'de> for ChunkStructuralMetadataVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut variant_tag: Option<String> = None;
-        let mut structural_kind_tag: Option<String> = None;
-        let mut structural_pattern_kind: Option<String> = None;
-        let mut structural_name: Option<String> = None;
-        let mut structural_scope: Option<String> = None;
-        let mut structural_matched_node: Option<String> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "variant_tag" => {
+        let mut variant_tag = None;
+        let mut structural_kind_tag = None;
+        let mut structural_pattern_kind = None;
+        let mut structural_name = None;
+        let mut structural_scope = None;
+        let mut structural_matched_node = None;
+        while let Some(field) = self.0.next_field(&mut map)? {
+            match field {
+                ChunkStructuralFieldV1::VariantTag => {
                     if variant_tag.is_some() {
                         return Err(de::Error::duplicate_field("variant_tag"));
                     }
-                    variant_tag = Some(map.next_value()?);
+                    variant_tag = Some(self.0.next_boxed_text(&mut map)?);
                 }
-                "structural_kind_tag" => {
+                ChunkStructuralFieldV1::StructuralKindTag => {
                     if structural_kind_tag.is_some() {
                         return Err(de::Error::duplicate_field("structural_kind_tag"));
                     }
-                    structural_kind_tag = Some(map.next_value()?);
+                    structural_kind_tag = Some(self.0.next_boxed_text(&mut map)?);
                 }
-                "structural_pattern_kind" => {
+                ChunkStructuralFieldV1::StructuralPatternKind => {
                     if structural_pattern_kind.is_some() {
                         return Err(de::Error::duplicate_field("structural_pattern_kind"));
                     }
-                    structural_pattern_kind = Some(map.next_value()?);
+                    structural_pattern_kind = Some(self.0.next_boxed_text(&mut map)?);
                 }
-                "structural_name" => {
+                ChunkStructuralFieldV1::StructuralName => {
                     if structural_name.is_some() {
                         return Err(de::Error::duplicate_field("structural_name"));
                     }
-                    structural_name = Some(map.next_value()?);
+                    structural_name = Some(self.0.next_boxed_text(&mut map)?);
                 }
-                "structural_scope" => {
+                ChunkStructuralFieldV1::StructuralScope => {
                     if structural_scope.is_some() {
                         return Err(de::Error::duplicate_field("structural_scope"));
                     }
-                    structural_scope = Some(map.next_value()?);
+                    structural_scope = Some(self.0.next_boxed_text(&mut map)?);
                 }
-                "structural_matched_node" => {
+                ChunkStructuralFieldV1::StructuralMatchedNode => {
                     if structural_matched_node.is_some() {
                         return Err(de::Error::duplicate_field("structural_matched_node"));
                     }
-                    structural_matched_node = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        CHUNK_STRUCTURAL_METADATA_FIELDS,
-                    ));
+                    structural_matched_node = Some(self.0.next_boxed_text(&mut map)?);
                 }
             }
         }
         Ok(ChunkStructuralMetadata {
-            variant_tag: variant_tag
-                .ok_or_else(|| de::Error::missing_field("variant_tag"))?
-                .into_boxed_str(),
+            variant_tag: variant_tag.ok_or_else(|| de::Error::missing_field("variant_tag"))?,
             structural_kind_tag: structural_kind_tag
-                .ok_or_else(|| de::Error::missing_field("structural_kind_tag"))?
-                .into_boxed_str(),
+                .ok_or_else(|| de::Error::missing_field("structural_kind_tag"))?,
             structural_pattern_kind: structural_pattern_kind
-                .ok_or_else(|| de::Error::missing_field("structural_pattern_kind"))?
-                .into_boxed_str(),
+                .ok_or_else(|| de::Error::missing_field("structural_pattern_kind"))?,
             structural_name: structural_name
-                .ok_or_else(|| de::Error::missing_field("structural_name"))?
-                .into_boxed_str(),
+                .ok_or_else(|| de::Error::missing_field("structural_name"))?,
             structural_scope: structural_scope
-                .ok_or_else(|| de::Error::missing_field("structural_scope"))?
-                .into_boxed_str(),
+                .ok_or_else(|| de::Error::missing_field("structural_scope"))?,
             structural_matched_node: structural_matched_node
-                .ok_or_else(|| de::Error::missing_field("structural_matched_node"))?
-                .into_boxed_str(),
+                .ok_or_else(|| de::Error::missing_field("structural_matched_node"))?,
         })
     }
 }
@@ -148,10 +275,14 @@ impl<'de> Deserialize<'de> for ChunkStructuralMetadata {
         deserializer.deserialize_struct(
             "ChunkStructuralMetadata",
             CHUNK_STRUCTURAL_METADATA_FIELDS,
-            ChunkStructuralMetadataVisitor,
+            ChunkStructuralMetadataVisitor(OrdinaryChunkStructuralMetadataPolicyV1),
         )
     }
 }
+
+#[cfg(test)]
+#[path = "records/admitted_structural_tests.rs"]
+mod admitted_structural_tests;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkRecord {
@@ -168,6 +299,23 @@ pub struct ChunkRecord {
     /// Producer-carried searchable repo facet for federated chunks in one
     /// generation pin. When absent, the batch `repo_id` is indexed.
     pub source_repo_id: Option<RepoId>,
+}
+
+impl ChunkRecord {
+    /// Decode the existing wire with every owned text backing admitted by
+    /// `admission`. The caller must retain that owner alongside the result.
+    pub fn deserialize_seed_with_admission_v1<'a, A>(
+        admission: &'a A,
+        max_text_bytes: usize,
+    ) -> impl for<'de> DeserializeSeed<'de, Value = Self> + 'a
+    where
+        A: SourceIdentityDecodeAdmissionV1 + ?Sized,
+    {
+        AdmittedChunkRecordPolicyV1 {
+            admission,
+            max_text_bytes,
+        }
+    }
 }
 
 const CHUNK_RECORD_FIELDS: &[&str] = &[
@@ -205,9 +353,249 @@ impl Serialize for ChunkRecord {
     }
 }
 
-struct ChunkRecordVisitor;
+#[derive(Clone, Copy)]
+enum ChunkRecordFieldV1 {
+    ChunkId,
+    RepoRelativePath,
+    Language,
+    StartByte,
+    EndByte,
+    StartLine,
+    EndLine,
+    Text,
+    Structural,
+    ParentChunkId,
+    SourceRepoId,
+}
 
-impl<'de> Visitor<'de> for ChunkRecordVisitor {
+fn chunk_record_field_v1<E: de::Error>(key: &str) -> Result<ChunkRecordFieldV1, E> {
+    match key {
+        "chunk_id" => Ok(ChunkRecordFieldV1::ChunkId),
+        "repo_relative_path" => Ok(ChunkRecordFieldV1::RepoRelativePath),
+        "language" => Ok(ChunkRecordFieldV1::Language),
+        "start_byte" => Ok(ChunkRecordFieldV1::StartByte),
+        "end_byte" => Ok(ChunkRecordFieldV1::EndByte),
+        "start_line" => Ok(ChunkRecordFieldV1::StartLine),
+        "end_line" => Ok(ChunkRecordFieldV1::EndLine),
+        "text" => Ok(ChunkRecordFieldV1::Text),
+        "structural" => Ok(ChunkRecordFieldV1::Structural),
+        "parent_chunk_id" => Ok(ChunkRecordFieldV1::ParentChunkId),
+        "source_repo_id" => Ok(ChunkRecordFieldV1::SourceRepoId),
+        other => Err(E::unknown_field(other, CHUNK_RECORD_FIELDS)),
+    }
+}
+
+struct ChunkRecordFieldSeedV1;
+
+impl<'de> DeserializeSeed<'de> for ChunkRecordFieldSeedV1 {
+    type Value = ChunkRecordFieldV1;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        decoder.deserialize_identifier(self)
+    }
+}
+
+impl Visitor<'_> for ChunkRecordFieldSeedV1 {
+    type Value = ChunkRecordFieldV1;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a borrowed ChunkRecord field name")
+    }
+
+    fn visit_str<E: de::Error>(self, key: &str) -> Result<Self::Value, E> {
+        chunk_record_field_v1(key)
+    }
+
+    fn visit_string<E: de::Error>(self, _key: String) -> Result<Self::Value, E> {
+        Err(E::custom("admitted chunk field key must be borrowed"))
+    }
+}
+
+trait ChunkRecordDecodePolicyV1<'de> {
+    fn next_field<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkRecordFieldV1>, M::Error>;
+    fn next_chunk_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<ChunkId, M::Error>;
+    fn next_path<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoRelativePath, M::Error>;
+    fn next_language<M: MapAccess<'de>>(&self, map: &mut M) -> Result<LanguageCode, M::Error>;
+    fn next_text<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Box<str>, M::Error>;
+    fn next_structural<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkStructuralMetadata>, M::Error>;
+    fn next_parent_chunk_id<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkId>, M::Error>;
+    fn next_source_repo_id<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<RepoId>, M::Error>;
+}
+
+struct OrdinaryChunkRecordPolicyV1;
+
+impl<'de> ChunkRecordDecodePolicyV1<'de> for OrdinaryChunkRecordPolicyV1 {
+    fn next_field<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkRecordFieldV1>, M::Error> {
+        map.next_key::<String>()?
+            .map(|key| chunk_record_field_v1(key.as_str()))
+            .transpose()
+    }
+
+    fn next_chunk_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<ChunkId, M::Error> {
+        map.next_value()
+    }
+
+    fn next_path<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoRelativePath, M::Error> {
+        map.next_value()
+    }
+
+    fn next_language<M: MapAccess<'de>>(&self, map: &mut M) -> Result<LanguageCode, M::Error> {
+        map.next_value()
+    }
+
+    fn next_text<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Box<str>, M::Error> {
+        let text: String = map.next_value()?;
+        Ok(text.into_boxed_str())
+    }
+
+    fn next_structural<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkStructuralMetadata>, M::Error> {
+        map.next_value()
+    }
+
+    fn next_parent_chunk_id<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkId>, M::Error> {
+        map.next_value()
+    }
+
+    fn next_source_repo_id<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<RepoId>, M::Error> {
+        map.next_value()
+    }
+}
+
+struct AdmittedRepoIdSeedV1<'a, A: ?Sized>(&'a A);
+
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> DeserializeSeed<'de>
+    for AdmittedRepoIdSeedV1<'_, A>
+{
+    type Value = RepoId;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        self.0.decode_repo_id_v1(decoder)
+    }
+}
+
+struct AdmittedChunkRecordPolicyV1<'a, A: ?Sized> {
+    admission: &'a A,
+    max_text_bytes: usize,
+}
+
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> ChunkRecordDecodePolicyV1<'de>
+    for AdmittedChunkRecordPolicyV1<'_, A>
+{
+    fn next_field<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkRecordFieldV1>, M::Error> {
+        map.next_key_seed(ChunkRecordFieldSeedV1)
+    }
+
+    fn next_chunk_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<ChunkId, M::Error> {
+        map.next_value_seed(ChunkId::deserialize_seed_with_admission_v1(
+            self.admission,
+            self.max_text_bytes,
+        ))
+    }
+
+    fn next_path<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoRelativePath, M::Error> {
+        map.next_value_seed(RepoRelativePath::deserialize_seed_with_admission_v1(
+            self.admission,
+            self.max_text_bytes,
+        ))
+    }
+
+    fn next_language<M: MapAccess<'de>>(&self, map: &mut M) -> Result<LanguageCode, M::Error> {
+        map.next_value_seed(LanguageCode::deserialize_seed_with_admission_v1(
+            self.admission,
+            self.max_text_bytes,
+        ))
+    }
+
+    fn next_text<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Box<str>, M::Error> {
+        map.next_value_seed(AdmittedBoxedTextSeedV1::new(
+            self.admission,
+            self.max_text_bytes,
+        ))
+    }
+
+    fn next_structural<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkStructuralMetadata>, M::Error> {
+        map.next_value_seed(AdmittedOptionalSeedV1::new(
+            self.admission,
+            ChunkStructuralMetadata::deserialize_seed_with_admission_v1(
+                self.admission,
+                self.max_text_bytes,
+            ),
+        ))
+    }
+
+    fn next_parent_chunk_id<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<ChunkId>, M::Error> {
+        map.next_value_seed(AdmittedOptionalSeedV1::new(
+            self.admission,
+            ChunkId::deserialize_seed_with_admission_v1(self.admission, self.max_text_bytes),
+        ))
+    }
+
+    fn next_source_repo_id<M: MapAccess<'de>>(
+        &self,
+        map: &mut M,
+    ) -> Result<Option<RepoId>, M::Error> {
+        map.next_value_seed(AdmittedOptionalSeedV1::new(
+            self.admission,
+            AdmittedRepoIdSeedV1(self.admission),
+        ))
+    }
+}
+
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> DeserializeSeed<'de>
+    for AdmittedChunkRecordPolicyV1<'_, A>
+{
+    type Value = ChunkRecord;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        let admission = self.admission;
+        let result = decoder.deserialize_struct(
+            "ChunkRecord",
+            CHUNK_RECORD_FIELDS,
+            ChunkRecordVisitor(self),
+        );
+        if result.is_err() {
+            admission.abort_decode();
+        }
+        result
+    }
+}
+
+struct ChunkRecordVisitor<P>(P);
+
+impl<'de, P: ChunkRecordDecodePolicyV1<'de>> Visitor<'de> for ChunkRecordVisitor<P> {
     type Value = ChunkRecord;
 
     fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -225,79 +613,78 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
         let mut end_byte: Option<u32> = None;
         let mut start_line: Option<u32> = None;
         let mut end_line: Option<u32> = None;
-        let mut text: Option<String> = None;
+        let mut text: Option<Box<str>> = None;
         let mut structural: Option<Option<ChunkStructuralMetadata>> = None;
         let mut parent_chunk_id: Option<Option<ChunkId>> = None;
         let mut source_repo_id: Option<Option<RepoId>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "chunk_id" => {
+        while let Some(field) = self.0.next_field(&mut map)? {
+            match field {
+                ChunkRecordFieldV1::ChunkId => {
                     if chunk_id.is_some() {
                         return Err(de::Error::duplicate_field("chunk_id"));
                     }
-                    chunk_id = Some(map.next_value()?);
+                    chunk_id = Some(self.0.next_chunk_id(&mut map)?);
                 }
-                "repo_relative_path" => {
+                ChunkRecordFieldV1::RepoRelativePath => {
                     if repo_relative_path.is_some() {
                         return Err(de::Error::duplicate_field("repo_relative_path"));
                     }
-                    repo_relative_path = Some(map.next_value()?);
+                    repo_relative_path = Some(self.0.next_path(&mut map)?);
                 }
-                "language" => {
+                ChunkRecordFieldV1::Language => {
                     if language.is_some() {
                         return Err(de::Error::duplicate_field("language"));
                     }
-                    language = Some(map.next_value()?);
+                    language = Some(self.0.next_language(&mut map)?);
                 }
-                "start_byte" => {
+                ChunkRecordFieldV1::StartByte => {
                     if start_byte.is_some() {
                         return Err(de::Error::duplicate_field("start_byte"));
                     }
                     start_byte = Some(map.next_value()?);
                 }
-                "end_byte" => {
+                ChunkRecordFieldV1::EndByte => {
                     if end_byte.is_some() {
                         return Err(de::Error::duplicate_field("end_byte"));
                     }
                     end_byte = Some(map.next_value()?);
                 }
-                "start_line" => {
+                ChunkRecordFieldV1::StartLine => {
                     if start_line.is_some() {
                         return Err(de::Error::duplicate_field("start_line"));
                     }
                     start_line = Some(map.next_value()?);
                 }
-                "end_line" => {
+                ChunkRecordFieldV1::EndLine => {
                     if end_line.is_some() {
                         return Err(de::Error::duplicate_field("end_line"));
                     }
                     end_line = Some(map.next_value()?);
                 }
-                "text" => {
+                ChunkRecordFieldV1::Text => {
                     if text.is_some() {
                         return Err(de::Error::duplicate_field("text"));
                     }
-                    text = Some(map.next_value()?);
+                    text = Some(self.0.next_text(&mut map)?);
                 }
-                "structural" => {
+                ChunkRecordFieldV1::Structural => {
                     if structural.is_some() {
                         return Err(de::Error::duplicate_field("structural"));
                     }
-                    structural = Some(map.next_value()?);
+                    structural = Some(self.0.next_structural(&mut map)?);
                 }
-                "parent_chunk_id" => {
+                ChunkRecordFieldV1::ParentChunkId => {
                     if parent_chunk_id.is_some() {
                         return Err(de::Error::duplicate_field("parent_chunk_id"));
                     }
-                    parent_chunk_id = Some(map.next_value()?);
+                    parent_chunk_id = Some(self.0.next_parent_chunk_id(&mut map)?);
                 }
-                "source_repo_id" => {
+                ChunkRecordFieldV1::SourceRepoId => {
                     if source_repo_id.is_some() {
                         return Err(de::Error::duplicate_field("source_repo_id"));
                     }
-                    source_repo_id = Some(map.next_value()?);
+                    source_repo_id = Some(self.0.next_source_repo_id(&mut map)?);
                 }
-                other => return Err(de::Error::unknown_field(other, CHUNK_RECORD_FIELDS)),
             }
         }
         Ok(ChunkRecord {
@@ -309,9 +696,7 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
             end_byte: end_byte.ok_or_else(|| de::Error::missing_field("end_byte"))?,
             start_line: start_line.ok_or_else(|| de::Error::missing_field("start_line"))?,
             end_line: end_line.ok_or_else(|| de::Error::missing_field("end_line"))?,
-            text: text
-                .ok_or_else(|| de::Error::missing_field("text"))?
-                .into_boxed_str(),
+            text: text.ok_or_else(|| de::Error::missing_field("text"))?,
             structural: structural.ok_or_else(|| de::Error::missing_field("structural"))?,
             parent_chunk_id: parent_chunk_id
                 .ok_or_else(|| de::Error::missing_field("parent_chunk_id"))?,
@@ -326,9 +711,17 @@ impl<'de> Deserialize<'de> for ChunkRecord {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_struct("ChunkRecord", CHUNK_RECORD_FIELDS, ChunkRecordVisitor)
+        deserializer.deserialize_struct(
+            "ChunkRecord",
+            CHUNK_RECORD_FIELDS,
+            ChunkRecordVisitor(OrdinaryChunkRecordPolicyV1),
+        )
     }
 }
+
+#[cfg(test)]
+#[path = "records/admitted_chunk_tests.rs"]
+mod admitted_chunk_tests;
 
 impl ChunkRecord {
     #[must_use]

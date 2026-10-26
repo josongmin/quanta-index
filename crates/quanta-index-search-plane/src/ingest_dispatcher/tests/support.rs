@@ -549,7 +549,8 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
             | CoreError::NotReady(_)
             | CoreError::NotImplemented(_)
             | CoreError::NotFound(_)
-            | CoreError::Storage(_) => {
+            | CoreError::Storage(_)
+            | CoreError::StorageIo { .. } => {
                 return Err(CoreError::InvalidContract(
                     "record_refused takes a frozen-policy typed refusal".into(),
                 ));
@@ -1029,6 +1030,7 @@ impl IncompleteGenerationDiscardPort for TestIncompleteGenerationDiscard {
     fn discard_incomplete_generation(
         &self,
         _candidate: &GenerationSnapshot,
+        _pending_batch: Option<&SearchCorpusIngestBatch>,
     ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
         Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
     }
@@ -1577,6 +1579,7 @@ impl IncompleteGenerationDiscardPort for RecordingIncompleteGenerationDiscard {
     fn discard_incomplete_generation(
         &self,
         _candidate: &GenerationSnapshot,
+        _pending_batch: Option<&SearchCorpusIngestBatch>,
     ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
         let _previous = self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
@@ -1599,6 +1602,9 @@ impl SemanticIngestPort for MismatchedSemanticIngest {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        _publication: Option<
+            quanta_index_core::publication_admission::PublicationOutputAdmission<'_>,
+        >,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<
         (
@@ -1664,6 +1670,9 @@ impl SemanticScopeStreamBuildPort for FakeSemanticBuilder {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
+        _publication: Option<
+            quanta_index_core::publication_admission::PublicationOutputAdmission<'_>,
+        >,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<
         (
@@ -1711,6 +1720,17 @@ pub(super) struct FakeSearchCorpusBuilder {
 }
 
 impl quanta_index_core::SearchCorpusBatchBuildPort for FakeSearchCorpusBuilder {
+    fn prepare_hard_recovery_scan_with_owner(
+        &self,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+        _budget: &quanta_index_core::RequestBudgetV1,
+        _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        // This synthetic builder owns no lexical run registry or durable scan.
+        owner.bind_batch(batch)
+    }
+
     fn preflight_batch(
         &self,
         batch: &SearchCorpusIngestBatch,
@@ -1969,7 +1989,10 @@ pub(super) struct FixedFakeEmbedder {
 }
 
 impl TextEmbeddingProvider for FixedFakeEmbedder {
-    fn embed_batch(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+    fn embed_batch(
+        &self,
+        _texts: &[&str],
+    ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
         Ok((0..self.vectors_per_call)
             .map(|_| vec![0.0_f32; self.vector_len])
             .collect())
@@ -2155,7 +2178,10 @@ pub(super) struct CountingEmbedder {
 }
 
 impl TextEmbeddingProvider for CountingEmbedder {
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+    fn embed_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<quanta_index_core::TextEmbeddingBatch, CoreError> {
         {
             let mut calls = self.calls.lock().map_err(|err| {
                 CoreError::InvalidContract(format!("counting embedder lock poisoned: {err}"))

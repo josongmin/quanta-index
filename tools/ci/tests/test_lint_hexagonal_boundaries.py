@@ -159,6 +159,85 @@ def test_search_plane_real_adapter_is_test_only(tmp_path: Path, monkeypatch) -> 
     assert "must not depend on quanta-index-lexical" in messages[0]
 
 
+
+def test_native_product_cli_and_scratch_composition_are_test_only(tmp_path: Path, monkeypatch) -> None:
+    lint = _load_lint()
+    runtime = tmp_path / "crates" / "quanta-index-searchd-runtime"
+    runtime.mkdir(parents=True)
+    manifest = runtime / "Cargo.toml"
+    package = '[package]\nname = "quanta-index-searchd-runtime"\n'
+    monkeypatch.setattr(lint, "CRATES", tmp_path / "crates")
+    for dependency in ("quanta-index-searchctl", "quanta-index-scratch-sqlite"):
+        edge = f'{dependency} = {{ path = "../{dependency}" }}\n'
+        manifest.write_text(package + '[dev-dependencies]\n' + edge, encoding="utf-8")
+        assert lint.check_crate_dependency_matrix() == []
+
+        manifest.write_text(package + '[dependencies]\n' + edge, encoding="utf-8")
+        messages = [violation.message for violation in lint.check_crate_dependency_matrix()]
+        assert len(messages) == 1
+        assert f"must not depend on {dependency}" in messages[0]
+
+
+def test_native_harness_may_use_sdk_but_product_and_sdk_cannot_depend_back(
+    tmp_path: Path, monkeypatch
+) -> None:
+    lint = _load_lint()
+    crates = tmp_path / "crates"
+    monkeypatch.setattr(lint, "CRATES", crates)
+
+    def manifest(name: str, dependency: str, section: str = "dependencies") -> None:
+        crate = crates / name
+        crate.mkdir(parents=True, exist_ok=True)
+        (crate / "Cargo.toml").write_text(
+            f'[package]\nname = "{name}"\n'
+            f'[{section}]\n{dependency} = {{ path = "../{dependency}" }}\n',
+            encoding="utf-8",
+        )
+
+    harness = "quanta-index-searchd-harness"
+    sdk = "quanta-index-sdk"
+    runtime = "quanta-index-searchd-runtime"
+    manifest(harness, sdk)
+    manifest(runtime, harness, "dev-dependencies")
+    assert lint.check_crate_dependency_matrix() == []
+
+    manifest(runtime, harness)
+    violations = lint.check_crate_dependency_matrix()
+    assert len(violations) == 1
+    assert violations[0].path.parent.name == runtime
+    assert f"must not depend on {harness}" in violations[0].message
+
+    manifest(runtime, harness, "dev-dependencies")
+    manifest(sdk, harness)
+    violations = lint.check_crate_dependency_matrix()
+    assert len(violations) == 1
+    assert violations[0].path.parent.name == sdk
+    assert f"must not depend on {harness}" in violations[0].message
+
+
+def test_native_embedding_provider_edge_is_composition_only(tmp_path: Path, monkeypatch) -> None:
+    lint = _load_lint()
+    crates = tmp_path / "crates"
+    names = (
+        "quanta-index-searchd-runtime",
+        "quanta-index-core",
+        "quanta-index-kernel",
+        "quanta-index-search-plane",
+    )
+    for name in names:
+        crate = crates / name
+        crate.mkdir(parents=True)
+        (crate / "Cargo.toml").write_text(
+            f'[package]\nname = "{name}"\n'
+            '[dependencies]\nquanta-index-embed = { path = "../quanta-index-embed" }\n',
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(lint, "CRATES", crates)
+    violations = lint.check_crate_dependency_matrix()
+    assert {violation.path.parent.name for violation in violations} == set(names[1:])
+    assert all("must not depend on quanta-index-embed" in violation.message for violation in violations)
+
+
 def test_cfg_test_path_module_is_not_a_production_transport_leak(tmp_path: Path) -> None:
     lint = _load_lint()
     source = tmp_path / "owner.rs"

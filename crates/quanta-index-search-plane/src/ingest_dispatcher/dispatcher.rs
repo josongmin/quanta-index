@@ -8,6 +8,9 @@ use quanta_index_contract::{
     RepoMapTerminalReceiptV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
     canonical_repo_map_source_bundle_digest_v2,
 };
+use quanta_index_core::publication_admission::{
+    CatalogPublicationFundingPort, CatalogPublicationFundingScope, PublicationResourceAdmissionPort,
+};
 use quanta_index_core::{
     CATALOG_ROW_CORRUPT_CODE, ClaimOutcomeV1, CoreError, FileContributorIngestPort,
     FileOwnershipIngestPort, IdempotencyCatalogPort, IdempotencyKeyV1, IngestBatchBodyV1,
@@ -67,6 +70,8 @@ pub struct SearchPlaneIngestDispatcher {
     idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
     source_publication: Arc<dyn quanta_index_core::SourcePublicationCatalogPort>,
     source_authority: Arc<dyn super::ports::SearchCorpusAuthorityInspectPort>,
+    publication_admission: Option<Arc<dyn PublicationResourceAdmissionPort>>,
+    catalog_publication_funding: Option<Arc<dyn CatalogPublicationFundingPort>>,
     source_upload: Option<Arc<dyn quanta_index_core::SourcePublicationUploadPort>>,
     source_upload_commit: Mutex<()>,
 }
@@ -117,6 +122,8 @@ impl SearchPlaneIngestDispatcher {
             idempotency,
             source_publication,
             source_authority,
+            publication_admission: None,
+            catalog_publication_funding: None,
             source_upload: None,
             source_upload_commit: Mutex::new(()),
         }
@@ -131,6 +138,46 @@ impl SearchPlaneIngestDispatcher {
         self
     }
 
+    /// Install the same service-owned authority used by the source-corpus
+    /// materializer. Its control permit precedes the first journal write.
+    #[must_use]
+    pub fn with_publication_resource_admission(
+        mut self,
+        admission: Arc<dyn PublicationResourceAdmissionPort>,
+    ) -> Self {
+        self.publication_admission = Some(admission);
+        self
+    }
+
+    /// Fund synchronous Catalog callbacks from this publication's held control
+    /// parent. The selected Catalog VFS must authenticate this same authority.
+    #[must_use]
+    pub fn with_catalog_publication_funding(
+        mut self,
+        funding: Arc<dyn CatalogPublicationFundingPort>,
+    ) -> Self {
+        self.catalog_publication_funding = Some(funding);
+        self
+    }
+
+    fn enter_publication_catalog_scope(
+        &self,
+        owner: &quanta_index_core::PublicationValidationOwner,
+    ) -> Result<Option<Box<dyn CatalogPublicationFundingScope>>, CoreError> {
+        let Some(funding) = self.catalog_publication_funding.as_deref() else {
+            return Ok(None);
+        };
+        let parent = owner
+            .output_admission()
+            .held_control_file_allowance()?
+            .ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "funded Catalog requires an authenticated control allowance".into(),
+                )
+            })?;
+        funding.enter_funded_scope(parent).map(Some)
+    }
+
     /// Run one receipt-bearing publish under the operation journal
     /// (QI-BB-032, SEP-21 P02B), in this fixed order:
     ///
@@ -141,9 +188,10 @@ impl SearchPlaneIngestDispatcher {
     ///    frozen-refused record answers the replay with its stored
     ///    result — before any mutable preflight runs, so a replay never
     ///    re-inspects storage, config or base state.
-    /// 3. **Immutable prepare.** The prepared row is written under the
-    ///    verified body digest. A different body under the same key is a
-    ///    typed conflict here, with zero mutations.
+    /// 3. **Source control admission, then immutable prepare.** The control
+    ///    permit is acquired before the first journal write and retained
+    ///    through terminal settlement. The prepared row uses the verified
+    ///    body digest; a different body under the same key is a typed conflict.
     /// 4. **Mutable preflight.** Everything the route can refuse without
     ///    mutating — shape, surface authority, resource envelope, delta
     ///    base, and the auxiliary routes' semantic validation against
@@ -168,13 +216,13 @@ impl SearchPlaneIngestDispatcher {
     /// path this dispatcher can reach.
     fn publish_idempotent<B: IngestBatchBodyV1 + serde::Serialize>(
         &self,
-        body: &mut B,
+        body: &B,
         preflight: impl FnOnce(&B) -> Result<(), CoreError>,
         apply: impl FnOnce(&B) -> Result<BatchPublishReceipt, CoreError>,
     ) -> Result<BatchPublishReceipt, CoreError> {
         // Stage 1 — intrinsic validation: canonical decode and digest.
         let body_sha256 = verified_batch_digest_v1(body)?;
-        self.publish_idempotent_verified(body, body_sha256, preflight, apply)
+        self.publish_idempotent_verified(body, body_sha256, |_body| Ok(None), preflight, apply)
     }
 
     /// Continue after this exact body was verified. The source-event path
@@ -184,6 +232,10 @@ impl SearchPlaneIngestDispatcher {
         &self,
         body: &B,
         body_sha256: [u8; 32],
+        pre_prepare: impl FnOnce(
+            &B,
+        )
+            -> Result<Option<Box<dyn CatalogPublicationFundingScope>>, CoreError>,
         preflight: impl FnOnce(&B) -> Result<(), CoreError>,
         apply: impl FnOnce(&B) -> Result<BatchPublishReceipt, CoreError>,
     ) -> Result<BatchPublishReceipt, CoreError> {
@@ -212,6 +264,9 @@ impl SearchPlaneIngestDispatcher {
             | OperationInspectV1::InFlight { .. }
             | OperationInspectV1::Uncertain { .. } => {}
         }
+        // Source-corpus control admission runs here. Replay has already
+        // returned; no journal row exists yet for this invocation.
+        let _catalog_funding = pre_prepare(body)?;
         // Stage 3 — immutable prepare. The catalog compares this value to
         // Unix time; passing the lease duration here expires immediately.
         let owner = claim_owner();
@@ -288,8 +343,8 @@ impl SearchPlaneIngestDispatcher {
     ///
     fn publish_source_idempotent(
         &self,
-        batch: &mut quanta_index_contract::SearchCorpusIngestBatch,
-        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        budget: &RequestBudgetV1,
         apply: impl FnOnce(
             &quanta_index_contract::SearchCorpusIngestBatch,
             &mut quanta_index_core::PublicationValidationOwner,
@@ -301,6 +356,7 @@ impl SearchPlaneIngestDispatcher {
         ),
         CoreError,
     > {
+        let diagnostic = budget.diagnostic_context();
         let body_digest = verified_batch_digest_v1(batch)?;
         batch
             .validate_v1()
@@ -416,6 +472,15 @@ impl SearchPlaneIngestDispatcher {
             body_digest,
             |batch| {
                 let mut owner = validation.try_borrow_mut().map_err(|error| {
+                    CoreError::Storage(format!("source publication control custody: {error}"))
+                })?;
+                if let Some(admission) = self.publication_admission.as_deref() {
+                    owner.admit_publication_control(batch, budget, admission)?;
+                }
+                self.enter_publication_catalog_scope(&owner)
+            },
+            |batch| {
+                let mut owner = validation.try_borrow_mut().map_err(|error| {
                     CoreError::Storage(format!("source publication proof custody: {error}"))
                 })?;
                 self.lexical
@@ -428,6 +493,21 @@ impl SearchPlaneIngestDispatcher {
                 apply(batch, &mut owner)
             },
         )?;
+        let _catalog_funding = {
+            let owner = validation.try_borrow().map_err(|error| {
+                CoreError::Storage(format!(
+                    "source publication reconciliation custody: {error}"
+                ))
+            })?;
+            // A terminal inspect race can return without pre-prepare admission.
+            // Such replay requires separately funded Catalog maintenance;
+            // it must not reserve another publication allowance.
+            if owner.has_publication_control_permit() {
+                self.enter_publication_catalog_scope(&owner)?
+            } else {
+                None
+            }
+        };
         let reconciled = self.source_publication.reconcile_source_event(
             &batch.repo_id,
             &batch.source_event,
@@ -628,27 +708,23 @@ impl SearchPlaneIngestDispatcher {
                     Err(error) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(error)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(mut batch) => {
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
                 let mut observation = None;
-                match self.publish_source_idempotent(
-                    &mut batch,
-                    budget.diagnostic_context(),
-                    |batch, owner| {
-                        let outcome = self
-                            .lexical
-                            .publish_batch_with_owner(batch, budget, owner)?;
-                        outcome
-                            .publication
-                            .validate_receipt(
-                                &quanta_index_contract::SourcePublicationBinding::for_batch(batch),
-                                batch.seal,
-                                &outcome.receipt,
-                            )
-                            .map_err(CoreError::InvalidContract)?;
-                        observation = outcome.observation;
-                        Ok(outcome.receipt)
-                    },
-                ) {
+                match self.publish_source_idempotent(&batch, budget, |batch, owner| {
+                    let outcome = self
+                        .lexical
+                        .publish_batch_with_owner(batch, budget, owner)?;
+                    outcome
+                        .publication
+                        .validate_receipt(
+                            &quanta_index_contract::SourcePublicationBinding::for_batch(batch),
+                            batch.seal,
+                            &outcome.receipt,
+                        )
+                        .map_err(CoreError::InvalidContract)?;
+                    observation = outcome.observation;
+                    Ok(outcome.receipt)
+                }) {
                     Ok((receipt, publication)) => {
                         if !receipt.applied {
                             observation =
@@ -678,18 +754,17 @@ impl SearchPlaneIngestDispatcher {
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishHistoryBatch(mut batch) => {
-                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
-                    self.history
-                        .publish_batch(batch, budget.diagnostic_context())
+            SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => {
+                match self.publish_idempotent(&batch, no_storage_free_preflight, |batch| {
+                    self.history.publish_batch(batch, budget)
                 }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::HistoryReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(mut batch) => {
+            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => {
                 match self.publish_idempotent(
-                    &mut batch,
+                    &batch,
                     |batch| self.require_overlay_generation(batch),
                     |batch| self.repo_commit_recency.publish_batch(batch),
                 ) {
@@ -697,9 +772,9 @@ impl SearchPlaneIngestDispatcher {
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(mut batch) => {
+            SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch) => {
                 match self.publish_idempotent(
-                    &mut batch,
+                    &batch,
                     |batch| self.require_overlay_generation(batch),
                     |batch| self.repo_topic.publish_batch(batch),
                 ) {
@@ -707,9 +782,9 @@ impl SearchPlaneIngestDispatcher {
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(mut batch) => {
+            SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(batch) => {
                 match self.publish_idempotent(
-                    &mut batch,
+                    &batch,
                     |batch| self.require_overlay_generation(batch),
                     |batch| self.repo_description.publish_batch(batch),
                 ) {
@@ -717,9 +792,9 @@ impl SearchPlaneIngestDispatcher {
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(mut batch) => {
+            SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(batch) => {
                 match self.publish_idempotent(
-                    &mut batch,
+                    &batch,
                     |batch| self.require_overlay_generation(batch),
                     |batch| self.file_ownership.publish_batch(batch),
                 ) {
@@ -727,9 +802,9 @@ impl SearchPlaneIngestDispatcher {
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(mut batch) => {
+            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch) => {
                 match self.publish_idempotent(
-                    &mut batch,
+                    &batch,
                     |batch| self.require_overlay_generation(batch),
                     |batch| self.file_contributor.publish_batch(batch),
                 ) {
@@ -737,9 +812,9 @@ impl SearchPlaneIngestDispatcher {
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(mut batch) => {
+            SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(batch) => {
                 match self.publish_idempotent(
-                    &mut batch,
+                    &batch,
                     |batch| self.require_overlay_generation(batch),
                     |batch| self.repo_meta.publish_batch(batch),
                 ) {
@@ -747,24 +822,24 @@ impl SearchPlaneIngestDispatcher {
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishDirtyBatch(mut batch) => {
-                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => {
+                match self.publish_idempotent(&batch, no_storage_free_preflight, |batch| {
                     self.runtime.publish_batch(batch)
                 }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::DirtyReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(mut batch) => {
-                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+            SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => {
+                match self.publish_idempotent(&batch, no_storage_free_preflight, |batch| {
                     self.runtime.publish_catalog_batch(batch)
                 }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
-            SearchPlaneIngestIpcRequest::PublishStructuralBatch(mut batch) => {
-                match self.publish_idempotent(&mut batch, no_storage_free_preflight, |batch| {
+            SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => {
+                match self.publish_idempotent(&batch, no_storage_free_preflight, |batch| {
                     self.structural.publish_batch(batch)
                 }) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::StructuralReceipt(receipt),
@@ -883,7 +958,7 @@ fn replayed_repomap_receipt_v2(mut receipt: RepoMapTerminalReceiptV2) -> RepoMap
 /// The verified bytes are the idempotency record's body hash. A body that
 /// cannot be encoded is a contract defect of the batch.
 fn verified_batch_digest_v1<B: IngestBatchBodyV1 + serde::Serialize>(
-    body: &mut B,
+    body: &B,
 ) -> Result<[u8; 32], CoreError> {
     let verdict = verify_batch_digest_v1(body).map_err(|err| {
         CoreError::InvalidContract(format!(

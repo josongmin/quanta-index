@@ -25,6 +25,8 @@ pub enum IpcError {
     Oversized(u64),
     /// Declared body length is zero.
     EmptyFrame,
+    /// The service ledger could not admit data-only response frame capacity.
+    FrameMemoryLimited { bytes: u64 },
     /// CBOR encoder returned an error.
     Encode(String),
     /// CBOR decoder returned an error.
@@ -90,6 +92,7 @@ impl core::fmt::Display for IpcError {
                 )
             }
             Self::EmptyFrame => f.write_str("ipc frame declared zero-length body"),
+            Self::FrameMemoryLimited { bytes } => write!(f, "ipc frame memory admission refused {bytes} bytes"),
             Self::Encode(msg) => write!(f, "ipc cbor encode failed: {msg}"),
             Self::Decode(msg) => write!(f, "ipc cbor decode failed: {msg}"),
             Self::Io(err) => write!(f, "ipc transport io error: {err}"),
@@ -152,6 +155,7 @@ impl std::error::Error for IpcError {
             Self::Truncated
             | Self::Oversized(_)
             | Self::EmptyFrame
+            | Self::FrameMemoryLimited { .. }
             | Self::Encode(_)
             | Self::Decode(_)
             | Self::Timeout { .. }

@@ -3,6 +3,8 @@ use core::marker::PhantomData;
 
 use serde::de::{self, Deserialize, Deserializer, SeqAccess, Visitor};
 
+use quanta_index_contract_base::{AdmittedSequenceSeedV1, DecodeBackingAdmissionV1};
+
 use crate::SymbolId;
 
 pub(crate) struct BoundedVecV1<T, const MAXIMUM: usize>(Vec<T>);
@@ -66,6 +68,20 @@ where
 const CLUSTER_MEMBERS_CAPACITY_V1: usize = 4_096;
 
 pub(crate) type BoundedClusterMembersV1 = BoundedVecV1<SymbolId, CLUSTER_MEMBERS_CAPACITY_V1>;
+
+/// Decode the same bounded member field through the caller's retained backing
+/// owner. Element text and the outer vector are admitted by the same owner.
+pub(crate) fn admitted_cluster_members_seed_v1<'a, A>(
+    admission: &'a A,
+    max_symbol_bytes: usize,
+) -> impl for<'de> de::DeserializeSeed<'de, Value = Vec<SymbolId>> + 'a
+where
+    A: DecodeBackingAdmissionV1 + ?Sized,
+{
+    AdmittedSequenceSeedV1::new(admission, CLUSTER_MEMBERS_CAPACITY_V1, move || {
+        SymbolId::deserialize_seed_with_admission_v1(admission, max_symbol_bytes)
+    })
+}
 
 #[cfg(test)]
 mod tests {

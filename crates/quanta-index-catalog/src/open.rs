@@ -2,7 +2,7 @@
 //! table's schema, so a catalog is whole from its first open.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use quanta_index_core::CoreError;
@@ -11,6 +11,7 @@ use rusqlite::TransactionBehavior;
 use crate::connection::{
     CatalogClockPort, SqliteCatalog, SystemCatalogClock, engine_error, open_connection,
 };
+use crate::io_admission::{CatalogConnectionOwner, CatalogIoAdmission, ScopeLease};
 
 impl SqliteCatalog {
     /// Open (creating if needed) the catalog under `state_root/catalog/`.
@@ -29,13 +30,47 @@ impl SqliteCatalog {
         busy_timeout: Duration,
         clock: Arc<dyn CatalogClockPort>,
     ) -> Result<Self, CoreError> {
-        let (mut connection, path) = open_connection(state_root, busy_timeout)?;
+        Self::open_with_clock_and_admission(state_root, busy_timeout, clock, None)
+    }
+
+    /// Select an already registered VFS and retain its I/O custody through
+    /// initialization, every Catalog operation, and native connection close.
+    /// No registration or open failure falls back to the default VFS.
+    pub fn open_with_io_admission(
+        state_root: &Path,
+        busy_timeout: Duration,
+        admission: Arc<dyn CatalogIoAdmission>,
+    ) -> Result<Self, CoreError> {
+        Self::open_with_clock_and_admission(
+            state_root,
+            busy_timeout,
+            Arc::new(SystemCatalogClock),
+            Some(admission),
+        )
+    }
+
+    fn open_with_clock_and_admission(
+        state_root: &Path,
+        busy_timeout: Duration,
+        clock: Arc<dyn CatalogClockPort>,
+        admission: Option<Arc<dyn CatalogIoAdmission>>,
+    ) -> Result<Self, CoreError> {
+        let _scope = ScopeLease::enter(admission.as_ref(), None);
+        let (mut connection, path) = open_connection(
+            state_root,
+            busy_timeout,
+            admission.as_ref().map(|owner| owner.vfs_name()),
+        )?;
         // Lock before classifying the root. Two concurrent first opens must
         // not both observe an empty catalog and independently decide to seed
         // its first fence row.
         let initialization = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| engine_error("begin catalog initialization", &path, &error))?;
+        // Reject an older native source-capture meaning before any DDL, seed,
+        // or recovery can rewrite its claims. A marker-validated runtime is
+        // not the only consumer of this Catalog constructor.
+        let native_first_birth = crate::native::preflight_capture_format(&initialization, &path)?;
         let legacy_tables: i64 = initialization
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
@@ -81,7 +116,7 @@ impl SqliteCatalog {
             .execute_batch(crate::candidate::SCHEMA)
             .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
         crate::candidate::verify_installed_schema(&initialization, &path)?;
-        crate::native::initialize(&initialization, &path)?;
+        crate::native::initialize(&initialization, &path, native_first_birth)?;
         crate::idempotency::seed_fence_allocator(&initialization, &path, fresh_root)?;
         // A missing or recast GC floor must refuse before recovery mutates
         // journal rows or clears old mutation leases.
@@ -102,7 +137,7 @@ impl SqliteCatalog {
             .commit()
             .map_err(|error| engine_error("commit catalog initialization", &path, &error))?;
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: CatalogConnectionOwner::new(connection, admission),
             path,
             clock,
         })
