@@ -699,8 +699,12 @@ pub enum quanta_index_contract::index::CatalogViewDigestErrorV3<E>
 pub quanta_index_contract::index::CatalogViewDigestErrorV3::Arithmetic
 pub quanta_index_contract::index::CatalogViewDigestErrorV3::Encode(serde_json::error::Error)
 pub quanta_index_contract::index::CatalogViewDigestErrorV3::Work(E)
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_contract::index::CatalogViewDigestErrorV3<E>
+pub fn quanta_index_contract::index::CatalogViewDigestErrorV3<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_contract::index::CatalogViewDigestErrorV3<E>
 pub fn quanta_index_contract::index::CatalogViewDigestErrorV3<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_contract::index::CatalogViewDigestErrorV3<E>
+pub fn quanta_index_contract::index::CatalogViewDigestErrorV3<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E> core::marker::Freeze for quanta_index_contract::index::CatalogViewDigestErrorV3<E> where E: core::marker::Freeze
 impl<E> core::marker::Send for quanta_index_contract::index::CatalogViewDigestErrorV3<E> where E: core::marker::Send
 impl<E> core::marker::Sync for quanta_index_contract::index::CatalogViewDigestErrorV3<E> where E: core::marker::Sync
@@ -835,8 +839,12 @@ pub enum quanta_index_contract::index::ProjectionPayloadDigestErrorV3<E>
 pub quanta_index_contract::index::ProjectionPayloadDigestErrorV3::Arithmetic
 pub quanta_index_contract::index::ProjectionPayloadDigestErrorV3::Encode(serde_json::error::Error)
 pub quanta_index_contract::index::ProjectionPayloadDigestErrorV3::Work(E)
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_contract::index::ProjectionPayloadDigestErrorV3<E>
+pub fn quanta_index_contract::index::ProjectionPayloadDigestErrorV3<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_contract::index::ProjectionPayloadDigestErrorV3<E>
 pub fn quanta_index_contract::index::ProjectionPayloadDigestErrorV3<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_contract::index::ProjectionPayloadDigestErrorV3<E>
+pub fn quanta_index_contract::index::ProjectionPayloadDigestErrorV3<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E> core::marker::Freeze for quanta_index_contract::index::ProjectionPayloadDigestErrorV3<E> where E: core::marker::Freeze
 impl<E> core::marker::Send for quanta_index_contract::index::ProjectionPayloadDigestErrorV3<E> where E: core::marker::Send
 impl<E> core::marker::Sync for quanta_index_contract::index::ProjectionPayloadDigestErrorV3<E> where E: core::marker::Sync
@@ -2465,8 +2473,12 @@ pub quanta_index_contract::ipc::SearchCorpusValidationProgressError::Invalid(V)
 pub quanta_index_contract::ipc::SearchCorpusValidationProgressError::Progress(E)
 impl<E, V> core::convert::From<V> for quanta_index_contract::SearchCorpusValidationProgressError<E, V>
 pub fn quanta_index_contract::SearchCorpusValidationProgressError<E, V>::from(error: V) -> Self
+impl<E: core::error::Error + 'static, V: core::error::Error + 'static> core::error::Error for quanta_index_contract::SearchCorpusValidationProgressError<E, V>
+pub fn quanta_index_contract::SearchCorpusValidationProgressError<E, V>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl<E: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for quanta_index_contract::SearchCorpusValidationProgressError<E, V>
 pub fn quanta_index_contract::SearchCorpusValidationProgressError<E, V>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display, V: core::fmt::Display> core::fmt::Display for quanta_index_contract::SearchCorpusValidationProgressError<E, V>
+pub fn quanta_index_contract::SearchCorpusValidationProgressError<E, V>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E, V> core::marker::Freeze for quanta_index_contract::SearchCorpusValidationProgressError<E, V> where V: core::marker::Freeze, E: core::marker::Freeze
 impl<E, V> core::marker::Send for quanta_index_contract::SearchCorpusValidationProgressError<E, V> where V: core::marker::Send, E: core::marker::Send
 impl<E, V> core::marker::Sync for quanta_index_contract::SearchCorpusValidationProgressError<E, V> where V: core::marker::Sync, E: core::marker::Sync
@@ -10650,8 +10662,12 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapReda
 pub enum quanta_index_contract::repomap::RepoMapSourceBundleDigestWorkErrorV3<E>
 pub quanta_index_contract::repomap::RepoMapSourceBundleDigestWorkErrorV3::Encode(quanta_index_contract::RepoMapSourceBundleDigestEncodeErrorV3)
 pub quanta_index_contract::repomap::RepoMapSourceBundleDigestWorkErrorV3::Work(E)
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>
+pub fn quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>
 pub fn quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>
+pub fn quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E> core::marker::Freeze for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E> where E: core::marker::Freeze
 impl<E> core::marker::Send for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E> where E: core::marker::Send
 impl<E> core::marker::Sync for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E> where E: core::marker::Sync
@@ -13691,8 +13707,12 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::IngestOpera
 pub enum quanta_index_contract::NativeBootSourceCutDigestErrorV1<E>
 pub quanta_index_contract::NativeBootSourceCutDigestErrorV1::Encode(serde_json::error::Error)
 pub quanta_index_contract::NativeBootSourceCutDigestErrorV1::Work(E)
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_contract::NativeBootSourceCutDigestErrorV1<E>
+pub fn quanta_index_contract::NativeBootSourceCutDigestErrorV1<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_contract::NativeBootSourceCutDigestErrorV1<E>
 pub fn quanta_index_contract::NativeBootSourceCutDigestErrorV1<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_contract::NativeBootSourceCutDigestErrorV1<E>
+pub fn quanta_index_contract::NativeBootSourceCutDigestErrorV1<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E> core::marker::Freeze for quanta_index_contract::NativeBootSourceCutDigestErrorV1<E> where E: core::marker::Freeze
 impl<E> core::marker::Send for quanta_index_contract::NativeBootSourceCutDigestErrorV1<E> where E: core::marker::Send
 impl<E> core::marker::Sync for quanta_index_contract::NativeBootSourceCutDigestErrorV1<E> where E: core::marker::Sync
@@ -14531,8 +14551,12 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapReda
 pub enum quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>
 pub quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3::Encode(quanta_index_contract::RepoMapSourceBundleDigestEncodeErrorV3)
 pub quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3::Work(E)
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>
+pub fn quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>
 pub fn quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>
+pub fn quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E> core::marker::Freeze for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E> where E: core::marker::Freeze
 impl<E> core::marker::Send for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E> where E: core::marker::Send
 impl<E> core::marker::Sync for quanta_index_contract::RepoMapSourceBundleDigestWorkErrorV3<E> where E: core::marker::Sync
@@ -14697,8 +14721,12 @@ pub quanta_index_contract::SearchCorpusValidationProgressError::Invalid(V)
 pub quanta_index_contract::SearchCorpusValidationProgressError::Progress(E)
 impl<E, V> core::convert::From<V> for quanta_index_contract::SearchCorpusValidationProgressError<E, V>
 pub fn quanta_index_contract::SearchCorpusValidationProgressError<E, V>::from(error: V) -> Self
+impl<E: core::error::Error + 'static, V: core::error::Error + 'static> core::error::Error for quanta_index_contract::SearchCorpusValidationProgressError<E, V>
+pub fn quanta_index_contract::SearchCorpusValidationProgressError<E, V>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl<E: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for quanta_index_contract::SearchCorpusValidationProgressError<E, V>
 pub fn quanta_index_contract::SearchCorpusValidationProgressError<E, V>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display, V: core::fmt::Display> core::fmt::Display for quanta_index_contract::SearchCorpusValidationProgressError<E, V>
+pub fn quanta_index_contract::SearchCorpusValidationProgressError<E, V>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E, V> core::marker::Freeze for quanta_index_contract::SearchCorpusValidationProgressError<E, V> where V: core::marker::Freeze, E: core::marker::Freeze
 impl<E, V> core::marker::Send for quanta_index_contract::SearchCorpusValidationProgressError<E, V> where V: core::marker::Send, E: core::marker::Send
 impl<E, V> core::marker::Sync for quanta_index_contract::SearchCorpusValidationProgressError<E, V> where V: core::marker::Sync, E: core::marker::Sync
@@ -15271,8 +15299,12 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourceCover
 pub enum quanta_index_contract::SourceCoverageProgressError<E>
 pub quanta_index_contract::SourceCoverageProgressError::Invalid(quanta_index_contract::SourceCoverageError)
 pub quanta_index_contract::SourceCoverageProgressError::Progress(E)
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_contract::SourceCoverageProgressError<E>
+pub fn quanta_index_contract::SourceCoverageProgressError<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_contract::SourceCoverageProgressError<E>
 pub fn quanta_index_contract::SourceCoverageProgressError<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_contract::SourceCoverageProgressError<E>
+pub fn quanta_index_contract::SourceCoverageProgressError<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E> core::convert::From<quanta_index_contract::SourceCoverageError> for quanta_index_contract::SourceCoverageProgressError<E>
 pub fn quanta_index_contract::SourceCoverageProgressError<E>::from(error: quanta_index_contract::SourceCoverageError) -> Self
 impl<E> core::marker::Freeze for quanta_index_contract::SourceCoverageProgressError<E> where E: core::marker::Freeze

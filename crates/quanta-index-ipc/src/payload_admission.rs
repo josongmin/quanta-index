@@ -15,6 +15,26 @@ pub enum CborPayloadAdmissionErrorV1<E> {
     Progress(E),
 }
 
+impl<E: core::fmt::Display> core::fmt::Display for CborPayloadAdmissionErrorV1<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Codec(cause) => write!(formatter, "CBOR encoding failed: {cause}"),
+            Self::Admission(cause) => write!(formatter, "CBOR admission refused: {cause}"),
+            Self::Progress(cause) => write!(formatter, "CBOR encoding interrupted: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for CborPayloadAdmissionErrorV1<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Codec(cause) => Some(cause),
+            Self::Admission(cause) => Some(cause),
+            Self::Progress(cause) => Some(cause),
+        }
+    }
+}
+
 struct PayloadSink<'a, E, F> {
     output: Option<&'a mut Vec<u8>>,
     position: usize,

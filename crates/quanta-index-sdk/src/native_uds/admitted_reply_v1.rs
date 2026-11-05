@@ -925,32 +925,29 @@ mod tests {
             }],
         };
         let bytes = encoded(NativeIndexResponse::Stub(reply.clone()))?;
-        assert_eq!(
-            decode_stub(&bytes)?.payload,
-            NativeIndexResponse::Stub(reply.clone())
-        );
-        assert!(
-            decode(&bytes).is_err(),
-            "publication decoder must reject Stub"
-        );
+        if decode_stub(&bytes)?.payload != NativeIndexResponse::Stub(reply.clone()) {
+            return Err("admitted Stub payload changed".into());
+        }
+        if decode(&bytes).is_ok() {
+            return Err("publication decoder must reject Stub".into());
+        }
         let NativeStubReply::Prepared {
             mut edits,
             binding,
             selected_id,
         } = reply
         else {
-            unreachable!()
+            return Err("fixture is not a prepared Stub".into());
         };
-        edits[0].replacement = vec![b'x'; (64 << 10) + 1];
+        edits.first_mut().ok_or("fixture edit missing")?.replacement = vec![b'x'; (64 << 10) + 1];
         let oversized = encoded(NativeIndexResponse::Stub(NativeStubReply::Prepared {
             binding,
             selected_id,
             edits,
         }))?;
-        assert!(
-            decode_stub(&oversized).is_err(),
-            "oversized replacement reached Serde"
-        );
+        if decode_stub(&oversized).is_ok() {
+            return Err("oversized replacement reached Serde".into());
+        }
         Ok(())
     }
 

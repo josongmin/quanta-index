@@ -762,6 +762,34 @@ fn frame_and_input_refusals_abort_before_parser_reservations() -> TestResult {
 }
 
 #[test]
+fn admitted_decoder_keeps_the_original_io_refusal_in_its_error_chain() -> TestResult {
+    let owner = TestOwner::default();
+    let witness = owner.clone();
+    let mut scratch = [0_u8; 64];
+    let result = decode_cbor_seed_admitted_v1(
+        b"\x65hello",
+        &mut scratch,
+        TypedSeed::<String>(PhantomData),
+        &mut |_| Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+        6,
+        owner,
+    );
+    let Err(error) = result else {
+        return Err("refused decoder work unexpectedly succeeded".into());
+    };
+    let source = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<std::io::Error>())
+        .ok_or("original typed read refusal missing")?;
+    if source.kind() != std::io::ErrorKind::Interrupted
+        || !witness.aborted.load(Ordering::SeqCst)
+        || witness.reservations.load(Ordering::SeqCst) != 0
+    {
+        return Err("typed refusal, aborted owner or pre-allocation boundary changed".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn first_preflight_work_refusal_survives_io_error_without_retry() -> TestResult {
     #[derive(Debug, Eq, PartialEq)]
     enum WorkCause {

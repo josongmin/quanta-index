@@ -81,7 +81,7 @@ pub(super) fn directory_observation(anchor: &Anchor) -> Result<InodeObservation,
             inode: stat.st_ino,
         },
         bytes: 0,
-        links: u64::from(stat.st_nlink),
+        links: crate::publication_inventory::link_count_u64(stat.st_nlink),
     })
 }
 fn close_rejected_observer(

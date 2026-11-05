@@ -25,6 +25,33 @@ pub enum AdmittedCborDecodeErrorV1<E> {
     Parser(CborDecodeError<FiniteReadErrorV3<E>, FiniteSemanticReasonV3>),
 }
 
+impl<E: core::fmt::Debug + core::fmt::Display> core::fmt::Display for AdmittedCborDecodeErrorV1<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InputTooLarge { actual, maximum } => {
+                write!(formatter, "CBOR input {actual} exceeds limit {maximum}")
+            }
+            Self::ScratchTooSmall { actual } => {
+                write!(formatter, "CBOR scratch too small: {actual}")
+            }
+            Self::Frame(cause) => write!(formatter, "CBOR framing failed: {cause}"),
+            Self::Work(cause) => write!(formatter, "CBOR work refused: {cause}"),
+            Self::Parser(cause) => write!(formatter, "CBOR parsing failed: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for AdmittedCborDecodeErrorV1<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Frame(cause) => Some(cause),
+            Self::Work(cause) => Some(cause),
+            Self::Parser(cause) => Some(cause),
+            Self::InputTooLarge { .. } | Self::ScratchTooSmall { .. } => None,
+        }
+    }
+}
+
 /// The decoded value is dropped before its retained parser and visitor owner.
 /// A caller may borrow either field but cannot detach a bare DTO from custody.
 pub struct AdmittedDecodedCborV1<T, O> {

@@ -32,6 +32,24 @@ pub enum ParserTextInputErrorV1<E> {
     Validation(E),
 }
 
+impl<E: core::fmt::Display> core::fmt::Display for ParserTextInputErrorV1<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Admission(cause) => core::fmt::Display::fmt(cause, formatter),
+            Self::Validation(cause) => write!(formatter, "text validation failed: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for ParserTextInputErrorV1<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Admission(cause) => Some(cause),
+            Self::Validation(cause) => Some(cause),
+        }
+    }
+}
+
 impl<E> From<DecodeBackingRefusalV1> for ParserTextInputErrorV1<E> {
     fn from(cause: DecodeBackingRefusalV1) -> Self {
         Self::Admission(cause)

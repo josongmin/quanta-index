@@ -108,6 +108,25 @@ pub(super) struct PeerWatch {
     observer: WatchObserver,
 }
 
+fn cancel_before_reporting_hangup(
+    hung_up: &AtomicBool,
+    cancel: &CancelHandleV1,
+    counters: &IpcServerCounters,
+) {
+    // Terminal replies must see the closed peer even if a cancellation waiter
+    // panics. Publish the counter only after cancel set the budget flag.
+    hung_up.store(true, Ordering::Release);
+    struct ReportHangup<'a>(&'a IpcServerCounters);
+    impl Drop for ReportHangup<'_> {
+        fn drop(&mut self) {
+            self.0.peer_hangup_detected();
+        }
+    }
+    let report = ReportHangup(counters);
+    cancel.cancel();
+    drop(report);
+}
+
 impl PeerWatch {
     /// Defensive poll/probe bound: `poll` returns at once on peer events
     /// and on the wake FD, so this only paces the send probe after a
@@ -159,9 +178,7 @@ impl PeerWatch {
                             if peer_can_receive(&watched) {
                                 continue;
                             }
-                            hung_up.store(true, Ordering::Release);
-                            counters.peer_hangup_detected();
-                            cancel.cancel();
+                            cancel_before_reporting_hangup(&hung_up, &cancel, &counters);
                             observer.fire(WatchEvent::PeerDisconnected);
                             return;
                         }
@@ -181,9 +198,7 @@ impl PeerWatch {
                                 continue;
                             }
                             PeerState::HungUp => {
-                                hung_up.store(true, Ordering::Release);
-                                counters.peer_hangup_detected();
-                                cancel.cancel();
+                                cancel_before_reporting_hangup(&hung_up, &cancel, &counters);
                                 observer.fire(WatchEvent::PeerDisconnected);
                                 return;
                             }

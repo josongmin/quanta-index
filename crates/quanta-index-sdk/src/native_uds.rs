@@ -4475,20 +4475,20 @@ mod tests {
             ])?,
         };
         let selection = ViewSelection::Exact(view);
-        assert!(projection_owner_lookup_matches_request(
-            selection, projection, &owners, &valid
-        ));
+        if !projection_owner_lookup_matches_request(selection, projection, &owners, &valid) {
+            return Err("canonical projection owner lookup refused".into());
+        }
         let mut foreign = valid.clone();
         foreign.projection = ProjectionId([5; 16]);
-        assert!(!projection_owner_lookup_matches_request(
-            selection, projection, &owners, &foreign
-        ));
+        if projection_owner_lookup_matches_request(selection, projection, &owners, &foreign) {
+            return Err("foreign projection accepted".into());
+        }
         foreign = valid.clone();
         foreign.view.sequence += 1;
-        assert!(!projection_owner_lookup_matches_request(
-            selection, projection, &owners, &foreign
-        ));
-        foreign = valid.clone();
+        if projection_owner_lookup_matches_request(selection, projection, &owners, &foreign) {
+            return Err("foreign view accepted".into());
+        }
+        foreign = valid;
         foreign.rows =
             quanta_index_contract::native_protocol::NativeProjectionOwnerRows::new(vec![
                 quanta_index_contract::native_protocol::NativeProjectionOwnerBinding {
@@ -4496,9 +4496,9 @@ mod tests {
                     contribution: Some(ObjectRef(Digest([9; 32]))),
                 },
             ])?;
-        assert!(!projection_owner_lookup_matches_request(
-            selection, projection, &owners, &foreign
-        ));
+        if projection_owner_lookup_matches_request(selection, projection, &owners, &foreign) {
+            return Err("unbound contribution accepted".into());
+        }
         Ok(())
     }
 

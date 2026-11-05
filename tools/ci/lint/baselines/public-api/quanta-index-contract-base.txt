@@ -27,8 +27,12 @@ impl<E: core::cmp::Eq> core::cmp::Eq for quanta_index_contract_base::admitted_de
 impl<E: core::cmp::PartialEq> core::cmp::PartialEq for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
 pub fn quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>::eq(&self, other: &quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>) -> bool
 impl<E: core::cmp::PartialEq> core::marker::StructuralPartialEq for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
+pub fn quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
 pub fn quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
+pub fn quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E> core::convert::From<quanta_index_contract_base::admitted_decode::DecodeBackingRefusalV1> for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
 pub fn quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>::from(cause: quanta_index_contract_base::admitted_decode::DecodeBackingRefusalV1) -> Self
 impl<E> core::marker::Freeze for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E> where E: core::marker::Freeze
@@ -2993,8 +2997,12 @@ impl<E: core::cmp::Eq> core::cmp::Eq for quanta_index_contract_base::admitted_de
 impl<E: core::cmp::PartialEq> core::cmp::PartialEq for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
 pub fn quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>::eq(&self, other: &quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>) -> bool
 impl<E: core::cmp::PartialEq> core::marker::StructuralPartialEq for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
+pub fn quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
 pub fn quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
+pub fn quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E> core::convert::From<quanta_index_contract_base::admitted_decode::DecodeBackingRefusalV1> for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>
 pub fn quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E>::from(cause: quanta_index_contract_base::admitted_decode::DecodeBackingRefusalV1) -> Self
 impl<E> core::marker::Freeze for quanta_index_contract_base::admitted_decode::ParserTextInputErrorV1<E> where E: core::marker::Freeze

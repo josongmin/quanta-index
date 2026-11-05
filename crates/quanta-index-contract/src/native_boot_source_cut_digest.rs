@@ -25,6 +25,24 @@ pub enum NativeBootSourceCutDigestErrorV1<E> {
     Encode(serde_json::Error),
 }
 
+impl<E: core::fmt::Display> core::fmt::Display for NativeBootSourceCutDigestErrorV1<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Work(cause) => write!(formatter, "work refused: {cause}"),
+            Self::Encode(cause) => write!(formatter, "digest encoding failed: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for NativeBootSourceCutDigestErrorV1<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Work(cause) => Some(cause),
+            Self::Encode(cause) => Some(cause),
+        }
+    }
+}
+
 /// Charge the domain and each canonical JSON write before hashing its bytes.
 /// A refused callback stops serialization and retains its original error.
 pub fn native_boot_source_cut_digest_with_work_v1<E>(
@@ -74,6 +92,48 @@ pub fn native_boot_source_cut_digest_with_work_v1<E>(
 mod tests {
     use super::*;
     use crate::index::MapRoot;
+
+    #[test]
+    fn boot_digest_keeps_a_typed_error_chain_without_formatting_the_refusal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug)]
+        struct Refusal(Arc<AtomicUsize>);
+
+        impl std::fmt::Display for Refusal {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let _prior = self.0.fetch_add(1, Ordering::SeqCst);
+                formatter.write_str("independent work refusal")
+            }
+        }
+
+        impl std::error::Error for Refusal {}
+
+        let formatted = Arc::new(AtomicUsize::new(0));
+        let cut = SourceCut {
+            owners: MapRoot(None),
+            paths: MapRoot(None),
+            frontiers: MapRoot(None),
+        };
+        let Err(error) = native_boot_source_cut_digest_with_work_v1(&cut, &mut |_| {
+            Err(Refusal(Arc::clone(&formatted)))
+        }) else {
+            return Err("refused work unexpectedly produced a digest".into());
+        };
+        let source = std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<Refusal>())
+            .ok_or("original typed cause missing")?;
+        if !Arc::ptr_eq(&source.0, &formatted) || formatted.load(Ordering::SeqCst) != 0 {
+            return Err("refusal was replaced or formatted during digest failure".into());
+        }
+        let message = error.to_string();
+        if !message.contains("independent work refusal") || formatted.load(Ordering::SeqCst) != 1 {
+            return Err("explicit error display did not preserve the original cause".into());
+        }
+        Ok(())
+    }
 
     macro_rules! check_eq {
         ($left:expr, $right:expr $(,)?) => {{

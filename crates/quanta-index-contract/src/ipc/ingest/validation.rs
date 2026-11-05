@@ -94,6 +94,28 @@ pub enum SearchCorpusValidationProgressError<E, V> {
     Progress(E),
 }
 
+impl<E: core::fmt::Display, V: core::fmt::Display> core::fmt::Display
+    for SearchCorpusValidationProgressError<E, V>
+{
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Invalid(cause) => write!(formatter, "invalid corpus: {cause}"),
+            Self::Progress(cause) => write!(formatter, "validation interrupted: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static, V: std::error::Error + 'static> std::error::Error
+    for SearchCorpusValidationProgressError<E, V>
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Invalid(cause) => Some(cause),
+            Self::Progress(cause) => Some(cause),
+        }
+    }
+}
+
 impl<E, V> From<V> for SearchCorpusValidationProgressError<E, V> {
     fn from(error: V) -> Self {
         Self::Invalid(error)

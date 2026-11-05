@@ -1439,7 +1439,18 @@ fn client_write_timeout_closes_peer_that_never_reads_with_typed_error() -> TestR
             frame.len()
         ));
     }
-    let result = send_request::<_, TestResponseEnvelope>(&socket, &request, policy);
+    // Exercise the actual client writer and its error classification. Encoding
+    // an 8 MiB fixture must finish before this write-only deadline starts;
+    // otherwise an expired pre-connect budget leaves accept waiting forever.
+    let stream = UnixStream::connect(&socket).map_err(|error| error.to_string())?;
+    let deadline = policy
+        .request_deadline()
+        .map_err(|error| error.to_string())?;
+    let mut writer = super::DeadlineStream::new(stream, deadline);
+    let result = writer.write_all(&frame).map_err(|error| {
+        super::classify_client_io_error(error, super::IpcIoOperation::Write, policy)
+    });
+    drop(writer);
     release_tx.send(()).map_err(|error| error.to_string())?;
     let server_result = server
         .join()

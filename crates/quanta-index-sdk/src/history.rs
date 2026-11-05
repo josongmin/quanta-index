@@ -99,6 +99,22 @@ pub struct AdmittedAuxiliaryRemoteErrorV1<O> {
     decoded: AdmittedDecodedCborV1<SearchPlaneIngestIpcResponseEnvelope, O>,
     _body: AdmittedClientResponseBody,
 }
+impl<O> std::fmt::Debug for AdmittedAuxiliaryRemoteErrorV1<O> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AdmittedAuxiliaryRemoteErrorV1")
+            .field("code", &self.code())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<O> std::fmt::Display for AdmittedAuxiliaryRemoteErrorV1<O> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "remote {:?}: {}", self.code(), self.message())
+    }
+}
+
+impl<O> std::error::Error for AdmittedAuxiliaryRemoteErrorV1<O> {}
 
 impl<O> AdmittedAuxiliaryRemoteErrorV1<O> {
     #[expect(

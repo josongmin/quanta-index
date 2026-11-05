@@ -1036,6 +1036,11 @@ impl<O> quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O>
 pub fn quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O>::code(&self) -> quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2
 pub fn quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O>::message(&self) -> &str
 pub fn quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O>::repair(&self) -> core::option::Option<&quanta_index_contract::ipc::error::QueryErrorRepair>
+impl<O> core::error::Error for quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O>
+impl<O> core::fmt::Debug for quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O>
+pub fn quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<O> core::fmt::Display for quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O>
+pub fn quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<O> core::marker::Freeze for quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O> where O: core::marker::Freeze
 impl<O> core::marker::Send for quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O> where O: core::marker::Send
 impl<O> core::marker::Sync for quanta_index_sdk::AdmittedAuxiliaryRemoteErrorV1<O> where O: core::marker::Sync

@@ -194,6 +194,7 @@ const HOLD: u64 = 1_000;
 
 struct GatedDispatcher {
     entered: mpsc::Sender<u64>,
+    finished: mpsc::Sender<u64>,
     release: Arc<Barrier>,
     completed: Arc<AtomicU64>,
     /// Monotonic sequence stamped at completion, so a test can prove ordering
@@ -229,6 +230,7 @@ impl IpcDispatcher<u64, u64> for GatedDispatcher {
             log.push(stamp);
         }
         let _completed = self.completed.fetch_add(1, Ordering::SeqCst);
+        let _reported = self.finished.send(request);
         request.saturating_add(1)
     }
 }
@@ -239,6 +241,7 @@ struct Server {
     shutdown: quanta_index_ipc::ShutdownHandle,
     join: Option<thread::JoinHandle<Result<(), IpcError>>>,
     entered: mpsc::Receiver<u64>,
+    finished: mpsc::Receiver<u64>,
     release: Arc<Barrier>,
     completed: Arc<AtomicU64>,
     sequence: Arc<AtomicU64>,
@@ -259,6 +262,7 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
     let uds = Arc::new(UdsServer::bind(&socket)?);
     let shutdown = uds.shutdown_handle();
     let (entered_tx, entered_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
     let release = Arc::new(Barrier::new(2));
     let completed = Arc::new(AtomicU64::new(0));
     let sequence = Arc::new(AtomicU64::new(0));
@@ -266,6 +270,7 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
     let cancelled_observed = Arc::new(AtomicU64::new(0));
     let dispatcher = Arc::new(GatedDispatcher {
         entered: entered_tx,
+        finished: finished_tx,
         release: Arc::clone(&release),
         completed: Arc::clone(&completed),
         sequence: Arc::clone(&sequence),
@@ -288,6 +293,7 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
         shutdown,
         join: Some(join),
         entered: entered_rx,
+        finished: finished_rx,
         release,
         completed,
         sequence,
@@ -456,6 +462,11 @@ fn a_disconnected_peer_cancels_its_dispatch_budget() -> ProbeResult {
     let completions_while_abandoned = server.completed.load(Ordering::SeqCst);
 
     let _released = server.release.wait();
+    // A follow-up request runs on another connection and cannot acknowledge
+    // completion of the abandoned dispatch. Observe that dispatch directly.
+    if server.finished.recv_timeout(HANDSHAKE_BOUND)? != HOLD {
+        return Err("unexpected dispatch completion".into());
+    }
     let follow_up = send(&server.socket, 9, 1, HANDSHAKE_BOUND);
     let cancelled_observed = server.cancelled_observed.load(Ordering::SeqCst);
 

@@ -28,6 +28,11 @@ pub(crate) fn checked_device_id<T: TryInto<u64>>(device: T) -> Result<u64, T::Er
     device.try_into()
 }
 
+/// Linux nlink_t is u64; Darwin uses a narrower unsigned field.
+pub(crate) fn link_count_u64<T: Into<u64>>(links: T) -> u64 {
+    links.into()
+}
+
 /// All ceilings are supplied by the service configuration; no implicit scan
 /// or publication capacity is inferred from observed usage.
 #[derive(Clone, Copy, serde::Deserialize)]
@@ -113,7 +118,7 @@ fn compare_entry(parent: &File, name: &OsStr, opened: &File) -> Result<(), CoreE
     };
     if observed != inode(&metadata)
         || length != metadata.len()
-        || u64::from(before.st_nlink) != metadata.nlink()
+        || link_count_u64(before.st_nlink) != metadata.nlink()
     {
         return Err(inventory_error(format!(
             "entry changed during scan: {}",

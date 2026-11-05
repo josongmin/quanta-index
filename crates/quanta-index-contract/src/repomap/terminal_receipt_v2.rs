@@ -43,6 +43,24 @@ pub enum RepoMapSourceBundleDigestWorkErrorV3<E> {
     Encode(RepoMapSourceBundleDigestEncodeErrorV3),
 }
 
+impl<E: core::fmt::Display> core::fmt::Display for RepoMapSourceBundleDigestWorkErrorV3<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Work(cause) => write!(formatter, "work refused: {cause}"),
+            Self::Encode(cause) => write!(formatter, "digest encoding failed: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for RepoMapSourceBundleDigestWorkErrorV3<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Work(cause) => Some(cause),
+            Self::Encode(cause) => Some(cause),
+        }
+    }
+}
+
 /// Retains the exact codec failure without formatting it inside an Original
 /// source loan. The caller formats it only after its source has finished.
 #[derive(Debug)]

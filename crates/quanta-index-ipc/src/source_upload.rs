@@ -536,14 +536,15 @@ impl SourcePublicationUploadStore {
         )
         .map_err(storage)?;
         let path_entry = fs::symlink_metadata(&self.root).map_err(storage)?;
-        let expected = (opened.dev(), opened.ino());
-        let parent_device = u64::try_from(parent_entry.st_dev).map_err(storage)?;
+        // Native dev_t is signed on Darwin and unsigned on Linux. Widen both
+        // identities without truncating or relabeling a negative device value.
+        let expected = (i128::from(opened.dev()), opened.ino());
         if !opened.is_dir()
             || FileType::from_raw_mode(parent_entry.st_mode) != FileType::Directory
-            || (parent_device, parent_entry.st_ino) != expected
+            || (i128::from(parent_entry.st_dev), parent_entry.st_ino) != expected
             || !path_entry.is_dir()
             || path_entry.file_type().is_symlink()
-            || (path_entry.dev(), path_entry.ino()) != expected
+            || (i128::from(path_entry.dev()), path_entry.ino()) != expected
             || opened.uid() != rustix::process::geteuid().as_raw()
             || opened.mode() & 0o077 != 0
         {
@@ -647,12 +648,11 @@ impl SourcePublicationUploadStore {
     fn require_body_metadata(&self, name: &OsStr, meta: &fs::Metadata) -> Result<(), CoreError> {
         let entry =
             statat(&self.directory, Path::new(name), AtFlags::SYMLINK_NOFOLLOW).map_err(storage)?;
-        let device = u64::try_from(entry.st_dev).map_err(storage)?;
         Self::require_private_body_metadata(meta)?;
         if FileType::from_raw_mode(entry.st_mode) != FileType::RegularFile
-            || (device, entry.st_ino) != (meta.dev(), meta.ino())
+            || (i128::from(entry.st_dev), entry.st_ino) != (i128::from(meta.dev()), meta.ino())
             || u64::try_from(entry.st_size).map_err(storage)? != meta.len()
-            || u64::from(entry.st_nlink) != meta.nlink()
+            || i128::from(entry.st_nlink) != i128::from(meta.nlink())
         {
             return Err(invalid(
                 "source upload body identity or privacy changed during operation",

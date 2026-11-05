@@ -685,6 +685,24 @@ pub enum CborPayloadLengthProgressErrorV1<E> {
     Progress(E),
 }
 
+impl<E: core::fmt::Display> core::fmt::Display for CborPayloadLengthProgressErrorV1<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Codec(cause) => write!(formatter, "CBOR encoding failed: {cause}"),
+            Self::Progress(cause) => write!(formatter, "CBOR length interrupted: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for CborPayloadLengthProgressErrorV1<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Codec(cause) => Some(cause),
+            Self::Progress(cause) => Some(cause),
+        }
+    }
+}
+
 pub fn decode_request<T, R>(reader: &mut R) -> Result<T, IpcError>
 where
     T: serde::de::DeserializeOwned,

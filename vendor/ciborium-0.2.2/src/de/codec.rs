@@ -3,7 +3,7 @@ use super::{Error, FiniteSemanticReasonV3, SemanticReasonV3};
 use alloc::{string::String, vec::Vec};
 
 use ciborium_io::Read;
-use ciborium_ll::{simple, tag, Decoder, Header};
+use ciborium_ll::{Decoder, Header, simple, tag};
 use serde::{de, de::Deserializer as _, forward_to_deserialize_any};
 
 trait Expected<E: de::Error> {
@@ -1181,6 +1181,34 @@ pub enum FiniteReadErrorV3<E> {
     Work(E),
     /// The requested bytes are absent from the input slice.
     EndOfInput,
+}
+impl<E: core::fmt::Display> core::fmt::Display for FiniteReadErrorV3<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Work(cause) => write!(formatter, "read work refused: {cause}"),
+            Self::EndOfInput => formatter.write_str("unexpected end of input"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl<E: std::error::Error + 'static> std::error::Error for FiniteReadErrorV3<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Work(cause) => Some(cause),
+            Self::EndOfInput => None,
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl<E: de::StdError + 'static> de::StdError for FiniteReadErrorV3<E> {
+    fn source(&self) -> Option<&(dyn de::StdError + 'static)> {
+        match self {
+            Self::Work(cause) => Some(cause),
+            Self::EndOfInput => None,
+        }
+    }
 }
 
 struct WorkChargedSliceReaderV3<'a, E, V> {

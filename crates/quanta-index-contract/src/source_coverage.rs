@@ -246,6 +246,24 @@ pub enum SourceCoverageProgressError<E> {
     Progress(E),
 }
 
+impl<E: core::fmt::Display> core::fmt::Display for SourceCoverageProgressError<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Invalid(cause) => write!(formatter, "invalid source coverage: {cause}"),
+            Self::Progress(cause) => write!(formatter, "validation interrupted: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for SourceCoverageProgressError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Invalid(cause) => Some(cause),
+            Self::Progress(cause) => Some(cause),
+        }
+    }
+}
+
 impl<E> From<SourceCoverageError> for SourceCoverageProgressError<E> {
     fn from(error: SourceCoverageError) -> Self {
         Self::Invalid(error)

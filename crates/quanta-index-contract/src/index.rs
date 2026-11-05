@@ -428,6 +428,26 @@ pub enum ProjectionPayloadDigestErrorV3<E> {
     Encode(serde_json::Error),
 }
 
+impl<E: core::fmt::Display> core::fmt::Display for ProjectionPayloadDigestErrorV3<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Work(cause) => write!(formatter, "work refused: {cause}"),
+            Self::Arithmetic => formatter.write_str("digest length overflow"),
+            Self::Encode(cause) => write!(formatter, "digest encoding failed: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for ProjectionPayloadDigestErrorV3<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Work(cause) => Some(cause),
+            Self::Arithmetic => None,
+            Self::Encode(cause) => Some(cause),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "projection_payload_digest_tests_v3.rs"]
 mod projection_payload_digest_tests_v3;
@@ -606,6 +626,26 @@ pub enum CatalogViewDigestErrorV3<E> {
     Work(E),
     Arithmetic,
     Encode(serde_json::Error),
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for CatalogViewDigestErrorV3<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Work(cause) => write!(formatter, "work refused: {cause}"),
+            Self::Arithmetic => formatter.write_str("digest length overflow"),
+            Self::Encode(cause) => write!(formatter, "digest encoding failed: {cause}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for CatalogViewDigestErrorV3<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Work(cause) => Some(cause),
+            Self::Arithmetic => None,
+            Self::Encode(cause) => Some(cause),
+        }
+    }
 }
 
 struct CatalogViewIdentityRefV3<'a>(&'a CatalogView);
