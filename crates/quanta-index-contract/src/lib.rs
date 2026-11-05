@@ -26,11 +26,11 @@ mod native_score;
 mod semantic_kinds;
 mod source_coverage;
 
-pub use native_score::{FiniteScore, FiniteScoreError};
 pub use native_boot_source_cut_digest::{
     NativeBootSourceCutDigestErrorV1, native_boot_source_cut_digest_v1,
     native_boot_source_cut_digest_with_work_v1,
 };
+pub use native_score::{FiniteScore, FiniteScoreError};
 pub use quanta_index_contract_base::{
     AdmittedBoxedTextSeedV1, AdmittedByteStringSeedV1, AdmittedOptionalSeedV1,
     AdmittedSequenceSeedV1, AdmittedTextSeedV1, DecodeAttemptStateV1, DecodeBackingAdmissionV1,

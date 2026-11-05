@@ -1,11 +1,11 @@
 //! One canonical visitor family; ordinary callers own local DATA, native
 //! callers loan physical DATA retained outside their highest Source.
 use super::{
-    de, fmt, Deserialize, Deserializer, GenerationSnapshot, ManifestGeneration, MapAccess, RepoId,
-    RevisionId, SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1,
-    SearchCorpusGenerationIdentityV1, SearchPlaneTrackKind, SemanticContentRootsV1, Visitor,
-    GENERATION_SNAPSHOT_FIELDS, SEARCH_CORPUS_ACTIVE_HEAD_V1_FIELDS,
+    Deserialize, Deserializer, GENERATION_SNAPSHOT_FIELDS, GenerationSnapshot, ManifestGeneration,
+    MapAccess, RepoId, RevisionId, SEARCH_CORPUS_ACTIVE_HEAD_V1_FIELDS,
     SEARCH_CORPUS_GENERATION_IDENTITY_V1_FIELDS, SEMANTIC_CONTENT_ROOTS_V1_FIELDS,
+    SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
+    SearchPlaneTrackKind, SemanticContentRootsV1, Visitor, de, fmt,
 };
 use core::{convert::Infallible, marker::PhantomData};
 #[cfg(feature = "quanta-native-identity-v1")]

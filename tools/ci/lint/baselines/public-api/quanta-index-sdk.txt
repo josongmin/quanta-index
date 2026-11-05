@@ -325,6 +325,19 @@ impl core::marker::Unpin for quanta_index_sdk::native_uds::AdmittedNativePublica
 impl core::marker::UnsafeUnpin for quanta_index_sdk::native_uds::AdmittedNativePublicationReply
 impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::native_uds::AdmittedNativePublicationReply
 impl !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::native_uds::AdmittedNativePublicationReply
+pub struct quanta_index_sdk::native_uds::AdmittedNativeStubReply
+impl quanta_index_sdk::native_uds::AdmittedNativeStubReply
+pub fn quanta_index_sdk::native_uds::AdmittedNativeStubReply::reply(&self) -> &quanta_index_contract::native_protocol::stub::NativeStubReply
+pub fn quanta_index_sdk::native_uds::AdmittedNativeStubReply::request(&self) -> &quanta_index_contract::native_protocol::stub::NativeStubRequest
+impl core::fmt::Debug for quanta_index_sdk::native_uds::AdmittedNativeStubReply
+pub fn quanta_index_sdk::native_uds::AdmittedNativeStubReply::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_sdk::native_uds::AdmittedNativeStubReply
+impl core::marker::Send for quanta_index_sdk::native_uds::AdmittedNativeStubReply
+impl core::marker::Sync for quanta_index_sdk::native_uds::AdmittedNativeStubReply
+impl core::marker::Unpin for quanta_index_sdk::native_uds::AdmittedNativeStubReply
+impl core::marker::UnsafeUnpin for quanta_index_sdk::native_uds::AdmittedNativeStubReply
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::native_uds::AdmittedNativeStubReply
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::native_uds::AdmittedNativeStubReply
 pub struct quanta_index_sdk::native_uds::BorrowedSourceInput<'a>
 pub quanta_index_sdk::native_uds::BorrowedSourceInput::bytes: &'a [u8]
 pub quanta_index_sdk::native_uds::BorrowedSourceInput::path: &'a str
@@ -360,6 +373,7 @@ pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::complete_overlay_save(&
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::discard_input(&self, ingress: quanta_index_contract::index::IngressRef, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<(), quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::end_interaction_publisher(&self, publisher: quanta_index_contract::native_protocol::NativeInteractionPublisherId, sequence: u64, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<(), quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::list_producer_source_owners(&self, selection: quanta_index_contract::index::ViewSelection, producer: quanta_index_contract_base::index_refs::ProducerId, after: core::option::Option<quanta_index_contract_base::index_refs::StableOwnerId>, limit: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::NativeProducerSourcePage, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::lookup_projection_owners(&self, selection: quanta_index_contract::index::ViewSelection, projection: quanta_index_contract_base::index_refs::ProjectionId, owners: alloc::vec::Vec<quanta_index_contract_base::index_refs::OwnerKey>, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::NativeProjectionOwnerLookup, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::lookup_source_owners(&self, selection: quanta_index_contract::index::ViewSelection, owners: alloc::vec::Vec<quanta_index_contract_base::index_refs::OwnerKey>, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::NativeSourceOwnerLookup, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::new(socket: P) -> Self
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::overlay(&self, request: quanta_index_contract::native_protocol::headless::NativeOverlayRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::headless::NativeOverlayReply, quanta_index_sdk::native_uds::NativeUdsError>
@@ -391,6 +405,7 @@ pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::stage_sources_borrowed(
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::stage_sources_borrowed_admitted(&self, ingress: quanta_index_contract::index::IngressRef, inputs: &[quanta_index_sdk::native_uds::BorrowedSourceInput<'_>], budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::status(&self, key: quanta_index_contract_base::index_refs::OperationKey, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::index::OperationStatus, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::stub(&self, request: quanta_index_contract::native_protocol::stub::NativeStubRequest, exact_source: &str, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::stub::NativeStubReply, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::stub_admitted(&self, request: quanta_index_contract::native_protocol::stub::NativeStubRequest, exact_source: &str, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativeStubReply, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::submit(&self, request: quanta_index_contract::index::UpdateRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::index::SubmitOutcome, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::submit_borrowed(&self, request: &quanta_index_contract::index::UpdateRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::index::SubmitOutcome, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::submit_borrowed_admitted(&self, request: &quanta_index_contract::index::UpdateRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::native_uds::NativeUdsError>

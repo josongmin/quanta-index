@@ -105,6 +105,7 @@ crate quanta_index_kernel
     ├── struct IngressSink: pub(self)
     ├── struct Kernel: pub
     ├── struct KernelServices: pub
+    ├── struct MaterializedOwnerMaps: pub(self)
     ├── struct MetadataMapEdits: pub(self)
     ├── enum OperationExecutionClass: pub
     ├── struct PendingCoverageBatch: pub(self)

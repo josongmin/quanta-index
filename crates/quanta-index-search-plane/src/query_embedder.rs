@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::SearchPlaneErrorCodeV2;
+use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_core::{
-    CoreError, ProviderAuditEventV1, ProviderBudgetLedger, ProviderSettlementKindV1,
-    ProviderSettlementReceiptV1, ProviderSettlementUsageV1, ProviderWorkEstimateV1,
-    RequestBudgetV1, RequestProviderStageV1, SemanticAdmissionEngine, SemanticEgressPolicyV1,
-    SemanticInputClass, SemanticNormalizationFailureV1, SemanticPolicy, TextEmbeddingProvider,
-    EMBED_CHECKPOINT,
+    CoreError, EMBED_CHECKPOINT, ProviderAuditEventV1, ProviderBudgetLedger,
+    ProviderSettlementKindV1, ProviderSettlementReceiptV1, ProviderSettlementUsageV1,
+    ProviderWorkEstimateV1, RequestBudgetV1, RequestProviderStageV1, SemanticAdmissionEngine,
+    SemanticEgressPolicyV1, SemanticInputClass, SemanticNormalizationFailureV1, SemanticPolicy,
+    TextEmbeddingProvider,
 };
 
 /// Scalar failure from the canonical hash and normalization path. It can be
@@ -348,9 +348,11 @@ mod admitted_output_tests {
     #[test]
     fn caller_owned_slice_refuses_wrong_dimension() {
         let embedder = HashingQueryTextEmbedder::new(64);
-        assert!(embedder
-            .embed_query_into_v1("alpha", &mut [0.0; 63])
-            .is_err());
+        assert!(
+            embedder
+                .embed_query_into_v1("alpha", &mut [0.0; 63])
+                .is_err()
+        );
         assert_eq!(
             embedder.embed_query_into_checked_v1("alpha", &mut [0.0; 63]),
             Err(HashingQueryTextFailureV1::DimensionMismatch),

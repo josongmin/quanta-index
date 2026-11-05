@@ -1027,13 +1027,13 @@ fn only_ingest_request(
         .ok_or_else(|| crate::SdkError::Protocol("missing captured ingest request".to_string()))
 }
 
+mod admitted_auxiliary_tests;
 mod builder_tests;
 mod connect_options_tests;
 mod control_tests;
 mod corpus_ingest_tests;
 mod explicit_activation_adversarial_tests;
 mod other_ingest_tests;
-mod admitted_auxiliary_tests;
 mod published_activation_tests;
 mod query_routes_tests;
 mod query_tests;

@@ -337,7 +337,9 @@ pub struct BorrowedRepoMapActivateControlIpcRequestEnvelopeV3<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct BorrowedRepoMapActivateControlIpcRequestV3<'a>(pub &'a RepoMapActivateGenerationRequestV2);
+pub struct BorrowedRepoMapActivateControlIpcRequestV3<'a>(
+    pub &'a RepoMapActivateGenerationRequestV2,
+);
 
 impl Serialize for BorrowedRepoMapActivateControlIpcRequestV3<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

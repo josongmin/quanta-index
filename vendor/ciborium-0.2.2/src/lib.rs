@@ -11,7 +11,7 @@
 //! the main functions. Note that byte slices are also readers and writers and can be
 //! passed to these functions just as streams can.
 //!
-//! For dynamic CBOR value creation/inspection, see [`Value`](crate::value::Value).
+//! For dynamic CBOR value creation/inspection, see [`Value`].
 //!
 //! # Design Decisions
 //!

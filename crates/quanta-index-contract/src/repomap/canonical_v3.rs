@@ -12,9 +12,9 @@ use quanta_index_contract_base::{
 
 mod cbor;
 use cbor::{
-    decode_digest_wire_string, digest_wire_string, domain_digest, plain_digest, push_array_len,
-    push_array_len_checked, push_bytes, push_key, push_map_len, push_nullable_digest,
-    push_nullable_uint, push_text, push_uint_pair, Decoder,
+    Decoder, decode_digest_wire_string, digest_wire_string, domain_digest, plain_digest,
+    push_array_len, push_array_len_checked, push_bytes, push_key, push_map_len,
+    push_nullable_digest, push_nullable_uint, push_text, push_uint_pair,
 };
 
 const ARTIFACT_IDENTITY_DOMAIN: &str = "quanta-index/artifact-identity/v1";

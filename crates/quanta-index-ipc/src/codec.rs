@@ -1,8 +1,8 @@
 //! Length-prefixed CBOR frame codec for search-plane IPC envelopes.
 
 use quanta_index_core::{
-    index::{IndexError, MemoryLease, MemoryLifetime, MemoryScope},
     RequestBudgetV1,
+    index::{IndexError, MemoryLease, MemoryLifetime, MemoryScope},
 };
 use std::io::{ErrorKind, Read, Write};
 
@@ -1068,12 +1068,12 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        decode_cbor_payload, decode_request, decode_request_guarded, decode_response,
-        diagnostic_ack, diagnostic_ack_accepted, diagnostic_preface, encode_cbor_payload,
-        encode_request, IpcError, COMPRESSED_REQUEST_HEADER_BYTES, COMPRESSED_REQUEST_MAGIC,
-        DIAGNOSTIC_ACK_BYTES, DIAGNOSTIC_PREFACE_BYTES, DIAGNOSTIC_PREFACE_MAGIC,
+        COMPRESSED_REQUEST_HEADER_BYTES, COMPRESSED_REQUEST_MAGIC, DIAGNOSTIC_ACK_BYTES,
+        DIAGNOSTIC_PREFACE_BYTES, DIAGNOSTIC_PREFACE_MAGIC, IpcError,
         MAX_DECOMPRESSED_FRAME_BODY_BYTES, MAX_FRAME_BODY_BYTES, MAX_MULTIFRAME_REQUEST_BODY_BYTES,
-        MULTIFRAME_REQUEST_MAGIC,
+        MULTIFRAME_REQUEST_MAGIC, decode_cbor_payload, decode_request, decode_request_guarded,
+        decode_response, diagnostic_ack, diagnostic_ack_accepted, diagnostic_preface,
+        encode_cbor_payload, encode_request,
     };
 
     struct ClientMemoryOwner(std::sync::Arc<std::sync::atomic::AtomicU64>);
@@ -1429,11 +1429,7 @@ mod tests {
         let mut checkpoints = 0_u32;
         let error = super::cbor_payload_matches_with_progress(&7_u8, &encoded, &mut || {
             checkpoints = checkpoints.saturating_add(1);
-            if checkpoints == 2 {
-                Err(42)
-            } else {
-                Ok(())
-            }
+            if checkpoints == 2 { Err(42) } else { Ok(()) }
         });
         assert!(matches!(
             error,
@@ -1625,10 +1621,12 @@ mod tests {
             .expect("length header width");
         let wire_len = usize::try_from(u32::from_le_bytes(header)).expect("wire length fits usize");
         assert!(wire_len <= MAX_FRAME_BODY_BYTES);
-        assert!(frame
-            .get(4..)
-            .expect("body after length header")
-            .starts_with(COMPRESSED_REQUEST_MAGIC));
+        assert!(
+            frame
+                .get(4..)
+                .expect("body after length header")
+                .starts_with(COMPRESSED_REQUEST_MAGIC)
+        );
         let (actual, reserved): (String, usize) =
             decode_request_guarded(&mut Cursor::new(frame), Ok, |held, additional| {
                 *held += additional;
@@ -1678,10 +1676,12 @@ mod tests {
             })
             .collect();
         let frame = encode_request(&expected).expect("multiframe request");
-        assert!(frame
-            .get(4..)
-            .expect("first body")
-            .starts_with(MULTIFRAME_REQUEST_MAGIC));
+        assert!(
+            frame
+                .get(4..)
+                .expect("first body")
+                .starts_with(MULTIFRAME_REQUEST_MAGIC)
+        );
         let first_frame_len = usize::try_from(u32::from_le_bytes(
             frame
                 .get(..4)
@@ -1726,10 +1726,12 @@ mod tests {
     fn multiframe_request_above_64_mib_round_trips_and_detects_corruption() {
         let expected = "x".repeat(MAX_DECOMPRESSED_FRAME_BODY_BYTES + 1);
         let mut frame = encode_request(&expected).expect("bounded multiframe request");
-        assert!(frame
-            .get(4..)
-            .expect("first body")
-            .starts_with(MULTIFRAME_REQUEST_MAGIC));
+        assert!(
+            frame
+                .get(4..)
+                .expect("first body")
+                .starts_with(MULTIFRAME_REQUEST_MAGIC)
+        );
         let actual: String =
             decode_request(&mut Cursor::new(frame.as_slice())).expect("decoded request");
         assert_eq!(actual, expected);

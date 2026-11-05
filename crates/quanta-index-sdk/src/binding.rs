@@ -1292,8 +1292,7 @@ fn check_repo_map_v2_receipt(
                 )
             })
         })?;
-        if !prior_matches || receipt.mutation.activation_epoch != expected_epoch
-        {
+        if !prior_matches || receipt.mutation.activation_epoch != expected_epoch {
             return Err(binding_error(
                 "repomap_terminal_receipt_v2",
                 ResponseBindingAxis::CasExpectation,
@@ -1613,10 +1612,9 @@ impl IngestCallBinding {
                 ExpectedIngestResponseV1::StructuralReceipt,
                 Some((batch.generation, batch.batch_digest.clone())),
             ),
-            BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(_) => (
-                ExpectedIngestResponseV1::RepoMapTerminalReceiptV2,
-                None,
-            ),
+            BorrowedAuxiliaryIngestIpcRequestV1::RepoMap(_) => {
+                (ExpectedIngestResponseV1::RepoMapTerminalReceiptV2, None)
+            }
         }
     }
 

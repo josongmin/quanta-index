@@ -1399,6 +1399,7 @@ pub fn quanta_index_contract_base::query::LanguageCode::deserialize_seed_with_ad
 pub fn quanta_index_contract_base::query::LanguageCode::from_code_str(value: &str) -> core::option::Option<Self>
 pub fn quanta_index_contract_base::query::LanguageCode::into_inner(self) -> alloc::boxed::Box<str>
 pub fn quanta_index_contract_base::query::LanguageCode::new(value: impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, &'static str>
+pub fn quanta_index_contract_base::query::LanguageCode::try_from_boxed_into_v3(source: &mut core::option::Option<alloc::boxed::Box<str>>, destination: &mut core::option::Option<Self>) -> core::result::Result<(), &'static str>
 pub fn quanta_index_contract_base::query::LanguageCode::try_from_boxed_v1(value: alloc::boxed::Box<str>) -> core::result::Result<Self, &'static str>
 impl core::clone::Clone for quanta_index_contract_base::query::LanguageCode
 pub fn quanta_index_contract_base::query::LanguageCode::clone(&self) -> quanta_index_contract_base::query::LanguageCode
@@ -3762,6 +3763,7 @@ pub fn quanta_index_contract_base::query::LanguageCode::deserialize_seed_with_ad
 pub fn quanta_index_contract_base::query::LanguageCode::from_code_str(value: &str) -> core::option::Option<Self>
 pub fn quanta_index_contract_base::query::LanguageCode::into_inner(self) -> alloc::boxed::Box<str>
 pub fn quanta_index_contract_base::query::LanguageCode::new(value: impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, &'static str>
+pub fn quanta_index_contract_base::query::LanguageCode::try_from_boxed_into_v3(source: &mut core::option::Option<alloc::boxed::Box<str>>, destination: &mut core::option::Option<Self>) -> core::result::Result<(), &'static str>
 pub fn quanta_index_contract_base::query::LanguageCode::try_from_boxed_v1(value: alloc::boxed::Box<str>) -> core::result::Result<Self, &'static str>
 impl core::clone::Clone for quanta_index_contract_base::query::LanguageCode
 pub fn quanta_index_contract_base::query::LanguageCode::clone(&self) -> quanta_index_contract_base::query::LanguageCode

@@ -161,12 +161,11 @@ pub use domains::semantic::{
     SemanticContentRootsPort, SemanticEgressGrantV1, SemanticEgressPolicyV1,
     SemanticGenerationContractV1, SemanticIndexOpenPort, SemanticIngestHeaderV1,
     SemanticIngestPort, SemanticInputClass, SemanticNormalizationFailureV1, SemanticPolicy,
-    SemanticQueryPort, SemanticReadiness,
-    SemanticScopeSource, SemanticScopeStreamBuildPort, SemanticScopeWindowV1, SemanticSearchHitV1,
-    SemanticSearcher, SemanticStreamTallyV1, SemanticStreamWindowPolicy, SemanticWindowFillV1,
-    SemanticWindowIssuerV1, SemanticWindowLeaseV1, SemanticWindowPlacementV1,
-    SemanticWindowResidencyV1, TextEmbeddingBatch, TextEmbeddingProvider,
-    build_resident_semantic_batch_v1, owner_key_v1,
+    SemanticQueryPort, SemanticReadiness, SemanticScopeSource, SemanticScopeStreamBuildPort,
+    SemanticScopeWindowV1, SemanticSearchHitV1, SemanticSearcher, SemanticStreamTallyV1,
+    SemanticStreamWindowPolicy, SemanticWindowFillV1, SemanticWindowIssuerV1,
+    SemanticWindowLeaseV1, SemanticWindowPlacementV1, SemanticWindowResidencyV1,
+    TextEmbeddingBatch, TextEmbeddingProvider, build_resident_semantic_batch_v1, owner_key_v1,
 };
 pub use domains::source_publication::{
     LexicalDocumentNamespaceV1, LexicalDocumentVersionRangeV1, LexicalDocumentVersionReservationV1,

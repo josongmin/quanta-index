@@ -23,8 +23,8 @@ mod source_diff;
 pub use source_diff::{NativeProjectionSourceDiff, NativeSourceDiffRows};
 mod headless;
 mod stub;
-mod stub_schema;
 mod stub_certificate;
+mod stub_schema;
 pub use graph::{
     GraphEdge, GraphNode, GraphOwnerOutput, GraphProjectionRow, MAX_NATIVE_GRAPH_EDGES,
     MAX_NATIVE_GRAPH_ITEMS, MAX_REPOMAP_RANK_FOCUS_SUBJECTS, MAX_REPOMAP_RANK_HITS,
@@ -46,7 +46,6 @@ pub use stub::{
     NativeStubBinding, NativeStubByteEdit, NativeStubCoordinateUnit, NativeStubEdit,
     NativeStubItem, NativeStubPosition, NativeStubRange, NativeStubReply, NativeStubRequest,
 };
-pub use stub_schema::native_stub_preflight_schema_v1;
 pub use stub_certificate::{
     MAX_NATIVE_STUB_CERTIFICATE_BYTES, MAX_NATIVE_STUB_CERTIFICATE_ITEMS, NATIVE_STUB_AST_PRODUCER,
     NATIVE_STUB_AST_PROJECTION, NATIVE_STUB_AST_SCHEMA, NativeStubCertificate,
@@ -54,6 +53,7 @@ pub use stub_certificate::{
     NativeStubCertificateIter, encode_native_stub_certificate_into,
     native_stub_certificate_encoded_len, native_stub_certificate_policy,
 };
+pub use stub_schema::native_stub_preflight_schema_v1;
 
 mod semantic_chunk;
 mod semantic_chunk_manifest;

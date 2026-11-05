@@ -371,6 +371,7 @@ fn diagnostic_preface_selects_linked_request_only_for_active_matching_capture() 
                     .count(),
                 1
             );
+            assert!(matches!(events.last(), Some(event) if event.stage == RequestEventStageV1::ResponseWritten));
             let identities = trace_sink
                 .0
                 .lock()
@@ -3362,6 +3363,45 @@ fn handle_connection_surfaces_a_failed_peer_watch() {
         Ok(())
     })();
     assert_test_ok(&result);
+}
+
+#[test]
+fn response_write_cancellation_cannot_undo_a_complete_frame() -> TestRes {
+    let frame = b"\x12\x34";
+    for (expected, complete) in [(b"\x12".as_slice(), false), (frame.as_slice(), true)] {
+        let (mut writer, mut reader) = UnixStream::pair().map_err(|err| err.to_string())?;
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+        let cancellation = budget.cancel_handle();
+        let outcome = super::write_response_frame_before(frame, &budget, |bytes, timeout| {
+            if bytes != frame {
+                return Err(std::io::Error::other("unexpected write after cancellation"));
+            }
+            writer.set_write_timeout(Some(timeout))?;
+            writer.write_all(expected)?;
+            cancellation.cancel();
+            Ok(expected.len())
+        });
+        drop(writer);
+        let mut received = Vec::new();
+        let _read = reader
+            .read_to_end(&mut received)
+            .map_err(|err| err.to_string())?;
+        if received != expected {
+            return Err(format!(
+                "unexpected bytes: {received:?}, expected {expected:?}"
+            ));
+        }
+        match (complete, outcome) {
+            (true, Ok(())) => (),
+            (false, Err(err)) if err.kind() == std::io::ErrorKind::Interrupted => (),
+            (_, outcome) => {
+                return Err(format!(
+                    "complete={complete}, unexpected outcome: {outcome:?}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[test]

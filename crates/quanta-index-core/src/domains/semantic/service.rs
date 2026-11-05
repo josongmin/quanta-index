@@ -1,12 +1,12 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{EmbeddingNormalization, PUBLIC_TOP_K_MAX};
 
 use crate::domains::observability::{MetricPointV1, MetricSourcePort};
 use crate::domains::semantic::outbound::{TextEmbeddingBatch, TextEmbeddingProvider};
-use crate::error::{validate_internal_fetch_size, validate_query_top_k, CoreError};
+use crate::error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
 use crate::request_budget::RequestBudgetV1;
 
 /// How far from 1.0 a unit vector's L2 norm may be before it is not one.
@@ -102,7 +102,8 @@ impl SemanticPolicy {
                 SemanticNormalizationFailureV1::ZeroNorm => {
                     "semantic: cannot normalize a zero-norm embedding vector".to_string()
                 }
-                other => other.to_norm_message_v1(),
+                other @ (SemanticNormalizationFailureV1::NonFiniteComponent { .. }
+                | SemanticNormalizationFailureV1::NormOverflow) => other.to_norm_message_v1(),
             })
         })
     }
@@ -378,18 +379,22 @@ mod tests {
     fn the_norm_squares_its_components() {
         // Under `+`, `1 + (-1) = 0` → zero norm → refused; under `*` the
         // norm is sqrt(2) and a raw contract accepts it.
-        assert!(SemanticPolicy::validate_embedding_vector_v1(
-            &[1.0, -1.0],
-            2,
-            quanta_index_contract::EmbeddingNormalization::None
-        )
-        .is_ok());
-        assert!(SemanticPolicy::validate_embedding_vector_v1(
-            &[0.0, 0.0],
-            2,
-            quanta_index_contract::EmbeddingNormalization::None
-        )
-        .is_err());
+        assert!(
+            SemanticPolicy::validate_embedding_vector_v1(
+                &[1.0, -1.0],
+                2,
+                quanta_index_contract::EmbeddingNormalization::None
+            )
+            .is_ok()
+        );
+        assert!(
+            SemanticPolicy::validate_embedding_vector_v1(
+                &[0.0, 0.0],
+                2,
+                quanta_index_contract::EmbeddingNormalization::None
+            )
+            .is_err()
+        );
     }
 
     #[test]

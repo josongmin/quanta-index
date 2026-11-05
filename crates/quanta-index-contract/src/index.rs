@@ -136,9 +136,8 @@ impl SourceTransition {
 #[cfg(test)]
 mod source_capture_tests {
     use super::{
-        Digest, MapRoot, ObjectRef, OwnerMutationSet, SourceCut, SourceTransition,
-        NATIVE_INDEX_STATE_VERSION, NATIVE_SOURCE_CAPTURE_HASH_DOMAIN,
-        NATIVE_SOURCE_CAPTURE_VERSION,
+        Digest, MapRoot, NATIVE_INDEX_STATE_VERSION, NATIVE_SOURCE_CAPTURE_HASH_DOMAIN,
+        NATIVE_SOURCE_CAPTURE_VERSION, ObjectRef, OwnerMutationSet, SourceCut, SourceTransition,
     };
 
     #[test]

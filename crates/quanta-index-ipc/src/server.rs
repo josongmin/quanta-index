@@ -2331,6 +2331,17 @@ fn write_all_before(
     bytes: &[u8],
     budget: &RequestBudgetV1,
 ) -> std::io::Result<()> {
+    write_response_frame_before(bytes, budget, |remaining, timeout| {
+        stream.set_write_timeout(Some(timeout))?;
+        stream.write(remaining)
+    })
+}
+
+fn write_response_frame_before(
+    bytes: &[u8],
+    budget: &RequestBudgetV1,
+    mut write: impl FnMut(&[u8], Duration) -> std::io::Result<usize>,
+) -> std::io::Result<()> {
     let deadline = budget.deadline();
     let mut remaining_bytes = bytes;
     while !remaining_bytes.is_empty() {
@@ -2343,8 +2354,10 @@ fn write_all_before(
             .ok_or_else(deadline_elapsed_error)?;
         // A blocked socket periodically observes cancellation, without changing
         // the absolute deadline or retrying a partially written response frame.
-        stream.set_write_timeout(Some(remaining_time.min(Duration::from_millis(50))))?;
-        let written = match stream.write(remaining_bytes) {
+        let written = match write(
+            remaining_bytes,
+            remaining_time.min(Duration::from_millis(50)),
+        ) {
             Ok(written) => written,
             Err(error)
                 if matches!(
@@ -2369,10 +2382,10 @@ fn write_all_before(
             )
         })?;
     }
-    budget
-        .checkpoint("ipc_response_write")
-        .map_err(|error| std::io::Error::new(ErrorKind::Interrupted, error))?;
-    ensure_deadline_remaining(deadline)
+    // The peer can consume the full frame and close before this thread resumes.
+    // Once the socket accepts the final byte, the frame cannot be withdrawn.
+    // The client still enforces its own deadline when it decodes the reply.
+    Ok(())
 }
 
 mod peer_watch;

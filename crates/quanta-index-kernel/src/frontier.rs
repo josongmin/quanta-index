@@ -76,7 +76,9 @@ impl PreparedFrontiers {
         let mut prepared = Self::new(events, context.budget)?;
         for row in &mut prepared.rows {
             let event = row.event;
-            let expected = context.maps.lookup_object(root, &key(event), context.budget)?;
+            let expected = context
+                .maps
+                .lookup_object(root, &key(event), context.budget)?;
             match expected {
                 Some(reference) => validate_previous(event, read(reference, context)?)?,
                 None if event.predecessor != 0 => return Err(IndexError::Conflict),
@@ -146,7 +148,8 @@ impl FrontierEdits {
         let next = row.next.ok_or_else(|| {
             IndexError::BackendViolation("source frontier was not installed".into())
         })?;
-        OrdinalMapEdit::copy_object_key(2, &key(row.event), row.expected, Some(next), budget).map(Some)
+        OrdinalMapEdit::copy_object_key(2, &key(row.event), row.expected, Some(next), budget)
+            .map(Some)
     }
 }
 

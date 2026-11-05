@@ -7,15 +7,15 @@ use std::num::NonZeroU64;
 use quanta_index_contract_base::{AdmittedTextSeedV1, SourceIdentityDecodeAdmissionV1};
 use serde::de::DeserializeSeed;
 use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
-    Deserialize, Deserializer, Serialize, Serializer,
 };
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    admitted_v3::KnownKeySeed, CandidateCommitmentV1, ManifestGeneration, RepoId,
-    RepoMapMutationAck, RepoMapSourceBundle, RevisionId,
+    CandidateCommitmentV1, ManifestGeneration, RepoId, RepoMapMutationAck, RepoMapSourceBundle,
+    RevisionId, admitted_v3::KnownKeySeed,
 };
 
 const SOURCE_BUNDLE_DIGEST_DOMAIN_V2: &[u8] = b"quanta-index/repomap-source-bundle/v2\0";
@@ -370,7 +370,8 @@ impl RepoMapExpectedActiveV2 {
     /// Compare the existing wire spelling without allocating a temporary String.
     #[must_use]
     pub fn candidate_commitment_wire_matches_v3(&self, wire: &str) -> bool {
-        wire.as_bytes() == format_sha256_wire_bytes_v3(self.candidate_commitment.as_bytes()).as_slice()
+        wire.as_bytes()
+            == format_sha256_wire_bytes_v3(self.candidate_commitment.as_bytes()).as_slice()
     }
 }
 
@@ -784,7 +785,7 @@ struct ReceiptVisitor<P>(P);
 trait ReceiptDecodePolicy<'de> {
     fn next_field<A: MapAccess<'de>>(&self, map: &mut A) -> Result<Option<&'static str>, A::Error>;
     fn next_mutation<A: MapAccess<'de>>(&self, map: &mut A)
-        -> Result<RepoMapMutationAck, A::Error>;
+    -> Result<RepoMapMutationAck, A::Error>;
     fn next_text<A: MapAccess<'de>>(&self, map: &mut A) -> Result<String, A::Error>;
 }
 struct OrdinaryReceiptPolicy;
@@ -997,8 +998,8 @@ mod tests {
     fn borrowed_publish_and_activation_preserve_existing_cbor_wire() {
         let bundle = bundle_fixture_v2();
         let publish = RepoMapPublishBundleRequestV2::new(bundle.clone()).expect("bundle digest");
-        let activation = RepoMapActivateGenerationRequestV2::for_bundle(&bundle)
-            .expect("activation digest");
+        let activation =
+            RepoMapActivateGenerationRequestV2::for_bundle(&bundle).expect("activation digest");
         let borrowed_publish = BorrowedRepoMapPublishBundleRequestV3 {
             source_bundle_digest: &publish.source_bundle_digest,
             bundle: &bundle,

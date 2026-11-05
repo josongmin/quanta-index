@@ -291,7 +291,10 @@ mod tests {
         let (budget, ledger) = scoped_budget(32)?;
         let prepared = PreparedEdit::new(&key, expected, next, &budget)?;
         require(prepared.as_edit().key.as_slice() == key)?;
-        require(prepared.as_edit().expected == expected.map(Into::into) && prepared.as_edit().next == next.map(Into::into))?;
+        require(
+            prepared.as_edit().expected == expected.map(Into::into)
+                && prepared.as_edit().next == next.map(Into::into),
+        )?;
         require(prepared.as_slice().len() == 1 && ledger.live() == 32)?;
         drop(budget);
         require(ledger.live() == 32)?;

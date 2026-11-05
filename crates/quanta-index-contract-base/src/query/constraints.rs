@@ -518,7 +518,10 @@ mod tests {
         let rejected_pointer = rejected.as_deref().ok_or("rejected source")?.as_ptr();
         let mut empty = None;
         assert!(LanguageCode::try_from_boxed_into_v3(&mut rejected, &mut empty).is_err());
-        assert_eq!(rejected.as_deref().ok_or("preserved rejection")?.as_ptr(), rejected_pointer);
+        assert_eq!(
+            rejected.as_deref().ok_or("preserved rejection")?.as_ptr(),
+            rejected_pointer
+        );
         assert!(empty.is_none());
 
         let mut occupied_source = Some(String::from("rust").into_boxed_str());
@@ -526,7 +529,9 @@ mod tests {
             .as_deref()
             .ok_or("occupied source")?
             .as_ptr();
-        assert!(LanguageCode::try_from_boxed_into_v3(&mut occupied_source, &mut destination).is_err());
+        assert!(
+            LanguageCode::try_from_boxed_into_v3(&mut occupied_source, &mut destination).is_err()
+        );
         assert_eq!(
             occupied_source
                 .as_deref()

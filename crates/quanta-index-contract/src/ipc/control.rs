@@ -7,13 +7,13 @@ pub use native_decode_v1::{
 };
 
 use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
-    Deserialize, Deserializer, Serialize, Serializer,
 };
 
-use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
 use quanta_index_contract_base::SearchCorpusActivationTokenV1;
+use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
 #[cfg(feature = "quanta-native-identity-v1")]
 use quanta_index_contract_base::{AdmittedOptionalSeedV1, SourceIdentityDecodeAdmissionV1};
 #[cfg(feature = "quanta-native-identity-v1")]
@@ -2942,7 +2942,7 @@ mod qi_act_01_tests {
             DecodeFieldKindV1, DecodeFieldTokenV1, ParserTextInputErrorV1,
             SourceIdentityDecodeAdmissionV1,
         };
-        use serde::{de::DeserializeSeed, Deserializer};
+        use serde::{Deserializer, de::DeserializeSeed};
 
         struct Admission {
             births: Cell<usize>,

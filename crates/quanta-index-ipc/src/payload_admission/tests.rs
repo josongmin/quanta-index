@@ -1,17 +1,17 @@
 //! Encoder reservation tests use a local ledger, not a product Original issuer.
 
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use serde::{Serialize, Serializer};
 
 use super::{
-    encode_cbor_payload_admitted_v1, encode_cbor_payload_into_slots_v1, CborPayloadAdmissionErrorV1,
+    CborPayloadAdmissionErrorV1, encode_cbor_payload_admitted_v1, encode_cbor_payload_into_slots_v1,
 };
 use crate::{
-    IndexError, IpcError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope,
-    MemoryScopePort, MAX_FRAME_BODY_BYTES,
+    IndexError, IpcError, MAX_FRAME_BODY_BYTES, MemoryLease, MemoryLeaseOwner, MemoryLifetime,
+    MemoryScope, MemoryScopePort,
 };
 
 #[derive(Default)]

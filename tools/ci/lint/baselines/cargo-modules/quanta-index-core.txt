@@ -266,6 +266,7 @@ crate quanta_index_core
 │   │   ├── mod service: pub(self)
 │   │   │   ├── struct L2UnitEmbeddingProvider: pub
 │   │   │   ├── struct RawNormTallies: pub
+│   │   │   ├── enum SemanticNormalizationFailureV1: pub
 │   │   │   └── struct SemanticPolicy: pub
 │   │   └── mod stream: pub(self)
 │   │       ├── struct ResidentOwnerGroup: pub(self)
@@ -322,7 +323,8 @@ crate quanta_index_core
 │   └── trait HistoryTextPhysicalLock: pub
 ├── mod index: pub
 │   ├── mod attempt: pub(self)
-│   │   └── struct AttemptSink: pub(self)
+│   │   ├── struct AttemptSink: pub(self)
+│   │   └── struct PreparedMapOutput: pub(self)
 │   ├── mod budget: pub
 │   │   ├── struct DeniedCharge: pub(self)
 │   │   ├── struct DeniedMemory: pub(self)
@@ -446,8 +448,10 @@ crate quanta_index_core
 │   │   ├── trait ObjectWriteTicket: pub
 │   │   ├── enum OperationInspectAccess: pub
 │   │   ├── trait OperationJournalPort: pub
+│   │   ├── enum OwnerMapCompletion: pub
 │   │   ├── trait PersistentMapPort: pub
 │   │   ├── trait PreparedObjectMapBatch: pub
+│   │   ├── trait PreparedOwnerMapScope: pub
 │   │   ├── trait SourceAuthorityPort: pub
 │   │   ├── struct TerminalCustodyCandidate: pub
 │   │   ├── struct TerminalCustodyPage: pub

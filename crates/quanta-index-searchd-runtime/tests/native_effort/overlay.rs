@@ -296,16 +296,18 @@ fn uds_overlay_effort_replaces_adds_and_deletes_on_one_selected_view() -> TestRe
     assert_eq!(deleted_fast.view, selected);
     assert_eq!(deleted_deep.corpus, deleted_fast.corpus);
     assert_eq!(deleted_done.corpus.as_ref(), Some(&deleted_fast.corpus));
-    assert!(deleted_fast
-        .corpus
-        .revisions
-        .iter()
-        .any(|row| { row.owner == old.owner && row.revision == 2 && row.deleted && !row.retired }));
+    assert!(
+        deleted_fast.corpus.revisions.iter().any(|row| {
+            row.owner == old.owner && row.revision == 2 && row.deleted && !row.retired
+        })
+    );
     assert_eq!(deleted_fast.matched, 1);
-    assert!(deleted_fast
-        .hits
-        .first()
-        .is_some_and(|hit| hit.owner == added.owner));
+    assert!(
+        deleted_fast
+            .hits
+            .first()
+            .is_some_and(|hit| hit.owner == added.owner)
+    );
     assert!(!deleted_deep.hits.iter().any(|hit| hit.owner == old.owner));
     assert_eq!(
         client.overlay(NativeOverlayRequest::Close { session }, &budget())?,
@@ -377,10 +379,12 @@ fn uds_overlay_lexical_scope_limits_deep_to_fast_or_distinct_text_universe() -> 
     let calls_before = calls.load(Ordering::SeqCst);
     let (different_fast, different_deep, different_done) = query_overlay_stream(&client, distinct)?;
     assert_eq!(different_fast.matched, 1);
-    assert!(different_fast
-        .hits
-        .iter()
-        .all(|hit| hit.owner == replaced.owner));
+    assert!(
+        different_fast
+            .hits
+            .iter()
+            .all(|hit| hit.owner == replaced.owner)
+    );
     assert_eq!(different_fast.corpus, same_fast.corpus);
     assert_eq!(different_deep.corpus, same_fast.corpus);
     assert_eq!(different_done.corpus.as_ref(), Some(&same_fast.corpus));
@@ -599,10 +603,12 @@ fn uds_overlay_effort_original_cancellation_during_provider_blocks_deep_and_drai
     let captured = fast_rx.recv_timeout(Duration::from_secs(3))?;
     assert_eq!(captured.session, session);
     assert_eq!(captured.revisions.len(), 1);
-    assert!(captured
-        .revisions
-        .first()
-        .is_some_and(|revision| revision.owner == document.owner));
+    assert!(
+        captured
+            .revisions
+            .first()
+            .is_some_and(|revision| revision.owner == document.owner)
+    );
     wait_until(|| gate.entered.load(Ordering::Acquire))?;
     assert_eq!(
         pin_count(&catalog_path)?,

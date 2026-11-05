@@ -31,7 +31,9 @@ pub(crate) fn next_change(
         return Ok(None);
     };
     let key = owner_map_key(mutation.owner);
-    let prior = context.maps.lookup_object(delta.prior, &key, context.budget)?;
+    let prior = context
+        .maps
+        .lookup_object(delta.prior, &key, context.budget)?;
     let next = context
         .maps
         .lookup_object(delta.next.owners, &key, context.budget)?;
@@ -290,7 +292,9 @@ pub(crate) fn apply_projection(
         return Err(IndexError::RebuildRequired);
     };
     let key = projection_key(transition.projection);
-    let actual_ref = context.maps.lookup_object(base_root, &key, context.budget)?;
+    let actual_ref = context
+        .maps
+        .lookup_object(base_root, &key, context.budget)?;
     let actual = actual_ref
         .map(|reference| read_binding(reference, transition.projection, context))
         .transpose()?;
