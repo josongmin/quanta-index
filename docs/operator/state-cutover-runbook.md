@@ -1,6 +1,9 @@
 # State Cutover Runbook (S21-11 / S21-12)
 
-Current tasks, owners and next actions: [Oct-17 SSOT](../plans/oct-17-index-closeout/tickets/README.md), specifically [W2-18 cutover](../plans/oct-17-index-closeout/tickets/W2-18-native-cutover.md) and [W2-19 qualification](../plans/oct-17-index-closeout/tickets/W2-19-integration-acceptance.md). Source-scoped execution results remain in [VALIDATION](../plans/oct-10-index-closeout/VALIDATION.md).
+Current owners: [E06 cutover](../plans/oct-22-finalizing/E06-sdk-service-cutover.md)
+and [E08 qualification](../plans/oct-22-finalizing/E08-integration-release.md),
+under the [Oct-22 closeout](../plans/oct-22-finalizing/README.md).
+Source-scoped results remain in [VALIDATION](../plans/oct-22-finalizing/VALIDATION.md).
 
 This runbook owns procedures and safety contracts. Dated progress/implementation statements below are historical checkpoints, not a live task queue or current-source verdict. Do not recreate work or infer current completion from their percentages, diagnostics or pending lists.
 
@@ -8,17 +11,27 @@ Offline state backup/restore and the RepoMap single-mutation
 producer cutover. Offline backup/restore commands require the daemon fully
 stopped. Native SDK inventory recovery uses the running Native service.
 
-## Current cutover limits and staging safety (2026-10-12)
+## Current command and format authority
+
+The deployment launcher selects `serve-native` only with an admitted Native
+configuration; the legacy selection uses `serve`. The Native marker and
+layout refusal are defined by the [runtime](../../crates/quanta-index-searchd-runtime/src/native.rs),
+and the catalog stamp is defined independently by the
+[Catalog](../../crates/quanta-index-catalog/src/native/authority/capture_format.rs).
+Use the selected binary and its matching source to determine the current format.
+Prior Native markers require an explicit rebuild or a new incarnation.
+
+## Historical cutover checkpoint (2026-10-12)
 
 This runbook describes the existing legacy state workflow, not backup/restore
 qualification for the opt-in Catalog/Kernel native product. The remaining
 implementation and exact acceptance owners are in
-[W2-18](../plans/oct-17-index-closeout/tickets/W2-18-native-cutover.md) and
-[W2-19](../plans/oct-17-index-closeout/tickets/W2-19-integration-acceptance.md).
+[E06](../plans/oct-22-finalizing/E06-sdk-service-cutover.md) and
+[E08](../plans/oct-22-finalizing/E08-integration-release.md).
 The Native RFC retains design contracts and dated observations. Launcher `serve`, explicit `serve-native`, their state
 markers and native Semantic/Auto capabilities are not interchangeable.
 
-Native source now uses `.native-index-v12`. Source-event capture v2 binds the
+At this checkpoint Native used `.native-index-v12`. Source-event capture v2 bound the
 immutable logical mutation count/digest separately from the exact execution
 ViewRef/SourceCut and physical mutation-root layout. The Catalog verifies a
 persistent state-v12/capture-v2/hash-domain singleton before DDL, allocator
@@ -239,8 +252,8 @@ resource custody, SDK staging/Submit and typed Native terminal cold readback
 were then unimplemented. The ordinary host selected the existing publisher;
 these replay fields alone did not establish a Native deployment switch.
 
-Current recovery/producer work is owned by [W2-02](../plans/oct-17-index-closeout/tickets/W2-02-pending-recovery.md) and [W2-05](../plans/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md). [RFC §23.65](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md#2365-f07-durable-native-preparation-and-write-once-request-custody-2026-10-13)
-and [VALIDATION](../plans/oct-10-index-closeout/VALIDATION.md#2365-durable-native-preparation-and-write-once-request-checkpoint-2026-10-13) preserve historical context and source-scoped results.
+Current recovery/producer work is owned by [W2-02](../plans/oct-22-finalizing/E02-publication-recovery.md) and [W2-05](../plans/oct-22-finalizing/E01-producer-generation.md). [RFC §23.65](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md#2365-f07-durable-native-preparation-and-write-once-request-custody-2026-10-13)
+and [VALIDATION](../history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#2365-durable-native-preparation-and-write-once-request-checkpoint-2026-10-13) preserve historical context and source-scoped results.
 Do not promote static source checks or the Quanta scalar/capture tests to
 producer restart, existing-state cutover or Native performance qualification.
 
@@ -437,7 +450,7 @@ A/D/C5 repairs and the later legacy XL lifecycle pass remain scoped VERIFIED.
 
 The Rust binary and deployment launcher now share the same selected Native
 command contract. Qualification results are recorded in
-[VALIDATION](../plans/oct-10-index-closeout/VALIDATION.md), separately from source
+[VALIDATION](../plans/oct-22-finalizing/VALIDATION.md), separately from source
 implementation. Native remains opt-in; the legacy `backup-state` and
 `restore-state` commands do not support the Native root.
 

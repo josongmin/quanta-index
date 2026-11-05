@@ -1,11 +1,11 @@
 # W2-19 — 통합 테스트·CI 선택과 운영/성능/UX 수용
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-> `HISTORICAL_DESIGN_REFERENCE`. 현재 잔여/상태는 [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-19)만 따른다. 아래 과거 TODO·진척·실행 순서는 신규 작업을 만들지 않는다. 이 파일에는 상태/담당을 갱신하지 않는다.
+> `HISTORICAL_DESIGN_REFERENCE`. 현재 잔여/상태는 [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-19)만 따른다. 아래 과거 TODO·진척·실행 순서는 신규 작업을 만들지 않는다. 이 파일에는 상태/담당을 갱신하지 않는다.
 
-기존 요구/큐: R38,R39,R40; 기존 IMPLEMENTED 요구의 회귀 / NI-02,NI-03,NI-07,NI-08,NI-09. 설계 계약은 [RFC](../../../rfc/oct-10-native-incremental-vnext.md), 실행 결과는 [VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md)이 소유한다.
+기존 요구/큐: R38,R39,R40; 기존 IMPLEMENTED 요구의 회귀 / NI-02,NI-03,NI-07,NI-08,NI-09. 설계 계약은 [RFC](../../../rfc/oct-10-native-incremental-vnext.md), 실행 결과는 [VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)이 소유한다.
 
 ## Reuse
 
@@ -86,7 +86,7 @@ Q public auxiliary SDK→scripted UDS12/12는 해당 source의 실제 SDK 결합
 - 정식 제품/성능 수용은 서로 맞는 source·dependencies·config·input/corpus·binary·host 조건을 바인딩한다. quiet-host 성능 비교와 운영 부하 결과는 구분하며, routine focused 검증에 불필요한 qualification 증거 수집을 강제하지 않는다.
 - legacy LQ5 운영·정식 성능/trace Off-Record 비교, 기존 semantic/test-platform/installed-pair/provider/release 의무는 동등 Native 수용과 명시적 퇴역 또는 해당 기존 증거가 나오기 전까지 유지한다.
 
-통합 수용은 [SSOT의 병렬 장벽/증거 원 담당](../../../plans/oct-13-native-incremental-wave2/tickets/README.md#병렬-실행과-통합-장벽)을 따른다. 물리 fault·chunk membership·ANN·rank·headless·boot의 기존 owner oracle를 소비하고 통합 전용 복제 구현/테스트 체계를 추가하지 않는다. 실제 producer 미연결과 local fixture/Index-only 검증 가능 범위를 구분한다. W2-09가 동결한 단일 profile·결과 원장을 사용하며 미정 SLO나 누락 비용으로 qualification을 통과시키지 않는다.
+통합 수용은 [SSOT의 병렬 장벽/증거 원 담당](../RESIDUAL-LEDGER.md#병렬-실행과-통합-장벽)을 따른다. 물리 fault·chunk membership·ANN·rank·headless·boot의 기존 owner oracle를 소비하고 통합 전용 복제 구현/테스트 체계를 추가하지 않는다. 실제 producer 미연결과 local fixture/Index-only 검증 가능 범위를 구분한다. W2-09가 동결한 단일 profile·결과 원장을 사용하며 미정 SLO나 누락 비용으로 qualification을 통과시키지 않는다.
 
 ## Requirement routing
 
@@ -124,6 +124,6 @@ Q public auxiliary SDK→scripted UDS12/12는 해당 source의 실제 SDK 결합
 - [repository_issuer_v3.rs](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/orchestration/original_execution_keeper_v3/repository_issuer_v3.rs)
 - [ifds_materialization_operation_v1.rs](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/orchestration/ifds_materialization_operation_v1.rs)
 - [original_native_test_support_v3.rs](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/original_native_test_support_v3.rs)
-- 변경 파일은 기존 담당의 실제 dirty hunk와 [공유 파일 규칙](../../../plans/oct-13-native-incremental-wave2/tickets/WRITE-OWNERSHIP.md#shared-files)을 확인한 뒤 한 writer가 확정한다.
+- 변경 파일은 기존 담당의 실제 dirty hunk와 [공유 파일 규칙](WRITE-OWNERSHIP.md#shared-files)을 확인한 뒤 한 writer가 확정한다.
 
-공용 parent/export/contract/config/registry 변경은 [단일 writer 규칙](../../../plans/oct-13-native-incremental-wave2/tickets/WRITE-OWNERSHIP.md)을 따른다. 검사 미실행을 기능 부재로 바꾸지 않는다. 결과에는 source·명령·범위·VERIFIED/FAILED/BLOCKED/NOT_RUN/NOT_APPLICABLE을 구분한다.
+공용 parent/export/contract/config/registry 변경은 [단일 writer 규칙](WRITE-OWNERSHIP.md)을 따른다. 검사 미실행을 기능 부재로 바꾸지 않는다. 결과에는 source·명령·범위·VERIFIED/FAILED/BLOCKED/NOT_RUN/NOT_APPLICABLE을 구분한다.

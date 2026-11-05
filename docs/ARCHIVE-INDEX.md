@@ -9,6 +9,24 @@ Dated migration sections below describe their then-current paths; the Oct-22 SSO
 
 ## Historical record recovery
 
+### 2026-11-05 forwarding page retirement
+
+The 39 Oct-10/13/17 forwarding pages were removed after their in-tree links
+were redirected to current epic owners or the original historical sections.
+Their exact pre-removal pages and fragments are recoverable at
+`90a0ec340388400828c193809e533de2b1fb9001`:
+
+```sh
+git show 90a0ec340:<repository-relative-path>
+git ls-tree -r --name-only 90a0ec340 docs/plans
+```
+
+The [Oct-22 epics](plans/oct-22-finalizing/README.md) remain the execution owner.
+The [Native RFC](rfc/oct-10-native-incremental-vnext.md) and
+[R01–R40 DoD](plans/oct-22-finalizing/DOD.md) retain their acceptance scope.
+
+### 2026-10-07 dated packet retirement
+
 The final dated RFC/plan/ticket retirement on 2026-10-07 uses pre-deletion revision
 `4f07c3c5ac57f161aa6870a5cc661b0038932993`. It removes 39 Markdown files under
 `docs/plans/` plus the redundant `tickets/README.md`; the residual ledger was
@@ -29,7 +47,7 @@ git ls-tree -r --name-only 4f07c3c5 docs/plans tickets
 | Sep21 residual plan, S21-11/12/13, prompts/handoff usage | [Proof/backup/custody](adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md), [installed/pair/actions](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance), operator runbooks and executable registry; I0 |
 | Jul15 QIT, Sep27 MISC and root ticket index | [Selected regression/platform](adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#selected-regression-and-platform-acceptance), [CI provider](adr/SEP-28-001-circleci-provider-and-credit-boundary.md); test/platform/E1/E2/E4 |
 | Jun7 J7Q quality and May25 semantic | [Consumer preview/operator](adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#consumer-preview-and-operator-acceptance), [semantic generation](adr/MAY-31-001-lancedb-semantic-generation-authority.md), cost/review ADRs; semantic/E1/E4/I0 |
-| Oct4 owner map / Semantica pointer | [Current ownership](plans/oct-10-index-closeout/README.md#ownership), [consumer acceptance](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#release-and-consumer); external producer fact resolution stays producer-owned |
+| Oct4 owner map / Semantica pointer | [Current ownership](plans/oct-22-finalizing/OWNERSHIP.md#exclusive-boundaries), [consumer acceptance](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#release-and-consumer); external producer fact resolution stays producer-owned |
 
 Retired IDs and their original task bodies are recoverable from the revisions
 below. They are not additional active tasks; current validation is in the
@@ -53,9 +71,9 @@ Recover committed bodies with `git show de279c45:<repository-relative-path>`.
 The latest uncommitted scope-only refinement is incorporated in the new plan;
 the pre-deletion revision is not claimed to contain that later edit.
 Candidate/proof chronology is historical; accepted ADRs and their source-bound
-results remain. The new [implementation](plans/oct-10-index-closeout/README.md)
-and [validation](plans/oct-22-finalizing/VALIDATION.md) documents keep the
-necessary background and unresolved work without copying the old chronology.
+results remain. The Oct-10 plan took over at that checkpoint; its remaining
+work is now routed through the [Oct-22 epics](plans/oct-22-finalizing/README.md)
+and [source-scoped validation](plans/oct-22-finalizing/VALIDATION.md).
 Deletion does not mark pending code, quality, performance or release accepted.
 
 ## Earlier recovery boundaries
@@ -196,4 +214,8 @@ Current work/status/owners/next conditions live only in [eight epics](plans/oct-
 | Oct-17 seven tickets, prior SSOT and source/hunk rules | [Original ticket bodies](history/oct-22-finalizing/oct-17-index-closeout/tickets/README.md) and siblings | [Epics](plans/oct-22-finalizing/README.md), [single-writer map](plans/oct-22-finalizing/OWNERSHIP.md) |
 | Full validation immediately before migration | [Source/run history](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md) | [Compact current validation](plans/oct-22-finalizing/VALIDATION.md) |
 
-Ten former live documents are retired entrypoints with all 867 existing fragment aliases preserved. Oct-10/Oct-13 entrypoints route to the new epic owner without reopening their original tasks. Accepted ADR/RFC constraints and the original forty-requirement denominator remain unchanged. This migration creates no runtime, benchmark or release qualification.
+At this checkpoint ten former live documents became forwarding pages with
+867 fragment aliases. The forwarding pages were later removed as recorded
+above. Accepted ADR/RFC constraints and the original forty-requirement
+denominator remain unchanged. This migration creates no runtime, benchmark or
+release qualification.

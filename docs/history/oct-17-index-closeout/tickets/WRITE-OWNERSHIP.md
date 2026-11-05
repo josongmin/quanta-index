@@ -1,8 +1,8 @@
-> HISTORICAL REFERENCE — pre-cleanup ownership and handoff text. Current paths, owners and next conditions come only from [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old task names and interrupted child assignments below do not authorize new work.
+> HISTORICAL REFERENCE — pre-cleanup ownership and handoff text. Current paths, owners and next conditions come only from [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old task names and interrupted child assignments below do not authorize new work.
 
 # Oct-17 공용 파일·인계 규칙
 
-상태/담당/순서는 [README](../../../plans/oct-17-index-closeout/tickets/README.md)만 소유한다. 이 문서는 코드 수정 경계다. 기존 claim은 잠금이나 현재 실행 증거가 아니며 인계 전 source/dirty hunk를 대조한다.
+상태/담당/순서는 [README](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 소유한다. 이 문서는 코드 수정 경계다. 기존 claim은 잠금이나 현재 실행 증거가 아니며 인계 전 source/dirty hunk를 대조한다.
 
 ## Exclusive boundaries
 
@@ -40,9 +40,9 @@ Off/Record·운영 배치와 W2-19의 full-suite/CI/release는 원 담당 결과
 
 ### W2-02/05 cross-repository hunk map
 
-고정 실행 범위는 [W2-05 A/B](../../../plans/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md#native-chunk-plan)·[C](../../../plans/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md#native-publication-caller)·[D](../../../plans/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md#wire-canonical-custody)·[PUB E](../../../plans/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md#sdk-producer-custody)와 [W2-02 terminal](../../../plans/oct-17-index-closeout/tickets/W2-02-pending-recovery.md#terminal-publication-join)을 따른다. Root A–D/Runtime upper caller와 PUB E/SDK parent는 서로의 body를 중복 구현하지 않는다. PUB의 현재 recompute claim `OCT21-PUB-RECOMPUTE-CUSTODY-V163`와 P cutover claim을 실제 수정 전 대조한다. 이 링크는 상태 원장이 아니며 current state/next condition은 README7행만 소유한다.
+고정 실행 범위는 [W2-05 A/B](../../oct-22-finalizing/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md#native-chunk-plan)·[C](../../oct-22-finalizing/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md#native-publication-caller)·[D](../../oct-22-finalizing/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md#wire-canonical-custody)·[PUB E](../../oct-22-finalizing/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md#sdk-producer-custody)와 [W2-02 terminal](../../oct-22-finalizing/oct-17-index-closeout/tickets/W2-02-pending-recovery.md#terminal-publication-join)을 따른다. Root A–D/Runtime upper caller와 PUB E/SDK parent는 서로의 body를 중복 구현하지 않는다. PUB의 현재 recompute claim `OCT21-PUB-RECOMPUTE-CUSTODY-V163`와 P cutover claim을 실제 수정 전 대조한다. 이 링크는 상태 원장이 아니며 current state/next condition은 README7행만 소유한다.
 
-현재 배정/상태는 [SSOT 담당](../../../plans/oct-17-index-closeout/tickets/README.md#owners)과 위 7개 티켓 행만 갱신한다. 아래 경로는 S의 `packages/analysis/quanta-v2/crates` 아래이며 수정권 경계다. 인계 후보는 최신 live preimage와 대조한 뒤 원 writer가 결합한다. 후보 경로 수나 apply-check는 실제 합류를 뜻하지 않는다.
+현재 배정/상태는 [SSOT 담당](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#owners)과 위 7개 티켓 행만 갱신한다. 아래 경로는 S의 `packages/analysis/quanta-v2/crates` 아래이며 수정권 경계다. 인계 후보는 최신 live preimage와 대조한 뒤 원 writer가 결합한다. 후보 경로 수나 apply-check는 실제 합류를 뜻하지 않는다.
 
 2026-10-20 exact-hunk 인계: archived W의 후속 scheduler/Runtime consumer는 Root가 인수한다. M의 SourceLocator/generation 조합, P의 structured-store/5-root 상위 generation은 원 담당을 유지한다. M이 넘긴 `scv2_orchestration/graph_facts.rs`와 children은 Root Graph worker, `executor/native_symbol_v3.rs`·`native_graph_v3.rs`와 children은 Root 문서 worker, `native_chunk_v3.rs`·canonical Chunk paid recipe는 Root Chunk worker가 독점한다. 공용 dispatch/types/Runtime pending/consumer는 Root만 수정한다. P는 ImportGraph source-range 및 canonical producer의 derived quality field/init/finish/getter hunk를 Root 문서 lane에 넘겼으며 기존 encoder/recipe를 보존한다. ItemIndex checked accessor는 old owner archived·M/P2 교집합 없음과 stale claim을 대조한 뒤 Root Chunk lane이 인수했다. `tests.rs::sample_symbol_doc_v1`은 P 인계 후 visibility만 Root가 넓혀 M fixture를 재사용한다. 이것은 파일 전체 수정권·새 wire/issuer·동적 수용을 뜻하지 않는다. 후속 Graph empty producer는 Root 문서 lane이 `executor/native_empty_v3*`와 `job_validation/outcomes.rs`의 기존 digest tuple 공유 hunk를 맡고, Root는 `NativePreparedIndexProjectionV3`와 ports/dispatch/reexport만 직렬 결합한다. P는 paid `AuthoritativeEmptyProjectionScopeV1`의 writer transaction/삭제 소비를 맡는다. Symbol zero의 ordinary InvalidBatch와 FULL 전체 surface 교체 권한은 per-file Graph empty와 합치지 않는다. Public Stage3의 Original lender 부재는 actual caller 연결 잔여이며 free accessor나 retained group을 issuer로 사용하지 않는다.
 
@@ -100,7 +100,7 @@ W2-19는 G0에서 `ticket/lane → existing owner → exact path::function/hunk 
 - 인계에 ticket ID, exact path와 함수/hunk, 서명/authority, 재사용 코드, 독립 oracle, 실패/drop 순서, 미실행 검사를 포함한다. whole-file overwrite/formatter로 다른 hunk를 덮지 않는다.
 - 한 파일의 private child는 병렬 가능하지만 parent/export/schema는 한 writer다. 공용 caller 서명을 동결하고 실제 생산자/소비자를 함께 변경한다. definition-only API는 연결 완료가 아니다.
 - worker는 통합자에게만 반환한다. 다른 worker·채팅에 직접 요청/보고하지 않는다. 이 문서 자체는 다른 채팅 메시지나 소유권 인수를 승인한 기록이 아니다.
-- 기존 Semantica claim/세부 hunk는 [과거 인계 참고](../../../plans/oct-13-native-incremental-wave2/tickets/WRITE-OWNERSHIP.md)를 탐색 자료로만 사용한다. 현재 배정·실행·상태는 그 문서에 갱신하지 않는다.
+- 기존 Semantica claim/세부 hunk는 [과거 인계 참고](../../oct-13-native-incremental-wave2/tickets/WRITE-OWNERSHIP.md)를 탐색 자료로만 사용한다. 현재 배정·실행·상태는 그 문서에 갱신하지 않는다.
 
 ## Verification queue
 

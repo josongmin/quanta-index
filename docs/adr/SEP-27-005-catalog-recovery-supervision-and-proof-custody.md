@@ -7,7 +7,7 @@ Decided: 2026-09-27
 Consolidates completed SEP-21 repair decisions from the execution chronology.
 Extends SEP-21-002/003/004 and SEP-27-004. Historical runs do not qualify the
 current source; remaining release, producer and operational work stays in the
-[SEP-21 residual ledger](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer).
+[SEP-21 residual ledger](../plans/oct-22-finalizing/E08-integration-release.md#release-inputs).
 
 ## Decision
 
@@ -91,7 +91,7 @@ root; external trust anchors and root/daemon fencing are separate obligations.
 
 ### Original backup authority and current-format cutover
 
-- `backup-state`, `verify-state` and `restore-state` are the current offline
+- `backup-state`, `verify-state` and `restore-state` are the legacy offline
   workflow under an exclusive lease. `migrate-state` and boot-time legacy
   import are retired. A historical materialized RepoMap snapshot cannot recreate
   the original source graph/authority; retained legacy data needs an explicit
@@ -105,6 +105,16 @@ root; external trust anchors and root/daemon fencing are separate obligations.
   and directories remain exact. Drift or missing authority refuses, discards
   staging and cannot publish a partial root. Restore-forward is the supported
   post-mutation rollback boundary; actual target-root/release proof is separate.
+- The Catalog/Kernel Native service has a separate format and admission path.
+  The [launcher](../../tools/deployment/launcher.py) selects `serve-native` only
+  with a Native configuration; legacy selection uses `serve`. The
+  [runtime](../../crates/quanta-index-searchd-runtime/src/native.rs) rejects prior
+  markers before opening a Native root, and the
+  [Catalog](../../crates/quanta-index-catalog/src/native/authority/capture_format.rs)
+  independently checks the persistent format. Rebuild or create a new incarnation
+  for an incompatible root. These boundaries establish neither a default switch
+  nor installed or production acceptance; those remain under
+  [E06/E08](../plans/oct-22-finalizing/README.md#e06).
 
 ### One proof interpretation and custody owner
 
@@ -316,8 +326,8 @@ bytes across process restarts; its Medium restart/delete and binary-custody
 regressions passed. These focused owner results are not current hosted or
 Large/XL qualification. Original completed owner runs are recorded in
 [OCT-05-004](OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-source-bound-checkpoints).
-Current Large/XL cost remains [E4](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs);
-[test/platform](../plans/oct-10-index-closeout/VALIDATION.md#affected-checks)
+Current Large/XL cost remains [E4](../plans/oct-22-finalizing/E07-performance-operations.md);
+[test/platform](../plans/oct-22-finalizing/E08-integration-release.md#integration-gates)
 retains broader selected storage-boundary acceptance. The F15 matrix and recovered-query assertions are not missing
 implementation.
 
@@ -327,7 +337,7 @@ Full SDK-only recovery, broader native race detection, long mutation/fuzz and
 release/platform execution retain their independent oracles and scope.
 
 The old QIT progress snapshot/scaffolding is retired. Its unfulfilled acceptance
-is preserved in [the residual board](../plans/oct-10-index-closeout/VALIDATION.md#affected-checks);
+is preserved in [the residual board](../plans/oct-22-finalizing/E08-integration-release.md#integration-gates);
 this consolidation asserts implemented authorities, not SOTA/test qualification.
 
 ### Selected Darwin TSan and contract execution
@@ -423,7 +433,7 @@ Do not shorten sleeps, disable production jitter, weaken errors, share mutable
 global fixtures or delete lower-layer assertions to make timing look better.
 Reproduce a current regression before reopening implementation. Final selected
 functional/installed/platform execution and paired test-cost measurements remain
-in [MISC-05/06](../plans/oct-10-index-closeout/VALIDATION.md#affected-checks).
+in [MISC-05/06](../plans/oct-22-finalizing/E08-integration-release.md#integration-gates).
 
 ### Semantic mutation output admission
 

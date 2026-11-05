@@ -1,9 +1,9 @@
 # W2-05 — 실제 FULL/delta producer와 도메인·target 인계
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-상태는 [SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-05)만 갱신한다. 이전 **W2-05/06/12/14의 생산 연결 잔여**를 합쳤다. 하나의 producer가 lexical/semantic/graph 결과와 BOOT target을 제공한다.
+상태는 [SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-05)만 갱신한다. 이전 **W2-05/06/12/14의 생산 연결 잔여**를 합쳤다. 하나의 producer가 lexical/semantic/graph 결과와 BOOT target을 제공한다.
 
 ## Remaining scope and order
 

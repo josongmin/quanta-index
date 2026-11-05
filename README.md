@@ -115,8 +115,9 @@ own the guarantees; this section is operator usage.
 | --- | --- |
 | `quanta-index-contract` | Bundle, query, control and IPC DTOs |
 | `quanta-index-core` | Vendor-neutral ports and validation |
-| `quanta-index-search-plane` | Persisted ingest/query/control authority |
-| `quanta-index-lexical`, `quanta-index-semantic` | Tantivy and LanceDB adapters |
+| `quanta-index-search-plane` | Legacy ingest/query/control composition |
+| `quanta-index-kernel`, `quanta-index-catalog`, `quanta-index-storage` | Native incremental coordination, durable publication authority and immutable object storage |
+| `quanta-index-lexical`, `quanta-index-semantic`, `quanta-index-repomap` | Legacy and Native index adapters |
 | `quanta-index-ipc` | CBOR transport framing |
 | `quanta-index-searchd`, `quanta-index-searchd-runtime` | Composition and daemon executable |
 | `quanta-index-searchctl` | Operator CLI |
@@ -130,9 +131,9 @@ qualification split:
 
 ## Active work
 
-- [Index closeout](docs/plans/oct-10-index-closeout/README.md): semantic compatibility, RepoMap lifetime and generation reservation.
-- [Execution order](docs/plans/oct-10-index-closeout/README.md#execution-order): dependencies and owner handoffs.
-- [Validation and external inputs](docs/plans/oct-10-index-closeout/VALIDATION.md): owner/daemon checks, quality, performance and release boundaries.
+- [Index closeout](docs/plans/oct-22-finalizing/README.md): E01–E08 owners, remaining code and acceptance.
+- [Execution order](docs/plans/oct-22-finalizing/README.md#execution-order): dependencies and owner handoffs.
+- [Validation and external inputs](docs/plans/oct-22-finalizing/VALIDATION.md): owner/daemon checks, quality, performance and release boundaries.
 
 Historical documents and tickets are recoverable through the
 [single recovery index](docs/ARCHIVE-INDEX.md#historical-record-recovery). Use current source and actual gate

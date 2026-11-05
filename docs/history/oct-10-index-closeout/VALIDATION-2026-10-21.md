@@ -2,7 +2,7 @@
 
 <a id="검증-계획"></a>
 
-> 문서 권위: 현재 해야 할 일·담당·순서는 [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 갱신한다. 이 파일은 source·명령·scope별 실행 결과 원장이다. 아래 dated 계획/진척률/미완료 문구는 당시 기록이며 현재 작업을 생성하는 근거가 아니다. 기존 실패·timeout·후속 수리·통과 기록은 유지한다.
+> 문서 권위: 현재 해야 할 일·담당·순서는 [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 갱신한다. 이 파일은 source·명령·scope별 실행 결과 원장이다. 아래 dated 계획/진척률/미완료 문구는 당시 기록이며 현재 작업을 생성하는 근거가 아니다. 기존 실패·timeout·후속 수리·통과 기록은 유지한다.
 
 2026-10-13 당시 범위·진행률 대조는 **§23.76**, 실행 판정은 **§23.75**에 기록됐다. 당시 SDK owning 재시도는 종료·FAILED이며
 과거 checkpoint의 pending 문구는 현재 실행 상태가 아니다. 통과 숫자는 각
@@ -50,7 +50,7 @@ Native 제품 Semantic/pump/effort·물리 provider 실행 수명 후속 구현�
 [RFC §23.58](../../rfc/oct-10-native-incremental-vnext.md#2358-native-product-and-physical-provider-execution-checkpoint-2026-10-13)을 따른다.
 이 문서의 기존 legacy/56-test 결과를 후속 변경의 현재 수용으로 승계하지 않는다.
 
-[Legacy closeout 구현안](../../plans/oct-10-index-closeout/README.md)의 변경과 후속 통합 소스 검증을 관리한다. 결과는
+[Legacy closeout 구현안](../../ARCHIVE-INDEX.md#oct-22-finalizing-migration)의 변경과 후속 통합 소스 검증을 관리한다. 결과는
 해당 source·binary·scope의 실행 절을 따른다. 마지막 절도 자신이 실행한 범위만 갱신하며,
 이 파일 전체나 최신 native tree의 통합 verdict를 자동으로 갱신하지 않는다. 앞선 절은 각 실행 당시의 기록이며, 별도 실행
 결과가 명시되지 않은 코드 검증은 `NOT_RUN`이다. 문서 검사·컴파일·owner 테스트·실제
@@ -59,7 +59,7 @@ daemon 결과는 구분한다.
 ## 최종 재감사의 수용 경계 (2026-10-12)
 
 최신 할 일·담당·최소 검증은 [Native RFC §23.55](../../rfc/oct-10-native-incremental-vnext.md#2355--current-source-final-action-register-2026-10-12)와
-[legacy 계획 §10.37](../../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md#1037-최종-잔여-작업과-native-분업-2026-10-12)에 둔다.
+[legacy 계획 §10.37](LEXICAL-QUERY-PLAN.md#1037-최종-잔여-작업과-native-분업-2026-10-12)에 둔다.
 이 절은 실행 결과가 아닌 문서 대조다. 기존 결과를 합쳐 최신 전체 suite를 `VERIFIED`로
 만들지 않는다. 원 85/86 `FAILED`, 후속 panic 3/3와 Semantic 21/21의 scoped `VERIFIED`,
 Large 4,096-source 기능 PASS는 각각 실행 source를 유지한다.
@@ -366,7 +366,7 @@ decoded-page cache와 seal current-row 중복 조회 제거다. A/D/C5 직접 �
 위 표는 재개 초기의 source 범위다. 이후 paged 저장·조회·복구와 Native bootstrap
 수리가 추가됐으며 위 상태를 그 후속 source에 자동 승계하지 않는다. paged 후속의
 실행별 실패·수리·회귀와 Large/XL 비용은
-[LEXICAL-QUERY-PLAN.md](../../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md) 10절에 모은다.
+[LEXICAL-QUERY-PLAN.md](LEXICAL-QUERY-PLAN.md) 10절에 모은다.
 새 초기 구축, 최종 owner, SDK 실제 프로세스 및 성능 수용 여부는 해당 기록의 실제
 완료 결과를 따른다. 집중 테스트 통과를 전체 제품 또는 검색 품질 수용으로 승격하지 않는다.
 
@@ -433,7 +433,7 @@ observer replay는 boundary-only와 periodic 모두 시작/종료 disk snapshot�
 
 - `VERIFIED`: A/D/C5, 현재 paged/cache/File proof/observer 변경의 정적 검사 및 기본
   workspace 기능 회귀, doctest, 위 6개 SDK 실제 process 회귀.
-- Large optimized 결과는 [LEXICAL-QUERY-PLAN.md](../../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md) 10.22절의
+- Large optimized 결과는 [LEXICAL-QUERY-PLAN.md](LEXICAL-QUERY-PLAN.md) 10.22절의
   `VERIFIED_DIAGNOSTIC`이다. boundary-only와 이전 periodic을 같은 config의 성능
   비교나 수리별 인과적 배속으로 해석하지 않는다. XL은 실제 후속 결과를 따로 기록한다.
 - `NOT_RUN`: 위 SDK scope 밖의 기본 ignored 검사, 외부 producer 수용, remote CI,
@@ -1242,7 +1242,7 @@ tests 포함 strict Clippy의 native baseline 실패 함수는
 
 Rust는 위 절의 external test-daemon target, jobs=1 및 shared admission을 사용한다.
 원래 LQ5와 native R17/R11/R32의 관계는
-[LEXICAL-QUERY-PLAN.md §10.34](../../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md#1034-lq5-잔여-계약-재대조-2026-10-12)에 둔다.
+[LEXICAL-QUERY-PLAN.md §10.34](LEXICAL-QUERY-PLAN.md#1034-lq5-잔여-계약-재대조-2026-10-12)에 둔다.
 기본 경로 전환과 동등한 운영 수용 전에는 native 계획으로 legacy 운영 요구를 자동 취소하지 않는다.
 
 ## 2026-10-12 — tracing 비용·native indexing 병렬 정적 감사
@@ -1765,8 +1765,8 @@ publication은 이 실행의 수용 범위가 아니다.
   동시 변경 하 root physical admission, 측정 기반 enabled LQ5 정책, sustained churn/long pin/
   space pressure/query/cancel, 최신 전체 workspace/producer/remote CI/release.
 
-남은 코드·정책 경계는 [AUDIT.md](../../plans/oct-10-index-closeout/AUDIT.md)의 2026-10-12 최종 감사와
-[LEXICAL-QUERY-PLAN.md §10.34](../../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md#1034-lq5-잔여-계약-재대조-2026-10-12)를 따른다.
+남은 코드·정책 경계는 [AUDIT.md](AUDIT.md)의 2026-10-12 최종 감사와
+[LEXICAL-QUERY-PLAN.md §10.34](LEXICAL-QUERY-PLAN.md#1034-lq5-잔여-계약-재대조-2026-10-12)를 따른다.
 
 ### Physical snapshot 후속 정적 재대조 (2026-10-12)
 
@@ -1868,7 +1868,7 @@ env CARGO_BUILD_JOBS=1 QUANTA_INDEX_TARGET_GC=0 QUANTA_INDEX_BUILD_LOGGING=0 \
   backup을 삭제할 수 있다. 독립 정적 검토도 같은 경로를 확인했다. 기존
   `failed_contract_promotion_rolls_back_dataset_and_policy`는 rollback 성공만 검사한다.
   실제 filesystem 오류 재현과 이 실패 상태의 회귀 실행은 **NOT_RUN**이며 sealed serving
-  generation의 손실 재현으로 확대하지 않는다. 수리 범위는 [AUDIT.md](../../plans/oct-10-index-closeout/AUDIT.md)를 따른다.
+  generation의 손실 재현으로 확대하지 않는다. 수리 범위는 [AUDIT.md](AUDIT.md)를 따른다.
 - **FAILED — Core module snapshot gate:**
   `python3 tools/ci/lint/check-cargo-modules-snapshot.py --packages quanta-index-core`
   exit 1. 현재 출력 계약의 타입 이동은 baseline에 반영돼 있으며 diff는 다른 채팅의
@@ -7597,7 +7597,7 @@ FAILED(exit101), tests0: Lexical E0432/E0599/E0061 during GC/store integration.
 Current source now exports GcDeleteCustody and provides settle_pending_gc_delete;
 post-fix coupled execution is NOT_RUN in this handoff. Earlier boot199/199 and
 this Catalog/Kernel127/127 remain distinct source/scope results, not a merged
-product acceptance. See [the execution queue](../../plans/oct-10-index-closeout/NATIVE-EXECUTION.md) for ownership.
+product acceptance. See [the execution queue](../../ARCHIVE-INDEX.md#oct-22-finalizing-migration) for ownership.
 
 
 ## Borrowed digest, unit scratch and Native corpus custody (2026-10-13)
@@ -9964,7 +9964,7 @@ assigned by this document. W2-01 IOmetadata, W2-02 inner validation/seal/ports,
 W2-03 derivation/scratch, W2-05/06 product linkage, W2-09 Native total-cost
 harness, conditional W2-10 policy, engine API and integrated acceptance remain.
 Current canonical execution list:
-[Wave2 tickets](../../plans/oct-13-native-incremental-wave2/tickets/README.md).
+[Wave2 tickets](../oct-13-native-incremental-wave2/RESIDUAL-LEDGER.md).
 
 No full-suite, Native Large/XL, matched performance, actual Original SDK→daemon
 product, operating pressure, default cutover, remote CI or release claim is
@@ -12645,7 +12645,7 @@ Observed verification:
   results below remain tied to their earlier fixed source; the generic Original
   issuer has since moved to its canonical owner, so its old IFDS-only placement
   is no longer current remaining implementation work. Current residuals are
-  owned only by the existing [SSOT](../../plans/oct-13-native-incremental-wave2/tickets/README.md).
+  owned only by the existing [SSOT](../oct-13-native-incremental-wave2/RESIDUAL-LEDGER.md).
 - FAILED (current Q structure, reproduced in that maintenance):
   `just rust-hexagonal`, exit1, reports exactly the newly introduced
   `quanta-index-searchd-harness -> quanta-index-sdk` dependency outside its
@@ -12717,7 +12717,7 @@ Observed verification:
   provenance/namespace admission or snapshot already absent. They are not tests.
 
 Current remaining code, ownership and execution order are owned only by the
-existing [SSOT](../../plans/oct-13-native-incremental-wave2/tickets/README.md) rows.
+existing [SSOT](../oct-13-native-incremental-wave2/RESIDUAL-LEDGER.md) rows.
 Residual descriptions in the source-specific results above are historical;
 they do not recreate implemented helpers or reassign other owners. FULL/delta
 SDK, operating/product E2E/XL/current strict are not closed by owner-level results.

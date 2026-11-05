@@ -1,9 +1,9 @@
 # W2-09 — 실제 phase 비용·부하·유지보수 운영 수용
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-상태는 [SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-09)만 갱신한다. 이전 W2-10은 여기의 **측정 후 조건부 수리**로 합쳤다. 실행 결과는 [기존 VALIDATION의 최신 체크포인트](../../../plans/oct-10-index-closeout/VALIDATION.md#w2-09-native-refusal-diagnostics-2026-10-18)에만 기록하며, 이전 funding/IO/trace 결과도 해당 체크포인트에서 연결한다.
+상태는 [SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-09)만 갱신한다. 이전 W2-10은 여기의 **측정 후 조건부 수리**로 합쳤다. 실행 결과는 [기존 VALIDATION의 최신 체크포인트](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#w2-09-native-refusal-diagnostics-2026-10-18)에만 기록하며, 이전 funding/IO/trace 결과도 해당 체크포인트에서 연결한다.
 
 ## Remaining scope
 
@@ -202,7 +202,7 @@ Full Record 혼합부하는 현재 선언된 bounded capture 보존 profile이 �
 Native29, Legacy open-loop20, scale CLI9)는 통과했다. 여기에는 broad 검색의
 독립 top20 rank/binding/partial 거절과 새 adapter fixed gold가 포함된다.
 제품3개는 ignored이며 실제 Large/XL·15분 부하는 이 결과에 포함되지 않는다.
-정확한 source와 실패/수리 이력은 [v29 검증](../../../plans/oct-10-index-closeout/VALIDATION.md#w2-09-v29-consolidated-harness-gate--2026-10-18)을 따른다.
+정확한 source와 실패/수리 이력은 [v29 검증](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#w2-09-v29-consolidated-harness-gate--2026-10-18)을 따른다.
 
 공개 Native `SearchText`는 한 요청 동안 ticket으로 view를 보호한다. SDK/UDS에
 장기 read-pin Begin/Hold/Release 계약은 없다. 따라서 현재 product client만으로

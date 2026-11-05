@@ -1,7 +1,7 @@
 # Workspace crate ownership
 
-The 25 root `crates/*/Cargo.toml` packages are indexed below. Each README
-points to its implementation entry point. Directory size is not a crate
+The root `crates/*/Cargo.toml` packages are indexed below. Links point to the
+crate README or implementation entry point. Directory size is not a crate
 boundary decision; use dependency direction and change coupling when changing
 package ownership. Nested fuzz manifests are tooling, not root packages.
 
@@ -17,11 +17,14 @@ package ownership. Nested fuzz manifests are tooling, not root packages.
 
 | Crate | Owner surface |
 | --- | --- |
-| [quanta-index-catalog](../../crates/quanta-index-catalog/README.md) | SQLite-backed idempotency, generation and lifecycle records used by the search plane. |
+| [quanta-index-catalog](../../crates/quanta-index-catalog/README.md) | SQLite-backed durable publication, operation and lifetime authority; legacy and Native have distinct formats. |
 | [quanta-index-embed](../../crates/quanta-index-embed/README.md) | Local Model2Vec and opt-in remote embedding providers plus their cache; provider choice and egress remain explicit. |
-| [quanta-index-lexical](../../crates/quanta-index-lexical/README.md) | Tantivy-backed generation materialization and lexical querying; also owns source-grounded code-search authority. |
-| [quanta-index-semantic](../../crates/quanta-index-semantic/README.md) | LanceDB-backed persisted, generation-scoped vector index and ANN query adapter. |
-| [quanta-index-repomap](../../crates/quanta-index-repomap/README.md) | Repository-map snapshots, delta application, persistence and pinned query views. |
+| [quanta-index-kernel](../../crates/quanta-index-kernel/src/lib.rs) | Native incremental publication and query coordination; the injected Catalog owns durable state. |
+| [quanta-index-storage](../../crates/quanta-index-storage/src/lib.rs) | Native immutable candidate objects and bounded persistent maps; Catalog owns visibility and reclamation. |
+| [quanta-index-scratch-sqlite](../../crates/quanta-index-scratch-sqlite/src/lib.rs) | Shared admission for disposable SQLite main databases; distinct from durable Catalog state. |
+| [quanta-index-lexical](../../crates/quanta-index-lexical/README.md) | Legacy Tantivy and Native literal/text adapters; source-grounded code-search authority. |
+| [quanta-index-semantic](../../crates/quanta-index-semantic/README.md) | Legacy LanceDB and Native semantic index/query adapters. |
+| [quanta-index-repomap](../../crates/quanta-index-repomap/README.md) | Legacy RepoMap snapshots and the Native graph adapter. |
 
 ## Query language components
 
@@ -41,7 +44,7 @@ package ownership. Nested fuzz manifests are tooling, not root packages.
 | Crate | Owner surface |
 | --- | --- |
 | [quanta-index-ipc](../../crates/quanta-index-ipc/README.md) | CBOR framing, admission and Unix-domain socket client/server transport. Typed payloads live in quanta-index-contract. |
-| [quanta-index-search-plane](../../crates/quanta-index-search-plane/README.md) | Persisted ingest, query and control state transitions after typed admission. |
+| [quanta-index-search-plane](../../crates/quanta-index-search-plane/README.md) | Legacy ingest, query and control transitions; Native coordination is in Kernel and Runtime. |
 | [quanta-index-searchd](../../crates/quanta-index-searchd/README.md) | Searchd application assembly and CLI command types. The executable wiring lives in quanta-index-searchd-runtime. |
 | [quanta-index-searchd-runtime](../../crates/quanta-index-searchd-runtime/README.md) | Concrete adapter wiring and the quanta-index-searchd executable, including query/control/ingest socket serving. |
 | [quanta-index-searchctl](../../crates/quanta-index-searchctl/README.md) | Operator CLI for search, readiness, diagnosis and state inspection. |
@@ -56,7 +59,8 @@ package ownership. Nested fuzz manifests are tooling, not root packages.
 | [quanta-index-scan-experiment](../../crates/quanta-index-scan-experiment/README.md) | Exploratory keyword scan comparison. Its output is not a qualified daemon or DSL benchmark. |
 
 For current serving behavior, see [engine status](engine-status-v1.md).
-For verification status, follow the [active residual ledger](../history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#release-and-consumer) and the selected gate.
+For verification status, follow the [current epics](../plans/oct-22-finalizing/README.md)
+and the [source-scoped results](../plans/oct-22-finalizing/VALIDATION.md).
 
 ## Boundary triage
 

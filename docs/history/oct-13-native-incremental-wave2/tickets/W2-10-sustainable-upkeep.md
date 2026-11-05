@@ -1,11 +1,11 @@
 # W2-10 — 측정된 write amplification·유지보수 부채의 bounded 수리
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-> `HISTORICAL_DESIGN_REFERENCE`. 현재 잔여/상태는 [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-10)만 따른다. 아래 과거 TODO·진척·실행 순서는 신규 작업을 만들지 않는다. 이 파일에는 상태/담당을 갱신하지 않는다.
+> `HISTORICAL_DESIGN_REFERENCE`. 현재 잔여/상태는 [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-10)만 따른다. 아래 과거 TODO·진척·실행 순서는 신규 작업을 만들지 않는다. 이 파일에는 상태/담당을 갱신하지 않는다.
 
-기존 요구/큐: R17,R10,R12,R39 / NI-03. 설계 계약은 [RFC](../../../rfc/oct-10-native-incremental-vnext.md), 실행 결과는 [VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md)이 소유한다.
+기존 요구/큐: R17,R10,R12,R39 / NI-03. 설계 계약은 [RFC](../../../rfc/oct-10-native-incremental-vnext.md), 실행 결과는 [VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)이 소유한다.
 
 ## Reuse
 
@@ -40,7 +40,7 @@ span success와 phase `completed=false`가 함께 기록될 수 있다. 주기 s
 
 상태 조회 보완 후 Core/Searchd/Harness·`scale_matrix` selected strict와 Mac 선정
 회귀 **52/52는 `VERIFIED`**다. 이전 44/45건과 합산하지 않는다. Pre-reconciliation source: Linux daemon/harness build와 Linux 선택 회귀10/10, Small Off/Record 각20 churn·검색/재오픈·IO gold 및 누락0 capture는 **`VERIFIED`**다. Medium fixed는 full ACK `ResourceLimited` **`FAILED`**(churn0)이며 고정 입력을 증액하지 않는다. Large explicit도 full ACK에서 SDK `Unknown(original key)`로 **`FAILED`**다. 원 key status 확인을 빠뜨린 harness 호출부를 보완했으며 영향 회귀52/52·primary strict는 통과했고 새 actual/XL은 **`NOT_RUN`**이다. 기존45/45·이전 strict는 후속 수리 전 소스 결과로 보존한다. 범위와 명령은
-[VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md)의 최신 W2-09 기록을
+[VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)의 최신 W2-09 기록을
 따른다. 이 자료만으로 policy 수리 필요성·steady-state 안정성 또는 W2-10
 수용을 판정하지 않는다.
 
@@ -60,4 +60,4 @@ span success와 phase `completed=false`가 함께 기록될 수 있다. 주기 s
 - [Native child observations](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-harness/src/scale/native_index/observation.rs)
 - [Native harness trace](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-harness/src/scale/native_index/trace.rs)
 
-공용 parent/export/contract/config/registry 변경은 [단일 writer 규칙](../../../plans/oct-13-native-incremental-wave2/tickets/WRITE-OWNERSHIP.md)을 따른다. 검사 미실행을 기능 부재로 바꾸지 않는다. 결과에는 source·명령·범위·VERIFIED/FAILED/BLOCKED/NOT_RUN/NOT_APPLICABLE을 구분한다.
+공용 parent/export/contract/config/registry 변경은 [단일 writer 규칙](WRITE-OWNERSHIP.md)을 따른다. 검사 미실행을 기능 부재로 바꾸지 않는다. 결과에는 source·명령·범위·VERIFIED/FAILED/BLOCKED/NOT_RUN/NOT_APPLICABLE을 구분한다.

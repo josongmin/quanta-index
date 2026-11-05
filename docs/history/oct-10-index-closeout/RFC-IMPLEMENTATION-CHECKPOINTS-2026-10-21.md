@@ -2,8 +2,8 @@
 
 Source-scoped observations from 2026-10-11 through 2026-10-13, preserved on
 2026-10-21. This document is immutable history, not a task list or a statement
-about current source. [Current work](../../plans/oct-17-index-closeout/tickets/README.md),
-[results](../../plans/oct-10-index-closeout/VALIDATION.md), and the
+about current source. [Current work](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md),
+[results](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md), and the
 [active RFC](../../rfc/oct-10-native-incremental-vnext.md) have separate authority.
 Technical contracts, failure records and exact commands below remain available
 for reference; this relocation closes no acceptance gate.

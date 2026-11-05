@@ -19,8 +19,9 @@ acceptance. Historical tests, counts and status do not qualify current source.
 
 One Oct-22 epic index owns remaining work. Epic documents hold fixed contracts;
 VALIDATION keeps source-scoped results. Historical plans and handoff summaries
-do not create another live queue. Superseded dirty/untracked bodies have a
-verified recovery entry in ARCHIVE-INDEX.
+do not create another live queue. The Oct-10/13/17 forwarding pages are retired;
+current links go directly to the relevant epic or contract, and historical links
+go to the preserved source and result records.
 Accepted contracts, current usage, generated capabilities and the reusable
 [purpose audit inventory](reference/purpose-audit-inventory.md)
 are references, not another uncompleted feature queue. Proposed ADRs remain
@@ -37,7 +38,7 @@ conditional designs; their age or presence does not authorize implementation.
 
 [One recovery index](ARCHIVE-INDEX.md#historical-record-recovery) records pre-edit/deletion revisions and
 recovery commands for documents and tickets. Historical bodies
-remain recoverable; they are not another live queue. The Native RFC keeps its
+remain recoverable. The Native RFC keeps its
 [fixed requirement inventory](rfc/oct-10-native-incremental-vnext.md#23-fixed-full-product-implementation-and-acceptance-ledger);
 its dated progress tables and execution checkpoints are preserved as
 [section 23 history](history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md) and

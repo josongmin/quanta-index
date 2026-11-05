@@ -1,11 +1,11 @@
 # W2-09 — 기존 harness의 Native 총비용·cold build·catch-up·waterfall
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-> `HISTORICAL_DESIGN_REFERENCE`. 현재 잔여/상태는 [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-09)만 따른다. 아래 과거 TODO·진척·실행 순서는 신규 작업을 만들지 않는다. 이 파일에는 상태/담당을 갱신하지 않는다.
+> `HISTORICAL_DESIGN_REFERENCE`. 현재 잔여/상태는 [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-09)만 따른다. 아래 과거 TODO·진척·실행 순서는 신규 작업을 만들지 않는다. 이 파일에는 상태/담당을 갱신하지 않는다.
 
-기존 요구/큐: R13,R16,R39 / NI-03. 설계 계약은 [RFC](../../../rfc/oct-10-native-incremental-vnext.md), 실행 결과는 [VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md)이 소유한다.
+기존 요구/큐: R13,R16,R39 / NI-03. 설계 계약은 [RFC](../../../rfc/oct-10-native-incremental-vnext.md), 실행 결과는 [VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)이 소유한다.
 
 ## Reuse
 
@@ -120,7 +120,7 @@ profile은 오류 context에 mode와 4축을 남기고, phase 실행 뒤 실패�
 상태 조회 보완 후 Core/Searchd/Harness·`scale_matrix` selected strict와 Mac 선정 회귀
 **52/52는 `VERIFIED`**다. 이전 44/45건은 구버전 결과로 합산하지 않는다.
 Pre-reconciliation source: Linux daemon/harness build와 Linux 선택 회귀10/10, Small Off/Record 각20 churn·검색/재오픈·IO gold 및 누락0 capture는 **`VERIFIED`**다. Medium fixed는 full ACK `ResourceLimited` **`FAILED`**(churn0)이며 고정 입력을 증액하지 않는다. Large explicit도 full ACK에서 SDK `Unknown(original key)`로 **`FAILED`**다. 원 key status 확인을 빠뜨린 harness 호출부를 보완했으며 영향 회귀52/52·primary strict는 통과했고 새 actual/XL은 **`NOT_RUN`**이다. 기존45/45·이전 strict는 후속 수리 전 소스 결과로 보존한다.
-검증 선택·명령·결과는 [VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md)의
+검증 선택·명령·결과는 [VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)의
 최신 W2-09 기록을 따른다. 이 선정 결과를 clean-source 성능·장시간 운영·전체
 W2-09 수용으로 확장하지 않는다.
 
@@ -129,7 +129,7 @@ black-box harness의 의도적 한 방향으로 정책에 결합됐다. 이 구�
 재개발하지 않는다. 실행 상태는 SSOT의 W2-09 행만 갱신한다. clean-source 정식
 측정, Large/XL·장시간·실 producer·Off/Record 수용은 각각의 입력과 gold를
 요구한다. 명령·실패 이력·기능/계측 한계는 기존
-[검증 기록](../../../plans/oct-10-index-closeout/VALIDATION.md#w2-07-platform-final-2026-10-17)을 따른다.
+[검증 기록](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#w2-07-platform-final-2026-10-17)을 따른다.
 
 Same-key 확인은 private harness에서 Submit 1회와 원래 600초 budget으로
 수행한다. `Accepted`/`Unknown` 뒤 원 key `Status`만 조회하며 `Pending`은
@@ -174,4 +174,4 @@ Same-key 확인은 private harness에서 Submit 1회와 원래 600초 budget으�
 - [native_product_process.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/tests/native_product_process.rs)
 - [native_index_uds.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/tests/native_index_uds.rs)
 
-공용 parent/export/contract/config/registry 변경은 [단일 writer 규칙](../../../plans/oct-13-native-incremental-wave2/tickets/WRITE-OWNERSHIP.md)을 따른다. 검사 미실행을 기능 부재로 바꾸지 않는다. 결과에는 source·명령·범위·VERIFIED/FAILED/BLOCKED/NOT_RUN/NOT_APPLICABLE을 구분한다.
+공용 parent/export/contract/config/registry 변경은 [단일 writer 규칙](WRITE-OWNERSHIP.md)을 따른다. 검사 미실행을 기능 부재로 바꾸지 않는다. 결과에는 source·명령·범위·VERIFIED/FAILED/BLOCKED/NOT_RUN/NOT_APPLICABLE을 구분한다.

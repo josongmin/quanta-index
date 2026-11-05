@@ -126,7 +126,7 @@ External comparative claims need independent judged gold and the actual overlap
 subset; learned ranking or new consumer semantics require their own decision.
 
 Open acceptance stays in the
-[quality residual index](../plans/oct-10-index-closeout/VALIDATION.md#quality-inputs),
+[quality residual index](../plans/oct-22-finalizing/E08-integration-release.md#integration-gates),
 not completed implementation tickets. The gate names/output paths remain
 registry/code-owned; operator usage stays in benchmark and CLI READMEs.
 

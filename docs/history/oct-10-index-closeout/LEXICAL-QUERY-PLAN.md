@@ -1,14 +1,14 @@
 # Lexical 저장·검색·증분 검증 최종 구조안
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-> 기술 계약/날짜별 설계 근거 참고 문서다. 현재 작업·담당·순서는 [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 갱신한다. 아래 과거 상태/packet/미구현 판정은 현재 배정표가 아니다. 실행 결과는 [VALIDATION](../../plans/oct-10-index-closeout/VALIDATION.md), legacy의 Accepted 결정은 기존 ADR을 따른다.
+> 기술 계약/날짜별 설계 근거 참고 문서다. 현재 작업·담당·순서는 [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 갱신한다. 아래 과거 상태/packet/미구현 판정은 현재 배정표가 아니다. 실행 결과는 [VALIDATION](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md), legacy의 Accepted 결정은 기존 ADR을 따른다.
 
 
-문서 역할: legacy paged lexical의 당시 기술 설계 참고. 옛 실행 순서와 비용/검증 체크포인트는 [보존 이력](LEXICAL-CHECKPOINTS.md)으로 이전했다. 현재 작업·담당·검증 대기는 [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 갱신한다. 설계 설명은 최신 Native 구현 또는 성능 수용의 증거가 아니다.
+문서 역할: legacy paged lexical의 당시 기술 설계 참고. 옛 실행 순서와 비용/검증 체크포인트는 [보존 이력](LEXICAL-CHECKPOINTS.md)으로 이전했다. 현재 작업·담당·검증 대기는 [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 갱신한다. 설계 설명은 최신 Native 구현 또는 성능 수용의 증거가 아니다.
 
-[Legacy closeout 범위](../../plans/oct-10-index-closeout/README.md)의 후속 계획이다. 기존 A/D/C5 완료 조건을 대체하지 않는다.
+[Legacy closeout 범위](../../ARCHIVE-INDEX.md#oct-22-finalizing-migration)의 후속 계획이다. 기존 A/D/C5 완료 조건을 대체하지 않는다.
 이 문서는 이전의 F15 포맷 유지·쿼리 우선 계획을 대체한다. 유지할 것은 검색 의미와 소유권이며,
 당시 F15/Native LQ의 디스크 포맷과 전체 검증 호출 구조가 교체 대상이었다.
 
@@ -19,7 +19,7 @@
 당시 설계 근거이며 날짜별 후속 실행을 부정하지 않는다. LQ5 의무는 동등한 native 수용과
 명시적 legacy 퇴역 전까지 남는다; native 구현 진행만으로 자동 취소되지 않는다.
 
-현재 계측 잔여: [W2-09](../../plans/oct-17-index-closeout/tickets/README.md#w2-09). 옛 packet D 배정은 [RFC 이력](../../rfc/oct-10-native-incremental-vnext.md#2377-parallel-delivery-plan-and-exclusive-write-sets-2026-10-13)으로 보존한다.
+현재 계측 잔여: [W2-09](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-09). 옛 packet D 배정은 [RFC 이력](../../rfc/oct-10-native-incremental-vnext.md#2377-parallel-delivery-plan-and-exclusive-write-sets-2026-10-13)으로 보존한다.
 Native text_query already implements BM25; map regex/DSL/token gold and actual
 callers before declaring a feature missing. Instrument existing harness with
 a genuine Native mode, including producer O(N) closure proof and Catalog/WAL/
@@ -655,27 +655,27 @@ selected body를 읽는 경우 같은 verified bytes를 사용한다. path 판�
 ## 7. 실행 순서·소유권·완료 조건
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#7-실행-순서소유권완료-조건)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#7-실행-순서소유권완료-조건)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 7.1 범위별 체크리스트
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#71-범위별-체크리스트)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#71-범위별-체크리스트)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 7.2 반드시 명시할 자원 정책
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#72-반드시-명시할-자원-정책)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#72-반드시-명시할-자원-정책)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 7.3 작업 분리와 통합
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#73-작업-분리와-통합)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#73-작업-분리와-통합)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 7.4 조건부 실험
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#74-조건부-실험)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#74-조건부-실험)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ## 8. 적대적 acceptance와 성능 기준
 
@@ -847,234 +847,234 @@ root/counter/owner binding은 기존 restore 절차를 따르며 새 incarnation
 ## 10. 과거 비용 근거와 현재 검증 상태
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#10-과거-비용-근거와-현재-검증-상태)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#10-과거-비용-근거와-현재-검증-상태)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.1 이전 F16 검색 핵심 경로 구현과 검증
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#101-이전-f16-검색-핵심-경로-구현과-검증)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#101-이전-f16-검색-핵심-경로-구현과-검증)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.2 F16 독립 oracle 후속 실행과 paged rewrite 경계 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#102-f16-독립-oracle-후속-실행과-paged-rewrite-경계-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#102-f16-독립-oracle-후속-실행과-paged-rewrite-경계-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.3 Paged 통합 후 추가 결함과 복구 배치 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#103-paged-통합-후-추가-결함과-복구-배치-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#103-paged-통합-후-추가-결함과-복구-배치-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.4 배치 집중 실행과 실제 초기 게시 경로 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#104-배치-집중-실행과-실제-초기-게시-경로-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#104-배치-집중-실행과-실제-초기-게시-경로-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.5 전체 owner 재실행에서 발견한 정렬·복구 결함 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#105-전체-owner-재실행에서-발견한-정렬복구-결함-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#105-전체-owner-재실행에서-발견한-정렬복구-결함-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.6 내구성·자원 경계 보완과 재실행 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#106-내구성자원-경계-보완과-재실행-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#106-내구성자원-경계-보완과-재실행-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.7 전체 owner 실행과 후속 구조 수리 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#107-전체-owner-실행과-후속-구조-수리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#107-전체-owner-실행과-후속-구조-수리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.8 Lexical 재실행과 정책 경계 정리 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#108-lexical-재실행과-정책-경계-정리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#108-lexical-재실행과-정책-경계-정리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.9 Daemon 전체 실행에서 발견한 소유권 회귀 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#109-daemon-전체-실행에서-발견한-소유권-회귀-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#109-daemon-전체-실행에서-발견한-소유권-회귀-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.10 수정 경로 재검증과 최종 포맷 분류 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1010-수정-경로-재검증과-최종-포맷-분류-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1010-수정-경로-재검증과-최종-포맷-분류-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.11 Backup/restore 경계까지 실제 실행 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1011-backuprestore-경계까지-실제-실행-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1011-backuprestore-경계까지-실제-실행-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.12 Optimized Large 실행의 실제 query 비용 결함 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1012-optimized-large-실행의-실제-query-비용-결함-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1012-optimized-large-실행의-실제-query-비용-결함-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.13 Literal 수리 후 Large 통과와 남은 갱신 비용 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1013-literal-수리-후-large-통과와-남은-갱신-비용-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1013-literal-수리-후-large-통과와-남은-갱신-비용-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.14 공통 map·캐시·보존 비용 회귀와 XL 실패 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1014-공통-map캐시보존-비용-회귀와-xl-실패-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1014-공통-map캐시보존-비용-회귀와-xl-실패-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.15 Native 초기 구축의 중간 COW 게시 제거 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1015-native-초기-구축의-중간-cow-게시-제거-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1015-native-초기-구축의-중간-cow-게시-제거-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.16 통합 회귀의 실제 결과와 Native bootstrap 집중 검증 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1016-통합-회귀의-실제-결과와-native-bootstrap-집중-검증-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1016-통합-회귀의-실제-결과와-native-bootstrap-집중-검증-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.17 최종 경계 회귀 및 strict lint (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1017-최종-경계-회귀-및-strict-lint-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1017-최종-경계-회귀-및-strict-lint-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.18 SDK process 실행 실패의 분류와 fixture 수리 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1018-sdk-process-실행-실패의-분류와-fixture-수리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1018-sdk-process-실행-실패의-분류와-fixture-수리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.19 SDK 통과, Large 재측정 및 XL 재실패 RCA (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1019-sdk-통과-large-재측정-및-xl-재실패-rca-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1019-sdk-통과-large-재측정-및-xl-재실패-rca-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.20 XL 반복 검증의 구조 수리 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1020-xl-반복-검증의-구조-수리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1020-xl-반복-검증의-구조-수리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.21 Large 재실행과 측정 observer 분리 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1021-large-재실행과-측정-observer-분리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1021-large-재실행과-측정-observer-분리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.22 Boundary-only optimized 재측정 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1022-boundary-only-optimized-재측정-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1022-boundary-only-optimized-재측정-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.23 Quota 실패 후 저장 중복 수리 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1023-quota-실패-후-저장-중복-수리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1023-quota-실패-후-저장-중복-수리-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.24 새 저장 포맷 실행 검증과 진단 벤치 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1024-새-저장-포맷-실행-검증과-진단-벤치-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1024-새-저장-포맷-실행-검증과-진단-벤치-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.25 XL4 실패의 원인 경계와 중복 실행 방지 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1025-xl4-실패의-원인-경계와-중복-실행-방지-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1025-xl4-실패의-원인-경계와-중복-실행-방지-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.26 XL 초기 File query 검증 거절과 segment 단위 교집합 계약 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1026-xl-초기-file-query-검증-거절과-segment-단위-교집합-계약-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1026-xl-초기-file-query-검증-거절과-segment-단위-교집합-계약-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.27 File query 수리의 집중 검증과 실행 소스 결합 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1027-file-query-수리의-집중-검증과-실행-소스-결합-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1027-file-query-수리의-집중-검증과-실행-소스-결합-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.28 File query 수리 후 fresh release와 Large 진단 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1028-file-query-수리-후-fresh-release와-large-진단-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1028-file-query-수리-후-fresh-release와-large-진단-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.29 File query 수리 후 XL 누적 시간 초과와 retention 비용 경계 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1029-file-query-수리-후-xl-누적-시간-초과와-retention-비용-경계-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1029-file-query-수리-후-xl-누적-시간-초과와-retention-비용-경계-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.30 병렬 독립 RCA와 과도한 수리 범위의 재감사 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1030-병렬-독립-rca와-과도한-수리-범위의-재감사-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1030-병렬-독립-rca와-과도한-수리-범위의-재감사-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### 근거 범위
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#근거-범위)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#근거-범위)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### RCA-1: 작은 갱신 뒤에도 보존 확정은 전수 작업이다
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#rca-1-작은-갱신-뒤에도-보존-확정은-전수-작업이다)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#rca-1-작은-갱신-뒤에도-보존-확정은-전수-작업이다)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### RCA-2: 초기 구축은 작은 durability group의 확정 비용도 크다
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#rca-2-초기-구축은-작은-durability-group의-확정-비용도-크다)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#rca-2-초기-구축은-작은-durability-group의-확정-비용도-크다)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### RCA-2b: 한 파일 delta도 touched segment를 즉시 재작성한다
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#rca-2b-한-파일-delta도-touched-segment를-즉시-재작성한다)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#rca-2b-한-파일-delta도-touched-segment를-즉시-재작성한다)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### RCA-3: 과거 검색 거절과 현재 검색 범위를 구분한다
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#rca-3-과거-검색-거절과-현재-검색-범위를-구분한다)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#rca-3-과거-검색-거절과-현재-검색-범위를-구분한다)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### RCA-4: 전체 시간 제한과 관찰 비용을 분리해야 한다
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#rca-4-전체-시간-제한과-관찰-비용을-분리해야-한다)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#rca-4-전체-시간-제한과-관찰-비용을-분리해야-한다)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### 후속 수리 순서와 수용 조건
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#후속-수리-순서와-수용-조건)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#후속-수리-순서와-수용-조건)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.31 한 번의 실행으로 보는 waterfall 계약과 추가 감사 (2026-10-10)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1031-한-번의-실행으로-보는-waterfall-계약과-추가-감사-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1031-한-번의-실행으로-보는-waterfall-계약과-추가-감사-2026-10-10)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.32 LQ5 최소 준비 worker 계약 (2026-10-11)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1032-lq5-최소-준비-worker-계약-2026-10-11)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1032-lq5-최소-준비-worker-계약-2026-10-11)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.33 최소 준비 코드와 XL 종료 검증 (2026-10-11)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1033-최소-준비-코드와-xl-종료-검증-2026-10-11)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1033-최소-준비-코드와-xl-종료-검증-2026-10-11)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.34 LQ5 잔여 계약 재대조 (2026-10-12)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1034-lq5-잔여-계약-재대조-2026-10-12)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1034-lq5-잔여-계약-재대조-2026-10-12)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### 일반 append의 hard-limit 복구 계약
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#일반-append의-hard-limit-복구-계약)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#일반-append의-hard-limit-복구-계약)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Publication admission 연결과 관측 경계
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#publication-admission-연결과-관측-경계)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#publication-admission-연결과-관측-경계)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.35 Publication capacity foundation과 미연결 경계 (2026-10-12)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1035-publication-capacity-foundation과-미연결-경계-2026-10-12)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1035-publication-capacity-foundation과-미연결-경계-2026-10-12)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.36 통합 활성화와 daemon 수용 차단 경계 (2026-10-12)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1036-통합-활성화와-daemon-수용-차단-경계-2026-10-12)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1036-통합-활성화와-daemon-수용-차단-경계-2026-10-12)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 10.37 최종 잔여 작업과 native 분업 (2026-10-12)
 
 
-과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1037-최종-잔여-작업과-native-분업-2026-10-12)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](LEXICAL-CHECKPOINTS.md#1037-최종-잔여-작업과-native-분업-2026-10-12)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.

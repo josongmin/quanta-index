@@ -1,9 +1,9 @@
 # W2-16 — 실제 AST/Stub authority와 apply 인계
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-상태는 [SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-16)만 갱신한다. headless 기능/API 범위다.
+상태는 [SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-16)만 갱신한다. headless 기능/API 범위다.
 
 ## Remaining scope
 

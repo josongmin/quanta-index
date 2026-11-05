@@ -1,4 +1,4 @@
-> HISTORICAL ONLY. 당시 소스의 설계·실행 기록이며 현재 작업 지시가 아니다. 현재 작업·상태·담당은 [단일 SSOT](../../plans/oct-13-native-incremental-wave2/tickets/README.md), 실행 판정은 [VALIDATION](../../plans/oct-10-index-closeout/VALIDATION.md)을 따른다. 이 본문에 상태를 추가하지 않는다.
+> HISTORICAL ONLY. 당시 소스의 설계·실행 기록이며 현재 작업 지시가 아니다. 현재 작업·상태·담당은 [단일 SSOT](../oct-13-native-incremental-wave2/RESIDUAL-LEDGER.md), 실행 판정은 [VALIDATION](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)을 따른다. 이 본문에 상태를 추가하지 않는다.
 
 ### 23.55 — Current-source final action register (2026-10-12)
 

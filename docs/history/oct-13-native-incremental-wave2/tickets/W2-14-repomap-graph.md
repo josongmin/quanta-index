@@ -1,11 +1,11 @@
 # W2-14 — 동일 Catalog view의 provenance graph와 전체 랭킹
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-> `HISTORICAL_DESIGN_REFERENCE`. 현재 잔여/상태는 [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-14)만 따른다. 아래 과거 TODO·진척·실행 순서는 신규 작업을 만들지 않는다. 이 파일에는 상태/담당을 갱신하지 않는다.
+> `HISTORICAL_DESIGN_REFERENCE`. 현재 잔여/상태는 [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-14)만 따른다. 아래 과거 TODO·진척·실행 순서는 신규 작업을 만들지 않는다. 이 파일에는 상태/담당을 갱신하지 않는다.
 
-기존 요구/큐: R24 / NI-06. 요구는 [RFC §9.3](../../../rfc/oct-10-native-incremental-vnext.md#93-repomap-and-future-adapters), 결과는 [VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md)이 소유한다.
+기존 요구/큐: R24 / NI-06. 요구는 [RFC §9.3](../../../rfc/oct-10-native-incremental-vnext.md#93-repomap-and-future-adapters), 결과는 [VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)이 소유한다.
 
 ## Reuse
 
@@ -63,4 +63,4 @@
 - [materializer.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-repomap/src/materializer.rs), [native_protocol/graph.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract/src/native_protocol/graph.rs)
 - [native_repomap_transport.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/src/native_repomap_transport.rs), [native_uds/repomap.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk/src/native_uds/repomap.rs), [Kernel staging](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-kernel/src/update.rs)
 
-공용 parent/export/contract/config/registry는 [단일 writer 규칙](../../../plans/oct-13-native-incremental-wave2/tickets/WRITE-OWNERSHIP.md)을 따른다. 문서의 예정 타입/동작은 구현 완료가 아니다. 실행 결과는 VERIFIED/FAILED/BLOCKED/NOT_RUN/NOT_APPLICABLE로 구분한다.
+공용 parent/export/contract/config/registry는 [단일 writer 규칙](WRITE-OWNERSHIP.md)을 따른다. 문서의 예정 타입/동작은 구현 완료가 아니다. 실행 결과는 VERIFIED/FAILED/BLOCKED/NOT_RUN/NOT_APPLICABLE로 구분한다.

@@ -1,18 +1,18 @@
 # Trace waterfall execution packets
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-> 기술 계약/날짜별 설계 근거 참고 문서다. 현재 작업·담당·순서는 [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 갱신한다. 아래 과거 상태/packet/미구현 판정은 현재 배정표가 아니다. 실행 결과는 [VALIDATION](../../plans/oct-10-index-closeout/VALIDATION.md), legacy의 Accepted 결정은 기존 ADR을 따른다.
+> 기술 계약/날짜별 설계 근거 참고 문서다. 현재 작업·담당·순서는 [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 갱신한다. 아래 과거 상태/packet/미구현 판정은 현재 배정표가 아니다. 실행 결과는 [VALIDATION](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md), legacy의 Accepted 결정은 기존 ADR을 따른다.
 
-Native cost adapter와 계측 잔여는 [W2-09](../../plans/oct-17-index-closeout/tickets/README.md#w2-09), 측정 뒤 정책 수리는 [W2-10](../../plans/oct-17-index-closeout/tickets/README.md#w2-10)을 따른다. 옛 packet D 배정은 [RFC 이력](../../rfc/oct-10-native-incremental-vnext.md#2377-parallel-delivery-plan-and-exclusive-write-sets-2026-10-13)이며 현재 실행 순서가 아니다.
+Native cost adapter와 계측 잔여는 [W2-09](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-09), 측정 뒤 정책 수리는 [W2-10](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-10)을 따른다. 옛 packet D 배정은 [RFC 이력](../../rfc/oct-10-native-incremental-vnext.md#2377-parallel-delivery-plan-and-exclusive-write-sets-2026-10-13)이며 현재 실행 순서가 아니다.
 Extend existing owners for Native mode and producer/projection/Catalog/WAL/
 object/scratch/upkeep/freshness phases. Static instrumentation precedes matched
 CP4 execution; no extra runner, no legacy scale promotion.
 
 
 Date: 2026-10-12. Status: trace execution packets and source-specific handoffs.
-[VALIDATION.md](../../plans/oct-10-index-closeout/VALIDATION.md) owns observed results, source bindings and exclusions;
+[VALIDATION.md](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md) owns observed results, source bindings and exclusions;
 the packet list is not a second current-status ledger or a release verdict.
 Legacy product/trace evidence does not qualify the new native engine. Native
 decisions/status follow [Native RFC §1.1/§23](../../rfc/oct-10-native-incremental-vnext.md#11-reading-order-and-decision-boundaries).
@@ -36,9 +36,9 @@ Earlier P09 managed-worktree results below are historical and source-specific:
 Large timing was not qualified under contention; XL Off/Record workloads failed
 the 600 s build-seal request deadline while the XL Record trace closed Complete.
 They are not the later `47f904a` run. Current scope and evidence are maintained
-in [VALIDATION.md](../../plans/oct-10-index-closeout/VALIDATION.md), separately from those earlier packet reports.
+in [VALIDATION.md](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md), separately from those earlier packet reports.
 
-Contract SSOT: [TRACE-WATERFALL-PLAN.md](../../plans/oct-10-index-closeout/TRACE-WATERFALL-PLAN.md). This file assigns exact write permissions and protected surfaces. Logical repository root is `/Users/songmin/Documents/code-new/quanta-index`; P00–P09 were originally executed in `/Users/songmin/.codex/worktrees/trace-waterfall/quanta-index` at the same HEAD plus a different dirty tree; the current reconciliation operates in the logical main checkout. Paths below are relative to the logical repository root. A path omitted from every write set is read-only. Directories and globs never grant write permission.
+Contract SSOT: [TRACE-WATERFALL-PLAN.md](TRACE-WATERFALL-PLAN.md). This file assigns exact write permissions and protected surfaces. Logical repository root is `/Users/songmin/Documents/code-new/quanta-index`; P00–P09 were originally executed in `/Users/songmin/.codex/worktrees/trace-waterfall/quanta-index` at the same HEAD plus a different dirty tree; the current reconciliation operates in the logical main checkout. Paths below are relative to the logical repository root. A path omitted from every write set is read-only. Directories and globs never grant write permission.
 
 
 ## P10: current canonical capture follow-up (2026-10-11)

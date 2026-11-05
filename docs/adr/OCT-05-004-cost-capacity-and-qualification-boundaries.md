@@ -9,7 +9,7 @@ Consolidates implemented O4-E4/I0 contracts under
 [SEP-26-003](SEP-26-003-retrieval-evidence-custody-and-qualification.md) and
 [SEP-27-004](SEP-27-004-benchmark-capture-and-resource-custody.md).
 No conditional optimization or staged operation becomes accepted implementation.
-Measurements and missing authority remain in the [Oct-17 residual ledger](../plans/oct-17-index-closeout/tickets/README.md); [performance records](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs) retain source-scoped execution evidence.
+Measurements and missing authority remain in the [Oct-17 residual ledger](../plans/oct-22-finalizing/README.md); [performance records](../plans/oct-22-finalizing/E07-performance-operations.md) retain source-scoped execution evidence.
 
 ## Decision
 
@@ -205,7 +205,7 @@ repository callers obtain measurements through the producer functions.
 Owners: [harness publication](../../crates/quanta-index-searchd-harness/src/harness.rs)
 and [Scale producer](../../crates/quanta-index-searchd-harness/src/scale.rs).
 Owner execution and matching-release stage attribution remain separate checks
-under [E4-01](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs).
+under [E4-01](../plans/oct-22-finalizing/E07-performance-operations.md).
 
 With `QUANTA_INDEX_CAUSAL_PROFILE_V1=1`, `QI_INGEST_TRACE_V1` stderr spans
 also expose pre-intent and paired-base validation, lexical generation/file/
@@ -716,7 +716,7 @@ Follow-up `b09c4aa7` recovered-query parity, `70521514` interrupted clone retry
 and the 36 I/O + 36 SIGKILL matrix are implemented and their focused owner
 checks passed. The fixed705 daemon scope passed 214 tests; `eb97e7c2` Medium
 restart/delete and release-binary custody passed 2. Their completion is retained
-below; [E4](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs) directs
+below; [E4](../plans/oct-22-finalizing/E07-performance-operations.md) directs
 new hosted and Large/XL qualification to their owners. Process-kill testing
 does not qualify power loss.
 
@@ -840,8 +840,8 @@ source is `NOT_RUN`.
 Frozen a5 does not qualify later lazy-reader/deadline or buffer-sharing source,
 and this fresh diagnostic does not recover the absent historical binary replay.
 Admitted-host inputs, declared repetitions and whole-caller acceptance retain
-[E4-03](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs)/
-[E4-06](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs) boundaries.
+[E4-03](../plans/oct-22-finalizing/E07-performance-operations.md)/
+[E4-06](../plans/oct-22-finalizing/E07-performance-operations.md) boundaries.
 
 ## Closed scanner build and capture diagnostic
 

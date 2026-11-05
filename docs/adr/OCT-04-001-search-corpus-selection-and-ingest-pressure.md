@@ -15,7 +15,7 @@ Actual runtime OS-child tests covered selected G1 physical retirement before
 acquisition, slow disk metering/readiness and default SDK30s timeout followed by
 admitted publish/restart/exact replay. These are owner/process scope results;
 shipping current-source/Linux release remains in the
-[active residual ledger](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer).
+[active residual ledger](../plans/oct-22-finalizing/E08-integration-release.md#release-inputs).
 The old statements that these scenarios were entirely unexecuted no longer apply.
 
 ## Open decisions
@@ -44,11 +44,11 @@ The old statements that these scenarios were entirely unexecuted no longer apply
 
 ## Owners
 
-- [O4-E4-01](../plans/oct-10-index-closeout/VALIDATION.md#performance-inputs) owns causal
+- [O4-E4-01](../plans/oct-22-finalizing/E07-performance-operations.md) owns causal
   cost and any measured follow-up durable-barrier decision.
 - [S30-B07](OCT-05-004-cost-capacity-and-qualification-boundaries.md#whole-pipeline-measurement-acceptance)
   owns actual performance and indexing acceptance.
-- [SEP-21 residual plan](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer)
+- [SEP-21 residual plan](../plans/oct-22-finalizing/E08-integration-release.md#release-inputs)
   owns shipping process/release qualification.
 
 This compaction neither accepts the open designs nor supplies physical-pressure,

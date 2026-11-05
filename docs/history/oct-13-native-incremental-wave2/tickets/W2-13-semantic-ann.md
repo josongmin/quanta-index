@@ -1,11 +1,11 @@
 # W2-13 — 기존 Semantic ports 뒤 admitted incremental ANN backend
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-> `HISTORICAL_DESIGN_REFERENCE`. 현재 잔여/상태는 [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-13)만 따른다. 아래 과거 TODO·진척·실행 순서는 신규 작업을 만들지 않는다. 이 파일에는 상태/담당을 갱신하지 않는다.
+> `HISTORICAL_DESIGN_REFERENCE`. 현재 잔여/상태는 [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-13)만 따른다. 아래 과거 TODO·진척·실행 순서는 신규 작업을 만들지 않는다. 이 파일에는 상태/담당을 갱신하지 않는다.
 
-기존 요구/큐: R21,R22 / NI-05. 요구는 [RFC §9.2/9.2.1](../../../rfc/oct-10-native-incremental-vnext.md#921-dynamic-ann-evidence-and-independent-selection-gate), 결과는 [VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md)이 소유한다.
+기존 요구/큐: R21,R22 / NI-05. 요구는 [RFC §9.2/9.2.1](../../../rfc/oct-10-native-incremental-vnext.md#921-dynamic-ann-evidence-and-independent-selection-gate), 결과는 [VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)이 소유한다.
 
 ## Reuse and proven gaps
 
@@ -63,4 +63,4 @@
 - [vector_index.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-semantic/src/vector_index.rs), [qualified_fs.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-semantic/src/qualified_fs.rs)
 - [Kernel update.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-kernel/src/update.rs), [native_semantic_result.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/src/native_semantic_result.rs), [native_uds.rs](/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk/src/native_uds.rs)
 
-공용 parent/export/contract/config/registry는 [단일 writer 규칙](../../../plans/oct-13-native-incremental-wave2/tickets/WRITE-OWNERSHIP.md)을 따른다. 문서의 예정 타입/동작은 구현 완료가 아니다. 실행 결과는 VERIFIED/FAILED/BLOCKED/NOT_RUN/NOT_APPLICABLE로 구분한다.
+공용 parent/export/contract/config/registry는 [단일 writer 규칙](WRITE-OWNERSHIP.md)을 따른다. 문서의 예정 타입/동작은 구현 완료가 아니다. 실행 결과는 VERIFIED/FAILED/BLOCKED/NOT_RUN/NOT_APPLICABLE로 구분한다.

@@ -4,7 +4,7 @@ Authority: current source. This is navigation and explicit capability limits,
 not a current-source runtime/release receipt. Accepted decisions and current
 residual owners are separate in [the documentation index](../README.md).
 
-## Live source path
+## Live legacy source path
 
 | Boundary | Owner |
 | --- | --- |
@@ -21,11 +21,28 @@ Actual wire variants/selectors are code-owned inventories; static route counts
 are not maintained here. Structural/runtime routes retain their live subset
 authority rather than implying a missing producer crate.
 
+## Live Native source path
+
+| Boundary | Owner |
+| --- | --- |
+| Explicit Native process | [Deployment launcher](../../tools/deployment/launcher.py) and [product composition](../../crates/quanta-index-searchd-runtime/src/native_product.rs); an admitted Native configuration selects `serve-native`, while legacy selection uses `serve` |
+| SDK publication and reads | [Native SDK contract](../../crates/quanta-index-sdk/src/native_index.rs) and [Native UDS client](../../crates/quanta-index-sdk/src/native_uds.rs) |
+| Durable publication and recovery | [Kernel coordination](../../crates/quanta-index-kernel/src/lib.rs), [Catalog authority](../../crates/quanta-index-catalog/src/native/authority.rs) and [immutable storage](../../crates/quanta-index-storage/src/lib.rs) |
+| Search and graph | [Native literal](../../crates/quanta-index-lexical/src/native/literal.rs), [Native text](../../crates/quanta-index-lexical/src/native/text.rs), [Native semantic](../../crates/quanta-index-semantic/src/native/mod.rs) and [Native graph](../../crates/quanta-index-repomap/src/native/graph.rs) adapters |
+
+The Native runtime's configured semantic provider is OpenAI; the legacy
+`QUANTA_INDEX_EMBEDDER` defaults below and the external producer's Voyage
+transport are separate boundaries. The Native source path is present; installed
+acceptance, production inputs and the default switch remain under
+[E02](../plans/oct-22-finalizing/README.md#e02),
+[E06](../plans/oct-22-finalizing/README.md#e06) and
+[E08](../plans/oct-22-finalizing/README.md#e08).
+
 ## Explicit capability limits
 
 | Boundary | Source / interpretation |
 | --- | --- |
-| Default semantic embedder | [Daemon config](../../crates/quanta-index-searchd/src/app/config.rs): unset/empty `QUANTA_INDEX_EMBEDDER` selects `potion-code` with `Pinned512V1`; pinned model assets need [provisioning](../potion-code-embedder.md). Explicit `potion-code-full-v2` selects `FullLengthV2` and requires a newly indexed generation. Config selection does not qualify actual model execution or retrieval quality. |
+| Default legacy semantic embedder | [Daemon config](../../crates/quanta-index-searchd/src/app/config.rs): unset/empty `QUANTA_INDEX_EMBEDDER` selects `potion-code` with `Pinned512V1`; pinned model assets need [provisioning](../potion-code-embedder.md). Explicit `potion-code-full-v2` selects `FullLengthV2` and requires a newly indexed generation. Config selection does not qualify actual model execution or retrieval quality. |
 | Development embedder | Explicit `hash-dev` and `from_test_state_root` select the development hash profile; the default 64-d FNV implementation is in [query_embedder.rs](../../crates/quanta-index-search-plane/src/query_embedder.rs). Hash tests do not qualify PotionCode/OpenAI identity, egress or quality. |
 | Lexical structural-block leaf | [planner.rs](../../crates/quanta-index-lexical/src/planner.rs): typed `structural_block_leaf` refusal |
 | Selected history primitives | [text_plane.rs](../../crates/quanta-index-search-plane/src/query_dispatcher/text_plane.rs): explicit `NotImplemented` for unsupported filters/leaves |

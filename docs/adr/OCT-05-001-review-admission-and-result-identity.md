@@ -9,7 +9,7 @@ Consolidates implemented O4-E1 contracts. It preserves
 [SEP-26-003](SEP-26-003-retrieval-evidence-custody-and-qualification.md) and
 [SEP-27-003](SEP-27-003-code-search-source-and-preview-contract.md).
 It adds no new public API, metric, relevance policy or provenance claim.
-Unfinished execution lives in the [OCT-04 residual ledger](../plans/oct-10-index-closeout/VALIDATION.md#quality-inputs).
+Unfinished execution lives in the [OCT-04 residual ledger](../plans/oct-22-finalizing/E08-integration-release.md#integration-gates).
 
 ## Context
 

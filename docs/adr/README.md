@@ -25,9 +25,9 @@ They preserve existing contracts; conditional optimization, open proposals and
 actual operational targets remain staged. Oct-06/07 completed bounded
 publication, budget, executable-custody, common operational producer and CI
 contracts are consolidated in OCT-05-002/003/004. Current acceptance is owned by
-the [single residual ledger](../plans/oct-17-index-closeout/tickets/README.md).
+the [single residual ledger](../plans/oct-22-finalizing/README.md).
 
-Dated RFC/plan/ticket packets are retired. Their standing corpus/statistics,
+Dated execution packets are retired. Their standing corpus/statistics,
 native/update, cost/host, consumer/platform and installed/pair/action acceptance
 is consolidated into OCT-05-001/002/004 and SEP-27-005; unfinished execution
 remains once in the ledger. This consolidation admits no new result or target.
@@ -80,6 +80,11 @@ May–Jun 2026 accepted set:
 - [LanceDB semantic generation authority](MAY-31-001-lancedb-semantic-generation-authority.md)
 - [Verification, quality gates and benchmark separation](JUN-08-001-verification-hellgate-and-benchmark-separation.md)
 - [Decision registry](MAY-JUN-2026-DECISION-REGISTRY.md)
+
+Legacy lexical contracts:
+
+- [OCT-10-001](OCT-10-001-seal-owned-lexical-serving-metadata.md): historical F16 decision, superseded for storage and admission by OCT-10-002.
+- [OCT-10-002](OCT-10-002-shared-paged-lexical-authorities.md): Tantivy-coupled legacy family only. The separate Native engine follows the [Native RFC](../rfc/oct-10-native-incremental-vnext.md).
 
 Historical implementation packets and superseded drafts are indexed in
 [the plan history index](../ARCHIVE-INDEX.md#historical-record-recovery). Historical audits,

@@ -9,7 +9,7 @@ Consolidates implemented O4-E3 contracts. It preserves
 [SEP-21-003](SEP-21-003-read-view-continuation-and-provider-policy.md) and
 [SEP-27-005](SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
 It does not accept the stronger admission-pin proposal or wider dispatch.
-Shipping-source/release acceptance remains with [I0](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer).
+Shipping-source/release acceptance remains with [I0](../plans/oct-22-finalizing/E08-integration-release.md#release-inputs).
 
 ## Context
 

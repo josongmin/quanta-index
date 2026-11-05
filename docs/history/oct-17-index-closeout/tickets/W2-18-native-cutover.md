@@ -1,9 +1,9 @@
 # W2-18 — 실제 target 인계·Native 전환과 boot 수용
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-상태는 [SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-18)만 갱신한다. 이전 W2-08 verifier 잔여를 포함한다.
+상태는 [SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-18)만 갱신한다. 이전 W2-08 verifier 잔여를 포함한다.
 
 ## Remaining scope
 

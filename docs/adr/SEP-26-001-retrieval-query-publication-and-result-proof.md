@@ -102,5 +102,5 @@ matrix, but it cannot change public defaults or claim semantic quality without t
 
 The completed RBR packets were removed from the live tree after consolidation.
 Their exact pre-deletion bodies are available with
-`git show eff53181:<path>`; [the execution SSOT](../plans/oct-10-index-closeout/VALIDATION.md#affected-checks)
+`git show eff53181:<path>`; [the execution SSOT](../plans/oct-22-finalizing/E08-integration-release.md#integration-gates)
 owns remaining execution.

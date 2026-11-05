@@ -1,17 +1,17 @@
 # Paged lexical store integration contract
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-> 기술 계약/날짜별 설계 근거 참고 문서다. 현재 작업·담당·순서는 [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 갱신한다. 아래 과거 상태/packet/미구현 판정은 현재 배정표가 아니다. 실행 결과는 [VALIDATION](../../plans/oct-10-index-closeout/VALIDATION.md), legacy의 Accepted 결정은 기존 ADR을 따른다.
+> 기술 계약/날짜별 설계 근거 참고 문서다. 현재 작업·담당·순서는 [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 갱신한다. 아래 과거 상태/packet/미구현 판정은 현재 배정표가 아니다. 실행 결과는 [VALIDATION](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md), legacy의 Accepted 결정은 기존 ADR을 따른다.
 
 
 Scope: legacy paged lexical storage/admission contract, decided 2026-10-10.
-Recorded implementation/runtime follow-ups are in [VALIDATION.md](../../plans/oct-10-index-closeout/VALIDATION.md);
+Recorded implementation/runtime follow-ups are in [VALIDATION.md](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md);
 full operational acceptance is separate from the scoped functional passes.
 
 This contract fixes the next implementation boundary of
-[LEXICAL-QUERY-PLAN.md](../../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md). The validated F16 core remains a
+[LEXICAL-QUERY-PLAN.md](LEXICAL-QUERY-PLAN.md). The validated F16 core remains a
 separate baseline; source implementation and executed acceptance are distinct.
 The breaking admission decision is recorded in
 [OCT-10-002](../../adr/OCT-10-002-shared-paged-lexical-authorities.md).
@@ -28,7 +28,7 @@ new native store, or interpret native progress as legacy LQ5 acceptance.
 ### Remaining integration boundary (2026-10-12)
 
 The current action register is [Native RFC section 23.55](../../rfc/oct-10-native-incremental-vnext.md#2355--current-source-final-action-register-2026-10-12);
-[legacy plan section 10.37](../../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md#1037-최종-잔여-작업과-native-분업-2026-10-12)
+[legacy plan section 10.37](LEXICAL-QUERY-PLAN.md#1037-최종-잔여-작업과-native-분업-2026-10-12)
 owns this contract's remaining production integration. Shared pool subset quotas,
 prepared merge staging bounds and local write-fault tests exist. Complete boot
 inventory, publication/ingress/mutable-writer admission, secondary spill/WAL and

@@ -1,9 +1,9 @@
 # Wave2 공용 파일·인계 규칙
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-> `HISTORICAL_HANDOFF_REFERENCE`. 이전 exact hunk/claim 탐색용이다. 현재 단일 writer·인계 규칙은 [Oct-17 WRITE-OWNERSHIP](../../../plans/oct-17-index-closeout/tickets/WRITE-OWNERSHIP.md), 상태·담당·다음 작업은 [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md)만 갱신한다. 아래 분담은 현재 실행·잠금·편집권 이전을 증명하지 않는다.
+> `HISTORICAL_HANDOFF_REFERENCE`. 이전 exact hunk/claim 탐색용이다. 현재 단일 writer·인계 규칙은 [Oct-17 WRITE-OWNERSHIP](../../oct-22-finalizing/oct-17-index-closeout/tickets/WRITE-OWNERSHIP.md), 상태·담당·다음 작업은 [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 갱신한다. 아래 분담은 현재 실행·잠금·편집권 이전을 증명하지 않는다.
 
 - **W2-19 lib(test) consumer 정합**: root는 orchestration/closure imports·독립 Admission root fixture·args-only mismatch fixture·runner/bridge의 opaque borrow를 소유한다. issuer lane은 coordination와 executor 테스트의 기존 accessor/phase helper path를, snapshot lane은 search-builder/manifest/host-registry/semantic factory의 exact import를, native_cost lane은 기존 analysis facade export·Gateway typed borrow·SSA/TypeInference/query-builder mock signature/args 캡처와 taxonomy literal3개를 소유한다. 실제 producer/trait에 맞추며 새 root export·Clone 우회·test oracle 약화 없이 co-cut한다. 재실행은 root의 기존 owning9c 한 곳으로 모은다.
 

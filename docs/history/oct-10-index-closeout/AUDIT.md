@@ -1,14 +1,14 @@
-> HISTORICAL ONLY. 당시 소스의 설계·실행 기록이며 현재 작업 지시가 아니다. 현재 작업·상태·담당은 [단일 SSOT](../../plans/oct-13-native-incremental-wave2/tickets/README.md), 실행 판정은 [VALIDATION](../../plans/oct-10-index-closeout/VALIDATION.md)을 따른다. 이 본문에 상태를 추가하지 않는다.
+> HISTORICAL ONLY. 당시 소스의 설계·실행 기록이며 현재 작업 지시가 아니다. 현재 작업·상태·담당은 [단일 SSOT](../oct-13-native-incremental-wave2/RESIDUAL-LEDGER.md), 실행 판정은 [VALIDATION](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)을 따른다. 이 본문에 상태를 추가하지 않는다.
 
 # 해결안 감사와 범위 결정
 
-> 기술 계약/날짜별 설계 근거 참고 문서다. 현재 작업·담당·순서는 [Wave2 SSOT](../../plans/oct-13-native-incremental-wave2/tickets/README.md)만 갱신한다. 아래 과거 상태/packet/미구현 판정은 현재 배정표가 아니다. 실행 결과는 [VALIDATION](../../plans/oct-10-index-closeout/VALIDATION.md), legacy의 Accepted 결정은 기존 ADR을 따른다.
+> 기술 계약/날짜별 설계 근거 참고 문서다. 현재 작업·담당·순서는 [Wave2 SSOT](../oct-13-native-incremental-wave2/RESIDUAL-LEDGER.md)만 갱신한다. 아래 과거 상태/packet/미구현 판정은 현재 배정표가 아니다. 실행 결과는 [VALIDATION](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md), legacy의 Accepted 결정은 기존 ADR을 따른다.
 
 
 감사/범위 수정일: 2026-10-10 · source HEAD: `e073465e534f3529d47a43f84ceb1f19992953f1`.
 정적 소스/설계 감사이며 구현·race 재현·Rust/daemon/성능 검증은 `NOT_RUN`이다.
-원 legacy A/D/C5 구현 범위와 병렬 배정은 [README](../../plans/oct-10-index-closeout/README.md), oracle과 후속 실행은
-[VALIDATION](../../plans/oct-10-index-closeout/VALIDATION.md)이 소유한다. 위 NOT_RUN은 이 감사 당시 실행 범위이며,
+원 legacy A/D/C5 구현 범위와 병렬 배정은 [README](../../ARCHIVE-INDEX.md#oct-22-finalizing-migration), oracle과 후속 실행은
+[VALIDATION](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)이 소유한다. 위 NOT_RUN은 이 감사 당시 실행 범위이며,
 후속 A/D/C5 수용을 부정하지 않는다.
 
 여기서 제외한 새 registry/journal·일반화된 lifetime은 원 결함 수리의 비필수 확장이라는
@@ -24,9 +24,9 @@ producer cost obligation.
 ## 현재 잔여 작업에 대한 재감사 적용 (2026-10-13)
 
 아래 A/D/C5 판단은 결정 당시 계약이며, 수용된 직접 수리를 다시 시작하는 지시가 아니다.
-현재 재감사·분업·다음 작업은 [Wave2 SSOT](../../plans/oct-13-native-incremental-wave2/tickets/README.md)를 따른다. [Native RFC 보완 순서](../../rfc/oct-10-native-incremental-vnext.md#remediation-plan-recheck-and-delivery-order-2026-10-13)는 설계 근거이며 별도 실행 큐가 아니다.
+현재 재감사·분업·다음 작업은 [Wave2 SSOT](../oct-13-native-incremental-wave2/RESIDUAL-LEDGER.md)를 따른다. [Native RFC 보완 순서](../../rfc/oct-10-native-incremental-vnext.md#remediation-plan-recheck-and-delivery-order-2026-10-13)는 설계 근거이며 별도 실행 큐가 아니다.
 [RFC §23.55](../../rfc/oct-10-native-incremental-vnext.md#2355--current-source-final-action-register-2026-10-12)와
-[legacy 계획 §10.37](../../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md#1037-최종-잔여-작업과-native-분업-2026-10-12)은 이전 잔여 목록이다.
+[legacy 계획 §10.37](LEXICAL-QUERY-PLAN.md#1037-최종-잔여-작업과-native-분업-2026-10-12)은 이전 잔여 목록이다.
 native retirement composition과 결과/frame/provider custody는 구현·선정 검증 기록이
 있으므로 미구현으로 재배정하지 않는다. 남은 범위는 adapter build metadata,
 production aggregate disk/WAL/secondary-file 집행, default product 전환,
@@ -184,7 +184,7 @@ idle staging은 계약 선택으로 남기며, 현 publication-local preparation
 
 `VERIFIED`는 해당 정적 모듈 순환·포맷·diff 검사 범위다. 새 retention 실행 및 sustained
 churn/long pin/space pressure/query/cancel, 최신 전체 workspace/producer/remote CI/release는
-별도다. 실행 결과는 [VALIDATION.md](../../plans/oct-10-index-closeout/VALIDATION.md)의 최신 절에서 판정한다.
+별도다. 실행 결과는 [VALIDATION.md](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)의 최신 절에서 판정한다.
 
 출력 계약 후속 재대조의 잔여는 P1 semantic rollback 복구, P1 자원 회계,
 P2 전수 측정/가용성, P2 실측 기반 enabled 정책의 네 묶음이다. writer가 사용하는 Tantivy `MmapDirectory`와

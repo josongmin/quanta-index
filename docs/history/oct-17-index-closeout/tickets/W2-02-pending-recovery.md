@@ -1,15 +1,15 @@
 # W2-02 — pending 저장/claim·startup inventory의 Native 소유권
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-상태/담당/다음 작업은 [SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-02)만 갱신한다. 이전 W2-02의 **미연결 caller만** 남긴 티켓이다.
+상태/담당/다음 작업은 [SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-02)만 갱신한다. 이전 W2-02의 **미연결 caller만** 남긴 티켓이다.
 
 ## Remaining scope
 
 - pending 최초 carrier/JSON persist·claim의 recursive DTO/seed를 기존 Native Original 비용·수명 소유자에 연결한다. canonical serializer/validator·오류 순서·동일 SQL/Immediate transaction을 공유한다.
 - startup marker inventory의 genuine Original funding과 실제 startup caller를 연결한다. Native 분기 이전 ordinary replay loader 도달과 격리/복구 권한을 대조한다.
-- INT 기존 issuer/snapshot/cost의 [독점 hunk](../../../plans/oct-17-index-closeout/tickets/WRITE-OWNERSHIP.md)를 소비한다. pending root/jobs/delta/SQL은 issuer, taxonomy seed는 snapshot, semantic plan/unit seed는 cost, 공용 parent/COORD는 통합자다.
+- INT 기존 issuer/snapshot/cost의 [독점 hunk](../../oct-22-finalizing/oct-17-index-closeout/tickets/WRITE-OWNERSHIP.md)를 소비한다. pending root/jobs/delta/SQL은 issuer, taxonomy seed는 snapshot, semantic plan/unit seed는 cost, 공용 parent/COORD는 통합자다.
 
 ## Reuse boundary
 
@@ -29,7 +29,7 @@ S root: `/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analy
 
 - Native fence 비교·bounded scalar/schema 거절·공유 identity formatter·불변 wire view는 저장된 구현이다. 이를 다시 설계하지 않는다. 최초 recursive carrier/JSON·SQL row backing과 manifest normalization clone은 아직 남아 있다.
 - 기존 replay owner integration target에 동일 pending persist/retry·canonical corruption·restart takeover 함수를 연결했다. `lib(test)` mock 전체를 복제하거나 테스트 전용 저장/검증 경로를 만들지 않는다.
-- 선택적 ImportGraphPort discovery 호출은 해당 feature guard 안에 둔다. traversal/trait body와 enabled Native refusal을 보존한다. 전용 SQLite/replay와 SDK Native의 실행 판정은 [VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md#native-required-readback-code-checkpoint-2026-10-15)을 소비하고 이 문서에서 별도 상태를 만들지 않는다.
+- 선택적 ImportGraphPort discovery 호출은 해당 feature guard 안에 둔다. traversal/trait body와 enabled Native refusal을 보존한다. 전용 SQLite/replay와 SDK Native의 실행 판정은 [VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#native-required-readback-code-checkpoint-2026-10-15)을 소비하고 이 문서에서 별도 상태를 만들지 않는다.
 - startup의 `SearchOwnerRequestContextV1`은 현재 문자열·generation·deadline·publication authority만 보유한다. 실제 Original/TargetedSource 공급 경계를 먼저 연결해야 하며, inventory에서 새 예산을 발급하거나 ordinary loader를 우회 성공으로 취급하지 않는다.
 
 ## Pending root receiving map
@@ -58,7 +58,7 @@ JSON encode·row read·claim은 이 root 밖의 별도 backing 경계다. decode
 - startup의 inactive-scope loader0·foreign/손상 row 격리·다음 정상 row 진행, 실제 Original의 read/decode/work/drop를 검사한다. 동일 admitted custody 재사용과 mandatory fresh 읽기는 구분한다.
 - 기존 genuine Original/record/marker fixture와 owning QBC로 W2-19 영향 배치에 합류한다. 새 codec/issuer/runner는 만들지 않는다.
 
-의존: SDK FULL producer 재구현 없이 독립 진행 가능. Contract/COORD parent는 단일 writer가 결합한다. 과거 source별 실패/수리 저장과 새 동작 성공은 [VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md#native-required-readback-code-checkpoint-2026-10-15)에서 구분한다.
+의존: SDK FULL producer 재구현 없이 독립 진행 가능. Contract/COORD parent는 단일 writer가 결합한다. 과거 source별 실패/수리 저장과 새 동작 성공은 [VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#native-required-readback-code-checkpoint-2026-10-15)에서 구분한다.
 
 ## Implementation packet
 

@@ -5,8 +5,8 @@ main `3aeebae8`**, included in the Oct-10 source `de279c45`. Semantica consumer
 integration and native/product acceptance remain separate. The dated checkpoint
 narrative below is historical; its candidate and uncommitted-state descriptions
 do not override the Index integration decision. Current Index code work is in
-the [Oct-10 plan](../plans/oct-17-index-closeout/tickets/README.md), and consumer/release
-acceptance is in its [validation plan](../plans/oct-10-index-closeout/VALIDATION.md#release-and-consumer).
+the [Oct-10 plan](../plans/oct-22-finalizing/README.md), and consumer/release
+acceptance is in its [validation plan](../plans/oct-22-finalizing/E08-integration-release.md#release-inputs).
 This is not new test execution, installed-host, performance or cross-repo qualification.
 [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) owns the public
 ingress and publication boundary.
@@ -47,7 +47,7 @@ active head. The existing Source/SDK owner must bind that reservation to a new,
 authenticated full source closure and current host/root custody before prepare;
 no old predecessor/pin or public intent setter supplies recovery authority.
 These tasks were sent to the existing owner chats. Their contract and proof
-acceptance remain open in the [Index reservation workstream](../plans/oct-10-index-closeout/README.md#c5-generation-reservation)
+acceptance remain open in the [Index reservation workstream](../plans/oct-22-finalizing/E02-publication-recovery.md)
 and the external producer owner.
 
 ### Historical isolated pair
@@ -463,7 +463,7 @@ these counts cover separate selected behavior, not a Runtime or paired release.
 The first contract test compilation failed on an existing native-corpus test
 import and private helper visibility; the test-only owner repair preserves its
 validation assertions. Full boundary and parser gate failures remain recorded
-in the [closure ticket](../plans/oct-17-index-closeout/tickets/README.md).
+in the [closure ticket](../plans/oct-22-finalizing/README.md).
 
 ## Main comparison and merge disposition
 
@@ -502,12 +502,12 @@ recovery. Aggregate authority already requires `sqlite-store` in current main;
 no-SQLite aggregate refusal is not, by itself, a newly introduced regression.
 The supported feature matrix still needs owning execution.
 
-The [integration ticket](../plans/oct-17-index-closeout/tickets/W2-19-integration-acceptance.md)
+The [integration ticket](../plans/oct-22-finalizing/E08-integration-release.md)
 owns the exact remaining files, final pair inputs and acceptance sequence.
 
 ## Remaining coupled integration
 
-Current producer work lives only in [W2-05](../plans/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md), and current qualification work in [W2-19](../plans/oct-17-index-closeout/tickets/W2-19-integration-acceptance.md). The captured pair inputs, parser diagnostics and source percentages below are historical evidence, not a second execution queue or a current-source defect inventory.
+Current producer work lives only in [W2-05](../plans/oct-22-finalizing/E01-producer-generation.md), and current qualification work in [W2-19](../plans/oct-22-finalizing/E08-integration-release.md). The captured pair inputs, parser diagnostics and source percentages below are historical evidence, not a second execution queue or a current-source defect inventory.
 
 ### Current pair inputs and result
 
@@ -552,7 +552,7 @@ with that binary. `just rust-profile test-daemon` completed300passed/10skipped,
 not a performance benchmark. The candidate's SDK156+external7,CLI46+benchmark125,
 strict Clippy and API results remain distinct from main's split proof above.
 
-The [integration ticket](../plans/oct-17-index-closeout/tickets/W2-19-integration-acceptance.md)
+The [integration ticket](../plans/oct-22-finalizing/E08-integration-release.md)
 owns the exact current path set, committed-base execution and remaining
 shared-main claim/lock/consumer integration. No Runtime or process success is
 inferred from the separate contract or Quanta results.

@@ -1,7 +1,7 @@
 # Native RFC — historical section 23 checkpoints
 
 Historical source-scoped records through 2026-10-13, preserved on 2026-10-21.
-Current work: [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md).
+Current work: [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md).
 The [active RFC](../../rfc/oct-10-native-incremental-vnext.md) retains requirement contracts.
 No task, status or execution result is maintained in this history.
 
@@ -2961,27 +2961,27 @@ remain separate.
 ### 23.55 — Current-source final action register (2026-10-12)
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#2355--current-source-final-action-register-2026-10-12)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#2355--current-source-final-action-register-2026-10-12)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Current facts and important corrections
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#current-facts-and-important-corrections)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#current-facts-and-important-corrections)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Remaining implementation and acceptance slices
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#remaining-implementation-and-acceptance-slices)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#remaining-implementation-and-acceptance-slices)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Observed ownership and permitted parallelism
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#observed-ownership-and-permitted-parallelism)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#observed-ownership-and-permitted-parallelism)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Evidence reconciliation and the next checkpoints
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#evidence-reconciliation-and-the-next-checkpoints)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#evidence-reconciliation-and-the-next-checkpoints)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### NativeText inventory cost and cursor-contract follow-up (2026-10-12)
 
@@ -9110,7 +9110,7 @@ format contract; a deployed v11 root cannot silently reinterpret new rows.
 **VERIFIED — pooled runtime checkpoint:** `/tmp/qi-native-f07-v11-runtime-final.log`
 returned exit 0: **172/172 PASS**, 392 skipped, seven binaries, 39.569 seconds
 execution (49.24 seconds compiler report). The command is recorded in
-[VALIDATION](../../plans/oct-10-index-closeout/VALIDATION.md#f07-logical-capture-and-v11-format-checkpoint-2026-10-13).
+[VALIDATION](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#f07-logical-capture-and-v11-format-checkpoint-2026-10-13).
 It executed the complete selected Catalog library, independent capture golden,
 three managed-ingress rebase/negative tests, seven Runtime format tests and the
 actual source-owner UDS lifecycle. Earlier compile attempts failed on a discarded
@@ -10177,52 +10177,52 @@ Refused retirement need their own real producer/event authority.
 ### 23.75 Current source progress and remaining delivery (2026-10-13)
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#2375-current-source-progress-and-remaining-delivery-2026-10-13)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#2375-current-source-progress-and-remaining-delivery-2026-10-13)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 23.76 Original scope progress accounting and remaining work (2026-10-13)
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#2376-original-scope-progress-accounting-and-remaining-work-2026-10-13)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#2376-original-scope-progress-accounting-and-remaining-work-2026-10-13)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Remaining promised work, kept with original owners
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#remaining-promised-work-kept-with-original-owners)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#remaining-promised-work-kept-with-original-owners)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 23.77 Parallel delivery plan and exclusive write sets (2026-10-13)
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#2377-parallel-delivery-plan-and-exclusive-write-sets-2026-10-13)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#2377-parallel-delivery-plan-and-exclusive-write-sets-2026-10-13)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Current-source code-first dispatch revision
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#current-source-code-first-dispatch-revision)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#current-source-code-first-dispatch-revision)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Live ownership correction before dispatch (2026-10-13)
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#live-ownership-correction-before-dispatch-2026-10-13)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#live-ownership-correction-before-dispatch-2026-10-13)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Stage0: freeze interfaces and real write ownership
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#stage0-freeze-interfaces-and-real-write-ownership)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#stage0-freeze-interfaces-and-real-write-ownership)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### First dispatch: A / B / C in parallel
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#first-dispatch-a--b--c-in-parallel)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#first-dispatch-a--b--c-in-parallel)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Next available slots: D / E / F / G / H
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#next-available-slots-d--e--f--g--h)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#next-available-slots-d--e--f--g--h)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 #### Checkpoints and delivery discipline
 
 
-과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#checkpoints-and-delivery-discipline)으로 이전했다. 현재 작업은 [SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 따른다.
+과거 본문은 [보존 이력](RFC-DELIVERY-CHECKPOINTS.md#checkpoints-and-delivery-discipline)으로 이전했다. 현재 작업은 [SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 따른다.
 
 ### 23.78 Non-overlapping implementation checkpoint (2026-10-13)
 

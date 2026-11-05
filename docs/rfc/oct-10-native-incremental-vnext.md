@@ -2845,10 +2845,11 @@ fsyncs, scratch/live/orphan/retired bytes, pins, retry work, queue time, CPU and
 Stage timers are nested consistently so total time does not double-count children.
 Instrumentation must expose all required paths, not only successful adapter calls.
 
-The diagnostic contract authority is the existing
-[waterfall plan](../plans/oct-10-index-closeout/TRACE-WATERFALL-PLAN.md), with
-[execution packets](../plans/oct-10-index-closeout/TRACE-EXECUTION-PACKETS.md)
-P00–P09. Extend its common context, bounded recorder and exporter; do not create
+The [current diagnostics owner](../plans/oct-22-finalizing/E07-performance-operations.md)
+uses the common context, bounded recorder and exporter from the
+[original waterfall design](../history/oct-10-index-closeout/TRACE-WATERFALL-PLAN.md)
+and [execution packet specifications](../history/oct-10-index-closeout/TRACE-EXECUTION-PACKETS.md).
+Extend the existing path; do not create
 a second tracing pipeline for this RFC. Bind capture events to actual attempts,
 retain explicit incomplete/lost states after failure, and separate observer work
 from product stages. Auto's signal adapter consumes owner observations; recorder

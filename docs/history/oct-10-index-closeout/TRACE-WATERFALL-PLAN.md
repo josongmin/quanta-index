@@ -1,9 +1,9 @@
 # One-run troubleshooting waterfall: audit and implementation plan
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-> 기술 계약/날짜별 설계 근거 참고 문서다. 현재 작업·담당·순서는 [Oct-17 SSOT](../../plans/oct-17-index-closeout/tickets/README.md)만 갱신한다. 아래 과거 상태/packet/미구현 판정은 현재 배정표가 아니다. 실행 결과는 [VALIDATION](../../plans/oct-10-index-closeout/VALIDATION.md), legacy의 Accepted 결정은 기존 ADR을 따른다.
+> 기술 계약/날짜별 설계 근거 참고 문서다. 현재 작업·담당·순서는 [Oct-17 SSOT](../oct-22-finalizing/oct-17-index-closeout/tickets/README.md)만 갱신한다. 아래 과거 상태/packet/미구현 판정은 현재 배정표가 아니다. 실행 결과는 [VALIDATION](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md), legacy의 Accepted 결정은 기존 ADR을 따른다.
 
 Native cost packet D and checkpoint sequencing: [RFC §23.77](../../rfc/oct-10-native-incremental-vnext.md#2377-parallel-delivery-plan-and-exclusive-write-sets-2026-10-13).
 Extend existing owners for Native mode and producer/projection/Catalog/WAL/
@@ -14,11 +14,11 @@ CP4 execution; no extra runner, no legacy scale promotion.
 Date: 2026-10-12. Final contract audit revision: 4.
 Status: trace contract and source-specific execution plan. Recorded P00–P12
 implementation/capture/viewer results and failures are owned by
-[VALIDATION.md](../../plans/oct-10-index-closeout/VALIDATION.md), not duplicated as a whole-current-tree verdict here.
+[VALIDATION.md](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md), not duplicated as a whole-current-tree verdict here.
 Legacy XL lifecycle, Small capture, offline viewer compatibility and quiet-host
 Off/Record performance are separate evidence scopes.
 
-This document owns the trace contract; [TRACE-EXECUTION-PACKETS.md](../../plans/oct-10-index-closeout/TRACE-EXECUTION-PACKETS.md)
+This document owns the trace contract; [TRACE-EXECUTION-PACKETS.md](TRACE-EXECUTION-PACKETS.md)
 preserves its historical file assignments. Native lifecycle/backend contracts
 follow [Native RFC §1.1](../../rfc/oct-10-native-incremental-vnext.md#11-reading-order-and-decision-boundaries).
 Trace P/W identifiers are local to this workstream, not native RFC stages.
@@ -38,7 +38,7 @@ in progress retain their exact write sets in the execution packets.
 나열하는 로그만으로는 이 목표를 충족하지 못한다. 기존 요청 진단·owner 계측을
 확장하고 Chrome trace JSON으로 내보낸다. 별도 telemetry 서버나 자체 UI는 범위 밖이다.
 
-선행 근거: [LEXICAL-QUERY-PLAN.md §10.30](../../plans/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md#1030-병렬-독립-rca와-과도한-수리-범위의-재감사-2026-10-10).
+선행 근거: [LEXICAL-QUERY-PLAN.md §10.30](LEXICAL-QUERY-PLAN.md#1030-병렬-독립-rca와-과도한-수리-범위의-재감사-2026-10-10).
 소스 감사 기준은 `HEAD=8f11cad9587aec1668a9fb3f5f1f055337487071`와 당시 공유 dirty
 checkout이다. HEAD만으로 실행 소스를 식별하지 않는다. 과거 XL 수치는 §10.30의
 `a15d994…` source / `ba1b69c…` binary 실행에 한정한다.
@@ -46,7 +46,7 @@ checkout이다. HEAD만으로 실행 소스를 식별하지 않는다. 과거 XL
 
 ## P10 canonical profile and build boundary (2026-10-11)
 
-The execution packet write set is defined in [TRACE-EXECUTION-PACKETS.md](../../plans/oct-10-index-closeout/TRACE-EXECUTION-PACKETS.md#p10-current-canonical-capture-follow-up-2026-10-11).
+The execution packet write set is defined in [TRACE-EXECUTION-PACKETS.md](TRACE-EXECUTION-PACKETS.md#p10-current-canonical-capture-follow-up-2026-10-11).
 
 - `--managed-build` builds `scale_matrix` through the canonical `scripts/cargow`
   release recipe into a new external target, verifies the exact Cargo artifact,
@@ -390,7 +390,7 @@ resident 상한을 고정한다. 가변 길이 무제한 payload를 queue 앞에
 ## 7. 구현 순서와 병렬 write set
 
 파일 수정권·새 파일·금지 파일·허용 hunk·handoff·검증 명령은
-[TRACE-EXECUTION-PACKETS.md](../../plans/oct-10-index-closeout/TRACE-EXECUTION-PACKETS.md)의 P00–P09가 실행 기준이다.
+[TRACE-EXECUTION-PACKETS.md](TRACE-EXECUTION-PACKETS.md)의 P00–P09가 실행 기준이다.
 아래 wave 표는 순서 요약이며 directory 전체 수정권을 부여하지 않는다.
 
 | Wave | 작업 / 소유 범위 | 종료 조건 |

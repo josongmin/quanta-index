@@ -1,4 +1,4 @@
-> HISTORICAL ONLY. 당시 소스의 설계·실행 기록이며 현재 작업 지시가 아니다. 현재 작업·상태·담당은 [단일 SSOT](../../plans/oct-13-native-incremental-wave2/tickets/README.md), 실행 판정은 [VALIDATION](../../plans/oct-10-index-closeout/VALIDATION.md)을 따른다. 이 본문에 상태를 추가하지 않는다.
+> HISTORICAL ONLY. 당시 소스의 설계·실행 기록이며 현재 작업 지시가 아니다. 현재 작업·상태·담당은 [단일 SSOT](../oct-13-native-incremental-wave2/RESIDUAL-LEDGER.md), 실행 판정은 [VALIDATION](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)을 따른다. 이 본문에 상태를 추가하지 않는다.
 
 ## 7. 실행 순서·소유권·완료 조건
 
@@ -1777,7 +1777,7 @@ runtime 검증은 **NOT_RUN**이며, 기존 XL 전체 capture는 계속 **FAILED
 
 ### 10.31 한 번의 실행으로 보는 waterfall 계약과 추가 감사 (2026-10-10)
 
-후속 계측 계획은 [TRACE-WATERFALL-PLAN.md](../../plans/oct-10-index-closeout/TRACE-WATERFALL-PLAN.md)에 정리했다.
+후속 계측 계획은 [TRACE-WATERFALL-PLAN.md](TRACE-WATERFALL-PLAN.md)에 정리했다.
 운영 코드의 trace 구현 완료를 뜻하지 않는다.
 
 - 세 독립 감사와 계획 교차 검토로 duration-only 로그, success-only 관측값,
@@ -1798,7 +1798,7 @@ runtime 검증은 **NOT_RUN**이며, 기존 XL 전체 capture는 계속 **FAILED
 현재 소스/기존 artifact 감사와 계획 교차 검토는 **VERIFIED**다. 신규 tracing 구현,
 viewer/runtime/overhead 검증은 **NOT_RUN**이다.
 
-§10.31 계획의 마지막 계약 감사에서는 [TRACE-WATERFALL-PLAN.md](../../plans/oct-10-index-closeout/TRACE-WATERFALL-PLAN.md)
+§10.31 계획의 마지막 계약 감사에서는 [TRACE-WATERFALL-PLAN.md](TRACE-WATERFALL-PLAN.md)
 revision 2로 다음을 보완했다. enqueue 전 번호 발급의 순서 역전, dormant context가 남은
 footer 발급, 구버전 ingest의 diagnostic field 거절, token 오류가 제품 오류로 전파되는
 경계, legacy env에 묶인 BM25/process-I/O 계측, profile hash의 원본 의미를 각각 수정했다.
@@ -1806,7 +1806,7 @@ writer의 출력 순서와 producer 손실 회계를 분리하고, 종료 장벽
 기존 계측의 단일 경로 전환·profile schema 변경을 명시했다. 오버헤드는 `--timeline` 유무가
 아닌 실제 recorder Off/Record로 비교한다. 이 변경은 문서 계획이며 운영 구현은 아직 없다.
 
-revision 3에서는 [TRACE-EXECUTION-PACKETS.md](../../plans/oct-10-index-closeout/TRACE-EXECUTION-PACKETS.md)에 P00–P09의
+revision 3에서는 [TRACE-EXECUTION-PACKETS.md](TRACE-EXECUTION-PACKETS.md)에 P00–P09의
 정확한 기존/신규/보호 파일, 허용 hunk, 공통 계약 동결과 파일 소유권 인계, constructor/mock
 이행, API/module baseline 갱신, 직렬 검증 순서를 명시했다. A/B/C의 세 chain만 병렬로
 수정하며 ROOT 통합 전 lane handoff를 요구한다. 실행 패킷 작성은 구현 완료 증거가 아니다.
@@ -1864,7 +1864,7 @@ revision 3에서는 [TRACE-EXECUTION-PACKETS.md](../../plans/oct-10-index-closeo
   PARTIAL_DIAGNOSTIC/exit 2다. 정식 성능 수용이나 정리의 인과적 배속은 증명하지 않았다.
 - sustained churn/long pin/space pressure, measured merge threshold/reserve 및 post-merge
   admission은 별도 범위다. 최소 준비 worker를 전체 LQ5 구현·운영 수용으로 승격하지 않는다.
-  소스·명령·관측 결과는 [VALIDATION.md](../../plans/oct-10-index-closeout/VALIDATION.md)의 마지막 절을 따른다.
+  소스·명령·관측 결과는 [VALIDATION.md](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)의 마지막 절을 따른다.
 
 ### 10.34 LQ5 잔여 계약 재대조 (2026-10-12)
 
@@ -1935,12 +1935,12 @@ retention planner의 요청별 집합 측정 session에 lexical/semantic product
 위임한다. 세션은 기존 generation의 mutation stripe를 비차단 획득해 scrub receipt
 쓰기를 막으며, 부재 generation은 pin하거나 캐시하지 않는다. scratch SQLite의 주
 파일 상한은 별도 설정이며 RSS·journal memory·여유 공간 예약이 아니다. 실행 판정은
-[VALIDATION.md](../../plans/oct-10-index-closeout/VALIDATION.md)의 최신 절을 따른다.
+[VALIDATION.md](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)의 최신 절을 따른다.
 
 전체 track 측정은 유지한다. 두 physical session을 먼저 획득해 lexical/semantic lifecycle과
 lexical pool mutation을 측정 종료까지 막으며, 획득 충돌과 cached unsealed writer는
 거절한다. idle writer release도 lifecycle read를 보유하고 release/discard는 merge worker를
-join한다. 새 소스의 실행 판정은 [VALIDATION.md](../../plans/oct-10-index-closeout/VALIDATION.md)의 최신 절을 따른다.
+join한다. 새 소스의 실행 판정은 [VALIDATION.md](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)의 최신 절을 따른다.
 physical census는 두 트랙이 공유하는 service-owned deadline과 cap이 있는 SQLite inode
 집합을 사용한다. 기본 deadline은 60초이며 `QUANTA_INDEX_RETENTION_MEASUREMENT_TIMEOUT_MS`로
 지정한다. 이는 운영 guardrail이지 측정된 capacity threshold가 아니다. directory-only 순회는
@@ -1950,7 +1950,7 @@ pending 4096 frame/depth 64에서 거절하며 DB·순회 실패의 부분 합�
 inode의 파일 길이 합이며 실제 allocated blocks 또는 filesystem 여유 공간 예약을 뜻하지 않는다.
 
 이번 ROOT 후속 trace/build/profile 및 precise publication fault의 실행 판정은
-[VALIDATION.md](../../plans/oct-10-index-closeout/VALIDATION.md)의 최신 절을 따른다. A/D/C5 및 기존 XL product/lifecycle
+[VALIDATION.md](../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md)의 최신 절을 따른다. A/D/C5 및 기존 XL product/lifecycle
 수용은 유지하며, LQ5 전체 정책 코드와 운영 검증은 별도 미완료 범위다.
 
 #### 일반 append의 hard-limit 복구 계약

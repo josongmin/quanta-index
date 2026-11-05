@@ -1,9 +1,9 @@
 # W2-19 — 검증 잔여·통합 A/B·출시
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-상태는 [SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-19)만 갱신한다. 기존 구현의 미수용 검사만 모은 티켓이며 새 feature/producer/issuer/runner 개발 큐가 아니다. 새 정합 실패는 exact caller·원인에 한정해 수리한다.
+상태는 [SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-19)만 갱신한다. 기존 구현의 미수용 검사만 모은 티켓이며 새 feature/producer/issuer/runner 개발 큐가 아니다. 새 정합 실패는 exact caller·원인에 한정해 수리한다.
 
 Oct-18 SEARCH integration hunk: only the `history-text-epoch-manifest` row
 in `tools/ci/inventory/wire-surface.toml` is reconciled with the existing
@@ -18,7 +18,7 @@ The original digest/decode writers own the Contract strict and API join:
 `source_coverage.rs`, `index.rs`, admitted corpus/auxiliary/receipt decoders,
 `query/native_content.rs`, `repomap/admitted_v3.rs`, `lex/history.rs`, and
 the existing `NativeIndexRequest` enum-size hunk. Exact diagnostic sites are
-retained in [the result-contract validation record](../../../plans/oct-10-index-closeout/VALIDATION.md#w2-13-traversal-contract-2026-10-18).
+retained in [the result-contract validation record](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#w2-13-traversal-contract-2026-10-18).
 Preserve admission-before-work, original error propagation and closed wire
 shape when replacing unchecked operations or resolving lint-policy conflicts.
 Do not add blanket lint allowances, weaken gates, or duplicate the decoders.
@@ -40,7 +40,7 @@ do not rerun unchanged selectors to relabel this join as qualified.
 | W2-11/15/17 | lexical capability별 fixed gold/typed refusal·bounded query, overlay/save2session·mask-before-top-k·stale/late/close/cancel, Auto seq/TTL/revision·fairness/비협조 cancel charge·지속 부하 | SEARCH; 기존 query/overlay/Auto 구현 유지 |
 | W2-13/16 | selected vectors·membership·recall/progress·파일 수명, 실제 AST authority·source owner 원자 apply | 각 티켓의 원 oracle 소비 |
 | W2-09/10 | 같은 source/profile 비용·Off/Record·지속 churn/pin/space·aggregate RSS/temp disk·debt/drain·trace capture/UI | harness/source owner; W2-09 결과 소비 |
-| legacy/consumer/release | A/D/C5 완료 유지, 미수용 legacy LQ5/semantic/test-platform·installed/pair/provider/actions·remote CI/release | 기존 [VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md) oracle/consumer owner |
+| legacy/consumer/release | A/D/C5 완료 유지, 미수용 legacy LQ5/semantic/test-platform·installed/pair/provider/actions·remote CI/release | 기존 [VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md) oracle/consumer owner |
 
 정식 R01–R40/P2I01–08/UX01–12/AUTO01–10은 기존 RFC/독립 gold에 결합한다. conditional AUTO/외부 consumer 범위를 명시하고 새 GUI 요구로 바꾸지 않는다. 겹치는 테스트/수치는 한 번 실행·기록하고 이 표는 그 결과를 참조한다.
 
@@ -69,7 +69,7 @@ P12A infrastructure는 P11 운영 입력과 독립이다. 최종 aggregate의 `-
 
 ## Existing source/result boundaries
 
-[VALIDATION](../../../plans/oct-10-index-closeout/VALIDATION.md#native-required-readback-code-checkpoint-2026-10-15)의 source별 결과를 유지한다. 기존 CP43/43·Q41/41·S DTO20/20, SEARCH245/245/UDS39/39·RepoMap51/51/UDS6/6, PHYSICAL151/151, harness45/45 등은 서로 다른 source/selector다. 이를 합산해 현재 workspace/제품 통과로 계산하지 않는다. lock/API/공용 facade 실패와 수리 후 미검증 경계는 새 실제 결과가 나올 때까지 유지한다.
+[VALIDATION](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#native-required-readback-code-checkpoint-2026-10-15)의 source별 결과를 유지한다. 기존 CP43/43·Q41/41·S DTO20/20, SEARCH245/245/UDS39/39·RepoMap51/51/UDS6/6, PHYSICAL151/151, harness45/45 등은 서로 다른 source/selector다. 이를 합산해 현재 workspace/제품 통과로 계산하지 않는다. lock/API/공용 facade 실패와 수리 후 미검증 경계는 새 실제 결과가 나올 때까지 유지한다.
 
 expected는 fixed bytes/digest·reference/model·독립 관측에서 얻는다. 구현식을 다시 계산해 oracle로 삼거나 missing/stale/partial/timeout을 성공으로 만들지 않는다. routine focused 검사에는 별도 receipt/snapshot을 요구하지 않는다. formal replay/release/qualified benchmark만 필요한 source/input/dependencies/config/binary/environment를 결합한다. 모든 실행 결과는 기존 VALIDATION에 한 번 기록하고 새 결과 원장을 만들지 않는다.
 
@@ -95,7 +95,7 @@ expected는 fixed bytes/digest·reference/model·독립 관측에서 얻는다. 
 
 ## Scope closure without duplicate implementation
 
-G0에서 [공용 충돌 경계](../../../plans/oct-17-index-closeout/tickets/WRITE-OWNERSHIP.md#collision-resolution)의 기존 owner/path/hunk 인계를 확인한다. 인계 전 전체 파일 동시 편집을 허용하지 않는다. 신규 ABI/타입 불확실성에는 통합 큐의 좁은 compiler 검사를 사용할 수 있지만 같은 원인의 필터 변형·대형 daemon 실행은 반복하지 않는다.
+G0에서 [공용 충돌 경계](../../oct-22-finalizing/oct-17-index-closeout/tickets/WRITE-OWNERSHIP.md#collision-resolution)의 기존 owner/path/hunk 인계를 확인한다. 인계 전 전체 파일 동시 편집을 허용하지 않는다. 신규 ABI/타입 불확실성에는 통합 큐의 좁은 compiler 검사를 사용할 수 있지만 같은 원인의 필터 변형·대형 daemon 실행은 반복하지 않는다.
 
 코드 계약/actual caller 연결·영향 검증이 끝나면 그 하위 scope의 완료를 보존하고 남은 제품/성능/외부 수용만 추적한다. staged registry·provider/운영 target 부재는 해당 release scope의 BLOCKED이며 통과한 엔진/SDK 코드의 재개발 사유가 아니다. 기능 담당의 독립 gold/결과를 참조하고 cross-ticket 이름만 바꾼 동일 검사를 추가하지 않는다. W2-18이 launcher/action caller를 한 번 구현하며 이 티켓은 배포/활성화/rollback의 실제 target/observer 수용만 소유한다.
 

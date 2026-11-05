@@ -1,13 +1,13 @@
 # W2-13 — Native ANN 제품 경로 연결
 
-> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../../plans/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
+> HISTORICAL REFERENCE — 2026-10-18 retirement. Current work/status: [Oct-17 SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md). Old TODOs, owners, commands and counts below do not authorize new work or qualify current source.
 
 
-상태는 [SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-13)만 갱신한다. 기존 ANN private helper 뒤에 **실제 파일/Catalog/reader caller**를 연결한다. [기존 상세 설계](../../../plans/oct-13-native-incremental-wave2/tickets/W2-13-semantic-ann.md)는 참고이며 작업 배정/상태표가 아니다.
+상태는 [SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-13)만 갱신한다. 기존 ANN private helper 뒤에 **실제 파일/Catalog/reader caller**를 연결한다. [기존 상세 설계](../../oct-13-native-incremental-wave2/tickets/W2-13-semantic-ann.md)는 참고이며 작업 배정/상태표가 아니다.
 
 ## Confirmed boundary
 
-[Semantic mount](../../../../crates/quanta-index-semantic/src/native/mod.rs)는 `ann_lance`와 bounded `ann_store`/`ann_session`/`ann_files`를 제품 모듈로 등록한다. `NativeSemantic::with_ann`의 `prepare_searchable`은 `embedding/ann_materialization.rs`를 호출하고, Kernel source 변경·projection advance·owner materialization은 같은 AttemptContext와 기존 단일 publication CAS로 directory를 coverage에 채택한다. `validate_coverage`는 기존 owner-map 형식을 provider 호출 전에 `RebuildRequired`로 거절한다. Runtime의 실제 provider 등록이 owner와 reader의 ANN 경로를 선택한다. 컴파일·회귀 수용 여부는 [SSOT](../../../plans/oct-17-index-closeout/tickets/README.md#w2-13)만 판정한다.
+[Semantic mount](../../../../crates/quanta-index-semantic/src/native/mod.rs)는 `ann_lance`와 bounded `ann_store`/`ann_session`/`ann_files`를 제품 모듈로 등록한다. `NativeSemantic::with_ann`의 `prepare_searchable`은 `embedding/ann_materialization.rs`를 호출하고, Kernel source 변경·projection advance·owner materialization은 같은 AttemptContext와 기존 단일 publication CAS로 directory를 coverage에 채택한다. `validate_coverage`는 기존 owner-map 형식을 provider 호출 전에 `RebuildRequired`로 거절한다. Runtime의 실제 provider 등록이 owner와 reader의 ANN 경로를 선택한다. 컴파일·회귀 수용 여부는 [SSOT](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-13)만 판정한다.
 
 `NativeSemanticReader::query`는 selected coverage의 object/child refs·recipe·owner-root를 검증한 뒤 `ann_query`로 들어간다. directory는 COW region map과 bounded delta member map을 가진다. 64-owner 또는 256-row delta는 bounded size-tiered COW 병합 후 기존 Lance helper로 한 번 봉인하며, 지역당 8,192행·1,048,576 cells와 파일 총량32MiB를 넘길 수 없다. 빈 벡터 member는 owner graph에만 보존하여 delta 슬롯을 소모하지 않는다. 활성 지역은 최대4,096개, query가 여는 지역은 최대8개다. format2는 재사용하지 않는 단조 지역 ID와 활성 수를 분리한다. obsolete 지역은 새 selected owner map에 그 member 참조를 유지하는 owner가 하나도 없을 때만 동일 CAS에서 참조 해제한다. pending이어도 동일 searchable member를 유지하면 회수하지 않는다. query는 sparse COW region map의 실제 key를 순회한다. sealed-region 결과는 항상 `Approximate`; no-region·selected owners≤64를 별도 확인한 경우만 기존 exact oracle를 사용한다.
 
@@ -110,7 +110,7 @@ do not change sealing limits or adopt another engine without measured need.
 4. 기존 Kernel CAS가 source/member/coverage와 searchable directory를 함께 채택한다. 이전 pin은 이전 directory의 실제 object graph를 계속 소유한다.
 5. Runtime이 ANN owner/reader를 구성하고, reader가 sparse directory→bounded routing/refill→selected 인증→공용 exact ranking으로 조회한다. SDK는 같은 traversal/coverage 계약을 검증한다.
 
-이 경로의 source와 선정 수용 근거는 [README](../../../plans/oct-17-index-closeout/tickets/README.md#w2-13)와 기존 VALIDATION에서 확인한다. 미수용 항목은 아래 Acceptance의 실제 fault·filtered quality·비용·장기 churn 조건이며, 같은 포트/엔진/runner를 다시 만드는 작업이 아니다. PHYSICAL의 진행 중 물리/계측·부하 packet은 해당 기존 담당이 계속 소유한다.
+이 경로의 source와 선정 수용 근거는 [README](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-13)와 기존 VALIDATION에서 확인한다. 미수용 항목은 아래 Acceptance의 실제 fault·filtered quality·비용·장기 churn 조건이며, 같은 포트/엔진/runner를 다시 만드는 작업이 아니다. PHYSICAL의 진행 중 물리/계측·부하 packet은 해당 기존 담당이 계속 소유한다.
 
 ## Existing refill packet boundary
 
@@ -223,8 +223,8 @@ vendor RSS coverage or a join-all boundary.
 The regression packet covers pointer identity/last child release, detached
 input after outer abort, and refusal only after controlled write completion.
 
-Execution outcomes are recorded once in the existing [validation anchor](../../../plans/oct-10-index-closeout/VALIDATION.md#w2-13-managed-ann-layout-2026-10-18);
-current status and remaining assignment are owned only by [README](../../../plans/oct-17-index-closeout/tickets/README.md#w2-13).
+Execution outcomes are recorded once in the existing [validation anchor](../../oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#w2-13-managed-ann-layout-2026-10-18);
+current status and remaining assignment are owned only by [README](../../oct-22-finalizing/oct-17-index-closeout/tickets/README.md#w2-13).
 
 ## Bounded run consolidation contract — 2026-10-18
 
