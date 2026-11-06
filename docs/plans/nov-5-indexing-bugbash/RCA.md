@@ -198,6 +198,27 @@ Catalog 설치 사전 charge가 거절됐다. LexicalBuild selected prefix는
 이 nested/실패-prefix 시간은 총 완료 시간이나 mr5 대비 속도 개선율이 아니다.
 실제 Medium 수용은 FAILED이며, B03-B2의 8KiB/512-term 실험은 원 cap을 유지한다.
 
+### B03-B2 코드 후보와 아직 없는 제품 증거
+
+다음 후보는 한 owner의 occurrence dictionary block을 기존 `QITXOC01` wire/reader
+경로에서 4,096B/128행에서 **8,192B/512 canonical term**으로 확장한다. 같은
+positions vector 공유, singleton/oversize leaf, nonempty-prior Patch의 unchanged
+old ref 보존,64행 SQL flush·planned-confirmation row/ref binding은 유지한다.
+`a6083fb2` 대비6개 파일 변경을 포함한 소유 입력15개를 외부 stable `s3`의
+`878be6c9e4e33dd35b9c80cc5b450c2cf3f6f099`에 고정했다.
+
+새 output policy(admission `[31;32]`)의 literal digest는
+`b2c1df18b452485d69ef4e687b7a3519f07cfff76fe25f0a665d8706258d7d95`다.
+직전 4KiB/128행 policy `eef15862…`와 leaf-only `559e0482…`는
+`validate_instance`의 typed refusal oracle로 남겼다. 동일 wire magic만으로
+다른 bounds의 old object를 현재 policy로 재해석하지 않는다. 테스트 소스에는
+512행/8KiB·Full·cancel/memory 및 실제 FileObjectStore/SqliteCatalog의
+260-selector 한 block·public 첫/마지막 selector·delta·pin/reopen case가 포함됐다.
+기존 lifecycle case가 마지막 pin·GC를 다룬다. f20 Native/Kernel 배치는 admission
+대기 중이고 terminal/body 결과가 없다. 새 source의 컴파일·기능·제품 수용은
+NOT_RUN이다. seed42 투영 Medium512→256, Large12,288→4,096 block은 코드 기반
+추정이며 설치 호출·CPU·wall·SLO 개선 실측이 아니다. r7 제품 실행도 미시작이다.
+
 ## 2026-11-06 재감사 판정
 
 확정된 직접 실패는 C17·51b70b34·0a97e858 Large의 단일 SourceAdvance dispatch120초 소진이다.

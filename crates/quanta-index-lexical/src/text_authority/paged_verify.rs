@@ -615,6 +615,7 @@ fn verify_changed_segments_for_seal_inner(
         {
             return Err(corrupt("new segment has missing or retired local IDs"));
         }
+        let documents_phase = crate::causal_profile::begin_phase("seal_changed_documents");
         let mut raw_grams = BTreeMap::<[u8; 3], Vec<u32>>::new();
         let mut folded_grams = BTreeMap::<[u8; 3], Vec<u32>>::new();
         let mut raw_terms = TermDocs::new();
@@ -655,6 +656,8 @@ fn verify_changed_segments_for_seal_inner(
             add_terms(&mut raw_terms, &indexed, CaseMode::Sensitive, local)?;
             add_terms(&mut folded_terms, &indexed, CaseMode::Folded, local)?;
         }
+        crate::causal_profile::finish_phase("seal_changed_documents", documents_phase);
+        let expected_phase = crate::causal_profile::begin_phase("seal_changed_expected");
         let mut expected = Vec::<(Vec<u8>, ObjectKind, Vec<u8>)>::new();
         for (surface, grams) in [(GRAM_RAW, raw_grams), (GRAM_FOLDED, folded_grams)] {
             for (gram, locals) in grams {
@@ -685,6 +688,8 @@ fn verify_changed_segments_for_seal_inner(
                 "new segment route inventory differs from raw documents",
             ));
         }
+        crate::causal_profile::finish_phase("seal_changed_expected", expected_phase);
+        let routes_phase = crate::causal_profile::begin_phase("seal_changed_routes");
         let mut pages = BTreeMap::<ObjectRef, (BlobRef, BTreeMap<Vec<u8>, Vec<u8>>)>::new();
         let mut cursor_kind = None;
         let mut route_cursor = None;
@@ -719,6 +724,8 @@ fn verify_changed_segments_for_seal_inner(
                 ));
             }
         }
+        crate::causal_profile::finish_phase("seal_changed_routes", routes_phase);
+        let pages_phase = crate::causal_profile::begin_phase("seal_changed_posting_pages");
         for (_, (reference, expected_rows)) in pages {
             let actual_bytes = store.read_blob(&reference, MAX_POSTING_BYTES, None)?;
             let actual = PostingPage::decode(&actual_bytes, segment_key)?;
@@ -736,6 +743,7 @@ fn verify_changed_segments_for_seal_inner(
                 }
             }
         }
+        crate::causal_profile::finish_phase("seal_changed_posting_pages", pages_phase);
         if let Some(proof) = merge_proof.as_mut() {
             observe_verified_native_output(
                 proof,
