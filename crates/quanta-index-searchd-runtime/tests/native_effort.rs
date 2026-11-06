@@ -247,6 +247,9 @@ impl TextEmbeddingProvider for FixedProvider {
     }
 }
 
+const CATALOG_CACHE_KIB: u32 = 2048;
+const CATALOG_CACHE_BYTES: u64 = 2048 * 1024;
+
 fn resources() -> NativeServiceResources {
     let ordinary = ResourceNeed {
         cpu_units: 1,
@@ -255,6 +258,9 @@ fn resources() -> NativeServiceResources {
         provider_units: 0,
     };
     NativeServiceResources {
+        catalog_writer_cache: quanta_index_searchd_runtime::native::CatalogWriterCachePolicy {
+            kib: CATALOG_CACHE_KIB,
+        },
         physical: native_physical_profile::profile(),
         scratch_reserved_bytes: 16 * 1024 * 1024 * 1024,
         read_ticket_lease: Duration::from_secs(30),
@@ -569,7 +575,7 @@ fn service_with_options(
                 pump: None,
                 provider_attempt_pool: None,
             },
-            options.resources,
+            &options.resources,
         )?,
         semantic_spec,
     ))
@@ -1126,6 +1132,7 @@ fn in_process_fast_auto_unknown_and_deep_use_real_old_view() -> TestResult {
     assert_eq!(hit.owner, owner());
     assert_eq!(hit.score.get().to_bits(), 1.0f64.to_bits());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1208,6 +1215,7 @@ fn fast_deep_folded_content_keeps_exact_path_and_selected_old_view() -> TestResu
     assert_eq!(deep.hits.len(), 1);
     assert_eq!(deep.hits.first().ok_or("Deep hit absent")?.owner, owner());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1268,6 +1276,7 @@ fn auto_clear_dwell_runs_optional_deep_on_the_same_pinned_view() -> TestResult {
         assert!(result.deep.is_none());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1313,6 +1322,7 @@ fn auto_rechecks_interaction_and_provider_after_optional_prepare() -> TestResult
     assert_eq!(result.fast.durable()?.view, view);
     assert!(result.deep.is_none());
     assert_eq!(calls.load(Ordering::SeqCst), calls_before);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1396,6 +1406,7 @@ fn shared_auto_observation_accumulates_only_contiguous_fresh_windows() -> TestRe
         ),
         Err(IndexError::InvalidInput(_))
     ));
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1439,6 +1450,7 @@ fn malformed_fast_adapter_receipt_cannot_be_promoted_to_proof() -> TestResult {
         Err(IndexError::BackendViolation(_))
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1483,6 +1495,7 @@ fn auto_without_configured_semantic_reader_keeps_fast_result() -> TestResult {
     assert!(result.deep.is_none());
     assert_eq!(result.reason, DecisionReason::ProviderUnavailable);
     assert_eq!(calls.load(Ordering::SeqCst), baseline);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1523,6 +1536,7 @@ fn optional_deep_refusal_preserves_fast_when_enrichment_envelope_is_smaller() ->
     assert!(result.deep.is_none());
     assert_eq!(result.reason, DecisionReason::ResourceDenied);
     assert_eq!(calls.load(Ordering::SeqCst), baseline);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1576,6 +1590,7 @@ fn duplicate_semantic_identity_cannot_escape_the_in_process_controller() -> Test
     assert_eq!(resources.reserved, ResourceNeed::default());
     assert_eq!(resources.interactive.active, 0);
     assert_eq!(resources.enrichment.active, 0);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1646,6 +1661,7 @@ fn rejected_semantic_metadata_refunds(mode: MalformedSemanticMode) -> TestResult
     assert_eq!(resources.reserved, ResourceNeed::default());
     assert_eq!(resources.interactive.active, 0);
     assert_eq!(resources.enrichment.active, 0);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1658,17 +1674,27 @@ fn managed_native_service_excludes_standalone_object_namespace_openers() -> Test
     let namespace = root.path().join("native-objects");
     let (service, _) = service(root.path(), &socket, Arc::new(AtomicUsize::new(0)))?;
     let handle = service.effort_handle();
+    let retirement = service.retirement_handle();
     let running = RunningService::start(service);
     assert!(matches!(
         FileObjectStore::open(&namespace),
         Err(IndexError::ResourceLimited)
     ));
-    running.stop()?;
+    let Err(stop_error) = running.stop() else {
+        return Err("service reported a clean Catalog close with a live effort handle".into());
+    };
+    assert!(
+        stop_error
+            .to_string()
+            .contains("native Catalog consumers remain after child drain"),
+        "unexpected retirement failure: {stop_error}"
+    );
     assert!(matches!(
         FileObjectStore::open(&namespace),
         Err(IndexError::ResourceLimited)
     ));
     drop(handle);
+    retirement.retire()?;
     let reopened = FileObjectStore::open(&namespace)?;
     drop(reopened);
     Ok(())
@@ -1708,6 +1734,7 @@ fn cancelling_original_request_after_fast_prevents_optional_provider() -> TestRe
     ));
     assert!(signals.calls.load(Ordering::SeqCst) >= 2);
     assert_eq!(calls.load(Ordering::SeqCst), baseline);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1800,6 +1827,7 @@ fn observer_receives_fast_before_deep_on_one_pinned_old_view() -> TestResult {
     );
     assert_eq!(calls.load(Ordering::SeqCst), expected_provider_calls);
     assert_eq!(pin_count(&catalog_path)?, original_pins);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1814,6 +1842,7 @@ fn observer_cancellation_after_fast_blocks_deep_and_releases_pin() -> TestResult
     let resources = service.resource_observation();
     let handle = service.effort_handle();
     let running = RunningService::start(service);
+    assert_eq!(resources.observe()?.live_memory_bytes, CATALOG_CACHE_BYTES);
     let client = NativeUdsClient::new(socket);
     let (view, _) = setup(&client, semantic)?;
     let catalog_path = catalog_path(root.path());
@@ -1835,7 +1864,7 @@ fn observer_cancellation_after_fast_blocks_deep_and_releases_pin() -> TestResult
                 }
                 let observed = resources.observe()?;
                 if observed.reserved != ResourceNeed::default()
-                    || observed.retained_memory_bytes == 0
+                    || observed.retained_memory_bytes <= CATALOG_CACHE_BYTES
                     || observed.live_memory_bytes != observed.retained_memory_bytes
                     || observed.pending_escape_bytes != 0
                 {
@@ -1872,10 +1901,13 @@ fn observer_cancellation_after_fast_blocks_deep_and_releases_pin() -> TestResult
     assert_eq!(pin_count(&catalog_path)?, original_pins);
     let after = resources.observe()?;
     assert_eq!(after.reserved, ResourceNeed::default());
-    assert_eq!(after.live_memory_bytes, 0);
-    assert_eq!(after.retained_memory_bytes, 0);
+    assert_eq!(after.live_memory_bytes, CATALOG_CACHE_BYTES);
+    assert_eq!(after.retained_memory_bytes, CATALOG_CACHE_BYTES);
     assert_eq!(after.pending_escape_bytes, 0);
+    drop(handle);
     running.stop()?;
+    assert_eq!(resources.observe()?.live_memory_bytes, 0);
+    assert_eq!(resources.observe()?.retained_memory_bytes, 0);
     Ok(())
 }
 
@@ -1932,6 +1964,7 @@ fn observer_failure_after_fast_blocks_deep_and_releases_pin() -> TestResult {
     assert_eq!(calls.load(Ordering::SeqCst), provider_before);
     assert_eq!(pin_count(&catalog_path)?, original_pins);
     assert_eq!(resources.observe()?.reserved, ResourceNeed::default());
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -1945,6 +1978,7 @@ fn text_result_last_shared_owner_releases_memory_after_execution() -> TestResult
     let resources = service.resource_observation();
     let handle = service.effort_handle();
     let running = RunningService::start(service);
+    assert_eq!(resources.observe()?.live_memory_bytes, CATALOG_CACHE_BYTES);
     let client = NativeUdsClient::new(socket);
     let (view, _) = setup(&client, semantic)?;
     let policy = policy()?;
@@ -1974,7 +2008,12 @@ fn text_result_last_shared_owner_releases_memory_after_execution() -> TestResult
                     .checked_add(u64::try_from(hit.path.capacity())?)
                     .ok_or_else(|| "path bytes overflow".into())
             })?;
-    assert!(observed.live_memory_bytes > payload_bytes);
+    assert!(
+        observed.live_memory_bytes
+            > CATALOG_CACHE_BYTES
+                .checked_add(payload_bytes)
+                .ok_or("payload plus Catalog cache overflow")?
+    );
     assert_eq!(observed.live_memory_bytes, observed.retained_memory_bytes);
     assert_eq!(observed.reserved, ResourceNeed::default());
     assert_eq!(observed.pending_escape_bytes, 0);
@@ -2008,10 +2047,13 @@ fn text_result_last_shared_owner_releases_memory_after_execution() -> TestResult
     assert_eq!(shared.view, view);
     drop(shared);
     let released = resources.observe()?;
-    assert_eq!(released.live_memory_bytes, 0);
-    assert_eq!(released.retained_memory_bytes, 0);
+    assert_eq!(released.live_memory_bytes, CATALOG_CACHE_BYTES);
+    assert_eq!(released.retained_memory_bytes, CATALOG_CACHE_BYTES);
     assert_eq!(released.pending_escape_bytes, 0);
+    drop(handle);
     running.stop()?;
+    assert_eq!(resources.observe()?.live_memory_bytes, 0);
+    assert_eq!(resources.observe()?.retained_memory_bytes, 0);
     Ok(())
 }
 
@@ -2025,6 +2067,7 @@ fn cancelled_fast_observer_clone_keeps_data_without_any_execution_slot() -> Test
     let resources = service.resource_observation();
     let handle = service.effort_handle();
     let running = RunningService::start(service);
+    assert_eq!(resources.observe()?.live_memory_bytes, CATALOG_CACHE_BYTES);
     let client = NativeUdsClient::new(socket);
     let (view, _) = setup(&client, semantic)?;
     let catalog_path = catalog_path(root.path());
@@ -2067,7 +2110,7 @@ fn cancelled_fast_observer_clone_keeps_data_without_any_execution_slot() -> Test
     assert_eq!(calls.load(Ordering::SeqCst), provider_before);
     assert_eq!(pin_count(&catalog_path)?, original_pins);
     let observed = resources.observe()?;
-    assert!(observed.live_memory_bytes > 0);
+    assert!(observed.live_memory_bytes > CATALOG_CACHE_BYTES);
     assert_eq!(observed.live_memory_bytes, observed.retained_memory_bytes);
     assert_eq!(observed.reserved, ResourceNeed::default());
     assert_eq!(observed.pending_escape_bytes, 0);
@@ -2075,9 +2118,15 @@ fn cancelled_fast_observer_clone_keeps_data_without_any_execution_slot() -> Test
     assert_eq!(held.view, view);
     assert_eq!(held.hits.first().ok_or("held hit absent")?.path, "a.rs");
     drop(held);
+    assert_eq!(resources.observe()?.live_memory_bytes, CATALOG_CACHE_BYTES);
+    assert_eq!(
+        resources.observe()?.retained_memory_bytes,
+        CATALOG_CACHE_BYTES
+    );
+    drop(handle);
+    running.stop()?;
     assert_eq!(resources.observe()?.live_memory_bytes, 0);
     assert_eq!(resources.observe()?.retained_memory_bytes, 0);
-    running.stop()?;
     Ok(())
 }
 
@@ -2090,6 +2139,7 @@ fn semantic_result_last_shared_owner_releases_memory_without_execution_slots() -
     let resources = service.resource_observation();
     let handle = service.effort_handle();
     let running = RunningService::start(service);
+    assert_eq!(resources.observe()?.live_memory_bytes, CATALOG_CACHE_BYTES);
     let client = NativeUdsClient::new(socket);
     let (view, _) = setup(&client, semantic)?;
     let policy = policy()?;
@@ -2109,7 +2159,12 @@ fn semantic_result_last_shared_owner_releases_memory_without_execution_slots() -
     drop(result.fast);
     let observed = resources.observe()?;
     let hit = deep.hits.first().ok_or("Semantic hit absent")?;
-    assert!(observed.live_memory_bytes > u64::try_from(hit.vector_id.capacity())?);
+    assert!(
+        observed.live_memory_bytes
+            > CATALOG_CACHE_BYTES
+                .checked_add(u64::try_from(hit.vector_id.capacity())?)
+                .ok_or("vector plus Catalog cache overflow")?
+    );
     assert_eq!(observed.live_memory_bytes, observed.retained_memory_bytes);
     assert_eq!(observed.reserved, ResourceNeed::default());
     assert_eq!(observed.pending_escape_bytes, 0);
@@ -2136,10 +2191,13 @@ fn semantic_result_last_shared_owner_releases_memory_without_execution_slots() -
     );
     drop(shared);
     let released = resources.observe()?;
-    assert_eq!(released.live_memory_bytes, 0);
-    assert_eq!(released.retained_memory_bytes, 0);
+    assert_eq!(released.live_memory_bytes, CATALOG_CACHE_BYTES);
+    assert_eq!(released.retained_memory_bytes, CATALOG_CACHE_BYTES);
     assert_eq!(released.pending_escape_bytes, 0);
+    drop(handle);
     running.stop()?;
+    assert_eq!(resources.observe()?.live_memory_bytes, 0);
+    assert_eq!(resources.observe()?.retained_memory_bytes, 0);
     Ok(())
 }
 
@@ -2165,6 +2223,7 @@ fn cancelled_deep_observer_clone_retains_only_data_until_last_release() -> TestR
     let resources = service.resource_observation();
     let handle = service.effort_handle();
     let running = RunningService::start(service);
+    assert_eq!(resources.observe()?.live_memory_bytes, CATALOG_CACHE_BYTES);
     let client = NativeUdsClient::new(socket);
     let (view, _) = setup(&client, semantic)?;
     let policy = policy()?;
@@ -2188,7 +2247,7 @@ fn cancelled_deep_observer_clone_retains_only_data_until_last_release() -> TestR
     );
     assert!(matches!(result, Err(IndexError::Cancelled)));
     let snapshot = resources.observe()?;
-    assert!(snapshot.live_memory_bytes > 0);
+    assert!(snapshot.live_memory_bytes > CATALOG_CACHE_BYTES);
     assert_eq!(snapshot.live_memory_bytes, snapshot.retained_memory_bytes);
     assert_eq!(snapshot.reserved, ResourceNeed::default());
     assert_eq!(snapshot.pending_escape_bytes, 0);
@@ -2198,8 +2257,11 @@ fn cancelled_deep_observer_clone_retains_only_data_until_last_release() -> TestR
     );
     assert_eq!(pin_count(&catalog_path(root.path()))?, 0);
     observer.held = None;
-    assert_eq!(resources.observe()?.live_memory_bytes, 0);
+    assert_eq!(resources.observe()?.live_memory_bytes, CATALOG_CACHE_BYTES);
+    drop(handle);
     running.stop()?;
+    assert_eq!(resources.observe()?.live_memory_bytes, 0);
+    assert_eq!(resources.observe()?.retained_memory_bytes, 0);
     Ok(())
 }
 
@@ -2275,6 +2337,7 @@ fn observer_failure_after_deep_releases_pin_and_both_permits() -> TestResult {
     assert_eq!(observed.reserved, ResourceNeed::default());
     assert_eq!(observed.interactive.active, 0);
     assert_eq!(observed.enrichment.active, 0);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -2322,6 +2385,7 @@ fn effort_terminal_callback_runs_once_before_selected_pin_release() -> TestResul
     assert_eq!(summary.deep_delivered, result.deep.is_some());
     assert_eq!(observer.stages, vec![1, 2]);
     assert_eq!(pin_count(&catalog_path)?, original_pins);
+    drop(handle);
     running.stop()?;
     Ok(())
 }
@@ -2668,6 +2732,7 @@ fn cancellation_during_terminal_callback(preference: EffortPreference) -> TestRe
     );
     assert_eq!(pin_count(&catalog_path)?, original_pins);
     assert_eq!(resources.observe()?.reserved, ResourceNeed::default());
+    drop(handle);
     running.stop()?;
     assert!(
         matches!(result, Err(IndexError::Cancelled)),

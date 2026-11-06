@@ -417,6 +417,9 @@ impl Adapter {
     }
     fn before_mutation(&self, event: &Event<'_>) -> Result<(), Refusal> {
         self.with_state(|state| {
+            if state.poisoned {
+                return Err(Refusal::Io);
+            }
             let handle = state.handles.get_mut(&event.handle_id).ok_or(Refusal::Io)?;
             let parent = self.parent_for_mutation()?;
             if handle.mutation.is_none() {
@@ -435,14 +438,12 @@ impl Adapter {
             }
             let mutation = handle.mutation.as_mut().ok_or(Refusal::Io)?;
             let target_end = u64::try_from(event.target_size).map_err(|_error| Refusal::Io)?;
-            mutation.reserve_end(target_end).map_err(refusal)?;
-            // reserve_end authenticates root, publication state and allowance
-            // on every write, including overwrites. Start only the first
-            // mutation; repeating start would authenticate the same authority
-            // again without any intervening native IO or phase transition.
-            if !mutation.is_started() {
-                mutation.start().map_err(refusal)?;
-            }
+            // Authenticate root, publication state and allowance on every
+            // write, including overwrites. The first start shares that check
+            // because no native operation intervenes after reservation.
+            mutation
+                .reserve_end_and_start(target_end)
+                .map_err(refusal)?;
             if event.kind == EventKind::BeforeTruncate {
                 handle.sync_mutation.truncate();
             } else {
@@ -584,8 +585,7 @@ impl Adapter {
             self.require_pending_parent(parent.as_ref(), shm.mutation_parent.as_ref())?;
         }
         let mutation = shm.mutation.as_mut().ok_or(Refusal::Io)?;
-        mutation.reserve_end(target).map_err(refusal)?;
-        mutation.start().map_err(refusal)
+        mutation.reserve_end_and_start(target).map_err(refusal)
     }
     fn after_shm_map(&self, event: &Event<'_>) -> Result<(), Refusal> {
         self.with_state(|state| {
@@ -913,8 +913,6 @@ impl Admission for Adapter {
             kind,
             EventKind::BeforeOpen
                 | EventKind::BeforeNativeOpen
-                | EventKind::BeforeWrite
-                | EventKind::BeforeTruncate
                 | EventKind::BeforeSync
                 | EventKind::BeforeShmMap
                 | EventKind::BeforeDelete
@@ -943,6 +941,20 @@ impl Admission for Adapter {
         };
         let result =
             diagnostic::finish_settlement(settlement, event.sqlite_result, self.dispatch(&event));
+        if result.is_ok() {
+            // SQLite's existing file-control markers delimit page backfill only:
+            // WAL sync precedes START; main-file truncate/sync follows DONE.
+            // Their lower-VFS result is advisory and does not report checkpoint success.
+            match (kind, event.operation) {
+                (EventKind::AfterFileControl, 39) => {
+                    diagnostic::checkpoint_start(self.scope, event.handle_id);
+                }
+                (EventKind::BeforeFileControl, 37) => {
+                    diagnostic::checkpoint_done(self.scope, event.handle_id);
+                }
+                _ => {}
+            }
+        }
         if kind == EventKind::BeforeSync && result.is_ok() {
             diagnostic::before(self.scope, event.handle_id, event.open_flags, || {
                 let state = match self.state.lock() {
@@ -1096,39 +1108,47 @@ impl Admission for RouterCallback {
 
     fn on_event(&self, event: Event<'_>) -> Result<Option<CString>, Refusal> {
         let scope = event.scope_id;
-        if event.kind == EventKind::AfterWrite {
-            // The lower xWrite has already run. Adapter settlement may still
-            // refuse; neither result changes the native write observation.
-            diagnostic::write(scope, event.open_flags, event.amount, event.sqlite_result);
-        }
-        let adapter = {
-            let scopes = self.0.scopes.lock().map_err(|_error| Refusal::Io)?;
-            let entry = scopes.get(&scope).ok_or(Refusal::Io)?;
-            if entry.closing
-                && matches!(event.kind, EventKind::BeforeOpen | EventKind::BeforeDelete)
-            {
-                return Err(Refusal::Busy);
+        let timing =
+            diagnostic::write_timing::CallbackTiming::begin(scope, event.handle_id, event.kind);
+        let result = (|| {
+            if event.kind == EventKind::AfterWrite {
+                // The lower xWrite has already run. Adapter settlement may
+                // still refuse; neither result changes that observation.
+                diagnostic::write(scope, event.open_flags, event.amount, event.sqlite_result);
             }
-            let adapter = Arc::clone(&entry.adapter);
-            drop(scopes);
-            adapter
-        };
-        let frame = refusal_diagnostic::Frame::enter(
-            adapter.refusal_diagnostics,
-            scope,
-            event.handle_id,
-            event.kind,
-            event.operation,
-        );
-        let result = adapter.on_event(event);
-        drop(adapter);
-        // A successful physical retirement may be the last owner of a root.
-        // Errors retain the scope and its StateRootLease conservatively.
-        let result = result.and_then(|payload| {
-            self.0.retire_scope_if_quiescent(scope).map_err(refusal)?;
-            Ok(payload)
-        });
-        frame.finish(&result);
+            let adapter = {
+                let scopes = self.0.scopes.lock().map_err(|_error| Refusal::Io)?;
+                let entry = scopes.get(&scope).ok_or(Refusal::Io)?;
+                if entry.closing
+                    && matches!(event.kind, EventKind::BeforeOpen | EventKind::BeforeDelete)
+                {
+                    return Err(Refusal::Busy);
+                }
+                let adapter = Arc::clone(&entry.adapter);
+                drop(scopes);
+                adapter
+            };
+            let frame = refusal_diagnostic::Frame::enter(
+                adapter.refusal_diagnostics,
+                scope,
+                event.handle_id,
+                event.kind,
+                event.operation,
+            );
+            let result = adapter.on_event(event);
+            drop(adapter);
+            // A successful physical retirement may be the last owner of a
+            // root. Errors retain the scope and its StateRootLease.
+            let result = result.and_then(|payload| {
+                self.0.retire_scope_if_quiescent(scope).map_err(refusal)?;
+                Ok(payload)
+            });
+            frame.finish(&result);
+            result
+        })();
+        if let Some(timing) = timing {
+            timing.finish(&result);
+        }
         result
     }
 }
@@ -1334,6 +1354,17 @@ impl SqliteCapacityVfs {
         self.vfs.enter_scope(self.scope)
     }
 
+    #[must_use]
+    pub(crate) fn enter_scratch_scope(
+        &self,
+        diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Box<dyn quanta_index_core::index::ScratchIoScope> {
+        Box::new(ScratchSqliteScope {
+            scope: self.scope(),
+            _diagnostics: diagnostic::Scope::enter_scratch(self.scope, diagnostics),
+        })
+    }
+
     /// Bind the current `SQLite` operation to a held parent from this VFS's
     /// capacity authority. The returned guard is local to this thread.
     pub fn enter_funded_scope(
@@ -1409,6 +1440,16 @@ impl Drop for SqliteCapacityVfs {
         // A failed retirement keeps the adapter and its root lease in the
         // process router. Drop must not release that conservative custody.
         let _retirement_result = self.router.close_scope(self.scope);
+    }
+}
+
+struct ScratchSqliteScope {
+    scope: ScopeGuard,
+    _diagnostics: diagnostic::Scope,
+}
+impl quanta_index_core::index::ScratchIoScope for ScratchSqliteScope {
+    fn is_capacity_refusal(&self, backend_error_code: i32) -> bool {
+        self.scope.is_capacity_extended_code(backend_error_code)
     }
 }
 

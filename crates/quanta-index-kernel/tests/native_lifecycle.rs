@@ -1559,12 +1559,30 @@ fn late_path_collision_does_not_publish_earlier_path_value() -> TestResult {
         &mut budget(),
     ))?)?;
 
-    let first = stage(&objects, "a.rs", b"valid-first")?;
+    // The collision follows a complete 128-row scratch page and one more valid row.
+    let mut mutations = Vec::with_capacity(130);
+    for ordinal in 0_u8..129 {
+        let path = format!("a{ordinal:03}.rs");
+        let record = stage(&objects, &path, b"valid-first")?;
+        let owner_id = ordinal
+            .checked_add(2)
+            .ok_or("test owner identity overflow")?;
+        mutations.push(OwnerMutation {
+            owner: owner(owner_id),
+            expected: None,
+            next: Some(record),
+        });
+    }
     let collision = stage(&objects, "z.rs", b"colliding-last")?;
+    mutations.push(OwnerMutation {
+        owner: owner(131),
+        expected: None,
+        next: Some(collision),
+    });
     let old_cut = source(&engine, v1)?;
     assert!(
         objects
-            .lookup(old_cut.paths, b"path\0a.rs", &mut budget())?
+            .lookup(old_cut.paths, b"path\0a000.rs", &mut budget())?
             .is_none()
     );
     let refused = block_on(engine.submit(
@@ -1576,31 +1594,26 @@ fn late_path_collision_does_not_publish_earlier_path_value() -> TestResult {
             source(&engine, v1)?,
             3,
             2,
-            vec![
-                OwnerMutation {
-                    owner: owner(2),
-                    expected: None,
-                    next: Some(first),
-                },
-                OwnerMutation {
-                    owner: owner(3),
-                    expected: None,
-                    next: Some(collision),
-                },
-            ],
+            mutations,
         )?,
         &mut budget(),
     ))?;
     assert!(matches!(
         refused,
-        SubmitOutcome::Terminal(OperationStatus::Refused(_))
+        SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::Conflict))
     ));
     assert_eq!(source(&engine, v1)?, old_cut);
-    assert!(
-        objects
-            .lookup(old_cut.paths, b"path\0a.rs", &mut budget())?
-            .is_none()
-    );
+    for ordinal in 0_u8..129 {
+        let path = format!("a{ordinal:03}.rs");
+        let mut key = b"path\0".to_vec();
+        key.extend_from_slice(path.as_bytes());
+        assert!(
+            objects
+                .lookup(old_cut.paths, &key, &mut budget())?
+                .is_none(),
+            "fresh path published: {path}"
+        );
+    }
     assert_eq!(path_owner(&objects, old_cut, "z.rs")?, owner(1));
     assert_eq!(
         engine
@@ -2370,7 +2383,9 @@ fn materialize_trace_preserves_result_and_work_with_balanced_owner_phases() -> T
             | DiagnosticEventKindV1::Counter { .. }
             | DiagnosticEventKindV1::AnnRegionObservation { .. }
             | DiagnosticEventKindV1::SqliteSyncObservation { .. }
+            | DiagnosticEventKindV1::OwnedRenewalRefusal { .. }
             | DiagnosticEventKindV1::SyncAggregate { .. }
+            | DiagnosticEventKindV1::ObjectInstallAggregate { .. }
             | DiagnosticEventKindV1::ObjectKindAggregate { .. }
             | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
             | DiagnosticEventKindV1::Bm25CensusAggregate { .. }
@@ -3934,10 +3949,31 @@ fn native_text_statistics_follow_delta_delete_noop_and_pinned_history() -> TestR
         Err(IndexError::ResourceLimited)
     ));
     assert_eq!(incomplete.usage().reads, reads_through_first_owner);
+    // A multi-run Content keyword is an admitted positional phrase. None of
+    // the old sources contains the adjacent words "one two".
+    let absent_phrase = reader.search_content(
+        &old_member,
+        &content_plan("one two")?,
+        &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        1,
+        ranking_policy,
+        TextReadContext {
+            ticket: old_ticket.record(),
+            objects: objects.as_ref(),
+            maps: objects.as_ref(),
+            budget: &mut budget(),
+        },
+    )?;
+    assert_eq!(
+        (absent_phrase.view, absent_phrase.artifact),
+        (first, old_member.artifact)
+    );
+    assert_eq!(absent_phrase.matched, 0);
+    assert!(absent_phrase.hits.is_empty());
     assert!(matches!(
         reader.search_content(
             &old_member,
-            &content_plan("one two")?,
+            &content_plan("!!!")?,
             &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
             1,
             ranking_policy,
@@ -5033,10 +5069,10 @@ fn native_owned_assignment_survives_reopen_and_completes_original_receipt() -> T
     let mut stale_grant = grant.clone();
     stale_grant.ordinal = 2;
     assert!(matches!(
-        engine.renew_owned_work(&stale_grant),
+        engine.renew_owned_work(&stale_grant, None),
         Err(IndexError::WorkFenceLost)
     ));
-    let renewed = engine.renew_owned_work(&grant)?;
+    let renewed = engine.renew_owned_work(&grant, None)?;
     assert_eq!(renewed.fence, claim.fence);
     assert!(renewed.lease_until_ms <= grant.assignment.deadline_ms);
     let mut altered = grant.assignment.request.clone();
@@ -6092,6 +6128,9 @@ struct UpdateCostSpyState {
     scanned_entries: u64,
     occurrence_inputs: u64,
     occurrence_install_calls: u64,
+    inventory_block_install_calls: u64,
+    inventory_block_inputs: u64,
+    inventory_block_ten_row_inputs: u64,
     materialized_metadata_batches: u64,
     empty_base_edits: u64,
     single_map_stream: MapStreamCost,
@@ -6109,6 +6148,9 @@ struct UpdateCostObservation {
     scanned_entries: u64,
     occurrence_inputs: u64,
     occurrence_install_calls: u64,
+    inventory_block_install_calls: u64,
+    inventory_block_inputs: u64,
+    inventory_block_ten_row_inputs: u64,
     materialized_metadata_batches: u64,
     empty_base_edits: u64,
     single_map_stream: MapStreamCost,
@@ -6168,12 +6210,14 @@ impl UpdateCostSpy {
         if !self.active.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(());
         }
-        // Fixed persisted occurrence codec gold: {"positions":[...]}. Count
-        // submitted inputs across every immutable-write route, not files after
-        // content-addressed reuse.
+        // Count both current-policy occurrence wires at the physical installer,
+        // before content-addressed store reuse. Generic map blocks use another
+        // magic and must not enter this owner-local occurrence count.
         let count = payloads
             .into_iter()
-            .filter(|payload| payload.starts_with(br#"{"positions":"#))
+            .filter(|payload| {
+                payload.starts_with(br#"{"positions":"#) || payload.starts_with(b"QITXOC01")
+            })
             .count();
         if count == 0 {
             return Ok(());
@@ -6266,6 +6310,8 @@ impl UpdateCostSpy {
                 ..UpdateCostSpyState::default()
             };
         }
+        self.confirmed_inventory_roots
+            .store(0, std::sync::atomic::Ordering::Release);
         self.active
             .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
@@ -6287,6 +6333,9 @@ impl UpdateCostSpy {
             scanned_entries: state.scanned_entries,
             occurrence_inputs: state.occurrence_inputs,
             occurrence_install_calls: state.occurrence_install_calls,
+            inventory_block_install_calls: state.inventory_block_install_calls,
+            inventory_block_inputs: state.inventory_block_inputs,
+            inventory_block_ten_row_inputs: state.inventory_block_ten_row_inputs,
             materialized_metadata_batches: state.materialized_metadata_batches,
             empty_base_edits: state.empty_base_edits,
             single_map_stream: state.single_map_stream.clone(),
@@ -6379,6 +6428,73 @@ impl ImmutableObjectPort for UpdateCostSpy {
             return Err(IndexError::ResourceLimited);
         }
         let confirmed = self.inner.install_batch(inputs, sink, budget)?;
+        // Inventory Block is the actual map installation path for 9..=512
+        // rows. Observe confirmed objects, not attempted writes or a tree-only
+        // apply_stream call.
+        if self.active.load(std::sync::atomic::Ordering::Acquire)
+            && !inputs.is_empty()
+            && inputs
+                .iter()
+                .all(|input| input.payload.starts_with(b"QITXEM01"))
+        {
+            if confirmed.len() != inputs.len() {
+                return Err(IndexError::BackendViolation(
+                    "inventory block batch lost an ordinal".into(),
+                ));
+            }
+            {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|error| IndexError::Storage(error.to_string()))?;
+                state.inventory_block_install_calls = state
+                    .inventory_block_install_calls
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                state.inventory_block_inputs = state
+                    .inventory_block_inputs
+                    .checked_add(
+                        u64::try_from(confirmed.len())
+                            .map_err(|_error| IndexError::ResourceLimited)?,
+                    )
+                    .ok_or(IndexError::ResourceLimited)?;
+                let ten_row_inputs = inputs
+                    .iter()
+                    .filter(|input| {
+                        input.payload.get(8..10) == Some([0, 10].as_slice())
+                            && input.children.len() == 10
+                    })
+                    .count();
+                state.inventory_block_ten_row_inputs = state
+                    .inventory_block_ten_row_inputs
+                    .checked_add(
+                        u64::try_from(ten_row_inputs)
+                            .map_err(|_error| IndexError::ResourceLimited)?,
+                    )
+                    .ok_or(IndexError::ResourceLimited)?;
+            }
+            if inputs.len() == 64
+                && self
+                    .refuse_inventory_after_confirm_once
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                for (input, output) in inputs.iter().zip(&confirmed) {
+                    let expected = self
+                        .inner
+                        .identify(&input.payload, &input.children, budget)?;
+                    if output.reference != expected.reference {
+                        return Err(IndexError::BackendViolation(
+                            "confirmed inventory block ordinal changed".into(),
+                        ));
+                    }
+                }
+                self.confirmed_inventory_roots.store(
+                    u64::try_from(confirmed.len()).map_err(|_error| IndexError::ResourceLimited)?,
+                    std::sync::atomic::Ordering::Release,
+                );
+                return Err(IndexError::ResourceLimited);
+            }
+        }
         if self.active.load(std::sync::atomic::Ordering::Acquire)
             && let [binding_input, coverage_input] = inputs
         {
@@ -6602,20 +6718,6 @@ impl PersistentMapPort for UpdateCostSpy {
                 }
                 Ok(edit)
             }
-        }
-        // Failure at the real inventory-completion boundary, after every
-        // node in this first 64-root group is durably registered by the store.
-        if bases.len() == 64
-            && self
-                .refuse_inventory_after_confirm_once
-                .swap(false, std::sync::atomic::Ordering::AcqRel)
-        {
-            let confirmed = self.inner.apply_stream(bases, edits, sink, budget)?;
-            self.confirmed_inventory_roots.store(
-                u64::try_from(confirmed.len()).map_err(|_error| IndexError::ResourceLimited)?,
-                std::sync::atomic::Ordering::Release,
-            );
-            return Err(IndexError::ResourceLimited);
         }
         if !self.active.load(std::sync::atomic::Ordering::Acquire) {
             return self.inner.apply_stream(bases, edits, sink, budget);
@@ -7315,8 +7417,9 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
     // Two distinct bodies individually fit the public 8 MiB file contract,
     // but together exceed one draft window. Few tokens keep this a narrow law.
     let mut left = vec![b' '; 4 * 1024 * 1024];
-    // Five terms keep this confirmed-prefix fault on real mapped
-    // inventories after small inventories gained inline representation.
+    // Five terms produce ten canonical inventory rows per owner, selecting
+    // the positional Block representation after small inventories gained
+    // inline representation.
     left.extend_from_slice(b"left shared alpha beta gamma");
     let mut right = vec![b' '; 4 * 1024 * 1024];
     right.extend_from_slice(b"right shared alpha beta gamma");
@@ -7374,8 +7477,10 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
         engine.submit(initial_request, &mut large_fixture_budget()),
     )?)?;
     let measured = spy.disarm()?;
-    assert_eq!(measured.single_map_stream.calls, 2);
-    assert_eq!(measured.single_map_stream.roots, 2);
+    assert_eq!(measured.inventory_block_install_calls, 2);
+    assert_eq!(measured.inventory_block_inputs, 2);
+    assert_eq!(measured.inventory_block_ten_row_inputs, 2);
+    assert_eq!(measured.single_map_stream.calls, 0);
     assert_eq!(native_text_test_df(&engine, &objects, initial, "left")?, 1);
     assert_eq!(native_text_test_df(&engine, &objects, initial, "right")?, 1);
     assert_eq!(
@@ -7411,12 +7516,17 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
         })
         .collect();
     let failed = native_text_cost_request(&engine, initial, cut, failed_key, 1, mutations)?;
+    spy.arm(cut.owners, std::collections::BTreeSet::new())?;
     spy.refuse_inventory_after_confirm_once
         .store(true, std::sync::atomic::Ordering::Release);
     assert_eq!(
         block_on(engine.submit(failed.clone(), &mut large_fixture_budget()))?,
         SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::ResourceLimited))
     );
+    let failed_measured = spy.disarm()?;
+    assert_eq!(failed_measured.inventory_block_install_calls, 1);
+    assert_eq!(failed_measured.inventory_block_inputs, 64);
+    assert_eq!(failed_measured.inventory_block_ten_row_inputs, 64);
     assert_eq!(
         spy.confirmed_inventory_roots
             .load(std::sync::atomic::Ordering::Acquire),
@@ -8580,6 +8690,13 @@ fn native_text_one_owner_patch_cost_is_independent_of_unrelated_owner_count() ->
         TextSourceStage::Batch32,
         64,
     )?;
+    let (uncached_sixty_five, delete_uncached_sixty_five) = one_owner_native_text_cost_case(
+        65,
+        TextCostCorpus::Shared,
+        0,
+        TextSourceStage::Batch32,
+        64,
+    )?;
     let (scalar, delete_scalar) = one_owner_native_text_cost_case(
         64,
         TextCostCorpus::Shared,
@@ -8594,6 +8711,58 @@ fn native_text_one_owner_patch_cost_is_independent_of_unrelated_owner_count() ->
         TextSourceStage::Batch32,
         1,
     )?;
+    // Emit every bounded phase observation before the aggregate comparisons.
+    // A failed cost law must retain its actual inputs and physical IO counts.
+    for (corpus, owners, reuse_limit, stage, observed, deleted) in [
+        ("shared", 1u32, 64, "batch32", &one, &delete_one),
+        ("shared", 64, 64, "batch32", &sixty_four, &delete_sixty_four),
+        ("distinct", 64, 64, "batch32", &distinct, &delete_distinct),
+        ("shared", 65, 64, "batch32", &sixty_five, &delete_sixty_five),
+        (
+            "shared",
+            512,
+            64,
+            "batch32",
+            &five_twelve,
+            &delete_five_twelve,
+        ),
+        (
+            "distinct",
+            512,
+            64,
+            "batch32",
+            &distinct_five_twelve,
+            &delete_distinct_five_twelve,
+        ),
+        (
+            "distinct",
+            512,
+            0,
+            "batch32",
+            &distinct_uncached,
+            &delete_distinct_uncached,
+        ),
+        ("shared", 64, 0, "batch32", &uncached, &delete_uncached),
+        (
+            "shared",
+            65,
+            0,
+            "batch32",
+            &uncached_sixty_five,
+            &delete_uncached_sixty_five,
+        ),
+        ("shared", 64, 64, "scalar", &scalar, &delete_scalar),
+        (
+            "distinct",
+            512,
+            64,
+            "batch32",
+            &distinct_scalar_map,
+            &delete_distinct_scalar_map,
+        ),
+    ] {
+        print_native_text_cost_case(corpus, owners, reuse_limit, stage, observed, deleted)?;
+    }
     assert_eq!(
         distinct_five_twelve.cold_artifact,
         distinct_scalar_map.cold_artifact
@@ -8635,8 +8804,15 @@ fn native_text_one_owner_patch_cost_is_independent_of_unrelated_owner_count() ->
             .calls,
         0
     );
-    assert_eq!(grouped.reserve_calls, scalar_map.reserve_calls);
-    assert_eq!(grouped.barrier_calls, scalar_map.barrier_calls);
+    // The same 512 distinct blocks are installed in eight grouped packets
+    // versus 512 one-owner packets. Batch grouping reduces custody calls,
+    // while the set of physical object identities stays the same.
+    assert!(grouped.reserve_calls < scalar_map.reserve_calls);
+    assert_eq!(grouped.reserve_objects, scalar_map.reserve_objects);
+    #[cfg(target_os = "macos")]
+    assert!(grouped.barrier_calls < scalar_map.barrier_calls);
+    #[cfg(not(target_os = "macos"))]
+    assert_eq!((grouped.barrier_calls, scalar_map.barrier_calls), (0, 0));
     // The changed file has fixed token/position gold. Unrelated owners must
     // not add map submissions, logical roots or consumed edit rows. Physical
     // node counts may vary with trie shape; they are observed separately.
@@ -8648,6 +8824,7 @@ fn native_text_one_owner_patch_cost_is_independent_of_unrelated_owner_count() ->
         (&distinct_five_twelve, &delete_distinct_five_twelve),
         (&distinct_uncached, &delete_distinct_uncached),
         (&uncached, &delete_uncached),
+        (&uncached_sixty_five, &delete_uncached_sixty_five),
         (&scalar, &delete_scalar),
         (&distinct_scalar_map, &delete_distinct_scalar_map),
     ] {
@@ -8668,6 +8845,7 @@ fn native_text_one_owner_patch_cost_is_independent_of_unrelated_owner_count() ->
     assert_eq!(one.scanned_entries, sixty_four.scanned_entries);
     assert_eq!(one.scanned_entries, distinct.scanned_entries);
     assert_eq!(one.scanned_entries, sixty_five.scanned_entries);
+    assert_eq!(one.scanned_entries, uncached_sixty_five.scanned_entries);
     assert_eq!(one.scanned_entries, five_twelve.scanned_entries);
     assert_eq!(one.scanned_entries, distinct_five_twelve.scanned_entries);
     assert_eq!(
@@ -8702,10 +8880,40 @@ fn native_text_one_owner_patch_cost_is_independent_of_unrelated_owner_count() ->
         cached_distinct_io.written_bytes,
         uncached_distinct_io.written_bytes
     );
-    assert!(cached_distinct_io.reserve_calls < uncached_distinct_io.reserve_calls);
-    assert!(cached_distinct_io.barrier_calls < uncached_distinct_io.barrier_calls);
+    // Distinct owner keys make every packed block unique. The memo has no
+    // cross-owner physical identity to reuse in this corpus.
+    assert_eq!(
+        cached_distinct_io.reserve_calls,
+        uncached_distinct_io.reserve_calls
+    );
+    assert_eq!(
+        cached_distinct_io.reserve_objects,
+        uncached_distinct_io.reserve_objects
+    );
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        cached_distinct_io.barrier_calls,
+        uncached_distinct_io.barrier_calls
+    );
+    #[cfg(not(target_os = "macos"))]
+    assert_eq!(
+        (
+            cached_distinct_io.barrier_calls,
+            uncached_distinct_io.barrier_calls
+        ),
+        (0, 0)
+    );
     assert_eq!(sixty_four.cold_artifact, uncached.cold_artifact);
     assert_eq!(sixty_four.delta_artifact, uncached.delta_artifact);
+    assert_eq!(sixty_five.cold_artifact, uncached_sixty_five.cold_artifact);
+    assert_eq!(
+        sixty_five.delta_artifact,
+        uncached_sixty_five.delta_artifact
+    );
+    assert_eq!(
+        delete_sixty_five.delta_artifact,
+        delete_uncached_sixty_five.delta_artifact
+    );
     assert_eq!(sixty_four.cold_artifact, scalar.cold_artifact);
     assert_eq!(sixty_four.delta_artifact, scalar.delta_artifact);
     assert_eq!(
@@ -8735,6 +8943,7 @@ fn native_text_one_owner_patch_cost_is_independent_of_unrelated_owner_count() ->
         &delete_distinct_five_twelve,
         &delete_distinct_uncached,
         &delete_uncached,
+        &delete_uncached_sixty_five,
         &delete_scalar,
     ] {
         assert_eq!(delete_one.scanned_entries, deleted.scanned_entries);
@@ -8749,9 +8958,24 @@ fn native_text_one_owner_patch_cost_is_independent_of_unrelated_owner_count() ->
         .cold_object_io
         .as_ref()
         .ok_or("uncached cold observation missing")?;
-    assert!(reused_cold.reserve_calls < uncached_cold.reserve_calls);
-    assert!(reused_cold.reserve_objects < uncached_cold.reserve_objects);
+    // Both routes submit the same two owner-local blocks within one 64-owner
+    // packet. Pending identity dedup precedes the confirmed reuse window.
+    assert_eq!(reused_cold.reserve_calls, uncached_cold.reserve_calls);
+    assert_eq!(reused_cold.reserve_objects, uncached_cold.reserve_objects);
     assert_eq!(reused_cold.written_bytes, uncached_cold.written_bytes);
+    let cached_tail = sixty_five
+        .cold_object_io
+        .as_ref()
+        .ok_or("cached 65-owner cold observation missing")?;
+    let uncached_tail = uncached_sixty_five
+        .cold_object_io
+        .as_ref()
+        .ok_or("uncached 65-owner cold observation missing")?;
+    // The second packet repeats the plain/stable block. Only the confirmed
+    // window avoids a new physical custody submission across that boundary.
+    assert!(cached_tail.reserve_calls < uncached_tail.reserve_calls);
+    assert!(cached_tail.reserve_objects < uncached_tail.reserve_objects);
+    assert_eq!(cached_tail.written_bytes, uncached_tail.written_bytes);
     let singleton_baseline = one
         .cold_object_io
         .as_ref()
@@ -8771,48 +8995,6 @@ fn native_text_one_owner_patch_cost_is_independent_of_unrelated_owner_count() ->
                     .ok_or("singleton tail allowance overflowed")?
         );
     }
-    for (corpus, owners, reuse_limit, stage, observed, deleted) in [
-        ("shared", 1u32, 64, "batch32", &one, &delete_one),
-        ("shared", 64, 64, "batch32", &sixty_four, &delete_sixty_four),
-        ("distinct", 64, 64, "batch32", &distinct, &delete_distinct),
-        ("shared", 65, 64, "batch32", &sixty_five, &delete_sixty_five),
-        (
-            "shared",
-            512,
-            64,
-            "batch32",
-            &five_twelve,
-            &delete_five_twelve,
-        ),
-        (
-            "distinct",
-            512,
-            64,
-            "batch32",
-            &distinct_five_twelve,
-            &delete_distinct_five_twelve,
-        ),
-        (
-            "distinct",
-            512,
-            0,
-            "batch32",
-            &distinct_uncached,
-            &delete_distinct_uncached,
-        ),
-        ("shared", 64, 0, "batch32", &uncached, &delete_uncached),
-        ("shared", 64, 64, "scalar", &scalar, &delete_scalar),
-        (
-            "distinct",
-            512,
-            64,
-            "batch32",
-            &distinct_scalar_map,
-            &delete_distinct_scalar_map,
-        ),
-    ] {
-        print_native_text_cost_case(corpus, owners, reuse_limit, stage, observed, deleted)?;
-    }
     Ok(())
 }
 
@@ -8827,31 +9009,29 @@ fn print_native_text_cost_case(
     let map_batch_limit = observed
         .inventory_batch_limit
         .ok_or("map batch policy missing")?;
-    // Fixed independent position gold: each document has two unique tokens;
-    // raw/folded surfaces share positions0/1. A same-attempt confirmed cache
-    // installs those four ordinal inputs once, then each distinct body may
-    // reference them without another durable occurrence group.
-    let expected_occurrence_inputs = if reuse_limit == 0 {
-        u64::from(owners)
-            .checked_mul(4)
-            .ok_or("occurrence input gold overflow")?
-    } else {
-        4
+    // The empty-root Patch builds bounded owner-local blocks. Shared bodies
+    // repeat one block after the hot first owner; pending identity dedup spans
+    // one batch and confirmed reuse spans later batches. Distinct bodies carry
+    // unique term keys, so their block identities cannot be shared.
+    let batches = u64::from(owners).div_ceil(u64::try_from(map_batch_limit)?);
+    let (expected_occurrence_inputs, expected_occurrence_calls) = match corpus {
+        "shared" if owners == 1 => (1, 1),
+        "shared" if reuse_limit == 0 => (
+            batches
+                .checked_add(1)
+                .ok_or("occurrence input gold overflow")?,
+            batches,
+        ),
+        "shared" => (2, 1),
+        "distinct" => (u64::from(owners), batches),
+        _ => return Err("unknown native cost corpus".into()),
     };
-    let expected_occurrence_calls = if reuse_limit == 0 {
-        u64::from(owners)
-    } else {
-        1
-    };
-    assert_eq!(
-        observed.cold_occurrence_inputs,
-        Some(expected_occurrence_inputs)
-    );
-    assert_eq!(
-        observed.cold_occurrence_install_calls,
-        Some(expected_occurrence_calls)
-    );
-    assert!(observed.occurrence_install_calls > 0);
+    let cold_inputs = observed
+        .cold_occurrence_inputs
+        .ok_or("cold occurrence inputs missing")?;
+    let cold_calls = observed
+        .cold_occurrence_install_calls
+        .ok_or("cold occurrence install calls missing")?;
     for (phase, single, multi) in [
         (
             "cold",
@@ -8896,12 +9076,12 @@ fn print_native_text_cost_case(
         &mut std::io::stdout().lock(),
         format_args!(
             "native_occurrence_io corpus={corpus} owners={owners} reuse_limit={reuse_limit} stage={stage} map_batch_limit={map_batch_limit} cold_inputs={} cold_install_calls={} delta_inputs={} delta_install_calls={}\n",
-            expected_occurrence_inputs,
-            expected_occurrence_calls,
-            observed.occurrence_inputs,
-            observed.occurrence_install_calls,
+            cold_inputs, cold_calls, observed.occurrence_inputs, observed.occurrence_install_calls,
         ),
     )?;
+    assert_eq!(cold_inputs, expected_occurrence_inputs);
+    assert_eq!(cold_calls, expected_occurrence_calls);
+    assert!(observed.occurrence_install_calls > 0);
     let stage_calls = if stage == "batch32" {
         u64::from(owners).div_ceil(32)
     } else {
@@ -10976,5 +11156,10 @@ fn native_text_same_position_term_replace_installs_only_changed_occurrences() ->
 
 #[path = "native_lifecycle/inline_mutations.rs"]
 mod inline_mutations;
+#[path = "native_lifecycle/owned_renewal_trace.rs"]
+mod owned_renewal_trace;
 #[path = "native_lifecycle/text_entry_maps.rs"]
 mod text_entry_maps;
+
+#[path = "native_lifecycle/occurrence_blocks.rs"]
+mod occurrence_blocks;

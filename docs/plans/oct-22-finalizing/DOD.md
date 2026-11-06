@@ -25,6 +25,7 @@
 4. 기존 A semantic compatibility·D RepoMap lifetime·C5 generation reservation의 VERIFIED 범위와 완료된 bank/engine은 재사용한다. 관련 source/입력 변경 영향만 좁게 재검증하고 전체 미수용을 이유로 재구현하지 않는다.
 5. Semantica의 전체 PTA/DFG/Type 캠페인을 Index 작업으로 복제하지 않는다. Index가 실제 소비하는 source/generation/affected-output/lower failure 계약은 기존 canonical owner에게 있고 그 결과의 접합/수용은 필수다.
 6. profile/hardware/backend/provider·sample 수·품질 gold·latency/자원 상한은 측정 전에 고정한다. 결과를 보고 예산/시나리오/분모/합격선을 바꾸지 않는다. unset profile·baseline/client workflow 부재는 해당 성능/IntelliJ claim을 닫지 못한다.
+7. W205 수용은 [기존 여섯 목표의 출구](OWNERSHIP.md#w205-closeout-20261030)를 따른다. 공개 Java5와 미게시 precommit 모델2, SDK7(BC2/FT1/Python4), Runtime floor3·공개 Strong2의 본문/Source를 분리한다. 실제 설치 provider의 typed 실패·winning/losing DATA·최종 Native alias/refund는 별도 같은 실행 관측이 필요하다. R792 wire whole-target17/17은 backing2/digest3을 실제 실행했으며, packet2·SDK·Product를 대신하지 않는다. Main private PTA ABI 연결부2파일/3줄은 정적 검증과 r2 포함까지 확인됐고 수리 후 Rust는 NOT_RUN이다. 기존 same-key A/B 절대0 writer 회귀를 재사용한다. Strong의 ordered successor→terminal 관측은 동시성 race 증거가 아니며, 캡처 성공·환경 서명·guard 통과와 L1의 별도 결과를 설치 SDK/Product 수용으로 합산하지 않는다. R791의 오래된 guard 기대값2건 수리는 유지한다. 구현 합류와 wire 통과는 R03/R04/R23/R24/R37/R38 및 전체 E01–E08의 수용을 면제하지 않는다.
 
 <a id="requirements"></a>
 ## R01–R40 — 각 요구의 주 에픽 하나

@@ -227,7 +227,9 @@ impl DiagnosticEventSinkV1 for SealEvents {
             | DiagnosticEventKindV1::Counter { .. }
             | DiagnosticEventKindV1::AnnRegionObservation { .. }
             | DiagnosticEventKindV1::SqliteSyncObservation { .. }
+            | DiagnosticEventKindV1::OwnedRenewalRefusal { .. }
             | DiagnosticEventKindV1::SyncAggregate { .. }
+            | DiagnosticEventKindV1::ObjectInstallAggregate { .. }
             | DiagnosticEventKindV1::ObjectKindAggregate { .. }
             | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
             | DiagnosticEventKindV1::Bm25CensusAggregate { .. }

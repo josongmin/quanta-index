@@ -3315,6 +3315,12 @@ mod tests {
                     Err(_) => return false,
                 }
             };
+            stream
+                .set_nonblocking(false)
+                .expect("blocking scripted native peer");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("bounded scripted request read");
             let request: NativeIndexRequestEnvelope =
                 quanta_index_ipc::decode_request(&mut stream).expect("native effort request");
             assert!(matches!(

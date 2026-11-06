@@ -147,6 +147,9 @@ fn resources() -> NativeServiceResources {
         provider_units: 0,
     };
     NativeServiceResources {
+        catalog_writer_cache: quanta_index_searchd_runtime::native::CatalogWriterCachePolicy {
+            kib: 2048,
+        },
         physical: native_physical_profile::profile(),
         scratch_reserved_bytes: 16 * 1024 * 1024 * 1024,
         read_ticket_lease: Duration::from_secs(30),
@@ -214,7 +217,7 @@ fn service(
             pump: None,
             provider_attempt_pool: None,
         },
-        resources(),
+        &resources(),
     )?;
     service.configure_interaction_activity(Arc::new(NativeInteractionRecorder::new()))?;
     service.configure_overlay(2, 4, 1024, 4096, native_text_spec().instance)?;

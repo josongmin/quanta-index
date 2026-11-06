@@ -609,6 +609,7 @@ fn config(root: &Path, socket: &Path) -> serde_json::Value {
         "socket_path": socket.to_string_lossy(),
         "work_limits": {"reads": 1_000_000, "writes": 1_000_000, "bytes": 536_870_912, "mutations": 1_000_000},
         "resources": {
+            "catalog_writer_cache_kib": 8192,
             "physical": {
                 "inventory": {
                     "max_bytes": physical.inventory.max_bytes,
@@ -664,6 +665,7 @@ fn config_with_reclaim(root: &Path, socket: &Path) -> TestResult<serde_json::Val
     let old = object.insert("maintenance".into(), serde_json::json!({
         "interval_ms": 20,
         "max_steps_per_round": 1,
+        "wal_reclaim": {"trigger_bytes": 8_388_608, "min_interval_ms": 1_000},
         "child_limit": 32,
         "work_limits": {"reads": 1_000_000, "writes": 1_000_000, "bytes": 536_870_912, "mutations": 1_000_000},
         "round_timeout_ms": 2_000,
@@ -1962,6 +1964,9 @@ fn native_reclaim_config_refuses_invalid_policy_and_capacity_before_state_creati
         "too_many_steps",
         "low_work",
         "missing_control_floor",
+        "zero_wal_trigger",
+        "zero_wal_interval",
+        "unfunded_wal_trigger",
     ] {
         let root = temp.path().join(format!("state-{case}"));
         let socket = temp.path().join(format!("socket-{case}.sock"));
@@ -1979,6 +1984,21 @@ fn native_reclaim_config_refuses_invalid_policy_and_capacity_before_state_creati
                 &mut value,
                 "/maintenance/work_limits/bytes",
                 serde_json::json!(1),
+            )?,
+            "zero_wal_trigger" => set_fixture_json(
+                &mut value,
+                "/maintenance/wal_reclaim/trigger_bytes",
+                serde_json::json!(0),
+            )?,
+            "zero_wal_interval" => set_fixture_json(
+                &mut value,
+                "/maintenance/wal_reclaim/min_interval_ms",
+                serde_json::json!(0),
+            )?,
+            "unfunded_wal_trigger" => set_fixture_json(
+                &mut value,
+                "/maintenance/wal_reclaim/trigger_bytes",
+                serde_json::json!(16_777_217),
             )?,
             "missing_control_floor" => {
                 set_fixture_json(
@@ -2036,6 +2056,10 @@ fn native_reclaim_config_refuses_invalid_policy_and_capacity_before_state_creati
             "too_many_steps" => "native reclaim round must contain 1..=8 steps",
             "low_work" => "native reclaim WorkLimits are below the bounded round allowance",
             "missing_control_floor" => "native protected floors exceed service capacity",
+            "zero_wal_trigger" | "unfunded_wal_trigger" => {
+                "native WAL reclaim trigger must be positive and fit the existing IO allowance"
+            }
+            "zero_wal_interval" => "native WAL reclaim interval must be positive",
             _ => return Err("unknown maintenance config refusal case".into()),
         };
         let stderr_bytes = stderr_prefix(&stderr_path)?;
@@ -2067,6 +2091,74 @@ fn native_config_refuses_semantic_without_a_configured_provider() -> TestResult 
     let config_path = temp.path().join("missing-semantic-provider.json");
     fs::write(&config_path, serde_json::to_vec(&value)?)?;
     expect_native_config_refusal(&root, &socket, &config_path, "missing field `provider`")
+}
+
+#[test]
+fn native_catalog_writer_cache_config_refuses_before_state_creation() -> TestResult {
+    for case in [
+        "missing",
+        "zero",
+        "outside_u32",
+        "above_sqlite_signed",
+        "cache_headroom_shortfall",
+    ] {
+        let temp = tempfile::tempdir()?;
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+        let root = temp.path().join("state");
+        let socket = temp.path().join("native.sock");
+        let mut value = config(&root, &socket);
+        let expected = match case {
+            "missing" => {
+                let resources = value
+                    .pointer_mut("/resources")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or("native resources fixture is missing")?;
+                let _removed = resources
+                    .remove("catalog_writer_cache_kib")
+                    .ok_or("native Catalog cache fixture is missing")?;
+                "missing field `catalog_writer_cache_kib`"
+            }
+            "zero" => {
+                set_fixture_json(
+                    &mut value,
+                    "/resources/catalog_writer_cache_kib",
+                    serde_json::json!(0),
+                )?;
+                "catalog writer cache KiB must be positive"
+            }
+            "outside_u32" => {
+                set_fixture_json(
+                    &mut value,
+                    "/resources/catalog_writer_cache_kib",
+                    serde_json::json!(4_294_967_296_u64),
+                )?;
+                "expected u32"
+            }
+            "above_sqlite_signed" => {
+                set_fixture_json(
+                    &mut value,
+                    "/resources/catalog_writer_cache_kib",
+                    serde_json::json!(2_147_483_648_u64),
+                )?;
+                "fit SQLite's signed pragma"
+            }
+            "cache_headroom_shortfall" => {
+                // Preserve all four 64 MiB execution floors; leave one byte
+                // less than the configured 8 MiB retained Catalog charge.
+                set_fixture_json(
+                    &mut value,
+                    "/resources/execution/capacity/memory_bytes",
+                    serde_json::json!(276_824_063_u64),
+                )?;
+                "Catalog writer-cache retained buffers require headroom beyond protected execution floors"
+            }
+            _ => return Err("unknown Catalog cache config refusal case".into()),
+        };
+        let path = temp.path().join(format!("native-cache-{case}.json"));
+        fs::write(&path, serde_json::to_vec(&value)?)?;
+        expect_native_config_refusal(&root, &socket, &path, expected)?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -2153,7 +2245,7 @@ fn native_semantic_provider_contract_refuses_before_state_creation() -> TestResu
                     "/resources/execution/capacity/memory_bytes",
                     serde_json::json!(268_435_456_u64),
                 )?;
-                "escaping buffers require headroom beyond protected execution floors"
+                "provider, read-session, and Catalog writer-cache retained buffers require headroom beyond protected execution floors"
             }
             "invalid_api_key_variable" => {
                 set_fixture_json(

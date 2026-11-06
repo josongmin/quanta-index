@@ -3,6 +3,7 @@
 use quanta_index_core::index::{
     Digest, IndexError, MemoryLease, MemoryLifetime, ObjectRef, RegisteredObject, WorkBudget,
 };
+use std::path::{Path, PathBuf};
 
 use super::{MAX_BATCH_INPUTS, MAX_INSTALL_BATCH_INPUTS, PreparedObject};
 
@@ -180,5 +181,99 @@ impl RegistrationBatch {
 
     pub(super) fn as_slice(&self) -> &[RegisteredObject] {
         &self.registrations
+    }
+}
+
+/// Exact shard directories for a bounded install. All path backing is funded
+/// before the caller reserves custody or writes any immutable object.
+pub(super) struct BatchShards {
+    paths: [Option<PathBuf>; MAX_INSTALL_BATCH_INPUTS],
+    count: usize,
+    // Path backing drops before this one temporary allocation grant.
+    _memory: Option<MemoryLease>,
+}
+
+impl BatchShards {
+    pub(super) fn new(
+        objects: &Path,
+        registrations: &[RegisteredObject],
+        budget: &WorkBudget,
+    ) -> Result<Self, IndexError> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        if registrations.len() > MAX_INSTALL_BATCH_INPUTS {
+            return Err(IndexError::ResourceLimited);
+        }
+        let mut present = [false; 256];
+        for registration in registrations {
+            budget.checkpoint()?;
+            let first = (registration.reference.0)
+                .0
+                .first()
+                .copied()
+                .ok_or_else(|| IndexError::BackendViolation("empty object digest".into()))?;
+            *present
+                .get_mut(usize::from(first))
+                .ok_or(IndexError::ResourceLimited)? = true;
+        }
+        let count = present.iter().filter(|used| **used).count();
+        let path_bytes = objects
+            .as_os_str()
+            .as_encoded_bytes()
+            .len()
+            .checked_add(3)
+            .ok_or(IndexError::ResourceLimited)?;
+        let allocation = path_bytes
+            .checked_mul(count)
+            .ok_or(IndexError::ResourceLimited)?;
+        let memory = if allocation == 0 {
+            None
+        } else {
+            budget.reserve_memory(
+                u64::try_from(allocation).map_err(|_error| IndexError::ResourceLimited)?,
+                MemoryLifetime::Temporary,
+            )?
+        };
+        let mut paths = std::array::from_fn(|_| None);
+        let mut filled = 0usize;
+        for (first, used) in present.into_iter().enumerate() {
+            if !used {
+                continue;
+            }
+            budget.checkpoint()?;
+            let byte = u8::try_from(first).map_err(|_error| IndexError::ResourceLimited)?;
+            let hex = [
+                *HEX.get(usize::from(byte >> 4))
+                    .ok_or(IndexError::ResourceLimited)?,
+                *HEX.get(usize::from(byte & 0x0f))
+                    .ok_or(IndexError::ResourceLimited)?,
+            ];
+            let shard = std::str::from_utf8(&hex).map_err(|_error| {
+                IndexError::BackendViolation("invalid object shard encoding".into())
+            })?;
+            let mut path = PathBuf::new();
+            path.try_reserve_exact(path_bytes)
+                .map_err(|_error| IndexError::ResourceLimited)?;
+            path.push(objects);
+            path.push(shard);
+            *paths.get_mut(filled).ok_or(IndexError::ResourceLimited)? = Some(path);
+            filled = filled.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        }
+        if filled != count {
+            return Err(IndexError::BackendViolation(
+                "batch shard count changed during preparation".into(),
+            ));
+        }
+        Ok(Self {
+            paths,
+            count,
+            _memory: memory,
+        })
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = &Path> {
+        self.paths
+            .iter()
+            .take(self.count)
+            .filter_map(Option::as_deref)
     }
 }

@@ -11,7 +11,6 @@ use quanta_index_core::publication_admission::{
     PublicationObjectOpenTicket, PublicationObjectReader,
 };
 use quanta_index_core::publication_capacity::PublicationAllowance;
-use quanta_index_searchd::app::state_format::STATE_ROOT_LEASE_FILE_NAME;
 
 use crate::publication_file_capacity::{
     DeleteTicket, OpenGuard, PublicationFileCapacity, ReaderLease,
@@ -159,18 +158,9 @@ impl PublicationObjectLifetimePort for PublicationLexicalLifetime {
                 "lexical object root differs from the held file authority".into(),
             ));
         }
-        // Anchoring the lease entry revalidates the pinned root and its
-        // current lock identity without creating a file or claiming a path.
-        if self
-            .binder
-            .path_observation(&self.binder.state_root().join(STATE_ROOT_LEASE_FILE_NAME))?
-            .is_none()
-        {
-            return Err(CoreError::InvalidContract(
-                "state-root lease entry absent".into(),
-            ));
-        }
-        Ok(())
+        // The canonical guard already authenticates both the root and its
+        // held lock entry. Walking that same lock as a child repeats the guard.
+        self.binder.validate_current_state_root()
     }
 
     fn validate_parent(&self, parent: &Arc<PublicationAllowance>) -> Result<(), CoreError> {

@@ -61,7 +61,7 @@ impl EditCursor<'_> {
             if self.page.complete() {
                 return Ok(None);
             }
-            let db = self.scratch.db.scoped()?;
+            let db = self.scratch.db.scoped(budget)?;
             let query = if self.after.is_some() {
                 "SELECT key,expected,next FROM edit WHERE root=?1 AND key>?2 ORDER BY key LIMIT 64"
             } else {
@@ -132,8 +132,9 @@ impl MapScratch {
         let owned_db = ScratchConnection::open(
             &allocation.path().join("scratch.sqlite"),
             allocation.as_ref(),
+            budget,
         )?;
-        let db = owned_db.scoped()?;
+        let db = owned_db.scoped(budget)?;
         quanta_index_scratch_sqlite::configure(&db, allocation.as_ref())?;
         quanta_index_scratch_sqlite::reserve_for_write(&db, allocation.as_ref(), 8192, budget)?;
         db.execute_batch(
@@ -159,7 +160,7 @@ impl MapScratch {
     /// Coalesce disposable writes without retaining an operation's VFS scope.
     pub(crate) fn begin_batch(&self, budget: &WorkBudget) -> Result<(), IndexError> {
         budget.checkpoint()?;
-        let db = self.db.scoped()?;
+        let db = self.db.scoped(budget)?;
         if db.is_autocommit() {
             db.execute_batch("BEGIN IMMEDIATE")
                 .map_err(|error| sql_error(&error))?;
@@ -170,7 +171,7 @@ impl MapScratch {
     /// A failed OFF-journal commit poisons this attempt: callers must discard it.
     pub(crate) fn commit_batch(&self, budget: &WorkBudget) -> Result<(), IndexError> {
         budget.checkpoint()?;
-        let db = self.db.scoped()?;
+        let db = self.db.scoped(budget)?;
         // The preceding full group can also commit the next object's mark.
         // Its final flush then has no new mark transaction to finish.
         if !db.is_autocommit() {
@@ -191,14 +192,14 @@ impl MapScratch {
             ..WorkUsage::default()
         })?;
         quanta_index_scratch_sqlite::reserve_for_write(
-            &*self.db.scoped()?,
+            &*self.db.scoped(budget)?,
             self.allocation.as_ref(),
             object.registration.bytes,
             budget,
         )?;
         let key = (object.registration.reference.0).0;
         let inserted = {
-            let db = self.db.scoped()?;
+            let db = self.db.scoped(budget)?;
             let mut statement = db
                 .prepare_cached("INSERT OR IGNORE INTO node(reference,wire) VALUES (?1,?2)")
                 .map_err(|error| sql_error(&error))?;
@@ -208,7 +209,7 @@ impl MapScratch {
         };
         if inserted == 0 {
             let equal = {
-                let db = self.db.scoped()?;
+                let db = self.db.scoped(budget)?;
                 let mut statement = db
                     .prepare_cached("SELECT wire FROM node WHERE reference=?1")
                     .map_err(|error| sql_error(&error))?;
@@ -254,7 +255,7 @@ impl MapScratch {
             ..WorkUsage::default()
         })?;
         let key = (reference.0).0;
-        let io_scope = self.db.scoped()?;
+        let io_scope = self.db.scoped(budget)?;
         let mut statement = io_scope
             .prepare_cached(NODE_WIRE_SQL)
             .map_err(|error| sql_error(&error))?;
@@ -321,7 +322,7 @@ impl MapScratch {
         let reservations = reservations
             .get(..edits.len())
             .ok_or(IndexError::ResourceLimited)?;
-        let db = self.db.scoped()?;
+        let db = self.db.scoped(budget)?;
         quanta_index_scratch_sqlite::write_map_edit_batch(
             &db,
             self.allocation.as_ref(),
@@ -360,7 +361,7 @@ impl MapScratch {
             ..WorkUsage::default()
         })?;
         let key = (reference.0).0;
-        let db = self.db.scoped()?;
+        let db = self.db.scoped(budget)?;
         let mut statement = db
             .prepare_cached("SELECT state FROM mark WHERE reference=?1")
             .map_err(|error| sql_error(&error))?;
@@ -381,13 +382,13 @@ impl MapScratch {
             ..WorkUsage::default()
         })?;
         quanta_index_scratch_sqlite::reserve_for_write(
-            &*self.db.scoped()?,
+            &*self.db.scoped(budget)?,
             self.allocation.as_ref(),
             64,
             budget,
         )?;
         let key = (reference.0).0;
-        let db = self.db.scoped()?;
+        let db = self.db.scoped(budget)?;
         let mut statement = db
             .prepare_cached(
                 "INSERT INTO mark(reference,state) VALUES (?1,?2)
@@ -416,7 +417,7 @@ impl MapScratch {
                 ..WorkUsage::default()
             })?;
             let reservations = [64_u64; quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS];
-            let db = self.db.scoped()?;
+            let db = self.db.scoped(budget)?;
             quanta_index_scratch_sqlite::reserve_for_write_batch(
                 &db,
                 self.allocation.as_ref(),
@@ -547,15 +548,15 @@ mod tests {
             stage.set_mark(object.registration.reference, 1, &mut budget)?;
         }
         stage.commit_batch(&budget)?;
-        check!(stage.scratch.db.scoped()?.is_autocommit());
+        check!(stage.scratch.db.scoped(&budget)?.is_autocommit());
         let references = objects.iter().collect::<Vec<_>>();
         stage.complete_batch(&references, &mut budget)?;
-        check!(!stage.scratch.db.scoped()?.is_autocommit());
+        check!(!stage.scratch.db.scoped(&budget)?.is_autocommit());
         for object in &objects {
             check!(stage.mark(object.registration.reference, &mut budget)? == Some(2));
         }
         stage.commit_batch(&budget)?;
-        check!(stage.scratch.db.scoped()?.is_autocommit());
+        check!(stage.scratch.db.scoped(&budget)?.is_autocommit());
         Ok(())
     }
 
@@ -701,7 +702,7 @@ mod tests {
         check!(reading.usage().bytes == wire_bytes);
         drop(wire);
         let runs = || -> Result<i32, Box<dyn std::error::Error>> {
-            let db = scratch.db.scoped()?;
+            let db = scratch.db.scoped(&reading)?;
             let statement = db.prepare_cached(NODE_WIRE_SQL)?;
             Ok(statement.get_status(rusqlite::StatementStatus::Run))
         };
@@ -783,7 +784,7 @@ mod tests {
                     .ok_or(IndexError::ResourceLimited)?
             ]),
         ] {
-            let changed = scratch.db.scoped()?.execute(
+            let changed = scratch.db.scoped(&work)?.execute(
                 "UPDATE node SET wire=?1 WHERE reference=?2",
                 params![invalid, key.as_slice()],
             )?;
@@ -796,7 +797,7 @@ mod tests {
         }
         // A bounded BLOB still needs the original wire/hash authentication.
         work.bind_memory_scope(None);
-        let changed = scratch.db.scoped()?.execute(
+        let changed = scratch.db.scoped(&work)?.execute(
             "UPDATE node SET wire=?1 WHERE reference=?2",
             params![b"not an authenticated object".as_slice(), key.as_slice()],
         )?;
@@ -931,7 +932,7 @@ mod tests {
             }
             check!(ledger.live.load(Ordering::SeqCst) == 0);
         }
-        let _changed = scratch.db.scoped()?.execute(
+        let _changed = scratch.db.scoped(&work)?.execute(
             "UPDATE edit SET expected=?1 WHERE root=3",
             params![&[1_u8; 31]],
         )?;
@@ -1040,7 +1041,7 @@ mod tests {
         ));
         drop(cached);
 
-        let _updated = scratch.db.scoped()?.execute(
+        let _updated = scratch.db.scoped(&work)?.execute(
             "UPDATE edit SET next=?1 WHERE root=3 AND key=?2",
             params![&[1_u8; 31], 70_u16.to_be_bytes().as_slice()],
         )?;
@@ -1077,8 +1078,8 @@ mod tests {
             rusqlite::types::Value::Integer(1),
             rusqlite::types::Value::Text("invalid-key".into()),
         ] {
-            let _deleted = scratch.db.scoped()?.execute("DELETE FROM edit", [])?;
-            let _inserted = scratch.db.scoped()?.execute(
+            let _deleted = scratch.db.scoped(&work)?.execute("DELETE FROM edit", [])?;
+            let _inserted = scratch.db.scoped(&work)?.execute(
                 "INSERT INTO edit(root,key,expected,next) VALUES (3,?1,NULL,NULL)",
                 params![key],
             )?;
@@ -1126,7 +1127,7 @@ mod tests {
         check!(original == super::super::scratch_edit_fingerprint(&scratch, 1, &mut work)?);
         let _changed = scratch
             .db
-            .scoped()?
+            .scoped(&work)?
             .execute("UPDATE edit SET next=zeroblob(31) WHERE root=1", [])?;
         check!(matches!(
             super::super::scratch_edit_fingerprint(&scratch, 1, &mut work),

@@ -422,10 +422,27 @@ fn constrained_vector_search_matches_exhaustive_oracle_and_top_k_prefix_v1() -> 
             vec![0.0, 1.0, 0.0],
         )?,
     ];
-    build_resident_batch_v1(
-        &adapter,
-        &sealed_batch(generation, "src/oracle.rs", records.clone(), 3),
-    )?;
+    let mut batch = sealed_batch(
+        generation,
+        "src/oracle.rs",
+        vec![records[1].clone(), records[2].clone(), records[4].clone()],
+        3,
+    );
+    batch.replace_scopes.extend([
+        SemanticReplaceScope {
+            scope: scope("src/oracle.py"),
+            scope_digest: "scope:src/oracle.py".to_string(),
+            embeddings: vec![records[0].clone()],
+            cluster_memberships: Vec::new(),
+        },
+        SemanticReplaceScope {
+            scope: scope("src/outside.rs"),
+            scope_digest: "scope:src/outside.rs".to_string(),
+            embeddings: vec![records[3].clone()],
+            cluster_memberships: Vec::new(),
+        },
+    ]);
+    build_resident_batch_v1(&adapter, &batch)?;
 
     let constraints =
         QueryConstraintSetV1::from_languages([LanguageCode::new("rust").map_err(str::to_string)?]);
@@ -618,6 +635,7 @@ fn tombstone_scope_removes_existing_entries() -> TestResult {
                 corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
                 owner_kind: OwnerDocKind::Chunk,
                 owner_id: "owner-emb-1".to_string(),
+                source_file: scope("src/main.rs").source_file,
             })],
             seal: true,
         },

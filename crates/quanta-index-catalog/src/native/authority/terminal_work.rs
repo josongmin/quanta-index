@@ -486,7 +486,7 @@ fn next_candidate(
         ));
     }
     let children = read_children(connection, &key, budget)?;
-    let mut expected = work_roots(&decoded.intent);
+    let mut expected = work_roots(&decoded.intent).collect::<Vec<_>>();
     if let Some(prepared) = &decoded.prepared {
         expected.push(prepared.artifact);
     }

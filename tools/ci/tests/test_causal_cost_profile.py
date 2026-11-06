@@ -271,15 +271,30 @@ def _native_child(
     events = []
 
     def event(kind: dict) -> None:
-        events.append(
-            {
-                "record_type": "event",
-                "output_seq": len(events) + 1,
-                "capture_id": capture_id,
-                "ts_ns": len(events) + 1,
-                "kind": kind,
-            }
-        )
+        sequence = len(events) + 1
+        if schema_version == 5:
+            if kind["type"] == "span_begin":
+                wire_kind = [
+                    "b", kind["span_id"], kind.get("parent_span_id"),
+                    kind["stage"], kind["lane_id"], kind.get("root_kind"),
+                ]
+            elif kind["type"] == "span_end":
+                wire_kind = ["e", kind["span_id"], kind["outcome"], kind.get("error_code")]
+            elif kind["type"] == "counter":
+                wire_kind = ["c", kind["span_id"], kind["key"], kind["value"]]
+            else:
+                wire_kind = kind
+            events.append(["e", sequence, capture_id, sequence, wire_kind])
+        else:
+            events.append(
+                {
+                    "record_type": "event",
+                    "output_seq": sequence,
+                    "capture_id": capture_id,
+                    "ts_ns": sequence,
+                    "kind": kind,
+                }
+            )
 
     event(
         {
@@ -355,6 +370,130 @@ def _native_child(
     )
     path.chmod(0o600)
     return RawFile.capture(path), parse_timeline(path.read_bytes())
+
+
+TEXT_OCCURRENCE_DIFF_GOLD = {
+    "text_occurrence_prior_validation_attempts": 2,
+    "text_occurrence_next_validation_attempts": 3,
+    "text_occurrence_ram_reuses": 1,
+    "text_occurrence_spill_reuses": 1,
+    "text_occurrence_equal_reuses": 1,
+    "text_occurrence_validation_failures": 1,
+}
+
+
+def _native_child_with_text_occurrence_diff(
+    path: Path, *, outcomes: tuple[str, ...] = ("ok",),
+    parent_span_id: int = 3, counters: dict[str, int] | None = None,
+    second_request: bool = False,
+) -> tuple[RawFile, dict]:
+    _native_child(path, "1" * 32, publication=True, schema_version=5)
+    rows = [json.loads(line) for line in path.read_bytes().splitlines()]
+    events = rows[1:-1]
+    request_end = next(
+        index for index, event in enumerate(events)
+        if event[4] == ["e", 3, "ok", None]
+    )
+    inserted = []
+    for offset, outcome in enumerate(outcomes):
+        span_id = 10 + offset
+        diff_parent = 20 if second_request and offset == 1 else parent_span_id
+        if diff_parent == 20:
+            inserted.extend([
+                ["e", 0, "1" * 32, 0, ["b", 20, None, "request", 1, "request"]],
+                ["e", 0, "1" * 32, 0, {
+                    "type": "request_identity", "span_id": 20,
+                    "request_id": 2, "plane": "control", "connection_id": 2,
+                }],
+            ])
+        inserted.append(["e", 0, "1" * 32, 0, [
+            "b", span_id, diff_parent, "native_text_inventory_diff", 2, None,
+        ]])
+        for key, value in (counters or TEXT_OCCURRENCE_DIFF_GOLD).items():
+            inserted.append(["e", 0, "1" * 32, 0, ["c", span_id, key, value]])
+        inserted.append(["e", 0, "1" * 32, 0, [
+            "e", span_id, outcome, 1 if outcome == "error" else None,
+        ]])
+        if diff_parent == 20:
+            inserted.append(["e", 0, "1" * 32, 0, ["e", 20, "ok", None]])
+    events[request_end:request_end] = inserted
+    for sequence, event in enumerate(events, 1):
+        event[1] = event[3] = sequence
+    rows[-1].update(
+        closed_ns=len(events) + 1, last_output_seq=len(events),
+        events_attempted=len(events), events_accepted=len(events),
+        events_written=len(events),
+    )
+    path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in (rows[0], *events, rows[-1])))
+    path.chmod(0o600)
+    return RawFile.capture(path), parse_timeline(path.read_bytes())
+
+
+def test_native_child_summarizes_text_occurrence_diff_by_request(tmp_path: Path) -> None:
+    raw, parsed = _native_child_with_text_occurrence_diff(
+        tmp_path / "child.jsonl", outcomes=("ok", "error"),
+    )
+    child = _native_child_trace(parsed, raw, publication=True)
+    assert child["text_occurrence_diff"] == {"requests": [{
+        "request_span_id": 3,
+        "request_identity": {"request_id": 1, "plane": "control", "connection_id": 1},
+        "successful_diffs": 1,
+        "failed_diffs": 1,
+        "counters": {key: value * 2 for key, value in TEXT_OCCURRENCE_DIFF_GOLD.items()},
+    }]}
+    old_raw, old_parsed = _native_child(
+        tmp_path / "old.jsonl", "2" * 32, publication=True, schema_version=5,
+    )
+    assert "text_occurrence_diff" not in _native_child_trace(
+        old_parsed, old_raw, publication=True,
+    )
+
+
+def test_native_child_rejects_unattributed_or_overflowed_diff(tmp_path: Path) -> None:
+    raw, parsed = _native_child_with_text_occurrence_diff(
+        tmp_path / "unattributed.jsonl", parent_span_id=1,
+    )
+    with pytest.raises(ValueError, match="lacks identified request ancestry"):
+        _native_child_trace(parsed, raw, publication=True)
+    counters = dict(TEXT_OCCURRENCE_DIFF_GOLD)
+    counters["text_occurrence_ram_reuses"] = (1 << 64) - 1
+    raw, parsed = _native_child_with_text_occurrence_diff(
+        tmp_path / "overflow.jsonl", outcomes=("ok", "ok"), counters=counters,
+    )
+    with pytest.raises(ValueError, match="text_occurrence_ram_reuses is not a u64"):
+        _native_child_trace(parsed, raw, publication=True)
+
+
+def test_native_child_keeps_diff_requests_separate(tmp_path: Path) -> None:
+    raw, parsed = _native_child_with_text_occurrence_diff(
+        tmp_path / "separate.jsonl", outcomes=("ok", "error"), second_request=True,
+    )
+    requests = _native_child_trace(parsed, raw, publication=True)["text_occurrence_diff"]["requests"]
+    assert [item["request_span_id"] for item in requests] == [3, 20]
+    assert [item["request_identity"]["request_id"] for item in requests] == [1, 2]
+    assert [(item["successful_diffs"], item["failed_diffs"]) for item in requests] == [
+        (1, 0), (0, 1),
+    ]
+    assert all(item["counters"] == TEXT_OCCURRENCE_DIFF_GOLD for item in requests)
+
+
+def test_native_product_carries_observed_text_occurrence_diff_without_promoting_io(
+    tmp_path: Path,
+) -> None:
+    summary, children, workload = _native_product_fixture(
+        tmp_path, timeline_schema_version=5,
+    )
+    path = children["first"]["trace_file"].path
+    raw, parsed = _native_child_with_text_occurrence_diff(path)
+    children["first"].update(trace_file=raw, trace=parsed)
+    descriptor = summary["detail"]["child_trace_files"]["captures"][0]
+    descriptor.update(bytes=raw.size, sha256=raw.sha256.removeprefix("sha256:"))
+    product = _native_validate(summary, children, workload)
+    assert product["children"]["first"]["text_occurrence_diff"]["requests"][0][
+        "counters"
+    ] == TEXT_OCCURRENCE_DIFF_GOLD
+    assert "text_occurrence_diff" not in product["children"]["reopen"]
+    assert "text_occurrence_diff" not in product["children"]["first"]["object_io"]
 
 
 def _native_operation_key(sequence: int) -> dict:
@@ -480,6 +619,8 @@ def _native_product_fixture(
             "seed": 7,
             "file_count": 16,
             "source_bytes": 4096,
+            "source_mutation_count": {"full": 16, "delta": 1, "noop": 0, "delete": 1},
+            "derived_fanout": "unobserved; no projection producer in Index-only fixture",
             "daemon_sha256": "e" * 64,
             "native_config_sha256": "f" * 64,
             "foreground_workload": workload,
@@ -687,6 +828,42 @@ def test_native_ordinary_off_keeps_fixed_product_and_cold_reopen_gold(tmp_path: 
 @pytest.mark.parametrize(
     "fault",
     (
+        "missing_counts",
+        "wrong_full",
+        "wrong_delta",
+        "bool_noop",
+        "extra_churn",
+        "missing_fanout_scope",
+        "forged_fanout",
+    ),
+)
+def test_native_product_refuses_mutation_count_or_fanout_scope(
+    tmp_path: Path, fault: str
+) -> None:
+    summary, workload = _native_off_fixture(tmp_path)
+    detail = summary["detail"]
+    counts = detail["source_mutation_count"]
+    if fault == "missing_counts":
+        del detail["source_mutation_count"]
+    elif fault == "wrong_full":
+        counts["full"] = 15  # Fixed small tier has one repo with 16 files.
+    elif fault == "wrong_delta":
+        counts["delta"] = 2
+    elif fault == "bool_noop":
+        counts["noop"] = False
+    elif fault == "extra_churn":
+        counts["churn"] = 1
+    elif fault == "missing_fanout_scope":
+        del detail["derived_fanout"]
+    else:
+        detail["derived_fanout"] = "measured projection fanout=1"
+    with pytest.raises(ValueError, match="native source mutation count|native derived fanout"):
+        _native_validate_off(summary, workload)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    (
         "verified_flag",
         "child_custody",
         "child_object_io",
@@ -757,6 +934,7 @@ def _native_mixed_fixture(tmp_path: Path, *, churn_cycles: int = 0) -> tuple[dic
     detail["tier"] = "large"
     detail["seed"] = 42
     detail["file_count"] = 4096
+    detail["source_mutation_count"]["full"] = 4096
     detail["source_bytes"] = 1_048_576
     detail["child_trace_verified"] = False
     detail["child_trace_files"] = None
@@ -1431,6 +1609,7 @@ def test_native_resource_sampling_refuses_missing_or_forged_observation(
 def _native_two_cycle_fixture(tmp_path: Path) -> tuple[dict, dict, dict]:
     summary, children, workload = _native_product_fixture(tmp_path)
     detail = summary["detail"]
+    detail["source_mutation_count"]["churn"] = 2
     phase_gold = {
         "wall_ms": 1.0,
         "observer_ms": 0.0,
@@ -1476,12 +1655,31 @@ def test_native_two_cycle_product_binds_fixed_churn_order(tmp_path: Path) -> Non
     ] == [1, 2, 3, 4, 5, 6, 7]
 
 
+@pytest.mark.parametrize("fault", ("missing_churn", "wrong_churn", "bool_churn", "extra_axis"))
+def test_native_two_cycle_product_refuses_mutation_count_drift(
+    tmp_path: Path, fault: str
+) -> None:
+    summary, children, workload = _native_two_cycle_fixture(tmp_path)
+    counts = summary["detail"]["source_mutation_count"]
+    if fault == "missing_churn":
+        del counts["churn"]
+    elif fault == "wrong_churn":
+        counts["churn"] = 1
+    elif fault == "bool_churn":
+        counts["churn"] = True
+    else:
+        counts["unobserved_branch"] = 0
+    with pytest.raises(ValueError, match="native source mutation count"):
+        _native_validate(summary, children, workload, expected_churn_cycles=2)
+
+
 def test_native_one_cycle_bool_count_does_not_alias_integer_one(tmp_path: Path) -> None:
     summary, children, workload = _native_two_cycle_fixture(tmp_path)
     detail = summary["detail"]
     detail["publication_outcomes"].pop()
     for field in ("requested_cycles", "completed_cycles", "last_attempt"):
         detail["finite_churn"][field] = 1
+    detail["source_mutation_count"]["churn"] = 1
     assert (
         _native_validate(summary, children, workload, expected_churn_cycles=1)["summary"]["detail"][
             "finite_churn"
@@ -1537,7 +1735,7 @@ def test_native_two_cycle_product_refuses_churn_drift(tmp_path: Path, fault: str
 
 
 @pytest.mark.parametrize("enospc_writes", (0, 1))
-@pytest.mark.parametrize("timeline_schema_version", (2, 3, 4))
+@pytest.mark.parametrize("timeline_schema_version", (2, 3, 4, 5))
 def test_native_product_binds_two_raw_child_captures_and_quiescent_io(
     tmp_path: Path, enospc_writes: int, timeline_schema_version: int
 ) -> None:
@@ -1557,7 +1755,7 @@ def test_native_product_binds_two_raw_child_captures_and_quiescent_io(
     }
 
 
-@pytest.mark.parametrize("schema_version", (2, 3, 4))
+@pytest.mark.parametrize("schema_version", (2, 3, 4, 5))
 def test_native_child_accepts_legacy_and_current_timeline_versions(
     tmp_path: Path, schema_version: int
 ) -> None:
@@ -1565,6 +1763,243 @@ def test_native_child_accepts_legacy_and_current_timeline_versions(
         tmp_path / "child.jsonl", "1" * 32, publication=True, schema_version=schema_version
     )
     assert _native_child_trace(parsed, raw, publication=True)["capture_id"] == "1" * 32
+
+
+def _native_child_with_auxiliary_operation(
+    path: Path,
+    schema_version: int,
+    *,
+    before: bool = False,
+    extra_sync: tuple[str, ...] = (),
+    split_elapsed: bool = False,
+    boot_on_auxiliary_only: bool = False,
+    failed_io_root: bool = False,
+    counter_after_close: bool = False,
+) -> tuple[RawFile, dict]:
+    _native_child(path, "1" * 32, publication=True, schema_version=schema_version)
+    header, *events, footer = (json.loads(line) for line in path.read_bytes().splitlines())
+    kinds = [event[4] if schema_version == 5 else event["kind"] for event in events]
+
+    def begin(span_id: int, parent: int | None, stage: str, root: str | None = None):
+        if schema_version == 5:
+            return ["b", span_id, parent, stage, 1, root]
+        kind = {"type": "span_begin", "span_id": span_id, "stage": stage, "lane_id": 1}
+        if parent is not None:
+            kind["parent_span_id"] = parent
+        if root is not None:
+            kind["root_kind"] = root
+        return kind
+
+    def end(span_id: int, outcome: str = "ok"):
+        if schema_version == 5:
+            return ["e", span_id, outcome, None]
+        return {"type": "span_end", "span_id": span_id, "outcome": outcome}
+
+    def counter(span_id: int, key: str, value: int):
+        if schema_version == 5:
+            return ["c", span_id, key, value]
+        return {"type": "counter", "span_id": span_id, "key": key, "value": value}
+
+    def is_end(kind, span_id: int) -> bool:
+        return (
+            isinstance(kind, list) and kind[:2] == ["e", span_id]
+            if schema_version == 5
+            else kind.get("type") == "span_end" and kind.get("span_id") == span_id
+        )
+
+    def is_counter(kind, key: str) -> bool:
+        return (
+            isinstance(kind, list) and kind[:3] == ["c", 1, key]
+            if schema_version == 5
+            else kind.get("type") == "counter"
+            and kind.get("span_id") == 1
+            and kind.get("key") == key
+        )
+
+    elapsed = next(kind for kind in kinds if is_counter(kind, "sync_elapsed_ns"))
+    if split_elapsed or counter_after_close:
+        kinds.remove(elapsed)
+    if boot_on_auxiliary_only:
+        kinds = [
+            kind for kind in kinds
+            if not is_end(kind, 2)
+            and not (
+                isinstance(kind, list) and kind[:2] == ["b", 2] if schema_version == 5
+                else kind.get("type") == "span_begin" and kind.get("span_id") == 2
+            )
+        ]
+    if failed_io_root:
+        for kind in kinds:
+            if is_end(kind, 1):
+                if schema_version == 5:
+                    kind[2] = "error"
+                    kind[3] = 1
+                else:
+                    kind["outcome"] = "error"
+                    kind["error_code"] = 1
+                break
+    if counter_after_close:
+        kinds.append(elapsed)
+
+    auxiliary = [
+        begin(6, None, "operation", "operation"),
+        begin(7, 6, "runtime_boot"),
+        end(7),
+    ]
+    values = {"sync_calls": 1, "sync_failures": 0, "sync_elapsed_ns": 1}
+    auxiliary.extend(counter(6, key, values[key]) for key in extra_sync)
+    if split_elapsed:
+        auxiliary.append(counter(6, "sync_elapsed_ns", 27))
+    auxiliary.append(end(6))
+    kinds = auxiliary + kinds if before else kinds + auxiliary
+
+    records = []
+    for sequence, kind in enumerate(kinds, 1):
+        if schema_version == 5:
+            records.append(["e", sequence, "1" * 32, sequence, kind])
+        else:
+            records.append({
+                "record_type": "event", "output_seq": sequence,
+                "capture_id": "1" * 32, "ts_ns": sequence, "kind": kind,
+            })
+    footer.update(
+        closed_ns=len(records) + 1,
+        last_output_seq=len(records),
+        events_attempted=len(records),
+        events_accepted=len(records),
+        events_written=len(records),
+    )
+    path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in (header, *records, footer)))
+    return RawFile.capture(path), parse_timeline(path.read_bytes())
+
+
+@pytest.mark.parametrize("schema_version", (2, 5))
+@pytest.mark.parametrize("before", (False, True))
+def test_native_child_accepts_independent_operation_around_io_root(
+    tmp_path: Path, schema_version: int, before: bool
+) -> None:
+    raw, parsed = _native_child_with_auxiliary_operation(
+        tmp_path / "child.jsonl", schema_version, before=before
+    )
+    assert _native_child_trace(parsed, raw, publication=True)["sync"] == {
+        "sync_calls": 3, "sync_failures": 0, "sync_elapsed_ns": 27,
+    }
+
+
+@pytest.mark.parametrize("schema_version", (2, 5))
+@pytest.mark.parametrize(
+    ("fault", "kwargs", "reason"),
+    (
+        ("split", {"split_elapsed": True}, "split across operation roots"),
+        ("incomplete", {"extra_sync": ("sync_calls",)}, "split across operation roots"),
+        (
+            "duplicate",
+            {"extra_sync": ("sync_calls", "sync_failures", "sync_elapsed_ns")},
+            "split across operation roots",
+        ),
+        ("foreign_boot", {"boot_on_auxiliary_only": True}, "lacks successful runtime boot"),
+        ("failed_io_root", {"failed_io_root": True}, "lacks successful runtime boot"),
+        (
+            "post_close",
+            {"counter_after_close": True},
+            "native IO summary counter follows operation end",
+        ),
+    ),
+)
+def test_native_child_rejects_invalid_independent_operation_io(
+    tmp_path: Path, schema_version: int, fault: str, kwargs: dict, reason: str
+) -> None:
+    with pytest.raises(ValueError, match=reason):
+        raw, parsed = _native_child_with_auxiliary_operation(
+            tmp_path / "child.jsonl", schema_version, **kwargs
+        )
+        _native_child_trace(parsed, raw, publication=True)
+
+
+def _native_child_with_summary_counter_order(
+    path: Path,
+    schema_version: int,
+    publication: bool,
+    counter_key: str,
+    *,
+    after_close: bool,
+) -> RawFile:
+    _native_child(path, "1" * 32, publication=publication, schema_version=schema_version)
+    header, *events, footer = (json.loads(line) for line in path.read_bytes().splitlines())
+    if schema_version == 5:
+        counter = next(
+            event for event in events
+            if isinstance(event[4], list) and event[4][:3] == ["c", 1, counter_key]
+        )
+        end = next(
+            event for event in events
+            if isinstance(event[4], list) and event[4][:2] == ["e", 1]
+        )
+        counter[3] = end[3]
+    else:
+        counter = next(
+            event for event in events
+            if event["kind"].get("type") == "counter"
+            and event["kind"].get("span_id") == 1
+            and event["kind"].get("key") == counter_key
+        )
+        end = next(
+            event for event in events
+            if event["kind"].get("type") == "span_end"
+            and event["kind"].get("span_id") == 1
+        )
+        counter["ts_ns"] = end["ts_ns"]
+    events.remove(counter)
+    position = events.index(end)
+    if after_close:
+        position += 1
+    events.insert(position, counter)
+    for sequence, event in enumerate(events, 1):
+        if schema_version == 5:
+            event[1] = sequence
+        else:
+            event["output_seq"] = sequence
+    path.write_bytes(
+        b"".join(json.dumps(row).encode() + b"\n" for row in (header, *events, footer))
+    )
+    return RawFile.capture(path)
+
+
+@pytest.mark.parametrize("schema_version", (2, 3, 4, 5))
+@pytest.mark.parametrize("publication", (False, True))
+@pytest.mark.parametrize("counter_key", ("sync_calls", "sync_failures", "sync_elapsed_ns"))
+@pytest.mark.parametrize("after_close", (False, True))
+def test_native_child_summary_counter_order_at_equal_timestamp(
+    tmp_path: Path,
+    schema_version: int,
+    publication: bool,
+    counter_key: str,
+    after_close: bool,
+) -> None:
+    raw = _native_child_with_summary_counter_order(
+        tmp_path / "child.jsonl",
+        schema_version,
+        publication,
+        counter_key,
+        after_close=after_close,
+    )
+    if after_close:
+        with pytest.raises(ValueError, match="native IO summary counter follows operation end"):
+            _native_child_trace(parse_timeline(raw.path.read_bytes()), raw, publication=publication)
+    else:
+        result = _native_child_trace(
+            parse_timeline(raw.path.read_bytes()), raw, publication=publication
+        )
+        assert result["sync"] == {
+            "sync_calls": 3, "sync_failures": 0, "sync_elapsed_ns": 27,
+        }
+
+
+def test_legacy_schema_keeps_its_counter_order_contract(tmp_path: Path) -> None:
+    raw = _native_child_with_summary_counter_order(
+        tmp_path / "legacy.jsonl", 1, True, "sync_calls", after_close=True
+    )
+    assert parse_timeline(raw.path.read_bytes())["status"] == "complete"
 
 
 def test_native_product_rechecks_children_under_explicit_trace_cap(tmp_path: Path) -> None:
@@ -1910,6 +2345,8 @@ def test_profile_distinguishes_pool_posix_full_and_control_sync() -> None:
         b"QI_CAUSAL_V1 kind=phase_end name=full_seal ok=1\n",
         b"QI_CAUSAL_V1 kind=sync label=pool_data_file_posix ok=1 elapsed_ns=11\n"
         b"QI_CAUSAL_V1 kind=sync label=pool_data_shard_posix ok=1 elapsed_ns=13\n"
+        b"QI_CAUSAL_V1 kind=sync label=pool_new_directory_posix ok=1 elapsed_ns=23\n"
+        b"QI_CAUSAL_V1 kind=sync label=pool_new_parent_posix ok=1 elapsed_ns=29\n"
         b"QI_CAUSAL_V1 kind=sync label=pool_adoption_full_barrier ok=1 elapsed_ns=17\n"
         b"QI_CAUSAL_V1 kind=sync label=pool_control_file_full ok=1 elapsed_ns=19\n"
         b"QI_CAUSAL_V1 kind=phase_end name=full_seal ok=1\n",
@@ -1918,6 +2355,8 @@ def test_profile_distinguishes_pool_posix_full_and_control_sync() -> None:
     for label, elapsed in (
         ("pool_data_file_posix", 11),
         ("pool_data_shard_posix", 13),
+        ("pool_new_directory_posix", 23),
+        ("pool_new_parent_posix", 29),
         ("pool_adoption_full_barrier", 17),
         ("pool_control_file_full", 19),
     ):
@@ -1926,7 +2365,7 @@ def test_profile_distinguishes_pool_posix_full_and_control_sync() -> None:
             "failed_calls": 0,
             "elapsed_ns": elapsed,
         }
-    assert phase["sync_call_elapsed_ns_sum"] == 460
+    assert phase["sync_call_elapsed_ns_sum"] == 512
 
 
 @pytest.mark.parametrize("label", ["file_authority_object", "file_authority_directory"])

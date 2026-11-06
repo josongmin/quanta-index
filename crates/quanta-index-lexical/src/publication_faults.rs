@@ -30,6 +30,8 @@ pub(crate) enum Cut {
     PoolOrphanCleanupDirectorySync,
     PoolUnlinkRecoveryDirectorySync,
     PoolFullBarrier,
+    PoolNewDirectorySyncCall,
+    PoolNewParentSyncCall,
     AttemptJournalWrite,
     AttemptJournalFileSync,
     AttemptJournalRename,

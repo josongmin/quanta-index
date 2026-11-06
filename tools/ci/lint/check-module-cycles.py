@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -60,6 +61,8 @@ DEFINITION_RE = re.compile(
 MACRO_RE = re.compile(r"^[ \t]*macro_rules!\s+(" + IDENT + r")", re.M)
 MOD_DECL_RE = re.compile(r"^[ \t]*(?:pub(?:\([a-z ]+\))?\s+)?mod\s+(" + IDENT + r")\s*;", re.M)
 PATH_MOD_DECL_RE = re.compile(r'#\[path\s*=\s*"([^"\n]+)"\]\s*mod\s+(' + IDENT + r")\s*;")
+PATH_INLINE_MOD_DECL_RE = re.compile(r'#\[path\s*=\s*"([^"\n]+)"\]\s*mod\s+(' + IDENT + r")\s*\{")
+INLINE_MOD_DECL_RE = re.compile(r"\bmod\s+(" + IDENT + r")\s*\{")
 
 
 def blank_non_code(text: str) -> str:
@@ -264,6 +267,16 @@ def module_path_of(src: Path, file: Path) -> str | None:
     return "::".join(parts)
 
 
+def enclosing_inline_modules(code: str, offset: int) -> tuple[str, ...]:
+    """Inline module scopes containing a declaration at `offset`."""
+    names = []
+    for match in INLINE_MOD_DECL_RE.finditer(code, 0, offset):
+        open_at = match.end() - 1
+        if offset < matching_brace(code, open_at):
+            names.append(match.group(1))
+    return tuple(names)
+
+
 def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
     src = crate_dir / "src"
     if not src.is_dir() or not any(src.rglob("*.rs")):
@@ -287,24 +300,46 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
     # Rust's #[path] names a module by the declaration, not by the target
     # filename. Preserve that ownership in the graph instead of treating the
     # declared child as missing or silently dropping its edges.
-    for file in sorted(src.rglob("*.rs")):
-        parent = module_path_of(src, file)
+    pending = deque(
+        (file, module_path_of(src, file), frozenset({file.resolve()}))
+        for file in sorted(src.rglob("*.rs"))
+    )
+    while pending:
+        file, parent, ancestors = pending.popleft()
         if parent is None:
             continue
         source = file.read_text(encoding="utf-8")
         code = blank_non_code(source)
+        path_inline_scopes = [
+            (override.start(), matching_brace(code, override.end() - 1))
+            for override in PATH_INLINE_MOD_DECL_RE.finditer(source)
+            if code[override.start() : override.start() + 2] == "#["
+        ]
         for match in PATH_MOD_DECL_RE.finditer(source):
             if code[match.start() : match.start() + 2] != "#[":
                 continue
-            target = (file.parent / match.group(1)).resolve()
+            if any(start < match.start() < end for start, end in path_inline_scopes):
+                raise ValueError(f"unsupported Rust inline module path override: {file}")
+            inline = enclosing_inline_modules(code, match.start())
+            # In a non-inline module #[path] is relative to its source file.
+            # An inline module adds its module directory (and a non-root
+            # source file's stem) before the declared relative path.
+            base = file.parent
+            if inline:
+                if file.name not in {"lib.rs", "main.rs", "mod.rs"}:
+                    base /= file.stem
+                base = base.joinpath(*inline)
+            target = (base / match.group(1)).resolve()
             if not target.is_relative_to(crate_dir.resolve()) or not target.is_file():
                 raise ValueError(
                     f"declared Rust path module has no source: {file}:{match.group(1)}"
                 )
+            if target in ancestors:
+                raise ValueError(f"recursive Rust path module source: {file}:{match.group(1)}")
             source_key = (
                 module_path_of(src, target) if target.is_relative_to(src.resolve()) else None
             )
-            child = f"{parent}::{match.group(2)}" if parent else match.group(2)
+            child = "::".join((*([parent] if parent else []), *inline, match.group(2)))
             if source_key is None:
                 # A declared fixture can live in tests/support outside src.
                 # Keep its declaration's ownership; cfg(test) subtree removal
@@ -312,21 +347,47 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
                 if child in raw:
                     raise ValueError(f"duplicate Rust path module source: {crate.name}::{child}")
                 raw[child] = blank_non_code(target.read_text(encoding="utf-8"))
+                pending.append((target, child, ancestors | {target}))
                 continue
             if source_key not in raw:
                 raise ValueError(
                     f"declared Rust path module has no source: {file}:{match.group(1)}"
                 )
             if child != source_key:
-                if child in raw:
+                # A path alias also owns the target file's descendants. Those
+                # descendants may already have been scanned under the physical
+                # filename, depending on inventory order.
+                moved = {
+                    key: child + key[len(source_key) :]
+                    for key in raw
+                    if key == source_key or key.startswith(source_key + "::")
+                }
+                if any(new in raw and new not in moved for new in moved.values()):
                     raise ValueError(f"duplicate Rust path module source: {crate.name}::{child}")
-                raw[child] = raw.pop(source_key)
+                contents = {new: raw[old] for old, new in moved.items()}
+                for old in moved:
+                    del raw[old]
+                raw.update(contents)
+                pending = deque(
+                    (
+                        queued_file,
+                        child + queued_parent[len(source_key) :]
+                        if queued_parent is not None
+                        and (
+                            queued_parent == source_key
+                            or queued_parent.startswith(source_key + "::")
+                        )
+                        else queued_parent,
+                        queued_ancestors,
+                    )
+                    for queued_file, queued_parent, queued_ancestors in pending
+                )
     # modules declared under #[cfg(test)] are test code, with their subtree
     test_modules: set[str] = set()
     for path, code in raw.items():
         for start, end in top_level_cfg_test_spans(code):
             span = code[start:end]
-            for decl in MOD_DECL_RE.finditer(span):
+            for decl in (*MOD_DECL_RE.finditer(span), *INLINE_MOD_DECL_RE.finditer(span)):
                 # Children inside an inline test module belong to that module,
                 # not to its production parent. Do not hide a same-named peer.
                 prefix = span[: decl.start()]

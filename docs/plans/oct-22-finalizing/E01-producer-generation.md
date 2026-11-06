@@ -2,6 +2,12 @@
 
 상태/담당/다음 조건은 [SSOT E01](README.md#e01)만 갱신한다. 원 요구 R03/R04/R23/R24/R37/R38, 종전 W2-05/06/12/14를 소유한다. 게시·복구 수명은 [E02](E02-publication-recovery.md), ANN 검색은 [E04](E04-semantic-ann.md)의 결과를 소비한다.
 
+## Current W205 routing
+
+이 채팅의 현재 구현·잔여·소유권은 [W205 현재 원장](OWNERSHIP.md#w205-closeout-20261030), 실제 실행 판정은 [W205 검증](VALIDATION.md#w205-proof-20261030)을 따른다. 아래 C0/K/C1/H/T/I/D는 고정 수용 계약이며, 과거 미구현 표현을 새 작업 발주로 읽지 않는다. W205의 실제 initial pin/capture/inventory→Product/context→provisional graph→공개 commit caller와 BC/FT/Java mount3개는 Main에 합류했다. L1-D의 별도 ItemIndex bank·collector 구현도 다시 만들지 않는다.
+
+Java 분모는 **공개 SDK5**(SourceOnly1 + 기존 공개 Maven/Gradle2 + configured JAR 양성/누락 음성2)와 **게시 전 모델2**를 구분한다. `initial_full_java_models_v86`의 두 본문은 Store 미게시를 단언하므로 공개 Maven/Gradle 실행을 대체하지 않는다. BC2/FT1/Python4, Strong2, 실제 provider 실패·최종 Native alias/refund도 각각 독립 oracle다. R789에서 v143 provider 실패 fixture와 기존 공개 Native fixture의 alias/최종 환급 관측을 구현했다. 그 과정에서 확인한 Ordinary-only Native caller·누락 paid-result wire API·GQLang-only Source cfg도 기존 owner에서 연결했고, provider header는 실제 A로 과금한다. R790은 공개 admission의 typed bridge, completed-result terminal, 실제 서비스의 checked readiness와 canonical borrowed digest, 최고 Source 외부의 context/map/Host 슬롯까지 연결했다. 이를 새 구현 잔여로 발급하지 않는다. 현재 필수 owning Rust/Product 실행은 미충족이며 이 문서는 E01 전체 완료를 선언하지 않는다.
+
 ## Reuse and exclusive writes
 
 - A: 기존 `consumer_v3/chunk_preplan_v3.rs`·`plan_v3.rs`와 private child. 파일별 single-ordinal query·paid TextBasis·canonical recipe·plan 전달을 재사용.

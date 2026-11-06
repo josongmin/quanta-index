@@ -18,8 +18,8 @@ use quanta_index_core::{CoreError, SemanticGenerationContractV1};
 
 use crate::codec::{self, cbor_serde, decode_current_format, format_unsupported};
 
-/// Version 4 persists the complete embedding model and policy identity.
-pub(crate) const GENERATION_CONTRACT_VERSION: u32 = 4;
+/// Version 5 requires source-file identity on semantic rows and scopes.
+pub(crate) const GENERATION_CONTRACT_VERSION: u32 = 5;
 
 /// Return `Err($variant(format!(...)))` when two contract fields disagree.
 ///
@@ -425,6 +425,14 @@ mod tests {
         };
         let bytes = current.encode()?;
         assert_eq!(GenerationContract::decode(&bytes)?, current);
+        let mut without_source_identity = current.clone();
+        without_source_identity.format_version = 4;
+        let prior_bytes = without_source_identity.encode()?;
+        assert!(matches!(
+            GenerationContract::decode(&prior_bytes),
+            Err(CoreError::Typed { code, message })
+                if code == FORMAT_UNSUPPORTED_CODE && message.contains("rebuild")
+        ));
         let mut value: ciborium::value::Value =
             crate::codec::decode(&bytes, "current generation contract fixture")?;
         if let ciborium::value::Value::Map(fields) = &mut value {

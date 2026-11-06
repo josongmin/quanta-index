@@ -379,6 +379,38 @@ impl WorkBudget {
         self.usage
     }
 
+    /// Record accepted logical work since an observed synchronous boundary.
+    ///
+    /// Deltas include nested work, not rejected charges or physical I/O. Call
+    /// before closing the owning span, while its diagnostic context is scoped.
+    /// This does not checkpoint, charge, allocate, or change execution authority.
+    pub fn record_diagnostic_usage_delta(
+        &self,
+        before: WorkUsage,
+        span: &crate::DiagnosticSpanGuardV1,
+    ) {
+        let Some(context) = self.request.diagnostic_context() else {
+            return;
+        };
+        let (Some(reads), Some(writes), Some(bytes), Some(mutations)) = (
+            self.usage.reads.checked_sub(before.reads),
+            self.usage.writes.checked_sub(before.writes),
+            self.usage.bytes.checked_sub(before.bytes),
+            self.usage.mutations.checked_sub(before.mutations),
+        ) else {
+            context.health(crate::DiagnosticHealthCodeV1::CounterOverflow);
+            return;
+        };
+        for (key, value) in [
+            (crate::DiagnosticCounterV1::WorkReads, reads),
+            (crate::DiagnosticCounterV1::WorkWrites, writes),
+            (crate::DiagnosticCounterV1::WorkBytes, bytes),
+            (crate::DiagnosticCounterV1::WorkMutations, mutations),
+        ] {
+            context.counter(span, key, value);
+        }
+    }
+
     /// The provider receives the same deadline and cancellation authority as
     /// admission. It must not create a fresh timeout when execution resumes.
     #[must_use]
@@ -386,15 +418,9 @@ impl WorkBudget {
         &self.request
     }
 
-    /// Temporarily parent diagnostic work to an already opened phase span.
-    ///
-    /// Only the request's diagnostic context changes. The original request,
-    /// including its deadline, cancellation, ledgers and provider grant, is
-    /// restored when the lexical borrow ends, including on unwind. Off avoids
-    /// cloning the request or observing a diagnostic clock.
-    pub fn scoped_diagnostic_context(
+    fn scoped_request(
         &mut self,
-        context: Option<crate::DiagnosticContextV1>,
+        replacement: Option<crate::RequestBudgetV1>,
     ) -> impl std::ops::DerefMut<Target = Self> + '_ {
         struct Restore<'a> {
             budget: &'a mut WorkBudget,
@@ -423,14 +449,45 @@ impl WorkBudget {
             }
         }
 
-        let original = context.map(|context| {
-            let scoped = self.request.clone().with_diagnostic_context(context);
-            std::mem::replace(&mut self.request, scoped)
-        });
+        let original = replacement.map(|scoped| std::mem::replace(&mut self.request, scoped));
         Restore {
             budget: self,
             original,
         }
+    }
+
+    /// Temporarily parent diagnostic work to an already opened phase span.
+    ///
+    /// `None` inherits the existing context. The request's deadline,
+    /// cancellation, ledgers and provider grant are preserved and the original
+    /// request is restored on return or unwind. Off does not clone the request.
+    pub fn scoped_diagnostic_context(
+        &mut self,
+        context: Option<crate::DiagnosticContextV1>,
+    ) -> impl std::ops::DerefMut<Target = Self> + '_ {
+        let replacement =
+            context.map(|context| self.request.clone().with_diagnostic_context(context));
+        self.scoped_request(replacement)
+    }
+
+    /// Override the diagnostic context for one work scope.
+    ///
+    /// `Some` replaces it; `None` explicitly masks an inherited context.
+    /// An already unobserved request is borrowed directly, without a clone
+    /// or diagnostic clock read. The original request is restored on return
+    /// or unwind.
+    pub fn scoped_diagnostic_override(
+        &mut self,
+        context: Option<crate::DiagnosticContextV1>,
+    ) -> impl std::ops::DerefMut<Target = Self> + '_ {
+        let replacement = match context {
+            Some(context) => Some(self.request.clone().with_diagnostic_context(context)),
+            None => self
+                .request
+                .diagnostic_context()
+                .map(|_| self.request.clone().without_diagnostic_context()),
+        };
+        self.scoped_request(replacement)
     }
 
     /// Bind a newly admitted execution stage before asynchronous work starts.
@@ -516,6 +573,8 @@ mod tests {
             }
         }};
     }
+
+    mod diagnostic_tests;
 
     fn limits() -> WorkLimits {
         WorkLimits {
@@ -986,6 +1045,26 @@ mod tests {
                 check!(inner.request().same_request_as(&original));
             }
             {
+                let mut masked = outer.scoped_diagnostic_override(None);
+                check!(masked.request().diagnostic_context().is_none());
+                check!(masked.request().same_request_as(&original));
+                check_eq!(masked.request().deadline(), deadline);
+                check!(matches!(
+                    masked.request().begin_provider_attempt_v1(),
+                    Ok(Some(_))
+                ));
+                masked.charge(WorkUsage {
+                    mutations: 1,
+                    ..WorkUsage::default()
+                })?;
+                {
+                    let nested = masked.scoped_diagnostic_override(Some(trace.clone()));
+                    check!(nested.request().diagnostic_context().is_some());
+                    check!(nested.request().same_request_as(&original));
+                }
+                check!(masked.request().diagnostic_context().is_none());
+            }
+            {
                 let inner = outer.scoped_diagnostic_context(Some(trace));
                 check!(inner.request().diagnostic_context().is_some());
                 check!(inner.request().same_request_as(&original));
@@ -1001,6 +1080,7 @@ mod tests {
         check_eq!(budget.request().deadline(), deadline);
         check_eq!(budget.usage().reads, 1);
         check_eq!(budget.usage().writes, 1);
+        check_eq!(budget.usage().mutations, 1);
         check!(matches!(
             budget.request().begin_provider_attempt_v1(),
             Ok(Some(_))
@@ -1029,6 +1109,11 @@ mod tests {
                 ..WorkUsage::default()
             })?;
         }
+        {
+            let off = budget.scoped_diagnostic_override(None);
+            check!(off.request().diagnostic_context().is_none());
+            check!(off.request().same_request_as(&original));
+        }
         check_eq!(clock.0.load(Ordering::Relaxed), before);
         let error = {
             let mut scoped = budget.scoped_diagnostic_context(Some(trace.clone()));
@@ -1043,7 +1128,7 @@ mod tests {
         check!(budget.request().diagnostic_context().is_none());
         check!(budget.request().same_request_as(&original));
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut scoped = budget.scoped_diagnostic_context(Some(trace));
+            let mut scoped = budget.scoped_diagnostic_context(Some(trace.clone()));
             let _charged = scoped.charge(WorkUsage {
                 writes: 1,
                 ..WorkUsage::default()
@@ -1055,7 +1140,24 @@ mod tests {
         check!(budget.request().same_request_as(&original));
         check_eq!(budget.usage().writes, 1);
         check_eq!(budget.first_denial(), Some(WorkBudgetDenial::Reads));
-        original.cancel_handle().cancel();
+        let mut traced_budget =
+            WorkBudget::with_request(limits(), original.clone().with_diagnostic_context(trace));
+        let masked_unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> Result<(), IndexError> {
+                let masked = traced_budget.scoped_diagnostic_override(None);
+                check!(masked.request().diagnostic_context().is_none());
+                std::panic::resume_unwind(Box::new("masked diagnostic phase unwind"));
+            },
+        ));
+        check!(masked_unwind.is_err());
+        check!(traced_budget.request().diagnostic_context().is_some());
+        check!(traced_budget.request().same_request_as(&original));
+        {
+            let masked = traced_budget.scoped_diagnostic_override(None);
+            original.cancel_handle().cancel();
+            check_eq!(masked.checkpoint(), Err(IndexError::Cancelled));
+        }
+        check!(traced_budget.request().diagnostic_context().is_some());
         check_eq!(budget.checkpoint(), Err(IndexError::Cancelled));
         Ok(())
     }

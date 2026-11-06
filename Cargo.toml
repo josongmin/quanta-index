@@ -32,7 +32,7 @@ members = [
     "benchmarks/bench-protocol",
     "vendor/ciborium-0.2.2",
 ]
-exclude = ["vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript", "vendor/tantivy-0.22.1", "vendor/libsqlite3-sys-0.38.2", "vendor/lance-io-7.0.0", "vendor/lance-7.0.0", "vendor/object_store-0.13.2", "vendor/lancedb-0.30.0"]
+exclude = ["vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript", "vendor/tantivy-0.22.1", "vendor/libsqlite3-sys-0.38.2", "vendor/rusqlite-0.40.2", "vendor/lance-io-7.0.0", "vendor/lance-7.0.0", "vendor/object_store-0.13.2", "vendor/lancedb-0.30.0"]
 resolver = "2"
 
 [workspace.package]
@@ -242,6 +242,8 @@ unicode-normalization = { path = "vendor/unicode-normalization-0.1.25" }
 
 # One bundled SQLite instance; the pinned fork adds the admitted Unix VFS.
 libsqlite3-sys = { path = "vendor/libsqlite3-sys-0.38.2" }
+# Same pinned Connection owner; safe pager snapshots retain its handle borrow.
+rusqlite = { path = "vendor/rusqlite-0.40.2" }
 
 # IVF metadata caches must not retain self-referential open reader leases.
 lance = { path = "vendor/lance-7.0.0" }

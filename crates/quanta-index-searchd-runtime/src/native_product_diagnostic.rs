@@ -210,6 +210,18 @@ mod tests {
             .lines()
             .map(serde_json::from_str)
             .collect::<std::result::Result<_, _>>()?;
+        let schema_version = rows
+            .first()
+            .and_then(|row| row.get("schema_version"))
+            .and_then(Value::as_u64)
+            .context("capture schema version absent")?;
+        let rows = rows
+            .into_iter()
+            .map(|row| {
+                quanta_index_searchd::trace_wire::normalize_record(schema_version, row)
+                    .map_err(anyhow::Error::from)
+            })
+            .collect::<Result<Vec<_>>>()?;
         anyhow::ensure!(
             rows.iter()
                 .any(|row| row.pointer("/kind/outcome").and_then(Value::as_str) == Some("aborted"))

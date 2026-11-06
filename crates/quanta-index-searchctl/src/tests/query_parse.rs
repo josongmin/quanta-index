@@ -271,6 +271,104 @@ fn parses_hybrid_subcommand_into_a_hybrid_request() {
 }
 
 #[test]
+fn parses_go_test_trace_file_with_independent_chunk_and_file_caps() {
+    let parsed = ParsedCommand::parse([
+        "go-test-trace-file",
+        "--repo-id",
+        "repo",
+        "--revision-id",
+        "rev",
+        "--manifest-generation",
+        "7",
+        "--syntax",
+        "native",
+        "--query-text",
+        "panic",
+        "--semantic-query-text",
+        "handler panic",
+        "--top-k",
+        "100",
+        "--failure-excerpt",
+        "handler.go:42: panic",
+        "--file-top-k",
+        "20",
+    ]);
+    assert!(parsed.is_ok(), "{parsed:?}");
+    let Ok(parsed) = parsed else { return };
+    assert_eq!(parsed.kind, CommandKind::GoTestTraceFileV1);
+    let CliRequest::GoTestTraceFileV1(request) = parsed.request else {
+        panic!("expected Go test trace file request");
+    };
+    assert_eq!(request.query.top_k, 100);
+    assert_eq!(request.query.text_query.top_k, 100);
+    assert_eq!(request.top_k, 20);
+    assert_eq!(request.failure_excerpt, "handler.go:42: panic");
+    assert_eq!(request.failure_source_repo_id, None);
+    let owned = ParsedCommand::parse([
+        "go-test-trace-file",
+        "--repo-id",
+        "repo",
+        "--revision-id",
+        "rev",
+        "--manifest-generation",
+        "7",
+        "--syntax",
+        "native",
+        "--query-text",
+        "panic",
+        "--semantic-query-text",
+        "handler panic",
+        "--top-k",
+        "100",
+        "--failure-excerpt",
+        "handler.go:42: panic",
+        "--failure-source-repo-id",
+        "source-repo",
+        "--file-top-k",
+        "20",
+    ])
+    .expect("explicit failure owner");
+    let CliRequest::GoTestTraceFileV1(owned) = owned.request else {
+        panic!("expected Go test trace file request");
+    };
+    assert_eq!(
+        owned
+            .failure_source_repo_id
+            .map(|id| id.as_str().to_string()),
+        Some("source-repo".to_string())
+    );
+    for absent in ["--failure-excerpt", "--file-top-k"] {
+        let mut args = vec![
+            "go-test-trace-file",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--syntax",
+            "native",
+            "--query-text",
+            "panic",
+            "--semantic-query-text",
+            "handler panic",
+            "--top-k",
+            "100",
+        ];
+        if absent == "--failure-excerpt" {
+            args.extend(["--file-top-k", "20"]);
+        }
+        if absent == "--file-top-k" {
+            args.extend(["--failure-excerpt", "panic"]);
+        }
+        let Err(error) = ParsedCommand::parse(args) else {
+            panic!("missing {absent} must fail");
+        };
+        assert!(error.message.contains(absent), "{}", error.message);
+    }
+}
+
+#[test]
 fn lexical_defaults_to_code_search_without_changing_symbol_syntax() {
     let parsed = ParsedCommand::parse([
         "lexical",

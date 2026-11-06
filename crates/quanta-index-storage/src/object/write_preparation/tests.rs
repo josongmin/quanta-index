@@ -401,6 +401,16 @@ fn wire_charge_survives_actual_install_confirmation_and_unwind()
         };
         let registrations = RegisteredObject::allocation_bytes(0)? * if batch { 2 } else { 1 };
         let returned_slots = if batch { metadata } else { 0 };
+        // Fixed wire gold for "first" and "other" has distinct ea/a4 shards.
+        // Their complete PathBuf backing is now admitted before reservation.
+        let shard_paths = if batch {
+            u64::try_from(store.objects.as_os_str().as_encoded_bytes().len())?
+                .checked_add(3)
+                .and_then(|bytes| bytes.checked_mul(2))
+                .ok_or("shard-path grant overflow")?
+        } else {
+            0
+        };
         check!(
             ledger.peak.load(Ordering::SeqCst)
                 == if batch { 42 } else { 21 }
@@ -408,8 +418,9 @@ fn wire_charge_survives_actual_install_confirmation_and_unwind()
                     + preparation
                     + registrations
                     + returned_slots
+                    + shard_paths
         );
-        check!(ledger.refunds.load(Ordering::SeqCst) == if batch { 7 } else { 2 });
+        check!(ledger.refunds.load(Ordering::SeqCst) == if batch { 8 } else { 2 });
         check!(sink.reserve.load(Ordering::SeqCst) == 1);
         if unwind {
             check!(result.is_err());
@@ -589,7 +600,7 @@ fn private_256_object_chain_survives_reopen_across_physical_batch_boundaries()
 }
 
 #[test]
-fn private_257_and_public_65_refuse_before_custody_or_physical_write()
+fn private_and_public_257_refuse_before_custody_or_physical_write()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let store_path = directory.path().join("store");
@@ -608,7 +619,7 @@ fn private_257_and_public_65_refuse_before_custody_or_physical_write()
             payload: b"one".to_vec(),
             children: Vec::new(),
         };
-        65
+        257
     ];
     check!(matches!(
         store.install_batch(&over_public, &sink, &mut work),
@@ -629,20 +640,24 @@ fn bounded_digest_index_keeps_original_ordinals_at_zero_and_full_boundaries()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut table = BatchIndex::new();
     check!(table.lookup(ObjectRef(Digest([0; 32])))?.is_none());
-    table.insert(ObjectRef(Digest([0; 32])), 63)?;
+    table.insert(ObjectRef(Digest([0; 32])), 255)?;
     check!(matches!(
         table.insert(ObjectRef(Digest([0; 32])), 0),
         Err(IndexError::BackendViolation(_))
     ));
-    for byte in (1..64_u8).rev() {
-        table.insert(ObjectRef(Digest([byte; 32])), usize::from(63 - byte))?;
+    for byte in (1..=255_u8).rev() {
+        table.insert(ObjectRef(Digest([byte; 32])), usize::from(255 - byte))?;
     }
-    for byte in 0..64_u8 {
-        check!(table.lookup(ObjectRef(Digest([byte; 32])))? == Some(usize::from(63 - byte)));
+    for byte in 0..=255_u8 {
+        check!(table.lookup(ObjectRef(Digest([byte; 32])))? == Some(usize::from(255 - byte)));
     }
-    check!(table.lookup(ObjectRef(Digest([64; 32])))?.is_none());
+    let absent = ObjectRef(Digest([
+        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0,
+    ]));
+    check!(table.lookup(absent)?.is_none());
     check!(matches!(
-        table.insert(ObjectRef(Digest([64; 32])), 0),
+        table.insert(absent, 0),
         Err(IndexError::ResourceLimited)
     ));
     Ok(())
@@ -696,3 +711,5 @@ fn fixed_gate_array_keeps_every_gate_through_real_reserve_and_confirmation()
     check!(ledger.live.load(Ordering::SeqCst) == 0);
     Ok(())
 }
+
+mod install_envelope;

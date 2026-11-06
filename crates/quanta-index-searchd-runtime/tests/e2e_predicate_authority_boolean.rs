@@ -15,8 +15,8 @@ use quanta_index_contract::{
     FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch, OwnerDocKind,
     RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch,
     RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch, SemanticCorpusKindV1,
-    SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1,
-    TextQuerySyntax,
+    SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceFileKey,
+    SourceRoleV1, TextQuerySyntax,
 };
 use quanta_index_searchd_harness as e2e_harness;
 
@@ -49,13 +49,18 @@ fn chunk(id: &str, path: &str, text: &str, source_repo_id: &str) -> AnyResult<Ch
     })
 }
 
-fn semantic_scope(path: &str) -> SemanticSourceReplaceScopeV1 {
+fn semantic_scope(path: &str, source_repo_id: &str) -> AnyResult<SemanticSourceReplaceScopeV1> {
     let owner_id = format!("predicate-boolean:{path}");
-    SemanticSourceReplaceScopeV1 {
+    let source_file = SourceFileKey {
+        source_repo_id: RepoId::new(source_repo_id)?,
+        repo_relative_path: RepoRelativePath::new(path),
+    };
+    Ok(SemanticSourceReplaceScopeV1 {
         scope: SemanticSourceScopeKeyV1 {
             corpus_kind: SemanticCorpusKindV1::SymbolCard,
             owner_kind: OwnerDocKind::Symbol,
             owner_id: owner_id.clone(),
+            source_file: source_file.clone(),
         },
         scope_digest: format!("predicate-boolean:semantic-scope:{path}"),
         sources: vec![SemanticSourceRecordV1 {
@@ -65,7 +70,7 @@ fn semantic_scope(path: &str) -> SemanticSourceReplaceScopeV1 {
             owner_id,
             source_doc_id: format!("predicate-boolean:semantic-doc:{path}"),
             parent_owner_id: None,
-            repo_relative_path: RepoRelativePath::new(path),
+            source_file,
             language: Some("rust".to_string()),
             package: Some("predicate-boolean".to_string()),
             symbol_kind: Some("function".to_string()),
@@ -80,7 +85,7 @@ fn semantic_scope(path: &str) -> SemanticSourceReplaceScopeV1 {
             text: format!("semantic authority fixture {path}"),
         }],
         cluster_memberships: Vec::new(),
-    }
+    })
 }
 
 fn sorted_ids(result: &e2e_harness::E2eQueryResult) -> Vec<String> {
@@ -146,8 +151,8 @@ fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
         ],
         Vec::new(),
         vec![
-            semantic_scope("src/shared.rs"),
-            semantic_scope("src/target.rs"),
+            semantic_scope("src/shared.rs", "corp-alpha")?,
+            semantic_scope("src/target.rs", "corp-gamma")?,
         ],
     )?;
 

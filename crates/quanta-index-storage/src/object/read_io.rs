@@ -8,14 +8,31 @@ use std::{
 };
 
 use quanta_index_core::index::{
-    IndexError, ObjectReadFile, ObjectReadIoPort, ObjectRef, WorkBudget, WorkUsage,
+    IndexError, ObjectReadFile, ObjectReadIoPort, ObjectRef, StoredObject, WorkBudget, WorkUsage,
 };
 
 use super::{
-    FileObjectStore, HEADER_LEN, MAX_WIRE, ReadWire, digest_wire, hex_digit,
-    namespace::NamespaceLease, nofollow_flag, storage_error, validate_private_directory,
-    validate_private_file, validate_private_shard,
+    HEADER_LEN, MAX_WIRE, digest_wire, hex_digit, namespace::NamespaceLease, nofollow_flag,
+    storage_error, validate_private_directory, validate_private_file, validate_private_shard,
 };
+
+/// Only the completed file read constructs this immutable, reference-bound wire.
+pub(super) struct ReadWire {
+    bytes: Vec<u8>,
+    // Drop the bytes before releasing their live allocation custody.
+    _memory: Option<quanta_index_core::index::MemoryLease>,
+    reference: ObjectRef,
+}
+
+impl ReadWire {
+    pub(super) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(super) fn decode(self, budget: &mut WorkBudget) -> Result<StoredObject, IndexError> {
+        super::decode_authenticated_stored_wire(self.reference, &self.bytes, budget)
+    }
+}
 
 pub(super) enum ObjectIoFile {
     Plain(File),
@@ -32,40 +49,6 @@ impl ObjectIoFile {
             #[cfg(target_os = "macos")]
             Self::Writer(owner) => owner.file(),
         }
-    }
-}
-
-impl FileObjectStore {
-    #[cfg(target_os = "macos")]
-    pub(super) fn open_reader(
-        &self,
-        path: &Path,
-        budget: &mut WorkBudget,
-    ) -> Result<ObjectIoFile, IndexError> {
-        open_reader(self.read_io.as_deref(), path, budget)
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(super) fn open_private_regular_file(
-        &self,
-        path: &Path,
-        budget: &mut WorkBudget,
-    ) -> Result<ObjectIoFile, IndexError> {
-        use std::os::unix::fs::MetadataExt as _;
-        let linked = std::fs::symlink_metadata(path).map_err(|error| storage_error(&error))?;
-        validate_private_file(&linked)?;
-        let owner = self.open_reader(path, budget)?;
-        let opened = owner
-            .file()?
-            .metadata()
-            .map_err(|error| storage_error(&error))?;
-        validate_private_file(&opened)?;
-        if opened.dev() != linked.dev() || opened.ino() != linked.ino() {
-            return Err(IndexError::CorruptObject(
-                "immutable object changed during batch sync".into(),
-            ));
-        }
-        Ok(owner)
     }
 }
 
@@ -109,17 +92,32 @@ pub(super) fn read_wire(
     reference: ObjectRef,
     budget: &mut WorkBudget,
 ) -> Result<ReadWire, IndexError> {
+    let (wire, _owner) = read_wire_with_owner(objects, namespace, io, reference, budget)?;
+    Ok(wire)
+}
+
+pub(super) fn read_wire_with_owner(
+    objects: &Path,
+    namespace: Option<&NamespaceLease>,
+    io: Option<&dyn ObjectReadIoPort>,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<(ReadWire, ObjectIoFile), IndexError> {
     budget.charge(WorkUsage {
         reads: 1,
         ..WorkUsage::default()
     })?;
-    let root = objects
-        .parent()
-        .ok_or_else(|| IndexError::Storage("object store has no root".into()))?;
-    validate_private_directory(root)?;
-    validate_private_directory(objects)?;
     if let Some(namespace) = namespace {
+        // The held lease validates the live root, lease and objects names and
+        // their private metadata together. Repeat the generic path checks only
+        // for legacy reads without a namespace binding.
         let _binding = namespace.validate_objects(objects)?;
+    } else {
+        let root = objects
+            .parent()
+            .ok_or_else(|| IndexError::Storage("object store has no root".into()))?;
+        validate_private_directory(root)?;
+        validate_private_directory(objects)?;
     }
     let path_bytes = u64::try_from(objects.as_os_str().len())
         .map_err(|_error| IndexError::ResourceLimited)?
@@ -193,8 +191,12 @@ pub(super) fn read_wire(
             "object digest or size mismatch".into(),
         ));
     }
-    Ok(ReadWire {
-        bytes: wire,
-        _memory: memory,
-    })
+    Ok((
+        ReadWire {
+            bytes: wire,
+            _memory: memory,
+            reference,
+        },
+        owner,
+    ))
 }

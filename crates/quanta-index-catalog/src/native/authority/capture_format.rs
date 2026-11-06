@@ -1,4 +1,4 @@
-//! Semantic version gate for persisted native source-event claims.
+//! Semantic version gate for persisted native claims and registration payloads.
 //!
 //! A schema version alone cannot distinguish the old execution-base hash from
 //! the logical capture hash. This row is checked before Catalog DDL or recovery.
@@ -15,7 +15,7 @@ use quanta_index_contract::{
 use quanta_index_core::CoreError;
 use rusqlite::{Connection, params, types::ValueRef};
 
-use super::{SCHEMA, SCHEMA_OBJECTS, fields_digest};
+use super::{SCHEMA, SCHEMA_OBJECTS, fields_digest, registration_codec};
 use crate::connection::engine_error;
 
 const DIGEST_DOMAIN: &[u8] = b"qidx.native.capture-format.v1\0";
@@ -38,6 +38,7 @@ fn expected_digest(root_nonce: &[u8; 32]) -> Result<Vec<u8>, CoreError> {
             i64::from(NATIVE_INDEX_STATE_VERSION),
             i64::from(NATIVE_SOURCE_CAPTURE_VERSION),
             NATIVE_SOURCE_CAPTURE_HASH_DOMAIN,
+            registration_codec::VERSION,
             root_nonce,
         ),
     )
@@ -166,12 +167,13 @@ pub(super) fn seed_and_verify(
         let _inserted = connection
             .execute(
                 "INSERT INTO native_capture_format_v1
-                 (singleton,state_version,capture_version,hash_domain,root_nonce,row_digest)
-                 VALUES (1,?1,?2,?3,?4,?5)",
+                 (singleton,state_version,capture_version,hash_domain,registration_codec,root_nonce,row_digest)
+                 VALUES (1,?1,?2,?3,?4,?5,?6)",
                 params![
                     i64::from(NATIVE_INDEX_STATE_VERSION),
                     i64::from(NATIVE_SOURCE_CAPTURE_VERSION),
                     NATIVE_SOURCE_CAPTURE_HASH_DOMAIN,
+                    registration_codec::VERSION,
                     root_nonce.as_slice(),
                     expected_digest(&root_nonce)?
                 ],
@@ -188,7 +190,9 @@ pub(super) fn verify_stamp(connection: &Connection, path: &Path) -> Result<[u8; 
                CASE WHEN typeof(singleton)='integer' AND singleton=1 THEN 1 ELSE 0 END,
                CASE WHEN typeof(state_version)='integer' AND state_version=?1 THEN 1 ELSE 0 END,
                CASE WHEN typeof(capture_version)='integer' AND capture_version=?2 THEN 1 ELSE 0 END,
-               CASE WHEN typeof(hash_domain)='blob' THEN length(hash_domain)=?3 ELSE 0 END,
+               CASE WHEN typeof(hash_domain)='blob'
+                          AND typeof(registration_codec)='integer' AND registration_codec=?4
+                    THEN length(hash_domain)=?3 ELSE 0 END,
                CASE WHEN typeof(row_digest)='blob' THEN length(row_digest)=32 ELSE 0 END,
                CASE WHEN typeof(root_nonce)='blob' THEN length(root_nonce)=32 ELSE 0 END
              FROM native_capture_format_v1 LIMIT 2",
@@ -200,7 +204,8 @@ pub(super) fn verify_stamp(connection: &Connection, path: &Path) -> Result<[u8; 
             i64::from(NATIVE_SOURCE_CAPTURE_VERSION),
             i64::try_from(NATIVE_SOURCE_CAPTURE_HASH_DOMAIN.len()).map_err(|error| {
                 CoreError::Storage(format!("native capture domain length overflow: {error}"))
-            })?
+            })?,
+            registration_codec::VERSION
         ])
         .map_err(|error| engine_error("read native capture format", path, &error))?;
     let Some(row) = rows
@@ -216,8 +221,9 @@ pub(super) fn verify_stamp(connection: &Connection, path: &Path) -> Result<[u8; 
             .map_err(|error| engine_error("read native state version shape", path, &error))?,
         row.get(2)
             .map_err(|error| engine_error("read native capture version shape", path, &error))?,
-        row.get(3)
-            .map_err(|error| engine_error("read native capture domain shape", path, &error))?,
+        row.get(3).map_err(|error| {
+            engine_error("read native capture domain/codec shape", path, &error)
+        })?,
         row.get(4)
             .map_err(|error| engine_error("read native capture digest shape", path, &error))?,
         row.get(5)
@@ -233,15 +239,18 @@ pub(super) fn verify_stamp(connection: &Connection, path: &Path) -> Result<[u8; 
     if shape != (1, 1, 1, 1, 1, 1) {
         return Err(unsupported(
             path,
-            "invalid state/capture scalar or domain/digest/root nonce type/length",
+            "invalid state/capture/registration scalar or domain/digest/root nonce type/length",
         ));
     }
     drop(rows);
     drop(query);
     let contents: Option<([u8; 32], [u8; 32])> = connection
         .query_row(
-            "SELECT hash_domain,root_nonce,row_digest FROM native_capture_format_v1 WHERE singleton=1 LIMIT 1",
-            [],
+            "SELECT CASE WHEN typeof(registration_codec)='integer' AND registration_codec=?1
+                         THEN hash_domain END,
+                    root_nonce,row_digest
+             FROM native_capture_format_v1 WHERE singleton=1 LIMIT 1",
+            params![registration_codec::VERSION],
             |row| {
                 let domain = row.get_ref(0)?;
                 let nonce = row.get_ref(1)?;
@@ -369,6 +378,19 @@ mod tests {
         connection::{CATALOG_FILE_NAME, catalog_dir},
     };
 
+    type StampRow = (Value, Value, Value, Value, Value, Value, Value);
+    type StampShape = (
+        String,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        i64,
+        String,
+        i64,
+    );
+
     macro_rules! check {
         ($condition:expr $(,)?) => {
             if !$condition {
@@ -454,11 +476,11 @@ mod tests {
     #[test]
     fn fixed_nonce_stamp_has_independent_golden() -> Result<(), Box<dyn Error>> {
         // Independently computed SHA-256 of the stamp domain and canonical
-        // JSON [1,18,2,byte-array hash domain,[7;32]] with compact separators.
+        // JSON [1,18,2,byte-array hash domain,1,[7;32]] with compact separators.
         const GOLDEN: [u8; 32] = [
-            0x37, 0xed, 0xc7, 0x9b, 0x60, 0x72, 0x27, 0x64, 0xec, 0x2f, 0x00, 0xee, 0x70, 0x53,
-            0x1b, 0x76, 0x11, 0x6f, 0xfc, 0x74, 0x05, 0xd4, 0x3f, 0x28, 0x22, 0x66, 0xd0, 0x4a,
-            0x7f, 0x39, 0x93, 0xaf,
+            0xd2, 0x40, 0xff, 0x88, 0x00, 0xf7, 0xb6, 0xaf, 0x11, 0x48, 0x74, 0x1d, 0xde, 0xce,
+            0xb2, 0xe1, 0x0f, 0x3c, 0x88, 0x7f, 0x15, 0x15, 0x19, 0x50, 0x88, 0x95, 0xb9, 0x2e,
+            0x2d, 0xa6, 0xd1, 0xda,
         ];
         let actual = super::expected_digest(&[7; 32])?;
         check_eq!(actual.as_slice(), GOLDEN.as_slice());
@@ -470,13 +492,14 @@ mod tests {
         let root = tempfile::tempdir()?;
         drop(open(root.path())?);
         let db = Connection::open(path(root.path()))?;
-        let (state, capture, domain, nonce, digest): (i64, i64, Vec<u8>, Vec<u8>, Vec<u8>) = db.query_row(
-            "SELECT state_version,capture_version,hash_domain,root_nonce,row_digest FROM native_capture_format_v1 WHERE singleton=1",
+        let (state, capture, domain, codec, nonce, digest): (i64, i64, Vec<u8>, i64, Vec<u8>, Vec<u8>) = db.query_row(
+            "SELECT state_version,capture_version,hash_domain,registration_codec,root_nonce,row_digest FROM native_capture_format_v1 WHERE singleton=1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         )?;
         check_eq!(state, i64::from(NATIVE_INDEX_STATE_VERSION));
         check_eq!(capture, 2);
+        check_eq!(codec, super::registration_codec::VERSION);
         check_eq!(
             domain.as_slice(),
             b"quanta-index-native-source-capture-v2\0".as_slice()
@@ -635,6 +658,10 @@ mod tests {
             "UPDATE native_capture_format_v1 SET state_version=12",
             "UPDATE native_capture_format_v1 SET state_version=10",
             "UPDATE native_capture_format_v1 SET capture_version=1",
+            "PRAGMA ignore_check_constraints=ON;
+             UPDATE native_capture_format_v1 SET registration_codec=2",
+            "PRAGMA ignore_check_constraints=ON;
+             UPDATE native_capture_format_v1 SET registration_codec=x'01'",
             "UPDATE native_capture_format_v1 SET hash_domain=x'01'",
             "UPDATE native_capture_format_v1 SET row_digest=x'01'",
             "UPDATE native_capture_format_v1 SET root_nonce=zeroblob(32)",
@@ -649,17 +676,17 @@ mod tests {
              UPDATE native_capture_format_v1 SET singleton=2",
             "PRAGMA ignore_check_constraints=ON;
              INSERT INTO native_capture_format_v1
-             (singleton,state_version,capture_version,hash_domain,root_nonce,row_digest)
-             SELECT 2,state_version,capture_version,hash_domain,root_nonce,row_digest
+             (singleton,state_version,capture_version,hash_domain,registration_codec,root_nonce,row_digest)
+             SELECT 2,state_version,capture_version,hash_domain,registration_codec,root_nonce,row_digest
              FROM native_capture_format_v1 WHERE singleton=1",
         ] {
             let root = tempfile::tempdir()?;
             drop(open(root.path())?);
             let db = Connection::open(path(root.path()))?;
             db.execute_batch(mutation)?;
-            let before: Option<(Value, Value, Value, Value, Value, Value)> = db
+            let before: Option<StampRow> = db
                 .query_row(
-                    "SELECT singleton,state_version,capture_version,hash_domain,row_digest,root_nonce
+                    "SELECT singleton,state_version,capture_version,hash_domain,registration_codec,row_digest,root_nonce
                      FROM native_capture_format_v1 ORDER BY singleton LIMIT 1",
                     [],
                     |row| {
@@ -670,6 +697,7 @@ mod tests {
                             row.get(3)?,
                             row.get(4)?,
                             row.get(5)?,
+                            row.get(6)?,
                         ))
                     },
                 )
@@ -681,9 +709,9 @@ mod tests {
             drop(db);
             require_format_refusal(root.path())?;
             let db = Connection::open(path(root.path()))?;
-            let after: Option<(Value, Value, Value, Value, Value, Value)> = db
+            let after: Option<StampRow> = db
                 .query_row(
-                    "SELECT singleton,state_version,capture_version,hash_domain,row_digest,root_nonce
+                    "SELECT singleton,state_version,capture_version,hash_domain,registration_codec,row_digest,root_nonce
                      FROM native_capture_format_v1 ORDER BY singleton LIMIT 1",
                     [],
                     |row| {
@@ -694,6 +722,7 @@ mod tests {
                             row.get(3)?,
                             row.get(4)?,
                             row.get(5)?,
+                            row.get(6)?,
                         ))
                     },
                 )
@@ -753,6 +782,7 @@ mod tests {
             "UPDATE native_capture_format_v1 SET row_digest=zeroblob(1048576)",
             "UPDATE native_capture_format_v1 SET state_version=x'01'",
             "UPDATE native_capture_format_v1 SET capture_version='bad'",
+            "UPDATE native_capture_format_v1 SET registration_codec='bad'",
             "UPDATE native_capture_format_v1 SET hash_domain='text-domain'",
             "UPDATE native_capture_format_v1 SET row_digest='text-digest'",
             "UPDATE native_capture_format_v1 SET root_nonce=zeroblob(1048576)",
@@ -763,8 +793,8 @@ mod tests {
             let db = Connection::open(path(root.path()))?;
             db.execute_batch("PRAGMA ignore_check_constraints=ON")?;
             db.execute_batch(mutation)?;
-            let before: (String, String, String, i64, String, i64, String, i64) = db.query_row(
-                "SELECT typeof(state_version),typeof(capture_version),
+            let before: StampShape = db.query_row(
+                "SELECT typeof(state_version),typeof(capture_version),typeof(registration_codec),
                         typeof(hash_domain),length(hash_domain),
                         typeof(row_digest),length(row_digest),typeof(root_nonce),length(root_nonce)
                  FROM native_capture_format_v1",
@@ -779,14 +809,15 @@ mod tests {
                         row.get(5)?,
                         row.get(6)?,
                         row.get(7)?,
+                        row.get(8)?,
                     ))
                 },
             )?;
             drop(db);
             require_format_refusal(root.path())?;
             let db = Connection::open(path(root.path()))?;
-            let after: (String, String, String, i64, String, i64, String, i64) = db.query_row(
-                "SELECT typeof(state_version),typeof(capture_version),
+            let after: StampShape = db.query_row(
+                "SELECT typeof(state_version),typeof(capture_version),typeof(registration_codec),
                         typeof(hash_domain),length(hash_domain),
                         typeof(row_digest),length(row_digest),typeof(root_nonce),length(root_nonce)
                  FROM native_capture_format_v1",
@@ -801,6 +832,7 @@ mod tests {
                         row.get(5)?,
                         row.get(6)?,
                         row.get(7)?,
+                        row.get(8)?,
                     ))
                 },
             )?;

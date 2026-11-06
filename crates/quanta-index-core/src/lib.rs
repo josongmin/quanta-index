@@ -39,8 +39,9 @@ pub use diagnostic_trace::{
     DiagnosticAnnRegionPhaseV1, DiagnosticAttemptGuardCoreV1, DiagnosticCaptureIdV1,
     DiagnosticClockV1, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticEmitV1,
     DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
-    DiagnosticObjectKindV1, DiagnosticOccupancyBucketV1, DiagnosticPhaseV1, DiagnosticPlaneV1,
-    DiagnosticRootKindV1, DiagnosticSpanGuardV1, DiagnosticSpanIdV1,
+    DiagnosticObjectInstallPhaseV1, DiagnosticObjectKindV1, DiagnosticOccupancyBucketV1,
+    DiagnosticOwnedRenewalRefusalReasonV1, DiagnosticOwnedRenewalRefusalV1, DiagnosticPhaseV1,
+    DiagnosticPlaneV1, DiagnosticRootKindV1, DiagnosticSpanGuardV1, DiagnosticSpanIdV1,
     DiagnosticSqliteSyncObservationV1, DiagnosticStageV1, DiagnosticSyncLabelV1,
     DiagnosticTerminalV1, DiagnosticTraceErrorV1, DiagnosticTraceRefV1,
 };
@@ -84,8 +85,9 @@ pub use domains::generation::{
 pub use domains::hybrid::{
     DenseAdmissionOutcomeV1, DenseLaneFilterClassV1, ExplainQueryPort, FusedKeyV1, FusedLaneRankV1,
     HYBRID_FILTER_UNSUPPORTED_CODE, HybridFetchFloorPolicy, HybridFilterPlanV1,
-    HybridOrchestratorPolicy, HybridQueryPort, classify_hybrid_filter_v1,
-    dense_admission_round_outcome_v1, hybrid_filter_name_v1,
+    HybridOrchestratorPolicy, HybridQueryPort, TraceFileEvidenceV1, TraceFileHitV1, TraceFileKeyV1,
+    TraceFileLaneWitnessV1, TraceFileRankPolicyV1, TraceSourceFrameClassV1,
+    classify_hybrid_filter_v1, dense_admission_round_outcome_v1, hybrid_filter_name_v1,
 };
 pub use domains::idempotency::{
     BATCH_DIGEST_CONFLICT_CODE, BATCH_DIGEST_MISMATCH_CODE, CATALOG_BUSY_CODE,

@@ -139,6 +139,7 @@ variants = [
   "Semantic",
   "SemanticWorkBoundedV1",
   "Hybrid",
+  "GoTestTraceFileV1",
   "HybridSeed",
   "History",
   "RuntimeMetadata",
@@ -161,6 +162,7 @@ variants = [
   "Semantic",
   "SemanticWorkBoundedV1",
   "Hybrid",
+  "GoTestTraceFileV1",
   "HybridSeed",
   "History",
   "RuntimeMetadata",
@@ -274,6 +276,7 @@ variants = [
   "Submit",
   "Resume",
   "ReadView",
+  "ReadSession",
   "Status",
   "ReadyWork",
   "ClaimWork",
@@ -317,6 +320,7 @@ variants = [
   "Staged",
   "Submitted",
   "View",
+  "ReadSession",
   "Status",
   "ReadyWork",
   "Claimed",
@@ -364,11 +368,11 @@ id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Format 21 binds compact File and Native roots, including their run registries and posting authority, with canonical QLMAP002 leaf value dictionaries and single-surface NFC Native bodies. Shared object dependencies, identity digest, normalizer, Tantivy components, live BM25 statistics, overlays, source coverage and ranked keys remain authenticated. Selected shared objects authenticate on use; full shared closure validation belongs to offline scrub. Older sealed formats require a producer rebuild."
+notes = "Format 22 binds compact File and Native roots, including their run registries and posting authority, with canonical QLMAP002 leaf value dictionaries and single-surface NFC Native bodies. Shared object dependencies, identity digest, normalizer, Tantivy components, live BM25 statistics, overlays, source coverage and ranked keys remain authenticated. Selected shared objects authenticate on use; full shared closure validation belongs to offline scrub. Older sealed formats require a producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/lexical_root_names.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
-value = 21
+value = 22
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
@@ -463,11 +467,11 @@ id = "lexical-file-authority"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/file-authority/root.cbor"
 reproduction = "producer-rebuild"
-notes = "Format 20 compact File root binds QLMAP002 source/document/routing maps, bounded immutable segments, authenticated run registry and posting authority, compaction debt, and the premerge run witness in the shared pool. Raw source blocks remain authoritative for exact verification. Older authority formats require producer rebuild."
+notes = "Format 21 compact File root binds QLMAP002 source/document/routing maps, bounded immutable segments, authenticated run registry and posting authority, compaction debt, and the premerge run witness in the shared pool. Raw source blocks remain authoritative for exact verification. Older authority formats require producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/file_authority/paged.rs"
 name = "FILE_AUTHORITY_FORMAT"
-value = 20
+value = 21
 
 [[artifact]]
 id = "lexical-shared-object-pool"
@@ -525,22 +529,22 @@ id = "semantic-manifest"
 owner = "quanta-index-semantic"
 path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Exactly one format is served; older formats are refused typed at decode, open, validate and inventory. Format 13 persists embedding and view policy digests alongside the model contract. Older artifacts require a producer rebuild, including embedding calls and ANN training."
+notes = "Exactly one format is served; older formats are refused typed at decode, open, validate and inventory. Format 14 binds source repository and path in semantic rows and membership scope authority, alongside embedding and view policy digests and the model contract. Older artifacts require a producer rebuild, including embedding calls and ANN training."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/manifest.rs"
 name = "FORMAT_VERSION"
-value = 13
+value = 14
 
 [[artifact]]
 id = "semantic-build-contract"
 owner = "quanta-index-semantic"
 path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-build-contract.cbor"
 reproduction = "producer-rebuild"
-notes = "Model id / revision / dimension / metric / normalization / embedding policy / view policy / corpus policy the generation was built under. Version 4 persists both policy digests; formats 1-3 are refused typed and require a producer rebuild."
+notes = "Model id / revision / dimension / metric / normalization / embedding policy / view policy / corpus policy the generation was built under. Version 5 binds the source-file-aware row layout and both policy digests; formats 1-4 are refused typed and require a producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/generation_contract.rs"
 name = "GENERATION_CONTRACT_VERSION"
-value = 4
+value = 5
 
 [[artifact]]
 id = "semantic-sealed-manifest"
@@ -742,4 +746,4 @@ notes = "Canonical JSON directory binds recipe and selected owner coverage to CO
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/native/embedding/ann_directory.rs"
 name = "DIRECTORY_FORMAT"
-value = 2
+value = 3

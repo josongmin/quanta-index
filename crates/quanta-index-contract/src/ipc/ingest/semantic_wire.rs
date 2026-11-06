@@ -280,6 +280,20 @@ pub struct SemanticReplaceScope {
     pub cluster_memberships: Vec<ClusterMembershipReplaceV1>,
 }
 
+impl SemanticReplaceScope {
+    fn validate_source_file(&self) -> Result<(), &'static str> {
+        self.scope.source_file.validate()?;
+        if self
+            .embeddings
+            .iter()
+            .any(|embedding| embedding.source_file != self.scope.source_file)
+        {
+            return Err("semantic embedding source_file differs from scope");
+        }
+        Ok(())
+    }
+}
+
 const SEMANTIC_REPLACE_SCOPE_FIELDS: &[&str] =
     &["scope", "scope_digest", "embeddings", "cluster_memberships"];
 
@@ -288,6 +302,8 @@ impl Serialize for SemanticReplaceScope {
     where
         S: Serializer,
     {
+        self.validate_source_file()
+            .map_err(serde::ser::Error::custom)?;
         let mut state = serializer.serialize_struct("SemanticReplaceScope", 4)?;
         state.serialize_field("scope", &self.scope)?;
         state.serialize_field("scope_digest", &self.scope_digest)?;
@@ -348,13 +364,17 @@ impl<'de> Visitor<'de> for SemanticReplaceScopeVisitor {
                 }
             }
         }
-        Ok(SemanticReplaceScope {
+        let replacement = SemanticReplaceScope {
             scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
             scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
             embeddings: embeddings.ok_or_else(|| de::Error::missing_field("embeddings"))?,
             cluster_memberships: cluster_memberships
                 .ok_or_else(|| de::Error::missing_field("cluster_memberships"))?,
-        })
+        };
+        replacement
+            .validate_source_file()
+            .map_err(de::Error::custom)?;
+        Ok(replacement)
     }
 }
 
@@ -426,6 +446,10 @@ impl<'de> Visitor<'de> for SemanticTombstoneScopeVisitor {
                 "semantic tombstone owner_id must not be empty",
             ));
         }
+        semantic_scope
+            .source_file
+            .validate()
+            .map_err(de::Error::custom)?;
         Ok(SemanticTombstoneScope { semantic_scope })
     }
 }

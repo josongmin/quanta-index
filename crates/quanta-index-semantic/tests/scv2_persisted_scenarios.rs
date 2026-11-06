@@ -236,6 +236,7 @@ fn scv2_s02_owner_tombstone_removes_only_target_owner() -> TestResult {
                 SemanticCorpusKindV1::SymbolCard,
                 OwnerDocKind::Symbol,
                 "symbol:RuntimeSession::commit",
+                "src/session.rs",
             )],
             true,
         ),

@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod trace_wire;
 
 pub use app::trace_recorder::{
     DiagnosticCaptureCloseErrorV1, DiagnosticCaptureClosedV1, DiagnosticCaptureLeaseV1,

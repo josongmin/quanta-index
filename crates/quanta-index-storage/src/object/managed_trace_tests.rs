@@ -31,6 +31,12 @@ impl DiagnosticClockV1 for StepClock {
     }
 }
 
+#[path = "write_preparation/tests/root_validation.rs"]
+mod root_validation;
+#[cfg(target_os = "macos")]
+#[path = "scalar_sync_tests.rs"]
+mod scalar_sync_tests;
+
 #[derive(Debug, Default)]
 struct Events(Mutex<Vec<DiagnosticEmitV1>>);
 
@@ -39,7 +45,7 @@ impl DiagnosticEventSinkV1 for Events {
         let Ok(mut rows) = self.0.try_lock() else {
             return false;
         };
-        if rows.len() == 16 {
+        if rows.len() == 64 {
             return false;
         }
         rows.push(event);
@@ -505,6 +511,108 @@ fn managed_reserve_confirm_trace_preserves_off_cost_and_closes_error()
                 }
             }
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn managed_batch_physical_trace_is_one_packet_aggregate() -> Result<(), Box<dyn std::error::Error>>
+{
+    let off = run_managed(false, false, 3)?;
+    let recorded = run_managed(true, false, 3)?;
+    if !matches!((&off.result, &recorded.result), (Ok(left), Ok(right)) if left == right)
+        || off.usage != recorded.usage
+        || off.clock_calls != 0
+        || !off.events.is_empty()
+    {
+        return Err(IndexError::BackendViolation(
+            "physical packet observation changed Off product result or budget".into(),
+        )
+        .into());
+    }
+    let packet = recorded.events.iter().find_map(|event| {
+        if let DiagnosticEventKindV1::SpanBegin {
+            span_id,
+            stage: DiagnosticStageV1::ManagedObjectInstall,
+            ..
+        } = event.kind
+        {
+            Some(span_id)
+        } else {
+            None
+        }
+    });
+    let Some(packet) = packet else {
+        return Err(IndexError::BackendViolation("physical packet span is absent".into()).into());
+    };
+    let expected = [
+        quanta_index_core::DiagnosticObjectInstallPhaseV1::ChildValidation,
+        quanta_index_core::DiagnosticObjectInstallPhaseV1::NamespaceAndCreate,
+        quanta_index_core::DiagnosticObjectInstallPhaseV1::Write,
+        quanta_index_core::DiagnosticObjectInstallPhaseV1::FileSync,
+        quanta_index_core::DiagnosticObjectInstallPhaseV1::PublishAndRetire,
+        quanta_index_core::DiagnosticObjectInstallPhaseV1::DirectorySync,
+        quanta_index_core::DiagnosticObjectInstallPhaseV1::Settlement,
+    ];
+    for phase in expected {
+        let expected_calls = if matches!(
+            phase,
+            quanta_index_core::DiagnosticObjectInstallPhaseV1::Write
+                | quanta_index_core::DiagnosticObjectInstallPhaseV1::FileSync
+        ) {
+            3
+        } else {
+            0
+        };
+        let count = recorded
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(event.kind, DiagnosticEventKindV1::ObjectInstallAggregate {
+                span_id, phase: observed, calls, elapsed_sum_ns, thread_cpu_ns: None, failures: 0,
+            } if span_id == packet
+                && observed == phase
+                && calls > 0
+                && (expected_calls == 0 || calls == expected_calls)
+                && elapsed_sum_ns > 0)
+            })
+            .count();
+        if count != 1 {
+            return Err(IndexError::BackendViolation(
+                "physical packet omitted or duplicated one reached phase".into(),
+            )
+            .into());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if recorded
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(event.kind, DiagnosticEventKindV1::ObjectInstallAggregate {
+            span_id, phase: quanta_index_core::DiagnosticObjectInstallPhaseV1::Barrier,
+            calls: 1, failures: 0, ..
+        } if span_id == packet)
+        })
+        .count()
+        != 1
+    {
+        return Err(
+            IndexError::BackendViolation("physical packet barrier is absent".into()).into(),
+        );
+    }
+    if recorded
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(event.kind, DiagnosticEventKindV1::SpanEnd {
+            span_id, outcome: DiagnosticTerminalV1::Ok,
+        } if span_id == packet)
+        })
+        .count()
+        != 1
+    {
+        return Err(IndexError::BackendViolation("physical packet was not closed".into()).into());
     }
     Ok(())
 }

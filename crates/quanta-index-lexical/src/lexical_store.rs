@@ -17,7 +17,8 @@ pub(crate) use store::{
     AdoptedRootAdvance, AdoptedRootCursor, AttemptBinding, AttemptLease, AttemptWriteCost,
     Authority, BlobCursor, CandidateWitness, CheckpointPayload, EligibilityWitness, Gate,
     GcDeleteCustody, IndependentWindowOracle, IneligibleReason, MAX_CLOSURE_REFS,
-    ObjectInventoryAdvance, ObjectInventoryCursor, ObjectStore, ScanLane, WindowWitness,
+    MAX_PACKED_RECORDS, MAX_RECORD_GROUP_BYTES, ObjectInventoryAdvance, ObjectInventoryCursor,
+    ObjectStore, ScanLane, WindowWitness,
 };
 
 #[cfg(test)]

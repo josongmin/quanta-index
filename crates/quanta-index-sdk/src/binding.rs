@@ -52,6 +52,7 @@ pub enum ExpectedQueryResponseV1 {
     SemanticWorkBoundedV1,
     Hybrid,
     HybridSeed,
+    GoTestTraceFileV1,
     History,
     Structural,
     RepoMapQuery,
@@ -74,6 +75,7 @@ impl ExpectedQueryResponseV1 {
             Self::SemanticWorkBoundedV1 => "semantic_work_bounded_v1",
             Self::Hybrid => "hybrid",
             Self::HybridSeed => "hybrid_seed",
+            Self::GoTestTraceFileV1 => "go_test_trace_file_v1",
             Self::History => "history",
             Self::Structural => "structural",
             Self::RepoMapQuery => "repomap",
@@ -225,6 +227,7 @@ pub(crate) struct QueryCallBinding {
     /// timeref authority may rebind the read to an ancestor revision.
     rev_at_time: bool,
     max_work_units: Option<u64>,
+    go_trace_lane_top_k: Option<u32>,
 }
 
 impl QueryCallBinding {
@@ -244,6 +247,7 @@ impl QueryCallBinding {
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
+                go_trace_lane_top_k: None,
             },
             SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(request) => {
                 let (pin, active_domain) = identity_from(
@@ -377,6 +381,25 @@ impl QueryCallBinding {
                 ));
                 binding
             }
+            SearchPlaneQueryIpcRequest::GoTestTraceFileV1(request) => {
+                let (pin, active_domain) = identity_from(
+                    request.query.generation.clone(),
+                    request.query.generation_selector.clone(),
+                );
+                let mut binding = Self::ranked(
+                    ExpectedQueryResponseV1::GoTestTraceFileV1,
+                    pin,
+                    active_domain,
+                    request.top_k,
+                    false,
+                );
+                binding.secondary = Some(identity_from(
+                    request.query.text_query.generation.clone(),
+                    request.query.text_query.generation_selector.clone(),
+                ));
+                binding.go_trace_lane_top_k = Some(request.query.top_k);
+                binding
+            }
             SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
                 text_query, order, ..
             }) => {
@@ -395,6 +418,7 @@ impl QueryCallBinding {
                     history_order: Some(*order),
                     rev_at_time: false,
                     max_work_units: None,
+                    go_trace_lane_top_k: None,
                 }
             }
             SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
@@ -448,6 +472,7 @@ impl QueryCallBinding {
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
+                go_trace_lane_top_k: None,
             },
             SearchPlaneQueryIpcRequest::Explain(SearchPlaneExplainQueryRequest {
                 generation,
@@ -463,6 +488,7 @@ impl QueryCallBinding {
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
+                go_trace_lane_top_k: None,
             },
             SearchPlaneQueryIpcRequest::ClusterMembershipRead(
                 ClusterMembershipBatchReadRequestV1 { generation, .. },
@@ -477,6 +503,7 @@ impl QueryCallBinding {
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
+                go_trace_lane_top_k: None,
             },
         }
     }
@@ -507,6 +534,7 @@ impl QueryCallBinding {
             history_order: None,
             rev_at_time,
             max_work_units: None,
+            go_trace_lane_top_k: None,
         }
     }
 }
@@ -1003,6 +1031,39 @@ pub(crate) fn bind_query_response(
             let rows = payload.seed_candidates.len();
             check_window("hybrid_seed", payload.window.returned(), rows)?;
             check_cap("hybrid_seed", binding.top_k.unwrap_or(u32::MAX), rows)
+        }
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(payload) => {
+            check_variant(binding, ExpectedQueryResponseV1::GoTestTraceFileV1)?;
+            check_pin(binding, &payload.generation)?;
+            check_selected_active_head(
+                binding,
+                &payload.generation,
+                payload.selected_active_head.as_ref(),
+            )?;
+            check_cap(
+                "go_test_trace_file_v1",
+                binding.top_k.unwrap_or(u32::MAX),
+                payload.results.len(),
+            )?;
+            let lane_cap = binding.go_trace_lane_top_k.unwrap_or(u32::MAX);
+            for (route, window) in [
+                (
+                    "go_test_trace_file_v1 lexical lane",
+                    &payload.lexical_window,
+                ),
+                ("go_test_trace_file_v1 dense lane", &payload.dense_window),
+            ] {
+                let rows = usize::try_from(window.returned()).map_err(|_| {
+                    binding_error(
+                        route,
+                        ResponseBindingAxis::Window,
+                        "lane returned count representable as usize",
+                        "lane returned count overflow",
+                    )
+                })?;
+                check_cap(route, lane_cap, rows)?;
+            }
+            Ok(())
         }
         SearchPlaneQueryIpcResponse::History(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::History)?;

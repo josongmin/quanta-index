@@ -1926,7 +1926,7 @@ impl E2eRuntime {
             batch_digest: String::new(),
             mode: BatchIngestMode::Delta,
             replace_scopes: vec![StructuralReplaceScope {
-                scope: scope_key(path),
+                scope: scope_key(self.repo(), path),
                 scope_digest: format!("struct-scope:{path}:{}", self.next_batch_sequence()),
                 trees: vec![StructuralTreeRecord {
                     chunk_id,
@@ -2284,7 +2284,7 @@ impl E2eRuntime {
                     mode: BatchIngestMode::Delta,
                     replace_scopes: Vec::new(),
                     tombstone_scopes: vec![StructuralTombstoneScope {
-                        scope: scope_key(path),
+                        scope: scope_key(self.repo(), path),
                     }],
                     seal: false,
                 },
@@ -2691,6 +2691,9 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_history_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_history_response("HybridSeed"),
+            SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
+                unexpected_history_response("GoTestTraceFileV1")
+            }
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_history_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
                 unexpected_history_response("RepoMapQuery")
@@ -2768,6 +2771,7 @@ impl E2eRuntime {
                 | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)
                 | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -2807,6 +2811,7 @@ impl E2eRuntime {
                 | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)
                 | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -2865,6 +2870,7 @@ impl E2eRuntime {
                 | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
                 | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -2923,6 +2929,7 @@ impl E2eRuntime {
             | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
@@ -3034,6 +3041,9 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
+            SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
+                unexpected_response("GoTestTraceFileV1")
+            }
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
@@ -3200,6 +3210,9 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
+            SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
+                unexpected_response("GoTestTraceFileV1")
+            }
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
@@ -3316,6 +3329,9 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
+            SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
+                unexpected_response("GoTestTraceFileV1")
+            }
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
@@ -3567,6 +3583,9 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_explain_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_explain_response("HybridSeed"),
+            SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
+                unexpected_explain_response("GoTestTraceFileV1")
+            }
             SearchPlaneQueryIpcResponse::History(_) => unexpected_explain_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_explain_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
@@ -3936,6 +3955,7 @@ fn query_response_ready(response: &SearchPlaneQueryIpcResponseEnvelope) -> bool 
         | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -3961,6 +3981,7 @@ fn query_response_ready_allow_structural_not_ready(
         | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -3989,6 +4010,7 @@ fn describe_query_response_payload(payload: &SearchPlaneQueryIpcResponse) -> Str
         }
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid".to_string(),
         SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed".to_string(),
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => "GoTestTraceFileV1".to_string(),
         SearchPlaneQueryIpcResponse::History(_) => "History".to_string(),
         SearchPlaneQueryIpcResponse::Structural(_) => "Structural".to_string(),
         SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "RepoMapQuery".to_string(),
@@ -4512,6 +4534,11 @@ fn route_window_probe_from_response(
         SearchPlaneQueryIpcResponse::HybridSeed(seed) => {
             (seed.seed_candidates.len(), Some(seed.window))
         }
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: Go trace file projection has two lane windows and no file window; it cannot be window-probed"
+            ));
+        }
         SearchPlaneQueryIpcResponse::History(history) => (
             history.commits.len().saturating_add(history.diffs.len()),
             Some(history.window),
@@ -4551,6 +4578,7 @@ fn query_response_kind(payload: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => "SemanticWorkBoundedV1",
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid",
         SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed",
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => "GoTestTraceFileV1",
         SearchPlaneQueryIpcResponse::History(_) => "History",
         SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "RuntimeMetadata",
         SearchPlaneQueryIpcResponse::Structural(_) => "Structural",
@@ -4646,17 +4674,23 @@ fn language_from_path(path: &str) -> &'static str {
 /// Lexical chunks alone are not an implicit semantic ingest request.
 #[must_use]
 pub fn semantic_source_scopes_for_chunk_records(
+    batch_repo_id: &RepoId,
     records: &[ChunkRecord],
 ) -> Vec<SemanticSourceReplaceScopeV1> {
     records
         .iter()
         .map(|record| {
             let owner_id = record.chunk_id.as_str().to_string();
+            let source_file = quanta_index_contract::SourceFileKey {
+                source_repo_id: record.searchable_repo_id(batch_repo_id).clone(),
+                repo_relative_path: record.repo_relative_path.clone(),
+            };
             SemanticSourceReplaceScopeV1 {
                 scope: SemanticSourceScopeKeyV1 {
                     corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
                     owner_kind: OwnerDocKind::Chunk,
                     owner_id: owner_id.clone(),
+                    source_file: source_file.clone(),
                 },
                 scope_digest: format!("e2e-harness:semantic-source:scope:{owner_id}"),
                 sources: vec![SemanticSourceRecordV1 {
@@ -4666,7 +4700,7 @@ pub fn semantic_source_scopes_for_chunk_records(
                     owner_id: owner_id.clone(),
                     source_doc_id: owner_id.clone(),
                     parent_owner_id: Some(owner_id),
-                    repo_relative_path: record.repo_relative_path.clone(),
+                    source_file,
                     language: Some(record.language.as_str().to_string()),
                     package: None,
                     symbol_kind: None,
@@ -4688,10 +4722,13 @@ pub fn semantic_source_scopes_for_chunk_records(
         .collect()
 }
 
-fn scope_key(path: &str) -> quanta_index_contract::SearchScopeKey {
+fn scope_key(repo_id: RepoId, path: &str) -> quanta_index_contract::SearchScopeKey {
     quanta_index_contract::SearchScopeKey {
         doc_surface: quanta_index_contract::SearchScopeSurface::Chunk,
-        repo_relative_path: RepoRelativePath::new(path),
+        source_file: quanta_index_contract::SourceFileKey {
+            source_repo_id: repo_id,
+            repo_relative_path: RepoRelativePath::new(path),
+        },
     }
 }
 
@@ -4998,6 +5035,24 @@ mod teardown_fault_tests {
         build_config,
     };
 
+    fn trace_rows(path: &std::path::Path) -> AnyResult<Vec<serde_json::Value>> {
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        let schema_version = rows
+            .first()
+            .and_then(|row| row.get("schema_version"))
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| anyhow::anyhow!("capture schema version absent"))?;
+        rows.into_iter()
+            .map(|row| {
+                quanta_index_searchd::trace_wire::normalize_record(schema_version, row)
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
     #[test]
     fn scale_capacity_profile_reaches_daemon_config() -> AnyResult<()> {
         let default = E2eRuntime::boot()?;
@@ -5133,10 +5188,7 @@ mod teardown_fault_tests {
         );
         let closed = capture.close(std::time::Duration::from_secs(5))?;
         anyhow::ensure!(closed.status == DiagnosticCaptureStatusV1::Complete);
-        let rows = std::fs::read_to_string(trace_path)?
-            .lines()
-            .map(serde_json::from_str::<serde_json::Value>)
-            .collect::<Result<Vec<_>, _>>()?;
+        let rows = trace_rows(&trace_path)?;
         let stop_spans = rows
             .iter()
             .filter_map(|row| row.get("kind"))
@@ -5185,10 +5237,7 @@ mod teardown_fault_tests {
         drop(lease);
         let closed = capture.close(std::time::Duration::from_secs(5))?;
         anyhow::ensure!(closed.status == DiagnosticCaptureStatusV1::Complete);
-        let rows = std::fs::read_to_string(trace_path)?
-            .lines()
-            .map(serde_json::from_str::<serde_json::Value>)
-            .collect::<Result<Vec<_>, _>>()?;
+        let rows = trace_rows(&trace_path)?;
         anyhow::ensure!(rows.iter().filter_map(|row| row.get("kind")).any(|kind| {
             kind.get("type").and_then(serde_json::Value::as_str) == Some("span_begin")
                 && kind.get("stage").and_then(serde_json::Value::as_str) == Some("runtime_stop")

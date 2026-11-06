@@ -254,8 +254,8 @@ fn hash_query_text_into_checked(
         return Err(HashingQueryTextFailureV1::ZeroDimension);
     }
     vector.fill(0.0);
-    let dimension_u64 =
-        u64::try_from(dimension).map_err(|_| HashingQueryTextFailureV1::DimensionConversion)?;
+    let dimension_u64 = u64::try_from(dimension)
+        .map_err(|_out_of_range| HashingQueryTextFailureV1::DimensionConversion)?;
     let mut saw_token = false;
     for token in text
         .split(|ch: char| !ch.is_alphanumeric())
@@ -301,7 +301,7 @@ fn hashed_slot(hash: u64, dimension_u64: u64) -> Result<usize, HashingQueryTextF
         .checked_rem(dimension_u64)
         .ok_or(HashingQueryTextFailureV1::ZeroDimension)?;
     usize::try_from(slot_u64)
-        .map_err(|_| HashingQueryTextFailureV1::SlotConversion { slot: slot_u64 })
+        .map_err(|_out_of_range| HashingQueryTextFailureV1::SlotConversion { slot: slot_u64 })
 }
 
 fn stable_fnv1a64(bytes: &[u8]) -> u64 {

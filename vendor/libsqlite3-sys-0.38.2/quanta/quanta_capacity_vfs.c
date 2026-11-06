@@ -170,6 +170,28 @@ static int qiv_scope_matches(qiv_file *file) {
   return qiv_scope_id != 0 && qiv_scope_id == file->scope_id;
 }
 
+int qiv_can_pack_wal_frame(sqlite3_file *base) {
+  qiv_file *file;
+  if (!base || (base->pMethods != &qiv.io_v1 &&
+                base->pMethods != &qiv.io_v2 && base->pMethods != &qiv.io_v3))
+    return 0;
+  file = (qiv_file *)base;
+  return qiv_scope_matches(file) && !file->verification_only &&
+         !qiv_verification_only && (file->open_flags & SQLITE_OPEN_WAL) != 0;
+}
+
+int qiv_can_batch_checkpoint_pages(sqlite3_file *database, sqlite3_file *wal) {
+  qiv_file *file;
+  if (!qiv_can_pack_wal_frame(wal) || !database ||
+      (database->pMethods != &qiv.io_v1 && database->pMethods != &qiv.io_v2 &&
+       database->pMethods != &qiv.io_v3))
+    return 0;
+  file = (qiv_file *)database;
+  return qiv_scope_matches(file) && !file->verification_only &&
+         !qiv_verification_only &&
+         (file->open_flags & SQLITE_OPEN_MAIN_DB) != 0;
+}
+
 static qiv_event qiv_file_event(qiv_file *file, uint32_t kind) {
   return qiv_event_for(kind, file->scope_id, file->handle_id, file->path,
                        file->open_flags);

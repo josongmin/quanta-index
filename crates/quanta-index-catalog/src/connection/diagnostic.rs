@@ -74,9 +74,9 @@ pub(super) fn current(catalog: &SqliteCatalog) -> Option<DiagnosticContextV1> {
 mod tests {
     use super::*;
     use quanta_index_core::{
-        DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticEmitV1, DiagnosticEventKindV1,
-        DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticSpanIdV1,
-        DiagnosticStageV1, DiagnosticTerminalV1, RequestBudgetV1,
+        DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticCounterV1, DiagnosticEmitV1,
+        DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1,
+        DiagnosticSpanIdV1, DiagnosticStageV1, DiagnosticTerminalV1, RequestBudgetV1,
         index::{IndexError, WorkBudget, WorkLimits},
     };
     use std::sync::{
@@ -105,6 +105,8 @@ mod tests {
         catalog: OnceLock<Weak<SqliteCatalog>>,
         hold_ends: AtomicUsize,
         unlocked_hold_ends: AtomicUsize,
+        cache_counters: AtomicUsize,
+        unlocked_cache_counters: AtomicUsize,
     }
 
     impl LockEvents {
@@ -146,6 +148,38 @@ mod tests {
                     });
                 if unlocked {
                     let _prior = self.unlocked_hold_ends.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            if let DiagnosticEventKindV1::Counter { span_id, key, .. } = event.kind
+                && matches!(
+                    key,
+                    DiagnosticCounterV1::SqliteCacheHits
+                        | DiagnosticCounterV1::SqliteCacheMisses
+                        | DiagnosticCounterV1::SqliteCacheWrites
+                        | DiagnosticCounterV1::SqliteCacheSpills
+                )
+                && rows.iter().any(|row| {
+                    matches!(
+                        row.kind,
+                        DiagnosticEventKindV1::SpanBegin {
+                            span_id: begin,
+                            stage: DiagnosticStageV1::CatalogLockHold,
+                            ..
+                        } if begin == span_id
+                    )
+                })
+            {
+                let _prior = self.cache_counters.fetch_add(1, Ordering::Relaxed);
+                let unlocked = self
+                    .catalog
+                    .get()
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|catalog| match catalog.connection.mutex() {
+                        Ok(mutex) => !matches!(mutex.try_lock(), Err(TryLockError::WouldBlock)),
+                        Err(_closed) => false,
+                    });
+                if unlocked {
+                    let _prior = self.unlocked_cache_counters.fetch_add(1, Ordering::Relaxed);
                 }
             }
             rows.push(event);
@@ -330,6 +364,91 @@ mod tests {
             events.hold_ends.load(Ordering::Relaxed) == 1
                 && events.unlocked_hold_ends.load(Ordering::Relaxed) == 1,
             "hold end was emitted before mutex release",
+        )
+    }
+
+    #[test]
+    fn real_catalog_hold_emits_exact_pager_deltas_after_unlock() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let catalog = Arc::new(SqliteCatalog::open(root.path(), Duration::from_secs(1))?);
+        let before = catalog.lock()?.pager_cache_status()?;
+        let (events, child, _root_span) = lock_trace(&catalog, 7)?;
+        {
+            let _scope = catalog.enter_diagnostic_scope(Some(&child));
+            let guard = catalog.lock()?;
+            guard.execute_batch(
+                "CREATE TABLE pager_cache_probe(id INTEGER PRIMARY KEY, value BLOB);
+                 INSERT INTO pager_cache_probe VALUES(1, zeroblob(4096));
+                 SELECT value FROM pager_cache_probe WHERE id=1;",
+            )?;
+        }
+        let after = catalog.lock()?.pager_cache_status()?;
+        let rows = events.rows();
+        let holds = terminal(&rows, DiagnosticStageV1::CatalogLockHold);
+        let [(hold_id, _, _, DiagnosticTerminalV1::Ok)] = holds.as_slice() else {
+            return Err("real Catalog hold did not finish once".into());
+        };
+        let observed = rows
+            .iter()
+            .filter_map(|row| {
+                let DiagnosticEventKindV1::Counter {
+                    span_id,
+                    key,
+                    value,
+                } = row.kind
+                else {
+                    return None;
+                };
+                (span_id == *hold_id).then_some((key, value))
+            })
+            .collect::<Vec<_>>();
+        let expected = [
+            (
+                DiagnosticCounterV1::SqliteCacheHits,
+                after.hit.checked_sub(before.hit).ok_or("hit regressed")?,
+            ),
+            (
+                DiagnosticCounterV1::SqliteCacheMisses,
+                after
+                    .miss
+                    .checked_sub(before.miss)
+                    .ok_or("miss regressed")?,
+            ),
+            (
+                DiagnosticCounterV1::SqliteCacheWrites,
+                after
+                    .write
+                    .checked_sub(before.write)
+                    .ok_or("write regressed")?,
+            ),
+            (
+                DiagnosticCounterV1::SqliteCacheSpills,
+                after
+                    .spill
+                    .checked_sub(before.spill)
+                    .ok_or("spill regressed")?,
+            ),
+        ];
+        require_lock(
+            observed.as_slice() == expected,
+            "pager deltas differ from SQLite",
+        )?;
+        require_lock(
+            expected
+                .iter()
+                .any(|(key, value)| *key == DiagnosticCounterV1::SqliteCacheWrites && *value > 0),
+            "real SQLite fixture made no dirty page writes",
+        )?;
+        require_lock(
+            events.cache_counters.load(Ordering::Relaxed) == 4
+                && events.unlocked_cache_counters.load(Ordering::Relaxed) == 4,
+            "pager counters were emitted before Catalog mutex release",
+        )?;
+        let prior_events = rows.len();
+        drop(catalog.lock()?);
+        require_lock(
+            events.rows().len() == prior_events,
+            "Off Catalog lock emitted pager counters or span events",
         )
     }
 

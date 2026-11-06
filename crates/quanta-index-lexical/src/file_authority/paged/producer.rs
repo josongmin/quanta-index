@@ -2178,7 +2178,12 @@ pub(crate) fn build_for_seal_prepared_with_policy(
     maintenance_policy: Option<&LexicalMaintenancePolicy>,
     hard_scan: Option<&ScanLane>,
 ) -> Result<FileAuthorityBuild, CoreError> {
-    store.with_adoption_batch(lease, |batched_store| {
+    let cached_store = if store.has_read_meter() {
+        store.clone()
+    } else {
+        store.metered_clone()
+    };
+    cached_store.with_adoption_batch(lease, |batched_store| {
         build_for_seal_inner(
             batched_store,
             lease,
@@ -2257,6 +2262,7 @@ fn build_for_seal_inner(
     let mut prepared = Vec::new();
     let mut digests = BTreeSet::new();
     let mut allocated = 0_u64;
+    let source_phase = crate::causal_profile::begin_phase("file_sources_and_segments");
     for cohort in mutation.edits.chunks(MAX_SEGMENT_DOCS) {
         // Prior writes must not hold the publication gate through a long
         // inherited/no-op scan. Tiny files still share a bounded cohort.
@@ -2474,6 +2480,8 @@ fn build_for_seal_inner(
     {
         return Err(corrupt("hard scan touched source set differs from build"));
     }
+    crate::causal_profile::finish_phase("file_sources_and_segments", source_phase);
+    let maps_phase = crate::causal_profile::begin_phase("file_source_maps");
     let clean_selection = if let Some(policy) = maintenance_policy
         && !mutation.clear_all
     {
@@ -2493,6 +2501,8 @@ fn build_for_seal_inner(
     output.segments = map_update(store, lease, &original.segments, segment_edits)?;
     output.compaction_debt = map_update(store, lease, &original.compaction_debt, debt_edits)?;
     store.flush_adoption_batch()?;
+    crate::causal_profile::finish_phase("file_source_maps", maps_phase);
+    let footprint_phase = crate::causal_profile::begin_phase("file_segment_footprints");
     // Derive the exact changed segment set from authenticated map roots. A
     // touched segment whose descriptor remains identical does not create a
     // new logical run or change its attributed index bytes.
@@ -2528,6 +2538,8 @@ fn build_for_seal_inner(
     output.run_registry = original
         .run_registry
         .apply(store, lease, &removed, &added)?;
+    crate::causal_profile::finish_phase("file_segment_footprints", footprint_phase);
+    let runs_phase = crate::causal_profile::begin_phase("file_run_postings");
     // A changed physical leaf affects only its old/new owning run. Apply
     // leaf term deltas in bounded gram batches, then rewrite only changed
     // run route counts; inherited run posting dictionaries are reused.
@@ -2659,6 +2671,7 @@ fn build_for_seal_inner(
         let _previous = run_edits.insert(key, new_ref);
     }
     output.run_postings = map_update(store, lease, &original.run_postings, run_edits)?;
+    crate::causal_profile::finish_phase("file_run_postings", runs_phase);
     if let (Some(policy), Some(selection)) = (maintenance_policy, clean_selection) {
         publish_clean_run_merge(store, lease, &mut output, &selection, policy)?;
     }

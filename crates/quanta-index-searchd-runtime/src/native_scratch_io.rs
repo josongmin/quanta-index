@@ -20,7 +20,7 @@ use quanta_index_core::{
     },
     publication_capacity::InodeKey,
 };
-use rusqlite::ffi::quanta_capacity_vfs::{ScopeGuard, close_owned_file};
+use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
 use rustix::fs::OFlags;
 
 use crate::{
@@ -83,13 +83,6 @@ fn charge_cleanup(budget: &mut Option<&mut WorkBudget>, usage: WorkUsage) -> Res
             message: format!("scratch cleanup original work budget: {error}"),
         }
     })
-}
-
-struct ScratchScope(ScopeGuard);
-impl ScratchIoScope for ScratchScope {
-    fn is_capacity_refusal(&self, backend_error_code: i32) -> bool {
-        self.0.is_capacity_extended_code(backend_error_code)
-    }
 }
 
 struct NamespaceLease {
@@ -208,6 +201,11 @@ impl NativeScratchIo {
         self.vfs.drain_retirements()
     }
 
+    /// Finish the named `SQLite` scope only after every native handle retires.
+    pub(crate) fn retire_checked(&self) -> Result<(), CoreError> {
+        self.vfs.retire_checked()
+    }
+
     fn acquire_lock(&self, path: &Path) -> Result<Box<dyn ScratchNamespaceLease>, IndexError> {
         self.prepare_lock(path)
             .map_err(|error| index_error(&error))?;
@@ -318,8 +316,11 @@ impl ScratchIoBinding for NativeScratchIo {
     fn driver_name(&self) -> &str {
         self.vfs.name()
     }
-    fn enter_scope(&self) -> Box<dyn ScratchIoScope> {
-        Box::new(ScratchScope(self.vfs.scope()))
+    fn enter_scope(
+        &self,
+        diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Box<dyn ScratchIoScope> {
+        self.vfs.enter_scratch_scope(diagnostics)
     }
     fn acquire_namespace(&self, path: &Path) -> Result<Box<dyn ScratchNamespaceLease>, IndexError> {
         self.acquire_lock(&path.join(".lease"))
@@ -384,6 +385,7 @@ impl ScratchIoBinding for NativeScratchIo {
 
 #[cfg(test)]
 mod tests {
+    mod diagnostic_context;
     use super::*;
     use crate::publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity};
     use quanta_index_core::{
@@ -471,9 +473,10 @@ mod tests {
         )?;
         let path = allocation.path().to_path_buf();
         for name in ["a.sqlite", "b.sqlite"] {
-            let connection = ScratchConnection::open(&path.join(name), allocation.as_ref())?;
+            let connection =
+                ScratchConnection::open(&path.join(name), allocation.as_ref(), &budget()?)?;
             {
-                let db = connection.scoped()?;
+                let db = connection.scoped(&budget()?)?;
                 db.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; CREATE TABLE t(v); INSERT INTO t VALUES(42);")?;
             }
             drop(connection);
@@ -572,9 +575,9 @@ mod tests {
             )?;
             let path = allocation.path().to_path_buf();
             let database = path.join("rows.sqlite");
-            let connection = ScratchConnection::open(&database, allocation.as_ref())?;
+            let connection = ScratchConnection::open(&database, allocation.as_ref(), &budget()?)?;
             {
-                let db = connection.scoped()?;
+                let db = connection.scoped(&budget()?)?;
                 db.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; CREATE TABLE t(v BLOB); INSERT INTO t VALUES(zeroblob(1024));")?;
             }
             if mode == 0 {
@@ -664,9 +667,10 @@ mod tests {
             &mut budget()?,
         )?;
         let path = allocation.path().to_path_buf();
-        let connection = ScratchConnection::open(&path.join("rows.sqlite"), allocation.as_ref())?;
+        let connection =
+            ScratchConnection::open(&path.join("rows.sqlite"), allocation.as_ref(), &budget()?)?;
         {
-            let db = connection.scoped()?;
+            let db = connection.scoped(&budget()?)?;
             db.execute_batch(
                 "PRAGMA journal_mode=OFF; PRAGMA synchronous=FULL; CREATE TABLE t(v BLOB);",
             )?;
@@ -731,9 +735,10 @@ mod tests {
             &mut budget()?,
         )?;
         let path = allocation.path().to_path_buf();
-        let connection = ScratchConnection::open(&path.join("rows.sqlite"), allocation.as_ref())?;
+        let connection =
+            ScratchConnection::open(&path.join("rows.sqlite"), allocation.as_ref(), &budget()?)?;
         {
-            let db = connection.scoped()?;
+            let db = connection.scoped(&budget()?)?;
             db.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE; CREATE TABLE t(v BLOB); INSERT INTO t VALUES(zeroblob(32768));")?;
             let length: i64 = db.query_row("SELECT length(v) FROM t", [], |row| row.get(0))?;
             require(length == 32768, "scratch data golden differs")?;
@@ -813,9 +818,10 @@ mod tests {
             &mut budget()?,
         )?;
         let path = allocation.path().to_path_buf();
-        let connection = ScratchConnection::open(&path.join("rows.sqlite"), allocation.as_ref())?;
+        let connection =
+            ScratchConnection::open(&path.join("rows.sqlite"), allocation.as_ref(), &budget()?)?;
         {
-            let db = connection.scoped()?;
+            let db = connection.scoped(&budget()?)?;
             db.execute_batch(
                 "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; CREATE TABLE t(v BLOB);",
             )?;

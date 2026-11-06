@@ -206,6 +206,7 @@ fn result_count_of(response: &SearchPlaneQueryIpcResponse) -> Option<u64> {
         SearchPlaneQueryIpcResponse::Symbol(page) => page.results.len(),
         SearchPlaneQueryIpcResponse::Semantic(page) => page.results.len(),
         SearchPlaneQueryIpcResponse::Hybrid(page) => page.results.len(),
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(page) => page.results.len(),
         SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
@@ -267,6 +268,7 @@ fn classify_response(
             ));
         }
         SearchPlaneQueryIpcResponse::Hybrid(page) => &page.generation,
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(page) => &page.generation,
         SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)

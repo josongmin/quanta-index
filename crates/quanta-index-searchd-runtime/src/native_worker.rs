@@ -21,7 +21,7 @@ use quanta_index_core::index::{
 };
 use quanta_index_core::{
     DiagnosticContextV1, DiagnosticLaneV1, DiagnosticSpanGuardV1, DiagnosticStageV1,
-    DiagnosticTerminalV1, RequestBudgetV1,
+    DiagnosticTerminalV1, DiagnosticTraceRefV1, RequestBudgetV1,
 };
 use quanta_index_kernel::{Kernel, OperationExecutionClass, ResumeDispatch};
 use tokio::sync::mpsc::{self, OwnedPermit, Sender, error::TrySendError};
@@ -195,6 +195,8 @@ impl Drop for ScopePermit {
 pub(super) struct OwnedRunStarted {
     pub grant: OwnedWorkGrant,
     pub cancel: quanta_index_core::CancelHandleV1,
+    /// Link identity, not a long-lived parent: execution can finish during renewal.
+    pub trace: Option<DiagnosticTraceRefV1>,
 }
 
 pub(super) enum OwnedRunSkip {
@@ -1004,6 +1006,7 @@ async fn run_command_inner(
             let started_message = OwnedRunStarted {
                 grant: grant.clone(),
                 cancel: request_budget.cancel_handle(),
+                trace,
             };
             if started
                 .send(Ok(OwnedRunStart::Granted(started_message)))
@@ -1720,6 +1723,24 @@ mod tests {
 
     type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
+    fn trace_rows(path: &std::path::Path) -> TestResult<Vec<Value>> {
+        let rows: Vec<Value> = std::fs::read_to_string(path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        let schema_version = rows
+            .first()
+            .and_then(|row| row.get("schema_version"))
+            .and_then(Value::as_u64)
+            .ok_or("capture schema version absent")?;
+        rows.into_iter()
+            .map(|row| {
+                quanta_index_searchd::trace_wire::normalize_record(schema_version, row)
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
     macro_rules! check {
         ($condition:expr $(,)?) => {{
             if !($condition) {
@@ -2100,10 +2121,7 @@ mod tests {
         drop(lease);
         let closed = capture.close(Duration::from_secs(2))?;
         check_eq!(closed.status, DiagnosticCaptureStatusV1::Complete);
-        let rows: Vec<Value> = std::fs::read_to_string(path)?
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<Result<_, _>>()?;
+        let rows = trace_rows(&path)?;
         check!(rows.iter().any(|row| {
             row.pointer("/kind/type").and_then(Value::as_str) == Some("span_begin")
                 && row.pointer("/kind/stage").and_then(Value::as_str) == Some("operation")
@@ -2293,10 +2311,7 @@ mod tests {
                     evidence.get("assignment_dispatches")
                 );
 
-                let rows: Vec<Value> = std::fs::read_to_string(&trace_path)?
-                    .lines()
-                    .map(serde_json::from_str)
-                    .collect::<Result<_, _>>()?;
+                let rows = trace_rows(&trace_path)?;
                 let header = rows.first().ok_or("capture header absent")?;
                 let footer = rows.last().ok_or("capture footer absent")?;
                 check_eq!(

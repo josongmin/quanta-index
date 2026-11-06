@@ -405,6 +405,7 @@ fn delta_generation_inherits_base_dataset_by_link_without_touching_base_bytes() 
                             quanta_index_contract::SemanticCorpusKindV1::RawCodeFallback,
                             quanta_index_contract::OwnerDocKind::Chunk,
                             "owner-base-0",
+                            BASE_PATH,
                         ),
                     );
                 }

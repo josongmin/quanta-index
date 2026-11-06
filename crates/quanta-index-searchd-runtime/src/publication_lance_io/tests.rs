@@ -1226,7 +1226,8 @@ fn managed_semantic_build_reopen_and_reclaim_matches_disk_census() -> TestResult
         parent_chunk_id: None,
         source_repo_id: None,
     };
-    let source_scopes = semantic_source_scopes_for_chunk_records(std::slice::from_ref(&chunk));
+    let source_scopes =
+        semantic_source_scopes_for_chunk_records(&repo, std::slice::from_ref(&chunk));
     let mut producer = SourceCorpusFixture::new(
         repo.clone(),
         revision.clone(),

@@ -266,6 +266,94 @@ fn hybrid_builder_assembles_a_hybrid_request_with_both_lanes() {
     );
 }
 
+#[test]
+fn hybrid_builder_dispatches_go_trace_file_request_without_changing_lane_budget() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(
+            quanta_index_contract::GoTestTraceFileQueryResponseV1 {
+                generation: sample_generation_pin(),
+                selected_active_head: None,
+                results: Vec::new(),
+                lexical_window: QueryResultWindowV2::exact_probe(0),
+                dense_window: QueryResultWindowV2::exact_probe(0),
+                frame_class: quanta_index_contract::GoTestTraceFrameClassV1::Exact,
+                explanation: sample_explanation(),
+            },
+        ),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let result = client
+        .search()
+        .hybrid()
+        .native("panic")
+        .semantic_text("handler panic")
+        .pinned(sample_generation_pin())
+        .top_k(100)
+        .go_test_trace_file("handler.go:42: panic", 20);
+    assert!(result.is_ok(), "{result:?}");
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::GoTestTraceFileV1(request) =
+        captured.payload
+    else {
+        panic!("expected GoTestTraceFileV1 request");
+    };
+    assert_eq!(request.query.top_k, 100);
+    assert_eq!(request.query.text_query.top_k, 100);
+    assert_eq!(request.top_k, 20);
+    assert_eq!(request.failure_excerpt, "handler.go:42: panic");
+    assert_eq!(request.query.semantic_query_text, "handler panic");
+}
+
+#[test]
+fn go_trace_file_builder_refuses_invalid_file_cap_before_transport() {
+    let query = unused_query();
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let result = client
+        .search()
+        .hybrid()
+        .native("panic")
+        .semantic_text("handler panic")
+        .pinned(sample_generation_pin())
+        .top_k(10)
+        .go_test_trace_file("handler.go:42: panic", 11);
+    assert!(
+        matches!(result, Err(crate::SdkError::Usage(_))),
+        "{result:?}"
+    );
+    assert_eq!(ok_or_fail!(query.requests.lock()).len(), 0);
+}
+
+#[test]
+fn go_trace_file_builder_refuses_frame_class_drift_from_raw_request() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(
+            quanta_index_contract::GoTestTraceFileQueryResponseV1 {
+                generation: sample_generation_pin(),
+                selected_active_head: None,
+                results: Vec::new(),
+                lexical_window: QueryResultWindowV2::exact_probe(0),
+                dense_window: QueryResultWindowV2::exact_probe(0),
+                frame_class: quanta_index_contract::GoTestTraceFrameClassV1::Unresolved,
+                explanation: sample_explanation(),
+            },
+        ),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let result = client
+        .search()
+        .hybrid()
+        .native("panic")
+        .semantic_text("handler panic")
+        .pinned(sample_generation_pin())
+        .top_k(100)
+        .go_test_trace_file("handler.go:42: panic", 20);
+    assert!(
+        matches!(result, Err(crate::SdkError::Protocol(_))),
+        "{result:?}"
+    );
+    assert_eq!(ok_or_fail!(query.requests.lock()).len(), 1);
+}
+
 /// QI-BB-025: the hybrid builder applies the shared `top_k` gate before any
 /// round trip, under the one code every route reports.
 #[test]

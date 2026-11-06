@@ -1,6 +1,74 @@
 use super::*;
 
 #[test]
+fn pretty_renderer_names_go_trace_file_result_and_lane_windows() {
+    use quanta_index_contract::{
+        GoTestTraceFileHitV1, GoTestTraceFileLaneWitnessV1, RepoRelativePath, SourceFileKey,
+    };
+    let source_repo_id = RepoId::new("source-repo").expect("fixture source repo");
+    let path = RepoRelativePath::new("pkg/source.go");
+    let response = SearchPlaneQueryIpcResponseEnvelope {
+        request_id: 1,
+        payload: SearchPlaneQueryIpcResponse::GoTestTraceFileV1(
+            quanta_index_contract::GoTestTraceFileQueryResponseV1 {
+                generation: GenerationPin::new(
+                    RepoId::new("repo").expect("fixture repo"),
+                    RevisionId::new("rev").expect("fixture revision"),
+                    ManifestGeneration::new(7),
+                ),
+                selected_active_head: None,
+                results: vec![GoTestTraceFileHitV1 {
+                    file: SourceFileKey {
+                        source_repo_id: source_repo_id.clone(),
+                        repo_relative_path: path.clone(),
+                    },
+                    lexical: Some(GoTestTraceFileLaneWitnessV1 {
+                        file_rank: 1,
+                        chunk_rank: 1,
+                        candidate: LexicalCandidate {
+                            source_repo_id,
+                            source: None,
+                            preview: None,
+                            candidate_id: "chunk-1".to_string(),
+                            repo_id: RepoId::new("repo").expect("fixture repo"),
+                            revision_id: RevisionId::new("rev").expect("fixture revision"),
+                            manifest_generation: ManifestGeneration::new(7),
+                            repo_relative_path: path,
+                            start_line: 1,
+                            end_line: 2,
+                            score: 0.7,
+                            snippet: "func source() {}".to_string(),
+                            snippet_hit_offset: None,
+                            highlights: Vec::new(),
+                        },
+                    }),
+                    dense: None,
+                    file_rrf_score: 1.0 / 61.0,
+                    production_source: true,
+                    source_frame: false,
+                }],
+                lexical_window: QueryResultWindowV2::exact_probe(1),
+                dense_window: QueryResultWindowV2::exact_probe(0),
+                frame_class: quanta_index_contract::GoTestTraceFrameClassV1::Unresolved,
+                explanation: SearchExplanation::empty(),
+            },
+        ),
+    };
+    validate_response_kind(CommandKind::GoTestTraceFileV1, &response).expect("matching kind");
+    let mut output = Vec::new();
+    render_response(OutputMode::Pretty, &response, &mut output).expect("pretty render");
+    let text = String::from_utf8(output).expect("UTF-8 render");
+    assert!(text.contains("kind: go-test-trace-file"), "{text}");
+    assert!(text.contains("frame_class: unresolved"), "{text}");
+    assert!(text.contains("lexical_window:"), "{text}");
+    assert!(text.contains("dense_window:"), "{text}");
+    assert!(
+        text.contains("source_repo_id=source-repo path=pkg/source.go"),
+        "{text}"
+    );
+}
+
+#[test]
 fn pretty_renderer_supports_symbol_response() {
     use quanta_index_contract::{
         RepoRelativePath, SymbolQueryResponse,

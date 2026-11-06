@@ -233,7 +233,9 @@ impl CorpusPublicationState {
                 .map(|chunk| chunk.chunk_id.as_str())
                 .collect::<BTreeSet<_>>();
             if let Some(previous) = self.committed_files.get(key) {
-                for scope in super::semantic_source_scopes_for_chunk_records(&previous.chunks) {
+                for scope in
+                    super::semantic_source_scopes_for_chunk_records(&repo, &previous.chunks)
+                {
                     if !new_ids.contains(scope.scope.owner_id.as_str()) {
                         semantic_tombstone_scopes.push(scope.scope);
                     }
@@ -242,6 +244,7 @@ impl CorpusPublicationState {
             if let Some(file) = file {
                 let scope = source_scope(key.clone(), revision.clone(), file)?;
                 semantic_replace_scopes.extend(super::semantic_source_scopes_for_chunk_records(
+                    &repo,
                     &scope.chunks,
                 ));
                 replace_scopes.push(scope);

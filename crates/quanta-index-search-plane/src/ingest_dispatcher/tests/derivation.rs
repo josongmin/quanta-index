@@ -104,8 +104,8 @@ fn sealed_lexical_batch_with_empty_typed_scope_publishes_without_embedding() -> 
     if !semantic.seal
         || !semantic.replace_scopes.is_empty()
         || !semantic.required_corpora.is_empty()
-        || semantic.corpus_policy_digest.as_deref() != Some("semantic-source.v1")
-        || semantic.model_contract.view_policy_digest.as_deref() != Some("semantic-source.v1")
+        || semantic.corpus_policy_digest.as_deref() != Some("semantic-source.v2")
+        || semantic.model_contract.view_policy_digest.as_deref() != Some("semantic-source.v2")
     {
         return Err(format!("sealed semantic no-op lost typed contract: {semantic:?}").into());
     }

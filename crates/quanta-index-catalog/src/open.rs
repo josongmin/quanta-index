@@ -5,13 +5,15 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use quanta_index_core::CoreError;
+use quanta_index_core::{CoreError, index::MemoryLease};
 use rusqlite::TransactionBehavior;
 
 use crate::connection::{
-    CatalogClockPort, SqliteCatalog, SystemCatalogClock, engine_error, open_connection,
+    CatalogClockPort, SqliteCatalog, SystemCatalogClock, configure_connection, engine_error,
+    open_connection,
 };
 use crate::io_admission::{CatalogConnectionOwner, CatalogIoAdmission, ScopeLease};
+use crate::writer_cache::{CatalogWriterCacheObservation, CatalogWriterCachePolicy};
 
 impl SqliteCatalog {
     /// Open (creating if needed) the catalog under `state_root/catalog/`.
@@ -30,7 +32,7 @@ impl SqliteCatalog {
         busy_timeout: Duration,
         clock: Arc<dyn CatalogClockPort>,
     ) -> Result<Self, CoreError> {
-        Self::open_with_clock_and_admission(state_root, busy_timeout, clock, None)
+        Self::open_with_clock_and_admission(state_root, busy_timeout, clock, None, None)
     }
 
     /// Select an already registered VFS and retain its I/O custody through
@@ -46,6 +48,25 @@ impl SqliteCatalog {
             busy_timeout,
             Arc::new(SystemCatalogClock),
             Some(admission),
+            None,
+        )
+    }
+
+    /// Open with an explicitly funded writer page-cache target. The retained
+    /// lease belongs to this exact native connection until checked close.
+    pub fn open_with_io_admission_and_writer_cache(
+        state_root: &Path,
+        busy_timeout: Duration,
+        admission: Arc<dyn CatalogIoAdmission>,
+        policy: CatalogWriterCachePolicy,
+        memory: MemoryLease,
+    ) -> Result<Self, CoreError> {
+        Self::open_with_clock_and_admission(
+            state_root,
+            busy_timeout,
+            Arc::new(SystemCatalogClock),
+            Some(admission),
+            Some((policy, memory)),
         )
     }
 
@@ -54,92 +75,126 @@ impl SqliteCatalog {
         busy_timeout: Duration,
         clock: Arc<dyn CatalogClockPort>,
         admission: Option<Arc<dyn CatalogIoAdmission>>,
+        cache: Option<(CatalogWriterCachePolicy, MemoryLease)>,
     ) -> Result<Self, CoreError> {
-        let _scope = ScopeLease::enter(admission.as_ref(), None);
-        let (mut connection, path) = open_connection(
-            state_root,
-            busy_timeout,
-            admission.as_ref().map(|owner| owner.vfs_name()),
-        )?;
-        // Lock before classifying the root. Two concurrent first opens must
-        // not both observe an empty catalog and independently decide to seed
-        // its first fence row.
-        let initialization = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| engine_error("begin catalog initialization", &path, &error))?;
-        // Reject an older native source-capture meaning before any DDL, seed,
-        // or recovery can rewrite its claims. A marker-validated runtime is
-        // not the only consumer of this Catalog constructor.
-        let native_first_birth = crate::native::preflight_capture_format(&initialization, &path)?;
-        let legacy_tables: i64 = initialization
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
-                 ('idempotency_v1', 'catalog_sequence_v1')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|error| engine_error("inspect legacy catalog tables", &path, &error))?;
-        if legacy_tables != 0 {
-            return Err(CoreError::Storage(format!(
-                "catalog: {} contains unsupported legacy catalog tables; this build has no migration reader",
-                path.display()
-            )));
+        if cache.is_some() && admission.is_none() {
+            return Err(CoreError::InvalidContract(
+                "funded catalog writer cache requires I/O admission".into(),
+            ));
         }
-        // Any pre-existing table means this is not a pristine catalog.
-        // An allowlist of today's journal tables would misclassify a retained
-        // auxiliary-only (or future-domain) root and silently reuse fences.
-        let existing_tables: i64 = initialization
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|error| engine_error("inspect existing catalog tables", &path, &error))?;
-        let fresh_root = existing_tables == 0;
-        // DDL and allocator seeding are one durable decision. In particular,
-        // interruption before the first fence row must not strand a new root
-        // with only some current tables, which would look like an older root
-        // and (correctly) refuse implicit fence re-seeding on the next open.
-        initialization
-            .execute_batch(crate::idempotency::SCHEMA)
-            .map_err(|error| engine_error("create idempotency schema", &path, &error))?;
-        crate::idempotency::verify_installed_schema(&initialization, &path)?;
-        initialization
-            .execute_batch(crate::sequence::SCHEMA)
-            .map_err(|error| engine_error("create sequence schema", &path, &error))?;
-        crate::sequence::verify_installed_schema(&initialization, &path)?;
-        initialization
-            .execute_batch(crate::auxiliary::SCHEMA)
-            .map_err(|error| engine_error("create auxiliary schema", &path, &error))?;
-        crate::auxiliary::verify_installed_schema(&initialization, &path)?;
-        initialization
-            .execute_batch(crate::candidate::SCHEMA)
-            .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
-        crate::candidate::verify_installed_schema(&initialization, &path)?;
-        crate::native::initialize(&initialization, &path, native_first_birth)?;
-        crate::idempotency::seed_fence_allocator(&initialization, &path, fresh_root)?;
-        // A missing or recast GC floor must refuse before recovery mutates
-        // journal rows or clears old mutation leases.
-        crate::sequence::verify_gc_floor_domain_integrity(&initialization, &path)?;
-        // Reconcile the sequence allocator before recovery allocates abort
-        // events. Recovery, lease cleanup, and the final integrity pass all
-        // share this transaction: a failed open must not publish a partial
-        // recovery or a partially initialized schema.
-        crate::sequence::seed_allocator(&initialization, &path)?;
-        crate::sequence::reconcile(&initialization, &path)?;
-        // Crash recovery (S21-04): the state root admits one writer at a
-        // time, so any unfinished journal row found here belongs to a dead
-        // process and is aborted before the catalog answers anything.
-        let _recovered = crate::idempotency::recover_unfinished_rows(&initialization, &path)?;
-        let _leases = crate::idempotency::release_stale_mutation_leases(&initialization, &path)?;
-        crate::integrity::verify_integrity(&initialization, &path)?;
-        initialization
-            .commit()
-            .map_err(|error| engine_error("commit catalog initialization", &path, &error))?;
+        let policy = cache.as_ref().map(|(policy, _memory)| *policy);
+        if let Some((policy, memory)) = cache.as_ref() {
+            policy.validate()?;
+            if memory.bytes() != policy.reservation_bytes()? {
+                return Err(CoreError::InvalidContract(
+                    "catalog writer cache lease differs from requested bytes".into(),
+                ));
+            }
+        }
+        let _scope = ScopeLease::enter(admission.as_ref(), None);
+        let (connection, path) =
+            open_connection(state_root, admission.as_ref().map(|owner| owner.vfs_name()))?;
+        let mut owner = match (admission, cache) {
+            (Some(admission), Some((_policy, memory))) => {
+                CatalogConnectionOwner::new_with_cache(connection, admission, memory)
+            }
+            (admission, None) => CatalogConnectionOwner::new(connection, admission),
+            (None, Some(_)) => {
+                return Err(CoreError::InvalidContract(
+                    "funded catalog writer cache requires I/O admission".into(),
+                ));
+            }
+        };
+        let writer_cache = {
+            let connection = owner.initialization_connection()?;
+            configure_connection(connection, &path, busy_timeout)?;
+            let writer_cache: Option<CatalogWriterCacheObservation> = policy
+                .map(|policy| crate::writer_cache::apply(connection, &path, policy))
+                .transpose()?;
+            // Lock before classifying the root. Two concurrent first opens must
+            // not both observe an empty catalog and independently decide to seed
+            // its first fence row.
+            let initialization = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| engine_error("begin catalog initialization", &path, &error))?;
+            // Reject an older native source-capture meaning before any DDL, seed,
+            // or recovery can rewrite its claims. A marker-validated runtime is
+            // not the only consumer of this Catalog constructor.
+            let native_first_birth =
+                crate::native::preflight_capture_format(&initialization, &path)?;
+            let legacy_tables: i64 = initialization
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
+                 ('idempotency_v1', 'catalog_sequence_v1')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| engine_error("inspect legacy catalog tables", &path, &error))?;
+            if legacy_tables != 0 {
+                return Err(CoreError::Storage(format!(
+                    "catalog: {} contains unsupported legacy catalog tables; this build has no migration reader",
+                    path.display()
+                )));
+            }
+            // Any pre-existing table means this is not a pristine catalog.
+            // An allowlist of today's journal tables would misclassify a retained
+            // auxiliary-only (or future-domain) root and silently reuse fences.
+            let existing_tables: i64 = initialization
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| engine_error("inspect existing catalog tables", &path, &error))?;
+            let fresh_root = existing_tables == 0;
+            // DDL and allocator seeding are one durable decision. In particular,
+            // interruption before the first fence row must not strand a new root
+            // with only some current tables, which would look like an older root
+            // and (correctly) refuse implicit fence re-seeding on the next open.
+            initialization
+                .execute_batch(crate::idempotency::SCHEMA)
+                .map_err(|error| engine_error("create idempotency schema", &path, &error))?;
+            crate::idempotency::verify_installed_schema(&initialization, &path)?;
+            initialization
+                .execute_batch(crate::sequence::SCHEMA)
+                .map_err(|error| engine_error("create sequence schema", &path, &error))?;
+            crate::sequence::verify_installed_schema(&initialization, &path)?;
+            initialization
+                .execute_batch(crate::auxiliary::SCHEMA)
+                .map_err(|error| engine_error("create auxiliary schema", &path, &error))?;
+            crate::auxiliary::verify_installed_schema(&initialization, &path)?;
+            initialization
+                .execute_batch(crate::candidate::SCHEMA)
+                .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
+            crate::candidate::verify_installed_schema(&initialization, &path)?;
+            crate::native::initialize(&initialization, &path, native_first_birth)?;
+            crate::idempotency::seed_fence_allocator(&initialization, &path, fresh_root)?;
+            // A missing or recast GC floor must refuse before recovery mutates
+            // journal rows or clears old mutation leases.
+            crate::sequence::verify_gc_floor_domain_integrity(&initialization, &path)?;
+            // Reconcile the sequence allocator before recovery allocates abort
+            // events. Recovery, lease cleanup, and the final integrity pass all
+            // share this transaction: a failed open must not publish a partial
+            // recovery or a partially initialized schema.
+            crate::sequence::seed_allocator(&initialization, &path)?;
+            crate::sequence::reconcile(&initialization, &path)?;
+            // Crash recovery (S21-04): the state root admits one writer at a
+            // time, so any unfinished journal row found here belongs to a dead
+            // process and is aborted before the catalog answers anything.
+            let _recovered = crate::idempotency::recover_unfinished_rows(&initialization, &path)?;
+            let _leases =
+                crate::idempotency::release_stale_mutation_leases(&initialization, &path)?;
+            crate::integrity::verify_integrity(&initialization, &path)?;
+            initialization
+                .commit()
+                .map_err(|error| engine_error("commit catalog initialization", &path, &error))?;
+            writer_cache
+        };
         Ok(Self {
-            connection: CatalogConnectionOwner::new(connection, admission),
+            connection: owner,
             path,
             clock,
+            writer_cache,
         })
     }
 }

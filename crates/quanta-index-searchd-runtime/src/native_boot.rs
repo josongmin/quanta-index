@@ -140,6 +140,14 @@ pub(super) fn execute(
         config.owned_work.is_some(),
         config.maintenance.is_some(),
     )?;
+    let mut catalog_cache_memory =
+        if command.mode == NativeCommandModeV1::Select {
+            Some(ledger.reserve_catalog_cache(
+                config.resources.catalog_writer_cache.reservation_bytes()?,
+            )?)
+        } else {
+            None
+        };
     let scheduler = ledger.scheduler(NativeResourceClass::Control);
     let control =
         ReservationGuard::try_acquire(Arc::clone(&scheduler), config.resources.execution.control)
@@ -151,7 +159,7 @@ pub(super) fn execute(
     let authority = prepare_native_boot_authority(
         lease,
         &config.socket_path,
-        config.resources,
+        &config.resources,
         budget.request(),
     )?;
     verify_existing_native_format(&authority, &config.socket_path, &mut budget)?;
@@ -181,16 +189,28 @@ pub(super) fn execute(
         drop(candidate);
         {
             let _funding = authority.io.enter_maintenance_scope()?;
-            let catalog = SqliteCatalog::open_with_io_admission(
+            let mut catalog = SqliteCatalog::open_with_io_admission_and_writer_cache(
                 &root,
                 std::time::Duration::ZERO,
                 authority.io.clone(),
+                config.resources.catalog_writer_cache,
+                catalog_cache_memory.take().ok_or_else(|| {
+                    IndexError::BackendViolation(
+                        "native selection Catalog cache lease is missing".into(),
+                    )
+                })?,
             )?;
+            if let Some(observation) = catalog.writer_cache_observation() {
+                crate::native_catalog_cache_diagnostics::record_catalog_writer_cache(
+                    budget.request().diagnostic_context(),
+                    &observation,
+                );
+            }
             let selected = catalog.select_native_boot_manifest(operation, &mut budget)?;
             if identity(catalog.native_root_nonce(&mut budget)?, &selected)? != expected {
                 return Err(IndexError::DigestConflict.into());
             }
-            drop(catalog);
+            catalog.close_checked()?;
         }
         require_retired(&authority)?;
         let snapshot = verify_native_boot_catalog(&root, authority.io.as_ref(), &mut budget)?;

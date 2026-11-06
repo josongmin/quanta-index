@@ -299,7 +299,9 @@ fn publish(
             }],
             Vec::new(),
         )?;
-        for semantic in semantic_source_scopes_for_chunk_records(&scope.chunks) {
+        for semantic in
+            semantic_source_scopes_for_chunk_records(&pin(generation).repo_id, &scope.chunks)
+        {
             batch = batch.replace_semantic_scope(
                 semantic.scope,
                 semantic.scope_digest,

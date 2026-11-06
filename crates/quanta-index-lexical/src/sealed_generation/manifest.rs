@@ -725,8 +725,8 @@ mod tests {
     fn small_bigpos_tagged_leading_version_keeps_prior_classification() {
         let expected = manifest();
         let bytes = expected.encode().expect("encode manifest");
-        assert_eq!(bytes.get(..2), Some([0x8c, 0x13].as_slice()));
-        let mut tagged = vec![0x8c, 0xc2, 0x41, 0x13];
+        assert_eq!(bytes.get(..2), Some([0x8c, 0x16].as_slice()));
+        let mut tagged = vec![0x8c, 0xc2, 0x41, 0x16];
         tagged.extend_from_slice(bytes.get(2..).expect("manifest body"));
         assert_eq!(
             LexicalSealedManifest::decode(&tagged, Path::new("/g1/m")).expect("tagged version"),
@@ -1116,10 +1116,22 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 10")
-                    && message.contains("serves 19")
+                    && message.contains("serves 22")
                     && message.contains("shared paged lexical authorities")
                     && message.contains("must be rebuilt")
         ));
+    }
+
+    #[test]
+    fn format_twenty_one_requires_rebuild_before_packed_records_are_read() {
+        let error = LexicalSealedManifest::decode(&[0x81, 0x15], Path::new("/g21/m"))
+            .expect_err("old physical Record layout requires rebuild");
+        assert!(
+            matches!(error, quanta_index_core::CoreError::Typed { code, message }
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+                && message.contains("format 21") && message.contains("serves 22")
+                && message.contains("must be rebuilt"))
+        );
     }
 
     #[test]
@@ -1135,7 +1147,7 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 12")
-                    && message.contains("serves 19")
+                    && message.contains("serves 22")
                     && message.contains("shared paged lexical authorities")
                     && message.contains("must be rebuilt")
         ));

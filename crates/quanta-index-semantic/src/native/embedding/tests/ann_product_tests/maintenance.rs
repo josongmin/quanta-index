@@ -8,8 +8,9 @@ use crate::native::{
 use quanta_index_core::index::{MapBatchRequest, MapBatchWrite, MapValue, StagedMapRoots};
 use quanta_index_core::{
     DiagnosticAnnIndexKindV1, DiagnosticAnnRegionPhaseV1, DiagnosticCaptureIdV1, DiagnosticClockV1,
-    DiagnosticContextV1, DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1,
-    DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    DiagnosticContextV1, DiagnosticCounterV1, DiagnosticEmitV1, DiagnosticEventKindV1,
+    DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1,
+    DiagnosticTerminalV1,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -633,6 +634,8 @@ struct RecordingMap<'a, 'b> {
     overfull_first: bool,
     scans: Mutex<Vec<MemberScan>>,
     applies: Mutex<Vec<(MapRoot, Vec<MapEdit>)>>,
+    member_lookups: AtomicU64,
+    refuse_apply: AtomicBool,
 }
 
 impl<'a, 'b> RecordingMap<'a, 'b> {
@@ -643,6 +646,8 @@ impl<'a, 'b> RecordingMap<'a, 'b> {
             overfull_first,
             scans: Mutex::new(Vec::new()),
             applies: Mutex::new(Vec::new()),
+            member_lookups: AtomicU64::new(0),
+            refuse_apply: AtomicBool::new(false),
         }
     }
 
@@ -672,6 +677,9 @@ impl PersistentMapPort for RecordingMap<'_, '_> {
         key: &[u8],
         budget: &mut WorkBudget,
     ) -> Result<Option<MapValue>, IndexError> {
+        if root == self.members {
+            let _previous = self.member_lookups.fetch_add(1, AtomicOrdering::SeqCst);
+        }
         self.inner.lookup(root, key, budget)
     }
 
@@ -713,6 +721,9 @@ impl PersistentMapPort for RecordingMap<'_, '_> {
             .lock()
             .map_err(|_error| IndexError::Storage("ANN map apply log poisoned".into()))?
             .push((base, edits.to_vec()));
+        if self.refuse_apply.load(AtomicOrdering::SeqCst) {
+            return Err(IndexError::ResourceLimited);
+        }
         self.inner.apply(base, edits, sink, budget)
     }
 
@@ -736,14 +747,20 @@ impl PersistentMapPort for RecordingMap<'_, '_> {
     }
 }
 
-const INSTALL_TRACE_EVENT_CAP: usize = 8;
+// Operation, Compaction with CPU, and the two exact parent markers.
+const INSTALL_TRACE_EVENT_CAP: usize = 9;
 
 #[derive(Debug, Default)]
-struct InstallTraceClock(AtomicU64);
+struct InstallTraceClock(AtomicU64, AtomicU64, AtomicU64);
 
 impl DiagnosticClockV1 for InstallTraceClock {
     fn now_ns(&self) -> u64 {
         self.0.fetch_add(1, AtomicOrdering::Relaxed)
+    }
+
+    fn thread_cpu_now_ns(&self) -> Option<u64> {
+        let _previous = self.2.fetch_add(1, AtomicOrdering::Relaxed);
+        Some(self.1.fetch_add(7, AtomicOrdering::Relaxed))
     }
 }
 
@@ -1008,7 +1025,77 @@ enum CarryTraceCase {
     ExhaustedBytes,
 }
 
-fn observe_carry(case: CarryTraceCase, record: bool) -> TestResult<AnnTraceObservation> {
+// The marker is emitted by a real object-port read during consolidation, not
+// by the caller immediately after opening the Compaction span.
+struct CarryTraceObjects<'a> {
+    inner: &'a MemoryStore,
+    mark_first_get: bool,
+    marked: AtomicBool,
+}
+
+impl ImmutableObjectPort for CarryTraceObjects<'_> {
+    fn identify(
+        &self,
+        payload: &[u8],
+        children: &[ObjectRef],
+        budget: &mut WorkBudget,
+    ) -> Result<RegisteredObject, IndexError> {
+        self.inner.identify(payload, children, budget)
+    }
+
+    fn put(
+        &self,
+        payload: &[u8],
+        children: &[ObjectRef],
+        budget: &mut WorkBudget,
+    ) -> Result<RegisteredObject, IndexError> {
+        self.inner.put(payload, children, budget)
+    }
+
+    fn install(
+        &self,
+        payload: &[u8],
+        children: &[ObjectRef],
+        sink: &dyn ObjectWriteSink,
+        budget: &mut WorkBudget,
+    ) -> Result<RegisteredObject, IndexError> {
+        self.inner.install(payload, children, sink, budget)
+    }
+
+    fn install_batch(
+        &self,
+        inputs: &[ObjectBatchInput],
+        sink: &dyn ObjectWriteSink,
+        budget: &mut WorkBudget,
+    ) -> Result<quanta_index_core::index::RegisteredObjectBatch, IndexError> {
+        self.inner.install_batch(inputs, sink, budget)
+    }
+
+    fn get(
+        &self,
+        reference: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<StoredObject, IndexError> {
+        let mark = self.mark_first_get && !self.marked.swap(true, AtomicOrdering::Relaxed);
+        let span = if mark {
+            crate::build::begin_build_stage(
+                budget.request().diagnostic_context(),
+                DiagnosticStageV1::Backend,
+            )
+        } else {
+            None
+        };
+        let result = self.inner.get(reference, budget);
+        crate::build::finish_build_stage(span, result.is_ok());
+        result
+    }
+}
+
+fn observe_carry(
+    case: CarryTraceCase,
+    record: bool,
+    mark_port_and_restore: bool,
+) -> TestResult<AnnTraceObservation> {
     let store = MemoryStore::default();
     let maps = GraphMap::new(&store);
     let custody = TestCustody;
@@ -1053,17 +1140,29 @@ fn observe_carry(case: CarryTraceCase, record: bool) -> TestResult<AnnTraceObser
         },
         request,
     );
+    let objects = CarryTraceObjects {
+        inner: &store,
+        mark_first_get: mark_port_and_restore,
+        marked: AtomicBool::new(false),
+    };
     let result = directory.consolidated_members(
         &recipe,
         &mut AttemptContext {
             attempt: attempt(),
-            objects: &store,
+            objects: &objects,
             maps: &maps,
             custody: &custody,
             scratch: &NoScratch,
             budget: &mut budget,
         },
     );
+    if mark_port_and_restore {
+        let restored = crate::build::begin_build_stage(
+            budget.request().diagnostic_context(),
+            DiagnosticStageV1::Backend,
+        );
+        crate::build::finish_build_stage(restored, true);
+    }
     if let Ok(members) = &result {
         // The one selected member is already the exact base. Carry must
         // preserve its root, not merely agree between Off and Record.
@@ -1080,6 +1179,10 @@ fn observe_carry(case: CarryTraceCase, record: bool) -> TestResult<AnnTraceObser
         .lock()
         .map_err(|_error| "ANN carry trace sink poisoned")?
         .clone();
+    check_eq!(
+        clock.2.load(AtomicOrdering::Relaxed),
+        if record { 2 } else { 0 }
+    );
     Ok(AnnTraceObservation {
         result,
         usage: budget.usage(),
@@ -1096,8 +1199,8 @@ fn carry_trace_preserves_root_refusals_and_work_with_balanced_terminals() -> Tes
         CarryTraceCase::InvalidRecipe,
         CarryTraceCase::ExhaustedBytes,
     ] {
-        let off = observe_carry(case, false)?;
-        let record = observe_carry(case, true)?;
+        let off = observe_carry(case, false, false)?;
+        let record = observe_carry(case, true, false)?;
         check_eq!(record.result, off.result);
         check_eq!(record.usage, off.usage);
         check_eq!(off.clock_calls, 0);
@@ -1151,7 +1254,132 @@ fn carry_trace_preserves_root_refusals_and_work_with_balanced_terminals() -> Tes
             })
             .collect();
         check_eq!(terminals, vec![expected]);
-        check_eq!(record.events.len(), 4);
+        let cpu: Vec<_> = record
+            .events
+            .iter()
+            .filter_map(|event| {
+                if let DiagnosticEventKindV1::Counter {
+                    span_id,
+                    key: DiagnosticCounterV1::ThreadCpuNs,
+                    value,
+                } = event.kind
+                {
+                    Some((span_id, value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        check_eq!(cpu, vec![(span, 7)]);
+        check_eq!(record.events.len(), 5);
+    }
+    Ok(())
+}
+
+#[test]
+fn carry_trace_scopes_real_object_read_and_restores_parent_after_refusal() -> TestResult {
+    for case in [CarryTraceCase::Valid, CarryTraceCase::ExhaustedBytes] {
+        let off = observe_carry(case, false, true)?;
+        let record = observe_carry(case, true, true)?;
+        check_eq!(record.result, off.result);
+        check_eq!(record.usage, off.usage);
+        check_eq!(off.clock_calls, 0);
+        check!(off.events.is_empty());
+        check_eq!(off.rejected, 0);
+        check_eq!(record.rejected, 0);
+
+        let root = record.events.iter().find_map(|event| {
+            if let DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                parent_span_id: None,
+                root_kind: Some(DiagnosticRootKindV1::Operation),
+                ..
+            } = event.kind
+            {
+                Some(span_id)
+            } else {
+                None
+            }
+        });
+        let root = root.ok_or("ANN carry operation root missing")?;
+        let compaction = record.events.iter().find_map(|event| {
+            if let DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                parent_span_id: Some(parent),
+                stage: DiagnosticStageV1::Compaction,
+                ..
+            } = event.kind
+                && parent == root
+            {
+                Some(span_id)
+            } else {
+                None
+            }
+        });
+        let compaction = compaction.ok_or("ANN carry Compaction span missing")?;
+        let marker_spans: Vec<_> = record
+            .events
+            .iter()
+            .filter_map(|event| {
+                if let DiagnosticEventKindV1::SpanBegin {
+                    span_id,
+                    parent_span_id: Some(parent),
+                    stage: DiagnosticStageV1::Backend,
+                    ..
+                } = event.kind
+                {
+                    Some((span_id, parent))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let marker_parents: Vec<_> = marker_spans.iter().map(|(_, parent)| *parent).collect();
+        match case {
+            CarryTraceCase::Valid => {
+                check_eq!(marker_parents, vec![compaction, root]);
+                check_eq!(record.events.len(), 9);
+            }
+            CarryTraceCase::ExhaustedBytes => {
+                check_eq!(marker_parents, vec![root]);
+                check_eq!(record.events.len(), 7);
+            }
+            CarryTraceCase::InvalidRecipe => return Err("unrequested carry trace case".into()),
+        }
+        for (span, _) in marker_spans {
+            check!(record.events.iter().any(|event| matches!(
+                event.kind,
+                DiagnosticEventKindV1::SpanEnd {
+                    span_id,
+                    outcome: DiagnosticTerminalV1::Ok,
+                } if span_id == span
+            )));
+        }
+        let cpu: Vec<_> = record
+            .events
+            .iter()
+            .filter_map(|event| {
+                if let DiagnosticEventKindV1::Counter {
+                    span_id,
+                    key: DiagnosticCounterV1::ThreadCpuNs,
+                    value,
+                } = event.kind
+                {
+                    Some((span_id, value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        check_eq!(cpu, vec![(compaction, 7)]);
+        check!(record.events.iter().all(|event| !matches!(
+            event.kind,
+            DiagnosticEventKindV1::Health { .. }
+                | DiagnosticEventKindV1::SpanEnd {
+                    outcome: DiagnosticTerminalV1::Aborted,
+                    ..
+                }
+        )));
     }
     Ok(())
 }
@@ -1676,6 +1904,17 @@ fn delta_retirement_preserves_pending_member_and_old_view() -> TestResult {
     directory.owners = selected_owners;
     let before_prune = directory;
 
+    let second_member = store.get(second.member, &mut budget)?;
+    let second_binding: OwnerMemberBinding = serde_json::from_slice(&second_member.payload)?;
+    let checked_objects = SingleReadMemberObjects {
+        inner: &store,
+        member: second.member,
+        artifact: second_binding.artifact,
+        member_reads: AtomicU64::new(0),
+        artifact_reads: AtomicU64::new(0),
+    };
+    let recorded = RecordingMap::new(&maps, directory.delta, false);
+
     let mut cancelled_budget = ann_budget()?;
     cancelled_budget.request().cancel_handle().cancel();
     let cancelled = {
@@ -1692,17 +1931,66 @@ fn delta_retirement_preserves_pending_member_and_old_view() -> TestResult {
     check!(matches!(cancelled, Err(IndexError::Cancelled)));
     check_eq!(directory, before_prune);
 
+    recorded.refuse_apply.store(true, AtomicOrdering::SeqCst);
+    let mut refused_work = ann_budget()?;
+    let refused = directory.retire_delta(
+        &recipe,
+        &mut AttemptContext {
+            attempt: attempt(),
+            objects: &store,
+            maps: &recorded,
+            custody: &custody,
+            scratch: &NoScratch,
+            budget: &mut refused_work,
+        },
+    );
+    check!(matches!(refused, Err(IndexError::ResourceLimited)));
+    check_eq!(directory, before_prune);
+    let refused_applies = recorded.take_applies()?;
+    let [(refused_base, refused_edits)] = refused_applies.as_slice() else {
+        return Err("delta retirement must attempt one bounded apply".into());
+    };
+    check_eq!(*refused_base, before_prune.delta);
+    check_eq!(refused_edits.len(), 2);
+    recorded.refuse_apply.store(false, AtomicOrdering::SeqCst);
+
     {
         let mut context = AttemptContext {
             attempt: attempt(),
-            objects: &store,
-            maps: &maps,
+            objects: &checked_objects,
+            maps: &recorded,
             custody: &custody,
             scratch: &NoScratch,
             budget: &mut budget,
         };
         directory.retire_delta(&recipe, &mut context)?;
     }
+    let applies = recorded.take_applies()?;
+    let [(applied_base, applied_edits)] = applies.as_slice() else {
+        return Err("delta retirement must install one bounded apply".into());
+    };
+    check_eq!(*applied_base, before_prune.delta);
+    let [second_edit, third_edit] = applied_edits.as_slice() else {
+        return Err("delta retirement must remove exactly two stale owners".into());
+    };
+    check_eq!(
+        second_edit.key.as_slice(),
+        owner_map_key(second.owner).as_slice()
+    );
+    check_eq!(
+        third_edit.key.as_slice(),
+        owner_map_key(third.owner).as_slice()
+    );
+    check_eq!(second_edit.expected, Some(MapValue::from(second.member)));
+    check_eq!(third_edit.expected, Some(MapValue::from(third.member)));
+    check_eq!(second_edit.next, None);
+    check_eq!(third_edit.next, None);
+    check_eq!(recorded.member_lookups.load(AtomicOrdering::SeqCst), 0);
+    check_eq!(checked_objects.member_reads.load(AtomicOrdering::SeqCst), 1);
+    check_eq!(
+        checked_objects.artifact_reads.load(AtomicOrdering::SeqCst),
+        1
+    );
     check_eq!(directory.delta_owners, 1);
     check_eq!(directory.delta_rows, 1);
     check_eq!(directory.owners, selected_owners);
@@ -1733,6 +2021,105 @@ fn delta_retirement_preserves_pending_member_and_old_view() -> TestResult {
     check!(graph_reaches(&store, new_directory, first.member)?);
     check!(!graph_reaches(&store, new_directory, second.member)?);
     check!(!graph_reaches(&store, new_directory, third.member)?);
+    Ok(())
+}
+
+#[test]
+fn delta_retirement_late_artifact_and_count_fail_before_cow_install() -> TestResult {
+    let store = MemoryStore::default();
+    let maps = GraphMap::new(&store);
+    let custody = TestCustody;
+    let recipe = recipe();
+    let spec = instance(&recipe);
+    let first = selected_owner(&store, &spec, &recipe, 1, b"first", [1.0, 0.0])?;
+    let second = selected_owner(&store, &spec, &recipe, 2, b"second", [0.0, 1.0])?;
+    let third = selected_owner(&store, &spec, &recipe, 3, b"third", [1.0, 0.0])?;
+    let mut setup = ann_budget()?;
+    let original_member = store.get(third.member, &mut setup)?;
+    let mut binding: OwnerMemberBinding = serde_json::from_slice(&original_member.payload)?;
+    binding.artifact = store.insert(b"{".to_vec(), Vec::new())?;
+    let children = ObjectChildren::from_references([
+        Some(binding.artifact),
+        binding.input.source,
+        binding.input.projection,
+        None,
+    ]);
+    let malformed_member =
+        store.insert(serde_json::to_vec(&binding)?, children.as_slice().to_vec())?;
+    let checked_objects = SingleReadMemberObjects {
+        inner: &store,
+        member: malformed_member,
+        artifact: binding.artifact,
+        member_reads: AtomicU64::new(0),
+        artifact_reads: AtomicU64::new(0),
+    };
+    let malformed_root = maps.seed(BTreeMap::from([
+        (owner_map_key(first.owner).to_vec(), first.member),
+        (owner_map_key(second.owner).to_vec(), second.member),
+        (owner_map_key(third.owner).to_vec(), malformed_member),
+    ]))?;
+    let mut directory = ann_directory::AnnDirectory::empty(recipe.fingerprint(), MapRoot(None));
+    directory.delta = malformed_root;
+    directory.delta_owners = 3;
+    directory.delta_rows = 3;
+    let before = directory;
+    let recorded = RecordingMap::new(&maps, malformed_root, false);
+    let memory = Arc::new(QueryMemory::default());
+    let mut work = ann_budget()?;
+    work.bind_memory_scope(Some(MemoryScope::new(Arc::new(QueryMemoryScope(
+        Arc::clone(&memory),
+    )))));
+    let refused = directory.retire_delta(
+        &recipe,
+        &mut AttemptContext {
+            attempt: attempt(),
+            objects: &checked_objects,
+            maps: &recorded,
+            custody: &custody,
+            scratch: &NoScratch,
+            budget: &mut work,
+        },
+    );
+    check!(matches!(refused, Err(IndexError::CorruptObject(reason))
+        if reason == "owner vector commitment mismatch"));
+    check_eq!(checked_objects.member_reads.load(AtomicOrdering::SeqCst), 1);
+    check_eq!(
+        checked_objects.artifact_reads.load(AtomicOrdering::SeqCst),
+        1
+    );
+    check_eq!(directory, before);
+    check!(recorded.take_applies()?.is_empty());
+    drop(work);
+    check_query_memory_released(&memory)?;
+
+    let valid_root = maps.seed(BTreeMap::from([
+        (owner_map_key(first.owner).to_vec(), first.member),
+        (owner_map_key(second.owner).to_vec(), second.member),
+        (owner_map_key(third.owner).to_vec(), third.member),
+    ]))?;
+    for declared_rows in [2, 4] {
+        let mut directory = ann_directory::AnnDirectory::empty(recipe.fingerprint(), MapRoot(None));
+        directory.delta = valid_root;
+        directory.delta_owners = 3;
+        directory.delta_rows = declared_rows;
+        let before = directory;
+        let recorded = RecordingMap::new(&maps, valid_root, false);
+        let mut work = ann_budget()?;
+        let refused = directory.retire_delta(
+            &recipe,
+            &mut AttemptContext {
+                attempt: attempt(),
+                objects: &store,
+                maps: &recorded,
+                custody: &custody,
+                scratch: &NoScratch,
+                budget: &mut work,
+            },
+        );
+        check!(matches!(refused, Err(IndexError::CorruptObject(_))));
+        check_eq!(directory, before);
+        check!(recorded.take_applies()?.is_empty());
+    }
     Ok(())
 }
 

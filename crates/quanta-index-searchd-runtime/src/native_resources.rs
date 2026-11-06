@@ -582,6 +582,28 @@ impl NativeResourceLedger {
         if bytes == 0 || bytes > self.plan.interactive.memory_bytes {
             return Err(IndexError::ResourceLimited);
         }
+        self.reserve_detached_memory(bytes, NativeResourceClass::Interactive)
+    }
+
+    /// Reserve the service's one Catalog writer-cache commitment before its
+    /// connection can allocate pager pages. This does not occupy an execution
+    /// slot or borrow the Interactive response cap; protected class floors
+    /// remain in the same ledger for the connection's full lifetime.
+    pub(super) fn reserve_catalog_cache(
+        self: &Arc<Self>,
+        bytes: u64,
+    ) -> Result<MemoryLease, IndexError> {
+        if bytes == 0 {
+            return Err(IndexError::ResourceLimited);
+        }
+        self.reserve_detached_memory(bytes, NativeResourceClass::Control)
+    }
+
+    fn reserve_detached_memory(
+        self: &Arc<Self>,
+        bytes: u64,
+        class: NativeResourceClass,
+    ) -> Result<MemoryLease, IndexError> {
         if self.invalid.load(Ordering::Acquire) {
             return Err(invalid_ledger());
         }
@@ -622,7 +644,7 @@ impl NativeResourceLedger {
         let _previous = state.allocations.insert(
             reservation,
             AllocationState {
-                class: NativeResourceClass::Interactive,
+                class,
                 need: extra,
                 active: false,
                 temporary_bytes: 0,
@@ -955,6 +977,54 @@ mod tests {
             core: unit,
             enrichment: unit,
         }
+    }
+
+    #[test]
+    fn detached_catalog_cache_preserves_all_execution_floors_and_refunds_once()
+    -> Result<(), IndexError> {
+        let mut insufficient = plan();
+        insufficient.capacity.memory_bytes = 8192 + 1024 - 1;
+        let denied = NativeResourceLedger::new(insufficient)?;
+        check!(matches!(
+            denied.reserve_catalog_cache(1024),
+            Err(IndexError::ResourceLimited)
+        ))?;
+        check_eq!(denied.snapshot()?.live_memory_bytes, 0)?;
+
+        let mut exact = plan();
+        exact.capacity.memory_bytes = 8192 + 1024;
+        let ledger = NativeResourceLedger::new(exact)?;
+        let cache = ledger.reserve_catalog_cache(1024)?;
+        let snapshot = ledger.snapshot()?;
+        check_eq!(snapshot.reserved, ResourceNeed::default())?;
+        check_eq!(snapshot.live_memory_bytes, 1024)?;
+        check_eq!(snapshot.retained_memory_bytes, 1024)?;
+        let control = ReservationGuard::try_acquire(
+            ledger.scheduler(NativeResourceClass::Control),
+            exact.control,
+        )
+        .ok_or(IndexError::ResourceLimited)?;
+        let interactive = ReservationGuard::try_acquire(
+            ledger.scheduler(NativeResourceClass::Interactive),
+            exact.interactive,
+        )
+        .ok_or(IndexError::ResourceLimited)?;
+        let core =
+            ReservationGuard::try_acquire(ledger.scheduler(NativeResourceClass::Core), exact.core)
+                .ok_or(IndexError::ResourceLimited)?;
+        let enrichment = ReservationGuard::try_acquire(
+            ledger.scheduler(NativeResourceClass::Enrichment),
+            exact.enrichment,
+        )
+        .ok_or(IndexError::ResourceLimited)?;
+        check_eq!(ledger.snapshot()?.retained_memory_bytes, 1024)?;
+        drop((control, interactive, core, enrichment));
+        check_eq!(ledger.snapshot()?.reserved, ResourceNeed::default())?;
+        check_eq!(ledger.snapshot()?.retained_memory_bytes, 1024)?;
+        drop(cache);
+        check_eq!(ledger.snapshot()?.live_memory_bytes, 0)?;
+        check_eq!(ledger.snapshot()?.retained_memory_bytes, 0)?;
+        Ok(())
     }
 
     fn capacity_for_slots(

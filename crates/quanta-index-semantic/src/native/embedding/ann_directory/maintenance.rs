@@ -10,7 +10,7 @@ use quanta_index_core::index::{
 
 use super::{
     AnnDirectory, EmbeddingRecipe, MAX_DELTA_OWNERS, MAX_REGIONS, ReadContext, ann_files,
-    load_member,
+    load_member, load_query_owner_artifact, validate_directory,
 };
 
 const REGION_SCAN_PAGE: u32 = 64;
@@ -80,6 +80,14 @@ pub(super) fn selected_member_value(
 pub(super) struct SelectedPage {
     values: Vec<Option<MapValue>>,
     _memory: Option<MemoryLease>,
+}
+
+#[derive(Default)]
+struct DeltaPruneEdits {
+    // Destroy owned keys before their leases and table backing on every exit.
+    edits: Vec<MapEdit>,
+    key_memory: Vec<Option<MemoryLease>>,
+    _backing: Option<MemoryLease>,
 }
 
 impl SelectedPage {
@@ -241,8 +249,8 @@ fn fully_obsolete(
     Ok(true)
 }
 
-/// Remove selected delta entries that the new owner map no longer points to.
-/// The old page is immutable; each removal is a COW edit in this same attempt.
+/// Remove delta entries that the new owner map no longer points to.
+/// The immutable page supplies exact expected references for one COW edit batch.
 pub(super) fn prune_delta(
     directory: &mut AnnDirectory,
     recipe: &EmbeddingRecipe,
@@ -275,6 +283,10 @@ pub(super) fn prune_delta(
         previous = Some(key);
         let _owner = owner_from_map_key(key)?;
     }
+    let capacity = page.entries.len();
+    let mut pending = DeltaPruneEdits::default();
+    let mut remaining_owners = directory.delta_owners;
+    let mut remaining_rows = directory.delta_rows;
     for (key, member_ref) in &page.entries {
         let member_ref = member_ref.as_object_ref()?;
         context.budget.checkpoint()?;
@@ -284,9 +296,77 @@ pub(super) fn prune_delta(
             return Err(corrupt("ANN maintenance delta member recipe differs"));
         }
         if selected_member(directory, owner, key, context)? != Some(*member_ref) {
-            directory.remove_delta(owner, recipe, context)?;
+            let artifact =
+                load_query_owner_artifact(context.objects, context.budget, &member, recipe)?;
+            let rows = u32::try_from(artifact.vectors.len())
+                .map_err(|_error| IndexError::ResourceLimited)?;
+            drop(artifact);
+            remaining_owners = remaining_owners
+                .checked_sub(1)
+                .ok_or_else(|| corrupt("ANN delta owner count underflow"))?;
+            remaining_rows = remaining_rows
+                .checked_sub(rows)
+                .ok_or_else(|| corrupt("ANN delta row count underflow"))?;
+            if pending.edits.capacity() == 0 {
+                let bytes = capacity
+                    .checked_mul(
+                        std::mem::size_of::<MapEdit>()
+                            .checked_add(std::mem::size_of::<Option<MemoryLease>>())
+                            .ok_or(IndexError::ResourceLimited)?,
+                    )
+                    .ok_or(IndexError::ResourceLimited)?;
+                let backing = context.budget.reserve_memory(
+                    u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+                    MemoryLifetime::Temporary,
+                )?;
+                let mut key_memory = Vec::new();
+                key_memory
+                    .try_reserve_exact(capacity)
+                    .map_err(|_error| IndexError::ResourceLimited)?;
+                let mut edits = Vec::new();
+                edits
+                    .try_reserve_exact(capacity)
+                    .map_err(|_error| IndexError::ResourceLimited)?;
+                if edits.capacity() > capacity || key_memory.capacity() > capacity {
+                    return Err(IndexError::ResourceLimited);
+                }
+                pending = DeltaPruneEdits {
+                    edits,
+                    key_memory,
+                    _backing: backing,
+                };
+            }
+            let lease = context
+                .budget
+                .reserve_memory(38, MemoryLifetime::Temporary)?;
+            let mut owned_key = Vec::new();
+            owned_key
+                .try_reserve_exact(38)
+                .map_err(|_error| IndexError::ResourceLimited)?;
+            if owned_key.capacity() > 38 {
+                return Err(IndexError::ResourceLimited);
+            }
+            owned_key.extend_from_slice(key);
+            pending.edits.push(MapEdit {
+                key: owned_key,
+                expected: Some((*member_ref).into()),
+                next: None,
+            });
+            pending.key_memory.push(lease);
         }
     }
+    if pending.edits.is_empty() {
+        return Ok(());
+    }
+    let mut next = *directory;
+    next.delta_owners = remaining_owners;
+    next.delta_rows = remaining_rows;
+    if next.delta_owners == 0 && next.delta_rows != 0 {
+        return Err(corrupt("ANN delta row count differs from members"));
+    }
+    next.delta = context.apply(directory.delta, &pending.edits)?;
+    validate_directory(&next)?;
+    *directory = next;
     Ok(())
 }
 

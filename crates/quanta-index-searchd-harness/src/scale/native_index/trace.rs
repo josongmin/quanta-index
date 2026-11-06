@@ -115,6 +115,25 @@ mod tests {
     use serde_json::{Value, json};
     use std::time::Duration;
 
+    fn read_normalized(path: &std::path::Path) -> Result<Vec<Value>> {
+        let records: Vec<Value> = std::fs::read_to_string(path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<std::result::Result<_, _>>()?;
+        let schema_version = records
+            .first()
+            .and_then(|row| row.get("schema_version"))
+            .and_then(Value::as_u64)
+            .context("native capture schema version absent")?;
+        records
+            .into_iter()
+            .map(|row| {
+                quanta_index_searchd::trace_wire::normalize_record(schema_version, row)
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
     #[test]
     fn abandoned_native_operation_emits_aborted_and_releases_capture_lease() -> Result<()> {
         let directory = tempfile::tempdir()?;
@@ -134,10 +153,7 @@ mod tests {
             closed.events_dropped == 0 && closed.events_unwritten == 0,
             "aborted terminal was lost"
         );
-        let records: Vec<Value> = std::fs::read_to_string(output)?
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<std::result::Result<_, _>>()?;
+        let records = read_normalized(&output)?;
         let root_id = records
             .iter()
             .find(|row| {
@@ -185,10 +201,7 @@ mod tests {
         );
         anyhow::ensure!(closed.events_dropped == 0, "capture dropped events");
         anyhow::ensure!(closed.events_unwritten == 0, "capture lost output events");
-        let records: Vec<Value> = std::fs::read_to_string(output)?
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<std::result::Result<_, _>>()?;
+        let records = read_normalized(&output)?;
         let phase = records
             .iter()
             .find(|record| {

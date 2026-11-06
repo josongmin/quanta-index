@@ -7,8 +7,8 @@ fn owner_key(index: u16) -> Vec<u8> {
     key
 }
 
-fn executions(spool: &TextSpool, queries: &[&str]) -> Result<i64, IndexError> {
-    let db = spool.db.scoped()?;
+fn executions(spool: &TextSpool, queries: &[&str], budget: &WorkBudget) -> Result<i64, IndexError> {
+    let db = spool.db.scoped(budget)?;
     queries.iter().try_fold(0_i64, |total, query| {
         let statement = db.prepare_cached(query).map_err(|error| sql(&error))?;
         total
@@ -30,7 +30,7 @@ fn mixed_owner_edits_use_one_real_insert_per_64_row_packet() -> Result<(), Index
         let owner = owner_key(u16::try_from(root).map_err(|_error| IndexError::ResourceLimited)?);
         for surface in [0_u8, 1_u8] {
             inventories.push((
-                root,
+                InventoryPartition::Ready(root),
                 MapEdit {
                     key: vec![surface, b'a'],
                     expected: None,
@@ -52,19 +52,19 @@ fn mixed_owner_edits_use_one_real_insert_per_64_row_packet() -> Result<(), Index
         .join(",");
     let inventory_sql = format!("INSERT INTO inventory(root,k,p,n) VALUES {suffix}");
     let posting_sql = format!("INSERT INTO posting(term,k,p,n) VALUES {suffix}");
-    let run_count = |statement_sql: &str| -> Result<i32, IndexError> {
-        let db = spool.db.scoped()?;
+    let run_count = |statement_sql: &str, budget: &WorkBudget| -> Result<i32, IndexError> {
+        let db = spool.db.scoped(budget)?;
         let statement = db
             .prepare_cached(statement_sql)
             .map_err(|error| sql(&error))?;
         Ok(statement.get_status(rusqlite::StatementStatus::Run))
     };
-    check_eq!(run_count(&inventory_sql)?, 0);
-    check_eq!(run_count(&posting_sql)?, 0);
+    check_eq!(run_count(&inventory_sql, &work)?, 0);
+    check_eq!(run_count(&posting_sql, &work)?, 0);
     spool.inventory_batch(&inventories, &mut work)?;
     spool.posting_batch(&postings, &mut work)?;
-    check_eq!(run_count(&inventory_sql)?, 1);
-    check_eq!(run_count(&posting_sql)?, 1);
+    check_eq!(run_count(&inventory_sql, &work)?, 1);
+    check_eq!(run_count(&posting_sql, &work)?, 1);
     let mut inventory = spool.inventory_cursor(32)?;
     for root in 0..32_u32 {
         for surface in [0_u8, 1_u8] {
@@ -118,7 +118,10 @@ fn all_edit_cursors_keep_129_row_oracle_with_bounded_read_bytes() -> Result<(), 
             next: Some(reference.into()),
         };
         let value = MapValue::inline(&index.to_be_bytes(), [reference; 5])?;
-        spool.inventory_batch(&[(0, term_edit.clone())], &mut setup)?;
+        spool.inventory_batch(
+            &[(InventoryPartition::Ready(0), term_edit.clone())],
+            &mut setup,
+        )?;
         spool.posting_batch(&[(b"\0bulk".to_vec(), owner_edit)], &mut setup)?;
         spool.top_batch(
             &[
@@ -142,10 +145,11 @@ fn all_edit_cursors_keep_129_row_oracle_with_bounded_read_bytes() -> Result<(), 
         let queries: &[&str] = match kind {
             0 => &[INVENTORY_FIRST_SQL, INVENTORY_NEXT_SQL],
             1 => &[INVENTORY_ROOT_FIRST_SQL, INVENTORY_ROOT_NEXT_SQL],
-            2 | 3 => &[POSTING_ROOT_FIRST_SQL, POSTING_ROOT_NEXT_SQL],
+            2 => &[POSTING_RANGE_FIRST_SQL, POSTING_RANGE_NEXT_SQL],
+            3 => &[POSTING_ROOT_FIRST_SQL, POSTING_ROOT_NEXT_SQL],
             _ => &[TOP_NEXT_SQL],
         };
-        let before_executions = executions(&spool, queries)?;
+        let before_executions = executions(&spool, queries, &setup)?;
         let mut scan = WorkBudget::new(
             WorkLimits {
                 reads: 512,
@@ -183,7 +187,7 @@ fn all_edit_cursors_keep_129_row_oracle_with_bounded_read_bytes() -> Result<(), 
                 .collect(),
         };
         check_eq!(observed, expected);
-        let calls = executions(&spool, queries)?
+        let calls = executions(&spool, queries, &setup)?
             .checked_sub(before_executions)
             .ok_or(IndexError::ResourceLimited)?;
         // Independent SQLite execution counters prove fewer real seeks, not

@@ -10,12 +10,13 @@ use sha2::{Digest as _, Sha256};
 
 use quanta_index_contract_base::{
     AdmittedOptionalSeedV1, AdmittedSequenceSeedV1, AdmittedTextSeedV1, DecodeBackingAdmissionV1,
+    SourceIdentityDecodeAdmissionV1,
 };
 
 use crate::bounded_cluster_members::{BoundedClusterMembersV1, admitted_cluster_members_seed_v1};
 use crate::canonical_order::{CanonicalOrderBreakV1, first_canonical_order_break_v1};
 use crate::semantic_kinds::{CapabilityStatusV1, SemanticCorpusKindV1, SourceRoleV1};
-use crate::{MAX_CLUSTER_MEMBERSHIP_READ_V1, OwnerDocKind, RepoRelativePath, SymbolId};
+use crate::{MAX_CLUSTER_MEMBERSHIP_READ_V1, OwnerDocKind, SourceFileKey, SymbolId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum RawFallbackReasonV1 {
@@ -120,6 +121,7 @@ pub struct SemanticSourceScopeKeyV1 {
     pub corpus_kind: SemanticCorpusKindV1,
     pub owner_kind: OwnerDocKind,
     pub owner_id: String,
+    pub source_file: SourceFileKey,
 }
 
 impl SemanticSourceScopeKeyV1 {
@@ -129,7 +131,7 @@ impl SemanticSourceScopeKeyV1 {
         max_text_bytes: usize,
     ) -> impl for<'de> DeserializeSeed<'de, Value = Self> + 'a
     where
-        A: DecodeBackingAdmissionV1 + ?Sized,
+        A: SourceIdentityDecodeAdmissionV1 + ?Sized,
     {
         AdmittedSemanticScopeKeyPolicyV1 {
             admission,
@@ -138,13 +140,15 @@ impl SemanticSourceScopeKeyV1 {
     }
 }
 
-const SEMANTIC_SOURCE_SCOPE_KEY_V1_FIELDS: &[&str] = &["corpus_kind", "owner_kind", "owner_id"];
+const SEMANTIC_SOURCE_SCOPE_KEY_V1_FIELDS: &[&str] =
+    &["corpus_kind", "owner_kind", "owner_id", "source_file"];
 
 #[derive(Clone, Copy)]
 enum SemanticScopeKeyFieldV1 {
     CorpusKind,
     OwnerKind,
     OwnerId,
+    SourceFile,
 }
 
 fn semantic_scope_key_field_v1<E: de::Error>(key: &str) -> Result<SemanticScopeKeyFieldV1, E> {
@@ -152,6 +156,7 @@ fn semantic_scope_key_field_v1<E: de::Error>(key: &str) -> Result<SemanticScopeK
         "corpus_kind" => Ok(SemanticScopeKeyFieldV1::CorpusKind),
         "owner_kind" => Ok(SemanticScopeKeyFieldV1::OwnerKind),
         "owner_id" => Ok(SemanticScopeKeyFieldV1::OwnerId),
+        "source_file" => Ok(SemanticScopeKeyFieldV1::SourceFile),
         other => Err(E::unknown_field(other, SEMANTIC_SOURCE_SCOPE_KEY_V1_FIELDS)),
     }
 }
@@ -188,6 +193,7 @@ trait SemanticScopeKeyDecodePolicyV1<'de> {
         map: &mut M,
     ) -> Result<Option<SemanticScopeKeyFieldV1>, M::Error>;
     fn next_owner_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<String, M::Error>;
+    fn next_file<M: MapAccess<'de>>(&self, map: &mut M) -> Result<SourceFileKey, M::Error>;
 }
 
 struct OrdinarySemanticScopeKeyPolicyV1;
@@ -205,6 +211,9 @@ impl<'de> SemanticScopeKeyDecodePolicyV1<'de> for OrdinarySemanticScopeKeyPolicy
     fn next_owner_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<String, M::Error> {
         map.next_value()
     }
+    fn next_file<M: MapAccess<'de>>(&self, map: &mut M) -> Result<SourceFileKey, M::Error> {
+        map.next_value()
+    }
 }
 
 struct AdmittedSemanticScopeKeyPolicyV1<'a, A: ?Sized> {
@@ -212,7 +221,7 @@ struct AdmittedSemanticScopeKeyPolicyV1<'a, A: ?Sized> {
     max_text_bytes: usize,
 }
 
-impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> SemanticScopeKeyDecodePolicyV1<'de>
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> SemanticScopeKeyDecodePolicyV1<'de>
     for AdmittedSemanticScopeKeyPolicyV1<'_, A>
 {
     fn next_field<M: MapAccess<'de>>(
@@ -225,9 +234,15 @@ impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> SemanticScopeKeyDecodePolicyV1<'
     fn next_owner_id<M: MapAccess<'de>>(&self, map: &mut M) -> Result<String, M::Error> {
         map.next_value_seed(AdmittedTextSeedV1::new(self.admission, self.max_text_bytes))
     }
+    fn next_file<M: MapAccess<'de>>(&self, map: &mut M) -> Result<SourceFileKey, M::Error> {
+        map.next_value_seed(SourceFileKey::deserialize_seed_with_admission_v1(
+            self.admission,
+            self.max_text_bytes,
+        ))
+    }
 }
 
-impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> DeserializeSeed<'de>
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> DeserializeSeed<'de>
     for AdmittedSemanticScopeKeyPolicyV1<'_, A>
 {
     type Value = SemanticSourceScopeKeyV1;
@@ -251,10 +266,11 @@ impl Serialize for SemanticSourceScopeKeyV1 {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SemanticSourceScopeKeyV1", 3)?;
+        let mut state = serializer.serialize_struct("SemanticSourceScopeKeyV1", 4)?;
         state.serialize_field("corpus_kind", &self.corpus_kind)?;
         state.serialize_field("owner_kind", &self.owner_kind)?;
         state.serialize_field("owner_id", &self.owner_id)?;
+        state.serialize_field("source_file", &self.source_file)?;
         state.end()
     }
 }
@@ -277,6 +293,7 @@ impl<'de, P: SemanticScopeKeyDecodePolicyV1<'de>> Visitor<'de>
         let mut corpus_kind: Option<SemanticCorpusKindV1> = None;
         let mut owner_kind: Option<OwnerDocKind> = None;
         let mut owner_id: Option<String> = None;
+        let mut source_file: Option<SourceFileKey> = None;
         while let Some(key) = self.0.next_field(&mut map)? {
             match key {
                 SemanticScopeKeyFieldV1::CorpusKind => {
@@ -297,12 +314,19 @@ impl<'de, P: SemanticScopeKeyDecodePolicyV1<'de>> Visitor<'de>
                     }
                     owner_id = Some(self.0.next_owner_id(&mut map)?);
                 }
+                SemanticScopeKeyFieldV1::SourceFile => {
+                    if source_file.is_some() {
+                        return Err(de::Error::duplicate_field("source_file"));
+                    }
+                    source_file = Some(self.0.next_file(&mut map)?);
+                }
             }
         }
         Ok(SemanticSourceScopeKeyV1 {
             corpus_kind: corpus_kind.ok_or_else(|| de::Error::missing_field("corpus_kind"))?,
             owner_kind: owner_kind.ok_or_else(|| de::Error::missing_field("owner_kind"))?,
             owner_id: owner_id.ok_or_else(|| de::Error::missing_field("owner_id"))?,
+            source_file: source_file.ok_or_else(|| de::Error::missing_field("source_file"))?,
         })
     }
 }
@@ -328,7 +352,7 @@ pub struct SemanticSourceRecordV1 {
     pub owner_id: String,
     pub source_doc_id: String,
     pub parent_owner_id: Option<String>,
-    pub repo_relative_path: RepoRelativePath,
+    pub source_file: SourceFileKey,
     pub language: Option<String>,
     pub package: Option<String>,
     pub symbol_kind: Option<String>,
@@ -350,7 +374,7 @@ const SEMANTIC_SOURCE_RECORD_V1_FIELDS: &[&str] = &[
     "owner_id",
     "source_doc_id",
     "parent_owner_id",
-    "repo_relative_path",
+    "source_file",
     "language",
     "package",
     "symbol_kind",
@@ -374,7 +398,7 @@ impl SemanticSourceRecordV1 {
         max_record_bytes: usize,
     ) -> impl for<'de> DeserializeSeed<'de, Value = Self> + 'a
     where
-        A: DecodeBackingAdmissionV1 + ?Sized,
+        A: SourceIdentityDecodeAdmissionV1 + ?Sized,
     {
         AdmittedSemanticRecordPolicyV1 {
             admission,
@@ -392,7 +416,7 @@ enum SemanticRecordFieldV1 {
     OwnerId,
     SourceDocId,
     ParentOwnerId,
-    RepoRelativePath,
+    SourceFile,
     Language,
     Package,
     SymbolKind,
@@ -415,7 +439,7 @@ fn semantic_record_field_v1<E: de::Error>(key: &str) -> Result<SemanticRecordFie
         "owner_id" => Ok(SemanticRecordFieldV1::OwnerId),
         "source_doc_id" => Ok(SemanticRecordFieldV1::SourceDocId),
         "parent_owner_id" => Ok(SemanticRecordFieldV1::ParentOwnerId),
-        "repo_relative_path" => Ok(SemanticRecordFieldV1::RepoRelativePath),
+        "source_file" => Ok(SemanticRecordFieldV1::SourceFile),
         "language" => Ok(SemanticRecordFieldV1::Language),
         "package" => Ok(SemanticRecordFieldV1::Package),
         "symbol_kind" => Ok(SemanticRecordFieldV1::SymbolKind),
@@ -465,7 +489,7 @@ trait SemanticRecordDecodePolicyV1<'de> {
         &self,
         map: &mut M,
     ) -> Result<Option<String>, M::Error>;
-    fn next_path<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoRelativePath, M::Error>;
+    fn next_file<M: MapAccess<'de>>(&self, map: &mut M) -> Result<SourceFileKey, M::Error>;
 }
 
 struct OrdinarySemanticRecordPolicyV1;
@@ -491,7 +515,7 @@ impl<'de> SemanticRecordDecodePolicyV1<'de> for OrdinarySemanticRecordPolicyV1 {
     ) -> Result<Option<String>, M::Error> {
         map.next_value()
     }
-    fn next_path<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoRelativePath, M::Error> {
+    fn next_file<M: MapAccess<'de>>(&self, map: &mut M) -> Result<SourceFileKey, M::Error> {
         map.next_value()
     }
 }
@@ -502,7 +526,7 @@ struct AdmittedSemanticRecordPolicyV1<'a, A: ?Sized> {
     max_record_bytes: usize,
 }
 
-impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> SemanticRecordDecodePolicyV1<'de>
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> SemanticRecordDecodePolicyV1<'de>
     for AdmittedSemanticRecordPolicyV1<'_, A>
 {
     fn next_field<M: MapAccess<'de>>(
@@ -529,15 +553,15 @@ impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> SemanticRecordDecodePolicyV1<'de
             AdmittedTextSeedV1::new(self.admission, self.max_text_bytes),
         ))
     }
-    fn next_path<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoRelativePath, M::Error> {
-        map.next_value_seed(RepoRelativePath::deserialize_seed_with_admission_v1(
+    fn next_file<M: MapAccess<'de>>(&self, map: &mut M) -> Result<SourceFileKey, M::Error> {
+        map.next_value_seed(SourceFileKey::deserialize_seed_with_admission_v1(
             self.admission,
             self.max_text_bytes,
         ))
     }
 }
 
-impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> DeserializeSeed<'de>
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> DeserializeSeed<'de>
     for AdmittedSemanticRecordPolicyV1<'_, A>
 {
     type Value = SemanticSourceRecordV1;
@@ -570,7 +594,7 @@ impl Serialize for SemanticSourceRecordV1 {
         state.serialize_field("owner_id", &self.owner_id)?;
         state.serialize_field("source_doc_id", &self.source_doc_id)?;
         state.serialize_field("parent_owner_id", &self.parent_owner_id)?;
-        state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
+        state.serialize_field("source_file", &self.source_file)?;
         state.serialize_field("language", &self.language)?;
         state.serialize_field("package", &self.package)?;
         state.serialize_field("symbol_kind", &self.symbol_kind)?;
@@ -606,7 +630,7 @@ impl<'de, P: SemanticRecordDecodePolicyV1<'de>> Visitor<'de> for SemanticSourceR
         let mut owner_id: Option<String> = None;
         let mut source_doc_id: Option<String> = None;
         let mut parent_owner_id: Option<Option<String>> = None;
-        let mut repo_relative_path: Option<RepoRelativePath> = None;
+        let mut source_file: Option<SourceFileKey> = None;
         let mut language: Option<Option<String>> = None;
         let mut package: Option<Option<String>> = None;
         let mut symbol_kind: Option<Option<String>> = None;
@@ -657,11 +681,11 @@ impl<'de, P: SemanticRecordDecodePolicyV1<'de>> Visitor<'de> for SemanticSourceR
                     }
                     parent_owner_id = Some(self.0.next_optional_text(&mut map)?);
                 }
-                SemanticRecordFieldV1::RepoRelativePath => {
-                    if repo_relative_path.is_some() {
-                        return Err(de::Error::duplicate_field("repo_relative_path"));
+                SemanticRecordFieldV1::SourceFile => {
+                    if source_file.is_some() {
+                        return Err(de::Error::duplicate_field("source_file"));
                     }
-                    repo_relative_path = Some(self.0.next_path(&mut map)?);
+                    source_file = Some(self.0.next_file(&mut map)?);
                 }
                 SemanticRecordFieldV1::Language => {
                     if language.is_some() {
@@ -746,8 +770,7 @@ impl<'de, P: SemanticRecordDecodePolicyV1<'de>> Visitor<'de> for SemanticSourceR
                 .ok_or_else(|| de::Error::missing_field("source_doc_id"))?,
             parent_owner_id: parent_owner_id
                 .ok_or_else(|| de::Error::missing_field("parent_owner_id"))?,
-            repo_relative_path: repo_relative_path
-                .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
+            source_file: source_file.ok_or_else(|| de::Error::missing_field("source_file"))?,
             language: language.ok_or_else(|| de::Error::missing_field("language"))?,
             package: package.ok_or_else(|| de::Error::missing_field("package"))?,
             symbol_kind: symbol_kind.ok_or_else(|| de::Error::missing_field("symbol_kind"))?,
@@ -1092,6 +1115,14 @@ pub struct SemanticSourceReplaceScopeV1 {
 }
 
 impl SemanticSourceReplaceScopeV1 {
+    fn source_files_match_scope(&self) -> bool {
+        self.scope.source_file.validate().is_ok()
+            && self
+                .sources
+                .iter()
+                .all(|source| source.source_file == self.scope.source_file)
+    }
+
     /// Decode the existing scope wire with bounded source text and collection
     /// backings. Both source and cluster collections use `max_records`.
     pub fn deserialize_seed_with_admission_v1<'a, A>(
@@ -1101,7 +1132,7 @@ impl SemanticSourceReplaceScopeV1 {
         max_records: usize,
     ) -> impl for<'de> DeserializeSeed<'de, Value = Self> + 'a
     where
-        A: DecodeBackingAdmissionV1 + ?Sized,
+        A: SourceIdentityDecodeAdmissionV1 + ?Sized,
     {
         AdmittedSemanticReplacePolicyV1 {
             admission,
@@ -1227,7 +1258,7 @@ struct AdmittedSemanticReplacePolicyV1<'a, A: ?Sized> {
     max_records: usize,
 }
 
-impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> SemanticReplaceDecodePolicyV1<'de>
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> SemanticReplaceDecodePolicyV1<'de>
     for AdmittedSemanticReplacePolicyV1<'_, A>
 {
     fn next_field<M: MapAccess<'de>>(
@@ -1287,7 +1318,7 @@ impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> SemanticReplaceDecodePolicyV1<'d
     }
 }
 
-impl<'de, A: DecodeBackingAdmissionV1 + ?Sized> DeserializeSeed<'de>
+impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> DeserializeSeed<'de>
     for AdmittedSemanticReplacePolicyV1<'_, A>
 {
     type Value = SemanticSourceReplaceScopeV1;
@@ -1311,6 +1342,11 @@ impl Serialize for SemanticSourceReplaceScopeV1 {
     where
         S: Serializer,
     {
+        if !self.source_files_match_scope() {
+            return Err(serde::ser::Error::custom(
+                "semantic source_file differs from scope",
+            ));
+        }
         let mut state = serializer.serialize_struct("SemanticSourceReplaceScopeV1", 4)?;
         state.serialize_field("scope", &self.scope)?;
         state.serialize_field("scope_digest", &self.scope_digest)?;
@@ -1367,13 +1403,17 @@ impl<'de, P: SemanticReplaceDecodePolicyV1<'de>> Visitor<'de>
                 }
             }
         }
-        Ok(SemanticSourceReplaceScopeV1 {
+        let result = SemanticSourceReplaceScopeV1 {
             scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
             scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
             sources: sources.ok_or_else(|| de::Error::missing_field("sources"))?,
             cluster_memberships: cluster_memberships
                 .ok_or_else(|| de::Error::missing_field("cluster_memberships"))?,
-        })
+        };
+        if !result.source_files_match_scope() {
+            return Err(de::Error::custom("semantic source_file differs from scope"));
+        }
+        Ok(result)
     }
 }
 
@@ -1393,6 +1433,9 @@ impl<'de> Deserialize<'de> for SemanticSourceReplaceScopeV1 {
 pub fn validate_semantic_source_record_v1(
     record: &SemanticSourceRecordV1,
 ) -> Result<(), &'static str> {
+    if record.source_file.validate().is_err() {
+        return Err("semantic source_file is invalid");
+    }
     if record.record_id.is_empty() {
         return Err("semantic source record_id must not be empty");
     }

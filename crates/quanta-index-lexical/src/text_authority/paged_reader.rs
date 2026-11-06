@@ -323,6 +323,7 @@ impl NativeAuthority {
             ObjectKind::NativeTrigrams,
             surface,
             &prefixes,
+            None,
             budget,
             ledger,
         )
@@ -351,6 +352,7 @@ impl NativeAuthority {
             ObjectKind::NativePositions,
             surface,
             &prefixes,
+            Some(terms),
             budget,
             &PostingReadLedger::default(),
         )
@@ -362,6 +364,7 @@ impl NativeAuthority {
         kind: ObjectKind,
         surface: u8,
         prefixes: &[Vec<u8>],
+        exact_terms: Option<&[&str]>,
         budget: &RequestBudgetV1,
         ledger: &PostingReadLedger,
     ) -> Result<Vec<u64>, CoreError> {
@@ -406,7 +409,7 @@ impl NativeAuthority {
                 }
                 let descriptor = self.read_segment(segment_key, budget)?;
                 let mut local_match: Option<BTreeSet<u32>> = None;
-                for (reference, prefix) in refs.iter().zip(prefixes) {
+                for (term_index, (reference, prefix)) in refs.iter().zip(prefixes).enumerate() {
                     if reference.root.kind != kind {
                         return Err(corrupt("posting object kind differs"));
                     }
@@ -438,13 +441,31 @@ impl NativeAuthority {
                             .get(1..4)
                             .ok_or_else(|| corrupt("gram prefix width differs"))?
                     } else {
-                        prefix
-                            .get(3..)
-                            .ok_or_else(|| corrupt("term prefix width differs"))?
+                        exact_terms
+                            .and_then(|terms| terms.get(term_index))
+                            .ok_or_else(|| corrupt("exact query term absent"))?
+                            .as_bytes()
                     };
-                    let posting = page
-                        .posting(surface, posting_key)
-                        .ok_or_else(|| corrupt("selected posting absent from page"))?;
+                    let Some(posting) = page.posting(surface, posting_key) else {
+                        // A digest route may point at a different exact term
+                        // in a prior segment. Verify that the page owns the
+                        // route before treating that as a non-match.
+                        if matches!(surface, TERM_RAW | TERM_FOLDED)
+                            && prefix.get(1..3) == Some(&[0, 0][..])
+                        {
+                            let owns_route = page.rows.iter().any(|row| {
+                                row.surface == surface
+                                    && std::str::from_utf8(row.key)
+                                        .ok()
+                                        .and_then(|term| term_prefix(surface, term).ok())
+                                        .is_some_and(|candidate| candidate == *prefix)
+                            });
+                            if owns_route {
+                                return Ok(());
+                            }
+                        }
+                        return Err(corrupt("selected posting absent from page"));
+                    };
                     let locals =
                         decode_posting(posting, segment_key, surface, descriptor.logical_ids.len())
                             .map_err(|error| corrupt(&format!("posting row: {error}")))?;

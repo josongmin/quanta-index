@@ -141,6 +141,9 @@ pub(super) fn read(
             }
         }
     };
+    value
+        .inventory
+        .validate_for(entry_map::EntryMapUse::Inventory)?;
     if let Some(small) = value.inventory.inline_map() {
         for slot in 0..small.len() {
             check_term_key(

@@ -30,6 +30,7 @@ fn budget() -> WorkBudget {
 struct Reads {
     store: FileObjectStore,
     gets: AtomicUsize,
+    wrong_retained: AtomicBool,
 }
 
 impl ImmutableObjectPort for Reads {
@@ -79,6 +80,14 @@ impl ImmutableObjectPort for Reads {
         object: &StoredObject,
         budget: &mut WorkBudget,
     ) -> Result<StoredObject, IndexError> {
+        if self.wrong_retained.swap(false, Ordering::SeqCst) {
+            let other = *object
+                .registration
+                .children
+                .first()
+                .ok_or(IndexError::ResourceLimited)?;
+            return self.get(other, budget);
+        }
         self.store.read_retained(object, budget)
     }
 }
@@ -145,6 +154,7 @@ fn fixture() -> Result<(tempfile::TempDir, Reads, ObjectRef), Box<dyn std::error
         Reads {
             store,
             gets: AtomicUsize::new(0),
+            wrong_retained: AtomicBool::new(false),
         },
         parent,
     ))
@@ -278,6 +288,142 @@ fn collision_evicts_data_without_aliasing_another_identity() -> TestResult {
 }
 
 #[test]
+fn primary_collision_reuses_both_real_objects_without_changing_read_cost() -> TestResult {
+    let (_root, objects, _reference) = fixture()?;
+    let reads = AttemptObjectReads::with_bounds(&objects, 16, 4096);
+    let mut seen = Vec::new();
+    let mut pair = None;
+    for seed in 0..128 {
+        let payload = format!("collision-candidate-{seed}");
+        let reference = objects
+            .put(payload.as_bytes(), &[], &mut budget())?
+            .reference;
+        // The original one-slot lookup uses the low four bits of the digest's
+        // first byte for this fixed 16-slot table. Input selection must not
+        // depend on the new two-candidate implementation.
+        let primary = reference
+            .0
+            .0
+            .first()
+            .copied()
+            .ok_or(IndexError::ResourceLimited)?
+            & 15;
+        if let Some((_, prior_seed, prior)) = seen
+            .iter()
+            .find(|(seen_primary, _, _)| *seen_primary == primary)
+        {
+            pair = Some((*prior, *prior_seed, reference, seed));
+            break;
+        }
+        seen.push((primary, seed, reference));
+    }
+    let (first_ref, first_seed, second_ref, second_seed) = pair.ok_or_else(|| {
+        IndexError::BackendViolation("real object primary collision pair absent".into())
+    })?;
+    let mut cold = budget();
+    let first = reads.get(first_ref, &mut cold)?;
+    let mut second_cold = budget();
+    let second = reads.get(second_ref, &mut second_cold)?;
+    let mut warm = budget();
+    let again = reads.get(first_ref, &mut warm)?;
+    let mut second_warm = budget();
+    let second_again = reads.get(second_ref, &mut second_warm)?;
+    require(
+        first == again && first.payload.as_ptr() == again.payload.as_ptr(),
+        "primary collision did not retain the original authenticated DATA",
+    )?;
+    require(
+        first.payload.as_slice() == format!("collision-candidate-{first_seed}").as_bytes()
+            && second.payload.as_slice() == format!("collision-candidate-{second_seed}").as_bytes(),
+        "colliding objects changed their fixed input payloads",
+    )?;
+    require(
+        second.registration.reference == second_ref
+            && second == second_again
+            && second.payload.as_ptr() == second_again.payload.as_ptr(),
+        "alternate slot returned another identity",
+    )?;
+    require(
+        objects.gets.load(Ordering::SeqCst) == 2,
+        "primary collision reopened a retained object",
+    )?;
+    require(
+        cold.usage() == warm.usage() && second_cold.usage() == second_warm.usage(),
+        "alternate slot changed the original logical read cost",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn byte_full_alternate_falls_back_to_primary_eviction() -> TestResult {
+    let (_root, objects, _reference) = fixture()?;
+    let mut seen = Vec::new();
+    let mut pair = None;
+    for seed in 0..128 {
+        let payload = format!("byte-bound-candidate-{seed}");
+        let reference = objects
+            .put(payload.as_bytes(), &[], &mut budget())?
+            .reference;
+        // Fixed 16-slot original primary address, independent of the new
+        // alternate calculation and insertion policy.
+        let primary = reference
+            .0
+            .0
+            .first()
+            .copied()
+            .ok_or(IndexError::ResourceLimited)?
+            & 15;
+        if let Some((_, first_seed, first_ref)) = seen
+            .iter()
+            .find(|(seen_primary, _, _)| *seen_primary == primary)
+        {
+            pair = Some((*first_ref, *first_seed, reference, seed));
+            break;
+        }
+        seen.push((primary, seed, reference));
+    }
+    let (first_ref, first_seed, second_ref, second_seed) = pair.ok_or_else(|| {
+        IndexError::BackendViolation("real object primary collision pair absent".into())
+    })?;
+    let first_payload = format!("byte-bound-candidate-{first_seed}");
+    let second_payload = format!("byte-bound-candidate-{second_seed}");
+    let first_bytes = StoredObject::allocation_bytes(first_payload.len(), 0)?;
+    let second_bytes = StoredObject::allocation_bytes(second_payload.len(), 0)?;
+    let byte_limit = first_bytes.max(second_bytes);
+    require(
+        first_bytes
+            .checked_add(second_bytes)
+            .is_some_and(|sum| sum > byte_limit),
+        "byte cap does not force alternate refusal",
+    )?;
+    let reads = AttemptObjectReads::with_bounds(&objects, 16, byte_limit);
+    let mut first_work = budget();
+    let first = reads.get(first_ref, &mut first_work)?;
+    let second = reads.get(second_ref, &mut budget())?;
+    let mut repeated_work = budget();
+    let repeated = reads.get(first_ref, &mut repeated_work)?;
+    require(
+        first.payload.as_slice() == first_payload.as_bytes()
+            && second.payload.as_slice() == second_payload.as_bytes()
+            && repeated == first,
+        "byte-bound collision changed authenticated object DATA",
+    )?;
+    require(
+        objects.gets.load(Ordering::SeqCst) == 3,
+        "byte-full alternate retained a sticky primary instead of evicting it",
+    )?;
+    require(
+        first_work.usage() == repeated_work.usage(),
+        "byte-bound eviction changed the original logical read charge",
+    )?;
+    require(
+        reads.lock()?.retained == first_bytes,
+        "byte-bound replacement exceeded the cap or failed to retain the latest DATA",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn cancelled_or_unfunded_hit_never_returns_retained_data() -> TestResult {
     let (_root, objects, reference) = fixture()?;
     let reads = AttemptObjectReads::new(&objects, 1)?;
@@ -364,6 +510,142 @@ fn disabled_window_retains_the_original_read_path() -> TestResult {
     require(
         reads.lock()?.slots.is_empty(),
         "disabled window allocated backing",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn retained_read_survives_zero_slot_and_eviction_with_original_custody() -> TestResult {
+    let (_root, objects, first_ref) = fixture()?;
+    let second_ref = objects
+        .put(b"independent-second", &[], &mut budget())?
+        .reference;
+    let memory = Arc::new(Memory::default());
+    let scope = MemoryScope::new(Arc::new(Scope(Arc::clone(&memory))));
+    let mut first_work = budget();
+    first_work.bind_memory_scope(Some(scope.clone()));
+    let zero = AttemptObjectReads::with_bounds(&objects, 0, 0);
+    let first = zero.get(first_ref, &mut first_work)?;
+    let cold = first_work.usage();
+    let reused = zero.read_retained(&first, &mut first_work)?;
+    require(
+        first.payload.as_ptr() == reused.payload.as_ptr()
+            && first_work.usage().reads
+                == cold
+                    .reads
+                    .checked_mul(2)
+                    .ok_or(IndexError::ResourceLimited)?
+            && first_work.usage().bytes
+                == cold
+                    .bytes
+                    .checked_mul(2)
+                    .ok_or(IndexError::ResourceLimited)?
+            && objects.gets.load(Ordering::SeqCst) == 1,
+        "zero-slot retained DATA reopened or changed the selected port's charge",
+    )?;
+    drop(reused);
+    drop(first);
+    drop(zero);
+    require(
+        memory.0.load(Ordering::SeqCst) == 0,
+        "zero-slot DATA lease leaked",
+    )?;
+
+    let window = AttemptObjectReads::with_bounds(&objects, 1, 4096);
+    let mut second_work = budget();
+    second_work.bind_memory_scope(Some(scope));
+    let first = window.get(first_ref, &mut second_work)?;
+    let second = window.get(second_ref, &mut second_work)?;
+    let again = window.read_retained(&first, &mut second_work)?;
+    require(
+        again == first
+            && again.payload.as_ptr() == first.payload.as_ptr()
+            && objects.gets.load(Ordering::SeqCst) == 3,
+        "evicted retained DATA reopened or changed identity",
+    )?;
+    require(
+        memory.0.load(Ordering::SeqCst) > 0,
+        "retained DATA lost its original allocation grant",
+    )?;
+    drop(again);
+    drop(first);
+    drop(second);
+    drop(window);
+    require(
+        memory.0.load(Ordering::SeqCst) == 0,
+        "last retained DATA or window grant was not refunded",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn retained_read_preserves_no_reuse_cost_and_refusal() -> TestResult {
+    let (_root, objects, reference) = fixture()?;
+    let port = NoReuse(&objects);
+    let reads = AttemptObjectReads::with_bounds(&port, 0, 0);
+    let mut work = budget();
+    let original = reads.get(reference, &mut work)?;
+    let cold_reads = work.usage().reads;
+    let reread = reads.read_retained(&original, &mut work)?;
+    require(
+        reread == original
+            && work.usage().reads.checked_sub(cold_reads) == Some(8)
+            && objects.gets.load(Ordering::SeqCst) == 2,
+        "NoReuse retained read bypassed its fresh read or logical charge",
+    )?;
+    let mut denied = WorkBudget::with_request(
+        WorkLimits {
+            reads: 7,
+            writes: 100,
+            bytes: 4096,
+            mutations: 100,
+        },
+        work.request().clone(),
+    );
+    require(
+        reads.read_retained(&original, &mut denied) == Err(IndexError::ResourceLimited),
+        "NoReuse retained read bypassed its original refusal",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn retained_read_checks_reference_and_cancel_before_reuse() -> TestResult {
+    let (_root, objects, reference) = fixture()?;
+    let memory = Arc::new(Memory::default());
+    let mut work = budget();
+    work.bind_memory_scope(Some(MemoryScope::new(Arc::new(Scope(Arc::clone(&memory))))));
+    let reads = AttemptObjectReads::with_bounds(&objects, 0, 0);
+    let original = reads.get(reference, &mut work)?;
+    let prior_gets = objects.gets.load(Ordering::SeqCst);
+    objects.wrong_retained.store(true, Ordering::SeqCst);
+    require(
+        matches!(
+            reads.read_retained(&original, &mut work),
+            Err(IndexError::CorruptObject(_))
+        ),
+        "retained port changed the requested identity without refusal",
+    )?;
+    let mut cancelled = WorkBudget::with_request(
+        WorkLimits {
+            reads: 100_000,
+            writes: 100_000,
+            bytes: 64 * 1024 * 1024,
+            mutations: 100_000,
+        },
+        work.request().clone(),
+    );
+    cancelled.request().cancel_handle().cancel();
+    require(
+        reads.read_retained(&original, &mut cancelled) == Err(IndexError::Cancelled)
+            && Some(objects.gets.load(Ordering::SeqCst)) == prior_gets.checked_add(1),
+        "cancelled retained read reached the selected port",
+    )?;
+    drop(original);
+    drop(reads);
+    require(
+        memory.0.load(Ordering::SeqCst) == 0,
+        "retained refusal leaked the original allocation grant",
     )?;
     Ok(())
 }
@@ -463,6 +745,16 @@ fn borrowed_selected_artifact_needs_no_new_memory_and_reauthenticates_next_pin()
             memory.0.load(Ordering::SeqCst) == held,
             "selected DATA reserved additional memory",
         )?;
+        let prior = warm.usage();
+        let retained = selected.read_retained(&reread, &mut warm)?;
+        require(
+            retained.payload.as_ptr() == original.payload.as_ptr()
+                && warm.usage().reads.checked_sub(prior.reads) == Some(cold.usage().reads)
+                && warm.usage().bytes.checked_sub(prior.bytes) == Some(cold.usage().bytes)
+                && objects.gets.load(Ordering::SeqCst) == 1,
+            "selected retained DATA lost the original pinned read policy",
+        )?;
+        drop(retained);
         let mut cancelled = budget();
         cancelled.request().cancel_handle().cancel();
         require(

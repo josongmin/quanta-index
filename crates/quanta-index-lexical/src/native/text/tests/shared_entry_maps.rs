@@ -1,12 +1,18 @@
 //! Independent ordered-map laws for the shared bounded Text representation.
 
 use super::super::{
-    entry_map::{EntryMap, SmallMap},
+    entry_map::{EntryMap, EntryMapUse, SmallMap},
     entry_patch,
 };
 use super::*;
 use quanta_index_core::index::{OrdinalMapEdit, StagedMapRoots};
 use std::sync::Mutex;
+
+mod block_codec;
+mod block_cursor;
+mod block_custody;
+mod support;
+use support::CanonicalObjects;
 
 #[derive(Default)]
 struct ModelMaps {
@@ -228,7 +234,21 @@ fn row(key: &[u8], expected: Option<ObjectRef>, next: Option<ObjectRef>) -> Ordi
         },
     )
 }
+fn entry_budget() -> Result<WorkBudget, IndexError> {
+    Ok(WorkBudget::new(
+        WorkLimits {
+            reads: 8_192,
+            writes: 8_192,
+            bytes: 1_000_000,
+            mutations: 8_192,
+        },
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .ok_or(IndexError::ResourceLimited)?,
+    ))
+}
 fn execute(
+    objects: &CanonicalObjects,
     maps: &ModelMaps,
     prior: &EntryMap,
     count: u64,
@@ -237,16 +257,17 @@ fn execute(
     let fixture = visitor_fixture()?;
     let scratch = TestScratch::default();
     let custody = TestCustody;
-    let mut work = budget()?;
+    let mut work = entry_budget()?;
     let mut context = AttemptContext {
         attempt: test_attempt(fixture.ticket.view.identity.workspace),
-        objects: &fixture.objects,
+        objects,
         maps,
         custody: &custody,
         scratch: &scratch,
         budget: &mut work,
     };
     let result = entry_patch::apply(
+        EntryMapUse::Inventory,
         &[*prior],
         &[count],
         &mut Rows::new(edits.to_vec()),
@@ -260,12 +281,13 @@ fn execute(
         .ok_or_else(|| IndexError::BackendViolation("missing model result".into()))
 }
 fn assert_rows(
+    objects: &CanonicalObjects,
     maps: &ModelMaps,
     value: &EntryMap,
     rows: &BTreeMap<Vec<u8>, ObjectRef>,
 ) -> Result<(), IndexError> {
     let mut work = budget()?;
-    let mut cursor = MapEntries::new(maps, value);
+    let mut cursor = MapEntries::new(objects, maps, value);
     let mut actual = BTreeMap::new();
     while let Some(entry) = cursor.next(&mut work)? {
         let (key, value) = entry.object_parts()?;
@@ -276,8 +298,27 @@ fn assert_rows(
             "entry map differs from independent ordered model".into(),
         ));
     }
-    for (key, expected) in rows {
-        if value.lookup(maps, key, &mut work)? != Some(*expected) {
+    // Full ordered traversal is the independent row oracle. For large Blocks,
+    // sample lookup separately so this test does not turn 512 authenticated
+    // object reads into an unrelated budget denial.
+    let lookup_rows: Vec<_> = if rows.len() <= 64 {
+        rows.iter().collect()
+    } else {
+        let middle = rows
+            .len()
+            .checked_div(2)
+            .ok_or(IndexError::ResourceLimited)?;
+        let last = rows
+            .len()
+            .checked_sub(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        [0, middle, last]
+            .into_iter()
+            .filter_map(|ordinal| rows.iter().nth(ordinal))
+            .collect()
+    };
+    for (key, expected) in lookup_rows {
+        if value.lookup(objects, maps, key, &mut work)? != Some(*expected) {
             return Err(IndexError::BackendViolation(
                 "entry point lookup differs".into(),
             ));
@@ -289,6 +330,7 @@ fn assert_rows(
 #[test]
 fn inline_eight_expand_nine_and_shrink_eight_preserve_snapshots_and_model() -> Result<(), IndexError>
 {
+    let objects = CanonicalObjects::default();
     let maps = ModelMaps::default();
     let mut expected = BTreeMap::new();
     let initial = (b'a'..=b'h')
@@ -298,60 +340,77 @@ fn inline_eight_expand_nine_and_shrink_eight_preserve_snapshots_and_model() -> R
             row(&[key], None, Some(value))
         })
         .collect::<Vec<_>>();
-    let small = execute(&maps, &EntryMap::default(), 8, &initial)?;
+    let small = execute(&objects, &maps, &EntryMap::default(), 8, &initial)?;
     check!(small.inline_map().is_some());
     check_eq!(maps.applies.load(Ordering::Relaxed), 0);
-    assert_rows(&maps, &small, &expected)?;
+    assert_rows(&objects, &maps, &small, &expected)?;
     let ninth = reference(b'i');
-    let large = execute(&maps, &small, 9, &[row(b"i", None, Some(ninth))])?;
+    let large = execute(&objects, &maps, &small, 9, &[row(b"i", None, Some(ninth))])?;
     let old = expected.clone();
     let _prior = expected.insert(b"i".to_vec(), ninth);
     check!(large.inline_map().is_none());
-    check_eq!(maps.applies.load(Ordering::Relaxed), 1);
-    assert_rows(&maps, &large, &expected)?;
-    assert_rows(&maps, &small, &old)?;
+    check!(matches!(large, EntryMap::Block(_)));
+    check_eq!(maps.applies.load(Ordering::Relaxed), 0);
+    assert_rows(&objects, &maps, &large, &expected)?;
+    assert_rows(&objects, &maps, &small, &old)?;
     let expanded = expected.clone();
     let _prior = expected.remove(b"a".as_slice());
-    let shrunk = execute(&maps, &large, 8, &[row(b"a", Some(reference(b'a')), None)])?;
+    let shrunk = execute(
+        &objects,
+        &maps,
+        &large,
+        8,
+        &[row(b"a", Some(reference(b'a')), None)],
+    )?;
     check!(shrunk.inline_map().is_some());
-    check_eq!(maps.applies.load(Ordering::Relaxed), 1);
-    assert_rows(&maps, &shrunk, &expected)?;
-    assert_rows(&maps, &large, &expanded)?;
+    check_eq!(maps.applies.load(Ordering::Relaxed), 0);
+    assert_rows(&objects, &maps, &shrunk, &expected)?;
+    assert_rows(&objects, &maps, &large, &expanded)?;
     Ok(())
 }
 
 #[test]
 fn long_key_fallback_bad_cas_and_final_cardinality_have_independent_oracles()
 -> Result<(), IndexError> {
+    let objects = CanonicalObjects::default();
     let maps = ModelMaps::default();
     // An absent object is corruption, distinct from the legitimate empty root.
     let missing = EntryMap::from(MapRoot(Some(reference(99))));
     let mut original = budget()?;
     check!(matches!(
-        missing.lookup(&maps, b"a", &mut original),
+        missing.lookup(&objects, &maps, b"a", &mut original),
         Err(IndexError::CorruptObject(_))
     ));
     check!(matches!(
-        missing.scan(&maps, None, 1, &mut original),
+        missing.scan(&objects, &maps, None, 1, &mut original),
         Err(IndexError::CorruptObject(_))
     ));
     check!(matches!(
-        execute(&maps, &missing, 9, &[row(b"a", None, Some(reference(1)))]),
+        execute(
+            &objects,
+            &maps,
+            &missing,
+            9,
+            &[row(b"a", None, Some(reference(1)))]
+        ),
         Err(IndexError::CorruptObject(_))
     ));
     let key = vec![b'x'; 33];
     let value = reference(91);
     let long = execute(
+        &objects,
         &maps,
         &EntryMap::default(),
         1,
         &[row(&key, None, Some(value))],
     )?;
     check!(long.inline_map().is_none());
-    assert_rows(&maps, &long, &BTreeMap::from([(key, value)]))?;
+    check!(matches!(long, EntryMap::Block(_)));
+    assert_rows(&objects, &maps, &long, &BTreeMap::from([(key, value)]))?;
     let before = maps.applies.load(Ordering::Relaxed);
     check!(matches!(
         execute(
+            &objects,
             &maps,
             &EntryMap::default(),
             1,
@@ -361,6 +420,7 @@ fn long_key_fallback_bad_cas_and_final_cardinality_have_independent_oracles()
     ));
     check!(matches!(
         execute(
+            &objects,
             &maps,
             &EntryMap::default(),
             2,
@@ -374,6 +434,7 @@ fn long_key_fallback_bad_cas_and_final_cardinality_have_independent_oracles()
 
 #[test]
 fn compact_result_requires_the_same_complete_original_edit_stream() -> Result<(), IndexError> {
+    let objects = CanonicalObjects::default();
     let maps = ModelMaps::default();
     let fixture = visitor_fixture()?;
     let scratch = TestScratch::default();
@@ -381,7 +442,7 @@ fn compact_result_requires_the_same_complete_original_edit_stream() -> Result<()
     let mut work = budget()?;
     let mut context = AttemptContext {
         attempt: test_attempt(fixture.ticket.view.identity.workspace),
-        objects: &fixture.objects,
+        objects: &objects,
         maps: &maps,
         custody: &custody,
         scratch: &scratch,
@@ -391,6 +452,7 @@ fn compact_result_requires_the_same_complete_original_edit_stream() -> Result<()
     let changed = row(b"a", None, Some(reference(2)));
     check!(matches!(
         entry_patch::apply(
+            EntryMapUse::Inventory,
             &[EntryMap::default()],
             &[1],
             &mut Rows::new(vec![changed]),
@@ -403,6 +465,7 @@ fn compact_result_requires_the_same_complete_original_edit_stream() -> Result<()
     interrupted.fail_at_end = true;
     check!(matches!(
         entry_patch::apply(
+            EntryMapUse::Inventory,
             &[EntryMap::default()],
             &[1],
             &mut interrupted,
@@ -418,18 +481,21 @@ fn compact_result_requires_the_same_complete_original_edit_stream() -> Result<()
     };
     check!(matches!(
         execute(
+            &objects,
             &partial,
             &EntryMap::default(),
             1,
-            &[row(&[b'z'; 33], None, Some(reference(4)))]
+            &[row(&[b'z'; 1025], None, Some(reference(4)))]
         ),
-        Err(IndexError::BackendViolation(_))
+        Err(IndexError::BackendViolation(message))
+            if message == "map consumer did not complete original entry edits"
     ));
     Ok(())
 }
 
 #[test]
 fn large_tree_delta_does_not_scan_the_unrelated_prior_population() -> Result<(), IndexError> {
+    let objects = CanonicalObjects::default();
     let maps = ModelMaps::default();
     let mut before = BTreeMap::new();
     for key in 0_u16..4096 {
@@ -440,14 +506,15 @@ fn large_tree_delta_does_not_scan_the_unrelated_prior_population() -> Result<(),
     let key = 512_u16.to_be_bytes();
     let _prior = after.insert(key.to_vec(), reference(6));
     let next = execute(
+        &objects,
         &maps,
         &prior,
         4096,
         &[row(&key, Some(reference(5)), Some(reference(6)))],
     )?;
     check_eq!(maps.scans.load(Ordering::Relaxed), 0);
-    assert_rows(&maps, &next, &after)?;
-    assert_rows(&maps, &prior, &before)?;
+    assert_rows(&objects, &maps, &next, &after)?;
+    assert_rows(&objects, &maps, &prior, &before)?;
     Ok(())
 }
 
@@ -471,34 +538,27 @@ fn inline_codec_bounds_padding_and_direct_child_edges_are_not_advisory() -> Resu
         contribution_children(&contribution)?.as_slice(),
         children.as_slice()
     );
-    let mut value =
-        serde_json::to_value(inventory).map_err(|error| IndexError::Storage(error.to_string()))?;
+    let value =
+        serde_json::to_value(small).map_err(|error| IndexError::Storage(error.to_string()))?;
     for (path, replacement) in [
-        ("/small/len", serde_json::json!(9)),
-        ("/small/rows/0/key/31", serde_json::json!(7)),
-        ("/small/rows/0/len", serde_json::json!(33)),
+        ("/len", serde_json::json!(9)),
+        ("/rows/0/key/31", serde_json::json!(7)),
+        ("/rows/0/len", serde_json::json!(33)),
     ] {
         let mut corrupt = value.clone();
         *corrupt
             .pointer_mut(path)
             .ok_or_else(|| IndexError::BackendViolation("codec mutation path missing".into()))? =
             replacement;
-        let decoded: EntryMap = serde_json::from_value(corrupt)
+        let decoded: SmallMap = serde_json::from_value(corrupt)
             .map_err(|error| IndexError::Storage(error.to_string()))?;
         check!(matches!(
-            decoded.validate(),
+            EntryMap::inline(&decoded).validate(),
             Err(IndexError::CorruptObject(_))
         ));
     }
-    let record = value
-        .pointer_mut("/tree")
-        .ok_or_else(|| IndexError::BackendViolation("codec tree path missing".into()))?;
-    *record = serde_json::to_value(MapRoot(Some(reference(9))))
-        .map_err(|error| IndexError::Storage(error.to_string()))?;
-    let overlap: EntryMap =
-        serde_json::from_value(value).map_err(|error| IndexError::Storage(error.to_string()))?;
     check!(matches!(
-        overlap.validate(),
+        EntryMap::Block(reference(9)).validate_for(EntryMapUse::Posting),
         Err(IndexError::CorruptObject(_))
     ));
     Ok(())
@@ -507,6 +567,7 @@ fn inline_codec_bounds_padding_and_direct_child_edges_are_not_advisory() -> Resu
 #[test]
 fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
 -> Result<(), IndexError> {
+    let objects = CanonicalObjects::default();
     let maps = ModelMaps::default();
     let fixture = visitor_fixture()?;
     let scratch = TestScratch::default();
@@ -514,7 +575,7 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
     let mut work = budget()?;
     let mut context = AttemptContext {
         attempt: test_attempt(fixture.ticket.view.identity.workspace),
-        objects: &fixture.objects,
+        objects: &objects,
         maps: &maps,
         custody: &custody,
         scratch: &scratch,
@@ -533,6 +594,7 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
         ),
     ];
     let results = entry_patch::apply(
+        EntryMapUse::Inventory,
         &[EntryMap::default(); 3],
         &[1, 0, 1],
         &mut Rows::new(edits),
@@ -548,16 +610,19 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
     )?;
     let mut result = results.as_slice().iter();
     assert_rows(
+        &objects,
         &maps,
         result.next().ok_or(IndexError::Conflict)?,
         &BTreeMap::from([(b"a".to_vec(), reference(1))]),
     )?;
     assert_rows(
+        &objects,
         &maps,
         result.next().ok_or(IndexError::Conflict)?,
         &BTreeMap::new(),
     )?;
     assert_rows(
+        &objects,
         &maps,
         result.next().ok_or(IndexError::Conflict)?,
         &BTreeMap::from([(long.to_vec(), reference(2))]),
@@ -581,6 +646,7 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
     ] {
         check!(matches!(
             entry_patch::apply(
+                EntryMapUse::Inventory,
                 &[EntryMap::default()],
                 &[1],
                 &mut Rows::new(malformed),
@@ -592,6 +658,7 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
     }
     let mut empty = Rows::new(Vec::new());
     let empty_result = entry_patch::apply(
+        EntryMapUse::Inventory,
         &vec![EntryMap::default(); 64],
         &[0; 64],
         &mut empty,

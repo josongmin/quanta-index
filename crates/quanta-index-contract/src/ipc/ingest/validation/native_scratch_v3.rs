@@ -8,6 +8,7 @@ use super::{
     SearchCorpusIngestBatch, SearchCorpusSurfaceMutationConflictV1,
     SearchCorpusValidationProgressError, SearchScopeSurface,
 };
+use crate::SourceFileKey;
 
 pub struct CorpusSurfaceOrderScratchV3<'a> {
     pub replace_files: &'a [usize],
@@ -84,24 +85,26 @@ where
 fn semantic_replace_key(
     batch: &SearchCorpusIngestBatch,
     index: usize,
-) -> Option<(&str, &str, &str)> {
+) -> Option<(&str, &str, &str, &SourceFileKey)> {
     let scope = &batch.semantic_replace_scopes.get(index)?.scope;
     Some((
         scope.corpus_kind.as_code_str(),
         scope.owner_kind.as_code_str(),
         scope.owner_id.as_str(),
+        &scope.source_file,
     ))
 }
 
 fn semantic_tombstone_key(
     batch: &SearchCorpusIngestBatch,
     index: usize,
-) -> Option<(&str, &str, &str)> {
+) -> Option<(&str, &str, &str, &SourceFileKey)> {
     let scope = batch.semantic_tombstone_scopes.get(index)?;
     Some((
         scope.corpus_kind.as_code_str(),
         scope.owner_kind.as_code_str(),
         scope.owner_id.as_str(),
+        &scope.source_file,
     ))
 }
 

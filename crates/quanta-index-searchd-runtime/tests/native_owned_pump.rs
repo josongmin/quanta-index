@@ -24,6 +24,7 @@ use quanta_index_searchd::app::runtime::StateRootLease;
 use quanta_index_searchd_runtime::native::{
     NATIVE_MARKER_NAME, NativeIndexService, NativePumpDecision, NativePumpObservation,
     NativePumpPolicy, NativePumpScope, NativeReclaimConfig, NativeServiceCapabilities,
+    NativeWalReclaimPolicy,
 };
 use quanta_index_storage::FileObjectStore;
 use std::{
@@ -80,7 +81,7 @@ fn invalid_pump_scope_is_rejected_before_native_format_creation() -> TestResult 
         &root.path().join("native.sock"),
         limits(),
         AdapterRegistry::new(),
-        resources(),
+        &resources(),
         Some(invalid),
     );
     assert!(result.is_err());
@@ -99,7 +100,7 @@ fn owned_pump_refuses_capacity_that_can_starve_foreground_control_before_creatio
         &root.path().join("native.sock"),
         limits(),
         AdapterRegistry::new(),
-        too_small,
+        &too_small,
         Some(config()),
     );
     assert!(result.is_err());
@@ -123,7 +124,7 @@ fn declared_owner_provider_demand_is_checked_before_native_state_creation() -> T
         &zero_root.path().join("native.sock"),
         limits(),
         registry_with_provider(&gate, 0)?,
-        resources(),
+        &resources(),
         Some(config()),
     )?;
     drop(zero);
@@ -134,7 +135,7 @@ fn declared_owner_provider_demand_is_checked_before_native_state_creation() -> T
         &missing_root.path().join("native.sock"),
         limits(),
         registry_with_provider(&gate, 1)?,
-        resources(),
+        &resources(),
         Some(config()),
     );
     assert!(missing.is_err());
@@ -149,7 +150,7 @@ fn declared_owner_provider_demand_is_checked_before_native_state_creation() -> T
         &provider_root.path().join("native.sock"),
         limits(),
         registry_with_provider(&gate, 1)?,
-        reserved,
+        &reserved,
         Some(config()),
     )?;
     drop(present);
@@ -198,7 +199,7 @@ fn cadence_panic_after_grant_cancels_and_settles_active_owned_work() -> TestResu
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         Some(pump_config),
     )?;
     let shutdown = service.shutdown_handle();
@@ -253,7 +254,7 @@ fn cadence_panic_is_supervised_and_releases_the_service_root() -> TestResult {
         &socket,
         limits(),
         AdapterRegistry::new(),
-        resources(),
+        &resources(),
         Some(pump_config),
     )?;
     let error = service
@@ -266,7 +267,7 @@ fn cadence_panic_is_supervised_and_releases_the_service_root() -> TestResult {
         &socket,
         limits(),
         AdapterRegistry::new(),
-        resources(),
+        &resources(),
         None,
     )?;
     drop(reopened);
@@ -321,7 +322,7 @@ fn owned_worker_reserves_declared_provider_units_below_class_envelope() -> TestR
             &socket,
             limits(),
             registry_with_provider(&gate, provider_units)?,
-            reserved,
+            &reserved,
             Some(config()),
         )?;
         let observed = service.resource_observation();
@@ -442,7 +443,7 @@ fn two_direct_enrichment_calls_leave_ipc_ingress_for_core() -> TestResult {
         &socket,
         limits(),
         registry(&gate)?,
-        capacity,
+        &capacity,
         Some(pump_config),
     )?;
     let worker_observation = service.worker_observation();
@@ -536,7 +537,7 @@ fn batch_one_dispatches_distinct_scopes_while_first_provider_is_blocked() -> Tes
         &socket,
         limits(),
         registry(&gate)?,
-        capacity,
+        &capacity,
         Some(pump_config),
     )?;
     let worker_observation = service.worker_observation();
@@ -595,7 +596,7 @@ fn empty_first_scope_does_not_spend_batch_one_dispatch_slot() -> TestResult {
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         None,
     )?;
     let seed_shutdown = seed.shutdown_handle();
@@ -625,7 +626,7 @@ fn empty_first_scope_does_not_spend_batch_one_dispatch_slot() -> TestResult {
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         Some(pump_config),
     )?;
     let shutdown = service.shutdown_handle();
@@ -665,7 +666,7 @@ fn completed_owned_run_wakes_same_scope_backlog_before_long_poll() -> TestResult
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         None,
     )?;
     let seed_shutdown = seed.shutdown_handle();
@@ -692,7 +693,7 @@ fn completed_owned_run_wakes_same_scope_backlog_before_long_poll() -> TestResult
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         Some(pump_config),
     )?;
     let shutdown = service.shutdown_handle();
@@ -740,7 +741,7 @@ fn native_owned_pump_renews_and_completes_without_external_claim_or_submit() -> 
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         Some(pump_config),
     )?;
     let resource_observation = service.resource_observation();
@@ -875,7 +876,7 @@ fn native_owned_pump_renews_and_completes_without_external_claim_or_submit() -> 
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         None,
     )?;
     let shutdown = reopened.shutdown_handle();
@@ -934,6 +935,10 @@ fn native_owned_pump_renews_while_automatic_reclaim_deletes_discarded_input() ->
     };
     let reclaim = NativeReclaimConfig {
         interval: Duration::from_millis(20),
+        wal_reclaim: NativeWalReclaimPolicy {
+            trigger_bytes: 8 * 1024 * 1024,
+            min_interval: Duration::from_secs(1),
+        },
         max_steps_per_round: 1,
         child_limit: 32,
         work_limits: gc_limits,
@@ -953,7 +958,7 @@ fn native_owned_pump_renews_while_automatic_reclaim_deletes_discarded_input() ->
             pump: Some(pump_config),
             provider_attempt_pool: None,
         },
-        reserved,
+        &reserved,
         Some(reclaim),
     )?;
     let observed = service.resource_observation();
@@ -1112,7 +1117,7 @@ fn owned_shutdown_keeps_resources_and_root_until_provider_quiescence_then_resume
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         Some(pump_config.clone()),
     )?;
     let observation = service.resource_observation();
@@ -1180,7 +1185,7 @@ fn owned_shutdown_keeps_resources_and_root_until_provider_quiescence_then_resume
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         Some(pump_config),
     )?;
     let shutdown = reopened.shutdown_handle();
@@ -1234,7 +1239,7 @@ fn owned_scan_is_independent_of_foreground_request_limits() -> TestResult {
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         None,
     )?;
     let shutdown = first.shutdown_handle();
@@ -1265,7 +1270,7 @@ fn owned_scan_is_independent_of_foreground_request_limits() -> TestResult {
         &socket,
         foreground,
         registry(&gate)?,
-        resources(),
+        &resources(),
         Some(config()),
     )?;
     let shutdown = second.shutdown_handle();

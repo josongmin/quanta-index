@@ -1,9 +1,9 @@
 //! Optional spans over actual Native build and publication calls.
 
 use quanta_index_core::{
-    DiagnosticContextV1, DiagnosticCounterV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
-    DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceErrorV1,
-    index::{IndexError, OperationStatus, WorkBudget, WorkUsage},
+    DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticSpanGuardV1,
+    DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceErrorV1,
+    index::{AttemptContext, IndexError, OperationStatus, WorkBudget, WorkUsage},
 };
 
 /// This lexical observer is dropped before returning, including on unwind.
@@ -50,6 +50,53 @@ pub(crate) fn phase_budget<'a>(
             .map(|context| context.child_context(span))
     });
     budget.scoped_diagnostic_context(child)
+}
+
+/// Private attribution within the synchronous source-owner preparation loop.
+/// These lanes do not change the stage, its failure owner or the original work budget.
+#[derive(Clone, Copy)]
+pub(crate) enum SourceOwnerStep {
+    ManifestCursor,
+    BaseLookup,
+    RecordGet,
+    RecordDecodePathEdges,
+    BodyGetValidate,
+}
+
+impl SourceOwnerStep {
+    const fn lane(self) -> DiagnosticLaneV1 {
+        DiagnosticLaneV1(match self {
+            Self::ManifestCursor => 30,
+            Self::BaseLookup => 31,
+            Self::RecordGet => 32,
+            Self::RecordDecodePathEdges => 33,
+            Self::BodyGetValidate => 34,
+        })
+    }
+}
+
+/// Observe exactly one synchronous call, restoring the caller's diagnostic parent
+/// before finishing the child span. Off adds no clock read or budget checkpoint.
+pub(crate) fn source_owner_step<T>(
+    budget: &mut WorkBudget,
+    step: SourceOwnerStep,
+    call: impl FnOnce(&mut WorkBudget) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    let Some(context) = budget.request().diagnostic_context() else {
+        return call(budget);
+    };
+    let Some(span) = begin_in_lane(
+        context,
+        DiagnosticStageV1::NativeSourceOwnerPrepare,
+        step.lane(),
+    ) else {
+        return call(budget);
+    };
+    let result = {
+        let mut scoped = phase_budget(budget, Some(&span));
+        call(&mut scoped)
+    };
+    finish(Some(span), result)
 }
 
 /// Distinguish the two owner materialization APIs without changing execution.
@@ -120,7 +167,6 @@ pub(crate) fn finish_work<T>(
 pub(crate) struct WorkStage {
     stage: DiagnosticStageV1,
     span: Option<DiagnosticSpanGuardV1>,
-    context: Option<DiagnosticContextV1>,
     before: Option<WorkUsage>,
 }
 
@@ -128,15 +174,37 @@ impl WorkStage {
     pub(crate) fn begin(budget: &WorkBudget, stage: DiagnosticStageV1) -> Self {
         let span = begin(budget, stage);
         let before = span.as_ref().map(|_span| budget.usage());
-        let context = span
-            .as_ref()
-            .and_then(|_span| budget.request().diagnostic_context().cloned());
         Self {
             stage,
             span,
-            context,
             before,
         }
+    }
+
+    /// Execute synchronous work with the original budget borrowed under this
+    /// phase. Restore its request before emitting the phase's terminal event.
+    pub(crate) fn run<T>(
+        self,
+        context: &mut AttemptContext<'_>,
+        work: impl FnOnce(&mut AttemptContext<'_>) -> Result<T, IndexError>,
+    ) -> Result<T, IndexError> {
+        let result = {
+            let mut phase_budget = phase_budget(context.budget, self.span.as_ref());
+            let mut phase_context = AttemptContext {
+                attempt: context.attempt,
+                objects: context.objects,
+                maps: context.maps,
+                custody: context.custody,
+                scratch: context.scratch,
+                budget: &mut phase_budget,
+            };
+            work(&mut phase_context)
+        };
+        self.finish(context.budget, result)
+    }
+
+    pub(crate) fn span(&self) -> Option<&DiagnosticSpanGuardV1> {
+        self.span.as_ref()
     }
 
     pub(crate) fn finish<T>(
@@ -144,25 +212,8 @@ impl WorkStage {
         budget: &WorkBudget,
         result: Result<T, IndexError>,
     ) -> Result<T, IndexError> {
-        if let (Some(context), Some(span), Some(before)) = (&self.context, &self.span, self.before)
-        {
-            let after = budget.usage();
-            for (key, end, start) in [
-                (DiagnosticCounterV1::WorkReads, after.reads, before.reads),
-                (DiagnosticCounterV1::WorkWrites, after.writes, before.writes),
-                (DiagnosticCounterV1::WorkBytes, after.bytes, before.bytes),
-                (
-                    DiagnosticCounterV1::WorkMutations,
-                    after.mutations,
-                    before.mutations,
-                ),
-            ] {
-                if let Some(value) = end.checked_sub(start) {
-                    context.counter(span, key, value);
-                } else {
-                    context.health(DiagnosticHealthCodeV1::CounterOverflow);
-                }
-            }
+        if let (Some(span), Some(before)) = (&self.span, self.before) {
+            budget.record_diagnostic_usage_delta(before, span);
         }
         finish_work(budget, self.stage, self.span, result)
     }
@@ -200,13 +251,28 @@ mod tests {
         DiagnosticTerminalV1, RequestBudgetV1,
     };
 
-    use super::{DiagnosticStageV1, IndexError, WorkBudget, finish_work};
+    use super::{DiagnosticSpanGuardV1, DiagnosticStageV1, IndexError, WorkBudget, finish_work};
 
     #[derive(Debug, Default)]
     struct StepClock(AtomicU64);
     impl DiagnosticClockV1 for StepClock {
         fn now_ns(&self) -> u64 {
             self.0.fetch_add(1, Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct CpuStepClock {
+        wall: AtomicU64,
+        cpu: AtomicU64,
+    }
+    impl DiagnosticClockV1 for CpuStepClock {
+        fn now_ns(&self) -> u64 {
+            self.wall.fetch_add(1, Ordering::Relaxed)
+        }
+
+        fn thread_cpu_now_ns(&self) -> Option<u64> {
+            Some(self.cpu.fetch_add(7, Ordering::Relaxed))
         }
     }
 
@@ -223,6 +289,237 @@ mod tests {
             rows.push(event);
             true
         }
+    }
+
+    #[test]
+    fn source_owner_step_lanes_are_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let observed = [
+            super::SourceOwnerStep::ManifestCursor,
+            super::SourceOwnerStep::BaseLookup,
+            super::SourceOwnerStep::RecordGet,
+            super::SourceOwnerStep::RecordDecodePathEdges,
+            super::SourceOwnerStep::BodyGetValidate,
+        ]
+        .map(|step| step.lane().0);
+        if observed != [30, 31, 32, 33, 34] {
+            return Err("owner substep lanes changed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_owner_step_preserves_off_and_record_refusal_and_cpu_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for record in [false, true] {
+            let events = Arc::new(Events::default());
+            let clock = Arc::new(CpuStepClock::default());
+            let context = DiagnosticContextV1::new(
+                DiagnosticCaptureIdV1([96; 16]),
+                clock.clone(),
+                events.clone(),
+            );
+            let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))?;
+            let request = RequestBudgetV1::for_duration(Duration::from_secs(5));
+            let request = if record {
+                request.with_diagnostic_context(context.child_context(&root))
+            } else {
+                request
+            };
+            let mut work = WorkBudget::with_request(
+                WorkLimits {
+                    reads: 1,
+                    writes: 0,
+                    bytes: 0,
+                    mutations: 0,
+                },
+                request,
+            );
+            let original = work.request().clone();
+            let outer = super::begin(&work, DiagnosticStageV1::NativeSourceOwnerPrepare);
+            let outer_id = outer.as_ref().map(DiagnosticSpanGuardV1::span_id);
+            let before_clock = clock.wall.load(Ordering::Relaxed);
+            let mut calls = 0_u8;
+            let mut success_calls = 0_u8;
+            let primary = {
+                let mut scoped = super::phase_budget(&mut work, outer.as_ref());
+                let success = super::source_owner_step(
+                    &mut scoped,
+                    super::SourceOwnerStep::ManifestCursor,
+                    |_budget| {
+                        success_calls = success_calls.saturating_add(1);
+                        Ok(42_u8)
+                    },
+                );
+                if success != Ok(42) {
+                    return Err("owner substep changed successful result".into());
+                }
+                super::source_owner_step(
+                    &mut scoped,
+                    super::SourceOwnerStep::BaseLookup,
+                    |budget| {
+                        calls = calls.saturating_add(1);
+                        budget.charge(WorkUsage {
+                            reads: 1,
+                            ..WorkUsage::default()
+                        })?;
+                        budget.charge(WorkUsage {
+                            reads: 1,
+                            ..WorkUsage::default()
+                        })
+                    },
+                )
+            };
+            if calls != 1
+                || success_calls != 1
+                || primary != Err(IndexError::ResourceLimited)
+                || work.usage().reads != 1
+                || work.first_denial() != Some(quanta_index_core::index::WorkBudgetDenial::Reads)
+                || !work.request().same_request_as(&original)
+                || !format!("{work:?}").contains("failed_stage: None")
+                || (!record && clock.wall.load(Ordering::Relaxed) != before_clock)
+            {
+                return Err("owner substep changed original work or refusal".into());
+            }
+            let result = super::finish_work(
+                &work,
+                DiagnosticStageV1::NativeSourceOwnerPrepare,
+                outer,
+                primary,
+            );
+            if result != Err(IndexError::ResourceLimited)
+                || !format!("{work:?}").contains("failed_stage: Some(NativeSourceOwnerPrepare)")
+            {
+                return Err("owner substep changed enclosing failure stage".into());
+            }
+            root.finish(DiagnosticTerminalV1::from_result(&result))?;
+            let rows = events.0.lock().map_err(|_poison| "owner events poisoned")?;
+            let step = rows.iter().find_map(|event| match event.kind {
+                DiagnosticEventKindV1::SpanBegin {
+                    span_id,
+                    parent_span_id,
+                    stage: DiagnosticStageV1::NativeSourceOwnerPrepare,
+                    lane: DiagnosticLaneV1(31),
+                    ..
+                } => Some((span_id, parent_span_id)),
+                _ => None,
+            });
+            if record {
+                let (step_id, parent) = step.ok_or("owner substep span absent")?;
+                if parent != outer_id
+                    || rows
+                        .iter()
+                        .filter(|event| {
+                            matches!(
+                                event.kind,
+                                DiagnosticEventKindV1::SpanBegin {
+                                    lane: DiagnosticLaneV1(31),
+                                    ..
+                                }
+                            )
+                        })
+                        .count()
+                        != 1
+                    || !rows.iter().any(|event| {
+                        matches!(event.kind,
+                            DiagnosticEventKindV1::Counter {
+                                span_id,
+                                key: quanta_index_core::DiagnosticCounterV1::ThreadCpuNs,
+                                value: 7,
+                            } if span_id == step_id
+                        )
+                    })
+                {
+                    return Err("owner substep parent or thread CPU differs".into());
+                }
+            } else if step.is_some() {
+                return Err("Off opened an owner substep span".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_owner_step_unwind_restores_parent_and_aborts_span()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = Arc::new(Events::default());
+        let context = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([97; 16]),
+            Arc::new(StepClock::default()),
+            events.clone(),
+        );
+        let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))?;
+        let mut work = WorkBudget::with_request(
+            WorkLimits {
+                reads: 1,
+                writes: 0,
+                bytes: 0,
+                mutations: 0,
+            },
+            RequestBudgetV1::for_duration(Duration::from_secs(5))
+                .with_diagnostic_context(context.child_context(&root)),
+        );
+        let original = work.request().clone();
+        let outer = super::begin(&work, DiagnosticStageV1::NativeSourceOwnerPrepare);
+        let outer_id = outer.as_ref().ok_or("owner parent span absent")?.span_id();
+        {
+            let mut scoped = super::phase_budget(&mut work, outer.as_ref());
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _result: Result<(), IndexError> = super::source_owner_step(
+                    &mut scoped,
+                    super::SourceOwnerStep::RecordGet,
+                    |budget| {
+                        budget.charge(WorkUsage {
+                            reads: 1,
+                            ..WorkUsage::default()
+                        })?;
+                        std::panic::resume_unwind(Box::new("owner substep unwind"));
+                    },
+                );
+            }));
+            if panicked.is_ok() || scoped.usage().reads != 1 {
+                return Err("owner substep unwind lost work".into());
+            }
+            let after = super::begin(&scoped, DiagnosticStageV1::ManagedObjectReserve);
+            super::finish(after, Ok::<(), IndexError>(()))?;
+        }
+        if !work.request().same_request_as(&original) {
+            return Err("owner substep unwind changed request".into());
+        }
+        super::finish(outer, Ok::<(), IndexError>(()))?;
+        root.finish(DiagnosticTerminalV1::Ok)?;
+        let rows = events.0.lock().map_err(|_poison| "owner events poisoned")?;
+        let step = rows.iter().find_map(|event| match event.kind {
+            DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                parent_span_id,
+                lane: DiagnosticLaneV1(32),
+                ..
+            } => Some((span_id, parent_span_id)),
+            _ => None,
+        });
+        let (step_id, parent) = step.ok_or("unwound owner substep absent")?;
+        if parent != Some(outer_id)
+            || !rows.iter().any(|event| {
+                matches!(event.kind,
+                    DiagnosticEventKindV1::SpanEnd {
+                        span_id,
+                        outcome: DiagnosticTerminalV1::Aborted,
+                    } if span_id == step_id
+                )
+            })
+            || !rows.iter().any(|event| {
+                matches!(event.kind,
+                    DiagnosticEventKindV1::SpanBegin {
+                        stage: DiagnosticStageV1::ManagedObjectReserve,
+                        parent_span_id: Some(parent_span_id),
+                        ..
+                    } if parent_span_id == outer_id
+                )
+            })
+        {
+            return Err("owner substep unwind lost terminal or restored parent".into());
+        }
+        Ok(())
     }
 
     #[test]
@@ -305,10 +602,18 @@ mod tests {
     fn phase_budget_parents_managed_children_and_restores_worker_context()
     -> Result<(), Box<dyn std::error::Error>> {
         for stage in [
+            DiagnosticStageV1::NativeSourceApply,
+            DiagnosticStageV1::NativeSourceOwnerPrepare,
+            DiagnosticStageV1::NativeSourcePathValidate,
+            DiagnosticStageV1::NativeSourceMapApply,
             DiagnosticStageV1::BuildPrepare,
             DiagnosticStageV1::Finalize,
             DiagnosticStageV1::SemanticPrepare,
+            DiagnosticStageV1::NativeCoverageScan,
+            DiagnosticStageV1::NativeCoverageMapApply,
+            DiagnosticStageV1::NativeSearchablePrepare,
             DiagnosticStageV1::NativeCoverageSave,
+            DiagnosticStageV1::NativeMemberAssemble,
         ] {
             let events = Arc::new(Events::default());
             let context = DiagnosticContextV1::new(
@@ -387,6 +692,88 @@ mod tests {
     }
 
     #[test]
+    fn source_phase_refusal_retains_original_budget_and_child_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = Arc::new(Events::default());
+        let context = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([94; 16]),
+            Arc::new(StepClock::default()),
+            events.clone(),
+        );
+        let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))?;
+        let root_id = root.span_id();
+        let mut work = WorkBudget::with_request(
+            WorkLimits {
+                reads: 1,
+                writes: 1,
+                bytes: 1,
+                mutations: 1,
+            },
+            RequestBudgetV1::for_duration(Duration::from_secs(5))
+                .with_diagnostic_context(context.child_context(&root)),
+        );
+        let original = work.request().clone();
+        let stage = super::WorkStage::begin(&work, DiagnosticStageV1::NativeCoverageMapApply);
+        let stage_id = stage.span().ok_or("source phase span absent")?.span_id();
+        let primary = {
+            let mut scoped = super::phase_budget(&mut work, stage.span());
+            if !scoped.request().same_request_as(&original) {
+                return Err("phase replaced the original request".into());
+            }
+            let managed = super::begin(&scoped, DiagnosticStageV1::ManagedObjectReserve);
+            let refused = scoped.charge(WorkUsage {
+                reads: 2,
+                ..WorkUsage::default()
+            });
+            super::finish_work(
+                &scoped,
+                DiagnosticStageV1::ManagedObjectReserve,
+                managed,
+                refused,
+            )
+        };
+        let result = stage.finish(&work, primary.clone());
+        if primary != Err(IndexError::ResourceLimited)
+            || result != primary
+            || !work.request().same_request_as(&original)
+            || work.request().deadline() != original.deadline()
+            || work.usage() != WorkUsage::default()
+            || !format!("{work:?}").contains("first_denial: \"reads\"")
+            || !format!("{work:?}").contains("failed_stage: Some(ManagedObjectReserve)")
+        {
+            return Err("source phase changed refusal, authority or original work".into());
+        }
+        root.finish(DiagnosticTerminalV1::from_result(&result))?;
+        let rows = events.0.lock().map_err(|_error| "events poisoned")?;
+        let parents: Vec<_> = rows
+            .iter()
+            .filter_map(|event| {
+                if let DiagnosticEventKindV1::SpanBegin {
+                    stage,
+                    parent_span_id,
+                    ..
+                } = event.kind
+                {
+                    Some((stage, parent_span_id))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        drop(rows);
+        if parents
+            != [
+                (DiagnosticStageV1::Operation, None),
+                (DiagnosticStageV1::NativeCoverageMapApply, Some(root_id)),
+                (DiagnosticStageV1::ManagedObjectReserve, Some(stage_id)),
+            ]
+        {
+            return Err(format!("source refusal lost diagnostic ancestry: {parents:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn work_stage_reports_only_accepted_deltas_and_preserves_off_refusals()
     -> Result<(), Box<dyn std::error::Error>> {
         for record in [false, true] {
@@ -420,26 +807,38 @@ mod tests {
                     reads: 1,
                     ..WorkUsage::default()
                 })?;
+                let original_request = work.request().clone();
                 let clock_before = clock.0.load(Ordering::Relaxed);
                 let stage = super::WorkStage::begin(&work, DiagnosticStageV1::NativeCoverageScan);
-                work.charge(WorkUsage {
-                    reads: 2,
-                    writes: 1,
-                    bytes: 3,
-                    mutations: 1,
-                })?;
-                let accepted = work.usage();
-                let result = if refuse {
-                    work.charge(WorkUsage {
-                        reads: 10,
-                        ..WorkUsage::default()
-                    })
-                } else {
-                    Ok(())
+                let stage_id = stage.span().map(DiagnosticSpanGuardV1::span_id);
+                let (accepted, result) = {
+                    let mut scoped = super::phase_budget(&mut work, stage.span());
+                    let child = super::begin(&scoped, DiagnosticStageV1::ManagedObjectReserve);
+                    super::finish(child, Ok::<(), IndexError>(()))?;
+                    scoped.charge(WorkUsage {
+                        reads: 2,
+                        writes: 1,
+                        bytes: 3,
+                        mutations: 1,
+                    })?;
+                    let accepted = scoped.usage();
+                    let result = if refuse {
+                        scoped.charge(WorkUsage {
+                            reads: 10,
+                            ..WorkUsage::default()
+                        })
+                    } else {
+                        Ok(())
+                    };
+                    (accepted, result)
                 };
                 let expected = result.clone();
                 let actual = stage.finish(&work, result);
-                if actual != expected || work.usage() != accepted {
+                if actual != expected
+                    || work.usage() != accepted
+                    || !work.request().same_request_as(&original_request)
+                    || work.request().deadline() != original_request.deadline()
+                {
                     return Err("stage observation replaced result or work usage".into());
                 }
                 if !record && clock.0.load(Ordering::Relaxed) != clock_before {
@@ -447,6 +846,21 @@ mod tests {
                 }
                 root.finish(DiagnosticTerminalV1::from_result(&actual))?;
                 let rows = events.0.lock().map_err(|_error| "events poisoned")?;
+                let child_parent = rows.iter().find_map(|row| {
+                    if let DiagnosticEventKindV1::SpanBegin {
+                        stage: DiagnosticStageV1::ManagedObjectReserve,
+                        parent_span_id,
+                        ..
+                    } = row.kind
+                    {
+                        Some(parent_span_id)
+                    } else {
+                        None
+                    }
+                });
+                if record && child_parent != Some(stage_id) {
+                    return Err("stage child did not inherit the phase parent".into());
+                }
                 let counters: Vec<_> = rows
                     .iter()
                     .filter_map(|row| {

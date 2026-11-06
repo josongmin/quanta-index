@@ -368,13 +368,31 @@ impl AnnDirectory {
             context.budget.request().diagnostic_context(),
             quanta_index_core::DiagnosticStageV1::Compaction,
         );
-        let result = (|| {
-            validate_directory(self)?;
-            if self.recipe != recipe.fingerprint() {
-                return Err(invalid("Native ANN consolidation recipe mismatch"));
-            }
-            consolidation::prepare(self, recipe, context)
-        })();
+        let child = span.as_ref().and_then(|span| {
+            context
+                .budget
+                .request()
+                .diagnostic_context()
+                .map(|diagnostic| diagnostic.child_context(span))
+        });
+        let result = {
+            let mut budget = context.budget.scoped_diagnostic_context(child);
+            let scoped = &mut AttemptContext {
+                attempt: context.attempt,
+                objects: context.objects,
+                maps: context.maps,
+                custody: context.custody,
+                scratch: context.scratch,
+                budget: &mut budget,
+            };
+            (|| {
+                validate_directory(self)?;
+                if self.recipe != recipe.fingerprint() {
+                    return Err(invalid("Native ANN consolidation recipe mismatch"));
+                }
+                consolidation::prepare(self, recipe, scoped)
+            })()
+        };
         if result.is_err() {
             context
                 .budget

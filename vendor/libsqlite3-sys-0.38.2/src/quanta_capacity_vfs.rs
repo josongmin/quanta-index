@@ -121,6 +121,48 @@ unsafe extern "C" {
     fn qiv_test_first_shm_read_map(path: *const c_char, mapping_present: *mut c_int) -> c_int;
     #[cfg(feature = "quanta-capacity-vfs-test-hooks")]
     fn qiv_test_native_sync_syscall_outcomes(descriptor: c_int) -> c_int;
+    #[cfg(feature = "quanta-capacity-vfs-test-hooks")]
+    fn qiv_test_packed_wal_frame() -> c_int;
+    #[cfg(feature = "quanta-capacity-vfs-test-hooks")]
+    fn qiv_test_wal_append_batch() -> c_int;
+    #[cfg(feature = "quanta-capacity-vfs-test-hooks")]
+    fn qiv_test_checkpoint_batch_protocol() -> c_int;
+}
+
+/// Compare bounded checkpoint writes with independent scalar byte images,
+/// including gaps, bounds and terminal physical write errors.
+#[cfg(feature = "quanta-capacity-vfs-test-hooks")]
+pub fn test_checkpoint_batch_protocol() -> Result<(), Refusal> {
+    let rc = unsafe { qiv_test_checkpoint_batch_protocol() };
+    if rc == SQLITE_OK {
+        Ok(())
+    } else {
+        Err(Refusal::Io)
+    }
+}
+
+/// Compare bounded append batches with SQLite's scalar frame protocol,
+/// including sync boundaries and exact first-error propagation.
+#[cfg(feature = "quanta-capacity-vfs-test-hooks")]
+pub fn test_wal_append_batch() -> Result<(), Refusal> {
+    let rc = unsafe { qiv_test_wal_append_batch() };
+    if rc == SQLITE_OK {
+        Ok(())
+    } else {
+        Err(Refusal::Io)
+    }
+}
+
+/// Compare the bounded frame write with the original two-write sequence,
+/// including sync-point ordering and injected write/sync failures.
+#[cfg(feature = "quanta-capacity-vfs-test-hooks")]
+pub fn test_packed_wal_frame() -> Result<(), Refusal> {
+    let rc = unsafe { qiv_test_packed_wal_frame() };
+    if rc == SQLITE_OK {
+        Ok(())
+    } else {
+        Err(Refusal::Io)
+    }
 }
 
 /// Test-only oracle for the raw full-sync and POSIX outcomes. Fake fcntl calls

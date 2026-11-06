@@ -388,7 +388,10 @@ where
 fn scope_key(path: &str) -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
-        repo_relative_path: RepoRelativePath::new(path),
+        source_file: quanta_index_contract::SourceFileKey {
+            source_repo_id: repo(),
+            repo_relative_path: RepoRelativePath::new(path),
+        },
     }
 }
 
@@ -688,6 +691,7 @@ fn verify_publish_dispatch_lexical_roundtrip(socket: &Path) -> TestResult {
                 | SearchPlaneQueryIpcResponse::Semantic(_)
                 | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
+                | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)
                 | SearchPlaneQueryIpcResponse::RepoMapQuery(_)

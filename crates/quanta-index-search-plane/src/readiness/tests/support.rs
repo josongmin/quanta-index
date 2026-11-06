@@ -124,7 +124,10 @@ pub(super) fn rust_language() -> Result<LanguageCode, Box<dyn std::error::Error>
 pub(super) fn scope(path: &str) -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
-        repo_relative_path: RepoRelativePath::new(path),
+        source_file: quanta_index_contract::SourceFileKey {
+            source_repo_id: repo_id(),
+            repo_relative_path: RepoRelativePath::new(path),
+        },
     }
 }
 

@@ -18,6 +18,8 @@ from pathlib import Path
 from tools.benchmark.evidence import RawFile
 from tools.benchmark.retrieval.causal_cost_timeline import (
     MAX_CONFIGURED_CAPTURE_BYTES,
+    NATIVE_IO_SUMMARY_COUNTERS,
+    TEXT_OCCURRENCE_DIFF_COUNTERS,
 )
 from tools.benchmark.retrieval.causal_cost_timeline import (
     parse_stream as parse_timeline_stream,
@@ -43,6 +45,8 @@ SYNC_LABELS = frozenset(
         "file_authority_directory",
         "pool_new_directory_full",
         "pool_new_parent_full",
+        "pool_new_directory_posix",
+        "pool_new_parent_posix",
         "pool_data_file_posix",
         "pool_data_shard_posix",
         "pool_object_file_full",
@@ -924,7 +928,7 @@ def _native_child_trace(
         or not isinstance(footer, dict)
         or trace.get("status") != "complete"
         or type(trace.get("schema_version")) is not int
-        or trace["schema_version"] not in (2, 3, 4)
+        or trace["schema_version"] not in (2, 3, 4, 5)
         or trace.get("health")
         or trace.get("orphan_events") != 0
         or trace.get("truncated_tail") is not False
@@ -948,11 +952,11 @@ def _native_child_trace(
     spans = trace.get("spans")
     if not isinstance(spans, dict):
         raise ValueError("native child spans absent")
-    roots = [
-        span
-        for span in spans.values()
+    roots = {
+        span_id: span
+        for span_id, span in spans.items()
         if span.get("stage") == "operation" and span.get("parent_span_id") is None
-    ]
+    }
     identified = {
         span_id
         for span_id, span in spans.items()
@@ -961,55 +965,103 @@ def _native_child_trace(
         and span.get("parent_span_id") is None
         and isinstance(span.get("request_identity"), dict)
     }
-    if (
-        len(roots) != 1
-        or roots[0].get("outcome") != "ok"
-        or not identified
-        or not any(
-            span.get("stage") == "runtime_boot" and span.get("outcome") == "ok"
-            for span in spans.values()
-        )
-    ):
+    if not roots or not identified:
         raise ValueError("native child boot, operation or identified request absent")
     if publication:
         for required in ("build_prepare", "native_publish"):
             witnesses = [span for span in spans.values() if span.get("stage") == required]
             if not any(
-                span.get("outcome") == "ok" and _native_beneath_identified(spans, span, identified)
+                span.get("outcome") == "ok" and _native_beneath_roots(spans, span, identified)
                 for span in witnesses
             ):
                 raise ValueError(f"native child {required} witness absent")
-    sync = {}
+    # Catalog settings and supervisor phases can have independent Operation
+    # roots. The quiescent summary belongs to exactly one lifecycle root.
+    sync_by_root = {}
+    sync_keys = NATIVE_IO_SUMMARY_COUNTERS
     for row in trace.get("counters", []):
-        if row.get("span_id") != roots[0]["span_id"] or row.get("key") not in (
-            "sync_calls",
-            "sync_failures",
-            "sync_elapsed_ns",
-        ):
+        root_id = row.get("span_id")
+        if root_id not in roots or row.get("key") not in sync_keys:
             continue
+        sync = sync_by_root.setdefault(root_id, {})
         key = row["key"]
         if key in sync:
             raise ValueError("native child duplicate IO counter")
         sync[key] = _native_u64(row.get("value"), key)
-    if set(sync) != {"sync_calls", "sync_failures", "sync_elapsed_ns"}:
+    if len(sync_by_root) != 1:
+        raise ValueError("native child quiescent IO summary absent or split across operation roots")
+    root_id, sync = next(iter(sync_by_root.items()))
+    if set(sync) != sync_keys:
         raise ValueError("native child quiescent IO counters absent")
+    if roots[root_id].get("outcome") != "ok" or not any(
+        span.get("stage") == "runtime_boot"
+        and span.get("outcome") == "ok"
+        and _native_beneath_roots(spans, span, {root_id})
+        for span in spans.values()
+    ):
+        raise ValueError("native child IO operation lacks successful runtime boot")
     if sync["sync_failures"] != 0 or (publication and sync["sync_calls"] == 0):
         raise ValueError("native child install IO failed or first publication has no calls")
-    return {"capture_id": capture_id, "sync": sync}
+    result = {"capture_id": capture_id, "sync": sync}
+    requests: dict[int, dict] = {}
+    for span in spans.values():
+        observed = set(span["counters"]) & TEXT_OCCURRENCE_DIFF_COUNTERS
+        if not observed:
+            continue
+        if observed != TEXT_OCCURRENCE_DIFF_COUNTERS or trace["schema_version"] != 5:
+            raise ValueError("native child text occurrence Diff counter family is incomplete")
+        owner_id = _native_ancestor_root(spans, span, identified)
+        if owner_id is None:
+            raise ValueError("native child text occurrence Diff lacks identified request ancestry")
+        request = requests.setdefault(
+            owner_id,
+            {
+                "request_span_id": owner_id,
+                "request_identity": spans[owner_id]["request_identity"].copy(),
+                "successful_diffs": 0,
+                "failed_diffs": 0,
+                "counters": {key: 0 for key in sorted(TEXT_OCCURRENCE_DIFF_COUNTERS)},
+            },
+        )
+        outcome = span["outcome"]
+        count_key = "successful_diffs" if outcome == "ok" else "failed_diffs"
+        request[count_key] = _native_u64(request[count_key] + 1, count_key)
+        for key in TEXT_OCCURRENCE_DIFF_COUNTERS:
+            value = _native_u64(span["counters"][key], key)
+            request["counters"][key] = _native_u64(request["counters"][key] + value, key)
+    if requests:
+        result["text_occurrence_diff"] = {
+            "requests": [requests[span_id] for span_id in sorted(requests)]
+        }
+    return result
 
 
-def _native_beneath_identified(spans: dict, span: dict, identified: set) -> bool:
+def _native_beneath_roots(spans: dict, span: dict, roots: set) -> bool:
     current = span
     seen = set()
     while current is not None:
         span_id = current.get("span_id")
-        if span_id in identified:
+        if span_id in roots:
             return True
         if span_id in seen:
             return False
         seen.add(span_id)
         current = spans.get(current.get("parent_span_id"))
     return False
+
+
+def _native_ancestor_root(spans: dict, span: dict, roots: set) -> int | None:
+    current = span
+    seen = set()
+    while current is not None:
+        span_id = current.get("span_id")
+        if span_id in roots:
+            return span_id
+        if span_id in seen:
+            return None
+        seen.add(span_id)
+        current = spans.get(current.get("parent_span_id"))
+    return None
 
 
 def _native_check_write_failures(observation: dict, label: str) -> None:
@@ -1555,6 +1607,18 @@ def validate_native_product_artifacts(
         or detail.get("child_trace_verified") is not (not off)
     ):
         raise ValueError("native product tier, source or daemon differs from declared inputs")
+    mutation_counts = detail.get("source_mutation_count")
+    expected_mutations = {"full": repos * files, "delta": 1, "noop": 0, "delete": 1}
+    if expected_churn_cycles:
+        expected_mutations["churn"] = expected_churn_cycles
+    if not isinstance(mutation_counts, dict) or set(mutation_counts) != set(expected_mutations):
+        raise ValueError("native source mutation count axes differ from declared profile")
+    for axis, expected in expected_mutations.items():
+        _exact_int(mutation_counts[axis], expected, f"native source mutation count {axis}")
+    if detail.get("derived_fanout") != (
+        "unobserved; no projection producer in Index-only fixture"
+    ):
+        raise ValueError("native derived fanout observation scope differs")
     expected_limits = (
         expected_foreground_workload.get("work_limits")
         if isinstance(expected_foreground_workload, dict)
@@ -1835,6 +1899,8 @@ def validate_native_product_artifacts(
             "sync": child["sync"],
             "object_io": stderr,
         }
+        if "text_occurrence_diff" in child:
+            verified_children[role]["text_occurrence_diff"] = child["text_occurrence_diff"]
     if verified_children["first"]["capture_id"] == verified_children["reopen"]["capture_id"]:
         raise ValueError("native reopened child reused first capture identity")
     product["children"] = verified_children

@@ -182,7 +182,10 @@ impl ScratchIoBinding for FaultBinding {
         DRIVER
     }
 
-    fn enter_scope(&self) -> Box<dyn ScratchIoScope> {
+    fn enter_scope(
+        &self,
+        _diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Box<dyn ScratchIoScope> {
         Box::new(TestScope(self.vfs.enter_scope(SCOPE)))
     }
 

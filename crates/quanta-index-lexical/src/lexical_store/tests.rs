@@ -22,6 +22,62 @@ fn key(number: u32) -> Vec<u8> {
 }
 
 #[test]
+fn cursor_forward_seeks_match_ordered_reference_and_preserve_authentication() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = ObjectStore::open(dir.path()).expect("store");
+    let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+    let value = store
+        .put_blob(&lease, ObjectKind::Record, &[], b"cursor-seek-value")
+        .expect("value");
+    let expected = (0..600_u32)
+        .map(|number| (key(number * 2), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let root = store
+        .map_bootstrap(
+            &lease,
+            expected.iter().map(|(key, value)| {
+                Ok(MapEdit {
+                    key: key.clone(),
+                    value: Some(value.clone()),
+                })
+            }),
+        )
+        .expect("map");
+    let cold = store.metered_clone();
+    let mut cursor = cold
+        .map_cursor(&root, &[], Some(&key(1100)), None)
+        .expect("cursor");
+    for target in [0, 1, 21, 190, 401, 899, 1001, 1098] {
+        let lower = key(target);
+        let oracle = expected
+            .range(lower.clone()..key(1100))
+            .next()
+            .map(|(key, value)| (key.clone(), value.clone()));
+        assert_eq!(cursor.next_at_or_after(&lower).expect("seek"), oracle);
+    }
+    assert!(cursor.next_at_or_after(&key(1)).is_err());
+    assert!(
+        cursor
+            .next_at_or_after(&key(1100))
+            .expect("upper")
+            .is_none()
+    );
+
+    let expired = quanta_index_core::RequestBudgetV1::until(std::time::Instant::now());
+    let mut cancelled = cold
+        .map_cursor(&root, &[], None, Some(&expired))
+        .expect("cursor");
+    assert!(cancelled.next_at_or_after(&key(0)).is_err());
+    let mut foreign = root.clone();
+    foreign.entries += 1;
+    foreign.page.as_mut().expect("page").entries += 1;
+    let mut corrupt = cold
+        .map_cursor(&foreign, &[], None, None)
+        .expect("descriptor shape");
+    assert!(corrupt.next_at_or_after(&key(0)).is_err());
+}
+
+#[test]
 fn decoded_map_page_cache_preserves_lookup_oracle_and_rejects_foreign_descriptor() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = ObjectStore::open(dir.path()).expect("object store");

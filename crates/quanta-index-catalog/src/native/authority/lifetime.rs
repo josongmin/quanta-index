@@ -630,8 +630,8 @@ impl SqliteCatalog {
             // The original request validator read and authenticated these rows
             // in this held transaction. Retain the live-claim checks without
             // decoding the same immutable work and assignment again.
-            validate_live_claim_row(&work, claim, now)?;
-            validate_owned_live_claim(&assignment, claim, now)?;
+            validate_live_claim_row(&work, claim, now, None)?;
+            validate_owned_live_claim(&assignment, claim, now, None)?;
             if assignment.request.operation != request.operation {
                 return Err(IndexError::WorkFenceLost);
             }
@@ -1138,11 +1138,18 @@ impl CatalogReadPort for SqliteCatalog {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use quanta_index_core::index::WorkLimits;
 
-    use super::*;
+    use super::{
+        CatalogReadPort, CollectionId, Connection, IndexError, PinRow, ReadSessionRef,
+        ReadTicketLease, RetiredRow, SlotId, SqliteCatalog, TenantId, WorkBudget, WorkspaceKey,
+        WorktreeId, begin, checked_pin, checked_session, cleanup_retired_rows,
+        cleanup_retired_rows_with_hook, int, lock_path, max_workspace_key_bytes, params,
+        pin_digest, retired_digest, retired_snapshot, session_directory, ticket_from_integer,
+        workspace_key,
+    };
 
     macro_rules! check {
         ($condition:expr $(,)?) => {{

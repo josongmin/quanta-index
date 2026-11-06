@@ -91,6 +91,9 @@ pub(super) fn resources() -> NativeServiceResources {
         provider_units: 0,
     };
     NativeServiceResources {
+        catalog_writer_cache: quanta_index_searchd_runtime::native::CatalogWriterCachePolicy {
+            kib: 16,
+        },
         // Map spill currently reserves a fixed 4 GiB envelope even for a
         // small delta. This fixture covers pump behavior with that configured
         // capacity; it does not qualify a smaller scratch envelope.

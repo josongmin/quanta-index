@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, AsRawFd as _, RawFd};
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -29,6 +30,7 @@ use rustix::fs::{
     AtFlags, FileType, Mode, OFlags, RenameFlags, linkat, mkdirat, openat, renameat_with, statat,
     unlinkat,
 };
+use sha2::{Digest as _, Sha256};
 
 fn storage(context: &str, error: impl std::fmt::Display) -> CoreError {
     CoreError::Storage(format!("publication file capacity {context}: {error}"))
@@ -61,6 +63,12 @@ fn existing_target(context: &str) -> CoreError {
 enum MissingDisposition {
     Storage,
     NotFound,
+}
+#[derive(Clone, Copy)]
+enum CreatePolicy {
+    SafeReplace,
+    SafeIfAbsent,
+    NativeIfAbsent,
 }
 fn path_error(context: &str, error: rustix::io::Errno, missing: MissingDisposition) -> CoreError {
     if missing == MissingDisposition::NotFound && error == rustix::io::Errno::NOENT {
@@ -334,8 +342,11 @@ pub enum ControlCreateRecovery {
 struct Tracking {
     handoff_frozen: bool,
     close_unwitnessed: bool,
-    // False only after a complete, mutex-held scan observed no tombstones.
-    may_have_tombstones: bool,
+    // False only after a complete mutex-held scan found no eligible or
+    // in-flight releasing tombstones. Last-pin release re-arms this hint.
+    retirement_scan_needed: bool,
+    #[cfg(test)]
+    sweep_scan_count: u64,
     paths_busy: BTreeSet<PathBuf>,
     directory_scopes: BTreeSet<PathBuf>,
     inodes_busy: BTreeSet<InodeKey>,
@@ -441,6 +452,43 @@ fn directory_scope_busy(state: &Tracking, path: &Path) -> bool {
         .directory_scopes
         .iter()
         .any(|scope| path.starts_with(scope) || scope.starts_with(path))
+}
+// Refusal-only, opt-in observation. The tracking ledger has no operation-owner
+// token, so an active path/reader/scope cannot be attributed to a caller here.
+fn trace_claim_path_busy(state: &Tracking, path: &Path, operation: &'static str) {
+    if std::env::var_os("QUANTA_INDEX_CAUSAL_PROFILE_V1").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let path_busy = state.paths_busy.contains(path);
+    let opening_reader = state.opening_readers.contains_key(path);
+    let opening_readers = state.opening_readers.get(path).copied().unwrap_or(0);
+    let overlapping_scopes = state
+        .directory_scopes
+        .iter()
+        .filter(|scope| path.starts_with(scope.as_path()) || scope.starts_with(path))
+        .count();
+    let branch = if path_busy {
+        "path_busy"
+    } else if opening_reader {
+        "opening_reader"
+    } else {
+        "directory_scope"
+    };
+    let mut digest = Sha256::new();
+    digest.update(b"quanta-index/publication-claim-relative-path/v1\0");
+    digest.update(path.as_os_str().as_bytes());
+    eprintln!(
+        "QI_CAUSAL_V1 kind=publication_claim_refused operation={operation} branch={branch} relative_path_sha256={:x} path_busy={} opening_readers={} overlapping_scopes={} active_busy_paths={} active_opening_readers={} active_directory_scopes={} owner=unknown",
+        digest.finalize(),
+        u8::from(path_busy),
+        opening_readers,
+        overlapping_scopes,
+        state.paths_busy.len(),
+        state.total_opening_readers,
+        state.directory_scopes.len(),
+    );
 }
 fn require_publication_open(state: &Tracking) -> Result<(), CoreError> {
     if state.close_unwitnessed {
@@ -730,7 +778,7 @@ impl PublicationFileCapacity {
                 root,
                 authority,
                 state: Mutex::new(Tracking {
-                    may_have_tombstones: true,
+                    retirement_scan_needed: true,
                     ..Tracking::default()
                 }),
                 max_open_handles,
@@ -858,6 +906,14 @@ impl PublicationFileCapacity {
         allowance: &PublicationAllowance,
     ) -> Result<(), CoreError> {
         self.shared.root.require_current_v1()?;
+        self.validate_held_allowance_accounting(allowance)
+    }
+    /// Validate funding without repeating namespace I/O. Callers must also
+    /// authenticate the current root at their actual filesystem boundary.
+    pub(crate) fn validate_held_allowance_accounting(
+        &self,
+        allowance: &PublicationAllowance,
+    ) -> Result<(), CoreError> {
         if !allowance.belongs_to(&self.shared.authority) {
             return Err(contract("supplied allowance belongs to another authority"));
         }
@@ -1246,9 +1302,10 @@ impl PublicationFileCapacity {
         &self,
         path: &Path,
         supplied: Option<Arc<PublicationAllowance>>,
+        operation: &'static str,
     ) -> Result<(Anchor, Arc<PublicationAllowance>), CoreError> {
         if let Some(allowance) = supplied.as_ref() {
-            self.validate_held_allowance(allowance)?;
+            self.validate_held_allowance_accounting(allowance)?;
         }
         let anchor = self.anchor(path)?;
         {
@@ -1258,6 +1315,7 @@ impl PublicationFileCapacity {
                 || state.opening_readers.contains_key(&anchor.relative)
                 || directory_scope_busy(&state, &anchor.relative)
             {
+                trace_claim_path_busy(&state, &anchor.relative, operation);
                 return Err(capacity("path has an in-flight operation or reader open"));
             }
             if state.paths_busy.len() >= self.shared.max_tracked_entries {
@@ -1680,7 +1738,7 @@ impl PublicationFileCapacity {
             return Err(contract("native unlinked inode width changed"));
         }
         entry.tombstone_synced = true;
-        state.may_have_tombstones = true;
+        state.retirement_scan_needed = true;
         drop(state);
         Ok(())
     }
@@ -1778,10 +1836,22 @@ impl PublicationFileCapacity {
         }
     }
     pub fn begin_create(&self, final_path: &Path) -> Result<FileMutation, CoreError> {
-        self.begin_create_with_bound(final_path, 1, false, None, None)
+        self.begin_create_with_bound(final_path, 1, CreatePolicy::SafeReplace, None, None)
+    }
+    /// Claim the current namespace once, then reject an existing target before
+    /// reserving an inode slot or output. `None` means that target already exists.
+    ///
+    /// Path-busy and zero-allowance admission precede the target observation,
+    /// so either may refuse before an existing-target conflict is reported.
+    /// The caller still installs with no-replace.
+    pub(crate) fn begin_create_if_absent(
+        &self,
+        final_path: &Path,
+    ) -> Result<Option<FileMutation>, CoreError> {
+        self.try_begin_create_with_bound(final_path, 1, CreatePolicy::SafeIfAbsent, None, None)
     }
     pub fn begin_native_create(&self, final_path: &Path) -> Result<FileMutation, CoreError> {
-        self.begin_create_with_bound(final_path, 1, true, None, None)
+        self.begin_create_with_bound(final_path, 1, CreatePolicy::NativeIfAbsent, None, None)
     }
     /// Subdivide an already-held parent before `SQLite` creates a native file.
     /// Further native growth remains bounded by this same parent.
@@ -1790,7 +1860,13 @@ impl PublicationFileCapacity {
         final_path: &Path,
         allowance: Arc<PublicationAllowance>,
     ) -> Result<FileMutation, CoreError> {
-        self.begin_create_with_bound(final_path, 1, true, Some(allowance), None)
+        self.begin_create_with_bound(
+            final_path,
+            1,
+            CreatePolicy::NativeIfAbsent,
+            Some(allowance),
+            None,
+        )
     }
     /// Subdivide an already charged publication allowance. The caller keeps
     /// its Arc until all child files have settled; this method never top-ups.
@@ -1800,7 +1876,13 @@ impl PublicationFileCapacity {
         max_bytes: u64,
         allowance: Arc<PublicationAllowance>,
     ) -> Result<FileMutation, CoreError> {
-        self.begin_create_with_bound(final_path, max_bytes, false, Some(allowance), None)
+        self.begin_create_with_bound(
+            final_path,
+            max_bytes,
+            CreatePolicy::SafeReplace,
+            Some(allowance),
+            None,
+        )
     }
     /// Reserve a safe create-once file that is visible before termination.
     ///
@@ -1811,7 +1893,13 @@ impl PublicationFileCapacity {
         final_path: &Path,
         allowance: Arc<PublicationAllowance>,
     ) -> Result<FileMutation, CoreError> {
-        let mutation = self.begin_create_with_bound(final_path, 1, false, Some(allowance), None)?;
+        let mutation = self.begin_create_with_bound(
+            final_path,
+            1,
+            CreatePolicy::SafeReplace,
+            Some(allowance),
+            None,
+        )?;
         if mutation.replaced_old.is_some() {
             return Err(existing_target("visible create"));
         }
@@ -1826,16 +1914,38 @@ impl PublicationFileCapacity {
         allowance: Arc<PublicationAllowance>,
         ticket: OutputTicket,
     ) -> Result<FileMutation, CoreError> {
-        self.begin_create_with_bound(final_path, max_bytes, false, Some(allowance), Some(ticket))
+        self.begin_create_with_bound(
+            final_path,
+            max_bytes,
+            CreatePolicy::SafeReplace,
+            Some(allowance),
+            Some(ticket),
+        )
     }
     fn begin_create_with_bound(
         &self,
         final_path: &Path,
         bound: u64,
-        native: bool,
+        policy: CreatePolicy,
+        supplied: Option<Arc<PublicationAllowance>>,
+        reserved_ticket: Option<OutputTicket>,
+    ) -> Result<FileMutation, CoreError> {
+        self.try_begin_create_with_bound(final_path, bound, policy, supplied, reserved_ticket)?
+            .ok_or_else(|| match policy {
+                CreatePolicy::NativeIfAbsent => existing_target("native create"),
+                CreatePolicy::SafeReplace | CreatePolicy::SafeIfAbsent => {
+                    contract("unexpected create-if-absent conflict in replacement admission")
+                }
+            })
+    }
+    fn try_begin_create_with_bound(
+        &self,
+        final_path: &Path,
+        bound: u64,
+        policy: CreatePolicy,
         supplied: Option<Arc<PublicationAllowance>>,
         mut reserved_ticket: Option<OutputTicket>,
-    ) -> Result<FileMutation, CoreError> {
+    ) -> Result<Option<FileMutation>, CoreError> {
         if bound == 0 {
             return Err(contract("creation bound must be positive"));
         }
@@ -1843,19 +1953,24 @@ impl PublicationFileCapacity {
             let allowance = supplied
                 .as_ref()
                 .ok_or_else(|| contract("reserved output requires its supplied parent"))?;
-            self.validate_held_allowance(allowance)?;
+            self.validate_held_allowance_accounting(allowance)?;
             ticket.authenticate_reserved_for_parent(allowance, bound)?;
         }
         let supplied_funding = supplied.is_some();
-        let (anchor, allowance) = self.claim_path(final_path, supplied)?;
+        let operation = match policy {
+            CreatePolicy::SafeReplace => "safe_create_or_byte_copy",
+            CreatePolicy::SafeIfAbsent => "safe_create_if_absent",
+            CreatePolicy::NativeIfAbsent => "native_create",
+        };
+        let (anchor, allowance) = self.claim_path(final_path, supplied, operation)?;
         let relative = anchor.relative.clone();
         let mut claimed_inode = None;
         let mut reserved_new = false;
         let mut old_file_on_error = None;
         let result = (|| {
             let replaced_old_meta = if let Some(observed) = anchor.stat()? {
-                if native {
-                    return Err(existing_target("native create"));
+                if !matches!(policy, CreatePolicy::SafeReplace) {
+                    return Ok(None);
                 }
                 let file = anchor.open()?;
                 old_file_on_error = Some(file);
@@ -1886,7 +2001,7 @@ impl PublicationFileCapacity {
             } else {
                 allowance.reserve_output(bound)?
             };
-            Ok(FileMutation {
+            Ok(Some(FileMutation {
                 binder: self.clone(),
                 anchor,
                 allowance,
@@ -1914,7 +2029,7 @@ impl PublicationFileCapacity {
                 },
                 busy_inode: claimed_inode,
                 phase: MutationPhase::Reserved,
-                mode: if native {
+                mode: if matches!(policy, CreatePolicy::NativeIfAbsent) {
                     MutationMode::Native
                 } else {
                     MutationMode::Safe
@@ -1923,9 +2038,9 @@ impl PublicationFileCapacity {
                 external_writer_live: false,
                 safe_writer_fd: None,
                 reserved_inode_slot: true,
-            })
+            }))
         })();
-        if result.is_err() {
+        if !matches!(result.as_ref(), Ok(Some(_))) {
             if let Some(file) = old_file_on_error.take()
                 && close_owned_file(file).is_err()
             {
@@ -1947,7 +2062,13 @@ impl PublicationFileCapacity {
         final_path: &Path,
     ) -> Result<FileMutation, CoreError> {
         let source = InodeObservation::from_file(source)?;
-        self.begin_create_with_bound(final_path, source.bytes.max(1), false, None, None)
+        self.begin_create_with_bound(
+            final_path,
+            source.bytes.max(1),
+            CreatePolicy::SafeReplace,
+            None,
+            None,
+        )
     }
     pub fn begin_byte_copy_with_allowance(
         &self,
@@ -1959,7 +2080,7 @@ impl PublicationFileCapacity {
         self.begin_create_with_bound(
             final_path,
             source.bytes.max(1),
-            false,
+            CreatePolicy::SafeReplace,
             Some(allowance),
             None,
         )
@@ -1989,7 +2110,7 @@ impl PublicationFileCapacity {
         supplied: Option<Arc<PublicationAllowance>>,
     ) -> Result<FileMutation, CoreError> {
         let supplied_funding = supplied.is_some();
-        let (anchor, allowance) = self.claim_path(path, supplied)?;
+        let (anchor, allowance) = self.claim_path(path, supplied, "resize")?;
         let relative = anchor.relative.clone();
         let mut claimed_inode = None;
         let mut pin_on_error = None;
@@ -2102,7 +2223,7 @@ impl PublicationFileCapacity {
         supplied: Option<Arc<PublicationAllowance>>,
     ) -> Result<FileMutation, CoreError> {
         let supplied_funding = supplied.is_some();
-        let (anchor, allowance) = self.claim_path(path, supplied)?;
+        let (anchor, allowance) = self.claim_path(path, supplied, "native_resize")?;
         let relative = anchor.relative.clone();
         let mut claimed_inode = None;
         let result = (|| {
@@ -2810,7 +2931,7 @@ impl PublicationFileCapacity {
                 return Err(contract("replaced Control tracked inode changed"));
             }
             entry.tombstone_synced = true;
-            state.may_have_tombstones = true;
+            state.retirement_scan_needed = true;
             drop(state);
         }
         Ok(tombstone)
@@ -3052,18 +3173,23 @@ impl PublicationFileCapacity {
                 if state.close_unwitnessed {
                     return Err(storage("retirement", "owned FD close was ambiguous"));
                 }
-                if !state.may_have_tombstones {
+                if !state.retirement_scan_needed {
                     return Ok(());
                 }
-                let mut tombstone_seen = false;
+                #[cfg(test)]
+                {
+                    state.sweep_scan_count = state.sweep_scan_count.saturating_add(1);
+                }
+                let mut releasing_seen = false;
                 let key = state.inodes.iter().find_map(|(key, entry)| {
-                    tombstone_seen |= entry.tombstone_synced;
+                    releasing_seen |= entry.tombstone_synced && entry.releasing;
                     (entry.tombstone_synced && entry.pins == 0 && !entry.releasing).then_some(*key)
                 });
                 let Some(key) = key else {
-                    // Exhaustion, not absence of eligible entries, proves emptiness.
-                    // Pinned and concurrently releasing tombstones keep the hint set.
-                    state.may_have_tombstones = tombstone_seen;
+                    // Pinned-only tombstones cannot be reclaimed until their
+                    // final pin re-arms the hint under this same mutex.
+                    // A concurrent releasing owner may still fail and retry.
+                    state.retirement_scan_needed = releasing_seen;
                     return Ok(());
                 };
                 let entry = state
@@ -3085,6 +3211,7 @@ impl PublicationFileCapacity {
                     && let Some(entry) = state.inodes.get_mut(&key)
                 {
                     entry.releasing = false;
+                    state.retirement_scan_needed = true;
                 }
                 return Err(error);
             }
@@ -3343,8 +3470,24 @@ impl FileMutation {
         self.reserved_end = target_end;
         Ok(())
     }
+    /// Reserve and begin one native operation without repeating reservation's
+    /// live authentication. No filesystem operation intervenes; growth may
+    /// retain its own maintenance checks. Independent `reserve_end` and `start`
+    /// calls retain their own live checks.
+    pub(crate) fn reserve_end_and_start(&mut self, target_end: u64) -> Result<(), CoreError> {
+        if !self.is_native() {
+            return Err(contract(
+                "combined reserve and start requires a native mutation",
+            ));
+        }
+        self.reserve_end(target_end)?;
+        self.start_already_validated()
+    }
     pub fn creation_started(&mut self) -> Result<(), CoreError> {
         self.binder.validate_held_allowance(&self.allowance)?;
+        self.creation_started_already_validated()
+    }
+    fn creation_started_already_validated(&mut self) -> Result<(), CoreError> {
         match self.ticket.as_ref() {
             Some(MutationTicket::Create(ticket)) if !self.is_started() => {
                 ticket.creation_started()?;
@@ -3357,6 +3500,9 @@ impl FileMutation {
     }
     pub fn mutation_started(&mut self) -> Result<(), CoreError> {
         self.binder.validate_held_allowance(&self.allowance)?;
+        self.mutation_started_already_validated()
+    }
+    fn mutation_started_already_validated(&mut self) -> Result<(), CoreError> {
         match self.ticket.as_ref() {
             Some(MutationTicket::Resize(ticket)) if !self.is_started() => {
                 ticket.mutation_started()?;
@@ -3371,6 +3517,13 @@ impl FileMutation {
         match self.ticket.as_ref() {
             Some(MutationTicket::Create(_)) => self.creation_started(),
             Some(MutationTicket::Resize(_)) => self.mutation_started(),
+            None => Err(contract("mutation already settled")),
+        }
+    }
+    fn start_already_validated(&mut self) -> Result<(), CoreError> {
+        match self.ticket.as_ref() {
+            Some(MutationTicket::Create(_)) => self.creation_started_already_validated(),
+            Some(MutationTicket::Resize(_)) => self.mutation_started_already_validated(),
             None => Err(contract("mutation already settled")),
         }
     }
@@ -3875,7 +4028,7 @@ impl FileMutation {
                     .get_mut(&old_prior.inode)
                     .ok_or_else(|| contract("replaced inode tracking missing"))?;
                 entry.tombstone_synced = true;
-                state.may_have_tombstones = true;
+                state.retirement_scan_needed = true;
                 drop(state);
             }
         }
@@ -4252,19 +4405,26 @@ impl ReaderLease {
         }
         let should_sweep = (|| {
             let mut state = lock(&self.shared.state)?;
+            // Check both counters before either mutation. A failed release
+            // must not create an eligible tombstone with a stale hint.
+            let total_before = state.total_pins;
             let entry = state
                 .inodes
                 .get_mut(&self.inode)
                 .ok_or_else(|| contract("reader inode missing"))?;
-            entry.pins = entry
+            let pins = entry
                 .pins
                 .checked_sub(1)
                 .ok_or_else(|| contract("reader pin underflow"))?;
-            let should_sweep = entry.tombstone_synced && entry.pins == 0;
-            state.total_pins = state
-                .total_pins
+            let total_pins = total_before
                 .checked_sub(1)
                 .ok_or_else(|| contract("total pin underflow"))?;
+            entry.pins = pins;
+            let should_sweep = entry.tombstone_synced && pins == 0;
+            state.total_pins = total_pins;
+            if should_sweep {
+                state.retirement_scan_needed = true;
+            }
             drop(state);
             Ok(should_sweep)
         })();
@@ -4305,18 +4465,24 @@ impl NativeReaderLease {
             return Ok(());
         }
         let mut state = lock(&self.shared.state)?;
+        let total_before = state.total_pins;
         let entry = state
             .inodes
             .get_mut(&self.inode)
             .ok_or_else(|| contract("native pin inode missing"))?;
-        entry.pins = entry
+        let pins = entry
             .pins
             .checked_sub(1)
             .ok_or_else(|| contract("native pin underflow"))?;
-        state.total_pins = state
-            .total_pins
+        let total_pins = total_before
             .checked_sub(1)
             .ok_or_else(|| contract("total pin underflow"))?;
+        entry.pins = pins;
+        let last_tombstone_pin = entry.tombstone_synced && pins == 0;
+        state.total_pins = total_pins;
+        if last_tombstone_pin {
+            state.retirement_scan_needed = true;
+        }
         drop(state);
         self.live = false;
         Ok(())
@@ -4631,7 +4797,7 @@ impl NativeDeleteTicket {
                 .get_mut(&self.expected.inode)
                 .ok_or_else(|| contract("native deleted inode untracked"))?;
             entry.tombstone_synced = true;
-            state.may_have_tombstones = true;
+            state.retirement_scan_needed = true;
             drop(state);
         }
         self.settled = true;
@@ -4866,7 +5032,7 @@ impl PathTicket {
                 .get_mut(&prior.inode)
                 .ok_or_else(|| contract("replaced target tracking missing"))?;
             entry.tombstone_synced = true;
-            state.may_have_tombstones = true;
+            state.retirement_scan_needed = true;
             drop(state);
         }
         self.settled = true;
@@ -5113,7 +5279,7 @@ impl DeleteTicket {
                 .get_mut(&self.expected.inode)
                 .ok_or_else(|| contract("deleted inode untracked"))?;
             entry.tombstone_synced = true;
-            state.may_have_tombstones = true;
+            state.retirement_scan_needed = true;
             drop(state);
         }
         self.settled = true;

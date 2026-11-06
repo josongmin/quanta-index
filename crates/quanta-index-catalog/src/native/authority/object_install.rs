@@ -6,16 +6,18 @@
 use quanta_index_core::index::{IndexError, RegisteredObject};
 use rusqlite::{Connection, Transaction, params};
 
+use super::registration_codec::{
+    MAX_ENCODED_BYTES, decode as decode_registration, encode as encode_registration,
+};
 use super::{
     RegisteredBatchInTransaction, cached_execute, cached_query_row, canonical_object, check_digest,
-    decode, digest, encode, exactly_one, fields_digest, object_key, require_object,
-    require_registered_edges, sql,
+    digest, exactly_one, fields_digest, object_key, require_object, require_registered_edges, sql,
 };
 
-pub(super) const MAX_CHILDREN: usize = 4096;
+pub(super) use super::registration_codec::{MAX_CHILDREN, MAX_OBJECT_BYTES};
 const MAX_METADATA_BYTES: usize = 1_048_576;
 pub(super) const MAX_METADATA_BYTES_SQL: i64 = 1_048_576;
-pub(super) const MAX_OBJECT_BYTES: u64 = 16 * 1024 * 1024 + 4096 * 32 + 16;
+const _: () = assert!(MAX_ENCODED_BYTES <= MAX_METADATA_BYTES);
 
 #[derive(Clone, Copy)]
 pub(super) enum EdgeLedger {
@@ -131,7 +133,9 @@ pub(super) fn require_edge_ledger(
 }
 
 pub(super) fn checked_object(object: &RegisteredObject) -> Result<RegisteredObject, IndexError> {
-    checked_payload(object).map(|(canonical, _payload)| canonical)
+    // The maximum canonical encoding fits the metadata bound. Callers that
+    // need only the checked registration must not allocate and discard it.
+    canonical_object(object)
 }
 
 /// Retain the exact metadata bytes used to enforce the canonical size bound.
@@ -139,7 +143,7 @@ pub(super) fn checked_object(object: &RegisteredObject) -> Result<RegisteredObje
 /// This is local encoding data, not a reservation or registration proof.
 fn checked_payload(object: &RegisteredObject) -> Result<(RegisteredObject, Vec<u8>), IndexError> {
     let canonical = canonical_object(object)?;
-    let payload = encode(&canonical)?;
+    let payload = encode_registration(&canonical)?;
     if payload.len() > MAX_METADATA_BYTES {
         return Err(IndexError::ResourceLimited);
     }
@@ -207,7 +211,7 @@ pub(super) fn read_metadata(
         .ok_or(IndexError::ResourceLimited)?;
     admit(bytes)?;
     check_digest(domain, payload, checksum)?;
-    decode(payload).map(Some)
+    decode_registration(payload).map(Some)
 }
 
 pub(super) fn registered_matches(
@@ -379,6 +383,13 @@ pub(super) fn confirmation_state(
 ) -> Result<ConfirmationState, IndexError> {
     let canonical = checked_object(object)?;
     if provisional_matches(connection, &canonical)? {
+        // A permanent shadow cannot survive a valid atomic transfer. Check it
+        // after the complete provisional proof, before any batch registration.
+        if registered_matches(connection, &canonical)? {
+            return Err(IndexError::Storage(
+                "registered object retains provisional child custody".into(),
+            ));
+        }
         Ok(ConfirmationState::Provisional)
     } else if registered_matches(connection, &canonical)? {
         Ok(ConfirmationState::Registered)

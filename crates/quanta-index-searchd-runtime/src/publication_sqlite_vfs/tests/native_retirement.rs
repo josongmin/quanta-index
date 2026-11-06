@@ -48,9 +48,18 @@ impl Mode {
     }
 }
 
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum ArmState {
+    #[default]
+    Disarmed,
+    Armed,
+}
+
+type RetirementSnapshot = (usize, Option<FileWitness>, Option<FileWitness>);
+
 #[derive(Default)]
 struct State {
-    armed: bool,
+    armed: ArmState,
     entered: bool,
     released: bool,
     open_rejected: bool,
@@ -86,28 +95,33 @@ impl Gate {
         if self.mode != Mode::RejectedOpenCleanup {
             require(state.target_handle.is_some(), "main FD was not opened")?;
         }
-        state.armed = true;
+        state.armed = ArmState::Armed;
+        drop(state);
         Ok(())
     }
 
     fn wait_entered(&self) -> Result<(bool, Option<FileWitness>), Box<dyn std::error::Error>> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_error| std::io::Error::other("retirement gate poisoned"))?;
         let (state, _timeout) = self
             .changed
-            .wait_timeout_while(state, WAIT, |state| !state.entered)
+            .wait_timeout_while(
+                self.state
+                    .lock()
+                    .map_err(|_error| std::io::Error::other("retirement gate poisoned"))?,
+                WAIT,
+                |state| !state.entered,
+            )
             .map_err(|_error| std::io::Error::other("retirement wait poisoned"))?;
         if !state.entered {
             return Err(std::io::Error::other("native close callback did not enter").into());
         }
-        Ok((
+        let entered = (
             state
                 .immediate_fd_retired
                 .ok_or("missing close retirement snapshot")?,
             state.immediate_witness,
-        ))
+        );
+        drop(state);
+        Ok(entered)
     }
 
     fn release(&self) {
@@ -117,9 +131,7 @@ impl Gate {
         }
     }
 
-    fn snapshot(
-        &self,
-    ) -> Result<(usize, Option<FileWitness>, Option<FileWitness>), Box<dyn std::error::Error>> {
+    fn snapshot(&self) -> Result<RetirementSnapshot, Box<dyn std::error::Error>> {
         let state = self
             .state
             .lock()
@@ -150,7 +162,10 @@ impl Admission for GateAdmission {
         {
             state.target_handle = Some(event.handle_id);
             state.opening_witness = event.witness;
-            if self.0.mode == Mode::RejectedOpenCleanup && state.armed && !state.open_rejected {
+            if self.0.mode == Mode::RejectedOpenCleanup
+                && state.armed == ArmState::Armed
+                && !state.open_rejected
+            {
                 state.open_rejected = true;
                 return Err(Refusal::CannotOpen);
             }
@@ -166,10 +181,10 @@ impl Admission for GateAdmission {
             && state.target_handle == Some(event.handle_id)
             && event.operation == self.0.mode.retirement_operation()
         {
-            state.retirement_count += 1;
+            state.retirement_count = state.retirement_count.checked_add(1).ok_or(Refusal::Io)?;
             state.retirement_witness = event.witness;
         }
-        if state.armed
+        if state.armed == ArmState::Armed
             && event.kind == self.0.mode.event()
             && state.target_handle == Some(event.handle_id)
             && !state.entered
@@ -183,13 +198,15 @@ impl Admission for GateAdmission {
                 .changed
                 .wait_timeout_while(state, WAIT, |state| !state.released)
                 .map_err(|_error| Refusal::Io)?;
-            if !returned.released {
+            state = returned;
+            if !state.released {
                 return Err(Refusal::Io);
             }
             if self.0.mode == Mode::FailedMainCallback {
                 return Err(Refusal::Io);
             }
         }
+        drop(state);
         Ok(None)
     }
 }
@@ -361,21 +378,24 @@ fn child(mode: Mode) -> TestResult {
     // Always release and join the close thread, including a broken fixture.
     let result = if let Ok((snapshot, _witness)) = &entered {
         if mode == Mode::DeferredMain {
-            if let Some(other) = other {
-                let _scope = vfs.enter_scope(other_scope);
-                let released = other
-                    .execute_batch("ROLLBACK")
-                    .map_err(|error| std::io::Error::other(error.to_string()));
-                let closed = other
-                    .close()
-                    .map_err(|(_connection, error)| std::io::Error::other(error.to_string()));
-                (released.and(closed), None)
-            } else {
-                (
-                    Err(std::io::Error::other("missing read-lock connection")),
-                    None,
-                )
-            }
+            other.map_or_else(
+                || {
+                    (
+                        Err(std::io::Error::other("missing read-lock connection")),
+                        None,
+                    )
+                },
+                |other| {
+                    let _scope = vfs.enter_scope(other_scope);
+                    let released = other
+                        .execute_batch("ROLLBACK")
+                        .map_err(|error| std::io::Error::other(error.to_string()));
+                    let closed = other
+                        .close()
+                        .map_err(|(_connection, error)| std::io::Error::other(error.to_string()));
+                    (released.and(closed), None)
+                },
+            )
         } else if mode == Mode::FailedMainCallback {
             (Ok(()), None)
         } else if *snapshot {
@@ -431,7 +451,7 @@ fn read_log_prefix(file: &mut File) -> Result<String, std::io::Error> {
 }
 
 fn run_isolated(name: &str, mode: Mode) -> TestResult {
-    if std::env::var(CHILD_MODE).ok().as_deref() == Some(mode.label()) {
+    if matches!(std::env::var(CHILD_MODE).as_deref(), Ok(value) if value == mode.label()) {
         child(mode)?;
         writeln!(
             std::io::stdout().lock(),
@@ -449,7 +469,9 @@ fn run_isolated(name: &str, mode: Mode) -> TestResult {
         .stderr(Stdio::from(stderr.try_clone()?))
         .spawn()?;
     // Polling controls test-process liveness only; the Condvar event is the race oracle.
-    let deadline = Instant::now() + CHILD_WAIT;
+    let deadline = Instant::now()
+        .checked_add(CHILD_WAIT)
+        .ok_or("child process deadline overflow")?;
     let (status, wait_error) = loop {
         match child.try_wait() {
             Ok(Some(status)) => break (Some(status), None),
@@ -467,7 +489,9 @@ fn run_isolated(name: &str, mode: Mode) -> TestResult {
     let stdout = read_log_prefix(&mut stdout)?;
     let stderr = read_log_prefix(&mut stderr)?;
     require(
-        status.as_ref().is_some_and(|status| status.success())
+        status
+            .as_ref()
+            .is_some_and(std::process::ExitStatus::success)
             && stdout.contains(&format!("NATIVE_RETIREMENT_CHILD_OK:{}", mode.label())),
         &format!(
             "isolated retirement child failed: status={status:?} wait_error={wait_error:?} stdout={stdout} stderr={stderr}",

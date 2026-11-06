@@ -8,7 +8,7 @@ use quanta_index_contract::{
     EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ManifestGeneration,
     OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface,
     SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SemanticSourceScopeKeyV1,
-    SemanticTombstoneScope, SourceRoleV1, lex::LanguageCode,
+    SemanticTombstoneScope, SourceFileKey, SourceRoleV1, lex::LanguageCode,
 };
 use quanta_index_core::{CoreError, SemanticPolicy, build_resident_semantic_batch_v1};
 
@@ -85,7 +85,7 @@ pub fn embedding_record_v1(
         parent_owner_id: (corpus_kind == SemanticCorpusKindV1::RawCodeFallback)
             .then(|| owner_id.to_string().into_boxed_str()),
         source_doc_id: format!("doc-{id}").into_boxed_str(),
-        repo_relative_path: RepoRelativePath::new(path),
+        source_file: fixture_source_file(path),
         language: LanguageCode::new("rust").map_err(|err| format!("fixture language: {err}"))?,
         package: Some("crate".to_string().into_boxed_str()),
         symbol_kind: None,
@@ -112,6 +112,13 @@ pub fn embedding_record_v1(
 pub fn search_scope_v1(path: &str) -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
+        source_file: fixture_source_file(path),
+    }
+}
+
+fn fixture_source_file(path: &str) -> SourceFileKey {
+    SourceFileKey {
+        source_repo_id: RepoId::new("source-repo").expect("fixture source repo"),
         repo_relative_path: RepoRelativePath::new(path),
     }
 }
@@ -126,11 +133,13 @@ pub fn tombstone_scope_with_semantic_owner_v1(
     corpus_kind: SemanticCorpusKindV1,
     owner_kind: OwnerDocKind,
     owner_id: &str,
+    path: &str,
 ) -> SemanticTombstoneScope {
     tombstone_scope_v1(SemanticSourceScopeKeyV1 {
         corpus_kind,
         owner_kind,
         owner_id: owner_id.to_string(),
+        source_file: fixture_source_file(path),
     })
 }
 

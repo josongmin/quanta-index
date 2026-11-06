@@ -40,8 +40,8 @@ use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
     EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, GenerationPin,
     IngestStageReport, OwnerDocKind, SearchScopeSurface, SemanticCorpusKindV1,
-    SemanticReplaceScope, SemanticTombstoneScope, canonical_order::first_canonical_order_break_v1,
-    cluster_membership_content_digest_v1,
+    SemanticReplaceScope, SemanticTombstoneScope, SourceFileKey,
+    canonical_order::first_canonical_order_break_v1, cluster_membership_content_digest_v1,
 };
 use quanta_index_core::domains::semantic::SemanticPolicy;
 use quanta_index_core::publication_admission::PublicationOutputAdmission;
@@ -49,7 +49,6 @@ use quanta_index_core::{
     CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticLaneV1, DiagnosticSpanGuardV1,
     DiagnosticStageV1, DiagnosticTerminalV1, SemanticGenerationContractV1, SemanticIngestHeaderV1,
     SemanticScopeSource, SemanticScopeWindowV1, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
-    owner_key_v1,
 };
 
 use crate::dataset_promotion::DatasetPromotion;
@@ -62,8 +61,9 @@ use crate::layout::{
     COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID,
     COLUMN_MEMBERSHIP_CONTENT_DIGEST, COLUMN_MEMBERSHIP_MEMBER_COUNT,
     COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, COLUMN_MEMBERSHIP_ORDINAL, COLUMN_MEMBERSHIP_OWNER_ID,
-    COLUMN_MEMBERSHIP_OWNER_KIND, COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_VECTOR, TABLE_NAME,
-    cluster_membership_schema, dimension_to_i32, semantic_schema,
+    COLUMN_MEMBERSHIP_OWNER_KIND, COLUMN_MEMBERSHIP_REPO_RELATIVE_PATH,
+    COLUMN_MEMBERSHIP_SOURCE_REPO_ID, COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_VECTOR,
+    TABLE_NAME, cluster_membership_schema, dimension_to_i32, semantic_schema,
 };
 use crate::manifest::{
     ClusterMembershipSealV1, SemanticCorpusCoverageV1, SemanticManifest, SemanticRowSealV1,
@@ -84,8 +84,33 @@ const STAGING_DIR_NAME: &str = "dataset.staging";
 const BACKUP_DIR_NAME: &str = "dataset.backup";
 
 // Private backend SQL allocation ceiling, independent of vector residency.
-// Refuse oversized exact-owner predicates; never split or broaden deletion.
+// Split exact-owner deletes before either backend limit; a single oversized
+// owner remains a typed refusal.
 const MAX_DELETE_PREDICATE_BYTES: usize = 32 * 1024 * 1024;
+// Lance 7 visits a left-associated OR expression recursively with MAX_DEPTH
+// 500. Each exact-owner clause has five comparisons; 64 clauses leave a wide
+// margin for their AND tree and the parser's own recursion.
+const MAX_DELETE_OWNER_TUPLES: usize = 64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkingDatasetOriginV1 {
+    // This origin stays fixed for the build. Later windows may append rows,
+    // but StreamScopeAuthorityV1 forbids replacing the same full owner key.
+    FreshEmpty,
+    TargetContinuation,
+    SealedBaseClone,
+}
+
+impl WorkingDatasetOriginV1 {
+    const fn is_inherited(self) -> bool {
+        !matches!(self, Self::FreshEmpty)
+    }
+}
+
+struct PreparedWorkingDatasetV1 {
+    path: PathBuf,
+    origin: WorkingDatasetOriginV1,
+}
 
 pub(crate) fn begin_build_stage(
     diagnostic: Option<&DiagnosticContextV1>,
@@ -451,6 +476,26 @@ async fn verify_table_dimension(
         .schema()
         .await
         .map_err(|err| lancedb_err("read table schema", err))?;
+    let expected = semantic_schema(dimension_to_i32(expected_dimension)?);
+    for expected_field in expected.fields() {
+        let live = schema.field_with_name(expected_field.name()).map_err(|_error| {
+            CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                message: format!(
+                    "semantic: existing generation lacks required column `{}`; rebuild from producer",
+                    expected_field.name()
+                ),
+            }
+        })?;
+        if live.data_type() != expected_field.data_type()
+            || live.is_nullable() != expected_field.is_nullable()
+        {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic: existing generation column `{}` has incompatible schema",
+                expected_field.name()
+            )));
+        }
+    }
     let field = schema.field_with_name(COLUMN_VECTOR).map_err(|err| {
         CoreError::Storage(format!(
             "semantic: existing table missing `{COLUMN_VECTOR}` column: {err}"
@@ -484,7 +529,16 @@ fn validate_replace_scope(
     dimension: usize,
     normalization: EmbeddingNormalization,
 ) -> Result<(), CoreError> {
+    scope.scope.source_file.validate().map_err(|error| {
+        CoreError::InvalidContract(format!("semantic: invalid replace source file: {error}"))
+    })?;
     for embedding in &scope.embeddings {
+        if embedding.source_file != scope.scope.source_file {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic: embedding {} source file differs from replace scope",
+                embedding.embedding_id.as_str()
+            )));
+        }
         SemanticPolicy::validate_embedding_vector_v1(&embedding.vector, dimension, normalization)
             .map_err(|err| match err {
             CoreError::Typed { code, message } => CoreError::Typed {
@@ -594,8 +648,18 @@ pub(crate) fn proof_validate_resident_batch_v1(
     Ok(())
 }
 
-fn semantic_scope_key_v1(corpus_kind: &str, owner_kind: &str, owner_id: &str) -> String {
-    format!("{corpus_kind}\u{1f}{owner_kind}\u{1f}{owner_id}")
+fn semantic_scope_key_v1(
+    corpus_kind: &str,
+    owner_kind: &str,
+    owner_id: &str,
+    source_file: &SourceFileKey,
+) -> (String, String, String, SourceFileKey) {
+    (
+        corpus_kind.to_owned(),
+        owner_kind.to_owned(),
+        owner_id.to_owned(),
+        source_file.clone(),
+    )
 }
 
 /// The scope authority of one streamed batch, checked window by window.
@@ -610,8 +674,8 @@ fn semantic_scope_key_v1(corpus_kind: &str, owner_kind: &str, owner_id: &str) ->
 /// record id or owner scope is replaced twice.
 struct StreamScopeAuthorityV1 {
     clear_surfaces: BTreeSet<SearchScopeSurface>,
-    tombstone_semantic_keys: BTreeSet<String>,
-    replace_semantic_keys: BTreeSet<String>,
+    tombstone_semantic_keys: BTreeSet<(String, String, String, SourceFileKey)>,
+    replace_semantic_keys: BTreeSet<(String, String, String, SourceFileKey)>,
     record_ids: BTreeSet<String>,
     embedding_ids: BTreeSet<String>,
 }
@@ -636,6 +700,11 @@ impl StreamScopeAuthorityV1 {
         let mut tombstone_semantic_keys = BTreeSet::new();
         for tombstone in &header.mutations.tombstone_scopes {
             let scope = &tombstone.semantic_scope;
+            scope.source_file.validate().map_err(|error| {
+                CoreError::InvalidContract(format!(
+                    "semantic: invalid tombstone source file: {error}"
+                ))
+            })?;
             if scope.owner_id.is_empty() {
                 return Err(CoreError::InvalidContract(
                     "semantic: tombstone owner_id must not be empty".to_string(),
@@ -652,6 +721,7 @@ impl StreamScopeAuthorityV1 {
                 scope.corpus_kind.as_code_str(),
                 scope.owner_kind.as_code_str(),
                 scope.owner_id.as_str(),
+                &scope.source_file,
             );
             if !tombstone_semantic_keys.insert(key) {
                 return Err(CoreError::InvalidContract(format!(
@@ -703,11 +773,11 @@ impl StreamScopeAuthorityV1 {
                     embedding.record_id
                 )));
             }
-            let (corpus_kind, owner_kind, owner_id) = owner_key_v1(embedding);
             let _scope_key_was_new = scope_semantic_keys.insert(semantic_scope_key_v1(
-                corpus_kind,
-                owner_kind,
-                owner_id,
+                embedding.corpus_kind.as_code_str(),
+                embedding.owner_kind.as_code_str(),
+                embedding.owner_id.as_ref(),
+                &embedding.source_file,
             ));
         }
         for semantic_key in scope_semantic_keys {
@@ -851,6 +921,10 @@ async fn collect_cluster_membership_commitment_v1(
             column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, "Utf8")?;
         let owner_kinds = column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_OWNER_KIND, "Utf8")?;
         let owner_ids = column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_OWNER_ID, "Utf8")?;
+        let source_repos =
+            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_SOURCE_REPO_ID, "Utf8")?;
+        let source_paths =
+            column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_REPO_RELATIVE_PATH, "Utf8")?;
         let member_symbol_ids =
             column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, "Utf8")?;
         let ordinals = column_as::<UInt32Array>(&batch, COLUMN_MEMBERSHIP_ORDINAL, "UInt32")?;
@@ -864,6 +938,8 @@ async fn collect_cluster_membership_commitment_v1(
                 authority_digest: authority_digests.value(row).to_owned(),
                 owner_kind: owner_kinds.value(row).to_owned(),
                 owner_id: owner_ids.value(row).to_owned(),
+                source_repo_id: source_repos.value(row).to_owned(),
+                repo_relative_path: source_paths.value(row).to_owned(),
                 member_symbol_id: member_symbol_ids.value(row).to_owned(),
                 ordinal: ordinals.value(row),
                 member_count: member_counts.value(row),
@@ -944,7 +1020,12 @@ fn build_record_batch(
         vec![
             string_column(rows, |embedding| embedding.embedding_id.as_str()),
             string_column(rows, |embedding| embedding.record_id.as_ref()),
-            string_column(rows, |embedding| embedding.repo_relative_path.as_str()),
+            string_column(rows, |embedding| {
+                embedding.source_file.source_repo_id.as_str()
+            }),
+            string_column(rows, |embedding| {
+                embedding.source_file.repo_relative_path.as_str()
+            }),
             string_column(rows, |embedding| embedding.owner_id.as_ref()),
             string_column(rows, |embedding| embedding.owner_kind.as_code_str()),
             string_column(rows, |embedding| embedding.corpus_kind.as_code_str()),
@@ -991,6 +1072,8 @@ fn build_cluster_membership_record_batch(
     let mut authority_digests = Vec::with_capacity(row_count);
     let mut owner_kinds = Vec::with_capacity(row_count);
     let mut owner_ids = Vec::with_capacity(row_count);
+    let mut source_repos = Vec::with_capacity(row_count);
+    let mut source_paths = Vec::with_capacity(row_count);
     let mut member_symbol_ids = Vec::with_capacity(row_count);
     let mut ordinals = Vec::with_capacity(row_count);
     let mut member_counts = Vec::with_capacity(row_count);
@@ -1017,6 +1100,14 @@ fn build_cluster_membership_record_batch(
             authority_digests.push(membership.authority_digest.clone());
             owner_kinds.push(embedding.owner_kind.as_code_str().to_string());
             owner_ids.push(embedding.owner_id.to_string());
+            source_repos.push(embedding.source_file.source_repo_id.as_str().to_string());
+            source_paths.push(
+                embedding
+                    .source_file
+                    .repo_relative_path
+                    .as_str()
+                    .to_string(),
+            );
             member_symbol_ids.push(member.as_str().to_string());
             ordinals.push(u32::try_from(ordinal).map_err(|error| {
                 CoreError::InvalidContract(format!(
@@ -1034,6 +1125,8 @@ fn build_cluster_membership_record_batch(
             Arc::new(StringArray::from(authority_digests)),
             Arc::new(StringArray::from(owner_kinds)),
             Arc::new(StringArray::from(owner_ids)),
+            Arc::new(StringArray::from(source_repos)),
+            Arc::new(StringArray::from(source_paths)),
             Arc::new(StringArray::from(member_symbol_ids)),
             Arc::new(UInt32Array::from(ordinals)),
             Arc::new(UInt32Array::from(member_counts)),
@@ -1050,13 +1143,17 @@ fn build_cluster_membership_record_batch(
 
 fn semantic_scope_tuple_from_embedding(
     embedding: &quanta_index_contract::EmbeddingRecord,
-) -> (&str, &str, &str) {
+) -> SemanticScopeTuple<'_> {
     (
+        embedding.source_file.source_repo_id.as_str(),
+        embedding.source_file.repo_relative_path.as_str(),
         embedding.corpus_kind.as_code_str(),
         embedding.owner_kind.as_code_str(),
         embedding.owner_id.as_ref(),
     )
 }
+
+type SemanticScopeTuple<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str);
 
 fn predicate_budget_error() -> CoreError {
     CoreError::InvalidContract(format!(
@@ -1077,44 +1174,78 @@ fn literal_bytes(value: &str) -> Result<usize, CoreError> {
 /// Size both exact predicates before any escaping/String allocation or delete.
 /// Owner IDs remain borrowed; the bounded group map holds only byte counts.
 fn delete_predicate_bytes(
-    scopes: &BTreeSet<(&str, &str, &str)>,
+    scopes: &BTreeSet<SemanticScopeTuple<'_>>,
 ) -> Result<(usize, usize), CoreError> {
-    let mut groups = BTreeMap::<(&str, &str), usize>::new();
-    let mut membership_groups = BTreeMap::<&str, usize>::new();
-    for (corpus, kind, id) in scopes {
+    let mut groups = BTreeMap::<(&str, &str, &str, &str), usize>::new();
+    let mut membership_groups = BTreeMap::<(&str, &str, &str), usize>::new();
+    for (repo, path, corpus, kind, id) in scopes {
         let bytes = literal_bytes(id)?;
-        let group = groups.entry((corpus, kind)).or_default();
+        let group = groups.entry((*repo, *path, *corpus, *kind)).or_default();
         let separator = if *group == 0 { 0 } else { 2 };
         *group = add_predicate_bytes(*group, add_predicate_bytes(bytes, separator)?)?;
         if *corpus == SemanticCorpusKindV1::ClusterCard.as_code_str() {
-            let group = membership_groups.entry(kind).or_default();
+            let group = membership_groups.entry((*repo, *path, *kind)).or_default();
             let separator = if *group == 0 { 0 } else { 2 };
             *group = add_predicate_bytes(*group, add_predicate_bytes(bytes, separator)?)?;
         }
     }
     let mut semantic = 0;
-    for ((corpus, kind), ids) in groups {
+    for ((repo, path, corpus, kind), ids) in groups {
         let syntax = format!(
-            "({COLUMN_CORPUS_KIND} =  AND {COLUMN_OWNER_KIND} =  AND {COLUMN_OWNER_ID} IN ())"
+            "({} =  AND {} =  AND {COLUMN_CORPUS_KIND} =  AND {COLUMN_OWNER_KIND} =  AND {COLUMN_OWNER_ID} IN ())",
+            crate::layout::COLUMN_SOURCE_REPO_ID,
+            crate::layout::COLUMN_REPO_RELATIVE_PATH,
         )
         .len();
-        let group = add_predicate_bytes(syntax, literal_bytes(corpus)?)?;
+        let group = add_predicate_bytes(syntax, literal_bytes(repo)?)?;
+        let group = add_predicate_bytes(group, literal_bytes(path)?)?;
+        let group = add_predicate_bytes(group, literal_bytes(corpus)?)?;
         let group = add_predicate_bytes(group, literal_bytes(kind)?)?;
         let group = add_predicate_bytes(group, ids)?;
         semantic = add_predicate_bytes(semantic, if semantic == 0 { 0 } else { 4 })?;
         semantic = add_predicate_bytes(semantic, group)?;
     }
     let mut membership = 0;
-    for (kind, ids) in membership_groups {
-        let syntax =
-            format!("({COLUMN_MEMBERSHIP_OWNER_KIND} =  AND {COLUMN_MEMBERSHIP_OWNER_ID} IN ())")
-                .len();
-        let group = add_predicate_bytes(syntax, literal_bytes(kind)?)?;
+    for ((repo, path, kind), ids) in membership_groups {
+        let syntax = format!(
+            "({COLUMN_MEMBERSHIP_SOURCE_REPO_ID} =  AND {COLUMN_MEMBERSHIP_REPO_RELATIVE_PATH} =  AND {COLUMN_MEMBERSHIP_OWNER_KIND} =  AND {COLUMN_MEMBERSHIP_OWNER_ID} IN ())"
+        ).len();
+        let group = add_predicate_bytes(syntax, literal_bytes(repo)?)?;
+        let group = add_predicate_bytes(group, literal_bytes(path)?)?;
+        let group = add_predicate_bytes(group, literal_bytes(kind)?)?;
         let group = add_predicate_bytes(group, ids)?;
         membership = add_predicate_bytes(membership, if membership == 0 { 0 } else { 4 })?;
         membership = add_predicate_bytes(membership, group)?;
     }
     Ok((semantic, membership))
+}
+
+/// Partition one logical delete union without changing any source/owner key.
+/// The same planner runs before storage preparation and before native deletes.
+fn plan_delete_scope_batches<'a>(
+    scopes: &BTreeSet<SemanticScopeTuple<'a>>,
+) -> Result<Vec<BTreeSet<SemanticScopeTuple<'a>>>, CoreError> {
+    let mut batches = Vec::new();
+    let mut current = BTreeSet::new();
+    for tuple in scopes.iter().copied() {
+        if current.len() == MAX_DELETE_OWNER_TUPLES {
+            batches.push(std::mem::take(&mut current));
+        }
+        let _inserted = current.insert(tuple);
+        if let Err(error) = delete_predicate_bytes(&current) {
+            let _removed = current.remove(&tuple);
+            if current.is_empty() {
+                return Err(error);
+            }
+            batches.push(std::mem::take(&mut current));
+            let _inserted = current.insert(tuple);
+            let _sizes = delete_predicate_bytes(&current)?;
+        }
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    Ok(batches)
 }
 
 fn preflight_window_delete_predicates(window: &SemanticScopeWindowV1) -> Result<(), CoreError> {
@@ -1124,16 +1255,18 @@ fn preflight_window_delete_predicates(window: &SemanticScopeWindowV1) -> Result<
         .flat_map(|scope| &scope.embeddings)
         .map(semantic_scope_tuple_from_embedding)
         .collect();
-    let _sizes = delete_predicate_bytes(&scopes)?;
+    let _batches = plan_delete_scope_batches(&scopes)?;
     Ok(())
 }
 
-fn tombstone_tuples(chunk: &[SemanticTombstoneScope]) -> BTreeSet<(&str, &str, &str)> {
+fn tombstone_tuples(chunk: &[SemanticTombstoneScope]) -> BTreeSet<SemanticScopeTuple<'_>> {
     chunk
         .iter()
         .map(|scope| {
             let owner = &scope.semantic_scope;
             (
+                owner.source_file.source_repo_id.as_str(),
+                owner.source_file.repo_relative_path.as_str(),
                 owner.corpus_kind.as_code_str(),
                 owner.owner_kind.as_code_str(),
                 owner.owner_id.as_str(),
@@ -1147,43 +1280,49 @@ fn preflight_tombstone_delete_predicates(
     policy: SemanticStreamWindowPolicy,
 ) -> Result<(), CoreError> {
     for chunk in tombstones.chunks(policy.max_owner_scopes()) {
-        let _sizes = delete_predicate_bytes(&tombstone_tuples(chunk))?;
+        let _batches = plan_delete_scope_batches(&tombstone_tuples(chunk))?;
     }
     Ok(())
 }
 
 /// Preserve exact tuples: independently combining corpus/kind/ID lists would
 /// delete the cross product, including owners absent from this mutation.
-fn semantic_scope_delete_predicate(scopes: &BTreeSet<(&str, &str, &str)>) -> Option<String> {
-    let mut groups: BTreeMap<(&str, &str), Vec<String>> = BTreeMap::new();
-    for (corpus, kind, id) in scopes {
+fn semantic_scope_delete_predicate(scopes: &BTreeSet<SemanticScopeTuple<'_>>) -> Option<String> {
+    let mut groups: BTreeMap<(&str, &str, &str, &str), Vec<String>> = BTreeMap::new();
+    for (repo, path, corpus, kind, id) in scopes {
         groups
-            .entry((corpus, kind))
+            .entry((*repo, *path, *corpus, *kind))
             .or_default()
             .push(crate::sql::quote_sql_string(id));
     }
-    let clauses: Vec<String> = groups.into_iter().map(|((corpus, kind), ids)| {
-        format!("({COLUMN_CORPUS_KIND} = {} AND {COLUMN_OWNER_KIND} = {} AND {COLUMN_OWNER_ID} IN ({}))",
+    let clauses: Vec<String> = groups.into_iter().map(|((repo, path, corpus, kind), ids)| {
+        format!("({} = {} AND {} = {} AND {COLUMN_CORPUS_KIND} = {} AND {COLUMN_OWNER_KIND} = {} AND {COLUMN_OWNER_ID} IN ({}))",
+            crate::layout::COLUMN_SOURCE_REPO_ID,
+            crate::sql::quote_sql_string(repo),
+            crate::layout::COLUMN_REPO_RELATIVE_PATH,
+            crate::sql::quote_sql_string(path),
             crate::sql::quote_sql_string(corpus), crate::sql::quote_sql_string(kind), ids.join(", "))
     }).collect();
     (!clauses.is_empty()).then(|| clauses.join(" OR "))
 }
 
-fn membership_scope_delete_predicate(scopes: &BTreeSet<(&str, &str, &str)>) -> Option<String> {
-    let mut groups: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    for (corpus, kind, id) in scopes {
+fn membership_scope_delete_predicate(scopes: &BTreeSet<SemanticScopeTuple<'_>>) -> Option<String> {
+    let mut groups: BTreeMap<(&str, &str, &str), Vec<String>> = BTreeMap::new();
+    for (repo, path, corpus, kind, id) in scopes {
         if *corpus == SemanticCorpusKindV1::ClusterCard.as_code_str() {
             groups
-                .entry(kind)
+                .entry((*repo, *path, *kind))
                 .or_default()
                 .push(crate::sql::quote_sql_string(id));
         }
     }
     let clauses: Vec<String> = groups
         .into_iter()
-        .map(|(kind, ids)| {
+        .map(|((repo, path, kind), ids)| {
             format!(
-                "({COLUMN_MEMBERSHIP_OWNER_KIND} = {} AND {COLUMN_MEMBERSHIP_OWNER_ID} IN ({}))",
+                "({COLUMN_MEMBERSHIP_SOURCE_REPO_ID} = {} AND {COLUMN_MEMBERSHIP_REPO_RELATIVE_PATH} = {} AND {COLUMN_MEMBERSHIP_OWNER_KIND} = {} AND {COLUMN_MEMBERSHIP_OWNER_ID} IN ({}))",
+                crate::sql::quote_sql_string(repo),
+                crate::sql::quote_sql_string(path),
                 crate::sql::quote_sql_string(kind),
                 ids.join(", ")
             )
@@ -1192,20 +1331,25 @@ fn membership_scope_delete_predicate(scopes: &BTreeSet<(&str, &str, &str)>) -> O
     (!clauses.is_empty()).then(|| clauses.join(" OR "))
 }
 
-/// One native delete per table for a bounded set of mutation owners. The
+/// Bounded native deletes per table for the exact set of mutation owners. The
 /// logical scope counters are recorded by the callers, not by native calls.
 async fn delete_scope_batch(
     tables: &WorkingTables,
-    scopes: &BTreeSet<(&str, &str, &str)>,
+    scopes: &BTreeSet<SemanticScopeTuple<'_>>,
     report: &mut IngestStageReport,
     deleted_rows: &mut u64,
 ) -> Result<(), CoreError> {
-    let _sizes = delete_predicate_bytes(scopes)?;
-    if let Some(predicate) = semantic_scope_delete_predicate(scopes) {
-        delete_semantic_predicate(&tables.table, &predicate, report, deleted_rows).await?;
+    let batches = plan_delete_scope_batches(scopes)?;
+    if !tables.origin.is_inherited() {
+        return Ok(());
     }
-    if let Some(predicate) = membership_scope_delete_predicate(scopes) {
-        delete_membership_predicate(&tables.membership_table, &predicate, report).await?;
+    for batch in batches {
+        if let Some(predicate) = semantic_scope_delete_predicate(&batch) {
+            delete_semantic_predicate(&tables.table, &predicate, report, deleted_rows).await?;
+        }
+        if let Some(predicate) = membership_scope_delete_predicate(&batch) {
+            delete_membership_predicate(&tables.membership_table, &predicate, report).await?;
+        }
     }
     Ok(())
 }
@@ -1251,6 +1395,7 @@ async fn delete_membership_predicate(
 async fn delete_cluster_membership_for_surface(
     table: &lancedb::Table,
     surface: SearchScopeSurface,
+    origin: WorkingDatasetOriginV1,
     report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
     report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
@@ -1271,6 +1416,9 @@ async fn delete_cluster_membership_for_surface(
         return Ok(());
     }
     let predicate = owner_kinds.join(" OR ");
+    if !origin.is_inherited() {
+        return Ok(());
+    }
     let delete_started = Instant::now();
     let _result = table.delete(predicate.as_str()).await.map_err(|err| {
         lancedb_err(
@@ -1327,11 +1475,15 @@ fn semantic_surface_delete_predicate_v1(surface: SearchScopeSurface) -> Result<S
 async fn delete_surface_rows(
     table: &lancedb::Table,
     surface: SearchScopeSurface,
+    origin: WorkingDatasetOriginV1,
     report: &mut IngestStageReport,
     deleted_rows: &mut u64,
 ) -> Result<(), CoreError> {
     report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
     let predicate = semantic_surface_delete_predicate_v1(surface)?;
+    if !origin.is_inherited() {
+        return Ok(());
+    }
     let delete_started = Instant::now();
     let result = table.delete(predicate.as_str()).await.map_err(|err| {
         lancedb_err(
@@ -1359,10 +1511,10 @@ async fn append_window(
 ) -> Result<(), CoreError> {
     let mut rows: Vec<&EmbeddingRecord> = Vec::new();
     for scope in window.scopes() {
-        if failpoint::should_fail_append(scope.scope.repo_relative_path.as_str()) {
+        if failpoint::should_fail_append(scope.scope.source_file.repo_relative_path.as_str()) {
             return Err(CoreError::Storage(format!(
                 "semantic: injected append failure for path {}",
-                scope.scope.repo_relative_path.as_str()
+                scope.scope.source_file.repo_relative_path.as_str()
             )));
         }
         rows.extend(scope.embeddings.iter());
@@ -1725,7 +1877,7 @@ fn prepare_staging_dataset(
     repo_id: &quanta_index_contract::RepoId,
     revision_id: &quanta_index_contract::RevisionId,
     admission: Option<&Arc<dyn FileAdmission>>,
-) -> Result<std::path::PathBuf, CoreError> {
+) -> Result<PreparedWorkingDatasetV1, CoreError> {
     recover_dataset_artifacts(generation_dir, admission.cloned())?;
     let dataset = layout::dataset_dir(generation_dir);
     let staging = generation_dir.join(STAGING_DIR_NAME);
@@ -1736,7 +1888,10 @@ fn prepare_staging_dataset(
     )?;
     if dataset.exists() {
         inherit_dataset_tree(&dataset, &staging, admission.map(AsRef::as_ref))?;
-        return Ok(staging);
+        return Ok(PreparedWorkingDatasetV1 {
+            path: staging,
+            origin: WorkingDatasetOriginV1::TargetContinuation,
+        });
     }
     if let Some(base_generation) = generation_contract.base_generation {
         let base_dir = layout::generation_dir(semantic_root, repo_id, revision_id, base_generation);
@@ -1761,7 +1916,10 @@ fn prepare_staging_dataset(
             )));
         }
         inherit_dataset_tree(&base_dataset, &staging, admission.map(AsRef::as_ref))?;
-        return Ok(staging);
+        return Ok(PreparedWorkingDatasetV1 {
+            path: staging,
+            origin: WorkingDatasetOriginV1::SealedBaseClone,
+        });
     }
     if let Some(admission) = admission.map(AsRef::as_ref) {
         admission
@@ -1771,7 +1929,10 @@ fn prepare_staging_dataset(
         fs::create_dir_all(&staging)
             .map_err(|err| fs_err("create staging dataset dir", &staging, &err))?;
     }
-    Ok(staging)
+    Ok(PreparedWorkingDatasetV1 {
+        path: staging,
+        origin: WorkingDatasetOriginV1::FreshEmpty,
+    })
 }
 
 /// The verified index contract of the sealed base a delta inherited.
@@ -1913,6 +2074,7 @@ async fn build_manifest_bytes(
 struct WorkingTables {
     table: lancedb::Table,
     membership_table: lancedb::Table,
+    origin: WorkingDatasetOriginV1,
 }
 
 #[cfg(test)]
@@ -1920,13 +2082,20 @@ async fn open_working_tables(
     working_dataset: &Path,
     dimension: usize,
 ) -> Result<WorkingTables, CoreError> {
-    open_working_tables_with_session(working_dataset, dimension, None).await
+    open_working_tables_with_session(
+        working_dataset,
+        dimension,
+        None,
+        WorkingDatasetOriginV1::TargetContinuation,
+    )
+    .await
 }
 
 async fn open_working_tables_with_session(
     working_dataset: &Path,
     dimension: usize,
     session: Option<Arc<Session>>,
+    origin: WorkingDatasetOriginV1,
 ) -> Result<WorkingTables, CoreError> {
     let connection = open_connection_with_session(working_dataset, session).await?;
     let table = ensure_table(&connection, dimension).await?;
@@ -1934,6 +2103,7 @@ async fn open_working_tables_with_session(
     Ok(WorkingTables {
         table,
         membership_table,
+        origin,
     })
 }
 
@@ -1944,13 +2114,19 @@ async fn apply_clear_surfaces(
     deleted_rows: &mut u64,
 ) -> Result<(), CoreError> {
     for surface in surfaces {
-        delete_surface_rows(&tables.table, *surface, report, deleted_rows).await?;
-        delete_cluster_membership_for_surface(&tables.membership_table, *surface, report).await?;
+        delete_surface_rows(&tables.table, *surface, tables.origin, report, deleted_rows).await?;
+        delete_cluster_membership_for_surface(
+            &tables.membership_table,
+            *surface,
+            tables.origin,
+            report,
+        )
+        .await?;
     }
     Ok(())
 }
 
-/// Replace one admitted window: its exact owners are deleted in one batch, then the window's
+/// Replace one admitted window: its exact owners are deleted in bounded batches, then the window's
 /// rows are appended as one batch and its memberships per scope.
 async fn apply_window(
     tables: &WorkingTables,
@@ -2291,7 +2467,12 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
         )?;
         let tables = crate::run_blocking(
             runtime,
-            open_working_tables_with_session(&working_dataset, dimension, lance_session.clone()),
+            open_working_tables_with_session(
+                &working_dataset.path,
+                dimension,
+                lance_session.clone(),
+                working_dataset.origin,
+            ),
         )?;
         Ok::<_, CoreError>((generation_contract, tables))
     })();

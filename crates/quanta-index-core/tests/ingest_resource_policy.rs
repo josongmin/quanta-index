@@ -54,7 +54,7 @@ fn chunk(
     })
 }
 
-fn source(index: usize, text: &str) -> SemanticSourceRecordV1 {
+fn source(index: usize, text: &str, repo_id: &RepoId) -> SemanticSourceRecordV1 {
     let owner_id = format!("source-{index}");
     SemanticSourceRecordV1 {
         record_id: owner_id.clone(),
@@ -63,7 +63,10 @@ fn source(index: usize, text: &str) -> SemanticSourceRecordV1 {
         owner_id: owner_id.clone(),
         source_doc_id: owner_id,
         parent_owner_id: None,
-        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        source_file: SourceFileKey {
+            source_repo_id: repo_id.clone(),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        },
         language: Some("rust".to_string()),
         package: None,
         symbol_kind: None,
@@ -136,9 +139,13 @@ fn batch(
                 corpus_kind: SemanticCorpusKindV1::SymbolCard,
                 owner_kind: OwnerDocKind::Symbol,
                 owner_id: format!("source-{index}"),
+                source_file: SourceFileKey {
+                    source_repo_id: repo_id.clone(),
+                    repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+                },
             },
             scope_digest: format!("scope:source-{index}"),
-            sources: vec![source(index, text)],
+            sources: vec![source(index, text, &repo_id)],
             cluster_memberships: Vec::new(),
         })
         .collect();

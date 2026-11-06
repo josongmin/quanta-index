@@ -2,7 +2,23 @@
 
 상태·담당·다음 조건은 [SSOT](README.md)8개 에픽 행만 갱신한다. 이 문서는 고정 수정 경계다. 과거 child/채팅 배정·claim 번호·인계 chronology는 [보존 이력](../../history/oct-17-index-closeout/tickets/WRITE-OWNERSHIP.md)이며 현재 수정권이나 실행 증거가 아니다.
 
+외부 FNL410의 실행·수락은 [기존 FNL-410 티켓](/Users/songmin/Documents/code-new/semantica-codegraph-v2/docs/plans/oct-22-finilizing-semantica/tickets/FNL-410-public-analysis-semantics/TICKET.md#current-remaining-work)만 참조한다. 문서 처분 결정은 [ADR-0091](/Users/songmin/Documents/code-new/semantica-codegraph-v2/docs/adr/ADR-0091-fnl410-single-execution-and-acceptance-owner.md)에 있다. FNL410 상태·진행률·실행 큐를 이 문서에 복사하지 않는다. 과거 source/receipt/claim 인계는 해당 입력의 이력이며 현재 배정이 아니다. QIDX의 기존 lane·수용 SSOT와 검증 담당은 유지한다.
+
+L1의 최신 단일 수정/실행 경계는 [2026-10-30 L1 구획](#e02-l1-owner-boundary-20261030)과 [최종 검증](VALIDATION.md#e02-l1-final-audit-20261030)을 따른다. 과거 dispatch/active 관찰을 별도 현행 배정으로 복제하지 않는다.
+
 E02의 현재 슬롯·인수 범위는 [2026-10-26 exact hunk](#e02-current-wave-hunks-20261026), 순서는 [WAVES](WAVES.md#e02-residual-wave-plan)만 따른다. 아래의 이전 E02 슬롯·인계 문장은 계약/이력 참조이며 두 번째 실행 배정이 아니다. 다른 에픽의 원 owner는 유지한다.
+
+Current L1 exact-hunk ownership: [existing L1 boundary](#e02-l1-owner-boundary-20261030). Historical live-chat observations below do not grant new ownership.
+
+P60 A–E/I retain their existing private/shared source hunks. Existing L1-D retains the same owning execution queue; P60 D source ownership is a separate role. [Exact executor gate/input contract](/Users/songmin/.codex/artifacts/qidx-e02-delta-packets-20261028-01a17e61/executor/finalization-20261101T141910Z/P60-WAITING.md); [current proof](VALIDATION.md#e02-l1-d-closeout-20261031). No new implementation writer or duplicate queue is assigned here.
+
+## L3 적용된 최소 공용 hunk와 소유 소비 — 2026-11-01
+
+[L3 현재 source](E02-publication-recovery.md#l3-source-only-closeout-20261030)의 상시 소유 파일은 SDK `native_checked_delta_v3.rs` 하나다. 2026-11-01 사용자가 준비된 공용27/31/34/35/39/37/40과 문서11의 직접 적용을 명시 허용해 해당 최소 hunk만 실제 합류했다. 이 승인은 공용 파일 전체나 다른 owner 작업을 소유한다는 의미가 아니다.
+
+실제 적용 순서는 공용27→31→34→35→39→37→40, private32→33→36→38, 후속 private41 fixture 정리와42 추가 keeper/poll 제거다.42는 소유 소비 파일의 기존 budget/Weak 관측만 사용하며 새 공용 API는 없다. 문서11의 기존 L3 단락만 이 후속 소스에 맞춰 갱신했다. 실제 공용 API/feature/호출부를 확인하고 소비를 연결했다. 공용13/17/19/22/25는 재적용하지 않았다. 새 storage/worker/protocol/serializer/root/payer/issuer는 없다.
+
+Chunk·cold·Source-pointer physical fault·SDK seed/installer·L1·Graph·Watch·Provider는 기존 담당 범위다. 다른 chat 조회·연락과 source-only 제약은 유지한다. 소스 합류와 정적 확인은 compiler/body/product 수용이 아니다. 이후 실제 owning 검증은 기존 승인 담당 범위이며 Rust body0/SourceReady=false를 유지한다.
 
 ## Exclusive boundaries
 
@@ -158,11 +174,55 @@ A/B의 private 구현은 병렬 가능하지만 B successor/carry의 정합성 �
 | **Root / W2 공용 게시 접합** | N complete successor 소비·`entry_handoff_v130.rs`, `replay_metadata_handoff_v159.rs`, `native_manifest_handoff_v165.rs`; J `authority_assembly`의 기존 member/V5·final checker·prior V9·coordinator/terminal/committed-source consumer | W2.0→2.1→2.2 직렬. E01 successor의 실제 반환을 소비하며 중복 supplier를 만들지 않음. FULL/History/Kernel seal/Store·opaque ACK·PUB parent 재작성0 |
 
 현재 내부 수리의 독점 hunk: `native_memo_metadata`는 기존 Trace·Snapshot reader의 실제 Output A admission loan과 canonical `RevisionVector`의 map 이동 생성자·회귀5파일을 담당했다. 같은 기존 header reader의 빈 trace A loan과 `task_local_trace_original_v3.rs`의 genuine owner 단일 회귀를 추가했고, Source/root/물리 저장 issuer를 새로 만들지 않았다. `paid_itemindex_validator`는 publication alias의 generic target 검사·initial FULL 소비자의 좁은 검사 및 기존 계약/실제 captured Source 기반 identity 회귀만 담당했다. `persisted_itemindex_owner`는 코드 수정 없이 검증용 독립3-sibling cohort와 checkout 밖 동기화 도구를 준비했다. Root는 QE 세 persist entry·receipt-only rollback/transaction·ordinary completion custody를 유지하고, 기존 kernel persisted binding predicate와 Native artifact pre-read/currentness·대기 후 B/A 재검사, fixture의 공용 context helper/반환값과 동일 QE scan/pin/join 수리, `commit_protocol.rs::runtime_cancellation_context_from_ctx_v1`의 Original 취소 checkpoint 및 모든 공용 인터페이스·직렬 QBC·SSOT를 결합한다. 현재 검토58경로와 같은 owning cohort의 기본 QBC owner 경로를 반복 focused 검증에 사용할 수 있으며, immutable/release 증명과 구분한다. 같은 worker에게 완료된 decoder/Source census/guard 본문을 재배정하지 않는다. 과거 Symbol112·QE14·genuine trace6·Foundation32는 VALIDATION의 각 고정 Source 범위다. Runtime PTA 컴파일3건은 활성 `OCT23-FNL410-IMPLEMENT-ROOT-INTEGRATION`/kernel parent `W205-R56-JAVA-ORIGINAL-FORMAL-COHORT` 소유이므로 재배정하지 않는다. E01 successor·실제 Native DELTA 초기 authority producer와 후속 BoundV2/aggregate consumer, FULL/History/Store/PUB·configured provider 원 owner도 유지한다. 실제 초기 authority 생산→InitialAuthorityPrepared는 재사용하며 후속 member/V9/ACK 소비를 완료로 표시하지 않는다. 이 문단은 수정권이며 완료 판정은 README/VALIDATION만 따른다.
-10/27 후속 독점 hunk는 M=`execute_core_prepare/original_memo_material_v3.rs`의 실제 A-funded canonical MemoEntry 생성·전용 회귀, P=SourceWire `original_output_shared_group_v3/ordered_map_birth_v3{.rs,/tests_v3.rs}`의 기존 root 채택/교체/삭제·회귀, D=SDK `aggregate_publication_authority.rs`의 단일 pending backing·atomic DELTA 발급과 기존 scheduler child 회귀다. Root만 QE mount/기존 genuine fixture 공개 범위와 SDK FULL2개·sealed ingress pending epoch·test fixture wrapper를 결합한다. Core AVL/Source issuer/decoder/계약 IR를 복제하지 않는다. Native metadata 소유권을 packet/table/receipt에 옮기는 후속 cut과 실제 successor/member/V9 소비는 여전히 Root 통합 범위다. 개별 함수 존재나 정적 통과로 capability를 켜지 않는다.
+10/27 현재 독점 hunk는 아래만 적용한다. 이전 반환·검증 내역은 VALIDATION에 보존하며 완료된 decoder·metadata·ledger·opaque ACK를 재배정하지 않는다.
+
+- **Root:** CP Native 조회/물리 proof ABI·feature와 Foundation Native decorator, QE 실제 prepare/persist/read 및 canonical packet 합류, SDK/DELTA successor→member/V5→V9/ACK 소비, 직렬 QBC·SSOT. `tracing_otel.rs`의 실제 실행 실패는 Tokio reactor를 사용하는 기존 단위 fixture 한 곳만 수리한다.
+- **P / persisted_itemindex_owner:** Native physical/phase와 ordinary publication/invalidation 격리 hunk는 동결한다. GQLang fixture5·digest1 수리와 CP/GC/Source 종료 리뷰 뒤, 현재 독점 구현 hunk는 Trace `index.rs`의 default/explicit cap claim·cap 관찰, `native_authority_v3.rs`의 validated census cap 전달, `native_resident_v3.rs`의 동일 cap control metadata·순수 CAS 검사와 하위 회귀다. Native GC page 알고리즘·M 새 registrar/test child는 수정하지 않는다. General composition supplier/exec-contract/ingress의 기존 owner를 확인 없이 새로 구현하거나 양성을 Unsupported로 바꾸지 않는다. 현재 Source 전 commit 진단 diff는 checkout 밖에만 있고 검증/제품 수리에 포함하지 않는다.
+- **D / paid_itemindex_validator:** Wire `original_execution_scope_copy_v3{.rs,/tests.rs}`의 같은 paid owner borrowed-parts copy와 QE `execute_core_prepare/original_memo_material_v3.rs` genuine CP fixture를 소유한다. 공통 `commit_gated_persist.rs`에서는 `captured_original_with_rail_v3` fixture function hunk만 수정하며, M child mount와 독립이다. 기존 default fixture는 DEFAULT_INTERACTIVE 위임, 음성만 canonical finite-work rail을 사용한다. Root meta2·공용 port·adapter parent는 수정하지 않는다. Whole Native Flow/prepared Trace/Store production co-cut은 별도 Root 통합 범위다.
+- **M / native_memo_metadata:** InvalidatorRegistering의 admitted override와 `trace_invalidator/index{.rs,/native_authority_v3.rs,/native_resident_v3.rs,/native_admitted_registration_v3.rs}`의 동일 Native resident registrar를 소유한다. QE `tests/execution_core/commit_gated_persist/native_trace_registration_v3.rs` genuine public-trait 회귀와 parent child mount만 수정한다. D borrowed copy를 소비하고 Root Port/transparent TaskLocal·RuntimeErrorAdapter/Coordinating·feature forwarding을 소비한다. Binding cache-present 거절은 유지하며 active canonical cache port/adapter를 수정하지 않는다. Artifact fixture7은 동결된 이전 검증 입력이다.
+
+활성 currentness owner의 `memo_table/observed_row_v1.rs`·InMemory/Validating의 기존 `validate_coherent_observed_currentness_v1` 본문은 보존한다. 같은 파일의 새 Native 메서드와 위에 지정된 실패 fixture만 독립 hunk로 claim을 reconcile한다. Core/Wire/P 공용 parent 합류와 실제 caller 검증은 Root 한 writer가 직렬화한다. packet 마이그레이션은 Trace/RFC14 실제 resident 등록 계약까지 포함한 동시 절단으로 수행한다. 실제 table·예약·새 Original read·rollback/GC·consumer가 연결되기 전 capability=false를 유지하고 기존 ordinary fence 뒤에 미사용 성공 scaffold를 추가하지 않는다.
+
+E01 successor·PUB SDK writer·Q ANN/물리/launcher 원 owner는 유지한다. 이미 연결한 signed Store epoch·StartBoundV2·replay 동일 transaction, 실제 Native target/plan·owner/epoch→SDK authority→동일 Stage, opaque FULL ACK는 재사용한다. 새 generation의 RecoveryRequired 격리와 RestoredNeedsReconciliation을 fresh drain으로 우회하지 않는다. Store7·Runtime SDK·installed process 증명은 각각 따로 수용하며 W35e의139개 상위 오류를 동일 요청으로 반복하거나 이 lane에서 재작성하지 않는다. 새 Source issuer·codec·serializer·memo DTO/IR·보조 row store는 만들지 않는다.
 
 | **기존 구현 / 재사용** | Native views/graph formatter; FileText/literal/substrate·LA3; J metadata/outline·7 sideoutputs·State/batch/publish; C1 query8/9→row/pin/receiver; Contract copier·Original canonical loan/birth·Native graph bindings | 실제 새 defect가 확인된 함수만 원 owner가 수리. 과거 TODO/claim만으로 같은 구현을 재발급하지 않음. macOS/older Source GREEN을 Linux/current-source 전체 수용으로 승격0 |
 
 A의 schema3 finite decoder·단일 paid semantic validator·index-only checked backing·actual ItemIndex Query hooks·retained exact semantic cause가 이번 소스에 합류했다. 기본 feature의 Persisted match cfg도 보완했다. genuine nonempty raw fixture는 E01 입력 결손을 별도 표시하며 Rust/body 수용은 미완료다. B의 artifact gate/공유 artifact proof는 소스에 있으며 configured Voyage batch HTTP의 admitted request/response 경로는 미완성이다. C는 prepared read와 QE private partial caller를 반환했다. Root의 `QIDX-E02-W11-NATIVE-MEMO-INTEGRATION-20261026` claim은 세 checked reuse caller와 paid exterior error bank까지 소스에 결합했다. Root가 success packet의 canonical read authority와 meta/deferred 소비·lookup/freshness 전 Native capability 선검사를 합류했다. 내부 metadata worker는 기존 in-memory read port·validating decorator의 physical currentness와 회귀, CP identity의 borrowed map-key만 수정했다. 남은 actual A-paid metadata prepare/publication/observed/rollback custody·Native pre-read snapshot validation·public meta/packet retain·write/host/feature 대조는 Root 한 writer가 마감한다. 공용 ABI 변경 시 Root가 A의 hook/caller를 대조한다. worker끼리/외부 채팅 메시지·질문·상태 조회·재위임0. heavy 검증은 Root 단일 큐이며 상태/결과는 README/VALIDATION에만 기록한다.
+
+**E02 W60b 후속의 현재 독점 hunk:** P의 RuntimeExecution borrowed host fixture는 완료·동결했으며 `host_projection_v3.rs` 생산 변경은0이다. W60c가 최상위 Source WorkLimitExceeded를 확인했고 W60e에서 기존 multifield 출력/순서 oracle까지 통과해 predicate 수리는 배정하지 않는다. W60f의 invalid shadowing fixture 교정은 Root의 별도 exact claim만 소유한다. 같은 이전 쿼리의 source-anchored 거절과 이름을 구분한 양성 출력 gold를 모두 보존한다. D의 quota 중단 뒤 Root가 `QIDX-E02-W60-COMPILER-ROOT-FINAL-JOIN-20261027`에서 D claim과 reconcile하고 Compiler 최종 writer를 인수했다. 범위는 `relation_plan_v3.rs`, 기존 project/filter·sort·digest·host_storage child와 composition census caller6파일이며, host_scalar 본문은 수정하지 않았다. D의 partial bytes를 완료로 세지 않고 Source별 검증한다. 고정1M·메모리 상한/permit·shape/source/refusal은 유지하며 모든 실제 자료구조 작업을 선청구하지 못한 불완전 envelope 삭제는 적용하지 않는다. M은 새 `host_fields_tests_v3/work_budget_v3.rs` 회귀 child만 작성하고 parent mount는 Root가 한 번 결합한다. Root는 공용 인터페이스·위 인수 hunk·직렬 QBC·문서4개를 합류하며 다른 생산 owner를 재배정하지 않는다. Native cap3·Wire borrowed scope2·admitted registrar7의 통과 코드는 동결·재사용한다. Memo/Trace/binding 공통 가시성은 E02 고정 계약의 별도 미구현 절단이며 두 번째 cache나 독립 lock 순서 변경으로 대체하지 않는다. 외부 채팅 질의·메시지·재배정0.
+
+**W60f 인수 절단 마감:** 위 Compiler·borrowed Host·fixed-budget test hunk는 실제 RuntimeExecution/lib 실행에서 해당 본문이 통과했으며 완료 구현으로 재사용한다. Root의 이번 final-join·shadow-contract·test-mount claim3개는 해제했다. 중단된 D의 과거 claim은 다른 owner token이므로 Root가 대리 해제하지 않았고, 현재 writer 배정으로 해석하지 않는다. 다음 수정은 완료된 이 hunk의 재작성·동일 실행 반복이 아니라 (1) genuine general Composition supplier→selection→Runtime 소비, (2) E02의 기존 persisted Flow/Store·공통 visibility·Native binding/GC, (3) DELTA/installed 복구 수용의 exact caller 경계다. Supplier 재확인 결과는 기존 E02 VALIDATION에 있고 외부 채팅에 작업을 송신하지 않았다.
+
+**E02 manifest/inner lock:** 두 E02 manifest의 현재 직접 의존성·Native feature는 실제 owner 소스와 일치해 수정0으로 고정했다. `packages/analysis/quanta-v2/Cargo.lock`의 Trace Core/Wire2·QE dev Core1 누락 갱신은 W205 한 writer만 수행한다. 이 채팅은 root/candidate/inner lock을 편집하거나 동일 `--locked` 진단을 병렬 재실행하지 않는다. 정확한 이름·해시·수용 범위는 기존 [VALIDATION handoff](VALIDATION.md#e02-inner-lock-manifest-handoff-20261027)에 둔다.
+
+**E02 W63 공통 게이트 접합의 첫 코드 절단:** Root만 CP `memo_table/publication_port_v1.rs`의 under-ticket commit/rollback·post-ticket retire3개 ABI, InMemory의 같은 public facade, Foundation Validating forwarding hunk를 수정한다. P는 기존 Native physical의 `publication_v3.rs`·`port_phase_v3.rs`와 필요한 private 타입만 수정하며 같은 CAS를 재사용한다. M은 `original_memo_material_v3.rs`의 기존 genuine owner test module만 수정한다. 외부 gate를 보유한 채 기존 내부 gate 획득 메서드를 호출하지 않는다. 예약 Drop·옛 root retirement도 같은 gate에 재진입하므로 같은 paid phase에 보관하고 ticket 해제 뒤 회수한다. 실제 Source 종료는 CAS 전에 끝낸다. 같은 table_id의 다른 Arc ticket 거절·exact phase 보존·공개 Native Found·rollback·최종0을 기존 실제 producer로 검증한다. Native binding copier/cache·Trace gate 전환·persisted Store caller는 이 첫 절단의 완료로 처리하지 않으며, 이번 세 writer가 그 파일을 동시에 수정하지 않는다. Source/feature/serializer/allocator 추가0; lock은 W205만 유지한다. 현재 W63 세 owner 결과는 Sourceeaa84ccf에서171/171·295/295·401/401 VERIFIED다. 후속 W64 변경의 Rust 결과로 재사용하지 않는다.
+
+**E02 W64 완료된 코드 절단:** P는 Foundation canonical query→exact binding cache의 기존 parent/private Native 구현만, M은 Trace Native constructor/read epoch/pure CAS와 기존 genuine fixture만, 별도 physical custody/test lane은 CP의 일반 phase owner 추출 및 QE genuine binding test만 수정한다. Root가 CP cache port8개·기존 Wire feature forwarding·Trace facade와 최종 검증/SSOT를 소유한다. 이 lane들은 Memo private CAS를 다시 개발하지 않는다. Cache는 기존 객체의 Ordinary/Native 단일 authority이며 ordinary shadow·Source issuer·serializer 추가는 금지한다. 같은 gate 아래3-way visibility와 실제 persisted Flow/Store 연결은 소비자까지 접합하기 전 완료로 세지 않는다. W64 하위 owner 접합은 Source9a98defd의401/300/282/613/171, 총1767/1767 VERIFIED로 마감됐다. 담당25경로 main/후보가 일치한다. 후속 Memo A→B·exterior read·generic Trace port의 완료는 아래 W65/W66 한 항목에서 관리한다. 실제 Flow/Store·decoder·packet·GC는 아래의 현재 Root 수정 경계만 따르며 Native capability=false를 유지한다. 완료된 private/cache/Trace 구현은 재개발하지 않는다. [실제 결과·최소 잔여](VALIDATION.md#e02-native-binding-trace-w64-20261027).
+
+**E02 W65/W66 완료된 lower 코드·owner 경계:** M은 CP 단일 Native root snapshot·read/currentness·observability port·Kernel facade 및 두 투명 RuntimeExecution wrapper만, P는 기존 Memo physical/phase/publication/read와 기존 concrete Trace prepared/registering wrapper만, T는 기존 genuine QE·InMemory test hunk만 수정했다. Root는 Coordinating forwarding·최종 합류·한 QBC 큐·SSOT를 소유했다. Sourcee8fd75be에서4 owner171/401/282/303, 총1157/1157 VERIFIED이고 담당41경로 main/후보 byte parity가 일치한다. Memo의 fresh/retained F 분리, old optional locator의 checked remove→insert, highest Source 밖 snapshot/partial 수명, Trace generic callback·gate/source 순서·post-ticket retirement는 완료 범위다. 별도 snapshot/IR/Source/codec/ordinary fallback은 추가하지 않았다. 실패 Source와 각 수리는 [같은 VALIDATION](VALIDATION.md#e02-native-memo-ab-prepared-trace-w65-w66-20261027)에 보존한다.
+
+**E02 W68/W69 완료된 코드 절단·인계 경계:** W67 FileText admitted codec·공유 finite parser·Language lookup·admitted trace packet/prepare·guarded Store 소비자는 합류했고 완료된 하위 본문을 재개발하지 않는다. 이 절단에서 M은 CP `memo_table/native_currentness_v3.rs`의 실제 closed-row checked loan·scope funding 인증·유료 비교와 단일 export만, Root는 Kernel의 기존 `VerifiedPersistedOutputReadV3` Native 분기·공유 identity/artifact validator·두 query ArgsHash 소비자·기존 feature closure만 소유한다. P는 기존 Flow의 no-durable-decode 정책에 한정한 no-store owner/read-authority 이동과 실제 최종 소비자만, T는 같은 genuine A/B Native table fixture의 loan/binder 회귀 및 필요한 test-only helper/visibility hunk만 소유한다. Source capture/Query ID를 시험 편의상 재발급하지 않는다. W69에서는 M이 기존 ExecutionMemoCustodyV3의 고정 metadata checked projection, P가 기존 SharedAdmittedOutputBytesV1의 canonical physical pair 비교 접합, Root가 공개 result consumer의 두 Ordinary memo 읽기·중첩 wire 읽기 제거, T가 같은 genuine memo fixture의 metadata 회귀만 소유한다. Root가 기존 owning lane의 영향 검증과 SSOT를 직렬 소유한다. SDK 검증용 cohort의 taint 의존성 drift를 피하려고341개 dirty dependency를 복사하거나 feature를 줄이지 않는다. Native reservation·persisted entry fence·Store guard·capability=false는 유지한다. 실제 Native lookup/freshness/비동기 I/O 소비자와 같은 epoch Store/read/GC는 별도 실제 잔여이며, 이 ABI/테스트 합류로 완료 처리하지 않는다. E01 공급/SDK producer/funded RPC, Q 성능, W205 lock writer는 원 owner 유지.
+
+**E02 W70 실제 접합의 한 writer:** W69b의 회귀821/821는 이전 Source에만 유지한다. W70에서 P는 기존 Kernel verified-read/birth만 확장해 Native CP loan과 실제 A finisher·B 재검사 뒤 고정 ArgsHash와 물리 proof를 인계한다. T는 기존 genuine Native binder test child만 새 호출 순서로 전환한다. Root는 실제 persisted read helper의 decoder 이후 물리 currentness 재검사와 검증·SSOT를 소유한다. M의 FileText fixture 준비 변경은 genuine snapshot Store revision/provider 공급을 확보하지 못해 자기 hunk만 회수했고 새 stub·mount·producer는 남기지 않았다. 따라서 actual semantic decoder/late outer Source 본문은 실행했다고 세지 않는다. 기존 decoder/parser/packet/메타데이터/비교 helper는 재배정하지 않으며 다음 실제 생산 연결은 Native lookup/freshness→같은 물리 row/artifact→decoder/checked reuse다. 별도 Source issuer·Ordinary row 복원·boolean 완료 승격·capability 조기 활성화는 허용하지 않는다. 상태와 미수용 범위는 README E02, 실행은 기존 VALIDATION만 기록한다.
+
+**10/28 잔여 감사의 수정권:** [일곱 생산 접합 계약](E02-publication-recovery.md#production-join-contracts)의 1은 Root의 QE 조회/meta/freshness/native-prepared/reuse caller 경계, 2·3은 같은 Flow/Store/rollback 공용 parent를 Root가 직렬 결합하는 경계다. lower Memo·Trace·binding owner의 완료된 phase/producer는 재배정하지 않는다. 4의 GC는 이 공통 gate/visibility ABI를 소비하는 기존 physical/GC owner의 private cursor/page/hook 경계이며 guard만 지우지 않는다. 5의 complete successor는 E01 canonical producer가 공급하고 E02는 기존 final-view/paid-request/target 인계만 결합한다. 6의 DELTA state·member·V9/ACK caller는 Root의 공용 aggregate/entry hunk에서 기존 state owner와 한 번 합류한다. 7의 Voyage/EmbeddingPort/native semantic artifact는 기존 `QIDX-E02-NATIVE-ADMITTED-EMBEDDING-PORT-20261026` owner 경계를 유지한다.
+
+동시에 Flow/Store parent를 둘에게 배정하거나 DELTA 공용 member issuer·새 V9/ACK 엔진·새 snapshot Store를 만들지 않는다. 구현 때 W11/W12/W19/W20, Memo custody/physical/GC, W64/W66, DELTA W1/W2/W31의 현재 exact symbol/preimage를 다시 읽고 같은 hunk의 writer를 하나로 정한다. claim의 non-stale 상태는 실제 실행·완료·외부 채팅의 진행 증거가 아니다. 이번 읽기전용 감사는 새 배정·claim 인수·채팅 송신을 하지 않았다. SDK의 기존 snapshot Store/Revision/provider는 이미 제품에 존재하며, QE 검증 fixture 연결을 해당 supplier의 재구현으로 배정하지 않는다.
+
+**최종 실행 묶음의 충돌 금지 경계:** 조회·재사용 담당은 QE `execute.rs`, `execute_meta_stages/{memo_lookup,memo_execute}.rs`, `snapshot_validation.rs`, `memo_hit_read/native_prepared_v3.rs`, `execute/reuse_admission_v1.rs`, `execute_meta/deferred_persist.rs`의 조회·성공/공유 재사용 caller를 소유한다. 저장·회수 담당은 QE `execute_core.rs`, `execute_core_flow.rs`, `execute_core_prepare.rs`, `execute_core_store.rs`, `execute_core_store/rollback.rs`의 Native entry/예약/Store/보상 caller를 소유한다. 저장 담당의 같은 epoch reader 요구는 Root가 조회 담당의 파일에 한 번 결합하며 두 담당이 해당 파일을 병렬 편집하지 않는다. Native GC의 기존 public port/`in_memory/core/memo_table/gc.rs`와 lower physical/Trace/binding hunk는 원 canonical owner를 유지한 채 같은 저장·회수 계약으로 결합한다. 공용 Kernel/CP/packet ABI·feature/export는 Root만 수정한다.
+
+DELTA 게시·복구 담당은 Runtime `native_delta_v3/consumer_v3/{custody_v3,entry_handoff_v130,native_manifest_handoff_v165,replay_metadata_handoff_v159}.rs`와 `native_delta_v3.rs`/committed-source continuation의 실제 DELTA 인계·재개 hunk다. 공용 `ordinary_aggregate_prepare_v2.rs`·`prepared_completion_v3.rs`의 member/issuer/terminal 인수·caller는 Root만 직렬 결합한다. E01 complete successor의 생산·Voyage Native batch·SDK funded RPC·Q ANN/성능·launcher·lock/CI는 기존 owner의 결과를 소비한다. 이 구분은 새 worker 배정이나 기존 claim 인수가 아니며 착수 직전 현재 hunk/claim을 다시 확인한다.
+
+<a id="e02-independent-chats-20261028"></a>
+**사용자 명시 지시로 생성·위임한 독립 채팅 — 2026-10-28:** 아래 세 채팅은 모두 quanta-index 프로젝트의 local/shared-main에서 시작했다. 생성 후 bounded wait snapshot에서 세 turn 모두 inProgress를 확인했으며, 이것은 코드 완료나 검증 성공이 아니다. 위 읽기전용 감사 이후의 실제 위임이며 기존 일곱 계약/DoD는 유지한다.
+
+| 채팅 제목 | thread ID | 독점 구현 경계 |
+| --- | --- | --- |
+| QIDX E02 Native 조회·재사용 구현 | `01a17e61-6739-7663-975f-7823db852723` | 위 조회·재사용 caller/meta/freshness/native-prepared/reuse/finalizer와 private test child. Store/Flow·lower owner·공용 ABI 편집 제외 |
+| QIDX E02 Native 저장·회수 구현 | `01a17e61-87b0-7d00-9e0d-1f187e0c57eb` | 위 Native core/Flow/prepare/Store/rollback caller와 기존 GC의 충돌 없는 private hunk. 조회 파일 편집 제외; lower canonical owner/공용 port 변경은 Root patch로 분리 |
+| QIDX E02 DELTA 게시·복구 구현 | `01a17e61-91c3-7cb2-a8f6-372f6180c9e4` | 위 DELTA private custody/entry/metadata/actual terminal·restore/continuation hunk. FULL/member/V9/ACK·E01 producer 재작성 제외 |
+
+세 worker는 부모를 포함한 다른 채팅 조회·메시지·질문·깨우기·대기·추가 채팅/하위 agent 생성을 금지한다. 기존 담당에게 연락하거나 새 작업을 배정하지 않는다. 결과는 자기 최종 답변 및 `/tmp/qidx-e02-<lane>-handoff-<threadid>/`의 통합용 최소 patch로 반환한다. 해당 patch는 실행 증거가 아니며 repo 안에 별도 상태 원장/one-off log를 만들지 않는다. Root는 master 문서·공용 Kernel/CP/packet/feature/export·reader gate·aggregate/member/terminal parent를 한 번 결합하고 owning QBC·SDK/독립 process 검증을 단일 큐에서 수행한다. worker는 코드·genuine test 작성·정적 검사까지만 수행하며 Rust/SDK/bench/Docker/CI/cleanup·stage/commit/push/lock rewrite는 실행하지 않는다. E01·provider·ANN/성능·launcher·lock/CI는 기존 담당을 유지하며 중복 채팅은 생성하지 않았다.
 
 ##### E01 공급 B1a–B4의 수정 경계
 
@@ -1461,16 +1521,36 @@ owners. External analysis/helper and per-run artifacts remain outside checkout.
 <a id="r165-six-item-goal"></a>
 ### R165 six-item implementation and validation ownership
 
-The resumed user objective includes all six items. Root owns isolated source integration and its sole QBC lane. Java87 is applied only to the owning cohort. Compile failures are repaired; R232/R237/R242 reached actual Maven/Gradle bodies and remain FAILED. R240 supplies the omitted canonical parser-row fixture phase. R247 corrects an actual initial Full-model Source-B/Output-A authority mix-up using the existing paired reader, retaining the exact source selection and independent semantic oracle. R248 finished FAILED0/2 at Sourcebac4c2f9 with InvalidNativeProducer after the prior authority refusal was repaired. R253 corrects sealed snapshot DATA identity and the independent cause test stack using the existing product helper. R254 is the active canonical focused retry; its174 paths stay frozen through the same execution terminal including cleanup. External Native co-cuts remain implementation candidates with explicit missing production callers.
+Current authority is live Main, as explicitly directed by the user: "다 합치면서 해야지 격리하지말고 메인에서". The isolated-only boundary and previous Main scope question are superseded. R600 actually applies19 Main files at HEAD1f08937356414d958c0d4609a94d7f4f2d550710: coherent R593 constructor/domain/borrowed identity/typed-error13 plus independent Java preclaim-work5, then the one-hunk R599 public-future forwarding repair. Twenty-one files were inspected; two current Main tests remain unchanged. Current Main trait/NativeGeneralPending, fully qualified SnapshotId, explicit Arc coercions and every ingress-owner byte outside the forwarding hunk are retained. Foreign dirty response/replay/docs files are preserved. Root did not stage, commit, push or mutate HEAD. Same owner claim is narrowed to the actual19 Main paths with current base and the existing FNL410 same-file reconciliation; future edits and verification use Main. R589/R590 and the Clone taxonomy repair already exist on Main, so they are not retransplanted.
+
+Main19 static verification: rustfmt parse19, whitespace and build-boundary preflight before28/after28 VERIFIED. Structural88→86/new0, with existing increases builder146→150/70→75, issuer1030→1039, ingress7830→7832 and Java identity810→816 retained as debt; no suppression/baseline/ceiling change. R611 frozen-Main constructor contract module is VERIFIED21/21 at Source2f2d033d045c722e3d092f92fd27d5fa1c9eab9c1efe1bb4f2e8e5d6628fc906, run20261028T074855.353430Z-7eb8b9b18516; original3289 driver terminal0, canonical finished/owner empty and reviewed21 paths drift0. This covers the constructor contract only. R612 original7302 is CLOSED101 with canonical cleanup and reviewed21 path drift0: run20261028T173011.251162Z-46f3d08523d5, Sourcecfd5fcc0767aa195d5b156f7feca2c11d046ccfa43fc6f4bf5a840331f15ced3. The dependency Memo GC failed compilation3/body0 (one reexport visibility, len_v3 twice). Current Main already repairs the2 supplier files; Root did not duplicate them. Exact R614 original35984 is CLOSED101 with canonical cleanup and reviewed21 path drift0: run20261028T180822.015208Z-874df2293539, Sourceca2ec77c512e4c329d7d196a28ff4dc89390d038122400165e2798729f58c15e, FAILED Parser compilation2/body0. Current Main already fixes the one Parser supplier callback ABI and native-error conversion; Root duplicate edits0. No Root Rust is active. The next compiler run is queued behind the coherent Native Main co-cut; SDK/Native behavior is still NOT_RUN. R599 returns the same canonical private Future with explicit repo lifetime, without adding a second async poll wrapper; same input/output/errors/custody, no allocation or stack/budget change. New R591 binary has nested3.30/3.16MiB poll frames and a0xba0 packet/future handoff consistent with this wrapper; exact stripped generic Rust symbols were not resolved. Therefore the fix is a reviewed replay candidate, not runtime success.
+
+Prior isolated evidence remains historical: R591 original47809 closed101 with canonical finished/empty owner and608 drift0, compiler build-finished=true, provider selected1 started/completed0 then sdk.ensure_indexed stack overflow/SIGABRT, Source58a3e17a60d184a3a0fcd615ac68d79b1abdbfb6bc17d0e52c351e6f1495061b. R583 had the previous nested-block_on crash. Contract21/check at Source839cd7f8 and QRA production/coreJava3/registration1/parser4 at Sourcebb7c757f8 do not qualify current Main. The isolated610/claim644 is retained for readback only; no further isolated implementation is planned. Prepared R592/R594/R595608 drivers are stale and must not execute. Current Main has two source-confirmed gaps for the existing Strong input. DFG prepare_call_bearing_source_v7 accepts only the single JavaConstructorFieldAllocation branch; its multi-assignment fallback requires keys.len()==3 and event_count+distinct_count==1, so two allocations/two stores/one load refuse before Phase21. The newer Main alloc/copy/ret+provenance issuer is retained. Main public Native issues its Source/provider transaction, but execute_may_alias_at_v1 unconditionally takes ordinary projection/result birth; the authenticated Original Host/paid result branch is absent. Producer (R605) and consumer (R606) minimum hunk closures are being prepared externally against current Main; names/old packet counts alone do not justify transplanting original_java_full_family_v204 or any whole file. PY/FNL/Host/master ownership stays separate. R604 Main contract original55632 ended1 before Rust because a foreign Python constructor_cohort_v3.rs changed during canonical source capture; owner/body0, NOT_RUN, reviewed21 path drift0. R607 original61864 also ended1 before Rust on live Cargo source-closure drift. Both were NOT_RUN. R611 uses the documented module --snapshot-source custody and actually passes21/21; it is closed/clean. No Root Native Source changes have been applied. R608v2 now preserves the legacy zero-count Skip, receiver text Work/Skip, switch typed/callsite and failure-read ordering before adding the constrained V183 constructor profile; its remaining structural findings are still open. R610 consumer30 Rust paths has scoped NEW0/WORSE0 and parse30/30, awaiting joint type/runtime proof. Root R613 field owner19 paths is actually rustfmt-formatted/parse19/19 with scoped canonical GOD24→0; its original105 DATA/lease declaration/drop sequence is preserved, and current supplier context callers are aligned. A source-backed missing dependency was also found: Main lacks the imported paid Native field-index/refinement APIs. Their canonical2-owner/7-child supplier co-cut is externally prepared with scoped NEW0/WORSE0; no parallel index or solver is added. QRA variable-input/authority and Source/Core decomposition continue, and Root has taken the existing flow solver only, preserving the Main Ordinary branches. All external candidates remain NOT_APPLIED until the coherent closure is reviewed. Feature class8fda14fab3a3 is now registered on Main; its canonical class hash, registry parse and3 Cargo features are VERIFIED, while the Native source co-cut remains pending. On Oct29 the three lanes continue semantic/owner-phase refactoring rather than copying those drafts to Main. R614 exact SDK provider replay has ended compiler2/body0; there is no active Root Rust execution. Root R615 full existing flow-solver closure31 Rust paths now has actual formatted/parse31/31 and scoped NEW0/WORSE0, with original119 function declarations and14 struct field/drop orders retained. Root R616 formal parent+3 children and R617 Port parent+3 children also have scoped NEW0/WORSE0. The public full-cohort migration was unnecessary for V183 and was removed; Main selected anchor/legacy switch ordinal1 and scalar Copy key are retained. No second solver or altered failure/Work ordering is introduced.
+
+Root Oct29 R620–R622 update: retained checked Source lenders and Source-line program-point selection were split at their existing owners (3 and2 Rust paths, scoped NEW0/WORSE0). Product PTS seed/definition set now has12 reviewed paths with same8 DATA/lease struct field/drop orders, Source metadata→rows→gaps order and paid transfer causes retained; scoped NEW0/WORSE0. The uncalled single-definition PTS scanner was excluded. The earlier optional-V235 conclusion is withdrawn: owning SDK and Runtime actual callers prove that preseal Core, adapter custody/lenders and full-family publication are a required producer-consumer cut. R629 restores20 pruned candidate paths; Root, constructor and QRA owners are completing that cut before Main integration. Candidate caller-zero alone was insufficient evidence. Current public Strong requires the worker path, whose V142/V183 immediate Unsupported gate and empty final defs/uses were actual defects; the11-path same-D worker/Port/Core/paid-reaching/final-lender candidate is prepared, not applied or compiled. Program-point/field-index also require canonical wire/index visitors and genuine mixed producer/lender closure; work continues there. Root actually registered the exact8fda14fab3a3 feature class on Main and verified canonical class hash/registry/Cargo3features/whitespace. This config result is not Native execution. All6 goals remain OPEN; Native Main source integration/type/runtime NOT_RUN.
+
+Historical isolated608 source-route audit (not current Main qualification): Java Alloc/Copy/Ret/FieldLoad/Store already pass through phase21_issued_native_v3 -> stage_native_noncall_v3 -> the paid native row emitter. The actual Java V183 fixture publishes genuine Source through ensure_indexed and calls public execute_native_may_alias_at_v1; the Host connects Local/CFG effects, PTS, ordered fields/RHS, checked paid projection and public Complete results. These are implemented paths requiring execution evidence, not confirmed missing code. A nonempty constructor callback rewrite is conditional: a genuine selected Source must first demonstrate positive DFG callsites with no issued Phase21 native row (attempted_v3=false), reaching the compatibility zero verifier. The existing V183 allocation/field fixture is not that counterexample. No unconditional reachable callback/effect/metadata/census/final-transport defect was established in this scope; do not rebuild the Host, issuer or fixtures speculatively. The existing file-ID memo retains its previous allocation boundary. Python's three-function physical-FD supplier, public extraction verifier and duplicate-producer refusal already exist on Main; consume the coherent owner closure for execution. Extraction execution/full solve remain unqualified. The confirmed static coherence defect is the owning Clone taxonomy row: it still names CloneDetectionOutput while the real code uses CloneDetectionQueryOutputV3/VerifiedCloneQueryExecutionErrorV3. R596 externally prepares only the existing Main Clone row, including its typed-error projection marker, preserving owning ICFG and all other owner contracts. It is now APPLIED isolated-only after actual R591 terminal/cleanup: frozen609/claim643, original608 drift0. Build preflight before FAILED, after VERIFIED16; whitespace VERIFIED. Guard logic, other taxonomy owners and Main source/index/HEAD are unchanged. Affected Source-bound drivers must be regenerated; current609 Rust remains NOT_RUN. Java preclaim undercharge is implemented by R578; postparse version.len()+256 covers exact worst case version.len()+189, so no speculative rewrite. FNL410, PY and master W2 acceptance/policy remain supplier scopes.
+
+Historical greens remain at their own Source: codec7@37f1b941, membership1@63f8969f, Maven/Gradle2 and cause1@b1cc02ca, metadata-priority2@f1e8fd9d, separate later priority3@25bd5165 and nested-cause1@b0f430ef. They do not qualify the current combined cohort. Broader structural debt remains open: R365 official36-path lint FAILED(new260), foundation53 and Runtime10 findings are not closed by the earlier six-path no-regression result. No baseline/suppression changes.
+
+Linux R544 current539/Source1d532a5d ended before SDK bodies: Runtime rustc SIGKILL and cgroup oom_kill1, peak11.01GiB in16GiB VM. Run20261027T160826.201801Z-28fcde250fb7, QBC101/RED0/0; original63301 terminal1/cleanup/539 drift0, BC2/FT1 NOT_RUN. R550 is APPLIED/VERIFIED after explicit user approval: Docker MemoryMiB16384→32768, clean Desktop stop/start, actual guest31.293GiB, all4 previously running containers restarted. Root three Git HEADs and the existing tmpfs cohort alias are verified/restored. R551 then found the older R529 container recreation had omitted release/trust volume-subpaths: mount existence did not prove installed paths. Root container w205-r551-linux-sdk-acceptance preserves the original R279 subpaths on the same read-only signed public volume; actual canonical quanta --version exits0 and trust files are present. Source volume/image/cache and all guards remain unchanged; old Root container is stopped. Interrupted foreign exec bodies require their owners to rerun. No Root Linux Rust overlaps Mac original13592; R556 then updated only the independent native source mirror6 files; frozen544/drift0/full Source0e1caec9 matches Mac. Mac owning source remains frozen and Linux Rust is still NOT_RUN. Same signed public r364 dependency, no current release/sign/install claim. Settings backup and execution details stay outside the checkout in /tmp/w205-r550-docker-restart-state.json.
+
+R-ENG-05 decision for R533: extend the existing opaque snapshot owner. Canonical first-pin and deep-copy issuers own independent DATA groups; existing joined capture and committed FULL loans already carry the authentic generation/source seal. Preserve those issued fixed scalars at the existing header birth, retaining every existing role/header funding check and authenticating the supplied pin separately. Binding construction is private and requires the genuine loan; no raw digest API, new Origin issuer, hash, traversal, cache or solver is introduced. Constant-size DATA and paid comparison work remain bounded. Owning positive/foreign-generation/foreign-Current tests R536 are VERIFIED10/10@1d532a5d; SDK acceptance remains separate.
+
+R546 static-stage diagnostics identified the actual R547 provider failure at seed_ingress_provider. R552 consumes an existing Main semantic hunk instead of creating a second retainer: initial composition first funds a Source Arc, then workspace_birth calls the same canonical Arc retainer; the old isolated guard rejected the already-funded input solely for having Arc custody. The unchanged producer authenticates the genuine shared Source/funding under Current, reserves a fresh destination Arc grant, and retains the same payload. Only the guard line is imported; the valid existing comment stays. Patch8c17da8fb885212dce5724630115ef330fa7086ce53b01db2224dc41a6d0d1ab, frozen544/claim577; source parse/pre-post boundary/whitespace VERIFIED, canonical scoped structural before7/after7/new0/worsened0, no baseline/suppression change. R553 actual provider1 remains NOT_RUN: normal artifact capacity blocked before spawn; owner/receipt/body0, original50996 terminal1/cleanup/544 drift0. No Root manual cache deletion or threshold override. Existing lower greens do not close this SDK failure. Native33 needs a fresh Main/owner residual check before new integration.
+
+Historical six-objective checkpoint below: current source/remaining work is superseded by [the 2026-10-30 final audit](#w205-closeout-20261030). Its old selectors, missing fixtures and frozen counts are not new implementation instructions.
 
 | Objective | Current code and owner | Decisive remaining verification |
 | --- | --- | --- |
-| 1. BuildContext, then same-Source FileText/Python | BuildContext2 and FileText1 remain VERIFIED at Source443c30e. Python4 there and positive/foreign diagnostics at Sourcea8ead5ea remain FAILED with Parser(WorkerUnavailable) on macOS. | R243 found the existing signed r363 Linux installation. Its installed CLI startup verification succeeded under read-only fixed trust/selected-root mounts in a task-owned isolated container. The parser verifier does not require the SDK caller to share the installation source digest. Current SDK Python acceptance is NOT_RUN; the supported Linux container/cache/lane is prepared. No paired7 GREEN or current Product release qualification. |
-| 2. Initial Java integration | R196 Java87 and subsequent compile repairs are applied only to the isolated owning cohort. R232 reached the actual scanner, R237 reached Java readiness, and R242 reached Full-model construction; each executed FAILED0/2. R240 now runs the same canonical parser-row phase in the focused fixture. | R242 run20261026T142719.022073Z-507b71c9b2a4 at Sourceed964595de3652b431329bc178b3be18a1307362a8129fe817ff99d4a2f7b076 compiled/linked and failed both bodies with SourceIssuanceControlRefusedV3(AuthorityRejected). Root traced Source-only Current used for the independent snapshot Output group and Source session used for Output reserves. R247 fixes both with the existing paired reader; syntax/pre-post boundary/whitespace VERIFIED, oracle unchanged. R248 compiled/linked and executed FAILED0/2 with InvalidNativeProducer. R253 replaces trait-object vtable equality with same-DATA address equality while retaining the exact digest/path checks. Syntax/pre-post boundary/whitespace VERIFIED. R254 retries the original Maven/Gradle2 through QBC ordinary focused module mode, frozen174, SDK56/jobs1/testthreads1/seedauto, normal guard and task-local external target root; this is focused owning verification, not formal immutable replay. Other model/JAR witnesses remain NOT_RUN. Combined acceptance=false; R171 all-seven guard remains unfulfilled. |
-| 3. Native refinement/Strong actual Host | R135 external9 has actual Host SCC request/membership, indexed may-store, checked CFG ordering, candidates, selected RHS PTS, final paid transfer/refinement and two owned FlowInputs. First execution-session owner is retained/rechecked. R193 corrects two missing wrapper type paths and selects receipt-G Product::Source before lower runtime failures in the external candidate. Three pure arbitration tests preserve losers/non-Source priority/preclose banks; syntax9 and before-bound9 apply/whitespace pass, with independent static review. | R193 supersedes R135 Strong9 after-images only; no owning integration or Rust/body proof yet. Keep all lower failure/data banks, original leases and actual A authority. Authentic multirow store/load Source and upstream complete Native PTA/entry/unique evidence remain required for Strong. |
-| 4. Java allocation/copy Source | R219 freezes the owning-rebased Source candidate72 paths/62 changes, patch4df0f0bd7fd81dadf614c8c3594e509b7ba9a2653d9fb0325960d210c69ff07c. It preserves the owning full parameter cohort/borrowed Copy/dynamic wire, includes actual mixed and constructor Store/Load profiles and paid field paths, and merges N0 checked statement/source/definition/use/membership visitors. | Constructor new-result→selected this/formal0 is traced through actual Parser symbol, Facts allocation/callsite, Core receiver comparison and ReceiverFirst normalization; no additional relation-body gap was found. Owning beforehash72, Rust parse71 and apply/whitespace pass. Type/body and genuine public corpus selection remain NOT_RUN. R204 must consume the same final-D Source/A loan with real CFG back edges. No SourceReady or public Strong claim. |
-| 5. Installed provider typed failure | R195 retains the genuine A-paid unfilled provider regression, enclosing Source priority and full losing metadata/copy causes. | R246 typed-provider1 actually FAILED0/1 before its cause assertions: initial Java precommit refused at the same Sourceed964595 as R242. R247 repairs the shared initial Full authority path; installed provider acceptance still requires a new executed witness. R250 selected the independent cause-chain body but aborted with stack overflow before assertions; it is FAILED, not cause-retention acceptance. R253 moves the unchanged body into the existing production-generation64MiB stack helper. R255 independent witness drivers are prepared on frozenR253; pure metadata arbitration2 remains independent and NOT_RUN. Late Source/durable wire transport remain separate from pure arbitration and process-local Error::source. |
-| 6. Public Native and final integration | R182 supersedes only the R164 public Strong test after-image by adding the actual main constructor caller; all four original test names/oracles and R167 exact4 policy match. N078/N1 producer16+consumer2/Strong9/policy2 remain external. | Actual source grammar and authenticated entry/receiver/unique allocation proof remain. Fresh private-PY/Main body audit confirms no complete multi-function W5/graph or Original PTS uniqueness supplier exists there. R220 combines external W5/Local/graph/domain and direct-consumer changes19 paths/14 changes, preserving authenticated root order and declaration/executable census; apply/whitespace/parse pass, Rust/body NOT_RUN. Its G lender exposes actual authority_packet_v1; derived graph.edges does not prove call completeness. R204 separately connects existing Native extraction/formal map/set/chunk/solver/result owners, plus canonical paid uniqueness. Explicit Native zero-depth entry reuses the existing full transfer; a positive-depth CS result cannot be relabelled baseline. R222 separately factors the existing full extractor/formal/RHS/issued-envelope owner for genuine borrowed Original DFG; current port/Param-only partials are not implementation closure. Its existing Java selector phases are one-shot, so Phase21 requires one authentic batch loan. All remain unapplied. Then changed-owner NativeCopy18/NativeFlow6 and publicJava4 bodies, followed by affected final integration. A main source string or direct FlowInput tests do not prove public Strong. |
+| 1. BuildContext → same-Source FileText/Python | Integrated Main suppliers and existing SDK fixtures; signed installed Linux bundle environment verified, approved32GiB VM. Root owns serialized execution; external driver is rebased to fresh Main. | **OPEN / NOT_RUN at current Main:** same frozen cohort BC2 → FileText1 → Python4. Old608 drivers cannot execute. Environment crypto is a prerequisite, not SDK acceptance. |
+| 2. Initial Java integration | Java preclaim-work and existing Maven/Gradle/SourceOnly/JAR implementation are on Main; no duplicate Java87 transplant. | **OPEN / NOT_RUN at current Main:** Maven/Gradle2 → SourceOnly1 → external-JAR positive/missing2, preserving typed causes and publication assertions. |
+| 3. Native refinement/Strong actual Host | Main product_may_alias_host_v1 routes live Original transactions to the existing original_execution_v3 and paid_result_v3 owners. The old absent-branch TODO is obsolete. R755 integrates the exact1/2 constructor Runtime consumers. | **OPEN / NOT_RUN:** actual SDK Strong replacement and stale-Source negative on current Main, plus Native/Full floor proof. Source presence is not public Host acceptance. |
+| 4. Java allocation/copy Source | Genuine Source two-store4defs/2uses and this-helper2calls PASS in R7529PASS/2FAIL. R755 repairs exact one-formal parameter-anchor capture; R756 positive executes before changing its old refusal oracle. Existing paid Source/final-D join banks and facade are integrated. | **OPEN:** R756 genuine formal positive → unsupported-input negative + DFG whole11 → owning NativeCopy/Flow/public Java scope. No duplicate Source issuer, Ordinary fallback or missing-to-empty conversion. |
+| 5. Installed provider typed failure | Existing forwarding/async/provider implementation retained. R755/R757 move actual OriginalJoin exterior errors by value QRA→SDK→backend, including final Display/source projections. Nested physical source projection is being checked separately. | **OPEN / NOT_RUN at current Main:** unchanged installed-provider selector with original stack/budget/oracles. Prior isolated R591 compiled then aborted after1started/0completed; no success is inferred. |
+| 6. Public Native and final integration | Root integrates shared Main directly; latest reviewed762 inputs r757-current-source-ledger.json include complete Runtime two-store consumer19 and typed failure10 co-cuts. No active isolated implementation lane. | **OPEN:** finish actual source-bound DFG/Runtime/SDK results, then current-source installed provider, Linux SDK7, Java5 and affected final integration. No commit/push authorization inferred. |
+
+All six objectives remain OPEN and SourceReady=false. The older R204 immutable55 is superseded as an integration packet; do not reapply it or revive its former four-conflict queue. R374/R376 applied the current71-file foundation, whose manifest explicitly consumes the corrected R294 call-birth dependency. All55 older donor paths were covered by the historical516-path foundation freeze; three borrowed-read/entry paths fall outside that71-file packet and retain the separate R356/R358 repairs. Path inclusion is not semantic acceptance: only actual current residuals belong in the queue, and the remaining formal/semantic/ancillary/full-result drafts remain NOT_APPLIED until their current-before integration is reviewed.
 
 R162 source review confirms no existing Original Java profile emits both preceding exact field store and subsequent field load in the same callable. ConstructorField is one store; CopySequence can read fields but has no such store. NativeFlow6 assembles FlowInput directly and does not prove public Host Strong. The Source owner must extend the same canonical producer/consumer path, while R164 uses real SDK input and independent May/No semantics. Missing typed pairs remain incomplete; they cannot become Strong or NoPriorStore. Full objective and SourceReady remain OPEN. No live Semantica source, Git index, HEAD or publication mutation is claimed.
 
@@ -1571,3 +1651,2275 @@ diagnostic relay's followup whitelist and its existing fixed input/output
 golden (three lines). Its original64KiB read and output-error checks stay.
 Root checks both existing relay tests before the fresh-source prefix witness;
 this is a consumer connection, not a new product or quality oracle.
+
+<a id="e07-checkpoint-rca-writers-20261027"></a>
+### E07 checkpoint boundary diagnostics — 2026-10-27
+
+Root internal ANN writer owns only `publication_sqlite_vfs/diagnostic.rs` and
+its new `tests/checkpoint_diagnostic.rs`. Root owns the existing `on_event`
+marker connection and child-test module declaration. Existing native SQLite
+file-control events delimit lane25 from After CKPT_START to Before CKPT_DONE;
+it observes backfill, not full checkpoint duration or result. Lane22 write
+segments are partitioned, never duplicated, at those exact scope/handle markers.
+No C/FFI, SQLite policy, capacity grant, sync, or publication behavior changes.
+
+Internal observer writer owns only Catalog `connection.rs` explicit checkpoint
+lane26 and focused tests. It observes the funded original PRAGMA call, retaining
+precharges, original results and error priority. Lane26 and lane25 do not imply
+automatic/explicit attribution by time overlap. Internal coverage writer owns
+only the reusable `causal_cost_diagnostic.py`, its tests and retrieval README:
+canonical ancestry assigns backfill writes; interval overlap stays diagnostic.
+No new collector/parser or evidence authority exists. Root serializes all joined
+verification, then one changed-source diagnostic prefix; no unchanged full4K
+rerun is assigned. No other chat or peer-agent communication is authorized.
+
+
+<a id="w205-r288-deduplicated-current-ownership-20261027"></a>
+### W205 R288 current ownership and duplicate-work exclusion
+
+Read-only routing refreshed eight active related chats and the shared claim registry before additional source work. Titles/progress are routing evidence only; code or runtime acceptance still requires actual caller/source/receipt. The current Source191 plus PTA candidate intersects37 non-stale foreign exact-path claims. The shared app PID is common to several chats and is not proof that each claim is actively editing; these are integration candidates requiring hunk/producer/consumer reconciliation, not37 confirmed duplicate implementations. Root has not messaged, reassigned or modified other chats. A read-only future-live three-way routing sample covers68 changed paths:40 text-clean (semantic review still required),21 same-hunk text conflicts,3 live=owning-before,2 add/delete differences and2 live=donor-after. Text conflict is not duplicate semantics. PTA/contracts reconciliation stays in external proposals; live supplier bytes are preserved.
+
+| Canonical owner | Reuse and excluded duplicate work | This chat's remaining cut |
+| --- | --- | --- |
+| FNL230/251/260 Python suppliers | Existing checked Core, dynamic wire, witnesses, return/constructor payloads, native projection/allocation in shared parents. Preserve current live hunks and independent oracles. | Consume those owners; only same-Source SDK BC/FileText/Python acceptance. No second Python producer, serializer or witness issuer. |
+| FNL310 SolverPrep/IFDS | Existing scalar named-row/AssignCall/SourceId and taint/IFDS solver preparation. | Java W5→one canonical PTA Set consumer; no taint/IFDS rewrite or parallel solver. |
+| FNL410 public analysis/Graph | Shared Original bundle, graph receipts and public-analysis private bodies remain supplier-owned. | Existing genuine Java call/target/CFG loans and Host Strong inputs; shared parent edits require precise hunk merge, never old whole-file replacement. |
+| FNL420/430 Host SDK packet | Existing Host capture/packet/public SDK transport and failure-custody producers. | Consume their canonical packet APIs; this chat's Native MayAlias/refinement oracle only. |
+| Master W2 and Python/Java source owner | Original request/coverage/final alias evidence and current nested-constructor Facts canonical reader correction stay with those suppliers. | No W0/W1 repetition, unconfirmed E4 implementation, duplicate alias corpus or nested-Facts fix. |
+| PTA installed-product/benchmark | Current Product build/sign/install/activation/pointerbench and qualification stay in that lane. | Read-only existing signed public dependency for SDK Python acceptance; no parallel release/signing or benchmark claim. |
+| This chat Root / R222 / R204 / R235 | Root owns all owning-source application, shared final writes and serial QBC. External proposal responsibilities remain R204 whole-W5/worker, R222 canonical semantic/ancillary producer, R235 exact joins/downstream transport. | R393 applied the disjoint14-file R389 compiler repair; frozen515/claim548, boundary/syntax/whitespace VERIFIED. R394 finished FAILED2/body0; R396 applied its3-path lexical repair and R397 finishes Runtime compile1/body0; R402 applies the scoped2-file graph-custody connection; R403 finishes SDK compile7/body0; R409 applies the3-file SDK compiler repair; R410 is terminal with runtime stack overflow; R415 independent1+2 scopes pass at the same Source; R419 applies the R418b frame split; R420 is terminal overflow. R426/R429 unit-status/coordinator repairs are applied; R430 is terminal overflow; R439 context-slot repair is applied; R440 completed0/1 after passing the prior stack-overflow point; R451 identifies the remaining MissingContext at the actual initial-Java Trace-owner read. R454 wires the existing canonical in-place Trace capture and retains context plus typed cause; R455 is terminal stack overflow with no completed witness. R462 applies the same composition-owner phase/slot split; frozen521/claim554. R463 completed0/1 after passing overflow; the actual full-failure projection panicked when attaching a second Runtime cause. R468/R471 preserve the existing projection owner in the same exterior whole-operation bank; R472 nested-cause regression1 is VERIFIED1/1 at Sourceb0f430ef; same-Source provider1 completes0/1 with a full typed error chain ending in Native JSON Unsupported. R477 Native JSON7 yields actual RED5pass2fail; R480 applies the canonical map-based newtype fix plus same-owner failure selector decomposition. R481 is VERIFIED7/7; changed2 production files official structural lint PASSallow0. R482 provider1 and SourceOnly1 are terminal, each completed0/1 at Source37f1b941 with workspace-input AuthorityRejected; terminal101/cleanup/frozen523 drift0. Current523/claim556 before R487 diagnostics. R222/R235 proposal agents ended at usage limits, so Root retains their outstanding review/integration; their drafts are NOT_APPLIED and do not prove Native success. Live supplier hunks remain unchanged. |
+
+R291 freezes the minimum producer cut externally: R284 Source191 + R222 canonical PTA/contracts84 + R204 borrowed producer prefix5, with three Source-after overlaps,277 paths/264 changed. All owning before hashes match; apply/whitespace and syntax258 are VERIFIED (256 unchanged hashes reused,2 parsed). The earlier29/84 drift report compared live Main rather than the owning baseline and is withdrawn. The canonical narrow PTA class is588454bef7d9 (`native-java-relation-output`), not the nonexistent feature name from another snapshot. R296 owning application is complete; its post-boundary two failures were repaired by R297 (unresolved worker mount removed from the minimum producer; actual CFG topology exposed by the stable intraprocedural facade). R298 stopped before rustc because added manifest dependencies were absent from both locks. R299 adds only four local dependency edges to each existing lock, preserving every package version/source/checksum. R300 through R313 are terminal compile failures, not body results. R316 finishes FAILED54/body0; R322 reduces this to one error and R324 repairs its checked work unit. R325 repeats the same PTA class on owning438 and is VERIFIED terminal0/drift0. All body/complete Native acceptance remains NOT_RUN. The worker bulk-read delta stays separate. R204 still needs virtual G→D candidate validation, complete Call/handled census, the canonical whole-Set adaptation, Native0/unique and public result. Partial noncall collection or prepared Cell DATA cannot be marked success. Cell borrowing must preserve prepared DATA/grants for failed/repeated queries.
+
+R318 refreshed the actual live registry2965 at verified HEAD7bcf214e007f415d817207aca09c1326e82c1ca8: minimum Native277 intersects40 non-stale foreign claims; the broader combined owning438 intersects48. These denominators differ from the older Source191+PTA sample and must not be combined. Claims identify reconciliation candidates, not duplicate implementations or active-edit proof. Live FNL230 return/Python parents have no identical Original Java callback hunk for the R316 errors; isolated Java repairs cannot overwrite those owners. No other chat was messaged or reassigned.
+
+R368 refreshes live HEAD7bcf214e007f415d817207aca09c1326e82c1ca8 and registry2991. The current453 owning paths intersect52 non-stale foreign claims over99 unique paths. This larger denominator includes the expanded repair/contract surface; it does not replace the older minimum277/40 sample or prove99 duplicate edits. Current chat inventory keeps active Python/FNL230/FNL410/bench owners excluded; master W2 remains its existing owner. Master reports only source/static FNL310 handoff and product acceptance0, which is routing context, not this chat's execution proof. No other chat is messaged or reassigned.
+
+R394 routing refresh (2026-10-27 KST): `FNL310 Native SolverPrep·IFDS 구현`, `Python 진입·CAS 회귀 테스트 마무리`, `FNL230 TSJS import·V4 출력 구현`, `FNL410 공개 분석 Native 의미 구현`, `PTA 벤치 다시 실행`, `마무리용 마스터` and `증분` are active. `FNL420·430 Host capture·SDK 구현` is notLoaded, which does not release its source ownership. These are app routing states only. Existing owners, W2 and release/benchmark scope remain excluded; no cross-chat message is sent. R393 refreshed and reconciled the shared registry before applying only its14 reviewed paths.
+
+R403 read-only source refresh at live HEAD7bcf214e007f415d817207aca09c1326e82c1ca8 confirms the supplier's canonical fourth `NativeGeneralPending(G)` and its distinct `NativeGeneralIncompleteV5` extraction path still exist. They are not a completed Java full payload and remain supplier-owned. Root will preserve them during the eventual hunk merge; the external Java-full sum draft remains NOT_APPLIED. No replacement of that supplier or duplicate generic solver is assigned.
+
+R407 reviews the unapplied R387 same-file caller and finds a concrete failure-priority defect: an actual Source finisher error is discarded when a losing roster reserve error is already parked. Root prepares a dependent external correction that records the Source error first while retaining the physical loser. It is NOT_APPLIED/Rust NOT_RUN and must join the one current-before Native packet plus a real failure-path witness. Do not apply the old R387 draft unchanged.
+
+R431/R433 read-only reconciliation of the master's inner-lock handoff confirms exactly3 missing dependency edges in `packages/analysis/quanta-v2/Cargo.lock`: invalidation-owner Native core/source-wire and query-executor-owner dev Native core. Both live manifests and the inner lock are hash-pinned; the external3-line candidate preserves all other parsed lock content and adds no alias names. It remains NOT_APPLIED/inner metadata NOT_RUN while this chat preserves the isolated execution boundary. Root-lock QBC results do not validate the inner workspace. No cross-chat message or live source/index/HEAD write is performed.
+
+R435 completes the external15-packet Native composition over31 relevant paths, resolving3 actual hunks while preserving current facade/compiler repairs and Root407 Source priority. All31 syntax scans pass; this remains NOT_APPLIED/NOT_READY. R436 connects the existing independent emitted-Alloc effect tally to the real full-worker tally stage, retains both census results and records missing Parser metadata as unresolved. It is staged externally only. R442 adds the actual whole-W5 semantic-zero invocation to the external worker: checked final-D four-axis counts are retained with each member, every authenticated W5 envelope is checked before the existing focal census birth, and the canonical closed census stays in the exterior bank. WorkItem order is joined to W5 by the existing exact visitor; no positional alias is assumed. Six-path syntax passes; the new module print-current structural scan has0 findings. External union is now32 paths. Rust/body proof, positive semantic modeling, owned full coverage, paid constructor decisions and canonical full-result transport remain open; worker still returns typed refusal.
+
+Immediate execution dependency: finish R440 SDK provider1 at unchanged8MiB after the backend ancestor frame repair, then continue the remaining scopes. Then run sourceOnly1/declared-JAR2 and Linux Python4→BC2→FT1 serially on an actual current Source. Regenerate drivers against the final freeze and previous finished receipt. Only complete canonical ancillary evidence permits full Native/Strong/public acceptance; external partial census/transport candidates remain open. Root owns final integration and Rust; no other chat is reassigned. All results retain their own Source and count denominator.
+
+The new77cb actual capture confirms a narrower diagnostic custody gap:
+SourceApply/BuildPrepare/CoverageScan/MapApply and lower managed-install calls
+are request-root siblings. Root internal ANN writer now owns only Kernel
+`diagnostic.rs`, Source apply/map observer wrappers in `source.rs`, and existing
+source build/coverage WorkStage hunks in `update.rs`. Internal observer writer
+owns only NativeTextIndex::prepare diagnostic child-context propagation in
+`native/text.rs` and its existing focused regression. They lend the same original
+WorkBudget through existing scoped diagnostic context; no work allowance,
+request deadline, object/SQL algorithm, source issuer or public port changes.
+Existing E01/E02 implementation is not reassigned. Root alone integrates and
+serializes the affected tests. The tool lane adds no second source-root index:
+original canonical timeline ancestry supplies request-level RCA, while the
+reusable worker index truthfully retains worker_count0 for the failed request.
+
+<a id="e07-scoped-scan-reuse-20261027"></a>
+### E07 scoped map scan reuse — 2026-10-27
+
+Root owns this E04/E07 continuation and ticket integration. The internal read
+lane exclusively owns `storage/src/map/scoped_reads.rs` and its existing
+`map/tests/scoped_reads.rs`: route paged reads through the original `scan_with`
+and funded authenticated DATA cache. No physical writer, schema, lifecycle,
+durability, public port, or authority change is assigned. This is a query read
+reuse fix; it is not a SourceAdvance30s or full4K throughput fix. Coverage/Catalog
+cost review remains read-only until a concrete removable operation is identified.
+Completed checkpoint/parent/renewal work is reused. Root alone runs the affected
+validation and updates README/VALIDATION; no peer or external chat messaging.
+The writer is finished: c3f482a7 Storage strict,5/5 scoped-read cases and8/8
+actual Kernel query cases are VERIFIED; no source writer remains active in
+this lane. Original4K and formal performance/operating qualification stay open.
+
+<a id="e04-stale-delta-batch-20261027"></a>
+### E04 bounded stale delta retirement — 2026-10-27
+
+The internal ANN lane exclusively owns
+`semantic/src/native/embedding/ann_directory/maintenance.rs` and the existing
+`embedding/tests/ann_product_tests/maintenance.rs`. Only `materialized=None`
+delta retirement is assigned: authenticate the original bounded page and stale
+artifacts, stage funded exact-precondition edits, apply once, then update counts.
+The scalar `materialized=Some` path, directory wire, seal, provider, Catalog,
+physical installation and budgets remain their original implementations. This
+is not a claimed original4K throughput repair. Root owns serial integration,
+validation and ticket writes. Other internal lanes are read-only; peer and
+external-chat communication remain excluded. The writer is closed at38dd3190:
+Semantic production/test strict,maintenance20/20 and actual Kernel16/16 are
+VERIFIED. Root's final edits repair only grant ownership/error order and the
+negative oracle; no foreign source lane is reassigned. The two-file repair is
+complete; original4K and formal operating/performance acceptance stay open.
+
+<a id="e07-native-stack-and-callback-rca-20261027"></a>
+### E07 native stack attribution and callback RCA — 2026-10-27
+
+Root continues the full original4K RCA goal; completed scan/stale-delta work is
+not reassigned. The internal physical lane owns only FileMutation reservation/
+start hunks in `publication_file_capacity.rs`, their existing tests, and the two
+VFS callback reservation/start pairs. Every callback still authenticates live
+root/lock/allowance; independent public transitions keep their own checks. The
+internal tool lane owns only `native_stack_symbols.py`, its Python tests and
+the retrieval README section. It verifies executable code/address identity
+before interpreting a stripped runtime's sample with a symbol companion.
+Root owns builds, actual sampling, integration and ticket updates. These are
+diagnostic and exact repeated-work cuts, not new authority/caches or a second
+benchmark. No internal peer or external-chat communication is assigned.
+
+R452 external-only follow-up removes an Ordinary String diagnostic allocation from the live Original semantic-positive refusal path. Paid candidate counts and the typed refusal remain in the member/bank; no missing axis becomes empty. External staged union remains32, NOT_APPLIED/NOT_READY.
+
+R464 read-only chat refresh: FNL310 and master are idle; 증분/FNL420430 are notLoaded. None of these states releases source ownership. PY/FNL230/FNL410/Host/master W2/bench scopes stay excluded. R466 rechecks live inner-lock unchanged0ee1c954 at HEAD7bcf214e; the same3 missing edges remain, so R433 remains a reviewable NOT_APPLIED candidate, with inner metadata NOT_RUN.
+
+R474 source/ownership check for the observed Native JSON failure: existing Native producer emits BuildInputKindV1::Other via serialize_newtype_variant; canonical Native codec returns Unsupported for that exact data model. Owning/live codec bytes are identical6bc842bdd9745f08eaaeaae3d8817e40b06e61d763453b887b44196915e43cca. Registry has only stale OCT19-HOST-NATIVE-JSON-FROZEN-PROOF-20261019 on this file, no active overlapping writer; FNL230 read-only latest scope remains Python constructor/range capture. Root extends the existing serializer/map owner, with no new DTO/serializer/Source. R476 test-only application is syntax/boundary/whitespace VERIFIED; current522/claim555. R478 production patch1b2782095f38861e9bb3ab27ad228847a0f2a91a6b4510ef3fa0cfff03602cb8 awaits observed R477 terminal. R473c initial-failure same-owner decomposition is a separate one-file external proposal7df944ee002c922c93139028828ee53ab2a8317800302d5cb1f177431ad16abd, syntax/print-current0 findings, NOT_APPLIED. Earlier R473/R473b are superseded.
+
+R480 applies the disjoint2 closure37605741e651203c154c8b047dc79817e42a341cff548bdf6721954b94694e81 from R478 canonical Native JSON newtype1 and R473c same-owner initial-failure decomposition1. Public grammar, selected cause priority and existing paid storage remain unchanged. Frozen523/claim556, exact/syntax/pre-post-boundary/whitespace VERIFIED; both production files official structural lint PASSallow0, no baseline/suppression. R481 codec7/7 is VERIFIED@Source37f1b941; R482 provider1 and SourceOnly1 each complete0/1 at the same Source37f1b941, ending in workspace-input Source AuthorityRejected (terminal101/cleanup/frozen523 drift0). R483 external-only full-worker phase split preserves the exact canonical call sequence, original byte-root wrapper and outer bank/terminal; new phase module has0 print-current findings, existing Copy/census debt remains. Native staging union33 remains NOT_APPLIED/NOT_READY; typed refusal stays until actual constructor/effect/coverage/full transport is complete. Current FNL230 constructor bank was rechecked as OriginalDfgPythonCheckedCohortBirthV3 with Python/MRO roles, so Root does not duplicate or modify that scope for Java G/final-D decisions.
+
+R484 read-only reconciliation of the master-reported Main E0507: the formal-reference branch in quanta-adapters-dfg/.../port_callsite_birth_v4/work_v4.rs:149 is newer than owning523. Live before64375089971aaf4292f8f04564b9b2d99fd81956076e80630bea881000099cc3; owning6c658eaefc5951140fefca3445daf829115c8ef837abe5a51188b6584c641362 does not contain formal_v1. One-line as_ref candidate /tmp/w205-r484-main-formal-argument-borrow-CANDIDATE/overlay.patch SHA5817291f6c6f8f7d438cc5f4d85086b0da652cfe0993aaa0668715aaf0e8073c, candidate-afterd90ea8a4ad7a48f2d83a23f5f4271a53b0f13dbe6e48a69c998475ea9b2f2ba5. It borrows the parser-owned Option; CanonicalSymbolIdV2 fields remain Copy16-byte identities. Syntax VERIFIED, NOT_APPLIED, Main Rust NOT_RUN/source-ready false. The current owning SDK run cannot qualify this distinct Main branch. No Main source/index/HEAD edit or cross-chat reply was sent; preserve serial final integration and separate snapshots.
+
+R485 partial ownership release: the newer Main formal-reference matches! arm in work_v4.rs(formal_binding_v1, lines148-155) is RELEASED TO MASTER W2 for the requested E0507 repair/integration. The path-wide Root declaration does not claim that newer Main hunk. Root has no in-flight Main write and retains its older owning literal/no-argument implementation plus all SDK/Native scope. The exact R484 one-line candidate remains available with before/after hashes; Main code NOT_APPLIED by Root, Main Rust NOT_RUN/source-ready false. This release is recorded in the shared claim domain and this existing ticket; no external chat message is sent.
+
+R486/R487 current-source diagnosis: R482 provider1 run20261027T102957.706826Z-6e1f290ec695 and SourceOnly1 run20261027T104820.626508Z-132515369b32 both completed0/1 FAILED at Source37f1b941003530592f91ee4ee73c4eef1eabc482602498a715bfd064df04723c; terminal101/cleanup/frozen523 drift0. Both retain the full typed chain through OriginalWorkspaceInputFailureNodeV3 to SourceIssuanceControlRefusedV3(AuthorityRejected). R486 adds nonblocking borrowed Debug inspection of the existing retained exact-owner/metadata bank to distinguish the producing phase without taking DATA, weakening authentication or changing Source semantics. Patch599d07aa95316520ecb6c38141cf8da93c75d41f0cc60efc15e236c6732fef2b is applied owning-only in R487: frozen524/claim557, exact/syntax/pre-post-boundary/whitespace VERIFIED. R488 provider1 finished0/1 FAILED@Sourcecc4fee63682f6d2059e23ecbf71a70127e1d4d88b0d0fa75dade5ed7bf15ed93, run20261027T105828.569324Z-94be525f8215; terminal101/cleanup/frozen524 drift0. Existing retained-bank Debug proves metadata.attempted=false, so the producer refusal precedes metadata construction. Main E0507 was separately applied by master after R485 release: current source read confirms the exact .as_ref arm, but the complete live file has additional edits (current SHA9aa1b686), so the earlier d90ea8a4 candidate is not its current whole-file hash; Main DFG Rust remains NOT_RUN here. All six goals stay OPEN.
+
+R489 Linux preflight: mounted owning524/524 hashes match with zero drift, existing signed r364 installation and records are present, normal free113.296GiB/6.097% exceeds the unchanged Linux50GiB/3% guard. No Root Linux Rust has executed yet. R490 serial SDK7 driver is refreshed to current524 and waits for R488 terminal; it must retain one actual Linux Source across Python4/BuildContext2/FileText1. Existing installed r364 is only the frozen dependency, not current release proof. Current UI refresh shows PY/FNL230/FNL310/FNL410/master/bench active and FNL420430 notLoaded; none is released.
+
+R493 duplicate-work routing refresh: Root has no live Main manifest writer or active child writer; its only Rust command is isolated R488. The exact E02 chat is `01a10d0b-bc57-7662-a2d3-315c1a07fdb5` (title `증분`), which successfully resolves with the thread reader; a string with an appended `a` is not that thread id. Read-only current turn shows E02 owns the QE manifest dev-feature closure for its Native binding fixture, and has copied that closure into its own frozen W64 cohort. Do not assign that manifest or its source/verification to W205. A write pause is not inferred from that read; no pause or cross-chat message was sent by Root.
+
+R491/R492 structural scope: official changed2 lint is FAILED(new6,worsened0,allow0); actual before/current has the same6 findings, parent file_lines1021->1033. External R492 patch982c308ab5a513053a5243df20d96ce8f6035abf0950364b1db25f54087cd1dc moves the same Debug implementation into an owner child, parent1020 below before1021 and child0 diagnostic findings. It remains NOT_APPLIED while R488 source is frozen; no baseline refresh or suppression.
+
+R494b/R496 current closure: R494b external3 patch027e4ce17940e846c916668f92d5a4a5a846613de9471b4bc638ed26b1c0122b extends the existing prepaid Native failure sum to retain the rejected checked input capture/receipt and the exact validation stage/cause after its Source ends. It preserves predicate order and rejection semantics; syntax3 and print-current structural0 only, NOT_APPLIED/Rust NOT_RUN. Successful and consumer-stopped behavior stays unchanged. R490 Linux detached snapshot was BLOCKED before Rust by RO Git common worktree registration; R495 standard owner was BLOCKED before Rust by rustup temp-file writes to RO toolchain root. R496 uses the supported standard owner module rail on the existing RO fixed root, with directly verified installed rustc/cargo1.92.0 executables in PATH. Same normal guards, lane, jobs1,threads1,seedauto and same actual Linux Source requirement remain; no detached replay or current release claim. R496 is the sole active Root Rust command; owning524 stays frozen through the SAME exec41696 terminal/cleanup.
+
+R497 Main snapshot pause boundary: Root and all its terminal proposal workers have no live Main Rust/Cargo writer. The only current execution/source custody is isolated owning524, which is frozen for Linux R496. Main source writing is already paused for this W205 scope; no Main commit/index/manifest action or claimed ownership of E02 is introduced. The master-requested global capture still requires its own other-writer readiness; no cross-chat READY message or global-ready assertion was sent by Root.
+
+<a id="e04-source-data-collision-20261027"></a>
+### E04/E07 bounded Source DATA collision handling — 2026-10-27
+
+Root retains the one Rust/original4K queue and SSOT edits. The internal DATA
+lane owns only Kernel attempt_reads.rs and its existing tests child. Source
+currently reuses the same object port during source apply and later adapter
+iteration; primary collisions in the existing direct-address cache can reopen
+an already authenticated immutable object. Two bounded candidate slots retain
+more of this DATA without adding slots,raising4MiB,changing logical WorkUsage,
+or caching filesystem/publication permission. Full identity,original port
+read_retained and all miss/error/cancel/memory behavior remain authoritative.
+Root review additionally requires old primary eviction when an empty alternate
+cannot fit the existing byte limit. A real-file-store collision oracle is
+selected independently of the new slot function. No other source owner is
+reassigned; no peer or external chats are contacted. Catalog collision payload
+reuse is read-only analysis only: hot-path benefit is unmeasured and no extra
+cross-phase payload lifetime/proof is added. Final selected Rust validation
+precedes exactly one changed-source ordinary Off original4K observation.
+
+R500-R503 current result: R499 five-path closuree9cb83f96c5f53dd3f52278b2656a6200b95899b6b2982e448089595670d9552 is applied owning-only as R500; frozen526/claim559, exact/syntax5/pre-post-boundary/whitespace VERIFIED. The SDK production3 official structural lint is PASSallow0; QRA parent retains its same6 prior findings, actual parent1020 vs prediagnostic1021. R501 provider1 ended compiler1/body0 at Sourcef036573087d95e0fbfbd7900bcd85874071a1d5fdffa2e551bce0abf735b9608, run20261027T113526.158573Z-dc7797de0ece; terminal101/cleanup/frozen526 drift0. Its E0753 is the new include child inner doc, not a runtime result. The rejected input/receipt/cause now share the existing paid Native failure terminal, with caller-local diagnostic stage and original predicate order; successful/consumer-stopped behavior is unchanged. Full six-goal completion remains OPEN.
+
+R498 Linux standard owner run20261027T112548.552302Z-ab03c3e93271 binds Sourcecc4fee63682f6d2059e23ecbf71a70127e1d4d88b0d0fa75dade5ed7bf15ed93, same as Mac R488. QBC terminal101/RED counts0/0 is Cargo offline dependency refusal (missing taskmesh Git checkout), not a completed Python body failure. Outer SAMEexec54108 is terminal1 with frozen524 drift0. BuildContext2/FileText1 were not started after the shared-target precompile failure; SDK7 acceptance NOT_RUN. R502 copied only Cargo.lock's actual host Git databases into the task-private Linux cache: taskmesh e5c209ce853fa1f02028478100ce0a61368cc632 and memory-platform472048ac849c7450660b87c4476f5b687e8b389b. Linux git rev-parse verifies both exact commit objects; no source/lock/trust/guard/network changes. R503/R505 metadata diagnostics selected the SDK nested workspace, unlike QBC actual command_cwd=repo root; their blake3 registry error is not current Root execution evidence. Root lock vendors blake3 while inner lock does not. Metadata does not count as Rust/test proof.
+
+R508-R511 current correction: one-line include-comment patch4668bb87c4c1827dc65f3c013c0bd6e38d393db4e2e0a8e74b8750cd760918ff is applied as R508 with frozen526/claim559, exact/syntax/pre-post-boundary/whitespace VERIFIED. R510 provider1 is the sole current Root Rust command on SAMEexec18369; keep all526 owning inputs frozen through terminal/cleanup. R500 SDK production3 official structural lint on actual owning files is PASSallow0. Linux R504 verifies all464 Root-lock registry archive checksums and411 index names, repairing24 missing public index cache entries; R509 corrected Root-workspace exact SDK-feature locked/offline metadata exits0 (environment diagnostic only). R511 seven-test driver is prepared for current526 + R510 predecessor, standard RO owning-root rail, exact installed compiler1.92.0, normal guards and one actual Linux Source; it is NOT_DISPATCHED while Mac Rust runs. No trust, Source, lock, network or budget override.
+
+The DATA writer is closed; Root fixes a typed slice-index closure and a nursery
+array-return lint before execution. The source/rebase integration then exposes
+two older trace-fixture assumptions. A separate test-only lane owns only
+native_source_rebase/source_trace.rs: fixed512 selected-stage projection,all
+error/aborted terminal counts,and correct early-cancel Catalog wait boundary.
+Root closes that lane with an explicit all-aborted count and keeps all product
+errors,work/head/status and Off-clock oracles. The cc81 serial queue terminates:
+strict,Source6/6 and Resync5/5 VERIFIED; whole lifecycle71pass/2fail/1skip.
+The existing Root E04 queue owns only the two failed lifecycle fixture hunks:
+platform-specific barrier metrics and the supported old-view phrase contract.
+Its internal fixture lane is closed after those two edits; no production edits
+or additional owner are introduced. Current0d990e43 owning strict and the changed two bodies are VERIFIED2/2;
+Root serial original4K0d990e43 Off observation terminates FAILED0/1 at materialization
+watchdog(observed2715/4096;Source22.9300s published;provider2746unique/dup0).
+Its source/binary drift0,daemon exit0 and resource lease cleanup are verified.
+The older71 and new2 results are not a single latest full-suite qualification.
+No unchanged runtime rerun is queued; Root owns static RCA of the per-owner
+persist path within E04/E07,without reassigning E01/E02 or relaxing durability,
+worker/request/quality limits. Extra permission caches or new authority are
+not authorized by performance uncertainty.
+
+R510/R514 actual Native source-bound closure: R510 provider1 completed0/1 FAILED@Sourced67a46e6b383ffa30b6c0fd4e19899e6c7e0676695d9bf963217d6c78eb9bf78, run20261027T114110.604468Z-6a84190c3a8a, terminal101/cleanup/frozen526 drift0. Full retained chain proves Native receipt_complete=true and exact rejection stage=captured_java_members before metadata. Actual producer emits .java as Other(SourceFrontierInput)/languageNone; canonical metadata excludes Java-labelled build manifests. SDK instead filtered Some(Java), dropping real sources and selecting Maven manifests. R514 applies four-path patch0da1075c9bd0b70049736c24de209db7c10dd4072743eac328070978c05335da: reuse that existing canonical predicate through an immutable input view, fund role/path reads, retain exact request count/order/content checks, update the existing fixed membership oracle to the public view and the genuine fixture to actual source roles. Intentional unqualified negative fixture is unchanged. Frozen530/claim563; exact/syntax4/pre-post-boundary/whitespace VERIFIED; production2 official structural lint PASSallow0. R515 exact existing membership1 is VERIFIED1/1@Source63f8969f84f5872139ef2ab26f16ac7943de7c2badf29a7680f3f64409f4d69a, run20261027T121330.434828Z-4d0bb1bdeb7a; terminal0/cleanup/frozen530 drift0. R516 provider1 ended SDK lib(test) compiler1/body0 at the same Source63f8969f, run20261027T121607.020024Z-3160c43acfd3; terminal101/cleanup/frozen530 drift0. LanguageId became unused after the genuine fixture switched to actual frontier roles. Provider/JAR/SourceOnly and Linux SDK7 still need acceptance; all six goals remain OPEN and SourceReady=false.
+
+R513 ownership/source check: four new paths had zero active foreign claims. Three Main files equal owning before bytes; Main SDK parent differs only by unrelated pub(crate) tests visibility at its last line. The classification hunk is still identical and uncorrected on Main; preserve that visibility hunk during eventual serial integration. This isolated actual Native counterexample does not assert a current-Main executed result. No Main source/index/HEAD edit or external chat message.
+
+R533/R535 historical execution closure (2026-10-28 KST): R527 actual World co-cut compiled/linked and R528 provider1 executed0/1 FAILED, run20261027T142917.912506Z-fdfba8eb67d7 at Source31e7588d2358d2b33266e1d1bb738057473a48945ffa2385a4a906b28856fc9d. The earlier owned-return UnsupportedAllocation is no longer selected; the actual rejection is CrossGenerationMismatch(indexed_snapshot_pin_funding_origin). SAMEexec56974 terminal101/cleanup/frozen532 drift0. Canonical initial pin birth and deep clone explicitly fund copied DATA in an independent group, whereas the old indexed snapshot validator required pointer equality with the capture group. R533 applies patch954e6c193b922a197e0a7f76334dc49d7b808b3cf4e12587657802f28ac3b43e in7 paths: extend the existing Original header with immutable generation/source-seal DATA derived only from the actual joined FD/FULL loan; validate the canonical pin and both real funding owners independently. The actual producer/caller, committed FULL publisher and retained-header path are co-cut. Existing same-origin checks between the original role payloads and their capture/header remain unchanged. No ordinary fallback, authority issuer, paid-DATA relabel, serializer/solver/allocator or stack/budget/oracle change. R531 Source/metadata MissingContext priority and existing QRA cfg(test) constructor/callback repairs are included. R535 applies phase extraction98fc16c27ca02645a86144e44ee08846388701aabe879219574ef90d275351c8: existing SDK role-header birth and genuine fixture pin issue are separated from packet/scan assembly without predicate changes. Current frozen539/claim572; syntax7+3/pre-post-boundary/whitespace VERIFIED, Rust acceptance pending. R536 Backend lib(test) class35b0fd890831 completed10/10 VERIFIED (ignored0, filtered497), run20261027T151310.149224Z-db5dfc8156b2 at Source1d532a5dc5cf60a293987057584a7fd5c15bbd52ef5686febba1bfc8d66a24cb; SAMEexec41427 terminal0/cleanup/frozen539 drift0. Scope: existing frontier7, independent initial/deep-copy pin funding positive1, same-operation foreign generation/auxiliary pair negative1, typed foreign Current negative1. R538 SDK provider1 executed0/1 FAILED@Source1d532a5d (run20261027T153336.937828Z-bdf697d5b1ab, SAME85268 terminal101/cleanup/539 drift0), at InvalidNativeProducer with no retained phase. R546 applied the reviewed R549c5 patchbc3eb5d65c7f8c8334767562594454a07391e9b984ea25fe04da12e4d4be7dff only in the isolated owning source: frozen543/claim576. Existing bridge static diagnostic storage gets borrowed context only when no inner context exists; actual seed/provider/ingress phases retain full causes, message/backing/kind and Source/drop/await order. Syntax5/pre-post-boundary/whitespace VERIFIED; canonical five-path structural comparison before40/after39/new0/worsened0, no baseline/suppression change. R547 Gateway static-context1 is VERIFIED1/1 (filtered133, ignored0), run20261027T174311.374438Z-9dce94c03014 at Source0b28702f2a7525a66d1166458f9ae1a7989e8b58b0ed115d07673af09a0461c0; original97493 terminal0/cleanup/543 drift0. R547 provider1 completed0/1 FAILED(ignored0, filtered1780), run20261027T175019.288774Z-b3e2cdbc2db4 at Source0b28702f2a7525a66d1166458f9ae1a7989e8b58b0ed115d07673af09a0461c0. Original13592 terminal101/cleanup/frozen543 drift0. The retained static stage is seed_ingress_provider. Actual initial composition first creates a paid Source Arc, then workspace_birth asks the canonical Arc retainer to retain that already-paid input; the old isolated guard rejects solely on existing Arc custody. Current Main already contains the repair: R552 consumes its exact one-line semantic hunk rather than duplicating implementation, preserving the unchanged same-Current/shared-Source/funding checks, fresh destination grant and occupied-output refusal. Patch8c17da8fb885212dce5724630115ef330fa7086ce53b01db2224dc41a6d0d1ab, frozen544/claim577; syntax/pre-post boundary/whitespace VERIFIED and scoped canonical structural7→7/new0/worsened0, no baseline/suppression changes. Main full source hash was bound/rechecked, and imported method body equals Main; Root wrote only the isolated cohort. R553 was blocked before Rust at unchanged artifact50GiB/2.75% admission(observed45.4GiB/2.4%), owner/receipt/body0. Original50996 terminal1/cleanup/frozen544 drift0; no fresh receipt exists and old Source0b is not a current544 execution result. Canonical GC dry-run exposed no Root target selected for deletion. Physical free space briefly read53.8GiB then48.9GiB at the immediate prelaunch predicate, so the conditional retry was not created and no new owner ran. Manual Root cache deletion0 and floors unchanged. R555 later rechecked52.57GiB/2.829% and passed the normal owner front door: run20261027T185639.534697Z-83d1aadde7a8, Source0e1caec9d12cb8036557eac67217ab461648dfc83750158faae7cfd8cf339e84, original13310. Canonical auto seeding used fnl410-deadcode-owning-snapshot-artifact via COW; no manual cache/binding change. Freeze544 through this sole Root Rust execution and terminal/cleanup. SDK acceptance pending; R556 then mirrored6 source files into the task-private native volume while Mac host inputs stayed frozen: Linux544/drift0/full Source0e1caec9 matches the same current Mac digest. Original mirror helper32276 exited0; no Linux Rust or installed Product qualification is claimed. No SDK acceptance from this source-only repair. QBC existing binding generation13 already rebound the absent external cache device to the standard internal root; Root did not change shared binding or admission guards. Automatic disk maintenance and canonical COW donor seeding ran before the focused request. Provider acceptance is pending; the lower context test is not SDK acceptance. R544 Linux original63301 ended1/cleanup/539 drift0 after Runtime SIGKILL and cgroup oom_kill1 (peak11.01GiB in16GiB VM), QBC101/RED/body0; BC2/FT1 NOT_RUN. R550 user-approved Docker MemoryMiB16384→32768 and clean Desktop restart are VERIFIED: actual guest31.293GiB, previous4 running containers restarted, Root Git HEADs verified and existing tmpfs cohort alias restored. R551 additionally repaired the pre-existing R529 recreation bug that dropped signed release/trust volume-subpaths: new Root container w205-r551-linux-sdk-acceptance uses the same source/image/cache and read-only public volume with original R279 subpaths, actual canonical quanta --version0 and trust paths verified; old Root container stopped. Mount existence alone was not installed-path proof. Interrupted foreign exec bodies require owner rerun. No Root Linux Rust overlaps Mac original13592; settings backup and restart state are /tmp/w205-r550-docker-restart-state.json. R556 current Linux source volume now holds544/drift0/Source0e1caec9 after the6-file private sync; full canonical portable digest matched Mac. Linux Rust remains NOT_RUN pending original Mac13310 terminal/cleanup. Main/PY/FNL/Host/master scopes remain untouched. Native33 remains NOT_APPLIED/NOT_READY. All six objectives remain OPEN/SourceReady=false.
+
+R578 implementation checkpoint (2026-10-28 KST): 8 additional owning-only files are APPLIED; frozen601/claim635. The Source verifier now issues a private-field zero-callsite proof token required by the constructor mode. After paid caller Domain registration and the existing file memo, the canonical issuer returns an empty envelope without FunctionKey/caller-row/locus/index scratch. Unverified/Ordinary/nonempty paths retain their existing checks. The same canonical batch finisher serves both paths. Exact pre-claim Java hashing now charges policy292 bytes and registration161 bytes (registered hash adds16), each before its hash, through the same hash-owner preimage visitor; digest encoding/goldens are unchanged. The old260-byte charge was193 bytes short (209 with registered hash). Reusable tests add a fixed453-byte delta and291/452-byte refusal boundaries; these parser Original Source/refund tests are VERIFIED4/4 at Sourcebb7c757f8 (R582 run20261027T232905.964435Z-e52a2ac67e26, original51965 terminal0/cleanup/601 drift0). Rust parse8/whitespace VERIFIED; structural22→22/new0, existing builder146→150 and70→75, issuer1036→1039/1047 and Java identity810→816 growth remain recorded; no baseline/ceiling increase. Build-phase boundary before/after VERIFIED. New-source QRA production lib check R579 VERIFIED: run20261027T231025.585724Z-d6944f641907 Sourcebb7c757f7fd04d1db4fa65e6ef193383c18334fbf096a817fa1888b988800e70, original75191 terminal0/cleanup/601 drift0. At the same Sourcebb7c757f8, coreJava grammar/AST tests3/3 VERIFIED (R580 run20261027T232041.686787Z-517037653a1c), registration digest test1/1 VERIFIED (R581 run20261027T232446.150882Z-199d1f0bd63d). Both original terminals0/cleanup/601 drift0. Parser Original Source budget/refund4 tests VERIFIED at the same Source; QRA constructor fast-path/bank behavior and whole product are not qualified. Existing installed Java typed-provider1 is running as R583 (historic registered class56add123c964); this is not Native product acceptance. Prior frozen596 Source839cd7f84efed2957686b6a6dbb715f48463432f6528afa9ec2ff0ad5686aa0d is VERIFIED for constructor contract21/21 (R573) and QRA production lib check (R577 run20261027T225011.951448Z-f8eb57f5fc69, original53917 terminal0/cleanup/596 drift0). These prior greens do not qualify the new601 cohort. R572 Python gate49 remains scoped to its unchanged2 files. Python supplier correction: Main already has the exact three-function physical-FD Native fixture and public genuine positional extraction verifier (SDK graph_oracles_v3.rs:51-76,283-295; QRA worker_zero_formal_extraction_v5.rs:26-80). Its existing producer_param_authority_join_bound_matrix_v1 also rejects duplicate producer identities (solve_worker_delta_tests.rs:762-783). Reuse these owners; no duplicate fixture/verifier implementation. The old owning captured-DTO helper still refuses and uses retired APIs, so its compile failure is not a missing Main supplier. Current extraction execution/complete solve remain NOT_RUN; orphan_unused had no executable dead-code oracle in either test and does not create a new task. Comparison: external python-worker-fixture-NO_PATCH.md, corrected to existing-chain status. Nonempty Original callsites, remaining paid DATA/effect/metadata/census/full transport, current QRA body and product acceptance remain OPEN/SourceReady=false. No Main source/index/HEAD writes, Linux Root Rust overlap, or budget/stack/floor/oracle relaxation. Artifacts: /Users/songmin/.codex/artifacts/w205-recovery-20261028/.
+
+<a id="e07-write-boundary-cost-20261027"></a>
+### E04/E07 callback-cost attribution — 2026-10-27
+
+The0d99 original4K run is terminal; its source freeze is released. Root assigns
+three exclusive internal code lanes: Core/recorder/canonical schema+parser;
+Runtime Router/diagnostic private timing child; worker-index consumer+tests.
+They do not message each other or external chats. Lanes are closed after static
+handoff. Root owns the existing sync/checkpoint manual fixture updates,SSOT,
+and the one serial Rust/runtime queue. No E01/E02 source ownership is moved.
+
+Fixed contract adds six aggregate lane22 counters: write admission calls,
+admission refusals/admission elapsed,lower-envelope elapsed,post-callback
+elapsed/post-callback refusals. Production Record accounts every Before/After
+boundary; no per-callback event or new persisted authority is introduced.
+Off has no new clock/event/allocation. Core clock sampling is diagnostic DATA
+only. Pending identity is owner+capture+segment+handle/sequence; mismatch,
+unfinished pair,clock regression/overflow and masked interval invalidate the
+capture instead of fabricating timing. All original VFS/capacity/refusal and
+product funding/worker/quality conditions remain authoritative.
+
+Root's first three strict cohorts are terminal FAILED before test bodies;
+exact lints are repaired without changing product behavior. The
+3945351f cohort /private/tmp/qi-e07-write-boundary-verified-20261027-4rglajos,
+exec91917 is terminal: owning three-library strict,Core24/24 and recorder22/22
+are VERIFIED;Runtime is FAILED at test compilation on two ambiguous imports.
+Root fixes those imports; the previous freeze is released. Python
+timeline+worker-index280/280 and Ruff were VERIFIED before the new fixture
+repair. Core/export/Runtime source lanes remain closed. Two exclusive tool/test
+lanes now repair the inline-module path lint and the inconsistent parser gold;
+neither changes production Rust or contacts another chat. No actual new Record
+has started. A short existing diagnostic prefix,not another full4K run,is the next
+measurement only after these prerequisites succeed.
+
+The two tool/test lanes are closed. All code inputs are frozen at6f4b2ffb
+for the restored-volume canonical queue exec24057,
+/private/tmp/qi-e07-write-boundary-cohort-20261027-urijvyh8. Only Root runs Rust
+or the next Record prefix. A separate read-only lane classifies the9 SCC
+reports against HEAD without edits or baseline promotion. Python281/281 and
+module-resolver35/35 are VERIFIED; full module-cycle and guarded tree gates
+remain FAILED with their distinct causes in VALIDATION.
+
+Exec24057 is terminal after strict passed and Core metadata failed on the
+minimal offline registry. Root formats only the2 Python resolver files and
+rechecks35/35/Ruff. Current freeze is f10fc5da at
+/private/tmp/qi-e07-write-boundary-qualified-20261027-99a4l1zv,exec38141;
+Rust inputs are unchanged from6f4b2ffb. Full host registry is mounted read-only.
+The9 SCCs are identical in HEAD and current; no new source owner or baseline
+change is assigned. All internal code lanes are closed,Root alone owns the
+Rust/Record queue and documentation.
+
+Exec38141 is terminal after strict/Core24/recorder22 passed and Runtime test
+compilation rejected one unused atomic return. Root fixes that test-only line;
+all code freezes at afd430bd for exec28300,
+/private/tmp/qi-e07-write-boundary-ready-20261027-jctoht__. This is the sole
+live Rust queue. Record has not started. All other lanes remain closed.
+
+Exec28300 terminates with strict/Core24/recorder22 VERIFIED and Runtime125/126.
+Root restores FULL sync in the failed clock fixture so warmup follows original
+funding settlement. No production or fixed-limit change. The only live queue
+is exec96277,/private/tmp/qi-e07-write-boundary-fullsync-20261027-8leb5ie0;
+all code inputs are frozen and all other agents are closed/read-only.
+
+Exec96277 is terminal VERIFIED: source42a9499d owning strict,Core24/24,
+recorder22/22,Runtime126/126;drift0/OOM0. That exact source remains frozen for
+Root's ordinary bench diagnostic compile/body exec95419 at
+/private/tmp/qi-e07-write-boundary-prefix-20261027-vketqteu. No agent owns new
+source edits. Only documentation may change while this queue runs. Normal
+quiet admission is BLOCKED;this is explicitly supported contended diagnosis.
+
+<a id="e07-write-boundary-readout-20261028"></a>
+### E04/E07 measured residual ownership — 2026-10-28
+
+Exec95419 is terminal VERIFIED1/1,prefix actual132,COMPLETE292206/loss0/health0,
+source42a9499d/binary drift0. That source freeze is released. Raw capture has
+199Ok+1Cancelled worker spans through confirmed shutdown;not199 public prefix
+completions or4096 acceptance. Root alone updates the result/SSOT.
+The only new exclusive source lane is Runtime Adapter::before_mutation and
+Adapter::on_event poison precheck plus the owning poison tests. It moves the
+existing check into the mutation mutex and removes duplicate acquisition for
+BeforeWrite/BeforeTruncate;C witness/root/ledger/retirement checks stay intact.
+No coverage/Catalog SQL rewrite,baseline update,foreign epic edit or runtime
+rerun is assigned. Other internal agents are read-only;Root owns integration,
+next focused Rust queue and any later performance observation.
+
+The mutex source lane is closed after Root's final integration. Root owns the
+sole frozen-input Runtime strict/regression queue exec85214 at
+/private/tmp/qi-e07-mutation-lock-20261028-6rppgzqw. Source changes are limited
+to the existing poison check in2 mutation kinds and its2 owning tests;all
+other code lanes are closed. No actual post-repair performance run is queued.
+
+Exec85214 is terminal VERIFIED at b19668ad:Runtime strict and127/127 bodies,
+source drift0/OOM0/owned container removed/resource admission released. The
+source freeze is released. All internal edit lanes are closed. Root retains
+E04/E07 measurement and throughput residual ownership;no additional code cut
+or full4K rerun is assigned. Prior42a9499d capture is pre-repair data and is
+kept separate from the current focused functional result. Foreign E01/E02
+ownership and full-plan structural/CI/release gates remain unchanged.
+
+<a id="e07-fulltail-rca-20261028"></a>
+### E04/E07 late-worker RCA — 2026-10-28
+
+All code remains frozen at b19668ad for Root's sole compile/body queue
+exec30967,/private/tmp/qi-e07-late-worker-original4k-record-20261028-4vlcisq9.
+This is the original4K test with existing Record/1GiB observer support so its
+late region can be measured;all original product/worker/watchdog limits stay.
+Three independent source/trace audits are read-only. The only analysis artifact
+preparation is outside the checkout and does not execute until the trace is
+terminal. No new performance fix or another full run is assigned concurrently.
+
+Exec30967 and sampler51509 are terminal. The original body FAILED SourceAdvance
+30.001s,then reconciled Published;provider0/worker Ok0. Complete/lossless capture
+and exact request subtree analysis are consumed once by E04/E07. Freezeb19668ad
+is released. The only new source writer is Catalog reserve_ingress's same-tx
+earlier-child adoption and its owning tests;another internal agent reviews that
+custody change read-only. Root owns integration,documentation and the serialized
+owning validation. No other source lane or full4K rerun is assigned. No external
+chat is contacted. Foreign E01/E02/source hunks and all product limits remain.
+
+The Catalog edit lane is closed at be31193f. Root's owning strict and full
+Catalog library264/264 are terminal VERIFIED,drift0/OOM0. The same source is
+frozen for the final affected3-process-witness slice,exec56066 at
+/private/tmp/qi-e07-ingress-process-20261028-n5bh5u6n. No source writer is active;
+only Root updates documents and consumes the result. This is the same queue,
+not a new full4K,paired-overhead or release run.
+
+Exec56066 is terminal VERIFIED3/3 existing public-path witnesses at the same
+be31193f,32 unselected,source drift0/OOM0,owned container removed and resource
+admission released. The source freeze is released. All internal edit lanes
+and Rust/runtime queues in this E04/E07 scope are closed. Root has reconciled the actual failure,
+bounded repair and remaining Source/worker performance seam into E04/E07;
+no whole-plan or original4K/overhead/operating closure is claimed.
+
+The current RCA/solution request is a read-only source/capture audit plus an
+E07 plan update. Root owns the single next diagnostic/repair selection in
+E07#rca-solution-20261028;no counter/cache source writer or runtime queue is
+started by this plan. Source-only diagnosis precedes any original4K rerun.
+Other epic ownership remains unchanged;no cross-chat message is sent.
+
+<a id="e07-pager-counter-ownership-20261028"></a>
+### E04/E07 same-connection pager observation — 2026-10-28
+
+The subsequent authorized implementation used three exclusive internal lanes:
+vendor/rusqlite-0.40.2 for the safe nonresetting64bit Connection API;
+Catalog io_admission.rs and connection/diagnostic.rs for same-lock snapshots
+and post-unlock emission;searchd trace_recorder plus the existing causal
+timeline/parser/index and their tests for the fixed wire/consumer contract.
+Root owns Core counter/health enums,Cargo patch/lock,integration and the single
+validation queue. Those edit lanes are now closed. No cache size/checkpoint/
+durability/product-limit policy changed. Other epic hunks remain untouched.
+Python299/299 and focused Ruff/rustfmt/diff checks are terminal VERIFIED;
+the first run's1 fixture group-selection assertion was corrected before rerun.
+Rust owning validation and actual source-only diagnosis remain NOT_RUN at this
+entry. All code inputs are frozen for Root's serialized validation;documentation
+may be reconciled while it runs. No external chat is contacted.
+
+The first strict attempt at45f9ae02 is terminal FAILED without test bodies;
+Root corrected only Result error retention and the used hold-field name.
+Exec75841 is terminal VERIFIED at7fdf7618:owning strict and311/311 bodies
+(Catalog267/Core diagnostic21/recorder23),drift0/OOM0. Its container is removed
+and resource admission released. The sole remaining live queue is Root's
+existing Source-only4096 diagnosis,exec39428 at
+/private/tmp/qi-e07-pager-source-only-20261028-ssfa7zfb. All code inputs stay
+frozen;only documentation may change. Other lanes remain closed/read-only.
+
+Exec39428 is terminal FAILED at the same7fdf7618,source/binary drift0. Source-only
+30.004s cancelled in NativeCoverageScan,provider0;COMPLETE23759/loss0/health0
+capture observed39555 spill pages. This is not original4K or an improvement
+comparison. The producer freeze is released. Root then changed only3 Python
+consumer/test files to include pre/post callback refusals and preserve missing
+callback observations. Focused Python302/302 and Ruff are VERIFIED. Rust inputs
+remain identical to the311-body cohort. All owned Rust/runtime/agent queues
+are closed. Root retains the single E07 cache-configuration/lifetime-policy
+repair decision and subsequent serialized Source/full4K acceptance;other epic
+owners and original limits remain unchanged. No external chat is contacted.
+
+<a id="e07-writer-cache-policy-ownership-20261028"></a>
+### E04/E07 admitted writer-cache implementation — 2026-10-28
+
+The prior goal turn made progress:real spill was observed and diagnostic
+error/missing-data handling was repaired. The next code pass has3 exclusive
+internal writers after a contract-first read-only audit:
+- Catalog:writer_cache.rs/open.rs/connection.rs/io_admission.rs/lib.rs and
+  owning cache/close tests;explicit KiB policy,actual before/after readback,
+  connection-bound existing MemoryLease and failed-close custody.
+- Runtime:native.rs/native_resources.rs/native_product.rs/native_boot.rs and
+  native_catalog_retirement.rs;required config,one-ledger detached retained
+  admission before mutation,explicit retryable checked retirement.
+- Diagnostics:native_catalog_cache_diagnostics.rs,existing recorder/wire/schema/
+  causal consumers and owning tests;fixed actual settings only,not policy.
+
+Root owns Core's5 setting counter keys,Runtime lib module declarations,Native
+integration/scale fixture callers,SSOT reconciliation and final serialized
+validation. Required Native config is catalog_writer_cache_kib;there is no
+adaptive size or silent default. The existing source profile explicitly tries
+8192KiB within its unchanged execution/request capacities;other narrow fixture
+callers explicitly use2048KiB. Neither value is yet a qualified product policy.
+No caller raises Source30s/1M reads/512MiB,worker/quality/durability limits.
+All code lanes are static-only until Root freezes the completed cohort. No
+Rust/runtime queue is live and no external chat is contacted. Other epic hunk
+owners remain unchanged.
+
+
+The3 source lanes have returned their implementation.Root's integration exposed
+external effort/maintenance aliases and persistent-cache baselines in existing
+fixtures;the same Runtime lane owns effort/product fixture updates,the Catalog
+lane owns native_index_uds alias/retry regressions,and diagnostics owns partial
+capture completeness repair.Root owns remaining fixture/config/module callers
+and the single validation queue.Small pump fixtures explicitly select16KiB
+within their unchanged384KiB cap;the ordinary2048KiB and product8192KiB values
+are not performance acceptance.No Rust/runtime execution is live at this entry.
+
+
+Strict integration found the new resource policy pushes the Copy resource config
+past the existing256B pass-by-value lint. Runtime production now borrows the
+resource config;the UDS lane updated33 bind callers,Root updated34 other callsites.
+No forwarding wrapper or lint exemption is added. The three initial strict
+attempts are terminal failures with no bodies;the final borrowed cohort exec7737
+holds the single source/validation queue.All code lanes are now read-only.
+Focused Python313/313 and formatting are VERIFIED at this checkpoint.
+
+
+Exec7737 is terminal:owning nextest compile/link hit the external800s envelope
+with bodies0,drift0.Root resumes the identicala894366d source with warm artifacts
+in exec27262,using2400s only for the compile/verification wrapper.Strict proof
+is reused by exact source equality.Product deadlines/caps/oracles are unchanged.
+Code lanes remain read-only until that single queue releases source freeze.
+
+
+Exec27262 was intentionally stopped at compile/link with bodies0 when the source
+audit found final VFS drain was not a checked retirement witness.Parent applied
+the minimal existing retire_checked forwarding and real-second-connection oracle,
+plus4 borrowed test helpers.New single queue exec74669 freezes the resulting
+source for strict libraries,all8 Native caller targets' compile check,and owning
+library bodies.Internal code lanes remain read-only;external chats untouched.
+
+
+Exec74669's handle/container/tmp outputs are absent after host session change;
+no owning summary can be recovered from those paths.Code freeze is released
+only for the prepared2-file fixture correction(canonical VFS512/read-only and
+redundant test borrow).Production implementations stay unchanged.Root rebuilds
+the single validation environment from surviving image/target cache,using
+outside-checkout Library/Caches results.All other code lanes remain read-only.
+
+
+The original image/target cache survived.Root's recovered serial queue is
+exec47705,source78e9e627,with persistent outside-checkout output under
+Library/Caches/quanta-index/audits/oct28-e07-writer-cache-final-3jnvvhd2.
+One read-only preparation lane reconstructs the existing Source-only external
+driver;it has no runtime or source-edit authority.The3 code lanes stay closed.
+
+
+Root current E04/E07 queue:exec47705 terminated compile FAILED/body0;Root owns
+only the3 new-test unused-result repairs and session80034 at sourcee4d0cf94,2857
+inputs. Source frozen through strict/owning/Native8-target check. Read-only
+writer-cache/late-worker audits are complete with no new confirmed P0–P2.
+No external chats were inspected or messaged;no peer messages,second runtime
+queue or new production source lane. External Source-only driver is prepared
+against this new cohort but remains NOT_RUN until all3 prerequisites pass.
+
+
+Session80034 is terminal VERIFIED(strict+owning349/349+Native8-target compile),
+exit0/drift0,owned container removed. Root extends sourcee4d0cf94 freeze through
+one existing Source-only queue session35663 at the external source-phase-prepare
+folder. It performs bench compile,config-refusal then Record Source-only in order;
+original full4K remains NOT_RUN after cache policy. No other writers or runtime
+lanes are active. Other epic owners remain unchanged.
+
+
+Root continues the live Source-phase session35663 without restart;actual
+compiler child progression is confirmed through Core/IPC/SearchPlane/Embed/
+Semantic. Internal helpers only prepared external public-integration and exact
+original4K supervisors;no source edits or execution. The4 public-caller bodies
+are selected after the Source queue;the original4K supervisor remains gated on
+actual Source completion and Root raw-trace readback. All source writers are
+closed and only Root may launch the next heavy verification step.
+
+
+The final read-only RCA helpers are closed. Root changed only the prepared
+external fullOff supervisor's redundant daemon-span30s upper bound and existing
+E07 plan/validation text;repository production source remains frozen at e4d0cf94.
+Client30s and all original product/quality/resource limits remain. No source writer,
+wire-format lane,external-chat communication or additional runtime queue is opened.
+Source session35663/PID55791 remains the sole live queue;public4/fullOff are pending.
+
+
+Source session35663 is terminal compile TIMEOUT/exit124/body0 and its exact
+owned process chain/lock are gone. Root continues the same frozen e4d0cf94/cache
+in sole queue24376 with compile-only supervision4800s;product budgets unchanged.
+Current external driver/analyzer folder is source-phase-resume-20261028. Public4
+and original fullOff remain unlaunched;no new source writer or peer lane.
+
+
+Source24376 and same-binary Off16343 are both terminal failed body0/1;their owned
+processes are gone. No product/runtime queue remains live. Root releases e4d0cf94
+freeze for the scoped code cut only. Internal wire owner edits Core trace enum,
+Searchd recorder,canonical schema and owning replay tests. Internal Kernel owner
+edits source.rs/diagnostic.rs/source_trace and bounded path-scratch page grouping.
+Fixed names NativeSourceOwnerPrepare/NativeSourcePathValidate,one canonical IR,
+wire v4,first failed_stage unchanged. No peer messages or outside-chat work.
+Root serially integrates and verifies;unrelated E01/E02/PHYSICAL hunks remain owned.
+
+
+Both private source writers are closed. Source104cc894's strict→owning/public4
+queue52429 is terminal VERIFIED(strict219.537s;73/73 including all12 required
+bodies;exit0/drift0). Root then changed only the existing late-collision test
+function to cover129 valid paths followed by the second-page collision.
+Root freezes47b5b12d09d7be320e789a74ce941a7b2f0fd0525de36c8f35225dedd6abd2a4
+(2857 inputs) through the sole exact-body queue50382,now terminal VERIFIED1/1,
+exit0/drift0. All production inputs are identical to104;source-bound scopes
+remain separate. The rebound Source-only supervisor23841 is now the sole live
+Rust/runtime queue;retain47 freeze through its terminal. No peer or external
+chat coordination;only Root launches Rust/runtime. E01/E02/PHYSICAL preserved.
+
+Source47 supervisor23841 is now terminal VERIFIED1/1,Source Published25.7275s,
+COMPLETE25064/loss0/health0. Its original4K Off successor6026 is terminal
+FAILED0/1,Source30.001845s/NativeCoverageScan cancelled/provider0,exit101/drift0.
+Both use identical selected test/daemon bytes;all product limits remain.
+No Rust/runtime queue is currently live at this entry. Root retains47 source
+freeze while preparing the original4K Record discriminator outside the checkout.
+Internal lanes only inspect coverage source,VFS admission source,and same-binary
+fixture/runner differences. No peer/external-chat messaging or duplicate source
+ownership. Root alone edits E07/README/VALIDATION/OWNERSHIP and launches runtime.
+Foreign E01/E02/PHYSICAL source remains untouched.
+
+Root started the reviewed external original4K Record discriminator in sole queue
+14842 at /Users/songmin/Library/Caches/quanta-index/audits/oct28-e07-full4k-record-page-20261028.
+It reuses the Off supervisor and exact selector,47 inventory and actual binaries.
+Capture explicitly uses1073741824B,matching the preceding Source47 diagnosis and
+the existing recorder/parser maximum;no product or parser limit is increased.
+Keep47 frozen through its terminal;raw presence alone is not complete evidence.
+
+Queue14842 is terminal FAILED0/1,Source30.001698s/BuildPrepare cancelled,
+provider0,exit101/drift0;no Rust/runtime queue remains live. Raw initial capture
+is retained for canonical analysis,not promoted from presence. Root keeps47
+inputs stable through that analysis;internal lanes remain read-only. No code
+optimization is selected solely from the failure-stage label or host load.
+
+Canonical Record analysis80492 is terminal0:COMPLETE23383/loss0/health0,
+SourceApply14.599s/OwnerPrepare9.002s/Map5.460s,TextPostings9.661s(error),
+coverage absent. No runtime queue remains. Root releases47 execution freeze for
+the next explicitly scoped source repair;prior47 results retain their old scope.
+Read-only managed-install review considers prepared-statement reuse only;
+transaction authentication bypass and VFS lifetime shortcuts are not assigned.
+
+Root owns the exact is_bound COUNT prepared-statement reuse hunk in
+crates/quanta-index-catalog/src/native/authority/reclaim.rs. New selected cut
+71a8b0d27c910ba8b20d31acfa39404537e571a30f1af0ddf3f741dcd703d076 has2857 inputs
+and differs from47 only in that path. Freeze it through sole focused queue69740
+(Catalog2,existing warm Linux target). Internal agent reviews only;no second
+writer/runtime lane. All47 product results remain47-only;foreign work untouched.
+
+Queue69740 is terminal VERIFIED2/2,exit0/drift0(0.529s body/77.108s command).
+Root releases71a8b0d2 freeze;no runtime/compiler queue remains live. The narrow
+COUNT statement reuse is implemented and focused-verified. Product speedup,
+Source30s/original4K and overhead/resource/operations acceptance remain open;
+do not recast the47 failure or the prior104 strict/73 as current71 proof.
+
+Next owner-local code lane exclusively edits kernel/source.rs,
+kernel/source/owner_edits.rs and its existing tests.rs:one owner contributes
+at most two path marks plus one owner row to the existing scratch batch
+admission,with one scoped connection. Root requested unchanged-path original
+charge/reservation ordering,one production/test entrypoint and explicit
+before-mutation cap-refusal gold. No compilation/runtime until this lane closes.
+Postings audit is read-only and found no safe confirmed COMMIT/validation skip.
+Profile preparation is read-only;stripped old binary samples must not be
+retrospectively symbolized with a mismatched rebuild. No outside-chat messages.
+
+Owner source writer closed. Initial5ca040c6 strict FAILED4/body0 at30.909s,
+then checked arithmetic/access and branch style were corrected without allows.
+Root froze9617e40e66aa328bb2f6ad9f5943ff035e41be0b8714fb116e41043d2515ca31,
+2857 inputs,through sole strict→owning queue85193 at
+/Users/songmin/Library/Caches/quanta-index/audits/oct28-e07-owner-admission-final-20261028.
+Exactly four paths differ from47:Catalog reclaim.rs plus Kernel source.rs,
+source/owner_edits.rs and its existing tests.rs. No concurrent source writer.
+One internal reader adversarially reviews budget/cap/cancellation/lifetime;
+another prepares an external Source-only runner that refuses missing/non-green
+current prerequisites. Neither starts Rust/runtime. Root alone updates SSOT.
+
+Queue85193 is terminal VERIFIED27/27 and strict18.110s,exit0/drift0/all9 present.
+Root then starts the reviewed external Source supervisor2942 at
+/Users/songmin/Library/Caches/quanta-index/audits/oct28-e07-owner-source-20261028;
+retain9617 freeze through terminal. No other Root Rust/runtime queue is live.
+Further object-read audit identifies a same-call directory-validation duplicate
+candidate only:NamespaceLease already repeats stronger linked/held root/objects
+checks. No storage source is assigned or changed while this freeze is active;
+no authentication cache or root-check skip is authorized by that observation.
+
+Source supervisor2942 and console failure parser19050 are terminal. Source
+Record FAILED0/1 at30.009616s;complete23255/loss0/health0 is capture proof only.
+Root releases9617 freeze after source/binary checks. Original full4K successor
+is not run after this failed prerequisite. No heavy queue remains live.
+
+Exclusive next writer is internal native_profile_prepare on storage
+src/object/read_io.rs,src/object/read_only/tests.rs and
+tests/native_object_namespace.rs only. It removes two same-call generic
+directory validations subsumed by the still-per-read NamespaceLease check;
+it cannot cache authority or remove file/digest checks. Source owner reviewer
+audits this diff read-only. Postings reviewer inspects bounded SQL planning
+only;no write permission or runtime queue. Root alone integrates docs and runs
+the next selected strict/focused check after code lanes close. No outside-chat
+coordination or new ticket is created.
+
+Storage writer and independent static review closed. Root frozeca1767d0/2857;
+sole queue21510 is terminal VERIFIED:Storage strict21.010s and14/14 owning
+bodies,.647s body/38.185s command,drift0. No Rust/runtime queue remains live.
+Current product speedup/Source30s is NOT_RUN;old9617 failure is retained.
+External Source successor preparation binds only these current Storage
+prerequisites;it cannot claim old Kernel9 as executed atca176. Root owns launch.
+Postings range-aggregate proposal is read-only/unselected because budget/error
+ordering changes require a separate decisive design;no unbounded scan or
+original-stream validation bypass is merged.
+
+Root then started sole Source14235 at
+/Users/songmin/Library/Caches/quanta-index/audits/oct28-e07-read-source-20261028;
+retainca176 freeze through terminal. All internal agents are read-only or
+external-runner preparation only. Conditional coarse CPU-counter design uses
+the existing Clock/SpanGuard/Counter boundary;it is unimplemented and may be
+selected after a current Source failure. No per-SQL profiling or live authority
+cache is permitted by that design. No outside-chat messaging.
+
+Source14235 is terminal FAILED0/1 atclient30.000942s. Canonical failure parse
+92177 is terminal0 COMPLETE24807/loss0/health0;ca176 freeze is released.
+Publish work-spool checkpoint is first cancellation after successful Build.
+No full4K successor/runtime queue is live. Internal writers exclusively changed
+Core diagnostic_trace.rs,Searchd Cargo.toml+trace_recorder.rs,and existing
+timeline schema/parser/Python test paths. All writer scopes are closed except
+the narrow consumer duplicate/wrong-stage rejection extension. Independent
+review found async BuildPrepare CPU attribution P2;Root removed it from the
+central whitelist and tightened its no-sample and moved-child terminal gold.
+After consumer closure and static review,Root alone freezes/runs one focused
+strict+Core/recorder+Python batch. No new Source runtime before this green.
+
+All three CPU writers closed;Root tightened moved-child terminal gold and
+removed async BuildPrepare from producer+consumer CPU selection. Initialbccd
+queue44493 is terminal FAILED strict/body0 after Python351/351. Two owned
+diagnostic lint issues are corrected;the unrelated Semantic test float_cmp
+hunk remains untouched and its all-Core-test strict result is FAILED.
+Currentc2ace806/2857 is frozen through sole Root1555,existing Python suites→
+Core+Searchd production strict→Searchd recorder-test strict→focused Core/
+recorder bodies. No agent source writer or parallel Rust/runtime queue is live.
+
+Root1555 and77357 are terminal.1555 production strict failed banned Result::ok;
+77357 production strict passed but recorder-test strict failed indexing access.
+Owned sites are corrected without allows;foreign Semantic float_cmp untouched.
+All three writers are now read-only after NativeWorkSeal integration in
+Kernel update/source_trace,Core/recorder,and existing consumer/schema/tests.
+Root froze7904cd5d/2857 through sole focused6837;no parallel Rust/runtime queue.
+No product Source successor runs before the current owning batch is green.
+No outside-chat coordination or new ticket. Historical scoped results stay
+on their original cuts;docs are excluded from the source freeze.
+
+6837 terminal:production/recorder strict green;source_trace test strict failed
+three wildcard arms,body0. Root fixed those new arms and applied consumer
+per-span-only CPU repair.377 Python tests are terminal green. Current3b13f740
+freeze through sole74314 covers repaired fixture strict and owning bodies.
+Only source_trace.rs+two Python paths changed from7904;unchanged Rust strict
+scopes are reused without repeat. All internal agents completed/read-only.
+No product runtime or other heavy queue is live,no outside-chat messages.
+
+74314 terminal VERIFIED fixture strict+52/52+Source1/1,drift0. Root releases
+that functional queue and starts sole Source45886 on same3b13 source with
+reviewed external CPU one-shot runner. Keep source freeze until terminal.
+Current agents only inspect fixed-SQL preparation and same-callback first-write
+validation;none has write or runtime authority. No auth-result cache,new bulk
+indexer,retirement shortcut or threshold change is selected. No outside-chat
+coordination. Root alone updates SSOT and owns the heavy queue.
+
+45886 and its canonical analyzer are terminal VERIFIED at3b13f740/drift0.
+Source4096 Record Published26.645467333s/provider0 under original30s/1M/
+512MiB,CPU13/13 observed,COMPLETE25119/loss0/health0.Root releases the sole
+heavy queue;no product execution remains live.No follow-up full4K or profiling
+is launched automatically.All agents are read-only/completed;their final
+Postings/owner/VFS audits are merged into E07,not new tickets or assignments.
+Current code target is Postings internal SQL/patch/map-install cost,then owner
+and SourceMap.21-owner reservation/cardinality grouping/cache changes remain
+unmeasured candidates,with original cap/authority/durability and near-cap
+acceptance constraints.Root updates only E07 row/E07 plan/VALIDATION/OWNERSHIP;
+other epic source ownership is unchanged.No outside-chat communication.
+
+Next code pass:Root rechecks the current source and keeps the original caps.
+Postings worker owns only lexical/native/text_spool.rs and its test subtree;
+Root owns the apply_postings integration hunk in lexical/native/text.rs and
+these E07 docs.Two independent agents audit budget/TLS/EOF and VFS behavior
+read-only.No agent runs Rust or product fixtures.Root batches validation only
+after all source edits and static audits finish.No outside-chat coordination.
+Selected change removes per-term SQL execution using one bounded cardinality
+query per existing64-key page;its latency contribution remains unproved.
+Page-wide read admission changes internal failure precedence/partial usage,
+not successful total reads or the public30s/1M/512MiB/typed error contracts.
+
+Root froze229781541a27fe7a998a396d5959630e54f3ee88bb84399975ebb53474f3afe1
+(2858 inputs),exact delta from3b13 is the two lexical source files plus reusable
+cardinality_pages.rs.All agents are read-only.Root's sole95053 runs lexical
+strict,all selected native text unit regressions,and three coupled Kernel
+witnesses sequentially.Functional container2CPU/10GiB is not a6GiB performance
+or RSS qualification.Module snapshot failed on unchanged guarded Core/Kernel
+trees;do not alter another lane's baseline to conceal that result.No product
+successor runs before this focused queue is terminal green.
+
+95053 terminal FAILED at2297:owned lint diagnostics only,body0.Root fixed the
+new let-else/unused results without suppression.Freeze03d32194051c299259a238716
+aaa71ad2c013213c2e504b96738964a8deee8cf/2858 through sole95270;two owning
+source/test paths changed from2297.All agents remain read-only.Root alone
+runs the same strict/unit/Kernel queue.No product successor is live.
+
+95270 is terminal VERIFIED03d3:strict+145 lexical+3 Kernel,drift0.Root releases
+the functional queue and starts sole original full4K Off6436 with reviewed
+external runner,unchanged original product caps and explicit Off environment.
+Keep03d3/2858 source frozen until terminal.All agents now only audit worker
+call paths for remaining whole-owner work;no writes/builds/samples/CLI or
+outside-chat coordination.No second product fixture is permitted.
+
+6436 is terminal FAILED at03d3/drift0:original full4K Off body0/1,83.88s;
+command88.523s/exit101,no outer timeout.SourceAdvance30.004044125s exceeded
+the unchanged30s request contract;original key Pending/outcome Unknown,
+provider rows/queries0.NativeCoverageMapApply object.rs:579 observed cancelled
+after reserve;reads713626/bytes495009299 are below their numeric caps.This is
+not an attribution of the whole delay to that checkpoint.Worker/Q64/recall/
+reopen/delta/overlay were NOT_RUN.Daemon exits0;source/binary binding VERIFIED.
+No Root product/heavy queue remains live.Root owns the current RCA/doc repair;
+native_profile_prepare prepares external-only one-shot original full4K Record
+with Source-triggered owned-daemon bounded sampling,without execution.
+postings_hotpath and source_owner_hotpath are read-only audits of Map/install
+and fixture/worker dispatch respectively;no source edits,new benchmark queue,
+outside-chat messages or competing runtime are authorized by this allocation.
+The next production patch remains unselected pending actual function cost.
+
+Root reviewed and corrected the external diagnostic before execution:sample
+trigger is the first SourceApply begin,but stop follows its enclosing request
+root end or20s,not the7s SourceApply phase end.Later delta spans do not retarget
+the sampler.Footers are only candidates until canonical parser audit.Direct
+existing binary uses the same cooperative build-test.lock admission,not a
+guard bypass.Sole86314 now runs original full4K Record+20s/10ms owned-daemon
+sampling;no compile,source edits,companion build or competing runtime.All
+03d3/2858 selected inputs remain frozen;body/capture/function results NOT_RUN
+until terminal.Other agents remain read-only;Root alone owns SSOT/integration.
+
+86314 is terminal FAILED/body0/1,no external timeout,source/binary drift0.
+Canonical parse completed with23207 events,loss/health/orphan/open/leases0,
+normal footer.Source30.0033145s failed before Coverage;the20s/10ms sample
+reached25.021s sampler guard with no output,so sample NOT_RUN and companion
+build is prohibited.No new product queue is started.Root11227 only checks
+sample2s/10ms on its own external60s sleep child,with45s collection/report
+supervision and finally cleanup.This is profiler diagnosis,not product proof.
+No production patch is selected from the missing sample.All agents stay
+read-only/preparation-only;Root alone reconciles current E07 SSOT.
+
+11227 terminal VERIFIED profiler selfcheck only:owned sleep target2s/10ms,
+5.080s elapsed/exit0,same target identity,13174B report with Call graph;child
+terminated/joined in finally.This does not prove why the large daemon sampler
+needed longer than25s.No companion build or product process remains live.
+Root next scope is narrowed function attribution with collection/report
+supervision separated,not another unchanged20s/25s run or unmeasured patch.
+
+Root22570 is the sole original full4K Record process with selected-Postings
+2s/10ms/-mayDie sampling and separate60s report supervision.It reuses03d3
+test/daemon under the same resource admission;no compile or product patch.
+native_profile_prepare exclusively prepares external runners;postings_hotpath
+maps sampled functions to existing bulk/term paths;source_owner_hotpath audits
+the conditional multi-term second-cursor contract.All source is read-only
+until terminal.No outside-chat coordination or duplicate runtime is started.
+
+22570 remains live;log observes Source Published29.505213667s,not full ANN
+success.The selected Postings sample report exists with correct PID/parent
+and original module UUID;macOS privacy-redacts Path,so the initial exact-path
+predicate will not be silently changed into success.native_profile_prepare
+prepares a separate postterminal custody audit using PID/start/command,
+pre/post binaries,report parent/image UUID and capture,result hashes;redacted
+Path is unavailable evidence.Companion stays prohibited while product lives.
+source_owner_hotpath writes only an external conditional second-cursor code
+copy/patch;postings_hotpath writes only external independent Rust tests.Root
+will choose/apply after terminal function attribution.No checkout source is
+changed during this run and conditional external code is not implementation.
+
+22570 terminal FAILED,body0/1 at210.34s,not1200s expiry.Source Published
+29.505213667s;worker observes222/4096 before row3732 dispatch2 blocked.
+Sampler output185689B/completion/exit0 exists;5768 separate custody audit
+VERIFIED the exact process+module chain while preserving runner NOT_RUN.
+Trace loss513/footer invalid is PARTIAL.67839 companion attempt compiled a
+test-bin harness because cargo-rustc --profile bench selects test mode;the
+original daemon stayed unchanged/restoration VERIFIED/source drift0.No symbol
+mapping was promoted.Root alone prepares corrected non-test companion settings.
+Native profile lane owns external recipes/custody only;two read-only worker
+audits distinguish lease-renewal Catalog waiting from numeric WorkBudget
+refusal.Candidate second-cursor source/tests remain external and unapplied.
+
+
+Root exact-test-graph companion80128 is terminal: original graph no-run compile
+exit0/18.911s; original daemon/deps/test/fingerprint/source mtime restored
+VERIFIED,source03d3 drift0.The initial filepath invocation failed importing
+`tools`; separate module invocation28824 matched all TEXT sections/UUID,329
+addresses but atos resolved0.Nm floor candidates use the same existing matched
+companion,not a new build or source-line/CPU-percentage proof.No product lives.
+
+Root applied the bounded second PostingCursor range and7 independent regressions
+including first-term empty owner key.New cursor7/7 VERIFIED;actual129-term SQL
+runs5,not a proportional logical-read or latency reduction.Root also applied
+OwnedRunStarted trace ref→renewal lane29→Kernel synchronous Catalog TLS scope.
+Kernel test is a new private child `native_lifecycle/owned_renewal_trace.rs`;
+existing lifecycle callers explicitly pass None.No Core port/grant/policy
+change.Root39182 owns the sole focused Rust queue;agents remain read-only.
+Renewal regression and full current-source product acceptance are pending.
+
+
+39182 terminal focused cursor7/7,real Kernel renewal1/1,Runtime trace2/2
+VERIFIED. First lexical impact151/152 failed solely at obsolete SQL meter;
+Root updated kind2 to range query constants,kept original oracle/bounds,and
+69600 rerun152/152 VERIFIED.Strict85622 new/prior E07 six lints were repaired;
+93100 remains FAILED on existing Runtime test-lint residuals,including E07
+observability and separate E02/shared risk-suite files.No unrelated E02 source
+was changed.Root2065 serializes existing compiled impact bodies only;no
+product or compiler queue overlaps it.No full-current-source4K claim exists.
+
+2065 terminal VERIFIED:Kernel selected3/3 andRuntime renewal19/19,queue released.
+No current Root build/product process remains.All three internal lanes are
+complete/read-only.E07 test-lint cleanup hunk proposals are cache diagnostic,
+retirement guard scope and VFS write-timing oracle only;E02 admitted-publish
+and shared risk-suite files retain original ownership.Performance/RSS/overhead
+and full-current-source qualification stay open;no source-binary reuse across
+that acceptance boundary is authorized by the focused impact result.
+
+Root's next E07 code batch adds the original owned-renewal refusal predicate
+observation across Core/Catalog/recorder/canonical Python consumer. Shared
+validator caller updates in authority/lifetime.rs and owned_work.rs only pass
+observer=None;their authority/lifecycle ownership and behavior are unchanged.
+Internal lanes exclusively completed cache/retirement/VFS tests-only cleanup,
+consumer/schema/tests and independent refusal tests;their subsequent audits
+were read-only. No outside chat inspection/messages or peer coordination.
+Root81889 Catalog/Core6/6,59991 recorder3/3,19185 Python410/410 and40069
+six production-library strict checks are VERIFIED. Root's heavy queue is idle
+at this checkpoint. Whole-test strict and new original4K are not promoted.
+Followup ownership is Root's same-grant RCA/necessary hunk integration;existing
+E01/E02/E04/PHYSICAL source owners and their pending qualifications remain.
+
+Root starts new cohort dc622f16/2864 under the real shared build-test lock.
+58969 owns only canonical native_product_process no-run build;prepared external
+runner will consume its terminal-zero result for config-refusal and original
+4K Record once. No second compiler/product queue or source patch overlaps.
+All3 internal audits are complete/read-only. Foreign host work is untouched;
+source-binary binding and shared-host qualification limits remain explicit.
+
+58969 terminal no-run compile VERIFIED,915.356s,dc622f16 source drift0.
+Root37137 is now the sole owned product queue using its newly bound prebuilt
+test/daemon,config-refusal1/1 then original4K Record once. Source remains frozen;
+no compiler,hotpath patch,sampler or competing owned product is started.
+
+37137 is terminal,including canonical offline parsing;Root heavy queue is idle.
+dc622f16 binding checks passed. Source20.802s is VERIFIED;original4K body is
+FAILED at watchdog2784/4096(last progress),later snapshot2813/blocked0. Canonical
+1GiB trace is PARTIAL/unwritten163069,so lossless capture acceptance is FAILED.
+Root's current RCA uses three read-only internal lanes:worker transaction/batch
+audit(postings_hotpath),independent durability/authority adversarial review
+(source_owner_hotpath),and terminal trace/wire custody(native_profile_prepare).
+They neither edit source nor run tests/products nor contact outside chats/peers.
+Existing2-object/256-object batch work is not reassigned;parent-sync skipping is
+rejected without a namespace durability proof. No worker perf hunk is selected
+yet. Next v5 wire contract and exclusive producer/consumer/raw-reader ownership
+must be fixed by Root before implementation;all current E01/E02/E04/PHYSICAL
+owners remain. Root alone updates E07 SSOT and joins validation.
+
+V5 source batch applied in non-overlapping lanes:A(native_profile_prepare)
+searchd recorder/trace_wire/lib export;B(postings_hotpath) schema/canonical
+Python/profile and their tests;C(source_owner_hotpath) Rust child and required
+raw-test readers only. Root owns closed-worker report/CLI/tests and E07 docs.
+All lanes now freeze source for the Root queue. Read-only adversarial review
+found and repaired common-name vocabulary,terminal-code pairing,numeric type
+and child fixture shape differences before Rust build. Existing producer/SDK/
+namespace/lifecycle owners retain all other dirty hunks. No external chat or
+peer coordination and no agent build/product execution occurred.
+Root88703 alone reuses the old1GiB trace offline;Rust verification follows its
+terminal result,not a parallel heavy queue. New V5 code is not product/overhead
+qualification,and unsafe fsync/authority shortcuts remain rejected.
+
+88703 terminal0;current partial oldtrace projection identifies CoverageSave
+Catalog/COMMIT/page churn as the next performance boundary.21390 compiled3libs
+but had1stale schema test path;30758 separately passed18Runtime/harness bodies.
+Root repaired that test and new wire lint findings;88697 then passed3production
+strict libraries and current recorder34/34. Python957/2existing skips and
+CPU-report impact43/43 are VERIFIED in their respective scopes. This does not
+qualify the original4K or all actual-process reader tests.
+All internal audits are complete/read-only;no safe local cache/checkpoint/
+edge-ledger shortcut was selected. Root40800 is now the sole heavy queue,
+existing capture→individual CPU sample projection. Its output remains PARTIAL
+observed-scope diagnosis. Native Catalog edge/schema/GC replacement would cross
+existing Catalog/PHYSICAL ownership and is not silently assigned to E07 agents.
+
+
+### E07 final RCA and solution boundary — 2026-10-28
+
+Root40800 terminal0/released after277.77s;the same original trace SHA08db8a27
+was projected to external closed-workers-with-cpu.json without changing PARTIAL
+custody. CoverageSave2793same-phase CPU samples:wall448.403s/CPU229.602s51.2%.
+The residual is mixed blocking/scheduling,not fsync-only. Root corrected the
+checkpoint backfill-vs-main-sync and VFS callback-vs-COMMIT ancestry wording.
+Final internal read-only audits found no new V4-only raw gate and no safe
+additional same-call admission deduplication;existing paths already implement it.
+All internal agents are complete/read-only;no external chats were inspected or
+messaged. No E07 heavy queue remains. Root retains E07 SSOT and the next actual
+function/SQL attribution selection;existing Catalog/PHYSICAL source ownership
+is unchanged. V5 observational repair is implemented/focused-verified,not a
+worker throughput closure;new process/full4K/paired/RSS/operations remain NOT_RUN.
+
+
+### E07 current function-profile preparation — 2026-10-28
+
+Previous goal turn completed same-SHA CPU projection40800 and corrected RCA
+ancestry wording;it was evidence progress,not throughput closure. Root6359 is
+now the sole E07 heavy queue:canonical bench native_product_process --no-run
+at source1ebf2cd6/2867 inputs with CARGO_PROFILE_BENCH_STRIP=none. This retains
+existing bench codegen/LTO/panic/overflow settings but is an explicitly separate
+symbol diagnostic profile,not default/paired performance acceptance. No source
+mutation occurs while it builds. The prepared external runner selects one V5
+query product body plus the existing4K-source/128-public-completion diagnostic
+and one owned-PID5s/5ms worker stack window. It does not execute original4096
+quality,relax original caps,or map old stripped addresses to new code.
+Internal read-only audits found no new removable SQL/GC writes or statement
+cache gap. Private packed-registration format would affect6 durable row kinds,
+state-version/replay/fee semantics and lacks attributable page evidence;it is
+not selected. Catalog/PHYSICAL ownership and the single validation queue remain.
+External preparation is under
+/Users/songmin/Library/Caches/quanta-index/audits/oct28-e07-v5-worker-symbol-profile-20261028/.
+
+### E07 selected scalar-sync and confirmation-shadow repair — 2026-10-28
+
+6359 completed exit0/source drift0.50942 actual small query and prefix bodies
+passed1/1 each;the original runner FAILED only on its same-line matcher and
+remains preserved. A separate post-terminal body audit records VERIFIED with
+source/binary drift0.12172 canonical projection of actual V5 COMPLETE capture
+passed exit0:201closed workers,310803events,health/loss/open0. This pre-P1/
+pre-scalar diagnostic cohort is not full4K or default-profile timing evidence.
+
+Root/native_profile_prepare prepared independent permanent+provisional shadow
+refusal tests;source_owner_hotpath prepared the narrow Catalog fix. Root ran
+RED2/2 then applied object_install confirmation preflight and insert-only
+unique registration within the same transaction. Root75438 Catalog277/277
+VERIFIED. No edge schema/GC authority/PHYSICAL API replacement was made.
+
+postings_hotpath exclusively changed Storage object.rs scalar sync selection,
+new private scalar_sync.rs and scalar_sync_tests.rs plus child test declaration.
+The per-install helper uses the existing batch fsync/final-F_FULLFSYNC protocol
+only for managed/macOS/new files on the same device. Original scalar fees,
+child validation,existing/collision/fallback and ticket/confirm order remain.
+Root removed the nonmac FnOnce move identified by independent static review;
+that review found no further P0-P2 in its scope. Agent source is frozen.
+Root4311 Storage lib VERIFIED151passed/1ignored subprocess fixture,0failed,
+compile101s/body10.38s;new scalar tests2/2pass. Root26087 subsequently VERIFIED
+Catalog+Storage production strict and Storage lib+tests strict after two owned
+collapsible-if repairs. Broad Catalog+Storage test strict22989 remains FAILED
+on30 existing Catalog test lints. Root alone owns verification and E07 SSOT.
+No agent runs builds/runtime or
+messages other agents/external chats. E01/E02/E04 and unrelated physical hunks
+retain their owners. New full4K/paired overhead/RSS/operations/release NOT_RUN.
+
+31904 guarded-module check ended FAILED:contract unchanged,Core6/Kernel1
+declarations differ from the baseline. No baseline acceptance was performed;
+new Storage helper is outside those guarded crates. Hexagonal check passed.
+All Root heavy queues are terminal/released. Next performance evidence must
+compile the changed source,then run original4K Off under the unchanged caps;
+the preserved pre-fix symbol binaries cannot establish this fix's effect.
+
+Root96962 default-profile no-run completed526.657s/exit0/source drift0 at
+sourceb0d51005/2870inputs. Root8398 original4K Off is terminal FAILED,
+child101/body1232.76s,outer1234.77s;the original1200s watchdog expired during
+initial materialization. Last progress2867/4096;later non-atomic snapshot
+2903completed/1192pending/1claimed/0blocked. Config-refusal1/1pass;Source4096
+Published23.885721792s;provider2922unique/duplicates0/query0. Source/binary
+postbinding and selected config VERIFIED. Q64/recall/reopen/delta/overlay NOT_RUN.
+Tracing was Off. The original fixture and all resource/durability caps remain.
+Internal source_owner audit found no evidence-backed additional Catalog hunk;
+native_profile audit found no per-owner whole-N ANN rebuild in the actual path.
+postings_hotpath and source_owner prepared separate test-lint-only external
+patches for connection/diagnostic/writer-cache and io-admission/lifetime tests.
+Neither patch is applied while the product source is frozen. Root alone owns
+subsequent application/verification and E07 SSOT. Runtime/source/provider/
+physical contracts and other epics keep their existing owners.
+
+Root60862 same-b0 default-binary Record is terminal FAILED before worker work:
+Source30.007668833s deadline/originalPending/provider0,body82.02s/child101.
+Root16830 one-pass canonical analysis completedexit0/6.547s,COMPLETE23830events/
+loss0/health0/worker0;full4K wirecapacity and later quality remain NOT_RUN.
+After all product processes exited,readonly pinned main/WAL became external
+raw forensic copies;unpaired WAL is excluded from isolated main-prefix census.
+Overflow footprint in two payload-heavy WITHOUT ROWID tables is a new bounded
+candidate,not an adopted schema/codec patch or proven worker throughput cause.
+Root applied the five-file Catalog test-lint patches only after product/source
+freeze ended;the first compile caught one unused test import,now removed.
+Root73835 owns the focused Catalog tests→three Runtime managed/short-write/WAL
+bodies→Catalog+Storage lib/tests strict queue. Product caps and all foreign
+source lanes remain unchanged. Internal helper lanes prepare external analysis
+only;no build/runtime,peer or external-chat coordination is delegated.
+
+Root73835 ended:Catalog277pass,pre-rowid actual Runtime IO/WAL3pass,strictFAILED18.
+Root68551 captured exact strict diagnostics. Root owns connection/io-admission/
+writer-cache test fixes;postings_hotpath owns only confirmation_shadows.rs six
+lints;source_owner_hotpath owns only prechecked_children.rs and committed
+managed_install_trace_tests.rs eight lints. Test oracles and unrelated dirty
+hunks preserved;no delegated execution/peer/external-chat messages.
+Root30722 serial countermodel completedexit0/3.309s with12149rows;source SCHEMA
+was unchanged through that experiment. Root selected object/provisional-only
+rowid after baseline14935→12595 WALframes vs12486 for allthree;intent remains
+unchanged. Exact old-root refusal/new-root rebuild is the compatibility boundary.
+Root alone applied the two DDL changes+new payload_storage.rs after the model
+and owns20415 Catalog279/strict queue. No current source performance claim;
+post-rowid Runtime/full4K/operations/release NOT_RUN. Other epics keep owners.
+
+Root20415 is terminal:two-table production repair Catalog279/279pass;strict
+failed one explicit test guard drop. Root49393 then passed affected payload2/2
+and Catalog+Storage lib/tests strict after only `drop(guard)` was added. All
+heavy queues from that focused batch are terminal/released. Hexagonal and owned-file formatting/diff
+checks pass. No guarded Core/Kernel baseline was changed. No new schema
+performance/Runtime qualification yet. Root next owns one stable default bench
+cohort for Runtime IO regressions and original4K Off/Record;code first,serial
+validation and fixed product caps remain. Other epics/hunks retain ownership.
+
+Root88152 completed the default-bench combined Runtime-libtest and
+native_product_process no-run633.643s/exit0/drift0. Frozen source fce4cedac1265bc2eaae032135aeff170fa8a0f82160615a0a07c0f782004cf9
+contains2871selected inputs at HEAD90a0ec340388400828c193809e533de2b1fb9001.
+No CARGO_PROFILE override;selected source stays frozen through this cohort.
+Root3897 now owns the sole heavy prebuilt validation queue:actual Runtime
+IO/short-write/WAL3/3 and config refusal1/1 passed;original4K Off is live.
+Two internal readonly lanes
+independently reviewed causal confidence and installation custody;no new
+confirmed P0–P2 source hunk was found. No peer/external-chat messaging or source
+edits are delegated. Root alone owns actual Runtime3→config refusal→original4K
+Off→Record;formal performance/overhead and other epic ownership remain separate.
+
+Root3897 Off is now terminal FAILED599.52s body/601.5s command/exit101 with
+source/binary/config post-binding VERIFIED. Source4096 Published28.292366167s;
+owner row668 first denial is individual10s deadline in ANN Compaction,not the
+global1200s watchdog or count/byte cap. Root30747 is the first actual Record,
+Source4096 Published26.683951375s;it is now terminal FAILED412.20s body/
+421.527s command/exit101 with Compaction10s deadline,not global watchdog.
+Root7277 canonical126.4MB one-parse RCA ended304.609s/exit0/COMPLETE1245615events/
+health0/loss0/open0. Sourcefce4 drift0 was verified before ending the cohort.
+Prior launcher14549 was
+BLOCKED before product/output by a stale two-key binary receipt comparison;
+Root repaired exact three-key matching and validated mismatch refusal.
+Readonly model audit found synthetic intent payloads differ from
+actual Source intent distribution;the109-frame argument is now explicitly
+limited in E07/VALIDATION/README. No intent schema/source change or extra live
+model/DB query was performed. Current cohort remains frozen through Record.
+
+After terminal cohort close,Root owns Core diagnostic_trace CPU stage and
+Python reader/gold changes;source_owner_hotpath owns only Compaction parent
+scope in ann_directory.rs and its maintenance.rs trace fixture hunk,preserving
+all prior E04 changes. Agent writes are complete. Root68346 combined no-run
+ended0/3m40s;Root62671 Core29+scope2/Semantic carry2 passed;PythonCPU14passed.
+Root now owns sole heavy Core+Semantic lib/tests strict queue. Product policy,
+batch/cap and physical authority unchanged. No source changes while strict runs;
+no repeated original4K run is selected before actual performance repair/RCA need.
+
+Root58277 strict ended FAILED at the release-only Semantic budget no-op's
+unused_async lint. Root additionally owns that isolated budget.rs stub repair
+to return Ready<()>;the awaited caller/debug-test hold stay unchanged. Root29697
+ended FAILED359.438s/E0432 at the existing bench integration's import of debug-only
+test_support. Root83063 production-library strict ended VERIFIED119.751s/exit0;
+that does not reclassify the full lib/tests failure. No heavy queue remains live
+from this batch. Two readonly internal audits confirmed carry
+shares the original worker budget but cannot yet attribute candidate/member/COW/
+Catalog cost inside old childless Compaction spans. They made no source edits
+or executions. Root updated E07's conditional local-repair/resumable decision;
+no extra E04/PHYSICAL implementation lane or external-chat coordination exists.
+
+Root69439 now owns the sole default-bench combined Runtime/product no-run for source11294467/2871inputs at unchanged HEAD90a0ec34. Selected source stays frozen;docs-only E07 updates are outside that input inventory. Native-profile helper audit found no execution-blocking mismatch;postings read-only audit found no additional safe DATA/auth elimination beyond existing caches/artifact reuse. Agents perform no writes/build/product execution or peer/external-chat coordination. Root alone will serialize focused Runtime3/config1,one original4K Record RCA,and one canonical analysis;current product/trace stages NOT_RUN.
+
+Root69439 default combined no-run ended VERIFIED1366.993s/exit0/source drift0. Root23510 now owns the serial Runtime3/config1 prebuilt queue at the same11294467 source. No product/trace process has been started yet;selected source remains frozen.
+
+Root23510 Runtime3/config1 is terminal VERIFIED with exact four bodies and postrun binding. Root48344 now owns the single original4K Record RCA at the same source/three binaries;canonical analysis not started. No source mutation,peer/external-chat coordination or delegated runtime.
+
+<a id="e02-owner-exclusion-20261029"></a>
+## E02 2026-10-29 — 현재 사용자 지시에 따른 중복 제외
+
+P01의 현재 판정·재개 조건은 [단일 현재 원장](VALIDATION.md#e02-deduplicated-current-work-20261030-root)이 소유하고 README E02는 이를 참조한다. 아래 공용 담당 배정은 유지하며, 다른 채팅의 인계에서 P01을 공용 gate 담당으로 통칭해도 명시적인 Native Root 공용 검증 배정을 변경하지 않는다.
+
+사용자가 이 채팅에 다른 채팅의 진행 범위를 제외하고 남은 작업을 마감하도록 지시했다. 아래는 활성 채팅의 최신 사용자 배정, 실제 exact-symbol claim, 현재 source/receipt를 대조한 경계다. 과거 문서의 모호한 Root 명칭을 이유로 같은 작업을 재배정하지 않는다. 배정/active/claim은 구현 또는 실행 완료 증거가 아니다.
+
+| 범위 | 현재 담당 채팅 | 이 채팅의 처리 |
+| --- | --- | --- |
+| P01 Acked canonical/row readback | 증분 작업 상태 전수 파악 | Acked 생산 수리와 기존 owning 전체 회귀만 소유한다. [현재 판정·단일 잔여](VALIDATION.md#e02-deduplicated-current-work-20261030-root)·[수용 계약](E02-publication-recovery.md#acked-row-readback-contract). P60/FNL/provider/DELTA 및 공용 Native gate는 기존 담당 유지. |
+| P02 Native GC / P03 trace/evidence | QIDX E02 Native 조회·재사용 구현 | 최신 사용자 배정과 QIDX-E02-ISOLATED-PRODUCERS-20261029의13경로·세 producer symbol 범위 확인. 구현/추가 위임 제외 |
+| P07 configured Native provider | QIDX E02 C Native Provider·Successor… | 기존 adapter/codecs/retained DATA 유지. 생산 enum5+테스트 패턴1 소스 수리 완료, 실제 transport ABI는 BLOCKED, compiler/body·SDK는 C에서 NOT_RUN. [현재 C 경계](#e02-provider-c-boundary-20261030) |
+| P04 lifecycle / 공용 ABI·접합·검증 / read-reuse 후행 수용 | QIDX E02 Native 조회·재사용 구현 | 해당 채팅이 최신 요청에서 직접 맡겠다고 명시했고 기존 Deferred integration claim을 유지. transaction/rollback/lifecycle/parent·중복 QBC 제외 |
+| complete successor 공급 분해 / P06 DELTA caller·terminal·restore | QIDX E02 DELTA 게시·복구 구현 | 최신 사용자 요청과77경로 terminal bridge claim 확인. ItemIndex·Graph 공급/RepoMap pair/SDK caller/회귀 패킷은 이 담당에서 이어가며 기존 E01 생산자를 복제하지 않음 |
+| Chunk producer / ANN·성능 / Semantica W2 | QIDX A 전체 파일 Chunk plan 구현 / Review Oct 10 index closeout / 마무리용 마스터 | 기존 소유권 유지. topic overlap을 새 구현 권한으로 간주하지 않음 |
+
+이 채팅의 비중복 직접 production 코드 잔여는 현재0이다. 전체 E02의5개 코드 묶음과 제품/설치 검증은 여전히 OPEN이며, 위 다른 담당의 미완료를 이 채팅이 중복 구현하거나 완료 처리하지 않는다. P00/P09라는 이름만으로 공용 parent/검증 큐를 별도로 시작하지 않는다. 다른 채팅에 메시지·깨우기·재배정·추가 worker 생성은 하지 않았다. 저장·회수 채팅의 과거 공용 메서드 부재 보고는 현재 source보다 오래됐으며 새 TODO로 복원하지 않는다.
+
+<a id="e02-b-final-write-boundary-20261030"></a>
+### E02 B 최신 exact-hunk 경계 — 2026-10-30
+
+[현재 source·검증·잔여](VALIDATION.md#e02-b-trace-reuse-final-audit-20261030)가 아래 B 상태의 기준이다. 과거 P03 producer 부재/packet 미적용은 폐기한다. 이 문서의 B라는 과거 package명과 B-TRACE 실제 채팅을 혼동하지 않는다.
+
+| 실제 담당 | 유지하는 수정/검증 경계 |
+| --- | --- |
+| QIDX E02 B Trace·Evidence 및 재사용 구현 | QE historical physical scope/current admission·Native read forwarding·Kernel borrowed predecessor 계약; 기존 Native/SDK Java provider transport2 ingress와 committed census/공급 입력 계약. 이번 감사의 Symbol options type-path3참조 수리는 helper 내부 의미를 바꾸지 않은 단발 수리다 |
+| QIDX E02 DELTA 게시·복구 구현 | actual prior identity owner·ItemIndex family semantics·SDK seed/공용 gateway·pair/installer/terminal·cold 공용 합류. 해당 source caller/hook은 이미 있으므로 B가 복제하지 않음 |
+| QIDX DELTA L1 ItemIndex successor 구현 / L1-D | selector/plan/bank private 회귀와 shared test-support/SDK fixture. Runtime/SDK QBC는 D 한 큐, B QE owning 검증과 host admission 직렬화 |
+| 기존 Native Root / GC A / C Provider / L2 / L3 / L4 / P01 | 공용 capability·GC/lifecycle, HTTP/Voyage, Graph, genuine gold/cold/fault, Watch, Acked 회귀를 각각 유지. B에게 재배정하지 않음 |
+
+현재 B 직접 Rust proof는 source capture/binding BLOCKED다. claim/idle/할당만으로 작업 중/완료를 추정하지 않는다. 공용 문서의 이번 수정은 B checkpoint/정확한 stale 문구로 한정하고 다른 dirty hunk를 보존했다. Q에는 S shared-main의 canonical hook source가 없어 해당 도구의 Q claim 요청은 발급되지 않았다. 이를 우회해 hook/claim 파일을 만들지 않았다. S의 options helper 수리는 별도 exact-path claim을 등록해 수행했다.
+
+### 후속 직접 요청 — DELTA Graph private lane 분리
+
+사용자의 후속 직접 요청인 “각 채팅만들어서 업무던져. 레인별로독립 … 서로 채팅금지”에 따라 `QIDX DELTA L2 Graph 구현` (`01a18390-7bc3-7193-8b89-5feeaadc899f`)을 quanta-index 프로젝트 아래 생성했고 첫 turn의 `inProgress`를 확인했다. 기존 `QIDX DELTA L1 ItemIndex successor 구현`, `QIDX DELTA L3 genuine 회귀 구현`, `QIDX DELTA L4 Native Watch Source 접합`은 재생성·재배정하지 않았다. 위의 “추가 worker 생성은 하지 않았다”는 이 후속 요청 이전 관측이다.
+
+L2의 유일한 write set은 S Runtime의 `sdk/search_builder/source_bound/snapshot_collector/subqueries/{graph.rs,graph_tests.rs,import_carry_dispatch_tests.rs}`와 필요한 같은 소유 경계의 private child다. 착수 직전 세 경로의 tracked dirty와 non-stale claim을 확인했고 충돌은 관측하지 못했다. 착수 후에는 L2가 최신 상태를 다시 확인하고 자기 claim을 등록한다. 이 증분 채팅은 해당 private body를 동시에 수정하지 않는다. 공용 map/collector/packet/final assembly·parent·feature·lock은 L2 수정 대상이 아니며, 필요한 최소 ABI 변경은 기존 공용 owner에게 반환할 checkout 밖 산출물로 한정한다. 기존 조회·저장·GC/Trace·P00/P04/P09·DELTA terminal 통합 담당은 유지한다.
+
+L2는 다른 채팅 조회·메시지·대기·재위임 및 추가 agent 생성을 금지했다. 코드·회귀 소스와 scoped 정적 검사만 수행하고 compiler/test/SDK/process/bench/CI는 `NOT_RUN`으로 반환한다. 배정·착수는 코드 또는 제품 수용 완료가 아니다.
+
+2026-10-29:Root48344 is terminal FAILED1217.28s body/1220.521s command/101 at global1200s watchdog,source/binary/config/trace-path postbinding VERIFIED. Root65271 now owns the sole admitted one-parse offline RCA of the624981238B trace. Current selected source11294467 was rechecked unchanged;no product rerun/source mutation. Two readonly lanes audited the watchdog/lifecycle and ordinary durable groups;no safe new duplicate-DML hunk was confirmed. Runtime worker10s,Source30s and full-watchdog failure scopes stay separate.
+
+
+### E07 measured intent-layout writer — 2026-10-29
+
+Root65271 canonical analysis is terminal VERIFIED/exit0/2127.910028s;no raw parse
+or product rerun remains live. Three readonly internal lanes separately audited
+Catalog DML/layout,map/owner COW,and VFS admission. No peer/external-chat contact
+or delegated execution occurred. Root alone edits the intent DDL hunk in
+catalog/native/authority.rs and its existing tests/payload_storage.rs,plus E07
+row/E07/VALIDATION/OWNERSHIP. Existing foreign hunks are preserved. The measured
+actual-intent model supports a narrow layout repair,not a product speedup claim.
+Root64455 owns the sole Catalog library bench test queue. Runtime close/admission
+fastpath and ANN unlink alternatives were not applied. Original performance and
+qualification gates stay unchanged.
+
+Root87573 Catalog280/280 is terminal VERIFIED,source22dc1f77/2871inputs. Only
+the reviewed two Catalog paths differ from11294467. Root58125 now owns the sole
+Catalog lib/tests strict queue. The next admitted compile/product cohort is
+prepared outside the checkout;no product process has started.
+
+Root58125 strict is terminal VERIFIED/exit0/81.357s. Root98129 owns the sole
+canonical combined no-run at frozen22dc1f77. Agents remain read-only/idle;
+shared source is not edited while this build/product cohort is live.
+
+Root98129 combined default-bench build is terminal VERIFIED/exit0/1533.169s,
+source22dc1f77/drift0. Root56370 alone executes the same-source Runtime3/config1
+and one original4K Off. No source edits or additional heavy queue while active.
+
+Root56370 is terminal:Runtime3/config1 VERIFIED,Off4K FAILED Source30.001s/
+provider0/source-binary-config postbinding true. Root alone prepares one22dc1f77
+Record RCA for current Source attribution;native-profile agent may write only
+the external helper,while Source/lexical agents audit separate source paths
+read-only. No repo source mutation,peer contact,delegated run or repeated Off.
+The intent throughput effect is untested because initial materialization was
+not reached;the earlier11294467 global1200s failure remains independent.
+
+Root92698 Record and Root25607 one-parse analysis are terminal FAILED product /
+VERIFIED canonical respectively,still22dc source and worker0. Root now owns only
+scratch-sqlite/src/lib.rs private pragma() hunk+2 regression bodies,besides the
+existing Catalog intent paths and four E07 doc hunks. Three fixed step-time
+read-only PRAGMAs reuse programs;page_size/setters remain fresh. No source owner
+or lexical implementation is duplicated. Static audit is readonly;no peer contact.
+Root5545 Scratch31/31 and47249 strict are terminal VERIFIED. Current source07bb8989
+changes only this Scratch path from22dc. Root34220 alone owns Kernel Source impact
+execution. No original4K queue is live and07bb product validation is NOT_RUN.
+
+Root34220 Source14/14 is terminal VERIFIED. Root1478 owns the sole frozen07bb8989
+canonical combined product no-run. No code edits during this cohort. Other lanes
+are idle/read-only;no peer/external chat contacts or duplicated source writers.
+The E07 row is reconciled to current07bb code and its unexecuted product scope;
+22dc Source failures and11294467 worker failure remain historical OPEN evidence.
+
+During frozen07bb compilation/product, only external staged copies may change:
+`/Users/songmin/Library/Caches/quanta-index/audits/oct29-e07-scratch-diagnostic-stage-20261029/`.
+Root owns Core ScratchIoBinding, ScratchConnection, Runtime Scratch/VFS integration;
+source_owner_hotpath owns Kernel/Storage current-budget callers; postings_hotpath
+owns Lexical/RepoMap callers; native_profile_prepare owns the new actual-VFS
+diagnostic regression module. No agent edits this repository or runs Cargo/product.
+The fixed ABI is open(path,allocation,&WorkBudget), scoped(&WorkBudget), and
+ScratchIoBinding enter_scope(Option<&DiagnosticContextV1>). Context is borrowed
+per synchronous call, never retained in the connection; lifecycle Drop uses None.
+Root applies only baseline-matching staged files after the07bb cohort terminates,
+then owns one serial affected validation queue. Static preparation is not applied
+code or runtime proof. No peer/external chat contacts.
+
+Root1478 was explicitly interrupted by Root after the additional code repair was
+ready:terminal FAILED/exit2,1585.862s,error=compile interrupted,source_drift=false.
+No compiler failure or07bb product body was observed. This supersedes that queue.
+After its exact process identities retired,Root verified every staged baseline
+hash and applied17existing files plus1reusable actual-VFS regression. Final
+sourceed9737cc/2872inputs/HEAD90a0ec34 is now frozen for Root55378,the one affected
+six-library bench no-run queue. Agents are idle/read-only;no source edits or
+external/peer chat contacts. Format/diff/hexagonal passed;new-source Rust bodies,
+strict and product remain NOT_RUN until terminal checks. Skip the intermediate
+07bb4K and validate the final joined source after the affected code checks.
+
+Before any body execution,Root corrected only the new diagnostic regression's
+test lint(HashSet→BTreeSet,redundant arithmetic counters→set gold). Latest source
+8235a55c/2872inputs differs fromed9737cc in that single new test file only;
+production inputs remain identical. Preserve Root55378 source_drift rather than
+calling it current-source VERIFIED. After terminal build,rebind the same no-run
+at stable8235a55c before executing bodies. No other source writes are assigned.
+
+The final static correction in that same new test removes enum wildcard matching
+and preserves poison-error context. Reviewed source is nowe2e41493/2872inputs;
+production bytes still matched9737cc. Final no-run/body tools are prepared for
+this source only. Root55378 remains the sole build;its initial drift stays visible.
+
+
+Root55378 is terminal FAILED/exit101/E0425 Lexical test-only free variable;
+source_drift=true also remains. Root alone fixed the existing closure's explicit
+WorkBudget argument without altering SQL/expected counts. Final stable source
+17e1d621/2872inputs/HEAD90a0ec34 is frozen for Root81900, the sole six-library
+bench no-run. Production inputs still match ed9737cc. Three agents are read-only
+auditors of separate source/tool scopes; no Cargo, repo edits, peer contact or
+external chat coordination. Root owns four E07 doc hunks and the serial validation
+queue. Body/strict/product remain NOT_RUN until their own terminal execution.
+
+
+Root81900 completed VERIFIED/drift0. Root20848 proved Scratch31 and Storage151
+(ignored1),then Root explicitly interrupted the overbroad Lexical File-inclusive
+whole733 scope via exact owned supervisor identity. Terminal FAILED/interrupted
+remains;selected processes retired. Root's serial queue now consumes the proved
+two scopes once and selects only remaining actual Native Lexical callers plus
+RepoMap/Kernel/Runtime. Native-profile agent may prepare only external final
+runner/strict prerequisite tools;no repo/Cargo/product/peer contact. Frozen
+source17e1d621 remains unchanged. No whole-Lexical qualification claim.
+
+
+Root93624 final native-caller impact terminal VERIFIED550/0failed/1ignored
+with prior two passed scopes reused byte-identically and remaining four executed.
+Root99923 now alone owns canonical production six-lib strict --lib. Source17e1
+stays frozen;agents idle/read-only, no peer/external chats. Final product build
+and original4K remain subsequent queue,not yet executed.
+
+
+Root99923 strict terminal FAILED map_err_ignore2 in clean HEAD SearchPlane
+query_embedder.rs,source17e1/postboundtrue. Root adds only that narrow two-error
+identifier/format hunk to exclusive ownership. No API/algorithm/error taxonomy
+change. Frozen89b581b8/2872inputs differs in one path;550 native-scope passes
+remain explicitly17e1. Source-owner audited readonly;Native-profile agent may
+prepare external strict repair runner and rebind not-yet-executed product tools.
+No delegated Rust execution,peer/external chat or duplicate source writer.
+
+
+Root77586 repair production strict completed VERIFIED/85.945s/postboundtrue.
+Root4139 now solely owns current89b581b8 canonical combined product no-run.
+Repository source is frozen through that cohort;no further source writers or
+heavy lanes. Prior550 remains17e1 evidence with unchanged scratch diagnostic
+implementation,not replayed. Product/overhead need their own terminal proofs.
+
+Root R633 Main integration update: finalized Source71 is actually applied to live Semantica Main (HEAD at application 4c7f159962d080f3b779eb4359200b08a67bead9), with all71 before/after hashes checked and patch/whitespace VERIFIED. The packet covers genuine Java V142/V183 Source, Facts/Core and paid Port production; scoped structural162→131, NEW0/WORSE0 and parse71/71. Upper QRA profile/worker/final-D consumers plus adapter/SDK/Runtime custody are still being connected. Type/runtime is NOT_RUN; all6 goals remain OPEN/SourceReady=false. No Root commit/push.
+
+
+Root4139 exact supervisor was interrupted for code-first final Off guard repair,
+not compiler failure;terminal FAILED325.476s/drift0/body0. After retirement Root
+applied only baseline-matched publication_sqlite_vfs/diagnostic.rs cold-state
+Box representation. New frozen5910b022/2872inputs;Root owns that hunk and current
+production strict queue. Source-owner staged externally;postings agent reviewed
+readonly;native-profile prepares only external fresh product/impact helpers.
+No source or execution duplication,peer/external chat,or untracked repo evidence.
+
+
+Root70805 current5910 production six-lib strict is terminal VERIFIED13.228s/
+postboundtrue. Root now owns the sole new cold-scope original4K canonical product
+no-run and subsequent serial focused/runtime/product queue. Source is frozen;
+all agents idle/read-only. Old89 interrupted compile and17e1 passes are preserved
+at their original source identities,not rebranded.
+
+R635 actual Main Source71 owner result: FAILED7/body0 in the Facts dependency of the exact genuine constructor integration test (quanta-adapters-dfg / original_java_typed_dispatch_v3 / original_explicit_constructor_distinct_field_allocation_survives_verified_dfg_v1; feature class5e92fd7c25ca). Run20261028T205015.409505Z-67a27ee1dec3, Sourceedc6448464f304435bc3399836e3b6179fcaa3dfcc87fc04c47ef3a16d6c2453; terminal101, actual canonical cleanup and Source71 drift0 VERIFIED. Missing paid carrier/metadata suppliers and the current RHS-event ABI are assigned to the existing Source owner. No behavior or product success is claimed; all6 objectives remain OPEN.
+
+
+Root21624 current5910 canonical product no-run terminal VERIFIED1176.256s/drift0.
+Root44739 actual Runtime scratch7/VFS66 bodies passed;Root59602 independently
+re-adjudicated existing noisy stdout logs VERIFIED without rerun, preserving the
+original parser-only FAILED wrapper. Root41928 alone owns Runtime3/config1 then
+original4K Off. Source remains frozen5910;source-owner and postings agents are
+read-only structural audits, no Cargo/source mutations/peer or external chats.
+Root owns only E07 doc hunks;other epic and producer work remain untouched.
+
+
+Root41928 terminal5910 Off FAILED30.0164s Source/provider0 with matched
+Runtime3/config1 VERIFIED and postbindings intact. Root31109 alone runs one
+Record RCA on the same frozen source/binaries. Native-profile prepared bounded
+phase-parent Scratch summary in the external one-parse analyzer only. Agents
+readonly audit completed;no safe SourceOwner/MapApply/COMMIT deletion was
+confirmed. No further source writer or peer/external chat coordination.
+
+
+Root31109 Record and Root17274 canonical parse are terminal FAILED with invalid
+footer569350dropped. No raw reparse or old-cohort retry. Source freeze5910 ends
+only now for confirmed scratch event-amplification correction. Source-owner
+exclusively owns diagnostic.rs/write_timing.rs/enter_scratch_scope;Root owns
+native_scratch_io/tests/diagnostic_context.rs;postings owns new
+publication_sqlite_vfs/tests/lazy_scratch_diagnostic.rs plus its module line.
+Native-profile prepares only a separate external sparse-scratch cohort with a
+fail-closed pending source ID. Shared compilation/testing remains Root serial
+after static integration;no peer/external chat communication or other source owner.
+
+R637/R638 integration checkpoint: the four-file R635 Facts repair is actually Main-applied with exact before/after hashes and whitespace verified. Current reviewed Source ledger is73 unique paths (R63371 plus the repair). Facts4 boundary is VERIFIED. Structural initializer50→51 remains OPEN without line compression, baseline change or waiver. R638 runs the SAME dedicated genuine constructor exact owner after actual R635 terminal/cleanup; no R638 body or verdict is inferred. SDK/Core identity uses the existing paid RuntimeFunctionId birth under the retained CFG-name Source; actual final-D and adapter/Runtime consumers remain uncompiled integration work.
+
+
+Sparse observer final source7a882223/2873 now frozen after initial60a3 strict
+lints were repaired;Root82300 production Runtime --lib strict VERIFIED15.284s.
+Root solely owns default bench combined no-run→Scratch8/VFS70→Runtime3/config1
+→original4K and optional single Record/parse queue. Source-owner production3
+hunks,postings dedicated4 fault tests and Root actualVFS4096-read/1write test
+are joined;all agents idle/read-only from now. External tools are re-bound to
+7a88 and exclusive output files;old5910 raw/parser failure and60a3 failed strict
+input preserved. No other epic source/document owner or cross-chat messages.
+
+
+Root44802 no-run VERIFIED699.277s and Root39574 Scratch8/VFS70 impact VERIFIED78,
+source7a88/postbindings intact. Root93552 alone owns same-binary Runtime3/config1
+→original4K Off. All source writers remain stopped;optional Record/one parse only
+after terminal product result. No duplicate full550/whole-workspace execution.
+
+
+Root93552 current Off progressed past Source publication18.2046s into owned
+materialization. Root preserves one serial run;no live Catalog SQL probe,extra
+SDK observer or source mutation. Native-profile read-only parser complexity
+audit found no confirmed O(n²) path and produced no code change/raw reparse.
+
+
+### W205 R638 terminal / R640 Main repair / R641 replay (2026-10-29)
+
+- R638 original exec71451: FAILED101, executor memo retire cfg E0425 2, test body0. Prior Facts compile7 resolved. Source17975f58e5adc2177572b5f64bfa74eebca7fc3f719948d4e638b4d5b4449453; run20261028T211208.639601Z-26b22aee0cdd; source73 drift0; canonical lane finished/active empty/owner empty/last run exact.
+- R640 memo feature repair3 is Main-applied. The existing paid failure retirement function is extracted into the same memo owner’s ungated private child and reused by feature-gated memo rows and always-built shared-inflight admission. No new failure owner, Source, allocator or fallback. Syntax3, structural NEW0/WORSE0 and build boundary5 VERIFIED.
+- R641 same dedicated genuine constructor positive1 is RUNNING (original exec96043); reviewed input union76. No test result is inferred before actual terminal and cleanup.
+- Higher integration: one early Core publication; separate workspace/native one-shot read terminals over that SAME Core; original scalar evidence ordinal/profile/Facts defs-count readback preserves late Copy and switch checks. SDK legacy workspace predicates remain mandatory. QRA complete Graph and foundation complete W5 actual producer cut is required. External candidates remain NOT_TYPECHECKED/NOT_MAIN_APPLIED until the Root serial integration. Initializer51 structural1 remains OPEN, all six goals OPEN/SourceReady=false.
+- Artifacts outside checkout: `/Users/songmin/.codex/artifacts/w205-recovery-20261029/r638-source-constructor-terminal-review.json`, `r640-memo-feature-retirement/main-applied.json`, `run-r641-source-constructor.py`. No Root stage/commit/push.
+
+
+Root93552 is terminal FAILED exact3490/4096 at original1200s despite
+Source18.2046s Published;postbindings intact. Root63907 alone runs prebuilt
+Source-only4096 Record to verify repaired trace,not whole ANN/worker acceptance.
+Postings agent audits readiness polling readonly;source-owner audits renewal
+time/lock/lease readonly. No source writer,peer/external chat or live SQL probe.
+New API/key-codec/cache-capacity candidates are not adopted without evidence.
+
+
+### W205 R641 terminal / R642 Main DFG repair / R643 replay (2026-10-29)
+
+- R641 original exec96043 FAILED101, DFG builders E0308/E0061 four errors, body0. Source707ce5eacfc16c243b1d364f5b48d6ea0fef94c89c42e0182257cf5574993e3b; run20261028T213148.691524Z-e753b3d03b96; reviewed76 drift0; canonical finished/active empty/owner empty/last exact. Memo cfg2 and prior Facts7 are resolved within this executed compile scope.
+- R642 DFG repair4 actually Main-applied at9e1a6924d548f5322fa8f14a9b0c933aee59f7cd: nested receiver APIs and TSJS mode tuple aligned; RHS statement offset kept and propagated with checked_add/FactsA ordinal; pending use/def/projection/row DATA remain exterior through late Source refusal. Canonical same-owner sink moved to a private child; no new algorithm, allocator, Source or fallback. Apply/preimage/after hashes/whitespace, parse4, structural NEW0/WORSE0, build boundary1 VERIFIED.
+- R643 exact positive constructor is RUNNING as original exec79910 on79 unique reviewed paths. The driver historical JSON key is source80 but its mapping contains79 actual paths; no80-path claim is made. No result is inferred before terminal+cleanup.
+- Higher product inventory now traces actual Main plus candidate caller/module closure. The QRA/adapter after-tree has301 Rust paths;293 are dependency candidates and8 stale/test-only paths are excluded. This is an inventory requiring semantic/structural review, not an approved apply packet or source readiness. Root stable bundles have separate owners. Same-Core SDK Copy migration also preserves original single-file/member checks and exact file/declaration/event predicates; second worker/Core issuance is removed only in the uncompiled external candidate. Complete W5 Runtime producer and QRA graph supplier are being joined at existing owners. All six goals remain OPEN/SourceReady=false.
+- Evidence: external `r641-source-constructor-terminal-review.json`, `r642-source-main-applied.json`, `run-r643-source-constructor.py`; no Root commit/stage/push.
+
+
+Root63907 Source-only Record and Root73436 canonical analysis are terminal.
+Source body FAILED30.0032s;capture COMPLETE37475/loss0/health0/open0 VERIFIED.
+Root54702 preparse wrapper failure preserved;no duplicate raw parse/full4K.
+Root owns E07 doc hunks and Catalog authority.rs work-read integration only.
+Postings owns new authority/tests/work_read_reuse.rs;source-owner independently
+reviews these hunks read-only. Native-profile owns private Core mutation
+canonical.rs bounded checkpoint coalescing plus inline_values.rs regression hunks.
+No schema/key/authority cache or external/peer-chat communication. Existing
+E02/E04/PHYSICAL ownership retained. Root alone runs focused validation after
+all writers finish;product timing/4K success is not inferred from these changes.
+
+
+Root8f7 CPU repair now frozen across5 source paths/2874inputs. One terminal_work
+consumer collects the root iterator for its unchanged sorted/deduplicated oracle;
+no other E02/terminal work hunk is claimed. Initial Catalog5 compile diagnostics
+and production strict4 lints are fixed and preserved in VALIDATION. Final Core26
+and production Core+Catalog strict are VERIFIED;Catalog full lib runs Root48694.
+Postings prepares only an external canonical4K/128-prefix analysis helper. Root
+alone will choose one existing diagnostic after focused greens;no current product
+or performance pass is inferred. No other code writer or peer/external chats.
+
+
+Root48694 final Catalog282 all pass;8f7 affected coverage308passed plus
+production Core/Catalog strict VERIFIED. Root85745 terminal build timeout1800s,
+body0/raw0,not a product failure;no repeated unchanged build. Root30863 real-row
+compact-registration model VERIFIED;runtime gain remains NOT_RUN.
+
+Compact registration implementation ownership (8f7 freeze lifted):
+- source-owner: new authority/registration_codec.rs and capture_format.rs only.
+- postings: production object_install.rs/bootstrap.rs/reclaim.rs/terminal_custody.rs
+  codec consumers only;now read-only adversarial review.
+- native-profile: tests/payload_storage.rs,prechecked_children.rs narrow payload
+  hunk,prechecked_children/repeated_children.rs,new registration_payload_format.rs.
+- Root: authority.rs schema/module/registration callsites+inline corrupt payload;
+  managed_install.rs exact bytes only(original JSON fee census unchanged);E07
+  hunks in README/E07/VALIDATION/OWNERSHIP. Root alone serial verification after
+  integration. No peer/external chat messages,shared unrelated E02/E04/PHYSICAL
+  work preserved. Prior7a88 fullOff FAILED3490/4096 remains latest full product.
+- postings additionally owns only the independent crash-WAL stamp golden in
+  publication_sqlite_vfs/tests/read_only.rs,now complete. All writers stopped;
+  Root fixed3 test-only unused-result compile diagnostics and owns serial
+  Catalog full-lib validation VERIFIED288/0failed. Static semantic/error-priority
+  review complete;packed decode leaves scalar semantics to the existing consumer
+  authority. Current1b6ef76c/2876inputs frozen;Root8046 alone owns default bench
+  Runtime lib/product no-run VERIFIED1071.452s/drift0;Root9701 read-only9 VERIFIED.
+  Root50701 terminal Source30.0054s/CoverageMap FAILED,worker0;Root98963 canonical
+  one-pass analysis COMPLETE37260/loss0 VERIFIED. Frozen1b6 source unchanged.
+  Source-owner/postings/native-profile now run read-only owner-prepare/postings/
+  causal-inference RCA respectively,all complete without a new confirmed safe
+  major hunk. Source remains frozen. Root97933 IO9 plus WAL1/config1 VERIFIED;
+  Root32558 terminal Off Source30.0037s/CoverageScan FAILED/provider0;bindingtrue.
+  Only after terminal,1b6 freeze lifted for observer-only lanes:source-owner owns
+  Kernel diagnostic.rs step helper/tests;Root owns source.rs callsites;postings
+  owns Lexical native/text.rs substep wrappers/test hunk. Native-profile owns only
+  external next-capture analyzer and readonly review. No Core/ABI/port changes.
+  All code writers now stopped;Root30551 alone runs production Kernel/Lexical
+  strict VERIFIED90s before batched affected tests. Root additionally owns only
+  the real-source trace test hunk and two module snapshot baselines:reviewed8
+  intentional symbols(Core6/Kernel2),Contract unchanged. No executable Core or
+  other owner source modified;baseline shape is not semantic qualification.
+  Root89124 module comparison VERIFIED;Root34171 Kernel125+Source6 andRoot99970
+  NativeLexical192 all passed(323 distinct affected tests). Production e78cea40
+  stays frozen. Root98650 alone owns product-only no-run;Native-profile external
+  runner/analyzer prep is complete. Postings/source-owner readonly follow-up
+  confirms no safely removable full pass/per-node persistent transaction;key codec
+  is a broad artifact change with unmeasured contribution,not chosen.
+  Root77172 e78 prefix terminal VERIFIED:Source4096 Published22.020648208s,
+  exact128 completed;postbinding/config/tracepath true. Root47453 alone owns
+  the new raw's canonical one-pass analysis. Only after terminal,e78 freeze
+  lifts for a narrow Root-integrated retirement readiness-hint repair:
+  publication_file_capacity.rs Tracking hint/sweep and ReaderLease+NativeReaderLease
+  release;tests.rs exact cost/refund regressions;publication_directory_capacity.rs
+  only mechanical private field rename. Current preimage hashes match the
+  external candidate;other existing PHYSICAL hunks/global sweep callers stay.
+  The unrelated per-reader conditional-sweep alternative was rejected for
+  retry/error-observation drift. Root48981 capacity70,Root39231 VFS70 and
+  Root10792 production Runtime strict are terminal VERIFIED. Current ffca9eab/
+  2876inputs frozen;only3 reviewed readiness paths changed frome78. Root67789
+  product-only no-run terminal VERIFIED204.061s/drift0. Root18878 alone owns
+  one originalfull4K Off body,now terminal FAILED101:Source4096 Published
+  28.378668375s but original1200s watchdog exact2361/4096. Source/binary/config
+  postbinding VERIFIED;no execution remains active. Source freeze may lift only
+  for a confirmed scoped repair. Original caps remain in force.
+  All writers stopped;internal agents readonly/external helper prep complete.
+  No peer/external messages or cap waiver.
+  Three follow-up read-only lanes completed:source-owner checked fresh clock/
+  lease predicates;postings checked actual status-only Catalog caller/lock/cache;
+  native-profile checked external process monitor overhead. No new confirmed
+  minimal product patch. No source edits or additional runtime from these audits.
+  Root owns current failure/remaining-work reconciliation in the existing SSOT;
+  all other owner scopes remain excluded.
+
+  New user-requested E07 closeout batch:Root owns authority.rs schema and its
+  hot-reference SQL plus existing affected regression predicates;postings owns
+  managed_install.rs/terminal_custody.rs/boot_manifest.rs only;source-owner owns
+  new tests/operation_ref_storage.rs only;native-profile owns new reusable Python
+  process monitor and its mock tests plus external next-run preparation. All
+  source writers stopped after integration. No new public key/IR/issuer,clock,
+  fee,transaction,fsync or product cap. Private SQL ids are resolved from the
+  canonical key in the same connection and never cached or exposed. Root31802
+  whole-library build was interrupted before any test body;Root73176 cold test
+  build also stopped before body. Root23416 functional library is terminal
+  FAILED101:289passed/2failed of291;only two test fixture errors were corrected,
+  with no subsequent production change. Root41899 terminal VERIFIED2/2,
+  body1.51s/admitted239.509258125s. Root64144 strict found a documentation
+  backtick lint;fixed without executable changes. Root86743 production Catalog
+  lib strict VERIFIED0/admitted45.848244917s. Source90c163e8/2879 frozen with
+  exactly9Rust+2Python reviewed changes fromffca. Root54621 alone owns canonical
+  default-bench product-only no-run;no functional profile override or nested
+  admission. Root54621 terminal build supervisor124/1804.587s,body0/driftfalse;
+  no compiler error,new binary or product result. Root85982 resumed the
+  unfinished default-bench build in compile-resume-1 with the same drivers,
+  binding/profile/caps and completed cache;terminal supervisor124/1807.0s,
+  body0/driftfalse and no compiler error. All Root jobs are now stopped;no
+  third unchanged build is queued under the same observed host conditions.
+  Full4K Off is NOT_RUN/BLOCKED by the missing terminal coherent binary.
+  Next local gate remains unfinished default-bench build→one original body,
+  with all caps/oracles preserved. Code/monitor/SSOT readonly audits found no
+  additional confirmed scoped production defect;product performance is open.
+  External key-layout
+  model is terminal VERIFIED4.710409542s with normalized rows/digests equal;
+  modeled selected-table pages4670→1716,not a product speedup. Provider duplicate
+  count is diagnostic cost under the existing at-least-once I/O contract,not an
+  independent correctness repair or a new exactly-once requirement.
+
+
+<a id="e07-closeout-ownership-20261030"></a>
+### E07 current closeout ownership — 2026-10-30
+
+- Root rechecked HEAD90a0ec34/source90c163e8/2879:changed paths from the last
+  bound cohort0. E07 compile/product drivers and owned Runtime compiler inventory0.
+  External helper preparation and this checkpoint's E07 document reconciliation
+  are complete;no Rust/test/bench run was performed by this audit.
+- Root owns the existing E07 row,execution sequence,source/build/config binding,
+  completed external verification-helper repair and single host heavy queue. The new
+  external oct30-e07-owned-closeout-20261030 helper removes the duplicate1800s
+  cutoff while retaining canonical cargow admission/default7200s compile guard
+  and every product hard limit. Four mocked lifecycle cases and AST passed;
+  actual build/product remain NOT_RUN.
+- Three internal readonly preparation lanes were used:source-owner=Catalog
+  schema/producer/consumer/tests;native-profile=build failure/driver/config
+  custody;postings=DoD/owner/verification de-duplication. No current production
+  defect or additional code writer is assigned. Prior scoped greens are reused
+  because source is unchanged;dirty/untracked does not invalidate them.
+- If a product failure identifies an actual new hunk,Root freezes the common
+  interface and grants exactly one existing owner that hunk. Shared authority,
+  Core/Kernel/Runtime parent and final verification stay single-writer. Existing
+  E01/E02/PHYSICAL and E08 authority is retained;no duplicate serializer,Source
+  issuer,ANN engine,publication/GC implementation or release lane is created.
+- No peer/external-chat messages or new chats. Internal preparations may run in
+  parallel;build,product,trace and operations execute serially through admission.
+  Execution order is only WAVES#e07-closeout-plan-20261030;current status is only
+  README#e07. Planned gates are not active/completed jobs.
+
+<a id="e07-nonoverlap-boundary-20261030"></a>
+
+**2026-11-05 적용 범위.** 아래 배정은 당시 source/hunk의 이력이다. 현재 Native 성능 RCA의 신규 패킷은 [bugbash 구현 계획](../nov-5-indexing-bugbash/WORKPLAN.md)을 따른다. 기존 담당의 진행 중인 수정은 코드·dirty hunk로 확인하고 보존한다.
+
+### E07 — 다른 채팅과 중복 없는 이번 실행 경계 (2026-10-30)
+
+이 절의 `E07/SEARCH Root`는 이 채팅의 합류·실행 담당만 뜻한다. E02·W205·PUB
+문서의 `Root`를 이 채팅의 수정권으로 해석하지 않는다. 기존 E02 제외표의
+ANN·성능 담당 기재는 E02가 그 범위를 제외한다는 뜻이며 별도 원4K 실행 큐나
+새 제품 writer를 만드는 근거가 아니다. 아래는 현재 source/기존 수정 경계를
+기준으로 한 계획이다. 아래 후속 읽기 전용 대조에서 실제 채팅 상태·최근 발언·
+변경 경로와 local HANDOFF를 확인했다. active/idle 또는 완료 발언만으로 제품
+수용이나 파일 전체 수정권을 인정하지 않는다.
+
+| 범위 | 이번 이 채팅의 직접 처리 | 보존할 기존 담당·금지 경계 |
+| --- | --- | --- |
+| 외부 검증 helper | 준비 완료: 기존 operation-refs helper의 빌드 전용1800s 중복 cutoff 제거·mock4/AST 검증. source/command/config·결과 결속/cleanup을 유지한 준비본 재사용 | `scripts/cargow`,`Justfile`,Cargo manifest/lock,제품 profile·예산은 변경하지 않는다. canonical admission/7200s build guard 유지 |
+| E07 문서 | README의 E07 한 행,WAVES의 E07 절,E07 본문과 OWNERSHIP/VALIDATION의 E07 hunk만 수정 | 같은 파일의 E01/E02/W205 및 다른 owner 상태·계획·영수증은 덮어쓰지 않는다. 새 SSOT/중복 티켓 없음 |
+| 원4K·E07 측정 | 이 채팅의 기존 단일 큐에서 current default-bench build→config1→원4K Off1,이후 E07 trace/운영 gate 수행 | E04의 같은 ANN 수용은 이 결과를 소비한다. 같은 source/selector를 다른 이름·폴더로 별도 원4K 작업에 중복 배정하지 않는다 |
+| Catalog 정규화·기존 비용 수리 | 합류된 결과와 scoped proof 재사용. 기존 SQL/schema hunk의 추가 writer0 | `authority.rs`의 operation-id DDL/참조 SQL,`managed_install.rs`의 참조 연결,`boot_manifest.rs` custody와 `terminal_custody.rs` predicate는 완료한 기존 hunk다. 파일 전체 인수나 새 schema/GC/transaction 구현 권한이 아니다 |
+| 파일·FD·capacity·VFS·retirement | 기존 API/fixture/결과 소비. 이번 측정으로 선택한 controlled WAL frame 쓰기만 아래 exact hunk로 수리;철회한 sync 통합 후보는 수정 대상이 아님 | Catalog/PHYSICAL의 sync·ledger·admission·원FD·물리수명 owner 유지. 기존 E07 readiness-hint hunk의 완료를 새 물리 writer 배정으로 해석하지 않는다 |
+| E01·E02·PUB·AST·BOOT·W205 | 필요한 현재 supplier/consumer 결과만 기존 인계 계약으로 소비 | Chunk/ItemIndex/Graph/DELTA/게시·복구/Native GC·Trace/Voyage/SDK/Auto/launcher/Semantica 생산자를 이 채팅에서 재구현하지 않는다 |
+| E08 full-suite·CI/release | E07 source/제품/비용 판정을 기존 통합 owner에 인계 | 별도 전체 통합 큐·release·default 전환·commit/push 작업을 이 채팅에서 만들지 않는다 |
+
+**이번 측정 후 배정한 exact hunk:** 미수용 sync 통합 후보는 철회했고 수리 전
+2879개 source 입력의 exact 복원을 확인했다. 현재 vendor의 `walWriteOneFrame`
+한 분기·`quanta_wal_frame.inc`의 bounded pack/reference oracle·기존 controlled
+VFS 판별·test-hook 선언과 Runtime 전용 회귀만 E07이 소유한다. 기존 sync ABI3,
+capacity/retirement/GC/source issuer는 수정하지 않는다. 공유 파일의 다른 dirty
+hunk를 인수하지 않으며 새 source 제품 검증은 Root 큐 하나에서 수행한다.
+
+**새 제품 수정의 진입 조건:** (1) 현재 실패/독립 불변식으로 결함을 특정한다.
+(2) repository/file/function 또는 SQL hunk·현재 preimage·직접 caller·기존 owner를
+대조한다. (3) 이 채팅의 기존 exact hunk에 속하고 충돌이 없으면 그 한 writer만
+수리한다. 다른 owner의 hunk는 기존 인계 산출물을 소비하며 선점 수정하지 않는다.
+공용 parent/API·서명·manifest/lock은 각 공용 owner가 합류한다. 범위가 불명확한
+제품 hunk는 미배정으로 두고 외부 helper/독립 준비를 계속한다. 과거 claim·topic
+유사성·같은 파일이라는 이유로 수정권을 새로 만들지 않는다.
+
+<a id="e07-conditional-resource-hunks-20261031"></a>
+**자원/비용 증거의 조건부 수정 경계 — 2026-10-31:** 원 조사 시 추가 제품 hunk는
+미확정이었다. 후속 실제 Large/Record RCA로 동일 packet 안의 occurrence leaf
+중복 설치 접점을 확인했다. SEARCH/E07 한 writer가
+`crates/quanta-index-lexical/src/native/text.rs::OccurrenceWrites::flush`의 unique
+입력/원래 edit ordinal 확장과 해당 기존 fixture·음성 gold만 수정한다. 수정 전
+선택 파일 SHA5ad43e54fce598c66639c380f62572e90d8777d0a0d53048ba12c23192cfa3e6은
+실제 고정본과 동일하다. 기존 put_batch/attempt sink/physical sync/confirmation을
+그대로 호출하며 Catalog/Native GC/parent/API·cap·wire는 수정하지 않는다.
+공유 파일의 기존 inventory/entry-map/query dirty hunk는 소유권을 인수하지 않는다.
+이는 전체120s 성능 해결을 아직 뜻하지 않으며 결과는 README E07만 소유한다.
+**코드 재감사 정정:** 이 hunk가 줄인 것은 상위 입력/준비/출력 backing이다.
+Storage의 기존 `BatchIndex`가 물리 batch를 이미 unique로 만들고, prepare당
+`InventoryReuse.occurrences`도 packet 사이에 살아 있다. 따라서 packet 간 cache
+신설이나 물리 sync 절반 감소를 배정/완료로 기록하지 않는다. 확인 창 밖 재등장·
+기존 파일 재확인/새 파일 생성과 Catalog checkpoint 비용의 구분 후에만 다음
+exact hunk를 선택한다. 이10-31 재감사 시점에는 후속 제품 hunk가 미배정이었다.
+후속11-02 사용자 재개로 선택한 count-only hunk는 아래에 별도로 고정한다.
+Large fixture의20ms maintenance/512KiB reserve는 명시 입력이며 운영 기본값이
+아니다. 설정·checkpoint 수리는 기존 Catalog/PHYSICAL·Native GC 경계를 유지한다.
+server120s/client600s 분리 구현은 이미 있으며 parent/API 전달 수리를 새로 발주하지 않는다.
+
+**11-02 사용자 `$ss` 재개로 특정한 SEARCH hunk:** 실제 caller는
+수리 전 `text.rs::validated_occurrence_count`→`text_occurrence::load`이며 위치
+개수만 반환하면서 검색용 배열 materialization/두 번째 JSON parse를 수행했다.
+SEARCH 한 writer가 `native/text_occurrence.rs`의 공통 object/첫-pass 검증을
+재사용하는 count-only reader와 해당 caller·독립 decoder gold만 확장한다.
+기존 query/phrase의 전체 위치 배열 reader,immutable object read/identity/edges,
+sorted/bounded/complete JSON·원 budget/취소·parser scratch admission은 보존한다.
+새 cache/installer/Core wire/공용 GC hunk는 포함하지 않는다.
+별도 내부 tool writer는 기존 `causal_cost_worker_scopes.py`의 공통 subtree
+projection,`causal_cost_diagnostic.py` CLI와 기존 테스트의 maintenance 분석만
+확장한다. producer·schema·capture 방식은 그대로이며 Root가 두 결과를 합류해
+좁은 검증 후 제품 큐를 한 번 선택한다. 다른 owner의 parent·GC/물리 hunk는 유지한다.
+수리 후 caller는 기존 검증을 공유하는 `load_count`다. 이 두 hunk의 영향 검증과
+실제 제품 결과는 [11-02 검증](VALIDATION.md#e07-count-reader-20261102)에만
+기록하며,Large deadline 실패를 이유로 Catalog reservation/COMMIT·checkpoint나
+Native server 기한의 수정권을 SEARCH에 추가하지 않는다. 추가 bounded Record는
+기존 Root 관측/실행 경계의 원인 분리이며 별도 collector·제품 성공 증거가 아니다.
+그 Record에서 확인한 `scale/native_index/child_trace.rs`의 단일 operation-root
+가정은 E07 기존 child 검증기 경계에서 수리·집중 검증을 마쳤다. 독립 Catalog
+설정 root와 수명 root의 공존을 허용하면서 하나의 IO summary root와 기존
+lifecycle/request/publication·footer/custody 계약을 보존했다. 다른 runtime emitter나
+Catalog/GC 생산 코드는 수정하지 않았고,이 파일의 기존 schema5 dirty hunk도
+보존했다. 추가 SEARCH 수정권은 미배정이며,[함수별 원인 분리](VALIDATION.md#e07-leaf-attribution-20261102)에서
+별도 lexical hunk가 확인될 때만 부여한다.
+후속6dff8330 진단은 occurrence 설치→기존 파일 read/재open을 가리켰다.
+`FileObjectStore::verify_existing`와 macOS existing/concurrent-publish-loser
+분기의 read→sync FD 보유 후보는 기존 PHYSICAL 경계였다. 당시 SEARCH의 새 제품
+writer0을 유지하며 해당 owner의 기존 one-open/path 교체·sync/barrier 실패·lease 환급 gold와
+수리 결과만 소비한다. retained FD를 재사용하더라도 fsync 직전 현재 namespace와
+path의 dev/ino를 다시 대조해야 하며,교체된 경로를 이전 FD의 sync로 confirm할 수
+없다. borrowed FD 추출/dup·새 capacity owner·sync/기한 완화는 후보가 아니다.
+이전 first64·Kernel DATA cache·Storage batch dedup과 positions SQL을 재구현하지
+않는다. 상세 측정과 후보 한계는 위 VALIDATION에만 기록한다.
+
+**11-02 후속 사용자 마무리 지시의 단일 구현 배치:** 앞 기록의 PHYSICAL 후보를
+이 채팅 Root가 같은 물리 경계의 exact hunk로 합류한다. 새 외부 채팅이나 두 번째
+물리 구현을 만들지 않는다. 시작점은6dff8330의 기존 read/install 본문이며 같은
+hunk의 추가 변동이 있으면 합류 전 재대조한다. 독점 writer는 다음과 같다.
+
+- 내부 production writer1: `crates/quanta-index-storage/src/object.rs`의 batch existing 및
+  concurrent-publish-loser read→sync 두 분기와 private 검증 helper,
+  `crates/quanta-index-storage/src/object/read_io.rs`의 canonical read core/원 owner 반환만 수정한다.
+  ordinary read/get·scalar 설치는 기존 FD 수명을 보존한다. `ObjectReadFile`/Core
+  ABI,Runtime capacity/FD authority,Catalog/GC,원 sync·예산·기한은 바꾸지 않는다.
+- 내부 independent-test writer1: `crates/quanta-index-storage/src/object/retained_read_tests.rs`만
+  작성한다. 실제 admitted-read open/close 수·동일 FD의 barrier 수명·path 교체 거절·
+  실패/cancel 후 미confirm·환급을 기존 batch API로 검사한다. production 등록은
+  위 writer가 한 번 합류한다. 테스트 기대값을 새 helper 구현에서 산출하지 않는다.
+- 별도 read-only slot은 namespace/inode/retirement/FD 생명주기와 실패 경로를
+  적대 검토한다. Root는 source/테스트 합류 뒤 한 owning Rust 검증·strict·제품 큐만
+  실행하고 README E07·VALIDATION의 새 source 결과를 갱신한다.
+
+이는 Storage 파일 전체나 다른 owner의 dirty hunk를 인수하는 배정이 아니다.
+기존 fixture/동기화 불변식은 재사용하며 검증 FD의 현재 path/inode가 달라지면
+sync/confirm 전에 typed refusal한다. borrowed FD 추출/dup·캐시·fallback은 없다.
+후속 코드 inventory에서 두 생산 분기와 최종 회귀6개가 반영됐음을 확인했다.
+[A–C 계약](WAVES.md#e07-residual-packets-20261102)의 multi-owner barrier 관측·
+실제 batch loser 회귀 보완과 B의 Storage166·Native3·Storage strict는 완료됐다.
+현재 잔여는 고정 소스 빌드를 마친 Root 한 큐의 C 제품 수용이다.
+이미 작성된 두 생산 파일을 새 구현 패킷으로 재배정하지 않는다. 추가 생산 수리는
+영향 검증 또는 다음 실제 실패에서 새 exact 결함이 확인될 때만 한 writer가 한다.
+
+**11-02 c0e11cce 제품 실패 뒤 D의 독점 추가 경계:** 같은 기존 SEARCH lane의
+`crates/quanta-index-lexical/src/native/text.rs`에서 positive reuse limit의 resident
+의미·기존 ConfirmedOccurrences/OccurrenceWrites.flush/prepare_inventory 연결만,
+`text_spool.rs`에서 기존 admitted DB의 private exact-reference 확인 집합·원
+AttemptRef 검사·bounded admission/lookup/mark만 생산 writer1이 수정한다. 이는
+first64 count-reader cache나 Kernel/Storage dedup의 재구현이 아니다. positive
+hot window 밖 확인 참조를 같은 prepare의 admitted scratch에 보관하며0은 기존
+완전 uncached다. 생산 writer는 부모 test 등록이나 기존 unrelated dirty hunk를
+수정하지 않는다. 독립 test writer1은 새
+`text_spool/tests/confirmed_occurrences.rs`와 `text/confirmed_reuse_tests.rs`만
+작성하며 Root가 실제 module 경로로 한 번 등록한다. read-only reviewer는 GC
+보호·fence·원 sync/confirm·부분 실패/취소/환급을 점검한다. 테스트/제품 실행은
+같은 Root 한 큐다. Catalog/GC/Runtime authority·공용 API 타입·기존 상한은 그대로다.
+같은 감사에서 드러난 `crates/quanta-index-lexical/src/maintenance_stats.rs`의 단일
+test hunk도 Root가 수리한다. 현재 계약이 금지한 unsealed source-event의 성공
+기대만 typed InvalidContract 거절로 바꾸고 sealed/replay/reopen/통계 불변/원
+resource-refusal oracle는 유지한다. 해당 파일은 수리 전 clean이었으며 별도 exact
+writer 배정은 정적 owner map에서 확인되지 않았다. File 생산 경로나 compaction
+구현을 인수하는 수정이 아니다. 새 상태 원장·다른 채팅 실행은 만들지 않는다.
+
+**11-02 b97d8191 실패 뒤 E의 독점 계측 경계:** Core/wire writer1은
+`crates/quanta-index-core/src/diagnostic_trace.rs`의 stage3개/동기 CPU 목록과
+`crates/quanta-index-searchd/src/trace_wire.rs` 및 필요한 기존 recorder gold를 수정한다.
+실제 output-cap 회귀 실패로 확인한 `app/trace_recorder.rs::write_capture`의
+연속 prefix latch와 독립 cap 회귀도 같은 E writer의 exact 추가 경계다.
+첫 accepted 미기록 뒤 후속 출력은 멈추되 drain/손실 보존·Health invalid·footer
+상한/동기화는 유지한다. wire 테스트의 기존 strict 스타일 결손도 동일 파일의
+테스트 hunk만 보완하며 생산 wire/gold/거절 의미는 바꾸지 않는다.
+Python writer1은 `causal_cost_timeline.py`·`causal_timeline.schema.json`·기존
+`test_causal_cost_timeline.py`의 closed-stage/CPU 계약만 수정한다. lexical writer1은
+`native/text.rs`의 InventoryBatch push/flush·finish_change에 기존 observe_attempt로
+owner 준비·bounded map 적용·owner diff를 감싸고 해당 trace gold만 보완한다.
+새 stage의 정확한 이름은 WAVES E가 소유한다. shared enum/producer/consumer는
+Root가 한 번 통합하며 peer/외부 채팅 연락·각 worker의 Rust/제품 실행은 하지 않는다.
+Catalog/GC/Runtime capacity나 count cache는 이 계측 패킷의 수정권이 아니다.
+
+**11-02 LP3 terminal 후 비중복 잔여:** E의8경로 구현/정적/집중 owning과 정상
+빌드·진단은 완료됐고 Large 수용은 deadline FAILED다. 기존 C의 단일 인계 입력은
+source e6fa916f/capture93f7321a이다. FileObjectStore::apply_stream의 scratch 저장·
+root 구성·reachable 설치와 Catalog/VFS의 중첩 비용은 기존 Storage/Catalog/PHYSICAL
+owner가 원 custody·sync·GC·quota·root/FD·fault oracle 안에서 분리한다. 이는
+해당 파일/SQL 전체를 이 채팅 SEARCH가 인수하는 추가 배정이 아니다. 이미 있는
+원 stream1회 전달·최대64-root 처리·reserve_end_and_start를 재구현하지 않는다.
+실제 반복참조 census/비용 우위가 없는 count spill memo는 미배정 후보이며 추가
+SQL 읽기/쓰기·원 request cap 비용까지 입증하기 전 구현하지 않는다.
+후속 동일 trace의 WAL/checkpoint 분해로 C 우선순위를 기존 Catalog의 dirty-page/
+WAL frame 생성·checkpoint 경로로 좁힌다. Native scratch는 journal_mode=OFF이고
+MapApply의 WAL108644회·checkpoint 내부 main76461회는 scratch cache 확대 근거가
+아니다. Router callback의 종료 점검용 두 번째 mutex/lookup과 allowance Arc 복제는
+정적 비용 후보이나 기여도가 미측정이고 종료 경합을 보존해야 하므로 별도 수리
+패킷으로 승격하지 않는다. 해당 VFS owner의 원 scope/FD 회수 계약을 보존한다.
+
+<a id="e07-wal-policy-writers-20261103"></a>
+
+**2026-11-05 적용 범위.** 아래 배정은 당시 source/hunk의 이력이다. 현재 Native 성능 RCA의 신규 패킷은 [bugbash 구현 계획](../nov-5-indexing-bugbash/WORKPLAN.md)을 따른다. 기존 담당의 진행 중인 수정은 코드·dirty hunk로 확인하고 보존한다.
+
+**11-03 KST C의 확정 구현 경계:** [C0–C7](WAVES.md#e07-wal-policy-execution-20261103)가
+현재 실행 계약이다. 기존 Runtime/Catalog/PHYSICAL 경계 안에서 아래 exact hunk만
+분리한다. 이는 해당 파일 전체의 소유권 이전이나 다른 채팅 작업의 중복 배정이 아니다.
+
+| 유일 writer | 파일·함수 경계 | 반환/합류 규칙 |
+| --- | --- | --- |
+| C1 / 순수 정책 | 제안 새 `crates/quanta-index-searchd-runtime/src/native_wal_reclaim.rs`와 그 inline 순수 테스트만 | C0에 합의한 policy/state 하나. SQLite/IO·config parser·pump·parent export를 수정하지 않음 |
+| C2 / Catalog | `catalog/src/connection.rs`의 기존 checkpoint와 해당 회귀, 필요한 `open.rs`의 busy-timeout 보존 초기화 hunk만 | `WalReclaimOutcome` 정의/반환·첫/복합 미funded·native 오류 구분·nonwaiting busy/checked restore. 일반 Catalog SQL·metadata/schema/VFS는 보존. `lib.rs` public export는 Root가 한 번 반영 |
+| C3 / 독립 fixture | 새 `searchd-runtime/tests/native_index_uds/physical_mixed_pressure/wal_reclaim.rs`만 | 기존 physical_mixed_pressure의 실제 서비스 fixture를 재사용해 장기 SQLite reader/GC 진행·unfunded WAL 회귀를 작성. Root가 parent module 등록. 제품 pin/고정 cap/복구 gold는 재사용. 기존 connection.rs 테스트와 중복하지 않음 |
+| C4 / Root | `runtime/src/lib.rs`, `catalog/src/lib.rs` export; `native_product.rs::MaintenanceConfig`, `native_reclaim_driver.rs::NativeReclaimConfig`·기존 literals, `native_pump.rs`의 mount/pump_loop/run_reclaim_due, `native.rs`의 자동 배선·manual/discard 소비 hunk | C1/C2 코드 합류 뒤 config→실제 pump→Catalog 결과 소비를 연결. 자동 GC-first·원 budget/물리 scope 유지. 기존 `wal_checkpoint_bytes`의 명시 cleanup 의미를 자동 정책과 분리하며 전체 필드를 무조건 삭제하지 않음 |
+| C4 / Root fixture join | `searchd-harness/src/scale/native_index.rs` maintenance JSON, `runtime/tests/native_owned_pump.rs`, `tests/native_index_uds/physical_mixed_pressure.rs`, 기존 `native_product`/pump/driver config fixtures 및 `publication_sqlite_vfs/tests/sync_diagnostic.rs`의 bool→typed 기대값 hunk | `rg`로 모든 실제 constructor/caller를 확인해 한 번 변경. 독립 기대값·기존 unrelated dirty hunk 보존. 새 fixture/API를 가정하지 않음 |
+| C5–C7 / Root 실행·SSOT | 기존 canonical Rust/제품 단일 큐와 README E07/WAVES E07/OWNERSHIP E07/VALIDATION E07/고정 계약 접점 | worker Rust/제품 실행0, peer/외부 채팅 연락0. source/static·실행·제품·정식 성능/자원은 분리 기록 |
+
+Root의 추가 회귀 hunk는 기존 `runtime/src/publication_sqlite_vfs/tests.rs`의
+`checkpoint_refusal` 등록1줄과 새 `tests/checkpoint_refusal.rs` 한 파일이다.
+기존 held-parent/VFS 권위에서 Catalog 실제 checkpoint의 용량 거절·원 funding
+복구·최종 custody를 검사한다. 테스트용 제품 seam이나 다른 physical writer는 없다.
+C3 child의 실제 정책8MiB/1s 재생도 같은 기존 fixture를 매개변수화해 합류했다.
+
+C5 strict가 실제 노출한 기존 E07 test-only hunk는 Root가 한 번 합류한다:
+Catalog `payload_storage.rs`/`registration_payload_format.rs`의 gold 길이 checked
+연산,`work_read_reuse.rs`의 assertion 전 guard 해제;Runtime cache diagnostic·
+Catalog retirement 및 VFS write_timing/refusal/native_retirement/wal_frame test의
+독립 oracle·락·산술/출력 스타일. risk suite helper는 소비자의 debug_assertions
+mount를 그대로 공유하며,admitted_publish_timeout_tests는 동등 private type alias와
+명시 drop binding 이름만 바꾼다. 생산 경로/공용 fixture API/실제 fault 기대값을
+확장하지 않는다. 이 exact 보완은 기존 dirty hunk를 덮거나 해당 파일의 다른
+구현을 이 채팅으로 인수하는 배정이 아니다. Core 기존 test strict4는 별도다.
+
+C6 observer 격리의 추가 exact hunk는 Root의 `causal_cost_capture.py` CLI/env/
+기존 expected_resource_sampling 전달,독립 test writer의 `test_causal_cost_capture.py`,
+별도 writer의 `causal_cost_canonical.py` resources 설명과 기존 canonical tests다.
+기존 nullable resource validator와 Rust Disabled/Enabled sampler를 재사용한다.
+별도 sampler/프로파일 schema/producer를 만들지 않는다. periodic 기본값과 mixed
+필수 관측·실제 cap은 유지하고 off에서 peak 수용을 주장하지 않는다. README usage는
+Root가 합류하며 source-cut3e0516의 실행 이력과 새 driver source를 구분한다.
+
+C6 GC queue churn의 후보 exact 경계는 Catalog writer의
+`native/authority/reclaim.rs` private lifecycle/queue helper와
+`managed_install.rs` Attempt/Ingress reserve/confirm caller다. 기존 reservation
+counter stream·packed codec·child proof/window·본문/SQL billing은 재작성하지 않는다.
+독립 fixture writer는 새 `native/authority/tests/protected_queue.rs`만 소유하고,
+Root가 parent 등록과 기존 `managed_install_trace_tests.rs`의 queue 정책 기대값을
+새 보호 해제 계약과 합성한다. 별도 적대 감사는 읽기 전용이다. 착수 조건은 모든
+최종 custody 해제의 기존 release/enqueue 확인이다. Bootstrap·terminal cleanup의
+공용 구현/다른 E02 hunk·VFS authority/캐시 확대는 이 패킷의 수정 범위가 아니다.
+해당 managed 소스와 독립 fixture는 반영했다. 실제 owning·제품 판정은 VALIDATION을 따른다.
+
+Root의 같은 C6 합류는 `authority.rs`의 tests mount 및
+`has_operation_object_custody`/`read_operation`/`delete_ingress_rows` exact hunk다.
+기존 ingress transfer 순서는 유지한다. 정리할 key의 같은 operation custody를
+bounded checksum으로 검증한 경우 기존 adopt로 lifecycle/queue를 인증하고,
+없으면 기존 release를 수행한다. adopted input은 intent가 없을 수 있으므로
+transfer batch에서 모든 intent 삭제를 가정하지 않는다. 원 cleanup fee에 새 조회
+reads1/bytes64, 채택 시 최악 normalization writes2/mutations2를 추가 청구한다.
+Root는 `prechecked_children.rs`의 기존 queue 정책 gold도 함께 합성하되 손상·
+실제 GC 보호·reclaiming conflict·late rollback oracle는 유지한다. 새 helper/fixture의
+구현은 반영됐고 owning compile/영향 회귀는 완료했다. strict와 변경 source Large 판정은 VALIDATION을 따른다.
+
+C2UR1 뒤 C6 cache 비교의 유일한 코드 hunk는 Root의
+`searchd-harness/src/scale/native_index.rs::native_config` 기존 KiB 값1개다.
+8192→16384는 동일384MiB capacity·320MiB floor 안에서 기존 cache lease를
+8MiB 추가 예약하며 Runtime/Catalog 구현·공용 interface·상한은 바꾸지 않는다.
+일반/mixed config digest와 source/binary variant를 구분한다. 기존 quota/close/
+readback oracle는 재사용하고 단순 literal의 새 unit test를 만들지 않는다.
+실제 startup/readback와 Large,필요 시 Record의 동일 prefix counter가 판정한다.
+이 비교는 C3 Off/Record FAILED와 첫5 MapApply miss 약3% 감소·원14 COMMIT/유사
+WAL 쓰기 결과로 종료했다. Root가 같은 literal을8192로 복원했고 GC 구조 수리는
+유지한다. GC/terminal/VFS의 새 writer는 발급하지 않는다. 기존 trace의
+ManagedObjectInputs 분포·완료 phase 대조는 내부 read-only 분석이며 제품 실행이나
+새 cache/상한 변경의 허가가 아니다.
+
+C6 sparse occurrence packet의 실제 쓰기 경계는 `lexical/src/native/text.rs`의
+PendingOccurrence/OccurrenceWrites,InventoryEdits의 confirmed slot,prepare_inventory,
+InventoryBatch 소유·flush caller다. Root가 기존 dirty spill/dedup/계측 코드를 보존한
+채 이 exact hunk를 합류한다. 기존 inline 테스트와 confirmed_reuse_tests.rs는
+명시적인 per-file flush로 원 gold를 유지한다. 독립 회귀는 새
+`lexical/src/native/text/tests/occurrence_packets.rs`에만 추가하고 parent mount는
+Root가 맡는다. fixture와 API 적응은 분리해 합류했으며 중단된 worker의 미보고
+결과는 Root가 직접 검토한다. 다른 채팅을 조회/메시지하거나 파일 전체 소유권을
+옮기지 않는다. Catalog/VFS/FD/cache/GC·MapApply 상한·공개 interface는 수정0이다.
+실제 owning/strict·Large 판정은 VALIDATION을 따른다.
+
+C6 Diff 관측의 단일 생산 writer는 Root다. Core diagnostic stage/CPU eligibility,
+`searchd/src/trace_wire.rs`의 closed names와 기존 trace_recorder의 전체 vocabulary/roundtrip gold,
+기존 lexical observe helper의 stage 매개변수와
+실제 inventory next/object port get+count 검증/posting push·flush caller만 수정한다. consumer는
+기존 causal timeline schema·CPU stage 집합과 기존 replay tests다. 독립 fixture writer는
+새 `lexical/src/native/text/tests/diff_trace_tests.rs`만 쓰고 parent mount는 Root가 한다.
+제품/Catalog/VFS·storage format·public indexing interface·상한은 수정하지 않는다.
+기존 E01/E02 source observer hunk와 겹치지 않으며 새 collector/trace stream은 없다.
+C5 귀속 후 scoped map DATA caller와 count spill은 코드 패킷으로 선정됐다.
+Root만 `text.rs::prepare/validated_new_count/diff_inventory`와 parent test mounts를 수정한다.
+spool worker는 `text_spool.rs`의 기존 row/API와 `text_spool/tests/confirmed_occurrences.rs`만,
+독립 두 worker는 새 `text/tests/map_read_window_tests.rs`와 `count_spill_tests.rs`를 각각
+독점한다. shared enum/API는 ConfirmedOccurrenceCount Missing/Unvalidated/Validated(u64)와
+confirmed_occurrence_count/record_validated_occurrence_count다. worker 간 통신·타채팅
+조회·Cargo/runtime 실행은0이며 Root에게만 인계한다. Root가 완료 후 scoped rustfmt와
+ValueRef exhaustive match 등 exact integration을 담당한다. Kernel/Storage/Catalog/VFS/
+provider·공개 port·대출/예산/GC 상한은 수정0이다.
+
+C6 unique64 후속의 exact writer는 Root의 `text.rs::InventoryEdits/OccurrenceWrites/
+prepare_inventory`와 기존 inline tests다. spool worker는 `text_spool.rs` 및 기존
+`text_spool/tests/edit_pages.rs`와 새 `planned_inventory.rs`만, oracle worker는 기존
+`text/tests/occurrence_packets.rs`와 `confirmed_reuse_tests.rs`만 수정한다. typed tag와
+opaque confirmation API를 먼저 고정했으며 SQL 행은 확인 전 map authority가 아니다.
+worker들이 사용 한도 오류로 중단돼 Root가 partial source를 직접 합류·수리했다.
+완료 인계나 실행 성공을 추정하지 않는다. 독립 reviewer도 중단돼 최종 교차 source
+검토·통합 검증은 Root가 맡는다. Cargo/runtime·source freeze·E07 문서는 Root 한 큐다.
+기존 count-spill/window·FD/Catalog/VFS/GC/공개 port·다른 채팅 hunk는 수정0이다.
+
+C6PR2의 diagnostic drop 후 Root는 `text.rs`의 Diff page-fill caller와 기존
+`text/tests/diff_trace_tests.rs`만 수정한다. `MapPageCursor::is_empty`를 재사용하므로
+Core/port API·collector·queue·schema·product storage는 수정0이다. 기존 CountSpill/
+unique64/Ready·Planned·확정 receipt 계약을 보존한다. 다른 writer·채팅·새 티켓은 없다.
+observer derivative는 집중2body·strict·normal build→Record 한 회로 검증하며
+0f70의155/155·UDS3와 새 source 결과를 구분한다.
+
+C6BR1의 저장 증폭과 F0의 inventory4096/4096 표현 적합성은 확인했다. 실제 codec의
+성능은 미확인이다. child index를 제거한 positional 모델은 최대payload2014B/wire11150B다.
+[F0→조건부 F1–F3](WAVES.md#e07-entry-map-rca-plan-20261103)를 따르며 F1–F3은
+아직 NOT_IMPLEMENTED다. 이번 Root-only 병렬 감사는 완료됐고 usage-limit는 현재
+작업 차단 사유가 아니다. 타채팅 상태를 조회하거나 해당 owner에게 재배정하지 않는다.
+
+| 수정 경계 | 유일 writer·합류 조건 |
+| --- | --- |
+| F0 canonical layout census — 완료·재작업0 | 고정 corpus/model 계수2/2는 설계 증거다. 후속 구조 검사에서 harness→normalizer 직접 dev edge가 거절되어 그 devdep/lock/test mount를 제거하고 진단 소스를 checkout 밖 기존 audit에 보존했다. 실제 codec·경계·수명 회귀는 lexical/Kernel/UDS가 소유한다. F0를 다시 만들거나 공개 normalizer API/allowlist 예외를 추가하지 않는다 |
+| F1 codec/reader | Root가 `native/text/entry_map.rs`의 closed enum/private API와 layout를 먼저 고정하고 parent를 소유한다. private codec leaf는 worker A,독립 oracle는 worker C. 같은 entry_map hunk를 둘에게 배정하지 않는다 |
+| F2 producer | 기존 `entry_patch.rs`의 완전 merge/CAS/EOF를 worker B 한 writer가 확장한다. Root는 R0 private 역할/borrower/API를 먼저 고정하고 B가 작성하는 동안 해당 파일을 수정하지 않는다. 기존 generic bulk writer 재개발0 |
+| F3 소비·profile | Root만 `text.rs`,`text_overlay.rs`,`contribution.rs`의 실제 caller·inline_posting·child/정책 접점과 parent/test mount를 수정한다. descriptor/config 결속이 필요한 경우에만 기존 `native_product.rs`의 NativeProductConfig/DescriptorConfig 해당 hunk를 대조하며 다른 runtime hunk를 인수하지 않는다. 독립 oracle leaf는 분리 가능 |
+| 공용 검증·문서 | Root 한 큐에서 영향 body/strict·실제 NativeText 경계·정상 pair build·제품 Off/Record를 수행하고 기존 E07 SSOT만 최신화한다. worker는 Root에게만 결과를 보내며 peer/외부 채팅 연락·Cargo/runtime·별도 제품 큐0 |
+
+<a id="e07-entry-map-exclusive-packets-20261103"></a>
+
+**2026-11-05 적용 범위.** 아래 배정은 당시 source/hunk의 이력이다. 현재 Native 성능 RCA의 신규 패킷은 [bugbash 구현 계획](../nov-5-indexing-bugbash/WORKPLAN.md)을 따른다. 기존 담당의 진행 중인 수정은 코드·dirty hunk로 확인하고 보존한다.
+
+**C7BR1 뒤 추가 exact hunk:** 기존 PHYSICAL/Catalog 소스와 아래 P1/P2는 재구현하지
+않는다. 이번 Root 내부 A만 `catalog/src/native/authority/managed_install.rs`의
+private ChildWindow·동일 capacity 전달·Attempt billing planning의 lazy 생성 hunk를
+수정한다. 내부 B는 기존 `tests/prechecked_children/repeated_children.rs`의 collision
+gold와 독립 큰-child/예산/rollback 회귀만 소유한다. 내부 C는 읽기 전용 적대 감사다.
+Root는 계약/문서·단일 실행 큐만 합류한다. registration codec/SQL/schema/GC·FULL·
+deadline·공개 port/이전 PHYSICAL hunks는 수정 범위가 아니다. worker 간 연락·Cargo0.
+
+**C8CR1 뒤 WAL append batch exact hunk:** 기존 E07 controlled WAL pack 소유권을
+재사용한다. 내부 A는 `vendor/libsqlite3-sys-0.38.2/quanta/quanta_wal_frame.inc`의
+production helper와 `sqlite3/sqlite3.c::walFrames`의 iFirst==0 guarded append
+분기만 수정한다. 내부 B는 기존 Runtime `publication_sqlite_vfs/tests/wal_frame_write.rs`
+실제 VFS 회귀만,내부 C는 새 private `quanta/quanta_wal_batch_tests.inc` 독립 scalar
+oracle만 소유한다. Root만 test include/build rerun/testhook FFI를 연결하고 단일 큐를
+실행한다. fd/root/allowance·VFS callback·retirement·schema·GC는 변경0이며 다른
+dirty vendor hunk를 인수하지 않는다. 실제8-frame 계약은 [validation](VALIDATION.md#e07-wal-append-batch-20261103)을 따른다.
+
+C9WR1 후 cache48 비교는 Root만 기존 `searchd-harness/src/scale/native_index.rs`
+`native_config`의 catalog_writer_cache_kib 한 값8192→49152를 소유한다. Runtime/
+Catalog/physical/GC/worker 구현·총384MiB/floor320MiB·deadline/FULL 변경0이다.
+원Source와 exact 역치환 hash가 같을 때만 R3의 영향 proof를 재사용하며 strict/
+정상 harness build와 새 profile 제품 결과는 실제 수행한다. 비교·유지 조건과
+논리 memory/RSS 구분은 [variant](VALIDATION.md#e07-cache48-budget-variant-20261103)에
+고정한다. 별도 cache issuer/knob/상태 티켓을 만들지 않는다.
+
+**C10 후 token-stream exact 경계 — 2026-11-03:** Root가 기존 SEARCH/E07
+`native/text.rs::prepare_inventory`의 full/delta 공통 caller와
+`native/text_spool.rs`의 token batch/visitor·private `token_groups.rs`,
+`causal_profile.rs`의 private lane helper 및 해당 기존/새 lexical test leaf만
+합류한다. 새 public port/schema/format,Storage/Catalog/VFS/GC authority,posting
+engine와 다른 채팅의 producer는 수정권에 포함하지 않는다. 단일 `term,pos`
+cursor의 live 기간 token table 변경/재진입을 거절하고,callback의 inventory와
+confirmed scratch DML은 원 connection·attempt·WorkBudget 안에서 수행한다.
+원 budget을 새로 발급하거나 중간 prefix rollback을 약속하지 않는다. lane2의
+자식 lane34/35는 비가산 진단이며 Off 양쪽 진단 None은 직접 경로다. 정적 감사에서
+P0–P2 추가 결함은 확인되지 않았으나 이는 runtime proof가 아니다. strict는
+통과했다. 이전170/171 실패는 generic100-read fixture 오류로 RCA해 테스트만
+기존1024-read packet budget에 연결했다. 수정96cf1f2에서 lexical/reader/spool/trace171,
+Kernel4,UDS5와 strict·hexagonal이 통과했고 구조/정상 pair도 같은 큐에서 통과했다. C10
+Large Off/Record는 모두120s FAILED이고 cache48은 기존384MiB/floor320MiB의
+논리 예약일 뿐 RSS 증거가 아니다. [현재 source·검증](VALIDATION.md#e07-token-stream-20261103).
+
+**C11 후 checkpoint 독점 경계 — 2026-11-04:** C11 token R4의 영향180개·strict·
+구조·정상 pair는 VERIFIED지만 Large Off/Record는 원120s FAILED다. 다음 candidate는
+Root의 기존 controlled VFS/SQLite owner 범위에서만 max8 연속 main-page write다.
+Catalog의 phase7 child-sort 후보와 producer/DELTA는 인수하지 않는다. Root는
+sqlite3.c loop·capacity C/header predicate·build/FFI·Rust mount와 합류/검증을 소유한다.
+Leaf A는 private checkpoint helper,Leaf B는 독립 C oracle,Leaf C는 실제 VFS test
+leaf로 분리했다. 중단된 leaf 마무리는 Root가 같은 파일에서 이어받았으며 추가
+채팅/peer message는 없다. c6e911b6의 C UBSan과 C가 같은 f591a0e3의 영향565개·
+strict·구조·정상 pair가 VERIFIED다. C12 Large는 원120s FAILED이고 첫 Map의 main
+호출44.54% 감소는 확인했다. 이후에는 충분히 조용한 로컬 현재-source 실행과
+실패 원인에 따른 Root 단일 후속 수리만 열려 있다;기존 구현을 새 패킷으로 반복하지 않는다. [R0 계약/최신 결과](VALIDATION.md#e07-checkpoint-batch-contract-20261104).
+
+**256 설치 envelope 계약 — 2026-11-04:** [R0](VALIDATION.md#e07-install-envelope-contract-20261104).
+Root:Core ports bound,Storage/Catalog aliases,text.rs OccurrenceWrites/flush caller.
+A:새 producer256/Storage256 독립 oracle leaf만. B:text_spool/confirmed_batch.rs와
+새 oracle 및 기존 confirmed admit/record의 test-only 표시만. C:text_spool.rs의
+InventoryConfirmation·admit_inventory_confirmation·관련 SQL과 새 planned oracle만.
+Parent module mount/import는 Root. Scalar/원64 fallback 추가·제품 예산 상향·원본
+occurrence read 검증 생략·다른 채팅 인수는 제외한다. 모든 코드 합류 후 단일 검증 큐.
+추가 C 담당은 managed_install.rs의6 prefix set만 fixed sorted256으로 바꾼다. 일반 child-rich 배치의 선형조회 P2를 닫으며 child window4096·원 과금/검증 순서를 유지한다. Root는 shard 경로의 쓰기 전 funding과 기존64 경계 oracle의256 정정을 담당한다. Core semantic/service·mutations/inline_values의 기존 test lint4건은 다른 owner 범위로 보존하며 이번 전체 Core test strict 통과로 보고하지 않는다.
+
+**R7 패킷 마감/C13 — 2026-11-04:** 위 Root/A/B/C 코드는 모두 합류·동결했고
+집중558개(동일 소스 원 근거 포함)·관련 strict·경계·모듈·정상 pair가 통과했다.
+C13 실제 256 경로와 설치 쌍24→6/110→29를 확인했지만 원120s는 Off/Record
+모두 FAILED다. Host paging/코드 비용을 구분한 [최종 RCA](VALIDATION.md#e07-install-envelope-contract-20261104)를
+따른다. 이 패킷의 미합류 코드0·추가 확정 결함0이며 새 wire/Map256/cache 작업은
+배정하지 않는다. 현재 소스의 안정된 로컬 수용만 Root에 남기고 기존 owner는
+유지한다. Quiet 비교 BLOCKED·전체 운영/출시 범위는 별도 미수용이다.
+
+**후속 요청 단위 RCA·음성 조회 수리 — 2026-11-04:** 위 R7 동결 이후 Root는
+`native/text.rs::prepare_inventory`의 pending-before-confirmed hunk만 수정하고,
+기존 `text/tests/confirmed_reuse_tests.rs` leaf는 독립 첫 owner 읽기 oracle만
+보완했다. 감사3개 lane은 Prepare/Catalog/예산 경계를 읽기 전용으로 분담했고
+실행은 Root 한 큐다. SourceApply17.638s와 실패 Lexical101.679s가 같은120s를
+소모하며 COMMIT33.945s·중간 물리 설치35.808s를 분리했다. 영향181개 VERIFIED,
+owning all-target strict도 VERIFIED;변경 제품 NOT_RUN·기존 R7 Large120s FAILED다. 이전 `확정 결함0`
+판정은 R7 당시 범위이며 새로 확인한 guaranteed-negative 조회는 실제 수리했다.
+새 wire/Map256/cache 재설계나 다른 owner 인수는 없다.
+[현재 RCA·수용 경계](VALIDATION.md#e07-sourceadvance-rca-20261104)를 따른다.
+
+**후속 namespace/CPU 패킷 소유 — 2026-11-04:** [현재 R3 원장](VALIDATION.md#e07-namespace-cpu-repair-20261104).
+Root는 Core CPU selector·계약 통합·단일 검증 큐를 소유한다. 물리 leaf 담당은
+Storage `validate_store_root` 단일 hunk와 `managed_trace_tests`의 테스트 mount,
+새 `write_preparation/tests/root_validation.rs`만 수정했다. parser 담당은
+`causal_cost_timeline.py`의 CPU owner/lane 검사와 기존 owning test만 수정했다.
+Catalog/VFS·Map 감사는 읽기 전용이다. R3 strict·집중276개·hexagonal은 VERIFIED이며
+수리의 제품 속도·원120s 통과는 아직 주장하지 않는다. 다른 owner 인수/연락0.
+넓은 Runtime library 재빌드는 본문 시작 전 Root가 취소했고 Catalog SQL은 재실행하지
+않았다. 정상 test=false pair는 VERIFIED이나 수정본 C14NO1 Off의 원120s는
+FAILED다. C14NR1 Record도 FAILED이며 새 CPU가 들어간 child trace는 유실 없이
+complete다. 그 뒤 [Block/shard 수리](VALIDATION.md#e07-block-cursor-repair-20261104)를
+합류했다. 물리 담당은 object.rs의 shard metadata helper/두 caller만,Lexical
+담당은 Block leaf·MapEntries hunk·test mount/new leaf만 수정했다. Root가
+비공개 상위 모듈 visibility·strict 스타일을 보완하고 단일 영향 큐를 소유한다.
+현재 추가 source 수정은 동결이며 다른 owner 범위는 인수하지 않는다.
+후속 C15 Off/Record는 FAILED이고 원 E07 최종 수용 의무를 면제하지 않는다.
+Block/shard 영향 strict·Storage65+Lexical189=254개·hexagonal은 VERIFIED다.
+실제 caller의 누락은 Root의 `kernel/src/attempt_reads.rs` 위임 hunk와 기존
+`attempt_reads/tests.rs` 회귀로만 수리했다. Kernel production strict는 VERIFIED,
+Kernel 전체 타깃은 변경하지 않은 Source rebase 테스트 lint2개로 FAILED다.
+그 테스트나 다른 owner 범위는 수정하지 않는다. Kernel caller17/17·경계·정상 pair도
+VERIFIED이며 수정본 C15 Off/Record는 terminal FAILED다. Storage/Lexical의 변경 없는
+254개를 반복하지 않는다. Root 실행은 모두 종료했다. 다음 고유 패킷은 기존
+physical writer/capacity의 같은 설치 묶음 비용 분할이며 완료한 leaf를 재배정하지 않는다.
+
+**11-05 physical attribution packet:** [계약·검증 계획](VALIDATION.md#e07-physical-attribution-20261105).
+Core/Searchd 담당은 진단 enum/context·V5 wire와 기존 owning test만,Storage 담당은
+실제 batch writer hunk와 고정 크기 phase observer/test만,Python 담당은 schema·
+canonical parser/summary/Perfetto 및 기존 owning test만 쓴다. Root는 canonical
+profile/capture와 직접 exhaustive 소비자 접합,한 번의 검증 큐를 소유한다.
+다른 채팅 연락·owner 재배정·완료한 성능 수리 재구현은0이다. 계측 구현/정적
+검토와 해당 고정본의 집중 검증은 완료했으나 제품 성능 해결로 승격하지 않는다.
+후속 C16 actual trace는 유실 없이 검증됐으나 원120s FAILED다. 측정된
+namespace/create CPU의 중복 탐색 수리는 Runtime 두 파일의 canonical
+create-policy/adapter hunk만 소유한다. Storage child 검증과 C checkpoint는
+안전한 삭제 근거가 없어 수정하지 않았다. Runtime strict·74/74·hexagonal은
+VERIFIED다. 후속 적대 정적 확인에서 새 구체적 결함은 발견하지 않았다.
+초기 자원 잠금 차단 후 공유23입력 변경을 보존하고 clean external8e94ca5c에서
+정상 pair를 빌드했다:0/872.034s·drift0. Off C17IO1/Record C17IR1은 모두120s
+BuildPrepare deadline으로 FAILED다. Record418,380events 완전성은 VERIFIED다.
+Lexical 두 span wall100.629s/CPU29.479s와 대기 잔여를 분리하되 host-only로
+단정하지 않는다. Root 실행/분석은 종료했다. 추가 full-bound 생성·child cache·
+체크포인트/권한 검사 삭제는 수리가 아니다. 기존 Native Text inline/배치 중복 제거는
+재배정하지 않는다. 다음 성능 수리는 실제 caller와 유효한 CPU/대기 근거가 지목하는
+최소 hunk만 소유한다. 다른 실행자/채팅은 배정하지 않는다. 이전74-body 입력을
+유지했고 변경된 공유 트리 전체 수용으로 승격하지 않는다.
+
+**계약 선행·4slots의 실제 패킷 allowlist:** [R0/P1/P2·테스트 계약](WAVES.md#e07-entry-map-contract-parallel-tests-20261103)을
+따른다. 후속 사용자의 구현 지시에 따라 아래 P1/P2 source가 실제 합류됐고 Root
+단일 큐에서 검증 중이다. 최종 source와 수용은 [구현 checkpoint](VALIDATION.md#e07-inventory-block-implementation-20261103)를
+따른다. 파일은 `crates/quanta-index-` 접두 경로 아래다. 코드·module parent의 writer를
+구별하며,mount를 포함한 같은 semantic hunk를 동시에 수정하지 않는다.
+
+| 단계·담당 | 쓸 수 있는 정확 파일/함수 | 금지·인계·완료 조건 |
+| --- | --- | --- |
+| R0 / Root | `lexical/src/native/text/entry_map.rs`의 enum/EntryMapUse·private signatures·codec reexport/mount; `text.rs`의 MapEntries/call-site/정책 접점 | wire magic/BE widths/positional children·error/custody와 inventory-only 역할을 먼저 고정. 실제 source ABI가 아직 없는 함수를 worker가 임의로 추정하지 않게 선언/접합 계약을 제공. 임시 success/NotImplemented body0. 이 단계만으로 컴파일 성공을 주장하지 않음 |
+| P1-A / codec writer | 새 `lexical/src/native/text/entry_map/block.rs`만 | BlockDraft·full parser/lookup/page의 private 구현. EntryMap parent·entry_patch·tests·Core/Storage/Catalog 수정0. gold를 구현 출력에서 생성하지 않음. source handoff 후 해당 leaf 고정 |
+| P1-B / producer writer | 기존 `lexical/src/native/text/entry_patch.rs`만. 파일이 실제 규칙 상한을 넘을 때만 Root와 이름을 먼저 고정한 private producer leaf | 같은 merge/CAS/RootInput/MapInput 재사용,명시 EntryMapUse,original EOF→compact staging/install→전 output ref 확인→결과 조립. own orchestration의 caller와 parser를 복제하지 않음. Root의 동시 수정0 |
+| P1-C / oracle writer | 기존 `lexical/src/native/text/tests/shared_entry_maps.rs`와 새 `lexical/src/native/text/tests/shared_entry_maps/{support,block_codec,block_custody}.rs` | 현재6개 독립 laws 유지·readback 가능한 test-local object fixture·고정 byte/BTreeMap/adversarial oracle. 신규 하위 module mount는 이 소유 parent 안에서만 가능. `TestObjects`의 설치 후 읽기 부재를 성공으로 우회하지 않음. 제품 port·parent text.rs 수정0 |
+| P1 / Root 동시 작업 | 위 entry_map parent와 `lexical/src/native/text.rs`의 lookup/scan/MapEntries·inventory/posting apply caller·TextChildren/inline_posting/read_posting·TextRecipe,`text/contribution.rs`,`native/text_overlay.rs` | Block inventory→parent source/block child,Posting Block typed reject·기존32B/8B inline 유지. object/map borrower 연결. P1-A/B/C allowlist 수정0. schema/format은 기존 descriptor owner와 대조하며 필요 없는 Runtime 전역 format issuer0 |
+| P2-A / lifecycle oracle | 기존 `kernel/tests/native_lifecycle/text_entry_maps.rs`만 | 실제 store/pin/reopen/GC·Small/Block/Generic/empty gold. Kernel parent/helper 변경이 필요하면 exact hunk를 Root에 요청하고 leaf는 기존 확정 helper만 사용. 다른 Kernel owner 테스트 수정0 |
+| P2-B / UDS oracle | 새 `searchd-runtime/tests/native_index_uds/text_entry_maps.rs`만 | block inventory와 df1/8/9 기존 posting·query/overlay/delta/noop/delete/reopen·NativeText old policy/format calls0 oracle. parent mount/공통 fixture는 Root. Literal 회귀를 NativeText acceptance로 대신하지 않음 |
+| P2-C / 비용·실패 oracle | P1-C의 동일 oracle subtree만 | tiny delta·64-row scan 비용·grant deny/refund·short/wrong-last output·late failure를 보완. 새 benchmark runner/ledger나 전체 제품 fixture 복제0 |
+| P2 / Root 합류 | `kernel/tests/native_lifecycle.rs`와 `searchd-runtime/tests/native_index_uds.rs`의 필요한 mount/기존 NativeText fixture hunk만; `lexical/src/native/text_reader.rs`의 기존 reader delegation/검증에 실제 누락이 확인된 경우 그 hunk만 | 공용 parent/fixture는 Root 한 writer. product descriptor/config mismatch가 실제 발견된 경우만 `searchd-runtime/src/native_product.rs`의 해당 hunk를 대조·수리. 다른 dirty parent hunk를 인수하지 않음 |
+| 단일 실행 / Root | 위 coherent source의 static/strict/owning/UDS/정상 build와 기존 Large/XL/mixed capture,기존 E07 문서 | worker Cargo0·같은 제품 입력 실행0. proof scope/body count/실패 클래스 및 source를 구분. 무관한 dirty를 전체 무효화하거나 과거 결과를 새 codec PASS로 승격하지 않음 |
+
+P1과 P2의 A/B/C는 각 wave 안에서 병렬이며,P2는 P1의 accepted interfaces와
+source handoff 뒤 시작한다. Root는 순차로 들어오는 leaf를 read-only 리뷰하고
+writer가 고정했다고 알린 뒤에만 그 파일을 수정할 수 있다. 계약 변경은 Root에
+의한 영향 scope 재동결 한 번으로 처리하며 worker끼리 API를 협의/변경하지 않는다.
+테스트의 expected bytes·결과·실패는 위 WAVES C1–C8을 먼저 소비한다. 최종 실제
+작성 파일/변경 함수·미수행 검증은 기존 VALIDATION과 README E07에만 갱신한다.
+
+canonical object/map ports와 기존 attempt custody/GC를 재사용한다. Catalog/Storage/
+Kernel·VFS·provider/SDK·다른 채팅의 producer/DELTA hunk는 수정하지 않는다.
+기존 paged SourceFile/BlobRef engine은 동일 NativeObject codec 소유자가 아니므로
+두 engine을 혼용하지 않는다. 새 SSOT·티켓·다른 채팅 연락0이다.
+
+표의 `runtime`/`catalog`/`searchd-harness`는 각각 기존 `crates/quanta-index-*` 경로다.
+착수 시 current preimage·dirty hunk를 재대조한다. 같은 semantic hunk가 바뀌면
+Root가 기존 변경을 먼저 합류하며 별도 writer를 겹쳐 실행하지 않는다. 자동1000/
+FULL/VFS·GC20ms·reserve512KiB·원 request/work/IO 상한은 보존한다. optional busy와
+미funded만 typed defer이고 실제 ResourceLimited/storage/cancel은 성공으로 숨기지 않는다.
+새 thread/ledger/checkpoint coordinator·새 SSOT/중복 티켓은 없다. A/B/D/E 및 기존
+E01/E02/DELTA/SDK/CI/release의 완료 코드/담당을 다시 발주하지 않는다.
+
+ 자원 상한의 실제 권위 또는 비용축의 실제 입력/독립 gold와 누락 접점이
+먼저 확인돼야 코드 작업을 연다. 이는 새 runner/collector·supplier 구현 배정이 아니다.
+
+| 구분 | 기존 경로/후보 hunk | 독점 수정·재사용 규칙 |
+| --- | --- | --- |
+| Source와 기존 실행 owner | `scanner_source_identity.capture`, `causal_cost_build.build_scale`, `causal_cost_capture` CLI; Linux의 `linux_process.run/_run_cgroup/ProcessResult` | 현재는 기존 함수 호출·source/방법 대조만 수행. 별도 source checker·process owner·sampler를 만들지 않음. Linux owner 본문 변경은 실제 방법이 요구하는 누락이 확인될 때만 기존 scope를 대조 |
+| 자원 증거 생산 | `causal_cost_capture.py::_linux_execution_observation`와 그 결과를 execution에 넣는 기존 caller | 검증된 method/scope/상계·source/binary/config/epoch를 전달할 접점만 후보. 현재 false/null 진단 상태를 임의 true/peak로 채우지 않음 |
+| 자원 증거 소비 | `causal_cost_profile.py::_native_linux_resource_observation`, `validate_native_product_artifacts`의 resource 소비/상한 판정 | 생산 계약과 함께 Root가 합류. 현재 dirty `_native_child_trace`의 schema5 허용 hunk는 보존하고 자원 수리로 재적용하지 않음. 필드 존재/타입만으로 권위를 인증하지 않음 |
+| 기존 독립 테스트 | `tools/ci/tests/test_causal_cost_capture.py`, `test_causal_cost_profile.py`, `tools/benchmark/retrieval/test_linux_process.py`, `test_linux_resource_integration.py` | 방법이 선정된 뒤 missing/forged/over-cap/단위·root·child·migration·deleted-open/첫 실행·재오픈 불일치 oracle를 해당 파일 한 writer가 보완. 이미 있는 gold를 다른 이름으로 복제하지 않음 |
+| 비용축 수용 | Native scale/mixed의 기존 producer→detail→profile과 기존 feature owner의 비용 fixture/결과 | 지원 full/delta/noop/delete/churn/mixed와 미수용 N/H/M/fanout/history/batch/branch/watch/model/policy를 구분. 입력·독립 gold·계수 누락의 exact hunk 확인 전 harness/producer 새 writer0 |
+
+producer와 consumer 파일은 계약을 먼저 고정한 뒤 서로 다른 writer가 준비할 수
+있지만 파일/함수 한 곳의 writer는 하나다. 공용 field·schema·signature·import와
+최종 적용/검증은 Root가 직렬 합류한다. 각 worker는 Root에게만 결과를 반환하고
+peer/외부 채팅을 조회·연락·재배정하지 않는다. 착수 직전 current preimage·dirty
+함수·기존 소유 경계를 다시 대조하고, 같은 semantic hunk가 바뀌었으면 Root가
+기존 결과와 결합한 뒤 재개한다. 파일 전체를 인수하거나 상대 변경을 되돌리지 않는다.
+
+**실행 중복 판정:** source/input/config/profile·package/target/selector·Off/Record
+phase·oracle가 같은 작업은 한 실행 큐의 기존 결과를 재사용한다. 다른 출력 폴더는
+새 작업이 아니다. 실패 재시도는 원인 수리/환경·관측 조건 변경이 확인된 경우와
+원 계약의 paired arm에만 허용한다. 이번처럼 사용자가 중복 대조를 요청했을 때
+Root의 일회성 읽기 전용 근황 조회만 사용한다. 메시지/깨우기/재배정·새 채팅
+생성 및 불필요한 반복 조회는 하지 않는다. 내부 lane은 타채팅을 조회하지 않으며,
+위 경계를 넘는 생산 코드를 자동 배정받지 않는다.
+
+<a id="e07-live-owner-exclusion-20261030"></a>
+#### 실제 담당 대조로 제외한 작업 — 2026-10-30
+
+목록/최근 turn은 한 번 읽고 local HANDOFF·현재 경로를 대조했다. 다음 표는
+이 채팅에서 중복 구현하지 않을 경계이며 다른 에픽의 상태 원장을 대체하지 않는다.
+대부분 실제 생산 경로는 `semantica-codegraph-v2/packages/analysis/quanta-v2`이고,
+이 채팅의 Index Catalog/Runtime hot3와 겹치지 않는다.
+
+| 기존 채팅 / 관측 | 이 채팅에서 제외할 작업 |
+| --- | --- |
+| `QIDX E02 A Native GC 구현` / 최근 완료 turn·HANDOFF | 배정된 Native GC 구현·Runtime 접합·대상 테스트는 완료 기록이 있다. 다시 구현하지 않는다. 전체 P02/installed SDK/full-suite는 별도 미수용이며 이 채팅의 새 GC TODO가 아니다 |
+| `QIDX E02 DELTA 게시·복구 구현` / inProgress·현재 dirty caller | prior Args/QueryKey/options/identity 공급,SDK seed·ItemIndex 소비 및 terminal 합류. 현재 파일에 predecessor request 연결이 있으므로 "caller 없음"을 새 구현으로 복원하지 않는다 |
+| `QIDX E02 B Trace·Evidence 및 재사용 구현` / 최신 owner checkpoint 소비 | QE/Kernel/metadata7·Java provider2·committed census1, 총10파일은 같은 Semantica checkout에 반영됐다. 과거 NOT_APPLIED patch를 재적용하지 않는다. 새 owning 실행·committed complete inventory·genuine predecessor/Runtime/SDK/cold 수용은 기존 담당의 잔여다. 이 dependency/evidence Trace를 E07 Perfetto 성능 trace와 같은 작업으로 취급하지 않는다. [최신 적용·한계](VALIDATION.md#e02-b-trace-reuse-final-audit-20261030) |
+| `QIDX E02 C Native Provider·Successor…` / 소유 범위 유지·후속 감사 inProgress | P07 Native HTTP·응답/오류/backing만 직접 소유. 생산 enum5+테스트 패턴1은 C가 소스 수리했고 P05는 DELTA 담당으로 제외. E07은 해당 수리/전송을 선점하지 않는다 |
+| `QIDX DELTA L1 ItemIndex successor 구현` / C·D source handoff 확인, Rust 수용 미완료 | selector·plan/collector·bank partial/환급·공용 접합/QBC의 기존 A–D 배정을 유지한다. C owner/oracle 수리와 독립 B/A fixture는 접합됐다. C의 직접 잔여는 D owning bank rail 하나(본문2개, 현재0/NOT_RUN)다. UI idle/inProgress를 완료나 수정권 회수 근거로 쓰지 않는다. [최신 소스·증거·잔여](VALIDATION.md#e02-l1-final-audit-20261030) |
+| `QIDX DELTA L2 Graph 구현` / inProgress | Graph supplier·Core path helper 및 해당 genuine 생산/검증. 별도 Graph/RepoMap 공급자를 만들지 않는다 |
+| `QIDX DELTA L3 genuine 회귀 구현` / inProgress | genuine fixture/cold/inventory·실패 관측. 같은 fixture를 E07 새 코드 작업으로 배정하지 않는다 |
+| `QIDX DELTA L4 Native Watch Source 접합` / inProgress·Source/SDK 경로 | Watch prepare/run·완료/부분 receipt·RepoState/generation/callback 접합. 이 채팅의 ANN fixed-delta 수용과 Watch 생산 구현은 다른 경계다 |
+| `QIDX A 전체 파일 Chunk plan 구현` / inProgress | 초기 Chunk/BC·FileText·Java supplier와 모듈 접합·소유 검증. 생산 파일/parent를 수정하지 않는다 |
+| `증분 작업 상태 전수 파악` / P01 담당 | Acked 소유 코드·기존 owning 전체 회귀만 담당한다. [현재 판정·단일 잔여](VALIDATION.md#e02-deduplicated-current-work-20261030-root)를 참조한다. 다른 Native/provider/DELTA 소스와 공용 검증은 기존 담당 유지. |
+| `마무리용 마스터` / inProgress | W2 R6 진단·C04 Evidence·C01/C02 소비 접합/QBC. E07 원4K/운영 판정과 합산하지 않는다 |
+
+L1 A–D의 실제 제목은 각각 `QIDX L1-A selector 경계·상태 마감`,
+`QIDX L1-B 실제 plan·collector 회귀 마감`,`QIDX L1-C bank partial·환급 회귀 마감`,
+`QIDX L1-D 통합·QBC 검증 마감`이다. C의 초기/후속 통합 patch는 현재 반영됐다.
+D의 source handoff와 Rust 실행은 별개이며 bank 본문0은 수용 미완료다. 다른 lane의
+Runtime/Linux/product 잔여는 기존 담당에 유지하고 C의 새 구현으로 중복 배정하지 않는다.
+
+**이 채팅의 실행 큐는 하나다:** 기본 bench/config의 완료 결과를 재사용하고
+원4K의 초기 처리량 실패를 좁은 RCA→확정 hunk 수리/영향 검증→재수용으로
+이어간다. 현재 결과와 실행 여부는 README E07만 갱신한다. 위 Semantica
+공급/Watch/QBC 완료를 독립 Index fixture의 새 선행조건으로 추가하지 않는다.
+실패 진단용 Record와 정식 overhead 수용을 구분한다. 원4K 성공 뒤 기존 E07
+성능·자원/운영의 미수용 gate를 열고, 실제 실패가 특정한 이 채팅 exact hunk만
+수리한다. 다른 담당 미완료 목록을 이 채팅 TODO에 복사하지 않는다.
+
+### W205 R653 Main141 / R654 execution ownership (2026-10-29)
+
+- Root integrated compiler repair13 (R651), then Core20 + authoritative mixed23 + Foundation7 (R653). Reviewed unique source paths141. Exact Main before/after hashes, parse and whitespace VERIFIED; canonical NEW0/WORSE0. The overlapping Core/mixed parents are composed once, with existing Python and current Main paths retained.
+- R649 actual compile15/body0 FAILED101, source83 drift0, terminal and canonical cleanup confirmed. R654 original exec30528 owns the single Root Rust queue for the same genuine constructor positive over Source141. Upper SDK/product execution is NOT_RUN.
+- Exclusive remaining owners: constructor=Authority leaf5; acceptance=PTA15 packet plus FullFamily formal capture and caller1 hunk; QRA=Graph/FullFamily roster/prepared-set and Authority data grouping; Root=paid-call relation5, SDK18, Runtime/family, shared integration/validation. No duplicate Source issuer, serializer, fallback or ordinary reconstruction.
+- R653 scoped boundary check has one pre-existing interprocedural finalization contract failure outside the selected50; before/after failure sets match. No guard/baseline is changed. Read-only direct scanning may proceed during R654; Main source mutations and another Root Rust run wait for terminal/cleanup.
+- Upper candidates are not yet typechecked or product acceptance. All six goals OPEN/SourceReady=false.
+
+### W205 R660 terminal / Main149 / R664 ownership (2026-10-29)
+
+- Actual Main source authority: `r663-current-source-ledger.json`, unique149 paths. R657 corrected Foundation ancestor-private graph comparison and existing singleton enum move (2); R659 connected canonical selected final-D/native Source (7); R663 exposed two borrowed-read fields only to the original parent (1). No new issuer/allocation or public visibility. Parse, whitespace, affected boundary before/after and canonical NEW0/WORSE0 VERIFIED per cut.
+- R654 original30528 closed101: Foundation3/body0. R660 original52840 closed101: Foundation1 E0451/body0, source149 drift0, canonical cleanup exact. R657's three errors no longer occur in R660. Lower DFG R651 repairs remain NOT_REACHED; compilation did not reach that crate.
+- R664 original44670 owns the sole Root Rust queue, same genuine constructor exact selector/registered class5e92, source149 beforechecked. Main source writes wait for terminal/cleanup. Read-only direct GOD scanning uses Python -B without graph/cache materialization.
+- External structural ownership: constructor = canonical Copy Port rows/profiles/statement projection; QRA = FullFamily roster W5/G/final-D and contiguous state carrier; acceptance = actual PTA Full member phases and exact lower caller alignment; Root = Native access/alloc/copy/Ret, per-definition dispatcher and identity. Root alone integrates current Main. R6505 then R65221 Authority decomposition must be overlaid in that order; original213 initializers/drop sequence retained, static NEW0/WORSE0.
+- Broad composed inventory R661 found118 new/27 worsened findings across386 candidate paths before the latest completed/wip cuts. This is an incomplete apply set, not remaining defect count or product readiness. Donor findings on absent Main paths are new. Re-scan authoritative composition before assigning another non-overlapping bundle.
+- SDK18 and Runtime45 are external parse/static-clean candidates, NOT_MAIN_APPLIED/NOT_TYPECHECKED. Existing typed source causes, independent same-Core reads and exact predicates are retained. Root partial String custody repairs and new per-def phases are external WIP until composed validation. All six goals OPEN/SourceReady=false.
+
+### W205 R668 Main151 / R669 replay (2026-10-29)
+
+- R664 original44670 CLOSED101: DFG2 E0308/body0, run20261028T232142.369699Z-3986cb09e3e5, Source2827157e478c3630fd587085129a5451a1ab774cbbde5ccd22abbb23b5b6df0a. Reviewed149 drift0, canonical finished/active empty/owner empty/last exact. All Foundation errors resolved in this compile; earlier DFG15 reduced to two count-helper type mismatches. No test-body acceptance.
+- R668 ACTUALLY Main2: private local/static count predicates now accept canonical OriginalJavaParameterAnchorV4 instead of retired (name,span) tuple. Existing is_none/count predicates unchanged. Parse2/whitespace/boundary before-after/canonical NEW0WORSE0 VERIFIED; reviewed unique151, authority r668-current-source-ledger.json.
+- R669 original13895 owns the sole Root Rust queue: same exact genuine constructor positive/class5e92, all151 source hashes beforechecked. Main source writes/another Root Rust wait for terminal and canonical cleanup.
+- Root external R66215 completed: canonical Alloc/access/Copy/Ret/per-definition/identity phases and actual partial-DATA custody3; reusable alias-refusal tests2 NOT_RUN. Parse15/NEW0WORSE0/apply-check VERIFIED. R6654 checked CFG/Ordinary store phases and R6672 Core Python dispatch/Java anchor phases parse/static VERIFIED. None is Main/type/runtime qualified yet.
+- Constructor completed CopyPort5 and now owns copied-span/result projection; QRA completed FullFamily roster and owns required reachable original_core_file_birth/mixed producer; acceptance completed OriginalJavaFull12 and owns adapter/transaction phase views with exact callers. SDK18/Runtime45 are external ready candidates. The latest broad403-path inventory had78 NEW/27 WORSE before these completed cuts; re-scan the authoritative composition. All six goals OPEN/SourceReady=false.
+
+
+### W205 R669 terminal / R673 Main157 (2026-10-29)
+
+- R669 original exec13895 CLOSED101: run20261028T233939.655286Z-a7a777f21c7b, Source4d2e619ddc154ba194bda6e87b5ac509eddb1b24a862198345e43f97a42e912f, exact `original_explicit_constructor_distinct_field_allocation_survives_verified_dfg_v1`, registered DFG class5e92fd7c25ca. Compiler build-finished success=true and executable produced: VERIFIED. Test started1/completed0 then SIGABRT stack overflow: FAILED. This supersedes compiler2/body0 from R664, does not establish successful Source acceptance. Original terminal, reviewed151 drift0 and canonical finished/empty owner/last-run match confirmed. Crash report exact image is retained in macOS DiagnosticReports; stack/frame diagnosis ongoing, no stack/fixture/oracle change.
+- R673 ACTUALLY Main6: canonical paid uniqueness workspace and Ordinary/Native shared pure predicates, source union157 (`r673-current-source-ledger.json`). Parse6/NEW0WORSE0/whitespace and affected boundary5 before/after VERIFIED. Native/Ordinary behavior and typecheck NOT_RUN. No new solver/Source/allocator, no budget change.
+- Current-source functional residual: selected Full worker ends unconditional `PtaOccurrenceAuthorityRefused` after actual closed Set/call association/multiplicity; canonical GeneralCI rejects genuine issued Call and bounded profile excludes Full. Root owns genuine Native issued Call/PTS/Full-result/Host co-cut; no Copy/Literal relabeling or Ordinary fallback. FNL410 captured-general/TAINT and other chat scopes retained.
+- External R670 JavaFinalRows2/R671 ValueConsumers1/R672 facades4 and agent issued Native14, Copy/Port, formal/full/adapter phases are structurally reviewed candidates only; their Main integration and Rust proof remain NOT_RUN. R631 SDK18 borrowed-read caller hash and R656 Runtime45 adapter-view hunk require fresh selected sealing. All six W205 goals OPEN/SourceReady=false; no Root stage/commit/push.
+
+
+### W205 R677 Main158 / R680 Core295 / R682 constructor replay (2026-10-29)
+
+- R677 ACTUALLY Main1 repairs the canonical Vec growth owner by replacing the factory `Option<T>` return with direct append into the same paid Vec. Work, ready/validation, paid replacement, append and late-checkpoint order unchanged. No new allocator/Source/unsafe/stack limit. Actual old crash caller frame approximately1.45MiB; stack acceptance still requires exact constructor replay. Parse/static NEW0WORSE0/affected boundary1 before-after VERIFIED; union158.
+- R678 Core whole-target unpinned request was BLOCKED before compilation: Main source closure changed during capture, original82132 exit1, canonical last_exit125 finished/empty owner. Source158 drift0. No Core test failure inferred. R680 uses canonical owner `--snapshot-source`; original41653 CLOSED0, run20261029T001351.139697Z-b6573bb9574f Source137ca2b5500b871d358637ece92f853fc28b538c1a0aa1ce25ad26674eeb0f22. **Core lib295 passed/0failed/0ignored** including factory admission/refusal/unwind and pending custody. Reviewed158 drift0 + canonical cleanup VERIFIED.
+- R682 original96085 ACTIVE: same genuine constructor exact/class5e92/lane; all158 preimages checked. No second Root Rust/Main source mutation before terminal/cleanup. No constructor success or product acceptance yet.
+- External readiness: Root R674 resealed Runtime45+SDK18 and phase7 exactselected paths, Root R676 paid function selection2, Root R679 canonical cold dispatch/Full bank checked Set lender4 parse+NEW0WORSE0. Agent PTA parents6, exact Call4, Cell3 and Native issued Call/return interpreter packets are prepared only. Main apply/type/runtime NOT_RUN; Full result/fixpoint/public output/Host remains actual Root co-cut. Full cannot reuse Copy-only Host lender or General wire which rejects Java allocation metadata. All6 OPEN/SourceReady=false.
+
+### W205 R682 terminal / R686 Main159 / R687 replay (2026-10-29)
+
+- R682 original96085 CLOSED101, Sourcef4a7b622d575c22bdb07801c13f28984ab4f92597eda831eaa0b4e27eeb9eb30/run20261029T002007.617131Z-2696ef0a4c6d: compiler VERIFIED, genuine constructor body1 completed (0pass/1fail/8filtered), stack overflow NOT_REPRODUCED. Actual refusal is NativeSourceMaterializationRefusedV3(InvalidNativeProducer), bank dfg.constructor_field.rows.result_projection. Reviewed158 drift0 and canonical terminal/cleanup exact. R680 allocation Core295/295 stays scoped VERIFIED.
+- R686 ACTUALLY Main1: existing constructor Facts definition projection rows reserve exactly2 through canonical try_exact_into_v3 before the existing exact append. Same result-projection phase extracted to private helper; no Source issuer, census, fixture, oracle, ceiling or stack change. Parse/static NEW0WORSE0/affected boundary before-after VERIFIED. Reviewed union159, r686-current-source-ledger.json. Runtime replay NOT_RUN at application.
+- R687 original7154 ACTIVE, same genuine constructor exact/class5e92/current159 beforechecked. Root source writes and second Rust wait for terminal/cleanup. Upper candidates remain external and NOT_TYPECHECKED; current Main provenance conflicts split by existing non-overlapping owners (PTA4, QRA read/projection2, Root Core/identifier+source owners). Integration remains into shared Main. All6 goals OPEN/SourceReady=false.
+
+### W205 historical Main integration (2026-10-29)
+
+- Shared Main reviewed762 inputs (`r760-current-source-ledger.json`). R755 integrates32 exact selected paths: Runtime exact1/2 constructor consumer/direct-wire/index/Port-ID19, PTA Java sidecar feature forwarding1, typed Original-join failure transport10, and exact one-formal paid anchor capture2. Main preimages/readback, Rust parse31/TOML parse1, structural NEW0/WORSE0 and boundary before/after VERIFIED. One new child's trailing empty EOF line was normalized in the Root composite. No new worktree or Root stage/commit/push. All6 goals remain OPEN/SourceReady=false.
+- R752 immutable DFG whole11: Source `da42692cdcd753dd71279cc4259f526f656d34b49e64fb89a1127aa26a8c9449`, run `20261029T042619.257126Z-c6f62e088755`, class5e92fd7c25ca. Compiler VERIFIED; bodies9PASS/2FAIL/0filtered in2.16s. Actual this-helper two calls and two-store Source4defs/2uses PASS, including prior one-store and typed dispatch rails. Original exec CLOSED101, canonical lane finished/owner empty and reviewed751-input drift0. Prior compiler-only failures R746/R748/R750 are superseded by this compiler result, not counted as tests.
+- The two remaining R752 failures concern one-formal constructors: the new genuine positive preserved Parser signature1 but failed the Source CFG loan before callback; the old negative expected refusal although intake returned Ok. Confirmed implementation cause was an early Ok after signature capture, leaving parameter cohort0. R755 removes only that exact empty-one-formal return and continues through the existing canonical paid cohort loop. Existing method/static rules and genuine positive oracle are preserved. The positive now executes successfully in R756; the old negative update is prepared outside Main for a genuinely unsupported two-formal input.
+- R755 typed join errors retain the same exterior Source/Join banks by value through QRA -> SDK -> raw owner -> final session owner. Native/TryReserve causes and exact missing/overlap keys remain borrowed from those banks. Static peer review found2 missing final Display/Error::source helper arms that would panic for the new variant; R757 repairs both in Main with exact preimages/readback, parse, structural NEW0/WORSE0 and boundary before/after VERIFIED. R760 applies4 paths: actual failed definition/use push transfers2, Java-only dispatch/Serialize cfg3 arms1, and unsupported two-formal negative1. The rejected R758v1 after-Source traversal is not applied: its caller is still under Source. R758v2 moves the actual TryReserveError at the failure site, retaining row DATA/permit and first cause. Parse, structural NEW0/WORSE0 and boundary before/after VERIFIED; typed physical failure runtime NOT_RUN. Do not claim typed-failure execution success from an empty synthetic bank.
+- Latest DFG positive owner request resolves to quanta-adapters-dfg/original_java_typed_dispatch_v3, exact one_formal_constructor_v235::original_empty_one_formal_constructor_retains_signature_and_facts_owner_v235, class5e92fd7c25ca, request02101e38009fcc0aa0cfdba45b388475. R756 canonical immutable execution VERIFIED1PASS/0FAIL/10filtered in0.09s at Source3fbfbb97720cdb73f721c3cdef830caef5e2fb554e09ed25da0ab1048e6949c9, run20261029T045140.916439Z-b73b79de9f0d. Compiler VERIFIED, original exec CLOSED0, canonical finished/owner empty/input762 drift0. The independent positive retains Parser signature1, same Source Facts owner and completed member loan. Root may now update the old negative to genuinely unsupported two-formal input, keeping the refusal assertion. Full-floor3, public SDK Strong2, installed Java5 and Linux SDK7 remain NOT_RUN on this Main cut. Root serializes owning Rust on existing lane01a15ed8-2d3d-7513-a9b5-aafa4dbb4996.
+- Linux installed environment cryptographic precondition VERIFIED in `linux-installed-cryptographic-readonly/report.json`: official Product bundle verifier, active deployment Ed25519 signature, manifest SHA pin, AG5 active-record SHA pin and all4 payload hashes. The complete AG5 issuer/genesis chain is NOT_RUN (inputs absent). Installed Source4fadc3a5 is older than Main; crypto environment checks are not current-Main SDK7/product acceptance. No foreign container restart or installed/source-volume mutation.
+- Prior guard R729 focused14/14 and scoped closeout VERIFIED. Latest executed global236PASS/3FAIL remains FAILED in foreign taint/summary-cache/mount owners. Exact one-formal positive -> retain unsupported-input negative -> DFG whole-target -> Full-floor3/public SDK Strong -> installed provider/Linux SDK7/Java5 is the remaining verification sequence. Existing Source/ledger/facade/Runtime consumer code is integrated; do not assign duplicate implementation lanes.
+- R761 canonical immutable DFG whole11 VERIFIED11PASS/0FAIL/0ignored/0filtered in2.23s, compiler VERIFIED, Sourcec5be34dd15c3b754c1b25a915af3595b6ca07aa99ea9804f703b12ae73506389/run20261029T050127.750705Z-ad92163619c7. Original exec CLOSED0, canonical finished/owner empty and reviewed762 drift0. This combines formal positive, unsupported-input negative, this-helper2 and direct two-store Source on one snapshot. Actual five-statement SDK Strong uses V183 constructor/V142 main→JavaMixed→Full PTA, statically connected with no confirmed unsupported gate; public Host verdict remains NOT_RUN.
+- Missing acceptance fixtures are confirmed current-source residuals: BC2/FT1 and Java5 exact definitions/mounts absent, Python4 present. Separate nonoverlapping child packets are in external review, including their real test-support suppliers; shared first_fd/parent mounts compose once under Root. Do not execute stale selectors or infer code qualification from old owning fixtures.
+- R762 Runtime quanta-runtime-analysis/lib(test), module full_floor_terminal_v235::tests, class9454b7c95cac, FAILED: PTA compiler51, executed bodies0. Source1ac570b77eda422cd549ae4e1bdad0866c1c0de7689bdbc943a7bfc1c4012dc6/run20261029T050821.604877Z-1af2fc7eb47d, original exec CLOSED101; canonical lane finished/owner empty and reviewed762 drift0. Error locations are byte-equal to Main. Full-floor3 and public Strong remain NOT_RUN. No Root Rust is active. Root repairs current Main PTA visibility, formal/return custody and actual consumer ABI in external R770; the existing QRA agent owns disjoint formal occurrence/map consumers. No donor parent overwrite or second issuer.
+- Initial acceptance restoration is implementation work, not fixture-only: current Main lacks external-JAR bootstrap/configured artifact custody and canonical precommit BC producer seams used by the old donor. The old donor BC row APIs are private/removed and cannot be restored merely to make a test compile. Shared prepared first-FD Source/provider connection belongs to acceptance lane; Java-specific authority/bootstrap/Full model closure belongs to constructor lane. Raw partial donor packets are NOT_COMPILE/NOT_APPLICABLE until current Main ABI and structural gates pass.
+
+- Historical packet ownership above is superseded by the [2026-10-30 current plan](OWNERSHIP.md#w205-closeout-20261030): SourceOnly v88 is already Main; L1-D owns the shared SDK fixture parent, while Root composes only W205-owned shared hunks. Static packets grant no execution or Product credit.
+
+<a id="w205-closeout-20261030"></a>
+### W205 current Main closeout (2026-10-30)
+
+This section is the current execution plan for this chat's six objectives and supersedes the historical W205 ownership/residual lists above. Final audit at 2026-10-30 08:07 KST observed shared Semantica Main `e9ee1bd5302c604b232ef2e2725fb6879ffbe7fd` and Index `90a0ec340388400828c193809e533de2b1fb9001` with concurrent changes; this is an observation, not an immutable execution receipt. Recheck only the affected preimages and dirty hunks before each write. Main is the implementation checkout: no new worktree, Root stage, commit or push. All six objectives remain OPEN / SourceReady=false. The scoped implementation and integration below are now Main code. Static checks grant no owning Rust or Product execution credit.
+
+**Current RCA follow-up (2026-11-01).** D retains the sole original A→D queue/lane; source owners remain unchanged. The later same-queue Source9b6 (`9b6a176592d1c366d6539d4aac69d6b7ffc7b0fe762bf215f5eb4b76625a95d2`) executed QE374/374, while its Runtime attempt invoked Cargo and stopped on internal ENOSPC without an owner completion. That attempt supplies no W205 compiler/body verdict; the old ENOSPC is not a claim that current capacity is still exhausted. D's [current code/proof audit](/Users/songmin/.codex/artifacts/qidx-l1-closeout-20261030-01a1838d/D/closeout-20261031/code-remaining-audit-20261101T055714Z/REPORT.md) records the B2 SDK boundary and two production default-dependency cuts separately; a current writer for the latter two is not established, so they are not described as repairs already underway. Historical Source94ca QE374/374, contract-ids100/100, memo-wire7/7 and separate Runtime212/QRA21 compiler failures retain their actual source bindings; those233 historical diagnostics are not a current-Main code backlog. Source255f's contract1, Root18, retained2 and Record3 remain separate. Static source checks, queue acceptance, and snapshot custody do not imply SDK/Host/Linux/Product acceptance. See [existing execution receipts](VALIDATION.md#e02-l1-d-closeout-20261031); r18 has RESUME status and predates R795/R796.
+
+The broader remaining-code prerequisites are real, separately owned work: Native Root must connect actual operation/channel/task/header allocation admission and an admitted immutable shutdown-failure snapshot; provider R/A and the Native SDK owner must supply accepted configured transport with same-Original worker handback, TLS/DNS and quiescence. Current transaction still births ordinary Tokio channels/Arc/Box, shutdown still copies receipts into an ordinary Vec, and nonempty configured Voyage still refuses TransportAdmissionUnavailable. Existing partial adapters/data carriers do not close these producers. These three prerequisites are not reassigned to W205 and are not hidden by this chat's narrower source audit.
+
+A proposed initial-Java context-custody repair was withdrawn after tracing the canonical backend: issue_request_v284 finishes its Source before retain_world_v284 invokes the verified-context callback; inventory Source opens later in birth_inventory_v284. No alleged enclosing-Source early-drop counterexample exists on that path. Only the proposal's two-file delta was removed after exact-byte checks; preexisting dirty source and R793 remain intact. Its external patch is explicitly WITHDRAWN and must not be reapplied. No additional W205 producer/caller repair was established by this audit. Compiler/body/Product acceptance remain NOT_RUN; all six objectives remain OPEN / SourceReady=false.
+
+**Duplicate-free remaining scope (2026-11-01).** This chat retains source ownership of the delivered W205 cut and closes only its own required receipts. The statically established C1 cause-projection repair below is now implemented on Main (R795), with three regressions added to the existing full-failure test module. Its owning compiler/body result remains NOT_RUN; no additional independent mandatory W205 code repair is currently established. C1 is no longer pending implementation. The same existing D queue must consume the already-authored groups: Chunk custody module6; Public Ingress packet priority2; QRA Full-floor3; Runtime private-root A/B1; public Java5 plus separate precommit model2; Strong2; installed provider failure1; and Linux SDK7 (BC2/FT1/Python4). The17 SDK exact names remain uniquely defined in current source. The affected existing C1 full-failure module5 is a separate focused obligation (three new, two existing); it does not change that17-name acceptance inventory. Strong2 is one execution obligation shared by O3/O6, and installed provider failure1 is shared by O5/O6; do not run or count them twice. Precommit model2 has a different pre-publication oracle and does not replace public Maven/Gradle2. The existing alias A/B fixture is reused; no new fixture is required. Compatible compiler artifacts may be reused only on matching admitted inputs/policy/target/OS; these authored counts are not a whole-suite denominator or executed proof. D's [04:40 KST audit](/Users/songmin/.codex/artifacts/qidx-l1-closeout-20261030-01a1838d/D/closeout-20261031/final-audit-20261031T191630Z/REPORT.md) explicitly accepted the21 unique typed requests covering these29 authored bodies into the existing queue. This is not a QBC scheduling or execution receipt. Full-floor3 belongs to QRA and packet2 to Public Ingress; Runtime has Chunk6 plus A/B1.
+
+**Code-work inventory (2026-11-01 14:56 KST; static scope).** No additional unimplemented W205-owned repair is currently demonstrated in the reviewed producer/caller/consumer paths. R792's callback ABI repair, R793's Chunk selection repair, and R795/C1's selected-cause custody repair are delivered on Main. All six R793/R795 source files remain byte-identical to their final delivery summaries. This is source preservation, not compiler success. The shared source-map child-module mount remains the existing B2 co-cut; Cargo/lock and unrelated guard changes are not new W205 work items. The concrete remaining W205 actions are owning compilation/body execution of the already-authored requests and repair of any resulting W205-owned failure. At this observation D's canonical QUEUE.json does not contain C1 request397e0b0971a5c56474f158249230e7d3: its request is prepared in the existing handoff, but queue consumption/scheduling is NOT_ESTABLISHED. D's earlier21-request/29-body acceptance excludes this newer five-body module. The three separately owned P04/P07 source prerequisites above remain open; no new fixture, ticket, executor or source implementation is assigned by this inventory.
+
+**Session hardening (R796, 2026-11-01 15:29 KST; state PARTIAL).** Reviewed the original six objectives through12 intent→owner→consumer→oracle units, corroborating commits, dirty/untracked state and the delivered patch/manifests. The historical977-path union includes supplier/read inputs and is not an authorship or whole-repository review claim. One introduced R795 test-proof gap was repaired in the existing `full_failure_v11/tests_v11.rs`: the real whole header and fresh-failure header must each raise live A usage, and the first bridge-alias drop must preserve all seven live axes before final baseline refund. No new test target/body was added; C1 stays module5 (three R795 tests plus two earlier tests). Production behavior is unchanged by R796. All187 delivered/supplier Rust files passed syntax review; two cfg-pattern cases required the canonical parser's existing compatibility handling and also passed nonmutating rustfmt. The changed test has structural findings0 before/after, explicit-file scoped honesty16/16 and whitespace checks pass; existing Source-storage/refusal Python contract/mutation cases passed9. The generic honesty wrapper excluded this nested test path, so its exit0 was not used as full honesty proof; the16 canonical gates were run directly in their scoped enforce mode. Owning compiler/link/body and pre-fix behavioral RED remain NOT_RUN; no runtime claim is made from these static checks. The exact C1 request remains397e0b0971a5c56474f158249230e7d3, prepared outside the repository but absent from the inspected D queue. A fresh source containing R796 and actual existing-owner execution are still required. Final test SHA/patch/map are in the existing external W205 `r796-session-hardening` directory. The original six objectives remain OPEN / SourceReady=false.
+
+Latest execution custody is [source-scoped D acceptance](VALIDATION.md#e02-l1-d-closeout-20261031). Current QE/Codec/memo passes and older Root/contract passes keep separate snapshots and denominators. Runtime compiler/body status, SDK/QRA/Host, lawful Linux suppliers and product gates remain explicit. W205's own selectors below were not executed by those filters. The retained Source94ca receipt is historical proof; its recorded execution-root path is no longer present, so it cannot supply a fresh source cohort or reusable live root. The delivered R789/R792 write claim was released; current coordination status has no non-stale claim for this chat (nine historical stale records remain). R793/R794 claims were already released. No new implementation, fixture or competing queue is opened by this inventory.
+
+P04 actual allocation and immutable shutdown snapshot, P07 accepted transport/SDK worker handback, L1 selector23/preplan3/bank2/provider-context5/Type1, QE/DELTA/L2/L3/L4, W2/FNL/RQR, Cargo/lock supplier work and Git publication retain their existing owners. Their work is excluded from this chat's new implementation and from its pass counts. W0/W1, old donor/ABI integrations, already-applied R792/R793 and withdrawn E4/R794 candidates are not reopened. Wire17/17 stays GREEN at r1 for unchanged proof inputs; it is not rerun merely to refresh status.
+
+**C1 implementation (R795, 2026-11-01; SOURCE_IMPLEMENTED / STATIC_VERIFIED, owning Rust NOT_RUN).** Exactly two production owners and the existing `full_failure_v11/tests_v11.rs` changed on Main. The preborn whole-failure DATA now retains any selected nested Runtime cause before attaching its own header; this reuses the canonical take-before-attach API and keeps the occupied-slot guard. Standard error traversal exposes Syntax and all three Fresh inner variants. Known Syntax Runtime/Native and Fresh Runtime refusals use the existing finite projector without replacing causes or changing highest-Source precedence. Three regressions were added: Syntax traversal/classification; all Fresh inner error types; and an actual opened-FD Original B / independent A fresh ingress refusing a valid ordinary BuildContext payload. The latter checks the exact UnsupportedAllocation cause, same nested backing, whole-owner survival after an alias drop and seven-axis incremental refund while B/A context remains live. This is real fresh-failure transport coverage, not installed Full Java Product acceptance. The existing module has five authored bodies including its two earlier tests; those are not five newly authored tests or an additional global denominator. Rust AST3/3, nonmutating rustfmt parse3/3, structural NEW0/WORSE0, before/after the same13 build boundary policies, honesty16/16 and scoped whitespace checks pass. Exact Runtime-executor lib(test) module request `client::indexing_api::original_initial_publication_birth_v3::full_failure_v11::tests_v11` resolves under class56add123c964, id397e0b0971a5c56474f158249230e7d3. Resolution is not discovery/execution. The existing L1-D single queue must run this affected module on a fresh source containing R795; the earlier r18 frozen capture predates the patch. Exact request/source hashes and scoped patch are in the existing external W205 `r795-c1-cause-projection` directory. Pre-fix RED and owning compiler/body are NOT_RUN because this is the broad SDK lib(test) closure, retained by the existing executor. All six objectives stay OPEN / SourceReady=false.
+
+**Execution update (R793, 2026-10-31).** The existing Chunk owner repaired exactly three Main files: the paid HIR candidate predicate skips zero-length Module containers after depth/work/file checks while preserving child visits, and shape uses the same predicate as key count/fill. Nonempty Module stays selected; empty Class, reversed span, foreign file, depth and exhausted Original work retain typed refusals. Three genuine Original predicate/walk regressions were added; the mounted module now has six authored bodies. Final Rust parse3/3, nonmutating rustfmt parse3/3, structural NEW0/WORSE0, build boundary17/17, honesty16/16 and scoped whitespace checks pass. Compiler/link and all six bodies remain NOT_RUN. The exact registered request is Runtime lib(test), module `retrieval::port_impls::index_job_executor::native_v3::native_chunk_custody_tests_v3`, class8df3117c6391; it belongs on the same existing queue now owned by L1-D and shares its compatible Runtime compile closure. The final three source hashes remain unchanged on follow-up. SourceAnchor rejects empty extent; Ordinary kind-only collection is unchanged, so this is not full Ordinary/Native success-path parity. Existing external `w205-recovery-20261029/HANDOFF.md` and `r793-chunk-module/owner-final-request.json` contain the exact source/request; old resolve without `native_v3` is superseded. No new Rust/GC queue, other-chat message or fixture duplication was started. The inspected QE05 attempt ended in source-overlay capture refusal after three attempts, before executable source custody; it is not a post-R793 compiler/body result. Freeze r3 has expired and its control is RESUME. All six objectives remain OPEN / SourceReady=false.
+
+**Execution update (R792, 2026-10-31).** The canonical frozen r1 Source is now usable for the standalone wire owner. Owning quanta-may-alias-at-wire/lib(test)/whole-target/package-all-features passed17/17, failed0, ignored0, filtered0, run20261031T061009.695797Z-35e98938a16a, Source96d199d43908412a7fc235c1702657e9f7c91ab5f998ef4dc7ba5ef05ed0b413. This executes the five authored wire regressions (retained backing2, checked digest3); packet-priority2, SDK and Product remain separate. The L1 r1 Runtime lib(test) attempt independently reached four PTA callback-arity diagnostics before any test body. Root traced two unclaimed private integration seams against the already seven-argument public API: extraction_phase_v222 now forwards the actual checked CFG loan and original_java_final_v222 accepts that argument without changing selection behavior. Exactly three argument lines changed across two Main files; no issuer, allocation, IR, solver or public schema was added. Active W2 upstream/downstream files and immutable r1 remain untouched. Both files parse, structural NEW0/WORSE0 and the same five pre/post build boundary policies pass. Frozen r2 contains both repaired files byte-identically; capture is not typecheck. Post-repair PTA compilation is NOT_RUN, and L1-A reports QE04 was refused at before_run capacity with no new Cargo/body result. The two bounded freeze requests are released. This follow-up finishes only the deferred static checks and documentation; the L1 single owning queue stays with its authorized coordinator. All six W205 objectives remain OPEN / SourceReady=false.
+
+**Execution update (R791, 2026-10-31).** Corrected two stale guard tests in place: the RepoMap saturation mutation now edits the canonical token-estimate return and requires its specific invalid-span diagnostic; the Taint policy test lists its actual request-phase dependency explicitly. No production guard, baseline or suppression changed. The two corrections plus the current positive integrity test pass (3/3). The broader two-file suite is 263/264: a concurrent Watch child mount was temporarily unresolved. The missing child now exists and the single affected gate test passes on recheck. The required full build boundary sweep is 234PASS/5FAIL, all five from source changes during verification. The existing same-key private-root A/B regression already checks seven-axis absolute zero while B pins/graph and the writer live; reuse it rather than author another fixture. Its typed owner request resolves, but no body ran. The new wire request is rejected during owner resolution because workspace manifests change during capture, before owner run/Cargo. Owning compiler, seven lower Rust bodies and installed SDK/Product acceptance remain NOT_RUN; all six objectives stay OPEN / SourceReady=false.
+
+**Execution update (R790, 2026-10-30).** R784 initial suppliers/caller and R789 provider/alias fixtures remain Main implementation. R790 closes additional direct Native code gaps at the same owners: public admission preserves its typed prepaid error rather than formatting it again; post-execution stale refusal retains the completed paid result in the same terminal; the actual public service startup consumes a checked readiness digest instead of copying Original Source rows. The canonical source digest now shares one v1 framing implementation between Ordinary sorted inputs and charged borrowed rows; its fixed64-byte control identity needs no heap payload or Source-text retention and JSON fields remain unchanged. Context DATA, generation custody and read/failure slots predate the highest request Source; generation is read through that caller Current. Native indexed-map capture, generation/alias validation and Host header transfer each finish only after their actual Source, using the existing map/alias/Host owners and retained execution session. Host refusal restores the same pending A storage and keeps header/metadata slots exterior. The existing ownership guard now verifies these stronger exterior-slot invariants, with destructive mutations; no baseline or suppression was added. Ordinary behavior, foreign RepoMap guard hunks and other owners are preserved. Main is the implementation checkout; no new implementation worktree, stage/commit/push or other-chat message.
+
+**Do not repeat completed work.** R600/R755/R757/R760 Native construction, Source joins and by-value typed-cause transport, and the R773 selected56-path integration are already Main work. R773's parse56, structural NEW0/WORSE0 and boundary checks were static checks, not typecheck/test success. Preserve later const empty-birth/cfg/import/error-type repairs. The SourceOnly v88 parent/child match current Main exactly and are not integration inputs. R761 DFG whole11 passed11/11 on its own Source. R775 failed upstream DFG-contract E0277/body0; current Main already uses `NativeAllocationErrorV1` at that exact callback, so no duplicate repair is allocated. Current repaired Runtime Full-floor3 remains NOT_RUN. Historical28 changed-path and51 PTA-diagnostic counts are not current-Main residual counts; see [actual proof](VALIDATION.md#w205-proof-20261030).
+
+**Critical path: coherent source admission, owning compilation and actual acceptance.** The eight donor calls were reconciled to existing canonical owners and the actual caller path is mounted. The Generation-versus-Shared Source mismatch is fixed. Java first-FD now defers its graph into the existing provisional candidate; genuine sealed inventory/provider rows must complete that candidate before the unchanged final commit gate can succeed. All six objectives remain OPEN pending their owning compile and executed acceptance receipts. A future compiler diagnostic can add a proved repair; the old absent-name list is not8 new APIs to implement again.
+
+**Final residual audit.** Provider failure and public alias/refund fixtures are implemented, and R790 adds the real readiness consumer plus deterministic completed-result→successor→typed terminal handoff inside existing Strong2. The handoff checks the actual stale guard, completed query/verdict, intermediate error aliases and final seven-axis incremental return to baseline while the old Source/prepared session and successor remain live. It is an ordered guard/terminal composition, not scheduler-race coverage or the separate same-key A/B absolute-zero proof. No additional independent W205 implementation item was established by this scoped source trace; owning Rust has still not accepted the cut, so compiler/body-driven repairs remain UNKNOWN. Do not reissue delivered producers, create another Source/allocator/serializer, or duplicate L1-D/FNL/DELTA code. Retain all six objectives OPEN / SourceReady=false until their own actual acceptance receipts exist.
+
+The following is a mapping of the existing six objectives, not six new tickets or an additional progress denominator.
+
+| Existing objective | Reused implementation / evidence | Actual remaining deliverable |
+| --- | --- | --- |
+| O1 — same-Source BC/FileText/Python | BC2/FT1/Python4 definitions and mounts are Main; existing Linux image/release/trust were inspected. | Fresh admitted cohort, valid completed Mac predecessor + matching source ledger, then Linux SDK7 seven exact bodies. Old mount blockers are resolved; old installed Source/crypto proof is not current execution. |
+| O2 — initial Java SourceOnly/Maven/Gradle/JAR | Public SourceOnly1, existing ensure_indexed Maven/Gradle2 and configured-JAR positive/negative2 already exist. Additional initial_full_java_models_v86 lower-level2 assert no Store publication. | Execute public Java5 and the separate precommit model2 with their own selectors/oracles. Do not count the lower2 as public Maven/Gradle success or implement duplicate public fixtures. |
+| O3 — Native refinement/public SDK Strong | Existing Strong2 drives the checked Original provider/Host/result path and contains readiness plus ordered successor/terminal observations. Wire17/17@r1 includes its five lower backing/digest regressions. R792 repairs two private PTA callback integration seams on Main and records their r2 source/static checks. | Post-repair owning compilation and actual Strong2 under SDK class8fda14fab3a3 remain NOT_RUN. Preserve Complete/MayAlias/NoAlias, the exact stale cause, independent ready digest and retained terminal owner. Wire tests and r2 capture are not public SDK/Product acceptance. |
+| O4 — genuine Java alloc/copy to Native/Host | Existing constructor/Copy/Port/Runtime adapters and Source transport are Main. R761 DFG11/11 belongs only to Source c5be34dd…6389. | Current Runtime full_floor_terminal_v235::tests three bodies and actual public consumer evidence on compatible admitted inputs; no cross-Source pass-count summation. |
+| O5 — installed provider typed failure | `installed_java_provider_failure_v143.rs` restores the genuine installed paid Product-port model and metadata failures using the existing unfilled-provider helper. No worker/process simulation or removed private row API. | Execute the new child-qualified exact selector under class56add123c964. Observe original typed model/metadata causes and losing DATA after Source. Unit bank and missing-JAR refusals do not replace it. |
+| O6 — final Native alias/refund/integration | Genuine public result/error aliases and Strong2 incremental refund assertions are implemented. The existing writer regression `same_key_private_roots_refund_independently_with_writer_and_graph_aliases_alive_v3` already checks independent A/B roots and seven-axis absolute zero with B and writer alive. | Execute the existing A/B Runtime lib(test) owner under registered class8304b600db74, plus the actual Strong2/installed Product fixture and affected integration. The A/B source/request is not executed proof, and its empty-shard pin/graph fixture is not public SDK/Product acceptance. No duplicate fixture. |
+
+| Work item | Single owner / write boundary | Prerequisite and concrete deliverable | Completion condition |
+| --- | --- | --- | --- |
+| W205-0: duplicate/ABI inventory | Root; read-only audits by existing acceptance/constructor agents | Completed for20 candidate packets and8 donor ABI names. Existing external integration notes and ABI plan contain per-path decisions. Refresh only changed affected inputs, rather than restarting a global inventory. | VERIFIED source/ownership audit only; execution NOT_RUN. |
+| W205-A: BC/FileText/paid parser | acceptance supplier + Root shared integration | **SOURCE_IMPLEMENTED / STATIC_VERIFIED:** common14, paid parser44 and BC/FT private/support inputs integrated; BC2/FT1 mounts are now present. Existing Python4 reused. | Owning compile and actual BC2/FT1/Python4 still NOT_RUN. |
+| W205-B: Java build/descriptor supply | constructor private bodies + Root shared integration | **SOURCE_IMPLEMENTED / STATIC_VERIFIED:** model/lender/authority/Core/metadata/Product/seed and R783 private caller integrated. One canonical wire plus one descriptor metadata birth; Java5 definitions/mounts present. | Public Java5 (SourceOnly1 + existing public Maven/Gradle2 + external-JAR2) and separate precommit model2 execution still NOT_RUN. |
+| W205-C: actual initial Java route | Root backend/Source/context/factory/publication; acceptance backend bodies; constructor private caller | **SOURCE_IMPLEMENTED / STATIC_VERIFIED:** real pin/capture/inventory → Product/BuildContext → provisional Java graph → final commit caller connected. Source B attached once before replay; full Java DATA and typed losers retained on precommit and post-CAS refusal. | Source trace/parse/structural checks are not typecheck or runtime evidence. Run owning Rust before closure. |
+| W205-C1: selected Java failure projection | Root; two existing wrapper/projection owners and full_failure_v11/tests_v11.rs | **SOURCE_IMPLEMENTED / STATIC_VERIFIED (R795):** nested selected cause retained under the whole owner; Syntax/Fresh source traversal and known finite refusal classification restored. Three tests added in place, with actual Original fresh failure/alias/refund coverage. | Owning SDK lib(test) class56add123c964 module5 remains NOT_RUN. Exact request397e0b0971a5c56474f158249230e7d3 is prepared; consumption by D is NOT_ESTABLISHED. Execute the same module on fresh source including R795 and R796 test hardening; no duplicate fixture or separate queue. |
+| W205-I: shared Main composition | Root after L1-D implementation handoff | **SOURCE_IMPLEMENTED / STATIC_VERIFIED:**16 packet steps plus actual caller/export seams, manual Source-path parent composition and3 additive SDK module mounts applied. D was idle with implementation_handoff_ready=true; existing D hunks preserved. No messages sent. | Current scoped static checks pass; fresh owning compiler/body results remain required. Historical capture-drift refusals are not a current-Main compiler verdict. |
+| W205-V: execution and objective closure | L1-D executes the same sole owning queue; Root consumes W205-specific receipts and repairs only its own failed source | Execute the ordered rails below after their source and cfg prerequisites. Use canonical owner resolution, exact selected/executed counts and actual installed Linux Product. Repair only W205-owned failures; preserve/reroute foreign ownership rather than patching it twice. | Each of the six objective rows has its own executed result and Source binding. Compiler success, L1 results, installed crypto checks and old DFG results do not substitute for SDK/Product acceptance. |
+
+**Current execution ownership.** Root owns the W205 source cut; L1-D now owns the user-authorized same single L1 queue after the later A→D takeover; earlier A routing is historical. Both capture pauses are released. The independent wire owner finished17/17 on canonical r1 using this chat's registered snapshot-artifact child; no L1 selector was run here. Automatic QBC capacity maintenance ran normally; Root performed no manual foreign-target deletion or threshold override. The three-line private PTA ABI repair was completed on Main before the r2 QUIET ACK and is present in r2. Its post-repair compiler/body result remains NOT_RUN. The current freeze-resume follow-up performs only the deferred static checks and existing-doc updates; it starts no new Rust/GC queue. Preserve active W2 parent/downstream ownership and the supplier's Cargo/lock writes. No cross-chat reply or new delegation was sent.
+
+**W205-C delivered ABI responsibilities (donor names do not mandate identically named APIs).** Crate paths below are under Semantica `packages/analysis/quanta-v2/crates/`.
+
+| Donor call / need | Existing owner and minimal change | Writer / dependency |
+| --- | --- | --- |
+| `with_prepared_initial_pin_into_birth_v3` | Backend `materialize_v3/initial_parser_rows_v3.rs` already issues `slots.pin_birth_v3`; use a checked lender against existing prepared store/target/current, charging the existing clone birth. Do not issue a second pin. | Root backend slots; same-target precondition. |
+| `original_capture_for_initial_java_precommit_v81` | Actual capture is retained by `RepositoryScannedSnapshotInputsV1`, not slots. Pass/loan that existing capture through the checked initial caller; do not duplicate capture storage. | Root backend/caller; capture must outlive alias check and replay. |
+| `complete_initial_java_import_graph_into_slots_v3` | Extend existing `original_source_publication_v3/full_batch_v3` graph preparation/read candidate with genuine sealed Java inventory/provider-backed members. Stage once, publish only after the existing generation cut. Preserve Python. | Root backend graph; depends on real inventory, provider and pin. Implemented Java completion seam in the existing graph owner. |
+| `produce_original_initial_java_inventory_batch_into_slots_v284` | Extend `production_normal_source_java_workspace_generation_port_v1/original_initial_workspace_replay_v3.rs::produce_original_initial_java_inventory_batch_v3` with the actual request callback/exterior-slot transfer. Reuse its issuer and seal algorithm. | Root backend inventory; Product preverified supplier + retained capture. No second v284 producer. |
+| `try_birth_for_retained_source_v81` | Adapt R783 to the existing `repo_state/generation_source_execution_authority_v1/original_query_birth_v3.rs` FirstFd/shared query-source birth. Align `BuildContextArgs` with `SharedQuerySourceExecutionAuthorityV3` and the pinned context branch. Committed-manifest issuance before CAS is invalid. | Root SDK source/context cohort; jointly resolve with context facade below. |
+| `prepare_initial_pre_ingress_java_owner_pair_v81` | Reuse the existing factory/Product owner construction in `normal_source_attribution_production_bootstrap_v1` and `product_java_exact_build_authority_owner_v1`; expose authentic pre-ingress inputs without fabricating an installed orchestrator. | Root SDK factory/parent; B supplies R772 private Product bodies. Pair must share repo/root/request/workspace owner/session. |
+| `build_initial_original_context_from_request_retaining_custody_v171` | Factor the existing composition `core/original_build_context_v3.rs` and backend `orchestrator_build_context.rs` source/rail/budget/axes preflight into an authentic pre-ingress facade. Keep RequestSpec, RuntimeCtx, Trace and typed failure custody. | Root composition; resolve together with source-input decision, not two mutually waiting work items. |
+| `try_birth_original_java_wire_from_paid_model_with_descriptor_v87` | R783 can call the existing canonical wire birth, then R780 descriptor-aware metadata exactly once with the R781 validator. The R771 v83 wrapper already attaches no-descriptor metadata; do not call it and append metadata again. | Constructor private `verified_birth_v81.rs`; depends on R771/R780/R781. Thin same-owner facade only if actually necessary. |
+
+**Single-writer hunk map.** Root applies existing packet changes before adding new Root seams in the same parent. A whole-file donor replacement is not permitted when current source or another lane owns other hunks.
+
+| Shared file / hunk | Required composition / final writer |
+| --- | --- |
+| BuildContext `build_context/mod.rs` | Common opaque export + R771 suffix; Root composes once. |
+| BuildContext `original_snapshot_source_v3.rs` | Common parent first; R768 lender import+impl are a manual additive merge because their raw patch context conflicts. Root only. |
+| BuildContext `java.rs` / `full_java_build_context_birth_v3.rs` | Preserve ordinary/other-language routes; parser mounts additive. R767 model first, R779 grouped caller only against R767 after. Root shared composition; constructor owns private model changes. |
+| Binary authority `java_binary_build_authority.rs` | Configured authority15 first, R781 validator parent against that after. Root shared composition. |
+| SDK `client/test_support/first_fd_source_v3.rs` | BC/FT support first, R764 Java5 multi-FD support against its after. Root only; preserve existing PATH semantics. |
+| SDK `client/tests/original_build_context_input_birth_v3.rs` and child `installed_native_type_root_v3.rs` | D implementation handoff is complete. Root applied the reconciled additive BC/FT/Java mounts and canonical assertion-child extraction after current preimage checks. D fixture mounts/bodies remain intact. |
+| SDK `client/tests/original_import_graph_ba_v3.rs` | Existing SourceOnly v88 stays; add R782 v89 mount only. Root, separate from D's reserved parent. |
+| SDK `product_java_exact_build_authority_owner_v1.rs` / bootstrap and public initial publication parents | Apply R772 existing parent hunk first; Root alone composes the new pre-ingress adapter/reexport and R783 public mount. Constructor edits private children, not these Root seams. |
+
+**Packet application dependencies.** All packet folders live in the existing external W205 recovery directory; they are inputs for Main integration, not separate implementation checkouts. Numeric R labels repeat, so identify the full folder in an operation.
+
+1. Common14 → source lenders3 (manual common-parent merge), paid parser44 and configured binary authority15 → model8 → `r779-java-maven-parser-caller` against model after → suffix1. This is a coherent supplier co-cut, not independently compile-ready patches.
+2. Core8 + `r781-v87-authority` against configured authority after → metadata3; preverified Product11 + SDK seed1. Close C's source/context/factory and inventory/graph adapters, then B's corrected R783 private caller. Only then add the public mount and route Java through the proven supplier path.
+3. BC/FT private children/support → R764 against BC/FT after; R782 has a Main-base import-graph mount and a separate BC/FT-after full-model mount. Root reconciled that hunk against the completed D parent and applied additive mounts only. No blanket R782 parent replacement was used.
+
+| Excluded integration input / outside work | Reason / retained owner |
+| --- | --- |
+| R77356 and SourceOnly v88 | Already Main. Do not reapply old patches over later repairs. |
+| `r777-java-preverified-supplier-draft` | Superseded by sealed `r772-java-product-preverified-wip`11. |
+| R762 Java5 stage / R763 binary seed stage; SDK7 v1 private-row restore | Use R782 opaque fixture + R764 support and focused R770 seed. Do not assume the old stage's extra support path is supplied unless its actual current caller proves a residual. |
+| W0/W1, withdrawn two E4 candidates, frozen608 bulk copy, R592/R594/R595 stale drivers | Completed handoff / withdrawn defects / invalid integration or execution inputs. |
+| L1 selector/bank/collector regressions and shared SDK mounts | L1-A/B/C private work and L1-D integration/rails. W205 does not implement or rerun their work. |
+| DELTA reuse/SDK ACK→M, Trace/QE, L2 Graph, L4 Watch, final successor publication | Existing E02/QE/DELTA owners. Their Main caller/seed/collector/terminal work is not absent merely because older W205 notes said so. |
+| FNL public semantics, Host Type/File, taint/context overlays, RQR CBOR, benchmark/release/publication | Existing FNL/Host/master/RQR/benchmark owners; excluded from this chat's new implementation. |
+
+**Delivered source changes; next capture inputs.**
+
+1. Provider fixture — SOURCE_IMPLEMENTED: the existing installed Product provider and current BuildContext capture/model/wire/metadata ABI are reused in the single mounted v143 child. Its exact selector is `client::tests::original_build_context_input_birth_v3::installed_java_provider_failure_v143::installed_java_unfilled_product_provider_retains_typed_model_and_metadata_causes_v143`. The shared bounded diagnostic helper is reused by SourceOnly; D Type/ItemIndex fixtures remain untouched.
+2. Public Native route, readiness and alias/refund — SOURCE_IMPLEMENTED: the existing Source/map/alias/Host/wire owners now preserve their highest-Source exterior slots, same-A provider headers and completed public terminal DATA. The public service consumes the SDK fixed readiness identity; borrowed Source rows use the same v1 digest framing as Ordinary inputs and charge work before reading. Seven lower unit bodies cover wire backing2, packet priority2 and digest framing/refusal3. They are not installed Product evidence. Strong2 retains its verdict/stale oracles and adds readiness and ordered result→successor→terminal lifetime observations.
+3. Scoped checks:36 selected source/config/lock/golden/tool paths,29 Rust parses, structural NEW0/WORSE0,17 affected build boundary policies and16 honesty gates over7 W205 test-owner files pass. Five focused ownership-guard tests pass, including three destructive exterior-slot mutations. The broader Python suite has262PASS/2FAIL of264: an existing RepoMap byte-span mutation no longer edits its changed source and the Taint checker dependency expectation omits its new phase-contract module. The full boundary sweep has237PASS/2FAIL from concurrent source-digest changes in MemSSA and the analysis mount ratchet. Preserve these failures; scoped results are not a whole-workspace PASS.
+
+**Serialized verification and stop conditions.**
+
+1. Admit one coherent canonical source cohort and run the narrow owning compiler closure before claiming any current Rust success. R788 owner check reached a recorded pre-execution refusal (not a compiler error); source guards and registered feature policies remain mandatory. Runtime Full-floor3: current owner-resolved `quanta-runtime-analysis` lib/test slice for `full_floor_terminal_v235::tests`. R775's exact error is already fixed; run the current closure, do not recode it. Record new compiler failures separately; body0 cannot qualify the three tests. The production Java cohort is already Main; this rail is an execution obligation, not an instruction to reapply donor integration.
+2. Reuse the delivered A/B/C/I, R789/R790 and three-line R792 private ABI cut. Wire whole-target17/17 is VERIFIED on r1; do not rerun it unless its actual proof inputs change. Packet-priority2, Runtime and SDK remain unexecuted obligations. Do not reapply donors, fixtures, readiness or exterior-slot rewrites. Admit a coherent owning Source/dependency/feature/OS cohort, then batch wire/Host unit and SDK/Runtime execution on compatible accepted artifacts. Compilation/body failures may identify additional repairs; current hashing/capacity failures did not execute Cargo. No source-guard weakening or unreviewed feature closure is allowed.
+3. Actual public SDK Strong2 (positive + stale-Source negative), public Java5 (SourceOnly1 + existing public Maven/Gradle2 + external-JAR2), separate precommit Maven/Gradle model2, and Linux SDK7 (BC2 → FT1 → existing Python4). Confirm OS/feature registration and expected body counts before running. Use the genuine signed Linux Product and freshly pinned matching SDK/source inputs; older installed Source and crypto preflight are environment evidence only.
+4. Execute the implemented v143 installed-provider fixture and actual Strong alias/refund observations with their exact mounted selectors. Keep first physical/typed Source cause and losing DATA observable; the four added transport/priority unit bodies do not replace installed acceptance. Apply canonical return-domain regression only in its owning PTA feature slice.
+5. L1-D results and W205 results keep separate selectors/body counts. Reuse a canonical compiler artifact only when Source, dependencies, features, target and OS are compatible; never infer Java5/SDK7 from D's L1 result. Do not submit overlapping active requests. After source drift, rerun only affected proof; do not repeat unchanged green scopes or merge pass counts across snapshots. Stop an affected lane on FAILED/BLOCKED with the exact cause and continue independent owned work. Close each objective only on its own actual receipt.
+
+Latest R793 details are in the existing external W205 `HANDOFF.md` and `r793-chunk-module/`: the integrated three-file patch, final static checks and corrected six-body owning request. No Rust bodies ran for R793. R792 details remain in `r792-frozen-wire/`: the exact wire owner result/immutable receipt, two-file ABI preimages/static checks and same-byte r2 custody, pre/post five-policy boundary checks and current documentation. Earlier follow-up details remain in `r791-remaining-closeout/`: two guard edits, focused3, the 263/264 batch and affected Watch recheck, full build sweep, existing A/B typed request and wire resolution refusal. R790 source/proof details remain in `r790-code-first/`: paths/claim, parse/structure, scoped/static and full boundary logs, five focused guard tests,264-case guard log, typed wire/SDK requests and terminal/stderr records, source hashes and capacity dry-run. The first wire stderr path was reused by the next attempt; its provenance note prevents treating it as an immutable first-run log. R789 and earlier records remain historical. This section stays the single execution plan; no parallel SSOT or new chat is created.
+
+
+<a id="e02-l1-final-owner-map-20261030"></a>
+<a id="e02-l1-owner-boundary-20261030"></a>
+## E02 DELTA L1 — retained write and execution boundaries
+
+**D session hardening — 2026-11-01 KST.** A stale duplicate QRA guard requirement was repaired;186 related tests and the owning source-policy closeout passed. Full build boundary checks remain238 PASS/1 SDK-boundary FAIL; both production dependency fences still fail. Confirmed additional original D implementation after repair:0; Runtime/SDK acceptance remains open. Existing36 proof requests and their owners are unchanged. [Current scope, actual proof and finite residuals](VALIDATION.md#e02-l1-d-closeout-20261031).
+
+이 표는 기존 dispatch의 수정/검증 소유권만 정리한다. 현재 상태·잔여 증거는 [README E02](README.md#e02)와 [최종 감사](VALIDATION.md#e02-l1-final-audit-20261030), 순서는 [L1 종료 순서](WAVES.md#e02-l1-closeout-order-20261030)를 따른다. 새 채팅/티켓/실행 큐를 만들거나 active/idle을 근거로 권한을 재배정하지 않는다.
+
+| 기존 담당 | 독점 수정/소비 경계 | 합류 규칙 |
+| --- | --- | --- |
+| `QIDX L1-A selector 경계·상태 마감` | Runtime `item_index/native_delta_v3.rs`의 selection state·closed-plan/unchanged/prepare 실패 경계, focused `item_index_tests.rs`, selector AST guard | Root seed ABI 보존. 공용 fixture mount/export hunk는 D. 실행은 아래 현행 단일 실행자 행을 따르며 private 구현을 다시 만들지 않음 |
+| `QIDX L1-B 실제 plan·collector 회귀 마감` | private plan/collector fixture와 genuine Linux SDK plan body; SQLite floor 계약 | 전달된 패치의 현재 postimage를 확인해 재적용 방지. [B source·다섯 oracle](VALIDATION.md#e02-l1-b-plan-source-binding-20261030)를 따른다. parent/facade 합류는 D; 실행은 현행 단일 실행자 행을 따름 |
+| `QIDX L1-C bank partial·환급 회귀 마감` | Native ItemIndex bank phase/read owner, observer와 두 SDK bank body의 독립 oracle | Source B와 독립 Output A fixture의 공용 hunk는 D. 현재 적용 여부는 최종 감사의 exact patch/source 대조를 따름 |
+| `QIDX L1-D 통합·QBC 검증 마감` | shared export/parent/test_support/SDK fixture·Type 품질·필요 공용 의존성 합류, 단일 실행자의 결과 검토·영향 문서 마감 | 2026-10-31 후속 사용자 응답 “이 채팅에서 기존 검증 큐 인수·실행”에 따라 D가 기존 동일 lane의 단일 실행 큐를 다시 인수했다. 실제 D 공용 hunk 결함만 보수하며 private 구현은 재개발하지 않는다. Type 품질 수리는 이미 적용됐다. 후속 사용자 재개에서 D가 기존 C02 후보의 남은 callback 인자2곳만 최소 컴파일 접합으로 반영했다. C02 의미/알고리즘 소유권은 유지하고 heavy 실행자만 D로 변경한다. [현행 적용·검증](VALIDATION.md#e02-l1-d-closeout-20261031) |
+| 현행 단일 검증 실행자 — 기존 `QIDX L1-D 통합·QBC 검증 마감` | 기존 등록 lane의 QE whole-lib/all-features → Runtime selector/preplan → SDK bank/provider/기존 Type → 별도 QRA 회귀 → lawful Linux genuine plan 및 영향 heavy gate | 후속 사용자 응답으로 A→D 실행 인계만 변경하며 A/B/C/D private source 의미 소유권은 유지한다. D가 기존 단일 큐·공용 연결·결과 검토를 담당한다. 실행/입력/문서 상태는 [10-31 D 마감](VALIDATION.md#e02-l1-d-closeout-20261031)만 따른다 |
+| 기존 PTA·taint facade / W205·Root private fixture owner | private intraprocedural import의 canonical facade 및 SDK `precommit_build_context_v3.rs` child module path | 최신 사용자 마감 요청에서 C가 경로3속성과 동일 타입 facade4파일의 최소 접합 수리를 반영하고 두 exact-path claim을 해제했다. 기존 의미/producer 소유권은 유지한다. 두 과거 제안은 재적용하지 않으며 D가 현재 소스의 gate·Rust 결과를 소비한다. [실제 수정·증거](VALIDATION.md#e02-l1-c-static-blockers-repaired-20261030) |
+| 기존 W2 C01 consumer owner (`OCT30-W2-C01-CONSUMER-VERTICAL`) | RunConfigInterprocInputV1 → NativeSolverPrepInputV11 → NativeSolverPrepFailureDataV11의 동일 pending execution / whole-failure custody 계약 | C가 실제 W2 dirty hunk를 대조한 뒤 비충돌 pending field와 producer/consumer 6파일을 기존 composition owner로 함께 수리했다. W2 PTA/overlay/facts 본문은 바이트 보존했고 Source-map identity·cause·DATA-before-funding 계약은 유지한다. 기존 의미 소유권은 바뀌지 않으며 미적용 패치 TODO는 폐기한다. C는 이어 기존 Ordinary composition 회귀 본문에 실제 진입점 재시도와 새 caller 입력 미소비·원 map identity 보존 검사를 반영했다. production 의미 소유권은 유지하며 D가 별도 taint owning 회귀와 영향 gate를 소비한다. [현재 적용·실행 경계·DoD](VALIDATION.md#e02-l1-c-resume-20261031) |
+| 기존 QE·DELTA Root·L3 | exact predecessor/current 재인증, SDK seed/P30/installer/terminal 및 genuine cold/product 수용 | 실제 production callers는 존재한다. L1 본문 미실행을 caller0/미구현으로 바꾸지 않고, L1 결과를 해당 제품 proof로 합산하지 않음 |
+
+
+<a id="e02-provider-c-boundary-20261030"></a>
+## E02 Provider C current ownership — 2026-10-30
+
+`QIDX E02 C Native Provider·Successor…` (`01a183c0-22b5-79c1-a260-fda56a4fc284`) directly owns only the existing P07 Voyage Native adapter/codecs/retained DATA boundary and same-owner tests. Its production enum5 and existing test pattern1 were repaired to lexical wrapping; the external five-site candidate must not be reapplied. Static/source results and unexecuted gates are recorded in [Provider final audit](VALIDATION.md#e02-provider-final-audit-20261030-c).
+
+| Work | Sole current role / boundary |
+| --- | --- |
+| P07 codec/policy/batch/HTTP response and provider DATA | Provider C; current ten parent/child paths, including four mounted test children |
+| Real admitted configured-client dependency operation | Required external transport-owner input; not confirmed supplied by another active lane. C preserves truthful pre-transport refusal until it exists |
+| Common SDK transport-attempt DATA/Cargo/export integration and expensive P07 QBC | Existing `QIDX E02 Native 조회·재사용 구현` Native/common Root; C returns only the exact required integration patch and owner request |
+| P05 actual prior identity,SDK seed/pair/installer/terminal | `QIDX E02 DELTA 게시·복구 구현` and existing producer owners; C's historical conditional P05 follow-up is removed from its direct residuals |
+| QE predecessor memo/current revalidation | `QIDX E02 B Trace·Evidence 및 재사용 구현`; do not confuse these provider hooks with Voyage HTTP |
+| ItemIndex selector/plan/bank partial/refund and L1 integration/QBC | Existing L1 A-D; parent idle/completed does not transfer ownership |
+| Graph / genuine DELTA regressions / Watch | Existing L2 / L3 / L4; no duplicate C producer,fixture,cold-gold or Watch lane |
+| Separate replay integration,metadata/lock/gate and E07 original4K/performance | Their existing inventory/E07 owners; not additional C work |
+
+Latest status and claim observations identify routing only, not completion. The current user requested read-only cross-chat deduplication and Provider-specific documentation correction. No other chat was messaged,woken,reassigned or created. Historical dated audit receipts remain intact; current C residual is actual Native HTTP connection plus its scoped proof. [P07 contract](/Users/songmin/Documents/code-new/quanta-index/docs/plans/oct-28-e02-native-closeout/tickets/P07-native-provider.md) and [current C OWN](/Users/songmin/.codex/artifacts/qidx-e02-native-chat-lanes-20261029/C-PROVIDER/OWN.md) supersede older C-to-P05 lists.
+
+<a id="e02-independent-finish-dispatch-20261030-b"></a>
+### E02 B 독립 마감 — 2026-11-03 현재 경계
+
+기존7채팅에 전달한10-30 dispatch는 실행 시작 기록이며 completion receipt가 아니다. 최신 반환으로 L3/common/Chunk·L2 미적용 source0을 확인해 같은 hunk를 재배정하지 않는다. 준비10파일과 cold registry/Just consumer는 current source에 있다. B의 source/static 및 정확 최신 owning/historical 구분은 [B checkpoint](VALIDATION.md#e02-b-trace-reuse-final-audit-20261030), 세부 source/handoff는 [B HANDOFF](/Users/songmin/.codex/artifacts/qidx-e02-native-chat-lanes-20261029/B-TRACE/HANDOFF.md)를 따른다.
+
+| 원 소유자 | 현재 경계 |
+| --- | --- |
+| QIDX E02 B Trace·Evidence 및 재사용 구현 | QE historical lookup/current admission·Trace/Evidence, cold suite/runner 유지·current source/static/receipt 정합성. scoped defect0이며 다른 source owner를 재구현하지 않음 |
+| QIDX E02 DELTA 게시·복구 구현 | actual prior identity/family/SDK seed·committed supplier/terminal·durable cold/common. 후속 compiler/body가 자기 hunk를 지목하면 exact 수리 |
+| QIDX DELTA L3 genuine 회귀 구현 | common/private 접합·독립 gold/cancel/unwind source 마감, 실제 LinuxG2/G3/cold3suite 수용 필요. old22/23/19/17패치 재적용 금지 |
+| QIDX DELTA L2 Graph 구현 / 기존 Chunk owner | 실제 pin/carry/SDK oracle·key/shape/spanlessModule 수리 source-present, current compiler/SDK proof는 별도 |
+| QIDX E02 Native 조회·재사용 구현 / 기존 P60 I/A/B | Native lifecycle/B69 및 Watch actual terminal/checkpoint/authority/cold/prepared·next event는 기존 source writer. B에 중복 배정하지 않음 |
+| 기존 P07/C1/C2/C3 | configured startup/nonempty send/Reqwest stack·TLS/CONNECT/lifetime/Pending·SDK/guard actual source와 validation, 원 owner 유지 |
+| QIDX L1-D 통합·QBC 검증 마감 | 현재 유일한 accepted execution queue. accepted45(historicalGREEN7/withoutGREEN38, Linux16), prepared54newaccepted0. A의 과거 executor takeover는 현재 아님 |
+
+D의 현재 final-source/independent-gate/hash/full-Cargo/OS/supplier qualification hold를 B7파일 static이나 send로 해제하지 않는다. 관련 exact proof만 기존 큐에 공급하고 새 큐/feature-profile/무조건 blanket rerun은 만들지 않는다. worker 간 peer 연락은 금지하고 orchestration B만 사용자 위임에 따라 exact 결과를 회수/전달한다. claims는 metadata이고 broad path 교차만으로 같은 hunk 소유권을 재배정하지 않는다.

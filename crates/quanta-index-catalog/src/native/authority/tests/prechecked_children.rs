@@ -1,4 +1,5 @@
 use super::*;
+use crate::native::authority::registration_codec;
 
 thread_local! {
     static METADATA_READS: std::cell::Cell<(u64, u64, u64)> = const {
@@ -12,6 +13,33 @@ thread_local! {
     static REGISTRATION_READS: std::cell::Cell<(u64, u64, u64, u64)> = const {
         std::cell::Cell::new((0, 0, 0, 0))
     };
+    static GC_QUEUE_WRITES: std::cell::Cell<(u64, u64)> = const {
+        std::cell::Cell::new((0, 0))
+    };
+}
+
+fn observe_gc_queue_writes(event: rusqlite::trace::TraceEvent<'_>) {
+    let rusqlite::trace::TraceEvent::Stmt(_statement, sql) = event else {
+        return;
+    };
+    GC_QUEUE_WRITES.with(|counter| {
+        let (mut inserted, mut deleted) = counter.get();
+        if sql.starts_with("INSERT INTO native_gc_queue_v1(") {
+            inserted = inserted.saturating_add(1);
+        } else if sql.starts_with("DELETE FROM native_gc_queue_v1 WHERE object=?1") {
+            deleted = deleted.saturating_add(1);
+        }
+        counter.set((inserted, deleted));
+    });
+}
+
+fn gc_queue_rows(catalog: &SqliteCatalog, object: ObjectRef) -> Result<i64, Box<dyn Error>> {
+    let guard = catalog.lock().map_err(|error| error.to_string())?;
+    Ok(guard.query_row(
+        "SELECT COUNT(*) FROM native_gc_queue_v1 WHERE object=?1",
+        params![object_key(object)],
+        |row| row.get(0),
+    )?)
 }
 
 fn observe_registration_reads(event: rusqlite::trace::TraceEvent<'_>) {
@@ -148,6 +176,227 @@ fn managed_install_counts(catalog: &SqliteCatalog) -> Result<[i64; 6], Box<dyn s
             ])
         },
     )?)
+}
+
+#[test]
+fn ingress_internal_child_avoids_gc_queue_under_durable_intent() -> TestResult {
+    use quanta_index_core::index::ports::{CatalogReclaimPort, ManagedObjectInstallPort};
+    use quanta_index_core::index::{ObjectInstallScope, ReclaimCandidate, ReclaimKind};
+
+    let (root, catalog, ingress) = managed_adoption_fixture()?;
+    let body = object(210, vec![]);
+    let record = object(211, vec![body.reference]);
+    let batch = [body.clone(), record.clone()];
+    let scope = ObjectInstallScope::Ingress(ingress);
+
+    GC_QUEUE_WRITES.with(|counter| counter.set((0, 0)));
+    {
+        let guard = catalog.lock().map_err(|error| error.to_string())?;
+        guard.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(observe_gc_queue_writes),
+        );
+    }
+    catalog.reserve_managed(scope, &batch, &mut admission_budget())?;
+    let first_writes = GC_QUEUE_WRITES.with(std::cell::Cell::get);
+    GC_QUEUE_WRITES.with(|counter| counter.set((0, 0)));
+    catalog.reserve_managed(scope, &batch, &mut admission_budget())?;
+    let replay_writes = GC_QUEUE_WRITES.with(std::cell::Cell::get);
+    {
+        let guard = catalog.lock().map_err(|error| error.to_string())?;
+        guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    }
+    // Intent custody already protects both objects. Initial and replayed
+    // reservation must not create work for GC to dequeue with another COMMIT.
+    check_eq!(first_writes, (0, 0));
+    check_eq!(replay_writes, (0, 0));
+    check_eq!(gc_queue_rows(&catalog, body.reference)?, 0);
+    check_eq!(gc_queue_rows(&catalog, record.reference)?, 0);
+    {
+        // A separate custody release may queue a still-protected object. Keep
+        // exercising real GC's reference check independently of this policy.
+        let guard = catalog.lock().map_err(|error| error.to_string())?;
+        reclaim::release(&guard, body.reference)?;
+    }
+    check_eq!(gc_queue_rows(&catalog, body.reference)?, 1);
+
+    let generation: i64 = catalog.lock()?.query_row(
+        "SELECT generation FROM native_gc_object_v1 WHERE object=?1 AND phase=0 AND kind=0",
+        params![object_key(body.reference)],
+        |row| row.get(0),
+    )?;
+    let candidate = ReclaimCandidate {
+        object: body.reference,
+        generation: u64::try_from(generation)?,
+        kind: ReclaimKind::Provisional,
+    };
+    // The real GC retirement API must see the durable ingress intent and
+    // refuse to retire a body even if another release queued it.
+    check_eq!(
+        catalog.retire_candidate(candidate, &mut admission_budget())?,
+        None
+    );
+    check_eq!(gc_queue_rows(&catalog, body.reference)?, 0);
+    drop(catalog);
+
+    let catalog = open(root.path())?;
+    catalog.confirm_managed(scope, &batch, &mut admission_budget())?;
+    catalog.confirm_managed(scope, &batch, &mut admission_budget())?;
+    check_eq!(gc_queue_rows(&catalog, body.reference)?, 0);
+    let guard = catalog.lock().map_err(|error| error.to_string())?;
+    check!(object_install::confirmed_matches(&guard, &body)?);
+    check!(object_install::confirmed_matches(&guard, &record)?);
+    Ok(())
+}
+
+#[test]
+fn ingress_internal_child_queue_corruption_and_external_refusal_roll_back() -> TestResult {
+    use quanta_index_core::index::ObjectInstallScope;
+    use quanta_index_core::index::ports::ManagedObjectInstallPort;
+
+    let (_root, catalog, ingress) = managed_adoption_fixture()?;
+    let scope = ObjectInstallScope::Ingress(ingress);
+    let body = object(212, vec![]);
+    let record = object(213, vec![body.reference]);
+    let batch = [body.clone(), record.clone()];
+    catalog.reserve_managed(scope, &batch, &mut admission_budget())?;
+    {
+        let guard = catalog.lock().map_err(|error| error.to_string())?;
+        reclaim::release(&guard, body.reference)?;
+    }
+    let before = managed_install_counts(&catalog)?;
+    let key = object_key(body.reference);
+    let connection = Connection::open(catalog.path())?;
+    let original: Vec<u8> = connection.query_row(
+        "SELECT row_digest FROM native_gc_queue_v1 WHERE object=?1",
+        params![&key],
+        |row| row.get(0),
+    )?;
+    check_eq!(
+        connection.execute(
+            "UPDATE native_gc_queue_v1 SET row_digest=zeroblob(32) WHERE object=?1",
+            params![&key],
+        )?,
+        1
+    );
+    let prefix = object(214, vec![]);
+    let replay = [prefix.clone(), body, record];
+    check!(matches!(
+        catalog.reserve_managed(scope, &replay, &mut admission_budget()),
+        Err(IndexError::Storage(message)) if message == "reclaim queue digest mismatch"
+    ));
+    check_eq!(managed_install_counts(&catalog)?, before);
+    check_eq!(gc_queue_rows(&catalog, prefix.reference)?, 0);
+    let corrupted: Vec<u8> = connection.query_row(
+        "SELECT row_digest FROM native_gc_queue_v1 WHERE object=?1",
+        params![&key],
+        |row| row.get(0),
+    )?;
+    check_eq!(corrupted, vec![0; 32]);
+    check_eq!(
+        connection.execute(
+            "UPDATE native_gc_queue_v1 SET row_digest=?2 WHERE object=?1",
+            params![&key, &original],
+        )?,
+        1
+    );
+
+    let external_parent = object(215, vec![object(216, vec![]).reference]);
+    check!(matches!(
+        catalog.reserve_managed(
+            scope,
+            &[prefix.clone(), external_parent.clone()],
+            &mut admission_budget(),
+        ),
+        Err(IndexError::CorruptObject(_))
+    ));
+    check_eq!(managed_install_counts(&catalog)?, before);
+    check_eq!(gc_queue_rows(&catalog, prefix.reference)?, 0);
+    check_eq!(gc_queue_rows(&catalog, external_parent.reference)?, 0);
+    Ok(())
+}
+
+#[test]
+fn ingress_internal_child_reservation_revives_retiring_and_refuses_reclaiming() -> TestResult {
+    use quanta_index_core::index::ports::{CatalogReclaimPort, ManagedObjectInstallPort};
+    use quanta_index_core::index::{
+        ObjectInstallScope, ObjectNamespaceBinding, ReclaimCandidate, ReclaimKind, ReclaimTarget,
+    };
+
+    let binding = ObjectNamespaceBinding {
+        root_device: 1,
+        root_inode: 2,
+        objects_device: 1,
+        objects_inode: 3,
+        lease_device: 1,
+        lease_inode: 4,
+    };
+    for reclaiming in [false, true] {
+        let (_root, catalog, ingress) = managed_adoption_fixture()?;
+        let body = object(217, vec![]);
+        let record = object(218, vec![body.reference]);
+        let prefix = object(219, vec![]);
+        {
+            let mut guard = catalog.lock().map_err(|error| error.to_string())?;
+            let tx = begin(&mut guard)?;
+            object_install::reserve(&tx, &body)?;
+            let _queued = reclaim::reserve_and_enqueue(&tx, body.reference)?;
+            tx.commit()?;
+            drop(guard);
+        }
+        let generation: i64 = catalog.lock()?.query_row(
+            "SELECT generation FROM native_gc_object_v1 WHERE object=?1",
+            params![object_key(body.reference)],
+            |row| row.get(0),
+        )?;
+        let candidate = ReclaimCandidate {
+            object: body.reference,
+            generation: u64::try_from(generation)?,
+            kind: ReclaimKind::Provisional,
+        };
+        let retiring = catalog
+            .retire_candidate(candidate, &mut admission_budget())?
+            .ok_or("unreferenced provisional body did not retire")?;
+        if reclaiming {
+            let _permit = catalog.enter_reclaiming(
+                retiring,
+                ReclaimTarget::AbsentProvisional(binding),
+                &mut admission_budget(),
+            )?;
+        }
+
+        let before = managed_install_counts(&catalog)?;
+        let batch = [prefix.clone(), body.clone(), record.clone()];
+        let result = catalog.reserve_managed(
+            ObjectInstallScope::Ingress(ingress),
+            &batch,
+            &mut admission_budget(),
+        );
+        let phase: i64 = catalog.lock()?.query_row(
+            "SELECT phase FROM native_gc_object_v1 WHERE object=?1",
+            params![object_key(body.reference)],
+            |row| row.get(0),
+        )?;
+        if reclaiming {
+            check!(matches!(result, Err(IndexError::Conflict)));
+            check_eq!(phase, 2);
+            check_eq!(managed_install_counts(&catalog)?, before);
+            check_eq!(gc_queue_rows(&catalog, prefix.reference)?, 0);
+            check_eq!(gc_queue_rows(&catalog, record.reference)?, 0);
+        } else {
+            result?;
+            check_eq!(phase, 0);
+            check_eq!(gc_queue_rows(&catalog, body.reference)?, 0);
+            check_eq!(gc_queue_rows(&catalog, record.reference)?, 0);
+            let revived_generation: i64 = catalog.lock()?.query_row(
+                "SELECT generation FROM native_gc_object_v1 WHERE object=?1",
+                params![object_key(body.reference)],
+                |row| row.get(0),
+            )?;
+            check!(revived_generation > generation);
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -690,7 +939,7 @@ fn managed_attempt_chain_elides_internal_adoption_but_preserves_queue_integrity(
     }
     begin_registration_reads(&catalog)?;
     catalog.reserve_managed(scope, &chain, &mut admission_budget())?;
-    // 256 lifecycle reads; normalization and queueing share each exact row.
+    // 256 lifecycle reads; normalization and protected dequeue share each row.
     // The attempt also authenticates its one operation request registration.
     check_eq!(end_registration_reads(&catalog)?, (1, 0, 1, 256));
     check_eq!(RESERVATION_PROBES.with(std::cell::Cell::get), (0, 0, 256));
@@ -737,8 +986,8 @@ fn managed_attempt_chain_elides_internal_adoption_but_preserves_queue_integrity(
     // A corrupt pre-existing scope row must survive unchanged, and roll back
     // both a freshly inserted provisional prefix and its fresh intent binding.
     let first_key = object_key(first.reference);
-    let intent_digest: Vec<u8> = connection.query_row("SELECT row_digest FROM native_object_intent_v1 WHERE operation=?1 AND fence=?2 AND object=?3", params![operation_key(attempt.operation)?, int(attempt.fence)?, &first_key], |row| row.get(0))?;
-    check_eq!(connection.execute("UPDATE native_object_intent_v1 SET row_digest=zeroblob(32) WHERE operation=?1 AND fence=?2 AND object=?3", params![operation_key(attempt.operation)?, int(attempt.fence)?, &first_key])?, 1);
+    let intent_digest: Vec<u8> = connection.query_row("SELECT row_digest FROM native_object_intent_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND fence=?2 AND object=?3", params![operation_key(attempt.operation)?, int(attempt.fence)?, &first_key], |row| row.get(0))?;
+    check_eq!(connection.execute("UPDATE native_object_intent_v1 SET row_digest=zeroblob(32) WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND fence=?2 AND object=?3", params![operation_key(attempt.operation)?, int(attempt.fence)?, &first_key])?, 1);
     let prefix = object(249, vec![]);
     check!(
         matches!(catalog.reserve_managed(scope, &[prefix.clone(), first.clone()], &mut admission_budget()), Err(IndexError::Storage(message)) if message == "native catalog row digest mismatch")
@@ -758,11 +1007,17 @@ fn managed_attempt_chain_elides_internal_adoption_but_preserves_queue_integrity(
         |row| row.get(0),
     )?;
     check_eq!(prefix_intents, 0);
-    let corrupt: Vec<u8> = connection.query_row("SELECT row_digest FROM native_object_intent_v1 WHERE operation=?1 AND fence=?2 AND object=?3", params![operation_key(attempt.operation)?, int(attempt.fence)?, &first_key], |row| row.get(0))?;
+    let corrupt: Vec<u8> = connection.query_row("SELECT row_digest FROM native_object_intent_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND fence=?2 AND object=?3", params![operation_key(attempt.operation)?, int(attempt.fence)?, &first_key], |row| row.get(0))?;
     check_eq!(corrupt, vec![0; 32]);
-    check_eq!(connection.execute("UPDATE native_object_intent_v1 SET row_digest=?4 WHERE operation=?1 AND fence=?2 AND object=?3", params![operation_key(attempt.operation)?, int(attempt.fence)?, &first_key, &intent_digest])?, 1);
+    check_eq!(connection.execute("UPDATE native_object_intent_v1 SET row_digest=?4 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND fence=?2 AND object=?3", params![operation_key(attempt.operation)?, int(attempt.fence)?, &first_key, &intent_digest])?, 1);
     for (object, confirming) in [(first, false), (last, true)] {
         let key = object_key(object.reference);
+        // Seed the candidate whose integrity this case attacks. Intent-owned
+        // reservations no longer create a queue row merely to remove it later.
+        {
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            reclaim::release(&guard, object.reference)?;
+        }
         let digest: Vec<u8> = connection.query_row(
             "SELECT row_digest FROM native_gc_queue_v1 WHERE object=?1",
             params![&key],
@@ -813,7 +1068,7 @@ fn managed_attempt_chain_elides_internal_adoption_but_preserves_queue_integrity(
         let registered_and_queued: (i64, i64) = guard.query_row(
             "SELECT kind,(SELECT COUNT(*) FROM native_gc_queue_v1 WHERE object=?1) FROM native_gc_object_v1 WHERE object=?1", params![object_key(object.reference)], |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        check_eq!(registered_and_queued, (1, 1));
+        check_eq!(registered_and_queued, (1, 0));
     }
     drop(guard);
     Ok(())
@@ -857,7 +1112,7 @@ fn allocation_intent_readers_refuse_oversized_and_nonblob_fields_before_copy() -
         std::slice::from_ref(&object),
         &mut admission_budget(),
     )?;
-    let payload = encode(&object)?;
+    let payload = registration_codec::encode(&object)?;
     let key = object_key(object.reference);
     let connection = Connection::open(catalog.path())?;
     for (table, domain, is_attempt) in [
@@ -1286,7 +1541,7 @@ fn metadata_reader_guards_shape_before_materialization_and_admission() -> TestRe
     use rusqlite::types::Value;
     let (_root, catalog, _) = managed_adoption_fixture()?;
     let leaf = object(249, vec![]);
-    let canonical_payload = encode(&leaf)?;
+    let canonical_payload = registration_codec::encode(&leaf)?;
     let connection = Connection::open(catalog.path())?;
     for (table, ledger, domain) in [
         (
@@ -1316,7 +1571,7 @@ fn metadata_reader_guards_shape_before_materialization_and_admission() -> TestRe
                 Value::Blob(original_digest.clone()),
             ),
             (
-                Value::Text(String::from_utf8(canonical_payload.clone())?),
+                Value::Text("registered object metadata is text".to_owned()),
                 Value::Blob(original_digest.clone()),
             ),
             (
@@ -1371,7 +1626,7 @@ fn metadata_reader_guards_shape_before_materialization_and_admission() -> TestRe
             )?;
             check_eq!(unchanged, (payload, checksum));
         }
-        // A valid shape must fund decoding before JSON is inspected. Its CRC
+        // A valid shape must fund decoding before the private payload is inspected. Its CRC
         // is also checked afresh on every call, including the next transaction.
         for bytes in [b"{".as_slice(), canonical_payload.as_slice()] {
             let _changed = connection.execute(
@@ -1440,4 +1695,5 @@ fn metadata_reader_guards_shape_before_materialization_and_admission() -> TestRe
     Ok(())
 }
 
+mod input_prefix_256;
 mod repeated_children;

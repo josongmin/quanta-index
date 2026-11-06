@@ -8,7 +8,9 @@ use std::{
     sync::Arc,
 };
 
-use quanta_index_core::index::{IndexError, ScratchAllocation, ScratchIoBinding, ScratchIoScope};
+use quanta_index_core::index::{
+    IndexError, ScratchAllocation, ScratchIoBinding, ScratchIoScope, WorkBudget,
+};
 use rusqlite::{Connection, OpenFlags};
 
 thread_local! {
@@ -21,9 +23,12 @@ struct OperationScope {
 }
 
 impl OperationScope {
-    fn enter(binding: Option<&Arc<dyn ScratchIoBinding>>) -> Self {
+    fn enter(
+        binding: Option<&Arc<dyn ScratchIoBinding>>,
+        diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Self {
         let scope: Option<Rc<dyn ScratchIoScope>> =
-            binding.map(|binding| Rc::from(binding.enter_scope()));
+            binding.map(|binding| Rc::from(binding.enter_scope(diagnostics)));
         let previous = CURRENT_SCOPE.with(|slot| slot.replace(scope.as_ref().map(Rc::downgrade)));
         Self {
             previous,
@@ -61,9 +66,13 @@ pub struct ScratchConnection {
 }
 
 impl ScratchConnection {
-    pub fn open(path: &Path, allocation: &dyn ScratchAllocation) -> Result<Self, IndexError> {
+    pub fn open(
+        path: &Path,
+        allocation: &dyn ScratchAllocation,
+        budget: &WorkBudget,
+    ) -> Result<Self, IndexError> {
         let binding = allocation.io_binding();
-        let _scope = OperationScope::enter(binding.as_ref());
+        let _scope = OperationScope::enter(binding.as_ref(), budget.request().diagnostic_context());
         let connection = match binding.as_ref() {
             Some(binding) => {
                 if binding.driver_name().is_empty() {
@@ -84,19 +93,24 @@ impl ScratchConnection {
         })
     }
 
-    pub fn scoped(&self) -> Result<ScratchConnectionScope<'_>, IndexError> {
+    pub fn scoped(&self, budget: &WorkBudget) -> Result<ScratchConnectionScope<'_>, IndexError> {
         Ok(ScratchConnectionScope {
             connection: self.connection.as_ref().ok_or_else(|| {
                 IndexError::BackendViolation("scratch connection is closed".into())
             })?,
-            _scope: OperationScope::enter(self.binding.as_ref()),
+            _scope: OperationScope::enter(
+                self.binding.as_ref(),
+                budget.request().diagnostic_context(),
+            ),
         })
     }
 }
 
 impl Drop for ScratchConnection {
     fn drop(&mut self) {
-        let _scope = OperationScope::enter(self.binding.as_ref());
+        // Drop has no live request grant. Keep physical close custody while
+        // masking any enclosing observer instead of retaining a stale phase.
+        let _scope = OperationScope::enter(self.binding.as_ref(), None);
         drop(self.connection.take());
     }
 }
@@ -117,10 +131,21 @@ impl Deref for ScratchConnectionScope<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quanta_index_core::index::WorkBudget;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const PRIVATE_FULL: i32 = rusqlite::ffi::SQLITE_FULL | (127 << 8);
+
+    fn test_budget() -> WorkBudget {
+        WorkBudget::with_request(
+            quanta_index_core::index::WorkLimits {
+                reads: 100,
+                writes: 100,
+                bytes: 1_048_576,
+                mutations: 100,
+            },
+            quanta_index_core::RequestBudgetV1::unbounded(),
+        )
+    }
 
     #[derive(Debug)]
     struct Binding {
@@ -152,7 +177,10 @@ mod tests {
         fn driver_name(&self) -> &str {
             self.name
         }
-        fn enter_scope(&self) -> Box<dyn ScratchIoScope> {
+        fn enter_scope(
+            &self,
+            _: Option<&quanta_index_core::DiagnosticContextV1>,
+        ) -> Box<dyn ScratchIoScope> {
             let _previous = self.live.fetch_add(1, Ordering::SeqCst);
             Box::new(Scope(Arc::clone(&self.live)))
         }
@@ -218,7 +246,7 @@ mod tests {
         };
         let file = allocation.path().join("denied.sqlite");
         require(matches!(
-            ScratchConnection::open(&file, &allocation),
+            ScratchConnection::open(&file, &allocation, &test_budget()),
             Err(IndexError::Storage(_))
         ))?;
         require(!file.exists() && live.load(Ordering::SeqCst) == 0)?;
@@ -234,7 +262,7 @@ mod tests {
             name: "unix",
             live: Arc::clone(&live),
         });
-        let outer = OperationScope::enter(Some(&binding));
+        let outer = OperationScope::enter(Some(&binding), None);
         require(matches!(
             storage_error(&full(PRIVATE_FULL), "fixture"),
             IndexError::ResourceLimited
@@ -243,10 +271,13 @@ mod tests {
             path: directory.path().to_path_buf(),
             binding: None,
         };
-        let connection =
-            ScratchConnection::open(&allocation.path().join("plain.sqlite"), &allocation)?;
+        let connection = ScratchConnection::open(
+            &allocation.path().join("plain.sqlite"),
+            &allocation,
+            &test_budget(),
+        )?;
         {
-            let scope = connection.scoped()?;
+            let scope = connection.scoped(&test_budget())?;
             scope.execute_batch("CREATE TABLE t(v);")?;
             require(matches!(
                 storage_error(&full(PRIVATE_FULL), "fixture"),

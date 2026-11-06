@@ -180,6 +180,7 @@ fn dispatch_symbol_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)

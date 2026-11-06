@@ -13,9 +13,26 @@ Open work is in the [single residual ledger](../../../docs/plans/oct-22-finalizi
 This guide declares no
 current capture, quality, speed or default-policy result.
 
+## Native timing and resource observer selection
+
+`causal_cost_capture --native-resource-sampling periodic` retains the existing
+Native observer: child RSS/process I/O every 100ms and allocated fixture-disk
+census every 500ms. It is the default and is required for `--native-mixed-load`.
+`--disk-observation boundary-only` controls the phase boundary census;it does not
+turn off that separate Native observer.
+
+For an explicit observer-isolation or trace-overhead diagnostic,use
+`--native-resource-sampling off` with either Native trace mode. This uses the
+existing disabled Native observer and expects `native_resource_observation:null`.
+The original daemon work/time/physical limits and failure diagnostics stay active.
+It supplies no Native RSS/disk sampled maximum,continuous peak or operating
+qualification. Mixed/off and conflicting inherited sampling flags are refused.
+Keep resource-observed runs separate and retain the fixed periodic resource
+acceptance gates;an unsampled functional result does not waive them.
+
 ## Worker RCA without repeated trace decoding
 
-Build a worker index once from a complete, lossless schema-v4 daemon capture.
+Build a worker index once from a complete, lossless schema-v4 or schema-v5 daemon capture.
 Use an external output path. The optional stderr input joins bounded refusal
 records by the exact capture/span reference; no timestamp matching is used.
 
@@ -30,15 +47,79 @@ python3 -m tools.benchmark.retrieval.causal_cost_diagnostic query \
 python3 -m tools.benchmark.retrieval.causal_cost_diagnostic query \
   --index /absolute/worker-index.json --stage sqlite_work --lane 11 \
   --refusals-only
+
+python3 -m tools.benchmark.retrieval.causal_cost_diagnostic query \
+  --index /absolute/worker-index.json --stage sqlite_work --lane 25
 ```
 
 Queries read the index without reopening the qtrace. Groups retain the nearest
 daemon worker phase, inclusive interval unions and direct counters. Nested groups
 can overlap; their durations are not additive CPU. SQLite lane22 bytes are
-requested bytes, not device writes. Zero sampled refusals are explicitly N/A.
+requested bytes, not device writes. Each worker also retains a `backfill`
+projection over the complete worker, even when the query filters its displayed
+groups. Lane25 measures the observed VFS window starting at `CKPT_START`;
+the lane22 write counts in that projection require actual lane25 ancestry.
+`window_outcomes` distinguishes an `ok` matched `CKPT_DONE` from an `aborted`
+span closed at scope end without `CKPT_DONE`. Neither duration asserts
+checkpoint completion. No lane25 span means no marker was observed in this
+capture, not proof of zero checkpoints. The window excludes preceding WAL sync
+and following main truncate/sync. `commit_overlap_ns` is the intersection
+of lane3 COMMIT and lane25 interval unions; `commit_minus_backfill_ns` subtracts
+that overlap once. These times are not additive, and overlap does not identify
+whether a checkpoint was automatic or explicitly requested. Explicit funded
+PRAGMA TRUNCATE calls use lane26 and remain a separate group. The index cache
+format is version 2; rebuild version-1 indexes from the original qtrace.
+Zero sampled refusals are explicitly N/A.
 The index is `UNBOUND_DIAGNOSTIC_ONLY`: capture integrity is not source/binary
 qualification, worker terminal is not public completion, and these queries do
 not establish tracing overhead or an Off/Record performance comparison.
+
+For Catalog contention in initial indexing, maintenance runs outside owned
+worker subtrees. Project it with the same canonical reader:
+
+```sh
+python3 -m tools.benchmark.retrieval.causal_cost_diagnostic closed-maintenance \
+  --input /absolute/daemon.qtrace --out /absolute/maintenance-scopes.json
+```
+
+The report keeps only observed closed maintenance subtrees, Catalog wait/hold
+groups and reached explicit checkpoint spans (`sqlite_work`, lane26), including
+their outcomes. A partial capture remains partial; missing checkpoint spans do
+not prove no WAL check occurred. Maintenance root, Catalog hold and nested
+checkpoint durations overlap and cannot be added or attributed as causal savings.
+Existing output is refused. This is offline analysis, not another product run.
+
+## Offline macOS stack symbol lookup
+
+`native_stack_symbols.py` can look up `???` addresses from an existing macOS
+`sample` text capture against a separately built symbol-bearing companion. The
+original executable SHA-256, sample module/load address/UUID, and every
+`__TEXT` section's address, size, flags, file offset, and bytes must match the
+companion. A changed Mach-O header or UUID alone is allowed. Only thin arm64
+executables with an executable `__TEXT,__text` are supported. This verifies
+code-address layout, not the companion symbol names or their build provenance.
+Inputs are read as bounded regular files; the companion is passed to `atos`,
+never executed.
+
+```sh
+python3 -m tools.benchmark.retrieval.native_stack_symbols \
+  --original /absolute/original/quanta-index-searchd \
+  --expected-sha256 ORIGINAL_BINARY_SHA256 \
+  --companion /absolute/symbols/quanta-index-searchd \
+  --sample /absolute/existing-sample.txt \
+  --module quanta-index-searchd \
+  --out /absolute/external/stack-symbols.json
+```
+
+Build a candidate with symbols retained, then check its actual names with
+`nm` before using it. Retaining symbols does not guarantee that internal
+functions are present. Only an independently trusted build receipt can establish
+symbol-name provenance; this tool reports `atos_candidate` and
+`symbol_name_provenance: UNVERIFIED`. A layout mismatch refuses retrospective
+lookup; a new capture of the candidate is a different run. Unresolved `atos`
+addresses remain unresolved. Reported frame-line counts are neither CPU percentages nor
+representative request timing; this diagnostic cannot qualify an Off/Record
+comparison or the original 4K performance gate.
 
 ## Native Quanta capture and recorded evaluation
 
@@ -143,6 +224,16 @@ The process memory ceiling validates the declared resident policies; it is not
 an OS RSS limit. The hash embedder and same-process scale rail are diagnostic; they do not prove
 model quality, quiet-host latency, multi-owner concurrency or OS-process crash
 recovery.
+
+The separate `index-native` causal-cost fixture in `scale/native_index.rs`
+selects a 600-second client I/O deadline and an independent 120-second Native
+server dispatch deadline. It explicitly enables maintenance at a 20ms interval,
+one step per round, a 2-second round budget and a 512KiB physical maintenance
+reserve. These are fixture inputs, not Native operator defaults or a required
+20ms policy. Original4K vector-row, Large file-tier and mixed-load results retain
+their separate input contracts. Kernel occurrence-input counts and object
+reserve/confirm entry counts do not measure unique file births or device writes.
+See the [counter and maintenance interpretation contract](../../../docs/plans/oct-22-finalizing/E07-performance-operations.md#비용-계수유지보수-설정-해석).
 
 ## Select the query policy and result unit
 

@@ -118,6 +118,7 @@ impl ClientQueryRpcKindV1 {
             | SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcRequest::Hybrid(_)
             | SearchPlaneQueryIpcRequest::HybridSeed(_)
+            | SearchPlaneQueryIpcRequest::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcRequest::History(_)
             | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
             | SearchPlaneQueryIpcRequest::Structural(_)
@@ -487,6 +488,7 @@ impl QuantaIndexClientPayloadV1 {
             | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -550,6 +552,7 @@ impl QuantaIndexClientPayloadV1 {
             | SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcRequest::Hybrid(_)
             | SearchPlaneQueryIpcRequest::HybridSeed(_)
+            | SearchPlaneQueryIpcRequest::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcRequest::History(_)
             | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
             | SearchPlaneQueryIpcRequest::Structural(_)
@@ -776,6 +779,7 @@ impl QuantaIndexClientPayloadV1 {
             SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => "semantic_work_bounded_v1",
             SearchPlaneQueryIpcResponse::Hybrid(_) => "hybrid",
             SearchPlaneQueryIpcResponse::HybridSeed(_) => "hybrid_seed",
+            SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => "go_test_trace_file_v1",
             SearchPlaneQueryIpcResponse::History(_) => "history",
             SearchPlaneQueryIpcResponse::Structural(_) => "structural",
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "repomap",

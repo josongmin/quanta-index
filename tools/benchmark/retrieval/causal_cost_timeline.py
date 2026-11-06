@@ -28,6 +28,17 @@ MAX_CAPTURE_BYTES = 128 * 1024 * 1024
 MAX_CONFIGURED_CAPTURE_BYTES = 1_073_741_824
 JS_SAFE_INTEGER = (1 << 53) - 1
 U64_MAX = (1 << 64) - 1
+NATIVE_IO_SUMMARY_COUNTERS = frozenset({"sync_calls", "sync_failures", "sync_elapsed_ns"})
+TEXT_OCCURRENCE_DIFF_COUNTERS = frozenset(
+    {
+        "text_occurrence_prior_validation_attempts",
+        "text_occurrence_next_validation_attempts",
+        "text_occurrence_ram_reuses",
+        "text_occurrence_spill_reuses",
+        "text_occurrence_equal_reuses",
+        "text_occurrence_validation_failures",
+    }
+)
 BM25_AGGREGATE_STAGES = {
     "bm25_census_aggregate": "bm25_census_build",
     "bm25_boundary_aggregate": "bm25_boundary",
@@ -51,6 +62,71 @@ SQLITE_WRITE_COUNTERS = frozenset(
         "sqlite_wal_write_calls",
         "sqlite_main_write_calls",
         "sqlite_other_write_calls",
+    }
+)
+THREAD_CPU_COUNTERS = frozenset({"thread_cpu_ns"})
+THREAD_CPU_STAGES = frozenset(
+    {
+        "native_source_apply",
+        "native_source_owner_prepare",
+        "native_source_path_validate",
+        "native_source_map_apply",
+        "lexical_build",
+        "native_text_inventory_prepare",
+        "native_text_inventory_map_apply",
+        "native_text_inventory_diff",
+        "native_text_inventory_read",
+        "native_text_occurrence_read",
+        "native_text_posting_edit",
+        "native_text_postings",
+        "native_text_root",
+        "native_coverage_scan",
+        "native_coverage_map_apply",
+        "native_coverage_save",
+        "native_member_assemble",
+        "native_work_seal",
+        "native_publish",
+        "compaction",
+    }
+)
+THREAD_CPU_V5_STAGES = THREAD_CPU_STAGES | frozenset(
+    {"managed_object_reserve", "managed_object_confirm", "managed_object_install"}
+)
+THREAD_CPU_V5_SQLITE_LANES = frozenset(
+    {*range(3, 9), 11, 12, 15, 16, 21, 25, 26}
+)
+SQLITE_WRITE_BOUNDARY_COUNTERS = frozenset(
+    {
+        "sqlite_write_admission_calls",
+        "sqlite_write_admission_refusals",
+        "sqlite_write_admission_elapsed_ns",
+        "sqlite_write_lower_envelope_elapsed_ns",
+        "sqlite_write_post_callback_elapsed_ns",
+        "sqlite_write_post_callback_refusals",
+    }
+)
+SQLITE_CACHE_COUNTERS = frozenset(
+    {
+        "sqlite_cache_hits",
+        "sqlite_cache_misses",
+        "sqlite_cache_writes",
+        "sqlite_cache_spills",
+    }
+)
+SQLITE_WRITER_SETTINGS_COUNTERS = frozenset(
+    {
+        "sqlite_page_size_bytes",
+        "sqlite_cache_size_magnitude",
+        "sqlite_cache_size_is_kib",
+        "sqlite_cache_spill_pages",
+        "sqlite_wal_autocheckpoint_pages",
+    }
+)
+SQLITE_CACHE_HEALTH_CODES = frozenset({"counter_unavailable", "counter_regressed"})
+OBJECT_INSTALL_PHASES = frozenset(
+    {
+        "child_validation", "namespace_and_create", "write", "file_sync",
+        "publish_and_retire", "directory_sync", "barrier", "settlement", "existing",
     }
 )
 EXECUTION_BINDING_WIDTHS = {
@@ -191,6 +267,13 @@ def _selected_validator(
     fallback: Draft202012Validator,
     dispatch: tuple[dict[str, Draft202012Validator], dict[str, Draft202012Validator]],
 ) -> Draft202012Validator:
+    if isinstance(record, list) and len(record) == 5 and record[0] == "e":
+        kind = record[4]
+        if isinstance(kind, list) and kind and isinstance(kind[0], str):
+            return dispatch[1].get(kind[0], fallback)
+        if isinstance(kind, dict) and isinstance(kind.get("type"), str):
+            return dispatch[1].get(kind["type"], fallback)
+        return fallback
     if not isinstance(record, dict):
         return fallback
     record_type = record.get("record_type")
@@ -209,6 +292,7 @@ def _decode_record(
     validator: Draft202012Validator,
     dispatch: tuple[dict[str, Draft202012Validator], dict[str, Draft202012Validator]],
     line_no: int,
+    version: int,
 ) -> dict[str, Any]:
     try:
         record = json.loads(
@@ -217,24 +301,140 @@ def _decode_record(
             parse_constant=_reject_constant,
         )
         _selected_validator(record, validator, dispatch).validate(record)
+        if version == 5:
+            _reject_v5_noninteger_numbers(record)
     except (UnicodeError, json.JSONDecodeError) as error:
         raise CausalSyntaxError(f"invalid causal timeline row {line_no}: {error}") from error
     except (ValidationError, ValueError) as error:
         raise ValueError(f"invalid causal timeline row {line_no}: {error}") from error
+    if isinstance(record, list):
+        return _normalize_v5_event(record)
     if not isinstance(record, dict):
         raise ValueError(f"invalid causal timeline row {line_no}: object required")
     return record
+
+
+def _reject_v5_noninteger_numbers(record: Any) -> None:
+    # This schema has no floating-point fields. JSON Schema's `integer` also
+    # accepts 1.0, whereas the Rust u64/u32 decoder accepts only JSON integers.
+    pending = [record]
+    while pending:
+        value = pending.pop()
+        if type(value) is float:
+            raise ValueError("V5 numeric field is not an exact JSON integer")
+        if isinstance(value, dict):
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+
+
+def _v5_integer(value: Any, label: str) -> int:
+    if type(value) is not int:
+        raise ValueError(f"V5 {label} is not an exact JSON integer")
+    return value
+
+
+def _normalize_v5_event(record: list[Any]) -> dict[str, Any]:
+    """Convert one already-validated V5 wire event to the existing semantic shape."""
+    _, output_seq, capture_id, ts_ns, wire_kind = record
+    _v5_integer(output_seq, "output sequence")
+    _v5_integer(ts_ns, "timestamp")
+    if isinstance(wire_kind, dict):
+        kind = wire_kind
+        if "span_id" in kind:
+            _v5_integer(kind["span_id"], "rare kind span ID")
+    elif wire_kind[0] == "b":
+        _, span_id, parent_span_id, stage, lane_id, root_kind = wire_kind
+        _v5_integer(span_id, "begin span ID")
+        if parent_span_id is not None:
+            _v5_integer(parent_span_id, "parent span ID")
+        _v5_integer(lane_id, "lane ID")
+        kind = {"type": "span_begin", "span_id": span_id, "stage": stage, "lane_id": lane_id}
+        if parent_span_id is not None:
+            kind["parent_span_id"] = parent_span_id
+        if root_kind is not None:
+            kind["root_kind"] = root_kind
+    elif wire_kind[0] == "e":
+        _, span_id, outcome, error_code = wire_kind
+        _v5_integer(span_id, "end span ID")
+        if error_code is not None:
+            _v5_integer(error_code, "error code")
+        if (outcome in ("error", "cancelled")) != (error_code is not None):
+            raise ValueError("V5 span end outcome and error code disagree")
+        kind = {"type": "span_end", "span_id": span_id, "outcome": outcome}
+        if error_code is not None:
+            kind["error_code"] = error_code
+    else:
+        _, span_id, key, value = wire_kind
+        _v5_integer(span_id, "counter span ID")
+        _v5_integer(value, "counter value")
+        kind = {"type": "counter", "span_id": span_id, "key": key, "value": value}
+    return {
+        "record_type": "event",
+        "output_seq": output_seq,
+        "capture_id": capture_id,
+        "ts_ns": ts_ns,
+        "kind": kind,
+    }
+
+
+def _dispatch_v5_validators(
+    schema: dict[str, Any],
+) -> tuple[dict[str, Draft202012Validator], dict[str, Draft202012Validator]]:
+    """Keep the exact V5 schema, selecting one disjoint kind branch per event."""
+    definitions = schema["$defs"]
+    references = definitions["event"]["prefixItems"][4]["oneOf"]
+    kinds: dict[str, Draft202012Validator] = {}
+    for reference in references:
+        name = reference["$ref"].removeprefix("#/$defs/")
+        branch = definitions[name]
+        key = branch["prefixItems"][0]["const"] if name in (
+            "spanBeginV5", "spanEndV5", "counterV5"
+        ) else branch["properties"]["type"]["const"]
+        selected = dict(schema)
+        selected_defs = dict(definitions)
+        selected_event = dict(definitions["event"])
+        selected_items = list(selected_event["prefixItems"])
+        selected_items[4] = reference
+        selected_event["prefixItems"] = selected_items
+        selected_defs["event"] = selected_event
+        selected["$defs"] = selected_defs
+        kinds[key] = Draft202012Validator(selected)
+    return {}, kinds
 
 
 def _schema_for_version(schema: dict[str, Any], version: int) -> dict[str, Any]:
     selected = copy.deepcopy(schema)
     for record_type in ("header", "footer"):
         selected["$defs"][record_type]["properties"]["schema_version"]["const"] = version
+    if version < 5:
+        selected["$defs"]["event"] = selected["$defs"]["legacyEvent"]
+        selected["$defs"]["spanBegin"]["properties"]["stage"]["enum"].remove(
+            "managed_object_install"
+        )
     if version < 4:
+        selected["$defs"]["event"]["properties"]["kind"]["oneOf"] = [
+            reference
+            for reference in selected["$defs"]["event"]["properties"]["kind"]["oneOf"]
+            if reference["$ref"] != "#/$defs/ownedRenewalRefusal"
+        ]
         selected["$defs"]["counterKey"]["enum"] = [
             key
             for key in selected["$defs"]["counterKey"]["enum"]
-            if key not in SQLITE_SYNC_MUTATION_COUNTERS | SQLITE_WRITE_COUNTERS
+            if key
+            not in (
+                SQLITE_SYNC_MUTATION_COUNTERS
+                | SQLITE_WRITE_COUNTERS
+                | THREAD_CPU_COUNTERS
+                | SQLITE_WRITE_BOUNDARY_COUNTERS
+                | SQLITE_CACHE_COUNTERS
+                | SQLITE_WRITER_SETTINGS_COUNTERS
+            )
+        ]
+        selected["$defs"]["health"]["properties"]["code"]["enum"] = [
+            code
+            for code in selected["$defs"]["health"]["properties"]["code"]["enum"]
+            if code not in SQLITE_CACHE_HEALTH_CODES
         ]
     if version == 1:
         selected["$defs"]["counterKey"]["enum"].remove("compacted_segments")
@@ -329,11 +529,15 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
     except (UnicodeError, json.JSONDecodeError, ValueError) as error:
         raise ValueError(f"invalid causal timeline header: {error}") from error
     version = header_probe.get("schema_version") if isinstance(header_probe, dict) else None
-    if type(version) is not int or version not in (1, 2, 3, 4):
+    if type(version) is not int or version not in (1, 2, 3, 4, 5):
         raise ValueError("unsupported causal timeline schema version")
     validator = Draft202012Validator(_schema_for_version(schema, version))
-    dispatch = _dispatch_validators(validator.schema)
-    header = _decode_record(header_line, validator, dispatch, 1)
+    dispatch = (
+        _dispatch_v5_validators(validator.schema)
+        if version == 5
+        else _dispatch_validators(validator.schema)
+    )
+    header = _decode_record(header_line, validator, dispatch, 1, version)
     if header["record_type"] != "header":
         raise ValueError("causal timeline must start with header")
     cap = header["max_record_bytes"]
@@ -348,12 +552,14 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
     counters: list[dict[str, Any]] = []
     ann_region_observations: list[dict[str, Any]] = []
     sqlite_sync_observations: list[dict[str, Any]] = []
+    object_install_aggregates: list[dict[str, Any]] = []
     sync_aggregates: list[dict[str, Any]] = []
     object_kind_aggregates: list[dict[str, Any]] = []
     adoption_group_aggregates: list[dict[str, Any]] = []
     bm25_census_aggregates: list[dict[str, Any]] = []
     bm25_boundary_aggregates: list[dict[str, Any]] = []
     bm25_live_build_aggregates: list[dict[str, Any]] = []
+    owned_renewal_refusals: list[dict[str, Any]] = []
     identities: dict[int, dict[str, Any]] = {}
     identity_times: dict[int, int] = {}
     health: list[dict[str, Any]] = []
@@ -367,7 +573,7 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         if not line:
             raise ValueError(f"blank causal timeline row {line_no}")
         try:
-            record = _decode_record(line, validator, dispatch, line_no)
+            record = _decode_record(line, validator, dispatch, line_no, version)
         except CausalSyntaxError:
             if not terminated:
                 if footer is not None:
@@ -435,11 +641,45 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             )
             span = spans.get(kind["span_id"])
             if span is None:
-                if kind["key"] in SQLITE_SYNC_MUTATION_COUNTERS:
-                    raise ValueError("SQLite sync mutation counter has no existing owner span")
+                if kind["key"] in TEXT_OCCURRENCE_DIFF_COUNTERS:
+                    raise ValueError("text occurrence Diff counter has no existing owner span")
+                if kind["key"] in THREAD_CPU_COUNTERS:
+                    raise ValueError("thread CPU counter has no existing owner span")
+                if kind["key"] in (
+                    SQLITE_SYNC_MUTATION_COUNTERS
+                    | SQLITE_CACHE_COUNTERS
+                    | SQLITE_WRITER_SETTINGS_COUNTERS
+                ):
+                    raise ValueError("SQLite diagnostic counter has no existing owner span")
                 orphan_events += 1
                 continue
             key = kind["key"]
+            if key in TEXT_OCCURRENCE_DIFF_COUNTERS:
+                if version != 5 or span["stage"] != "native_text_inventory_diff" or span["lane_id"] != 2:
+                    raise ValueError("text occurrence Diff counter targets wrong version, stage or lane")
+                if span["end_ns"] is not None:
+                    raise ValueError("text occurrence Diff counter follows span end")
+                if key in span["counters"]:
+                    raise ValueError("text occurrence Diff counter is duplicated")
+            if (
+                version >= 2
+                and key in NATIVE_IO_SUMMARY_COUNTERS
+                and span["stage"] == "operation"
+                and span["parent_span_id"] is None
+                and span["end_ns"] is not None
+            ):
+                raise ValueError("native IO summary counter follows operation end")
+            if key in THREAD_CPU_COUNTERS:
+                stage = span["stage"]
+                allowed = stage in (THREAD_CPU_V5_STAGES if version == 5 else THREAD_CPU_STAGES) or (
+                    version == 5
+                    and stage == "sqlite_work"
+                    and span["lane_id"] in THREAD_CPU_V5_SQLITE_LANES
+                )
+                if not allowed:
+                    raise ValueError("thread CPU counter targets wrong stage")
+                if key in span["counters"]:
+                    raise ValueError("thread CPU counter is duplicated")
             previous = span["counters"].get(key, 0)
             total = previous + kind["value"]
             if total > (1 << 64) - 1:
@@ -473,6 +713,23 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                     "span_id": kind["span_id"],
                     "ts_ns": event["ts_ns"],
                     "observation": observation.copy(),
+                }
+            )
+        elif event_type == "object_install_aggregate":
+            if version != 5 or kind["phase"] not in OBJECT_INSTALL_PHASES:
+                raise ValueError("object install aggregate requires V5 closed phase")
+            if kind["failures"] > kind["calls"]:
+                raise ValueError("object install aggregate failures exceed calls")
+            object_install_aggregates.append(
+                {
+                    "span_id": kind["span_id"],
+                    "ts_ns": event["ts_ns"],
+                    **{
+                        key: kind[key]
+                        for key in (
+                            "phase", "calls", "elapsed_sum_ns", "thread_cpu_ns", "failures"
+                        )
+                    },
                 }
             )
         elif event_type == "sync_aggregate":
@@ -606,6 +863,20 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                     **{key: kind[key] for key in metrics},
                 }
             )
+        elif event_type == "owned_renewal_refusal":
+            if kind["reason"] == "lease_expired" and (
+                kind["lease_until_ms"] is None or kind["now_ms"] < kind["lease_until_ms"]
+            ):
+                raise ValueError("owned renewal lease expiry lacks expired lease")
+            if kind["reason"] == "execution_expired" and (
+                kind["deadline_ms"] is None or kind["now_ms"] < kind["deadline_ms"]
+            ):
+                raise ValueError("owned renewal execution expiry lacks expired deadline")
+            owned_renewal_refusals.append(
+                {"span_id": kind["span_id"], "ts_ns": event["ts_ns"],
+                 "reason": kind["reason"], "now_ms": kind["now_ms"],
+                 "lease_until_ms": kind["lease_until_ms"], "deadline_ms": kind["deadline_ms"]}
+            )
         elif event_type == "link":
             links.append(
                 {
@@ -689,12 +960,14 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         *counters,
         *ann_region_observations,
         *sqlite_sync_observations,
+        *object_install_aggregates,
         *sync_aggregates,
         *object_kind_aggregates,
         *adoption_group_aggregates,
         *bm25_census_aggregates,
         *bm25_boundary_aggregates,
         *bm25_live_build_aggregates,
+        *owned_renewal_refusals,
         *links,
         *(
             {"span_id": span_id, "ts_ns": ts}
@@ -719,6 +992,7 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             *bm25_live_build_aggregates,
             *ann_region_observations,
             *sqlite_sync_observations,
+            *object_install_aggregates,
         )
     )
     observed_regions: dict[str, tuple[int, int, str, int, int]] = {}
@@ -749,7 +1023,39 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         prior = observed_regions.setdefault(row["fileset_ref"], shape)
         if prior != shape:
             raise ValueError("ANN fileset observations disagree")
+    seen_object_install_phases: set[tuple[int, str]] = set()
+    object_install_wall_by_span: dict[int, int] = {}
+    for row in object_install_aggregates:
+        span_id = row["span_id"]
+        owner = spans.get(span_id)
+        if owner is None or owner["stage"] != "managed_object_install":
+            raise ValueError("object install aggregate targets wrong owner")
+        identity = (span_id, row["phase"])
+        if identity in seen_object_install_phases:
+            raise ValueError("duplicate object install phase in one packet")
+        seen_object_install_phases.add(identity)
+        elapsed = object_install_wall_by_span.get(span_id, 0) + row["elapsed_sum_ns"]
+        if elapsed > U64_MAX:
+            raise ValueError("object install phase elapsed total exceeds u64")
+        object_install_wall_by_span[span_id] = elapsed
+    for span_id, observed_ns in object_install_wall_by_span.items():
+        owner = spans[span_id]
+        if owner["end_ns"] is not None and observed_ns > owner["end_ns"] - owner["start_ns"]:
+            raise ValueError("object install phases exceed packet wall interval")
     seen_sqlite_sync_spans: set[int] = set()
+    seen_renewal_refusal_spans: set[int] = set()
+    for row in owned_renewal_refusals:
+        span_id = row["span_id"]
+        owner = spans.get(span_id)
+        if owner is None:
+            raise ValueError(f"owned renewal refusal targets foreign span: {span_id}")
+        if owner["stage"] != "sqlite_work" or owner["lane_id"] != 29:
+            raise ValueError("owned renewal refusal targets wrong owner stage or lane")
+        if span_id in seen_renewal_refusal_spans:
+            raise ValueError("duplicate owned renewal refusal in one span")
+        seen_renewal_refusal_spans.add(span_id)
+        if owner["end_ns"] is not None and owner["outcome"] != "error":
+            raise ValueError("owned renewal refusal owner did not end in error")
     for row in sqlite_sync_observations:
         span_id = row["span_id"]
         owner = spans.get(span_id)
@@ -836,6 +1142,72 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             raise ValueError("complete capture has orphan local link target")
         if health:
             raise ValueError("complete capture contradicts loss or invalidity health")
+    for span_id, span in spans.items():
+        observed = set(span["counters"]) & TEXT_OCCURRENCE_DIFF_COUNTERS
+        if not observed:
+            continue
+        if complete and observed != TEXT_OCCURRENCE_DIFF_COUNTERS:
+            raise ValueError(f"text occurrence Diff counter family is partial: {span_id}")
+        if observed == TEXT_OCCURRENCE_DIFF_COUNTERS:
+            attempts = (
+                span["counters"]["text_occurrence_prior_validation_attempts"]
+                + span["counters"]["text_occurrence_next_validation_attempts"]
+            )
+            if attempts > U64_MAX:
+                raise ValueError(f"text occurrence Diff validation attempts exceed u64: {span_id}")
+            if span["counters"]["text_occurrence_validation_failures"] > attempts:
+                raise ValueError(f"text occurrence Diff validation failures exceed attempts: {span_id}")
+    pager_counts = Counter(
+        (counter["span_id"], counter["key"])
+        for counter in counters
+        if counter["key"] in SQLITE_CACHE_COUNTERS
+    )
+    settings_counts = Counter(
+        (counter["span_id"], counter["key"])
+        for counter in counters
+        if counter["key"] in SQLITE_WRITER_SETTINGS_COUNTERS
+    )
+    settings_by_root: dict[int, set[int]] = {}
+    for span_id, span in spans.items():
+        observed_cache = set(span["counters"]) & SQLITE_CACHE_COUNTERS
+        if observed_cache:
+            if span["stage"] != "catalog_lock_hold" or span["lane_id"] != 0:
+                raise ValueError(f"SQLite cache counters target wrong owner span: {span_id}")
+            if any(pager_counts[(span_id, key)] != 1 for key in observed_cache):
+                raise ValueError(f"SQLite cache counter is duplicated: {span_id}")
+            if complete and observed_cache != SQLITE_CACHE_COUNTERS:
+                raise ValueError(f"SQLite cache counter set is partial: {span_id}")
+        observed_settings = set(span["counters"]) & SQLITE_WRITER_SETTINGS_COUNTERS
+        stage, lane = span["stage"], span["lane_id"]
+        settings_lane = stage == "sqlite_work" and lane in (27, 28)
+        if not observed_settings and not settings_lane:
+            continue
+        if observed_settings and not settings_lane:
+            raise ValueError(f"SQLite writer settings counter targets wrong lane: {span_id}")
+        if any(settings_counts[(span_id, key)] != 1 for key in observed_settings):
+            raise ValueError(f"SQLite writer settings counter is duplicated: {span_id}")
+        if "sqlite_cache_size_is_kib" in observed_settings and span["counters"][
+            "sqlite_cache_size_is_kib"
+        ] not in (0, 1):
+            raise ValueError(f"SQLite writer settings cache size unit is invalid: {span_id}")
+        parent_id = span["parent_span_id"]
+        parent = spans.get(parent_id)
+        if parent is not None and (
+            parent["parent_span_id"] is not None
+            or parent["root_kind"] != "operation"
+            or parent["stage"] != "operation"
+            or parent["lane_id"] != 0
+        ):
+            raise ValueError(f"SQLite writer settings lack their operation root: {span_id}")
+        if complete:
+            if observed_settings != SQLITE_WRITER_SETTINGS_COUNTERS or parent is None:
+                raise ValueError(f"SQLite writer settings counter set is partial: {span_id}")
+            lanes = settings_by_root.setdefault(parent_id, set())
+            if lane in lanes:
+                raise ValueError(f"SQLite writer settings lane is duplicated: {parent_id}")
+            lanes.add(lane)
+    if complete and any(lanes != {27, 28} for lanes in settings_by_root.values()):
+        raise ValueError("SQLite writer settings before/after pair is partial")
     candidate_links = [
         link
         for link in links
@@ -877,12 +1249,14 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         "counters": counters,
         "ann_region_observations": ann_region_observations,
         "sqlite_sync_observations": sqlite_sync_observations,
+        "object_install_aggregates": object_install_aggregates,
         "sync_aggregates": sync_aggregates,
         "object_kind_aggregates": object_kind_aggregates,
         "adoption_group_aggregates": adoption_group_aggregates,
         "bm25_census_aggregates": bm25_census_aggregates,
         "bm25_boundary_aggregates": bm25_boundary_aggregates,
         "bm25_live_build_aggregates": bm25_live_build_aggregates,
+        "owned_renewal_refusals": owned_renewal_refusals,
         "health": health,
         "request_identities": identities,
         "event_count": event_count,
@@ -913,6 +1287,9 @@ def summarize(
 ) -> dict[str, Any]:
     spans = capture["spans"]
     rows = []
+    install_by_span: dict[int, list[dict[str, Any]]] = {}
+    for aggregate in capture["object_install_aggregates"]:
+        install_by_span.setdefault(aggregate["span_id"], []).append(aggregate)
     children_by_parent: dict[int, list[tuple[int, int]]] = {}
     for child in spans.values():
         if child["parent_span_id"] is not None and child["end_ns"] is not None:
@@ -927,29 +1304,36 @@ def summarize(
         )
         if exclusive is not None and exclusive < 0:
             raise ValueError(f"children exceed parent span: {span_id}")
-        rows.append(
-            {
-                "span_id": span_id,
-                "parent_span_id": span["parent_span_id"],
-                "stage": span["stage"],
-                "phase": span.get("phase"),
-                "lane_id": span["lane_id"],
-                "start_ns": span["start_ns"],
-                "end_ns": end,
-                "last_observed_ns": capture["last_observed_ns"] if end is None else None,
-                "duration_ns": duration,
-                "exclusive_ns": exclusive,
-                "outcome": span["outcome"],
-                "counters": span["counters"],
-                "bm25_aggregates": [aggregate.copy() for aggregate in span["bm25_aggregates"]],
-                "request_identity": span.get("request_identity", {}).copy() or None,
-                **(
-                    {"sqlite_sync_observation": span.get("sqlite_sync_observation")}
-                    if capture["schema_version"] >= 3
-                    else {}
-                ),
+        row = {
+            "span_id": span_id,
+            "parent_span_id": span["parent_span_id"],
+            "stage": span["stage"],
+            "phase": span.get("phase"),
+            "lane_id": span["lane_id"],
+            "start_ns": span["start_ns"],
+            "end_ns": end,
+            "last_observed_ns": capture["last_observed_ns"] if end is None else None,
+            "duration_ns": duration,
+            "exclusive_ns": exclusive,
+            "outcome": span["outcome"],
+            "counters": span["counters"],
+            "bm25_aggregates": [aggregate.copy() for aggregate in span["bm25_aggregates"]],
+            "request_identity": span.get("request_identity", {}).copy() or None,
+            **(
+                {"sqlite_sync_observation": span.get("sqlite_sync_observation")}
+                if capture["schema_version"] >= 3
+                else {}
+            ),
+        }
+        if span["stage"] == "managed_object_install":
+            observed = [aggregate.copy() for aggregate in install_by_span.get(span_id, [])]
+            elapsed_sum_ns = sum(item["elapsed_sum_ns"] for item in observed)
+            row["object_install"] = {
+                "observed_phases": observed,
+                "observed_elapsed_sum_ns": elapsed_sum_ns,
+                "unattributed_ns": None if duration is None else duration - elapsed_sum_ns,
             }
-        )
+        rows.append(row)
     summary = {
         "schema_version": capture["schema_version"],
         "status": capture["status"],
@@ -965,12 +1349,14 @@ def summarize(
             {**row, "observation": row["observation"].copy()}
             for row in capture["sqlite_sync_observations"]
         ],
+        "object_install_aggregates": [row.copy() for row in capture["object_install_aggregates"]],
         "sync_aggregates": [row.copy() for row in capture["sync_aggregates"]],
         "object_kind_aggregates": [row.copy() for row in capture["object_kind_aggregates"]],
         "adoption_group_aggregates": [row.copy() for row in capture["adoption_group_aggregates"]],
         "bm25_census_aggregates": [row.copy() for row in capture["bm25_census_aggregates"]],
         "bm25_boundary_aggregates": [row.copy() for row in capture["bm25_boundary_aggregates"]],
         "bm25_live_build_aggregates": [row.copy() for row in capture["bm25_live_build_aggregates"]],
+        "owned_renewal_refusals": [row.copy() for row in capture["owned_renewal_refusals"]],
         "links": [link.copy() for link in capture["links"]],
         "verified_flow_count": len(capture["verified_flows"]),
         "ambiguous_link_count": capture["ambiguous_links"],
@@ -1549,6 +1935,48 @@ def chrome_export(
                     },
                 }
             )
+    for aggregate in capture["object_install_aggregates"]:
+        span_id = aggregate["span_id"]
+        if aggregate["ts_ns"] > JS_SAFE_INTEGER:
+            raise ValueError("causal timestamp exceeds exact Chrome JSON range")
+        phase = aggregate["phase"]
+        events.append(
+            {
+                "name": f"object_install:{phase}",
+                "cat": "object_install_aggregate",
+                "ph": "i",
+                "s": "t",
+                "pid": process_id,
+                "tid": track_for_span[span_id],
+                "ts": aggregate["ts_ns"] / 1000,
+                "args": {
+                    "span_id": str(span_id),
+                    "phase": phase,
+                    "calls": str(aggregate["calls"]),
+                    "elapsed_sum_ns": str(aggregate["elapsed_sum_ns"]),
+                    "thread_cpu_ns": None
+                    if aggregate["thread_cpu_ns"] is None
+                    else str(aggregate["thread_cpu_ns"]),
+                    "failures": str(aggregate["failures"]),
+                    "scope": "observed_in_one_managed_object_install_packet",
+                },
+            }
+        )
+        for metric in ("elapsed_sum_ns", "thread_cpu_ns"):
+            value = aggregate[metric]
+            if value is not None and value <= JS_SAFE_INTEGER:
+                name = f"object_install:{phase}:{metric}"
+                events.append(
+                    {
+                        "name": name,
+                        "cat": "object_install_phase_counter",
+                        "ph": "C",
+                        "pid": process_id,
+                        "tid": track_for_span[span_id],
+                        "ts": aggregate["ts_ns"] / 1000,
+                        "args": {name: value},
+                    }
+                )
     for aggregate in capture["sync_aggregates"]:
         span_id = aggregate["span_id"]
         if span_id not in track_for_span:
@@ -1616,6 +2044,32 @@ def chrome_export(
                     "bytes_bucket": aggregate["bytes_bucket"],
                     "groups": str(aggregate["groups"]),
                     "failed_groups": str(aggregate["failed_groups"]),
+                },
+            }
+        )
+    for refusal in capture["owned_renewal_refusals"]:
+        span_id = refusal["span_id"]
+        if refusal["ts_ns"] > JS_SAFE_INTEGER:
+            raise ValueError("causal timestamp exceeds exact Chrome JSON range")
+        events.append(
+            {
+                "name": f"owned_renewal_refusal:{refusal['reason']}",
+                "cat": "owned_renewal_refusal",
+                "ph": "i",
+                "s": "t",
+                "pid": process_id,
+                "tid": track_for_span[span_id],
+                "ts": refusal["ts_ns"] / 1000,
+                "args": {
+                    "span_id": str(span_id),
+                    "reason": refusal["reason"],
+                    "now_ms": str(refusal["now_ms"]),
+                    "lease_until_ms": None
+                    if refusal["lease_until_ms"] is None
+                    else str(refusal["lease_until_ms"]),
+                    "deadline_ms": None
+                    if refusal["deadline_ms"] is None
+                    else str(refusal["deadline_ms"]),
                 },
             }
         )
@@ -1763,9 +2217,20 @@ def chrome_export(
         if row["request_identity"] is not None:
             row["request_identity"]["request_id"] = str(row["request_identity"]["request_id"])
             row["request_identity"]["connection_id"] = str(row["request_identity"]["connection_id"])
+        if "object_install" in row:
+            packet = row["object_install"]
+            packet["observed_phases"] = [
+                {key: str(value) if type(value) is int else value for key, value in aggregate.items()}
+                for aggregate in packet["observed_phases"]
+            ]
+            packet["observed_elapsed_sum_ns"] = str(packet["observed_elapsed_sum_ns"])
+            if packet["unattributed_ns"] is not None:
+                packet["unattributed_ns"] = str(packet["unattributed_ns"])
     for link in summary["links"]:
         link["source_span_id"] = str(link["source_span_id"])
         link["target_span_id"] = str(link["target_span_id"])
+    for row in summary["object_install_aggregates"]:
+        row.update({key: str(value) for key, value in row.items() if type(value) is int})
     for row in (
         *summary["sync_aggregates"],
         *summary["object_kind_aggregates"],
@@ -1789,6 +2254,10 @@ def chrome_export(
             row[key] = str(row[key])
     for row in summary["sqlite_sync_observations"]:
         row["span_id"] = str(row["span_id"])
+    for row in summary["owned_renewal_refusals"]:
+        for key in ("span_id", "ts_ns", "now_ms", "lease_until_ms", "deadline_ms"):
+            if row[key] is not None:
+                row[key] = str(row[key])
     for aggregates in (
         summary["bm25_census_aggregates"],
         summary["bm25_boundary_aggregates"],

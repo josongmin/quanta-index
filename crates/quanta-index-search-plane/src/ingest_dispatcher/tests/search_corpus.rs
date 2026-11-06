@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
     BatchIngestMode, GenerationPin, GenerationSnapshot, IngestOperationKindV1, ManifestGeneration,
-    OwnerDocKind, RepoId, RevisionId, SearchCorpusIngestBatch, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneTrackKind, SearchScopeSurface, SemanticCorpusKindV1,
-    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
+    OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneTrackKind,
+    SearchScopeSurface, SemanticCorpusKindV1, SemanticSourceReplaceScopeV1,
+    SemanticSourceScopeKeyV1,
 };
 use quanta_index_core::publication_admission::{
     PublicationAdmissionRequest, PublicationBuildWork, PublicationOutputPermit,
@@ -1096,6 +1097,10 @@ fn search_corpus_receipt_exactly_acknowledges_semantic_replace_and_tombstone_mut
         corpus_kind: SemanticCorpusKindV1::SymbolCard,
         owner_kind: OwnerDocKind::Symbol,
         owner_id: "symbol:receipt-cardinality".to_string(),
+        source_file: quanta_index_contract::SourceFileKey {
+            source_repo_id: RepoId::new("r")?,
+            repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        },
     };
     batch.semantic_replace_scopes = vec![SemanticSourceReplaceScopeV1 {
         scope: semantic_scope.clone(),
@@ -1236,14 +1241,13 @@ fn delta_finalization_inherits_untouched_chunk_authority_and_retries_after_base_
                     tombstone_scopes: vec![quanta_index_contract::StructuralTombstoneScope {
                         scope: quanta_index_contract::SearchScopeKey {
                             doc_surface: SearchScopeSurface::Chunk,
-                            repo_relative_path: delta
+                            source_file: delta
                                 .replace_scopes
                                 .first()
                                 .ok_or("a.rs")?
                                 .coverage
                                 .source
                                 .file
-                                .repo_relative_path
                                 .clone(),
                         },
                     }],
@@ -2345,9 +2349,9 @@ impl SemanticIngestPort for RefusingSemanticPreflight {
             || contract.model_contract.model_id.as_ref() != "counting-embedder"
             || contract.model_contract.model_version.as_deref() != Some("r1")
             || contract.model_contract.policy_digest.as_ref()
-                != "counting-embedder:semantic-source.v1"
-            || contract.model_contract.view_policy_digest.as_deref() != Some("semantic-source.v1")
-            || contract.corpus_policy_digest.as_deref() != Some("semantic-source.v1")
+                != "counting-embedder:semantic-source.v2"
+            || contract.model_contract.view_policy_digest.as_deref() != Some("semantic-source.v2")
+            || contract.corpus_policy_digest.as_deref() != Some("semantic-source.v2")
         {
             return Err(CoreError::InvalidContract(
                 "paired preflight projected the wrong semantic contract".into(),

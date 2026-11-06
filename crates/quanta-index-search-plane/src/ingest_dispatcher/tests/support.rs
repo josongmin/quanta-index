@@ -1762,7 +1762,10 @@ impl quanta_index_core::SearchCorpusBatchBuildPort for FakeSearchCorpusBuilder {
 pub(super) fn fixture_scope() -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
-        repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        source_file: quanta_index_contract::SourceFileKey {
+            source_repo_id: RepoId::new("r").expect("fixture repo"),
+            repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        },
     }
 }
 
@@ -1787,7 +1790,7 @@ pub(super) fn fixture_embedding_record() -> Result<EmbeddingRecord, Box<dyn std:
         corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
         parent_owner_id: None,
         source_doc_id: "chunk-1".to_string().into_boxed_str(),
-        repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        source_file: fixture_scope().source_file,
         language: quanta_index_contract::lex::LanguageCode::new("rust").map_err(str::to_string)?,
         package: None,
         symbol_kind: None,
@@ -1843,11 +1846,16 @@ pub(super) fn fixture_chunk_record() -> Result<ChunkRecord, Box<dyn std::error::
 }
 
 fn typed_symbol_source_scope(id: &str, path: &str, text: &str) -> SemanticSourceReplaceScopeV1 {
+    let source_file = quanta_index_contract::SourceFileKey {
+        source_repo_id: RepoId::new("r").expect("fixture repo"),
+        repo_relative_path: RepoRelativePath::new(path),
+    };
     SemanticSourceReplaceScopeV1 {
         scope: SemanticSourceScopeKeyV1 {
             corpus_kind: SemanticCorpusKindV1::SymbolCard,
             owner_kind: OwnerDocKind::Symbol,
             owner_id: id.to_string(),
+            source_file: source_file.clone(),
         },
         scope_digest: format!("scope:semantic:{id}"),
         sources: vec![SemanticSourceRecordV1 {
@@ -1857,7 +1865,7 @@ fn typed_symbol_source_scope(id: &str, path: &str, text: &str) -> SemanticSource
             owner_id: id.to_string(),
             source_doc_id: format!("doc:{path}"),
             parent_owner_id: None,
-            repo_relative_path: RepoRelativePath::new(path),
+            source_file,
             language: Some("rust".to_string()),
             package: Some("crate".to_string()),
             symbol_kind: Some("function".to_string()),

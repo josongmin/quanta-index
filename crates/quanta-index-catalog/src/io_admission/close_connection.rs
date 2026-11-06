@@ -7,6 +7,7 @@ use rusqlite::{Connection, Error};
 pub(super) fn close_connection_with_scope<E, S>(
     slot: &mut Option<Mutex<Connection>>,
     enter_scope: impl FnOnce() -> S,
+    close: impl FnOnce(Connection) -> Result<(), (Connection, Error)>,
     map_error: impl FnOnce(Error) -> E,
 ) -> Result<(), E> {
     if slot.is_none() {
@@ -22,7 +23,7 @@ pub(super) fn close_connection_with_scope<E, S>(
         Ok(connection) => connection,
         Err(poisoned) => poisoned.into_inner(),
     };
-    match connection.close() {
+    match close(connection) {
         Ok(()) => Ok(()),
         Err((connection, error)) => {
             *slot = Some(Mutex::new(connection));

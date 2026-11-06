@@ -9,17 +9,32 @@
 //! These envelopes are not parent-fsync-only timers or CPU measurements.
 //! Lane21 observes only the parent sync within a successful native-sync settlement.
 //! Lane22 aggregates native `AfterWrite` callbacks across one Record scope.
+//! Scratch starts that envelope at its first attempted write or sync, so a
+//! missing scratch lane22 only means no observed write/sync in that scope;
+//! read-only `SQLite` work can still have occurred. Catalog remains eager.
 //! Its bytes are requested, not successful or device bytes. A preflight
 //! refusal has no `AfterWrite`; an adapter refusal after lower `xWrite` still does.
+//! Lane25 observes only the `CKPT_START` to `CKPT_DONE` backfill window. `SQLite`
+//! emits START after WAL sync and DONE before main-DB sync; its Ok terminal
+//! confirms a marker pair, not checkpoint success. Lane22 is segmented at
+//! both markers so writes within lane25 have that span as their parent.
 
-use std::{cell::RefCell, marker::PhantomData, num::NonZeroU64, rc::Rc};
+use std::{
+    cell::RefCell,
+    marker::PhantomData,
+    num::NonZeroU64,
+    panic::{AssertUnwindSafe, catch_unwind},
+    rc::Rc,
+};
 
 use quanta_index_core::{
     DiagnosticContextV1, DiagnosticCounterV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
-    DiagnosticSpanGuardV1, DiagnosticSqliteSyncObservationV1, DiagnosticStageV1,
-    DiagnosticTerminalV1,
+    DiagnosticSpanGuardV1, DiagnosticSpanIdV1, DiagnosticSqliteSyncObservationV1,
+    DiagnosticStageV1, DiagnosticTerminalV1,
 };
 use rusqlite::ffi::quanta_capacity_vfs::NativeSyncObservation;
+
+pub(super) mod write_timing;
 
 /// Mutation attempts since the last successful capacity settlement. This is
 /// diagnostic DATA, not a durable-name witness or permission to omit a sync.
@@ -75,6 +90,28 @@ struct Active {
     context: DiagnosticContextV1,
     sync: Option<(u64, DiagnosticSpanGuardV1, MutationClass)>,
     writes: Option<WriteAggregate>,
+    write_start: WriteStart,
+    backfill: Option<Backfill>,
+    transition: Option<DiagnosticSpanIdV1>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WriteStart {
+    // Scratch read-only scopes have no lane22 span or diagnostic clock sample.
+    Pending,
+    // Prevent observer reentry from opening a duplicate segment.
+    Starting,
+    Ready,
+    // Reentrant observer I/O invalidates only this diagnostic aggregate.
+    Faulted,
+}
+
+struct Backfill {
+    handle: u64,
+    original_segment: DiagnosticSpanIdV1,
+    child_segment: DiagnosticSpanIdV1,
+    context: DiagnosticContextV1,
+    span: DiagnosticSpanGuardV1,
 }
 
 struct WriteAggregate {
@@ -82,69 +119,355 @@ struct WriteAggregate {
     // calls, requested bytes, failed calls, WAL, main DB, other.
     counts: [u64; 6],
     invalid: bool,
+    timing: write_timing::Totals,
+}
+
+fn new_writes(context: &DiagnosticContextV1) -> Option<WriteAggregate> {
+    crate::runtime_diagnostic_span(
+        context,
+        context.enter(DiagnosticStageV1::SqliteWork, DiagnosticLaneV1(22)),
+    )
+    .map(|span| WriteAggregate {
+        span,
+        counts: [0; 6],
+        invalid: false,
+        timing: write_timing::Totals::default(),
+    })
+}
+
+/// Start a scratch aggregate at its first attempted write or sync.
+///
+/// The state claim and installation touch TLS separately; clock and sink
+/// callbacks run without a `RefCell` borrow and cannot reject physical `SQLite` I/O.
+pub(super) fn ensure_writes(owner: NonZeroU64) {
+    let pending = CURRENT.with(|slot| {
+        let mut current = slot.borrow_mut();
+        let active = current.as_mut().filter(|active| active.owner == owner)?;
+        match active.write_start {
+            WriteStart::Pending => {
+                active.write_start = WriteStart::Starting;
+                Some(Ok(active.current_context().clone()))
+            }
+            WriteStart::Starting => {
+                active.write_start = WriteStart::Faulted;
+                Some(Err(active.current_context().clone()))
+            }
+            WriteStart::Ready | WriteStart::Faulted => None,
+        }
+    });
+    let context = match pending {
+        Some(Ok(context)) => context,
+        Some(Err(context)) => {
+            let _observer = catch_unwind(AssertUnwindSafe(|| {
+                context.health(DiagnosticHealthCodeV1::MissingParentSpan);
+            }));
+            return;
+        }
+        None => return,
+    };
+    let writes = match catch_unwind(AssertUnwindSafe(|| new_writes(&context))) {
+        Ok(writes) => writes,
+        Err(_observer_panic) => {
+            let _observer = catch_unwind(AssertUnwindSafe(|| {
+                context.health(DiagnosticHealthCodeV1::MissingParentSpan);
+            }));
+            None
+        }
+    };
+    let uninstalled = CURRENT.with(|slot| {
+        let mut current = slot.borrow_mut();
+        let Some(active) = current.as_mut().filter(|active| {
+            active.owner == owner
+                && active.context.shares_capture_session(&context)
+                && active.write_start == WriteStart::Starting
+                && active.writes.is_none()
+                && active.transition.is_none()
+        }) else {
+            return writes;
+        };
+        active.write_start = WriteStart::Ready;
+        active.writes = writes;
+        None
+    });
+    if let Some(writes) = uninstalled {
+        let _observer = catch_unwind(AssertUnwindSafe(|| {
+            context.health(DiagnosticHealthCodeV1::ForeignCaptureSpan);
+        }));
+        let _observer = catch_unwind(AssertUnwindSafe(|| drop(writes)));
+    }
+}
+
+fn finish_writes(
+    context: &DiagnosticContextV1,
+    mut writes: WriteAggregate,
+    outcome: DiagnosticTerminalV1,
+) {
+    writes.timing.finish_segment();
+    if let Some(code) = writes.timing.invalid_code() {
+        context.health(code);
+    } else {
+        for (key, count) in [
+            DiagnosticCounterV1::SqliteWriteAdmissionCalls,
+            DiagnosticCounterV1::SqliteWriteAdmissionRefusals,
+            DiagnosticCounterV1::SqliteWriteAdmissionElapsedNs,
+            DiagnosticCounterV1::SqliteWriteLowerEnvelopeElapsedNs,
+            DiagnosticCounterV1::SqliteWritePostCallbackElapsedNs,
+            DiagnosticCounterV1::SqliteWritePostCallbackRefusals,
+        ]
+        .into_iter()
+        .zip(writes.timing.counts())
+        {
+            context.counter(&writes.span, key, count);
+        }
+    }
+    if writes.invalid {
+        context.health(DiagnosticHealthCodeV1::CounterOverflow);
+    } else {
+        for (key, count) in [
+            DiagnosticCounterV1::SqliteWriteCalls,
+            DiagnosticCounterV1::SqliteWriteRequestedBytes,
+            DiagnosticCounterV1::SqliteWriteFailures,
+            DiagnosticCounterV1::SqliteWalWriteCalls,
+            DiagnosticCounterV1::SqliteMainWriteCalls,
+            DiagnosticCounterV1::SqliteOtherWriteCalls,
+        ]
+        .into_iter()
+        .zip(writes.counts)
+        {
+            context.counter(&writes.span, key, count);
+        }
+    }
+    let _finished = writes.span.finish(outcome);
 }
 
 impl Active {
+    fn current_context(&self) -> &DiagnosticContextV1 {
+        self.backfill
+            .as_ref()
+            .map_or(&self.context, |backfill| &backfill.context)
+    }
+
     fn finish(mut self) {
         // A missing AfterSync still drops as Aborted, before this scope's
         // aggregate ends. The TLS owner has already been restored.
         drop(self.sync.take());
         if let Some(writes) = self.writes.take() {
-            if writes.invalid {
-                self.context.health(DiagnosticHealthCodeV1::CounterOverflow);
-            } else {
-                for (key, count) in [
-                    DiagnosticCounterV1::SqliteWriteCalls,
-                    DiagnosticCounterV1::SqliteWriteRequestedBytes,
-                    DiagnosticCounterV1::SqliteWriteFailures,
-                    DiagnosticCounterV1::SqliteWalWriteCalls,
-                    DiagnosticCounterV1::SqliteMainWriteCalls,
-                    DiagnosticCounterV1::SqliteOtherWriteCalls,
-                ]
-                .into_iter()
-                .zip(writes.counts)
-                {
-                    self.context.counter(&writes.span, key, count);
-                }
-            }
             let outcome = if std::thread::panicking() {
                 DiagnosticTerminalV1::Aborted
             } else {
                 DiagnosticTerminalV1::Ok
             };
-            let _finished = writes.span.finish(outcome);
+            let context = self
+                .backfill
+                .as_ref()
+                .map_or(&self.context, |backfill| &backfill.context);
+            finish_writes(context, writes, outcome);
         }
+        // An unpaired START must never look like a completed checkpoint.
+        drop(self.backfill.take());
     }
 }
 
+fn resume_original_writes(
+    owner: NonZeroU64,
+    context: &DiagnosticContextV1,
+    marker: DiagnosticSpanIdV1,
+) {
+    // Clock and sink callbacks may enter nested scopes. Never hold a TLS
+    // RefCell borrow while entering the replacement segment.
+    let writes = new_writes(context);
+    let uninstalled = CURRENT.with(|slot| {
+        let mut current = slot.borrow_mut();
+        let Some(active) = current.as_mut().filter(|active| {
+            active.owner == owner
+                && active.context.shares_capture_session(context)
+                && active.transition == Some(marker)
+                && active.writes.is_none()
+                && active.backfill.is_none()
+        }) else {
+            return writes;
+        };
+        active.transition = None;
+        active.writes = writes;
+        None
+    });
+    if let Some(writes) = uninstalled {
+        context.health(DiagnosticHealthCodeV1::ForeignCaptureSpan);
+        drop(writes);
+    }
+}
+
+/// Observe the bundled `SQLite` `CKPT_START` marker after WAL sync.
+///
+/// This marker precedes main-DB backfill. Its advisory return grants no authority.
+pub(super) fn checkpoint_start(owner: NonZeroU64, handle: u64) {
+    // A sync-only scratch scope can reach a checkpoint without an xWrite.
+    ensure_writes(owner);
+    let pending = CURRENT.with(|slot| {
+        let mut current = slot.borrow_mut();
+        let active = current.as_mut().filter(|active| active.owner == owner)?;
+        if active.backfill.is_some() || active.transition.is_some() {
+            return Some(Err(active.context.clone()));
+        }
+        let writes = active.writes.take()?;
+        let marker = writes.span.span_id();
+        active.transition = Some(marker);
+        Some(Ok((active.context.clone(), marker, writes)))
+    });
+    let Some(pending) = pending else {
+        return;
+    };
+    let (context, marker, writes) = match pending {
+        Ok(pending) => pending,
+        Err(context) => {
+            context.health(DiagnosticHealthCodeV1::MissingParentSpan);
+            return;
+        }
+    };
+    finish_writes(&context, writes, DiagnosticTerminalV1::Ok);
+    let span = crate::runtime_diagnostic_span(
+        &context,
+        context.enter(DiagnosticStageV1::SqliteWork, DiagnosticLaneV1(25)),
+    );
+    let Some(span) = span else {
+        resume_original_writes(owner, &context, marker);
+        return;
+    };
+    let child_context = context.child_context(&span);
+    let child_writes = new_writes(&child_context);
+    let Some(child_writes) = child_writes else {
+        drop(span);
+        resume_original_writes(owner, &context, marker);
+        return;
+    };
+    let child_segment = child_writes.span.span_id();
+    let uninstalled = CURRENT.with(|slot| {
+        let mut current = slot.borrow_mut();
+        let Some(active) = current.as_mut().filter(|active| {
+            active.owner == owner
+                && active.context.shares_capture_session(&context)
+                && active.transition == Some(marker)
+                && active.writes.is_none()
+                && active.backfill.is_none()
+        }) else {
+            return Some((child_writes, span));
+        };
+        active.transition = None;
+        active.writes = Some(child_writes);
+        active.backfill = Some(Backfill {
+            handle,
+            original_segment: marker,
+            child_segment,
+            context: child_context.clone(),
+            span,
+        });
+        None
+    });
+    if let Some((child_writes, span)) = uninstalled {
+        context.health(DiagnosticHealthCodeV1::ForeignCaptureSpan);
+        finish_writes(&child_context, child_writes, DiagnosticTerminalV1::Aborted);
+        drop(span);
+        resume_original_writes(owner, &context, marker);
+    }
+}
+
+/// Observe `CKPT_DONE` after page copy, before main-DB sync and backfill settlement.
+///
+/// A paired Ok confirms marker observation; `SQLite` may still fail the checkpoint.
+pub(super) fn checkpoint_done(owner: NonZeroU64, handle: u64) {
+    let pending = CURRENT.with(|slot| {
+        let mut current = slot.borrow_mut();
+        let active = current.as_mut().filter(|active| active.owner == owner)?;
+        // SQLite emits CKPT_DONE even if the preceding WAL xSync failed,
+        // while CKPT_START is skipped on that supported error path. There is
+        // no backfill window to close and the WAL sync span already owns the
+        // failure. Do not invalidate this capture for a missing START.
+        let backfill = active.backfill.as_ref()?;
+        if backfill.handle != handle
+            || !active.context.shares_capture_session(&backfill.context)
+            || active
+                .writes
+                .as_ref()
+                .is_none_or(|writes| writes.span.span_id() != backfill.child_segment)
+        {
+            return Some(Err((
+                active.context.clone(),
+                DiagnosticHealthCodeV1::ForeignCaptureSpan,
+            )));
+        }
+        let backfill = active.backfill.take()?;
+        let writes = active.writes.take()?;
+        active.transition = Some(backfill.original_segment);
+        Some(Ok((active.context.clone(), backfill, writes)))
+    });
+    let Some(pending) = pending else {
+        return;
+    };
+    let (context, backfill, writes) = match pending {
+        Ok(pending) => pending,
+        Err((context, code)) => {
+            context.health(code);
+            return;
+        }
+    };
+    let marker = backfill.original_segment;
+    finish_writes(&backfill.context, writes, DiagnosticTerminalV1::Ok);
+    let _finished = backfill.span.finish(DiagnosticTerminalV1::Ok);
+    resume_original_writes(owner, &context, marker);
+}
+
+// Keep diagnostic aggregates out of the per-operation guard. An unobserved
+// scope still masks/restores nested contexts without allocating Active state.
 thread_local! {
-    static CURRENT: RefCell<Option<Active>> = const { RefCell::new(None) };
+    static CURRENT: RefCell<Option<Box<Active>>> = const { RefCell::new(None) };
 }
 
 pub(super) struct Scope {
-    previous: Option<Active>,
+    previous: Option<Box<Active>>,
     _not_send: PhantomData<Rc<()>>,
 }
 
 impl Scope {
     pub(super) fn enter(owner: NonZeroU64, context: Option<&DiagnosticContextV1>) -> Self {
+        Self::enter_with_writes(owner, context, true)
+    }
+
+    /// Defer scratch lane22 until an attempted write or sync; keep the same
+    /// nested Off/foreign masking and restoration as eager Catalog scopes.
+    pub(super) fn enter_scratch(owner: NonZeroU64, context: Option<&DiagnosticContextV1>) -> Self {
+        Self::enter_with_writes(owner, context, false)
+    }
+
+    fn enter_with_writes(
+        owner: NonZeroU64,
+        context: Option<&DiagnosticContextV1>,
+        eager: bool,
+    ) -> Self {
+        // A nested diagnostic scope masks the in-flight callback. Neither an
+        // Off nor a foreign capture may complete the outer write envelope.
+        CURRENT.with(|slot| {
+            if let Some(active) = slot.borrow_mut().as_mut()
+                && let Some(writes) = active.writes.as_mut()
+            {
+                writes.timing.mask_for_nested_scope();
+            }
+        });
         let current = context.map(|context| {
             // Span entry may invoke the clock or sink. Do it before touching
             // CURRENT so observer reentry cannot borrow an active RefCell.
-            let span = crate::runtime_diagnostic_span(
-                context,
-                context.enter(DiagnosticStageV1::SqliteWork, DiagnosticLaneV1(22)),
-            );
-            Active {
+            Box::new(Active {
                 owner,
                 context: context.clone(),
                 sync: None,
-                writes: span.map(|span| WriteAggregate {
-                    span,
-                    counts: [0; 6],
-                    invalid: false,
-                }),
-            }
+                writes: eager.then(|| new_writes(context)).flatten(),
+                write_start: if eager {
+                    WriteStart::Ready
+                } else {
+                    WriteStart::Pending
+                },
+                backfill: None,
+                transition: None,
+            })
         });
         Self {
             previous: CURRENT.with(|slot| slot.replace(current)),
@@ -159,7 +482,7 @@ impl Drop for Scope {
         // emitting or dropping an unfinished sync span. Nested Off masks it.
         let completed = CURRENT.with(|slot| slot.replace(self.previous.take()));
         if let Some(active) = completed {
-            active.finish();
+            (*active).finish();
         }
     }
 }
@@ -167,20 +490,22 @@ impl Drop for Scope {
 /// Count only a reached native `xWrite` result. Called from `AfterWrite`, never
 /// from preflight or from a higher-level SQL statement.
 pub(super) fn write(owner: NonZeroU64, open_flags: i32, amount: i64, sqlite_result: i32) {
-    CURRENT.with(|slot| {
+    let missing = CURRENT.with(|slot| {
         let mut current = slot.borrow_mut();
-        let Some(active) = current.as_mut().filter(|active| active.owner == owner) else {
-            return;
-        };
-        let Some(writes) = active.writes.as_mut() else {
-            return;
-        };
+        let active = current.as_mut().filter(|active| active.owner == owner)?;
+        if active.transition.is_some() {
+            // Recursive SQLite I/O from an Admission/diagnostic callback is
+            // unsupported. If it occurs anyway, invalidate the capture
+            // instead of publishing a silently incomplete write total.
+            return Some(active.context.clone());
+        }
+        let writes = active.writes.as_mut()?;
         if writes.invalid {
-            return;
+            return None;
         }
         let Ok(requested) = u64::try_from(amount) else {
             writes.invalid = true;
-            return;
+            return None;
         };
         let class = if open_flags & rusqlite::ffi::SQLITE_OPEN_WAL != 0 {
             3
@@ -199,16 +524,20 @@ pub(super) fn write(owner: NonZeroU64, open_flags: i32, amount: i64, sqlite_resu
         for (index, value) in changes {
             let Some(slot) = next.get_mut(index) else {
                 writes.invalid = true;
-                return;
+                return None;
             };
             let Some(sum) = slot.checked_add(value) else {
                 writes.invalid = true;
-                return;
+                return None;
             };
             *slot = sum;
         }
         writes.counts = next;
+        None
     });
+    if let Some(context) = missing {
+        context.health(DiagnosticHealthCodeV1::MissingParentSpan);
+    }
 }
 
 pub(super) fn before(
@@ -217,6 +546,9 @@ pub(super) fn before(
     open_flags: i32,
     mutation: impl FnOnce() -> MutationClass,
 ) {
+    // BeforeSync may be the first physical I/O in a scratch scope. Preserve
+    // its original lane11/12/13 parent and AfterSync pairing.
+    ensure_writes(owner);
     let pending = CURRENT.with(|slot| {
         let mut current = slot.borrow_mut();
         let active = current.as_mut().filter(|active| active.owner == owner)?;
@@ -224,7 +556,7 @@ pub(super) fn before(
         // A failed initial span has already invalidated the capture and cannot
         // produce valid sync spans.
         let marker = active.writes.as_ref()?.span.span_id();
-        Some((active.context.clone(), marker, active.sync.take()))
+        Some((active.current_context().clone(), marker, active.sync.take()))
     });
     let Some((context, marker, previous)) = pending else {
         return;
@@ -285,7 +617,7 @@ pub(super) fn after(
     let pending = CURRENT.with(|slot| {
         let mut current = slot.borrow_mut();
         let active = current.as_mut().filter(|active| active.owner == owner)?;
-        Some((active.context.clone(), active.sync.take()))
+        Some((active.current_context().clone(), active.sync.take()))
     });
     let Some((context, pending)) = pending else {
         return;
@@ -333,7 +665,7 @@ pub(super) fn settlement(owner: NonZeroU64, open_flags: i32) -> Option<Diagnosti
     let context = CURRENT.with(|slot| {
         let current = slot.borrow();
         let active = current.as_ref().filter(|active| active.owner == owner)?;
-        Some(active.context.clone())
+        Some(active.current_context().clone())
     })?;
     let lane = if open_flags & rusqlite::ffi::SQLITE_OPEN_WAL != 0 {
         15
@@ -354,7 +686,7 @@ pub(super) fn context(owner: NonZeroU64) -> Option<DiagnosticContextV1> {
         slot.borrow()
             .as_ref()
             .filter(|active| active.owner == owner)
-            .map(|active| active.context.clone())
+            .map(|active| active.current_context().clone())
     })
 }
 

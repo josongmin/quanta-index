@@ -13,23 +13,34 @@ use quanta_index_contract::{
     StructuralTreeRecord, SymbolId, TextQuerySyntax,
 };
 
-fn scope_key(path: &str) -> SearchScopeKey {
+fn scope_key(repo_id: quanta_index_contract::RepoId, path: &str) -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
-        repo_relative_path: quanta_index_contract::RepoRelativePath::new(path),
+        source_file: quanta_index_contract::SourceFileKey {
+            source_repo_id: repo_id,
+            repo_relative_path: quanta_index_contract::RepoRelativePath::new(path),
+        },
     }
 }
 
-fn semantic_source_scopes(chunks: &[ChunkRecord]) -> Vec<SemanticSourceReplaceScopeV1> {
+fn semantic_source_scopes(
+    batch_repo_id: &quanta_index_contract::RepoId,
+    chunks: &[ChunkRecord],
+) -> Vec<SemanticSourceReplaceScopeV1> {
     chunks
         .iter()
         .map(|chunk| {
             let owner_id = chunk.chunk_id.as_str().to_string();
+            let source_file = quanta_index_contract::SourceFileKey {
+                source_repo_id: chunk.searchable_repo_id(batch_repo_id).clone(),
+                repo_relative_path: chunk.repo_relative_path.clone(),
+            };
             SemanticSourceReplaceScopeV1 {
                 scope: SemanticSourceScopeKeyV1 {
                     corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
                     owner_kind: OwnerDocKind::Chunk,
                     owner_id: owner_id.clone(),
+                    source_file: source_file.clone(),
                 },
                 scope_digest: format!("structural-hellgate:semantic:{owner_id}"),
                 sources: vec![SemanticSourceRecordV1 {
@@ -39,7 +50,7 @@ fn semantic_source_scopes(chunks: &[ChunkRecord]) -> Vec<SemanticSourceReplaceSc
                     owner_id: owner_id.clone(),
                     source_doc_id: owner_id.clone(),
                     parent_owner_id: Some(owner_id),
-                    repo_relative_path: chunk.repo_relative_path.clone(),
+                    source_file,
                     language: Some(chunk.language.as_str().to_string()),
                     package: None,
                     symbol_kind: None,
@@ -190,7 +201,7 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
     rt.stage_corpus_fixture(
         vec![chunk_a.clone(), chunk_b.clone()],
         vec![symbol],
-        semantic_source_scopes(&[chunk_a.clone(), chunk_b.clone()]),
+        semantic_source_scopes(&rt.repo(), &[chunk_a.clone(), chunk_b.clone()]),
     )?;
     let tree = function_tree(content, "ParityTypeSymbol")?;
     let generation = rt.seal()?;
@@ -203,7 +214,7 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
         batch_digest: "structural-symbol-hellgate-struct-batch".to_string(),
         mode: BatchIngestMode::Delta,
         replace_scopes: vec![StructuralReplaceScope {
-            scope: scope_key(path),
+            scope: scope_key(rt.repo(), path),
             scope_digest: "structural-symbol-hellgate-struct-scope".to_string(),
             trees: vec![
                 StructuralTreeRecord {

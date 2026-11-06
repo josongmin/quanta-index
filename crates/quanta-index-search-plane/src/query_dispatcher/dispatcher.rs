@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use quanta_index_contract::{
     ActiveGenerationResolutionV1, ClusterMembershipBatchReadRequestV1, CurrentGenerationRequest,
-    EarlyStopReason, GenerationPin, HistoryQueryRequest, HybridQueryRequest,
-    HybridSeedQueryRequest, RepoMapQueryRequest, RuntimeMetadataQueryRequest,
+    EarlyStopReason, GenerationPin, GoTestTraceFileQueryRequestV1, HistoryQueryRequest,
+    HybridQueryRequest, HybridSeedQueryRequest, RepoMapQueryRequest, RuntimeMetadataQueryRequest,
     SearchCorpusActiveHeadV1, SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneTrackKind, SemanticQueryRequest,
     SemanticWorkBoundedQueryRequestV1, SemanticWorkBoundedQueryResponseV1, StructuralQueryRequest,
@@ -228,6 +228,9 @@ impl SearchPlaneDispatcher {
                 self.dispatch_semantic_work_bounded_v1(req, budget)
             }
             SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req, budget),
+            SearchPlaneQueryIpcRequest::GoTestTraceFileV1(req) => {
+                self.dispatch_go_test_trace_file(&req, budget)
+            }
             SearchPlaneQueryIpcRequest::HybridSeed(req) => self.dispatch_hybrid_seed(&req, budget),
             SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(&req, budget),
             SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(&req, budget),
@@ -571,6 +574,32 @@ impl SearchPlaneDispatcher {
                 Err(err) => {
                     self.emit_error_metric(requested_pin.as_ref(), &err);
                     SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
+            }
+        })
+    }
+
+    fn dispatch_go_test_trace_file(
+        &self,
+        request: &GoTestTraceFileQueryRequestV1,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
+        let requested_pin = request.query.text_query.generation.as_ref();
+        self.observed_route(QueryRoute::Hybrid, requested_pin, || {
+            match self.go_test_trace_file(request, budget) {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.generation);
+                    self.emit_engine_activity_metrics(
+                        &response.generation,
+                        response.explanation.engines_executed.len(),
+                        response.explanation.engines_touched.len(),
+                    );
+                    self.emit_merge_count_metric(&response.generation, response.results.len());
+                    SearchPlaneQueryIpcResponse::GoTestTraceFileV1(response)
+                }
+                Err(error) => {
+                    self.emit_error_metric(requested_pin, &error);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error))
                 }
             }
         })

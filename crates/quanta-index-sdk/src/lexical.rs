@@ -327,11 +327,12 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
 
 fn semantic_scope_sort_key_v1(
     scope: &SemanticSourceScopeKeyV1,
-) -> (&'static str, &'static str, &str) {
+) -> (&'static str, &'static str, &str, &SourceFileKey) {
     (
         scope.corpus_kind.as_code_str(),
         scope.owner_kind.as_code_str(),
         scope.owner_id.as_str(),
+        &scope.source_file,
     )
 }
 
@@ -1108,6 +1109,7 @@ fn dispatch_text_query_request_inner(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)

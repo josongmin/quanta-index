@@ -14,6 +14,8 @@ pub(crate) struct ClusterMembershipStoredRowV1 {
     pub(crate) authority_digest: String,
     pub(crate) owner_kind: String,
     pub(crate) owner_id: String,
+    pub(crate) source_repo_id: String,
+    pub(crate) repo_relative_path: String,
     pub(crate) member_symbol_id: String,
     pub(crate) ordinal: u32,
     pub(crate) member_count: u32,
@@ -91,6 +93,8 @@ pub(crate) fn cluster_membership_commitment_v1(
                 || row.authority_digest.is_empty()
                 || row.owner_kind.is_empty()
                 || row.owner_id.is_empty()
+                || row.source_repo_id.is_empty()
+                || row.repo_relative_path.is_empty()
                 || row.member_symbol_id.is_empty()
                 || row.membership_digest.is_empty()
             {
@@ -101,6 +105,8 @@ pub(crate) fn cluster_membership_commitment_v1(
             if row.authority_digest != first.authority_digest
                 || row.owner_kind != first.owner_kind
                 || row.owner_id != first.owner_id
+                || row.source_repo_id != first.source_repo_id
+                || row.repo_relative_path != first.repo_relative_path
                 || row.member_count != first.member_count
                 || row.membership_digest != first.membership_digest
             {
@@ -131,6 +137,8 @@ pub(crate) fn cluster_membership_commitment_v1(
         hash_field_v1(&mut root, &first.authority_digest);
         hash_field_v1(&mut root, &first.owner_kind);
         hash_field_v1(&mut root, &first.owner_id);
+        hash_field_v1(&mut root, &first.source_repo_id);
+        hash_field_v1(&mut root, &first.repo_relative_path);
         hash_field_v1(&mut root, &first.member_count.to_string());
         hash_field_v1(&mut root, &first.membership_digest);
         for row in cluster {
@@ -168,6 +176,8 @@ mod tests {
                 authority_digest: "authority:a".to_string(),
                 owner_kind: "Module".to_string(),
                 owner_id: "module:a".to_string(),
+                source_repo_id: "repo-a".to_string(),
+                repo_relative_path: "src/a.rs".to_string(),
                 member_symbol_id: member.as_str().to_string(),
                 ordinal: u32::try_from(ordinal).expect("small fixture ordinal"),
                 member_count: 2,
@@ -211,6 +221,14 @@ mod tests {
         let replacement = cluster_membership_commitment_v1(self_consistent_substitution)
             .expect("self-consistent replacement");
         assert_ne!(replacement.root_digest, expected.root_digest);
+
+        let mut changed_source = rows_v1();
+        for row in &mut changed_source {
+            row.source_repo_id = "repo-foreign".to_string();
+        }
+        let changed = cluster_membership_commitment_v1(changed_source)
+            .expect("self-consistent source change");
+        assert_ne!(changed.root_digest, expected.root_digest);
 
         let mut self_consistent_addition = rows_v1();
         let added_members = vec![

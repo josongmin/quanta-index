@@ -5,7 +5,7 @@ use quanta_index_contract_base::{
     DecodeFieldTokenV1, ParserTextInputErrorV1, SourceIdentityDecodeAdmissionV1,
 };
 use serde::{
-    Deserializer,
+    Deserialize, Deserializer,
     de::{self, DeserializeSeed},
 };
 
@@ -14,14 +14,16 @@ use crate::{RepoId, RevisionId, ipc::ingest::CorpusDecodeLimitsV1};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-// Semantic fixture only: identity and parser ownership remain the production
-// adapter's responsibility. The fixed nested wires contain no repo identity.
+// Test-only identity decode reaches the tree backing refusal. Production
+// identity and parser backing remain the caller's admission responsibility.
 struct TestAdmission {
     attempt: RefCell<DecodeAttemptStateV1>,
     aborted: Cell<bool>,
     text_reservations: Cell<usize>,
     boxed_copies: Cell<usize>,
     sequence_slots: Cell<usize>,
+    repo_id_decodes: Cell<usize>,
+    language_box_attempted: Cell<bool>,
     deny_text: bool,
     deny_box: bool,
 }
@@ -34,6 +36,8 @@ impl TestAdmission {
             text_reservations: Cell::new(0),
             boxed_copies: Cell::new(0),
             sequence_slots: Cell::new(0),
+            repo_id_decodes: Cell::new(0),
+            language_box_attempted: Cell::new(false),
             deny_text,
             deny_box,
         }
@@ -114,6 +118,9 @@ impl DecodeBackingAdmissionV1 for TestAdmission {
     }
 
     fn copy_boxed_text(&self, source: &str) -> Result<Box<str>, DecodeBackingRefusalV1> {
+        if source == "rust" {
+            self.language_box_attempted.set(true);
+        }
         if self.aborted.get() || self.deny_box {
             return Err(DecodeBackingRefusalV1);
         }
@@ -153,13 +160,9 @@ impl DecodeBackingAdmissionV1 for TestAdmission {
 }
 
 impl SourceIdentityDecodeAdmissionV1 for TestAdmission {
-    fn decode_repo_id_v1<'de, D: Deserializer<'de>>(
-        &self,
-        _decoder: D,
-    ) -> Result<RepoId, D::Error> {
-        Err(de::Error::custom(
-            "identity requires production Original owner",
-        ))
+    fn decode_repo_id_v1<'de, D: Deserializer<'de>>(&self, decoder: D) -> Result<RepoId, D::Error> {
+        self.repo_id_decodes.set(self.repo_id_decodes.get() + 1);
+        RepoId::deserialize(decoder)
     }
 
     fn decode_revision_id_v1<'de, D: Deserializer<'de>>(
@@ -187,7 +190,7 @@ const DIRTY_UPSERT: &str = concat!(
 );
 
 const STRUCTURAL_SCOPE: &str = concat!(
-    r#"{"scope":{"doc_surface":"File","repo_relative_path":"src/a.rs"},"scope_digest":"abc","trees":[{"chunk_id":"d1","record":{"wire_version":1,"lang":"rust","root":{"kind":"function_item","byte_start":0,"byte_end":2,"children":[{"kind":"identifier","byte_start":0,"byte_end":1,"children":[]}]},"source_hash":["#,
+    r#"{"scope":{"doc_surface":"File","source_file":{"source_repo_id":"repo","repo_relative_path":"src/a.rs"}},"scope_digest":"abc","trees":[{"chunk_id":"d1","record":{"wire_version":1,"lang":"rust","root":{"kind":"function_item","byte_start":0,"byte_end":2,"children":[{"kind":"identifier","byte_start":0,"byte_end":1,"children":[]}]},"source_hash":["#,
     r#"0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"role_tag_schema_version":1,"role_tags":[{"role":"definition","byte_start":0,"byte_end":2}]}}]}"#,
 );
 
@@ -212,6 +215,7 @@ fn structural_nested_tree_admitted_matches_fixed_ordinary_wire() -> TestResult {
     let admitted = StructuralReplaceScope::deserialize_seed_with_admission_v1(&admission, limits())
         .deserialize(&mut decoder)?;
     if admitted != ordinary
+        || admission.repo_id_decodes.get() != 1
         || admission.boxed_copies.get() < 4
         || admission.sequence_slots.get() < 3
         || admission.aborted.get()
@@ -245,6 +249,8 @@ fn denied_parse_language_box_refuses_before_tree_vector_birth() {
             .is_err()
     );
     assert!(admission.aborted.get());
+    assert_eq!(admission.repo_id_decodes.get(), 1);
+    assert!(admission.language_box_attempted.get());
     assert_eq!(admission.boxed_copies.get(), 0);
     assert_eq!(admission.sequence_slots.get(), 0);
 }
@@ -252,7 +258,7 @@ fn denied_parse_language_box_refuses_before_tree_vector_birth() {
 #[test]
 fn admitted_dirty_and_structural_reject_malformed_fixed_wires() {
     const DIRTY_DUPLICATE: &str = r#"{"Upsert":{"wire_version":1,"wire_version":2,"doc_id":"d1","applied_at_ms":7,"payload_hash":[0]}}"#;
-    const STRUCTURAL_UNKNOWN: &str = r#"{"scope":{"doc_surface":"File","repo_relative_path":"a.rs"},"scope_digest":"abc","trees":[],"alien":1}"#;
+    const STRUCTURAL_UNKNOWN: &str = r#"{"scope":{"doc_surface":"File","source_file":{"source_repo_id":"repo","repo_relative_path":"a.rs"}},"scope_digest":"abc","trees":[],"alien":1}"#;
     const STRUCTURAL_NULL: &str = r#"{"scope":null,"scope_digest":"abc","trees":[]}"#;
 
     let dirty = TestAdmission::new(false, false);
@@ -268,12 +274,16 @@ fn admitted_dirty_and_structural_reject_malformed_fixed_wires() {
     for wire in [STRUCTURAL_UNKNOWN, STRUCTURAL_NULL] {
         let owner = TestAdmission::new(false, false);
         let mut decoder = serde_json::Deserializer::from_str(wire);
-        assert!(serde_json::from_str::<StructuralReplaceScope>(wire).is_err());
-        assert!(
-            StructuralReplaceScope::deserialize_seed_with_admission_v1(&owner, limits())
-                .deserialize(&mut decoder)
-                .is_err()
-        );
+        let ordinary = serde_json::from_str::<StructuralReplaceScope>(wire)
+            .expect_err("malformed structural wire must fail ordinary decode");
+        let admitted = StructuralReplaceScope::deserialize_seed_with_admission_v1(&owner, limits())
+            .deserialize(&mut decoder)
+            .expect_err("malformed structural wire must fail admitted decode");
+        if wire == STRUCTURAL_UNKNOWN {
+            assert!(ordinary.to_string().contains("unknown field `alien`"));
+            assert!(admitted.to_string().contains("unknown field `alien`"));
+            assert_eq!(owner.repo_id_decodes.get(), 1);
+        }
         assert!(owner.aborted.get());
     }
 }

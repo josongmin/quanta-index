@@ -8,7 +8,8 @@ acceptance. Historical tests, counts and status do not qualify current source.
 
 | Question | Owner |
 | --- | --- |
-| Remaining code, owners and execution order | [Oct-22 SSOT](plans/oct-22-finalizing/README.md) |
+| Remaining code, owners and execution order | [Oct-22 epics](plans/oct-22-finalizing/README.md) |
+| Native indexing performance RCA and new code packets | [Nov-5 bugbash SSOT](plans/nov-5-indexing-bugbash/README.md) |
 | Shared files and handoff | [Single-writer rules](plans/oct-22-finalizing/OWNERSHIP.md) |
 | Original full-product DoD | [R01-R40 and final exit conditions](plans/oct-22-finalizing/DOD.md) |
 | Executed results | [VALIDATION](plans/oct-22-finalizing/VALIDATION.md) |
@@ -17,7 +18,8 @@ acceptance. Historical tests, counts and status do not qualify current source.
 | Historical RFC/tickets and accepted contracts | [Recovery index](ARCHIVE-INDEX.md#historical-record-recovery) and [ADRs](adr/README.md) |
 | Test/CI/platform, semantic, installed/pair/actions | [Current acceptance work](plans/oct-22-finalizing/E08-integration-release.md); prior [test/platform](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#affected-checks), [semantic](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#semantic-compatibility), [release/proof](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#release-and-consumer) results |
 
-One Oct-22 epic index owns remaining work. Epic documents hold fixed contracts;
+The Oct-22 epic index owns full-product scope. Its Native indexing performance RCA
+and new code packets are delegated to the Nov-5 bugbash SSOT. Epic documents hold fixed contracts;
 VALIDATION keeps source-scoped results. Historical plans and handoff summaries
 do not create another live queue. The Oct-10/13/17 forwarding pages are retired;
 current links go directly to the relevant epic or contract, and historical links

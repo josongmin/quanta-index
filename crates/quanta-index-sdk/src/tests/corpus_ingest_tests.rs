@@ -197,6 +197,32 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
 }
 
 #[test]
+fn semantic_builder_orders_same_path_scopes_by_source_owner() {
+    let first = sample_semantic_scope("shared");
+    let mut second = first.clone();
+    second.source_file.source_repo_id = ok_or_fail!(RepoId::new("repo-2"));
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(1),
+        "manifest:owners",
+    )
+    .replace_semantic_scope(second.clone(), "scope:second", Vec::new(), Vec::new())
+    .replace_semantic_scope(first.clone(), "scope:first", Vec::new(), Vec::new())
+    .tombstone_semantic_scope(second.clone())
+    .tombstone_semantic_scope(first.clone());
+    assert_eq!(
+        batch
+            .semantic_replace_scopes()
+            .iter()
+            .map(|entry| entry.scope.clone())
+            .collect::<Vec<_>>(),
+        vec![first.clone(), second.clone()]
+    );
+    assert_eq!(batch.semantic_tombstone_scopes(), &[first, second]);
+}
+
+#[test]
 fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inference_v1() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),

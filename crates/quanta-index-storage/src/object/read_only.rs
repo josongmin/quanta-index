@@ -11,7 +11,7 @@ use quanta_index_core::index::{
     ObjectReadIoPort, ObjectRef, StoredObject, WorkBudget, WorkUsage,
 };
 
-use super::{decode_stored_wire, namespace::NamespaceLease, read_io};
+use super::{namespace::NamespaceLease, read_io};
 
 pub struct FileObjectReader {
     objects: PathBuf,
@@ -71,7 +71,7 @@ impl FileObjectReader {
             reference,
             budget,
         )?;
-        let stored = decode_stored_wire(reference, &wire.bytes, budget)?;
+        let stored = wire.decode(budget)?;
         let _binding = self.namespace_binding()?;
         budget.checkpoint()?;
         Ok(stored)

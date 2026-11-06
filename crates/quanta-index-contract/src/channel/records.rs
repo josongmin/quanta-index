@@ -12,7 +12,7 @@ use crate::lex::{LanguageCode, SymbolKindCode};
 use crate::semantic_kinds::OwnerDocKind;
 use crate::{
     CapabilityStatusV1, ChunkId, EmbeddingId, RepoId, RepoRelativePath, SemanticCorpusKindV1,
-    SourceRoleV1,
+    SourceFileKey, SourceRoleV1,
 };
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -744,7 +744,7 @@ pub struct EmbeddingRecord {
     pub corpus_kind: SemanticCorpusKindV1,
     pub parent_owner_id: Option<Box<str>>,
     pub source_doc_id: Box<str>,
-    pub repo_relative_path: RepoRelativePath,
+    pub source_file: SourceFileKey,
     pub language: LanguageCode,
     pub package: Option<Box<str>>,
     pub symbol_kind: Option<SymbolKindCode>,
@@ -774,7 +774,7 @@ const EMBEDDING_RECORD_FIELDS: &[&str] = &[
     "corpus_kind",
     "parent_owner_id",
     "source_doc_id",
-    "repo_relative_path",
+    "source_file",
     "language",
     "package",
     "symbol_kind",
@@ -809,7 +809,7 @@ impl Serialize for EmbeddingRecord {
         state.serialize_field("corpus_kind", &self.corpus_kind)?;
         state.serialize_field("parent_owner_id", &self.parent_owner_id)?;
         state.serialize_field("source_doc_id", self.source_doc_id.as_ref())?;
-        state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
+        state.serialize_field("source_file", &self.source_file)?;
         state.serialize_field("language", &self.language)?;
         state.serialize_field("package", &self.package)?;
         state.serialize_field("symbol_kind", &self.symbol_kind)?;
@@ -856,7 +856,7 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
         let mut corpus_kind: Option<SemanticCorpusKindV1> = None;
         let mut parent_owner_id: Option<Option<String>> = None;
         let mut source_doc_id: Option<String> = None;
-        let mut repo_relative_path: Option<RepoRelativePath> = None;
+        let mut source_file: Option<SourceFileKey> = None;
         let mut language: Option<LanguageCode> = None;
         let mut package: Option<Option<String>> = None;
         let mut symbol_kind: Option<Option<SymbolKindCode>> = None;
@@ -920,11 +920,11 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
                     }
                     source_doc_id = Some(map.next_value()?);
                 }
-                "repo_relative_path" => {
-                    if repo_relative_path.is_some() {
-                        return Err(de::Error::duplicate_field("repo_relative_path"));
+                "source_file" => {
+                    if source_file.is_some() {
+                        return Err(de::Error::duplicate_field("source_file"));
                     }
-                    repo_relative_path = Some(map.next_value()?);
+                    source_file = Some(map.next_value()?);
                 }
                 "language" => {
                     if language.is_some() {
@@ -1066,8 +1066,7 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
             source_doc_id: source_doc_id
                 .ok_or_else(|| de::Error::missing_field("source_doc_id"))?
                 .into_boxed_str(),
-            repo_relative_path: repo_relative_path
-                .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
+            source_file: source_file.ok_or_else(|| de::Error::missing_field("source_file"))?,
             language: language.ok_or_else(|| de::Error::missing_field("language"))?,
             package: package
                 .ok_or_else(|| de::Error::missing_field("package"))?
@@ -1131,8 +1130,8 @@ mod tests {
     use crate::lex::LanguageCode;
     use crate::semantic_kinds::OwnerDocKind;
     use crate::{
-        CapabilityStatusV1, ChunkId, EmbeddingId, RepoRelativePath, SemanticCorpusKindV1,
-        SourceRoleV1,
+        CapabilityStatusV1, ChunkId, EmbeddingId, RepoId, RepoRelativePath, SemanticCorpusKindV1,
+        SourceFileKey, SourceRoleV1,
     };
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -1292,7 +1291,10 @@ mod tests {
             corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
             parent_owner_id: Some("parent-1".into()),
             source_doc_id: "doc-1".into(),
-            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            source_file: SourceFileKey {
+                source_repo_id: RepoId::new("repo").expect("fixture repo"),
+                repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            },
             language: rust_language()?,
             package: Some("crate".into()),
             symbol_kind: None,

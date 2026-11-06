@@ -4,21 +4,22 @@
 //! **both** the file's chunk records and its source-bound symbol records in
 //! a single combined replacement (RBR-04: no second replacement for the
 //! same path). Semantic routes also publish one `RawCodeFallback` scope per
-//! chunk; lexical-only routes leave the paired semantic generation empty. The
+//! embeddable chunk; lexical-only routes leave the paired semantic generation empty. The
 //! shared coverage commits the source bytes, symbol payload and producer
 //! policy. Empty files are admitted with explicit zero-unit coverage.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use quanta_index_contract::lex::LanguageCode;
+use quanta_index_contract::lex::{LanguageCode, LexicalErrorCode};
 use quanta_index_contract::{
     CapabilityStatusV1, ChunkId, ChunkRecord, ManifestGeneration, OwnerDocKind,
-    RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId,
+    RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2,
     SearchPlaneSearchCorpusActivationCasAck, SemanticCorpusKindV1, SemanticSourceRecordV1,
     SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceFileKey, SourceFileRevision,
     SourcePublicationEvent, SourceRoleV1,
 };
 use quanta_index_sdk::{BatchReceipt, SearchCorpusBatch};
+use quanta_index_search_plane::{SemanticAdmissionEngine, SemanticInputClass};
 
 use crate::chunking::Chunk;
 use crate::corpus::SourceFile;
@@ -104,10 +105,18 @@ fn chunk_record(chunk: &Chunk, source_repo: &RepoId) -> BenchResult<ChunkRecord>
     })
 }
 
-fn semantic_scope(chunk: &Chunk) -> BenchResult<SemanticSourceReplaceScopeV1> {
+fn semantic_scope(
+    chunk: &Chunk,
+    source_repo: &RepoId,
+) -> BenchResult<SemanticSourceReplaceScopeV1> {
     let language = language_for(&chunk.path)?;
+    let source_file = SourceFileKey {
+        source_repo_id: source_repo.clone(),
+        repo_relative_path: RepoRelativePath::new(chunk.path.clone()),
+    };
     Ok(SemanticSourceReplaceScopeV1 {
         scope: SemanticSourceScopeKeyV1 {
+            source_file: source_file.clone(),
             corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
             owner_kind: OwnerDocKind::Chunk,
             owner_id: chunk.chunk_id.clone(),
@@ -120,7 +129,7 @@ fn semantic_scope(chunk: &Chunk) -> BenchResult<SemanticSourceReplaceScopeV1> {
             owner_id: chunk.chunk_id.clone(),
             source_doc_id: chunk.chunk_id.clone(),
             parent_owner_id: Some(chunk.path.clone()),
-            repo_relative_path: RepoRelativePath::new(chunk.path.clone()),
+            source_file,
             language: Some(language.as_str().to_string()),
             package: None,
             symbol_kind: None,
@@ -228,7 +237,21 @@ pub fn assemble_batch(
         }
         if include_semantic_sources {
             for chunk in file_chunks {
-                let scope = semantic_scope(chunk)?;
+                if let Err(refusal) = SemanticAdmissionEngine::admit_input_text(
+                    SemanticInputClass::SourceContent,
+                    &chunk.text,
+                ) {
+                    let (code, message) = refusal.into_search_plane_wire();
+                    if code != SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::EmptyQuery) {
+                        return Err(BenchError::Protocol(format!(
+                            "semantic source admission refused chunk {} ({code}): {message}",
+                            chunk.chunk_id
+                        )));
+                    }
+                    report.semantic_tokenless_chunks += 1;
+                    continue;
+                }
+                let scope = semantic_scope(chunk, &identity.repo_id)?;
                 batch = batch.replace_semantic_scope(
                     scope.scope,
                     scope.scope_digest,
@@ -251,6 +274,7 @@ pub struct BatchAssemblyReport {
     pub chunks: usize,
     pub symbols: usize,
     pub semantic_scopes: usize,
+    pub semantic_tokenless_chunks: usize,
     pub empty_scopes: Vec<String>,
     pub symbol_only_scopes: Vec<String>,
 }
@@ -430,6 +454,33 @@ mod tests {
                 Some("text")
             );
         }
+    }
+
+    #[test]
+    fn paired_batch_keeps_tokenless_chunks_in_lexical_source_coverage() {
+        let source = files(&[("code.go", "package demo\n"), ("punctuation.txt", "[]{}\n")]);
+        let chunks = source
+            .iter()
+            .map(|(path, file)| (path.clone(), vec![chunk(path, &file.text)]))
+            .collect();
+        let policy = SymbolCoveragePolicy::AllowIncomplete;
+        let (lexical, _) =
+            build_with_semantic_sources(&source, &chunks, policy, false).expect("lexical batch");
+        let (paired, report) = build(&source, &chunks, policy).expect("paired batch");
+
+        assert_eq!(lexical.replace_scopes(), paired.replace_scopes());
+        assert_eq!((report.scopes, report.chunks), (2, 2));
+        assert_eq!(
+            (report.semantic_scopes, report.semantic_tokenless_chunks),
+            (1, 1)
+        );
+        let [scope] = paired.semantic_replace_scopes() else {
+            panic!("expected one embeddable scope");
+        };
+        assert_eq!(
+            scope.sources[0].source_file.repo_relative_path.as_str(),
+            "code.go"
+        );
     }
 
     #[test]

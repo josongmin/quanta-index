@@ -1857,6 +1857,28 @@ fn one_active_binder_per_root_rejects_independent_ledger() -> TestResult {
 }
 
 #[test]
+fn combined_native_reserve_refusal_does_not_start_or_change_charge() -> TestResult {
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let mut safe = common.begin_create(&root.join("safe-writer"))?;
+    require!(matches!(
+        safe.reserve_end_and_start(1),
+        Err(CoreError::InvalidContract(_))
+    ))?;
+    require!(!safe.is_started())?;
+    drop(safe);
+    let path = root.join("over-budget-native");
+    let mut ticket = common.begin_native_create(&path)?;
+    let charged = authority.snapshot()?;
+    require!(ticket.reserve_end_and_start(2048).is_err())?;
+    require!(!ticket.is_started())?;
+    require_eq!(authority.snapshot()?, charged)?;
+    require!(!path.exists())?;
+    drop(ticket);
+    require!(common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
 fn empty_native_sidecar_disposal_requires_original_zero_byte_birth() -> TestResult {
     for (body, replace, resize) in [
         (b"".as_slice(), false, false),
@@ -1878,8 +1900,12 @@ fn empty_native_sidecar_disposal_requires_original_zero_byte_birth() -> TestResu
         } else {
             common.begin_native_create(&path)?
         };
-        ticket.reserve_end(u64::try_from(body.len())?.max(1))?;
-        ticket.start()?;
+        let bound = u64::try_from(body.len())?.max(1);
+        ticket.reserve_end_and_start(bound)?;
+        require!(ticket.is_started())?;
+        // Repeated native callbacks still authenticate the live authority,
+        // without attempting a second phase transition.
+        ticket.reserve_end_and_start(bound)?;
         let mut writer = OpenOptions::new()
             .read(true)
             .write(true)
@@ -2156,6 +2182,122 @@ mod real_kernel_faults {
 }
 
 #[test]
+fn pinned_only_tombstone_skips_unrelated_read_scans_then_last_pin_refunds() -> TestResult {
+    use crate::native_object_read_io::NativeObjectReadIo;
+    use quanta_index_core::index::{ObjectReadIoPort as _, WorkBudget, WorkLimits};
+    use std::time::{Duration, Instant};
+
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let retired_path = root.join("pinned-retired");
+    let linked_path = root.join("other-linked");
+    publish_file(&common, &retired_path, b"four")?;
+    publish_file(&common, &linked_path, b"other")?;
+    let io = NativeObjectReadIo::new(Arc::clone(&common));
+    let mut budget = WorkBudget::new(
+        WorkLimits {
+            reads: 64,
+            writes: 64,
+            bytes: 4096,
+            mutations: 64,
+        },
+        Instant::now()
+            .checked_add(Duration::from_secs(60))
+            .ok_or_else(|| std::io::Error::other("deadline overflow"))?,
+    );
+    let first = io.open(&retired_path, &mut budget)?;
+    let last = io.open(&retired_path, &mut budget)?;
+    let unrelated_live = io.open(&linked_path, &mut budget)?;
+    let unrelated_probe = io.open(&linked_path, &mut budget)?;
+    let writer_path = root.join("original-live-writer");
+    let mut writer_ticket = common.begin_create(&writer_path)?;
+    let staging = writer_ticket.allocate_private_temp_path()?;
+    writer_ticket.reserve_end(4)?;
+    writer_ticket.creation_started()?;
+    let mut writer_fd = OpenOptions::new()
+        .write(true)
+        .read(true)
+        .create_new(true)
+        .open(&staging)?;
+    writer_ticket.created(&writer_fd, &staging)?;
+    writer_fd.write_all(b"keep")?;
+    let charged = authority.snapshot()?;
+    common.begin_delete(&retired_path)?.perform_and_sync()?;
+    let scans_after_delete = {
+        let state = lock(&common.shared.state)?;
+        require!(!state.retirement_scan_needed)?;
+        state.sweep_scan_count
+    };
+    require_eq!(authority.snapshot()?, charged)?;
+
+    drop(first);
+    drop(unrelated_probe);
+    let scans_while_pinned = lock(&common.shared.state)?.sweep_scan_count;
+    require_eq!(scans_while_pinned, scans_after_delete)?;
+    require_eq!(authority.snapshot()?, charged)?;
+
+    drop(last);
+    require!(lock(&common.shared.state)?.sweep_scan_count > scans_while_pinned)?;
+    let after_last_pin = authority.snapshot()?;
+    require_eq!(
+        after_last_pin.used_bytes.checked_add(4),
+        Some(charged.used_bytes)
+    )?;
+    require_eq!(
+        after_last_pin.used_files.checked_add(1),
+        Some(charged.used_files)
+    )?;
+    require_eq!(unrelated_live.file()?.metadata()?.len(), 5)?;
+    require_eq!(writer_fd.metadata()?.len(), 4)?;
+    common.sweep_retired()?;
+    require_eq!(authority.snapshot()?, after_last_pin)?;
+
+    drop(unrelated_live);
+    writer_ticket.before_replace(&writer_path)?;
+    fs::rename(&staging, &writer_path)?;
+    let _retained = writer_ticket.replaced_and_synced(&writer_fd, &writer_path)?;
+    writer_ticket.confirmed_safe_writer_fd_retired(writer_fd)?;
+    let writer_lease = writer_ticket.take_owned_lease()?;
+    drop(writer_ticket);
+    writer_lease.retire()?;
+    require!(common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
+fn safe_reader_last_pin_rearms_hint_and_new_marker_is_not_hidden() -> TestResult {
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let pinned = root.join("safe-pinned");
+    let newly_marked = root.join("new-marker");
+    publish_file(&common, &pinned, b"four")?;
+    publish_file(&common, &newly_marked, b"other")?;
+    let charged = authority.snapshot()?;
+    let reader = common
+        .begin_reader_open(&pinned)?
+        .opened_owned(File::open(&pinned)?)?;
+    common.begin_delete(&pinned)?.perform_and_sync()?;
+    require!(!lock(&common.shared.state)?.retirement_scan_needed)?;
+    let scans_while_pinned = lock(&common.shared.state)?.sweep_scan_count;
+
+    // A new zero-link marker must re-arm the false hint independently of pins.
+    common.begin_delete(&newly_marked)?.perform_and_sync()?;
+    require_eq!(
+        authority.snapshot()?.used_bytes.checked_add(5),
+        Some(charged.used_bytes)
+    )?;
+    require!(lock(&common.shared.state)?.sweep_scan_count > scans_while_pinned)?;
+    require!(!lock(&common.shared.state)?.retirement_scan_needed)?;
+
+    reader.retire()?;
+    let settled = authority.snapshot()?;
+    require_eq!(settled.used_bytes.checked_add(9), Some(charged.used_bytes))?;
+    require_eq!(settled.used_files.checked_add(2), Some(charged.used_files))?;
+    common.sweep_retired()?;
+    require_eq!(authority.snapshot()?, settled)?;
+    require!(common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
 fn empty_retirement_hint_never_hides_an_unwitnessed_close() -> TestResult {
     let (_dir, _root, _lease, _authority, common) = fixture()?;
     common.sweep_retired()?;
@@ -2194,7 +2336,7 @@ fn sweep_keeps_releasing_tombstone_for_its_finisher() -> TestResult {
         require!(!entry.tombstone_synced && !entry.releasing)?;
         entry.tombstone_synced = true;
         entry.releasing = true;
-        state.may_have_tombstones = true;
+        state.retirement_scan_needed = true;
         drop(state);
     }
     common.sweep_retired()?;

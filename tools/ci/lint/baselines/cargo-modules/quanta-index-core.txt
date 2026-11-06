@@ -17,8 +17,11 @@ crate quanta_index_core
 │   ├── enum DiagnosticHealthCodeV1: pub
 │   ├── struct DiagnosticInodeCensusV1: pub(crate)
 │   ├── struct DiagnosticLaneV1: pub
+│   ├── enum DiagnosticObjectInstallPhaseV1: pub
 │   ├── enum DiagnosticObjectKindV1: pub
 │   ├── enum DiagnosticOccupancyBucketV1: pub
+│   ├── enum DiagnosticOwnedRenewalRefusalReasonV1: pub
+│   ├── struct DiagnosticOwnedRenewalRefusalV1: pub
 │   ├── enum DiagnosticPhaseV1: pub
 │   ├── enum DiagnosticPlaneV1: pub
 │   ├── enum DiagnosticRootKindV1: pub
@@ -81,13 +84,20 @@ crate quanta_index_core
 │   │   ├── mod inbound: pub(self)
 │   │   │   ├── trait ExplainQueryPort: pub
 │   │   │   └── trait HybridQueryPort: pub
-│   │   └── mod service: pub(self)
-│   │       ├── struct FusedKeyV1: pub
-│   │       ├── struct FusedLaneRankV1: pub
-│   │       ├── enum HybridFetchFloorPolicy: pub
-│   │       ├── struct HybridOrchestratorPolicy: pub
-│   │       ├── struct KeyFuseAccumulator: pub(self)
-│   │       └── struct LaneRows: pub(self)
+│   │   ├── mod service: pub(self)
+│   │   │   ├── struct FusedKeyV1: pub
+│   │   │   ├── struct FusedLaneRankV1: pub
+│   │   │   ├── enum HybridFetchFloorPolicy: pub
+│   │   │   ├── struct HybridOrchestratorPolicy: pub
+│   │   │   ├── struct KeyFuseAccumulator: pub(self)
+│   │   │   └── struct LaneRows: pub(self)
+│   │   └── mod trace_file_rank: pub(self)
+│   │       ├── struct TraceFileEvidenceV1: pub
+│   │       ├── struct TraceFileHitV1: pub
+│   │       ├── struct TraceFileKeyV1: pub
+│   │       ├── struct TraceFileLaneWitnessV1: pub
+│   │       ├── struct TraceFileRankPolicyV1: pub
+│   │       └── enum TraceSourceFrameClassV1: pub
 │   ├── mod idempotency: pub
 │   │   ├── enum ClaimOutcomeV1: pub
 │   │   ├── trait IdempotencyCatalogPort: pub

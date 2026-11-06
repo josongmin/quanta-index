@@ -39,8 +39,8 @@ use quanta_index_core::{
 };
 use sha2::{Digest, Sha256};
 
-const SEMANTIC_SOURCE_POLICY_DIGEST: &str = "semantic-source.v1";
-const SEMANTIC_SOURCE_VIEW_POLICY_DIGEST: &str = "semantic-source.v1";
+const SEMANTIC_SOURCE_POLICY_DIGEST: &str = "semantic-source.v2";
+const SEMANTIC_SOURCE_VIEW_POLICY_DIGEST: &str = "semantic-source.v2";
 
 struct ValidatedSemanticSourceScope<'a> {
     scope: SearchScopeKey,
@@ -410,7 +410,7 @@ pub(crate) fn derive_semantic_stream_from_semantic_sources_v1<'a>(
     let required_corpora = required_corpora_for_semantic_sources_v1(&validated_scopes);
     let header = semantic_header_v1(
         batch,
-        format!("{}:semantic-derive:semantic-source-v1", batch.batch_digest),
+        format!("{}:semantic-derive:semantic-source-v2", batch.batch_digest),
         model_contract,
         required_corpora,
         Some(SEMANTIC_SOURCE_POLICY_DIGEST.to_string()),
@@ -460,7 +460,7 @@ fn embedding_record_for_semantic_source(
         corpus_kind: record.corpus_kind,
         parent_owner_id: record.parent_owner_id.clone().map(String::into_boxed_str),
         source_doc_id: record.source_doc_id.clone().into_boxed_str(),
-        repo_relative_path: record.repo_relative_path.clone(),
+        source_file: record.source_file.clone(),
         language,
         package: record.package.clone().map(String::into_boxed_str),
         symbol_kind,
@@ -557,9 +557,15 @@ fn validated_semantic_source_scopes_v1(
                 scope.scope.owner_kind,
                 scope.scope.corpus_kind,
             );
+            if scope.scope.source_file != first_record.source_file {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic derivation: scope {:?} source file differs from first source",
+                    scope.scope.owner_id
+                )));
+            }
             let scope_key = SearchScopeKey {
                 doc_surface: scope_surface,
-                repo_relative_path: first_record.repo_relative_path.clone(),
+                source_file: first_record.source_file.clone(),
             };
             let mut records = scope.sources.iter().collect::<Vec<_>>();
             records.sort_by(|left, right| left.record_id.cmp(&right.record_id));
@@ -594,9 +600,9 @@ fn validated_semantic_source_scopes_v1(
                         scope.scope.owner_id
                     )));
                 }
-                if record.repo_relative_path != scope_key.repo_relative_path {
+                if record.source_file != scope_key.source_file {
                     return Err(CoreError::InvalidContract(format!(
-                        "semantic derivation: semantic source scope {:?} spans multiple repo_relative_path values",
+                        "semantic derivation: semantic source scope {:?} spans multiple source files",
                         scope.scope.owner_id
                     )));
                 }
@@ -677,17 +683,31 @@ fn validated_semantic_source_scopes_v1(
 
 fn semantic_scope_sort_key_v1(
     scope: &SemanticSourceScopeKeyV1,
-) -> (&'static str, &'static str, &str) {
+) -> (
+    &'static str,
+    &'static str,
+    &str,
+    &quanta_index_contract::SourceFileKey,
+) {
     (
         scope.corpus_kind.as_code_str(),
         scope.owner_kind.as_code_str(),
         scope.owner_id.as_str(),
+        &scope.source_file,
     )
 }
 
 fn validated_semantic_tombstone_scope_keys_v1(
     batch: &SearchCorpusIngestBatch,
-) -> Result<BTreeSet<(&'static str, &'static str, &str)>, CoreError> {
+) -> Result<
+    BTreeSet<(
+        &'static str,
+        &'static str,
+        &str,
+        &quanta_index_contract::SourceFileKey,
+    )>,
+    CoreError,
+> {
     let mut keys = BTreeSet::new();
     for scope in &batch.semantic_tombstone_scopes {
         if scope.owner_id.is_empty() {
@@ -773,6 +793,18 @@ fn semantic_source_embedding_input_digest(
     record: &SemanticSourceRecordV1,
 ) -> String {
     let card_schema_version = record.card_schema_version.to_le_bytes();
+    let source_repo = record.source_file.source_repo_id.as_str().as_bytes();
+    let source_path = record.source_file.repo_relative_path.as_str().as_bytes();
+    // SourceFileKey is bounded at ingress, and this target never has a wider
+    // usize than u64. Fixed-width framing makes concatenation unambiguous.
+    const _: () = assert!(usize::BITS <= u64::BITS);
+    let length = |bytes: &[u8]| {
+        let mut framed = [0_u8; 8];
+        for (slot, byte) in framed.iter_mut().zip(bytes.len().to_le_bytes()) {
+            *slot = byte;
+        }
+        framed
+    };
     let digest = sha256_hex(&[
         model_contract.model_id.as_bytes(),
         model_contract
@@ -782,6 +814,10 @@ fn semantic_source_embedding_input_digest(
             .as_bytes(),
         &model_contract.dimension.to_le_bytes(),
         view_kind.as_bytes(),
+        &length(source_repo),
+        source_repo,
+        &length(source_path),
+        source_path,
         record.authority_digest.as_bytes(),
         record.render_policy_digest.as_bytes(),
         &card_schema_version,
@@ -934,7 +970,10 @@ mod tests {
             owner_id: "symbol-1".to_string(),
             source_doc_id: "doc-1".to_string(),
             parent_owner_id: None,
-            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            source_file: quanta_index_contract::SourceFileKey {
+                source_repo_id: RepoId::new("repo-1").expect("fixture repo"),
+                repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            },
             language: Some("rust".to_string()),
             package: Some("crate".to_string()),
             symbol_kind: Some("function".to_string()),
@@ -999,6 +1038,7 @@ mod tests {
                     corpus_kind: SemanticCorpusKindV1::SymbolCard,
                     owner_kind: OwnerDocKind::Symbol,
                     owner_id: "symbol-1".to_string(),
+                    source_file: fixture_semantic_source().source_file,
                 },
                 scope_digest: "scope:semantic".to_string(),
                 sources: vec![fixture_semantic_source()],
@@ -1040,7 +1080,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_source_input_digest_binds_text_and_authority() -> TestRes {
+    fn typed_source_input_digest_binds_text_authority_and_source_file() -> TestRes {
         let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
         let batch = fixture_search_batch()?;
         let model = derive_semantic_stream_from_semantic_sources_v1(
@@ -1058,13 +1098,19 @@ mod tests {
         let original = semantic_source_embedding_input_digest(&model, &view, &source);
         let mut changed_text = source.clone();
         changed_text.text.push_str(" changed");
+        let mut changed_owner = source.clone();
+        changed_owner.source_file.source_repo_id = RepoId::new("foreign-repo")?;
+        let mut changed_path = source.clone();
+        changed_path.source_file.repo_relative_path = RepoRelativePath::new("src/foreign.rs");
         let mut changed_authority = source;
         changed_authority.authority_digest.push_str(":changed");
         if original == semantic_source_embedding_input_digest(&model, &view, &changed_text)
             || original == semantic_source_embedding_input_digest(&model, &view, &changed_authority)
+            || original == semantic_source_embedding_input_digest(&model, &view, &changed_owner)
+            || original == semantic_source_embedding_input_digest(&model, &view, &changed_path)
             || !original.starts_with("search-owned-in:sha256:")
         {
-            return Err("typed input digest must bind source text and authority".into());
+            return Err("typed input digest must bind source text, authority, and file".into());
         }
         Ok(())
     }
@@ -1102,6 +1148,7 @@ mod tests {
             corpus_kind: SemanticCorpusKindV1::SymbolCard,
             owner_kind: OwnerDocKind::Symbol,
             owner_id: "symbol-deleted".to_string(),
+            source_file: fixture_semantic_source().source_file,
         }];
         batch.seal = false;
 
@@ -1147,6 +1194,7 @@ mod tests {
             corpus_kind: SemanticCorpusKindV1::SymbolCard,
             owner_kind: OwnerDocKind::Symbol,
             owner_id: "symbol-deleted".to_string(),
+            source_file: fixture_semantic_source().source_file,
         }];
         batch.seal = false;
 
@@ -1257,7 +1305,31 @@ mod tests {
     }
 
     #[test]
-    fn semantic_derivation_propagates_owner_tombstone_without_fake_path() -> TestRes {
+    fn semantic_derivation_rejects_foreign_source_in_same_path_scope() -> TestRes {
+        let embedder = RecordingEmbedder::failing();
+        let mut batch = fixture_search_batch()?;
+        let source = batch
+            .semantic_replace_scopes
+            .first_mut()
+            .and_then(|scope| scope.sources.first_mut())
+            .ok_or("semantic source fixture missing")?;
+        source.source_file.source_repo_id = RepoId::new("foreign-repo")?;
+        let result = derive_semantic_batch_from_semantic_sources_v1(&batch, &embedder);
+        if !embedder.calls()?.is_empty() {
+            return Err("foreign source reached the embedding provider".into());
+        }
+        match result {
+            Err(CoreError::InvalidContract(message))
+                if message.contains("source repo differs from replacement file owner") =>
+            {
+                Ok(())
+            }
+            other => Err(format!("foreign source must refuse before embedding: {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn semantic_derivation_propagates_owner_tombstone_with_source_key() -> TestRes {
         let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
         let mut batch = fixture_search_batch()?;
         batch
@@ -1266,6 +1338,7 @@ mod tests {
                 corpus_kind: SemanticCorpusKindV1::ModuleCard,
                 owner_kind: OwnerDocKind::Module,
                 owner_id: "module-deleted".to_string(),
+                source_file: fixture_semantic_source().source_file,
             });
         let derived = derive_semantic_batch_from_semantic_sources_v1(&batch, &embedder)?;
         let tombstone = derived
@@ -1457,13 +1530,15 @@ mod tests {
             let mut record = fixture_semantic_source();
             record.record_id = id.to_string();
             record.owner_id = id.to_string();
-            record.repo_relative_path = RepoRelativePath::new(path);
+            record.source_file.repo_relative_path = RepoRelativePath::new(path);
             record.text = text.to_string();
+            let source_file = record.source_file.clone();
             SemanticSourceReplaceScopeV1 {
                 scope: SemanticSourceScopeKeyV1 {
                     corpus_kind: SemanticCorpusKindV1::SymbolCard,
                     owner_kind: OwnerDocKind::Symbol,
                     owner_id: id.to_string(),
+                    source_file,
                 },
                 scope_digest: format!("scope:{id}"),
                 sources: vec![record],
@@ -1519,7 +1594,12 @@ mod tests {
                     .iter()
                     .map(|scope| {
                         (
-                            scope.scope.repo_relative_path.as_str().to_string(),
+                            scope
+                                .scope
+                                .source_file
+                                .repo_relative_path
+                                .as_str()
+                                .to_string(),
                             ids_of(std::slice::from_ref(scope)),
                         )
                     })

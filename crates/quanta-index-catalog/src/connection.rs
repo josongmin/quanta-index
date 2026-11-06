@@ -14,12 +14,16 @@ use std::time::Duration;
 
 use quanta_index_contract::ManifestGeneration;
 use quanta_index_core::index::{IndexError, WorkBudget, WorkUsage};
-use quanta_index_core::{CoreError, DiagnosticStageV1, DiagnosticTerminalV1};
+use quanta_index_core::{
+    CoreError, DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    DiagnosticTraceErrorV1,
+};
 use rusqlite::{Connection, OpenFlags, params};
 
 use crate::io_admission::{
     CatalogConnectionGuard, CatalogConnectionOwner, catalog_lock_span, is_capacity_refusal,
 };
+use crate::writer_cache::CatalogWriterCacheObservation;
 
 mod diagnostic;
 
@@ -48,6 +52,17 @@ impl CatalogClockPort for SystemCatalogClock {
 /// The catalog database file, under `state_root/catalog/`.
 pub const CATALOG_FILE_NAME: &str = "catalog-v1.sqlite";
 
+/// Result of optional, funded WAL truncation. Native capacity and other
+/// storage failures remain errors; only an unfunded attempt or a real `SQLite`
+/// reader/writer conflict is deferred.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WalReclaimOutcome {
+    BelowThreshold,
+    DeferredUnfunded,
+    DeferredBusy,
+    Completed,
+}
+
 /// The catalog directory under a state root.
 #[must_use]
 pub fn catalog_dir(state_root: &Path) -> PathBuf {
@@ -61,6 +76,7 @@ pub struct SqliteCatalog {
     pub(crate) connection: CatalogConnectionOwner,
     pub(crate) path: PathBuf,
     pub(crate) clock: Arc<dyn CatalogClockPort>,
+    pub(crate) writer_cache: Option<CatalogWriterCacheObservation>,
 }
 
 impl std::fmt::Debug for SqliteCatalog {
@@ -76,30 +92,38 @@ impl SqliteCatalog {
     /// Reclaim retained WAL extents before they consume cleanup headroom.
     /// The caller supplies the existing maintenance funding and request budget.
     /// A live `SQLite` snapshot may defer truncation; logical Catalog pins do not.
-    /// Returns false without checkpoint IO when below the threshold or when
-    /// the observed WAL cannot fit the current IO/work allowance. This optional
-    /// space optimization must not prevent the caller's bounded object reclaim.
+    /// An absent/small WAL or insufficient current allowance never starts
+    /// checkpoint IO. This optional space optimization must not prevent the
+    /// caller's bounded object reclaim.
     pub fn checkpoint_wal_for_reclaim(
         &self,
         threshold_bytes: u64,
         max_io_bytes: u64,
         budget: &mut WorkBudget,
-    ) -> Result<bool, IndexError> {
+    ) -> Result<WalReclaimOutcome, IndexError> {
         if threshold_bytes == 0 {
             return Err(IndexError::InvalidInput(
                 "zero WAL checkpoint threshold".into(),
             ));
         }
         let guard = self.lock_native_budget(budget)?;
-        budget.charge(WorkUsage {
+        if let Err(error) = budget.charge(WorkUsage {
             reads: 1,
             ..WorkUsage::default()
-        })?;
+        }) {
+            if error == IndexError::ResourceLimited {
+                budget.checkpoint()?;
+                return Ok(WalReclaimOutcome::DeferredUnfunded);
+            }
+            return Err(error);
+        }
         let mut wal = self.path.as_os_str().to_os_string();
         wal.push("-wal");
         let metadata = match std::fs::symlink_metadata(&wal) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(WalReclaimOutcome::BelowThreshold);
+            }
             Err(error) => return Err(IndexError::Storage(format!("stat Catalog WAL: {error}"))),
         };
         if !metadata.file_type().is_file() {
@@ -110,7 +134,7 @@ impl SqliteCatalog {
         let bytes = metadata.len();
         if bytes < threshold_bytes {
             budget.checkpoint()?;
-            return Ok(false);
+            return Ok(WalReclaimOutcome::BelowThreshold);
         }
         // Do not wedge every reclaim round on a WAL that outgrew this class.
         // Test before multiplication so even an oversized length is deferred
@@ -120,7 +144,7 @@ impl SqliteCatalog {
             .ok_or(IndexError::ResourceLimited)?;
         if bytes > max_wal_bytes {
             budget.checkpoint()?;
-            return Ok(false);
+            return Ok(WalReclaimOutcome::DeferredUnfunded);
         }
         // The connection mutex excludes this Catalog's writers. Charge the
         // observed wire width before checkpoint IO, including repeated frames,
@@ -142,33 +166,118 @@ impl SqliteCatalog {
                 // failures; a smaller remaining work allowance only skips the
                 // optional checkpoint, leaving it for a funded later round.
                 budget.checkpoint()?;
-                return Ok(false);
+                return Ok(WalReclaimOutcome::DeferredUnfunded);
             }
             return Err(error);
         }
-        let result: (i64, i64, i64) = guard
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
-            .map_err(|error| {
-                if is_capacity_refusal(&error)
-                    || matches!(
-                        &error,
-                        rusqlite::Error::SqliteFailure(failure, _)
-                            if matches!(failure.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
-                    )
-                {
-                    IndexError::ResourceLimited
-                } else {
-                    IndexError::Storage(format!("checkpoint Catalog WAL: {error}"))
-                }
-            })?;
-        drop(guard);
-        budget.checkpoint()?;
-        if result.0 != 0 {
-            return Err(IndexError::ResourceLimited);
+        // A live SQLite reader must not consume the maintenance round's busy
+        // timeout. The connection mutex protects the exact prior setting and
+        // its checked restoration. Classify native VFS errors before restoring
+        // the handler so the original failed IO remains the classification input.
+        let prior_busy_ms: i64 = guard
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .map_err(|error| IndexError::Storage(format!("read Catalog busy timeout: {error}")))?;
+        if prior_busy_ms < 0 {
+            return Err(IndexError::Storage(
+                "Catalog busy timeout is negative".into(),
+            ));
         }
-        Ok(true)
+        let attempt = (|| {
+            guard
+                .pragma_update(None, "busy_timeout", 0_i64)
+                .map_err(|error| {
+                    IndexError::Storage(format!("set Catalog nonwaiting checkpoint: {error}"))
+                })?;
+            let nonwaiting: i64 = guard
+                .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+                .map_err(|error| {
+                    IndexError::Storage(format!("read Catalog nonwaiting checkpoint: {error}"))
+                })?;
+            if nonwaiting != 0 {
+                return Err(IndexError::Storage(format!(
+                    "Catalog checkpoint busy timeout is {nonwaiting}, expected zero"
+                )));
+            }
+            // Observe only the reached, funded explicit checkpoint. This is
+            // not an ambient parent of lower-VFS events or an auto-checkpoint tag.
+            let checkpoint = budget.request().diagnostic_context().and_then(|context| {
+                context
+                    .enter(DiagnosticStageV1::SqliteWork, DiagnosticLaneV1(26))
+                    .map_or_else(
+                        |error| {
+                            context.health(match error {
+                                DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                                    DiagnosticHealthCodeV1::CounterOverflow
+                                }
+                                DiagnosticTraceErrorV1::ClockRegressed => {
+                                    DiagnosticHealthCodeV1::ClockRegressed
+                                }
+                                DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                                    DiagnosticHealthCodeV1::ForeignCaptureSpan
+                                }
+                                DiagnosticTraceErrorV1::MissingParentSpan => {
+                                    DiagnosticHealthCodeV1::MissingParentSpan
+                                }
+                            });
+                            None
+                        },
+                        Some,
+                    )
+            });
+            let query: rusqlite::Result<(i64, i64, i64)> =
+                guard.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                });
+            if let Some(checkpoint) = checkpoint {
+                let _finished = checkpoint.finish(DiagnosticTerminalV1::from_result(&query));
+            }
+            match query {
+                Ok((0, _, _)) => Ok(WalReclaimOutcome::Completed),
+                Ok((1, _, _)) => Ok(WalReclaimOutcome::DeferredBusy),
+                Ok((busy, _, _)) => Err(IndexError::Storage(format!(
+                    "checkpoint Catalog WAL returned invalid busy flag {busy}"
+                ))),
+                Err(error) if is_capacity_refusal(&error) => Err(IndexError::ResourceLimited),
+                Err(rusqlite::Error::SqliteFailure(failure, _))
+                    if matches!(
+                        failure.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    ) =>
+                {
+                    Ok(WalReclaimOutcome::DeferredBusy)
+                }
+                Err(error) => Err(IndexError::Storage(format!(
+                    "checkpoint Catalog WAL: {error}"
+                ))),
+            }
+        })();
+        let restore = guard
+            .pragma_update(None, "busy_timeout", prior_busy_ms)
+            .and_then(|()| {
+                guard.pragma_query_value(None, "busy_timeout", |row| row.get::<_, i64>(0))
+            })
+            .map_err(|error| IndexError::Storage(format!("restore Catalog busy timeout: {error}")))
+            .and_then(|restored| {
+                if restored == prior_busy_ms {
+                    Ok(())
+                } else {
+                    Err(IndexError::Storage(format!(
+                        "Catalog busy timeout restored to {restored}, expected {prior_busy_ms}"
+                    )))
+                }
+            });
+        drop(guard);
+        match (attempt, restore) {
+            (Err(original), Err(restoration)) => Err(IndexError::Storage(format!(
+                "checkpoint Catalog WAL failed: {original}; busy timeout restoration also failed: {restoration}"
+            ))),
+            (_, Err(restoration)) => Err(restoration),
+            (Err(original), Ok(())) => Err(original),
+            (Ok(outcome), Ok(())) => {
+                budget.checkpoint()?;
+                Ok(outcome)
+            }
+        }
     }
 
     /// Close the original native connection under its admitted close scope.
@@ -179,6 +288,11 @@ impl SqliteCatalog {
         let path = &self.path;
         self.connection
             .close_checked_with(|error| engine_error("close", path, &error))
+    }
+
+    #[must_use]
+    pub fn writer_cache_observation(&self) -> Option<CatalogWriterCacheObservation> {
+        self.writer_cache
     }
 
     /// Explicit adapter diagnostics for completed `SQLite` statements.
@@ -322,12 +436,10 @@ pub(crate) fn count_u64(label: &str, count: usize) -> Result<u64, CoreError> {
         .map_err(|error| CoreError::Storage(format!("catalog: {label} count overflow: {error}")))
 }
 
-/// Open (creating if needed) the catalog file under `state_root/catalog/`
-/// with the pragmas the G0-C gate requires, each read back; returns the
-/// connection and the file's path.
+/// Open (creating if needed) the catalog file under `state_root/catalog/`.
+/// The caller installs connection custody before any fallible configuration.
 pub(crate) fn open_connection(
     state_root: &Path,
-    busy_timeout: Duration,
     vfs_name: Option<&str>,
 ) -> Result<(Connection, PathBuf), CoreError> {
     let directory = catalog_dir(state_root);
@@ -341,30 +453,39 @@ pub(crate) fn open_connection(
             |name| Connection::open_with_flags_and_vfs(&path, flags, name),
         )
         .map_err(|error| engine_error("open", &path, &error))?;
+    Ok((connection, path))
+}
+
+/// Apply and verify the original durability settings on the same connection.
+pub(crate) fn configure_connection(
+    connection: &Connection,
+    path: &Path,
+    busy_timeout: Duration,
+) -> Result<(), CoreError> {
     // Each pragma is read back rather than assumed: `journal_mode` is a
     // request the engine may decline, and a catalog that silently ran
     // under `NORMAL` would ack work the engine can forget (G0-C).
     connection
         .pragma_update(None, "journal_mode", "WAL")
-        .map_err(|error| engine_error("set journal_mode", &path, &error))?;
+        .map_err(|error| engine_error("set journal_mode", path, &error))?;
     connection
         .pragma_update(None, "synchronous", "FULL")
-        .map_err(|error| engine_error("set synchronous", &path, &error))?;
+        .map_err(|error| engine_error("set synchronous", path, &error))?;
     connection
         .pragma_update(None, "fullfsync", "ON")
-        .map_err(|error| engine_error("set fullfsync", &path, &error))?;
+        .map_err(|error| engine_error("set fullfsync", path, &error))?;
     connection
         .pragma_update(None, "foreign_keys", "ON")
-        .map_err(|error| engine_error("set foreign_keys", &path, &error))?;
+        .map_err(|error| engine_error("set foreign_keys", path, &error))?;
     connection
         .busy_timeout(busy_timeout)
-        .map_err(|error| engine_error("set busy_timeout", &path, &error))?;
+        .map_err(|error| engine_error("set busy_timeout", path, &error))?;
     let journal_mode: String = connection
         .pragma_query_value(None, "journal_mode", |row| row.get(0))
-        .map_err(|error| engine_error("read journal_mode", &path, &error))?;
+        .map_err(|error| engine_error("read journal_mode", path, &error))?;
     let synchronous: i64 = connection
         .pragma_query_value(None, "synchronous", |row| row.get(0))
-        .map_err(|error| engine_error("read synchronous", &path, &error))?;
+        .map_err(|error| engine_error("read synchronous", path, &error))?;
     if !journal_mode.eq_ignore_ascii_case("wal") || synchronous != 2 {
         return Err(CoreError::Storage(format!(
             "catalog: {} runs journal_mode={journal_mode} synchronous={synchronous}; the catalog requires wal/FULL",
@@ -377,14 +498,14 @@ pub(crate) fn open_connection(
     // the flag is a storage error, not a degraded mode to run in.
     let fullfsync: i64 = connection
         .pragma_query_value(None, "fullfsync", |row| row.get(0))
-        .map_err(|error| engine_error("read fullfsync", &path, &error))?;
+        .map_err(|error| engine_error("read fullfsync", path, &error))?;
     if fullfsync != 1 {
         return Err(CoreError::Storage(format!(
             "catalog: {} runs fullfsync={fullfsync}; the catalog requires fullfsync=ON where the platform honors it",
             path.display()
         )));
     }
-    Ok((connection, path))
+    Ok(())
 }
 
 impl SqliteCatalog {
@@ -392,6 +513,15 @@ impl SqliteCatalog {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn observe_owned_renewal_refusal(
+        &self,
+        observation: quanta_index_core::DiagnosticOwnedRenewalRefusalV1,
+    ) {
+        if let Some(context) = diagnostic::current(self) {
+            context.owned_renewal_refusal(observation);
+        }
     }
 
     pub(crate) fn lock(&self) -> Result<CatalogConnectionGuard<'_>, CoreError> {
@@ -478,7 +608,7 @@ mod lock_budget_regressions {
         },
     };
 
-    use super::SqliteCatalog;
+    use super::{SqliteCatalog, WalReclaimOutcome};
 
     type TestResult = Result<(), Box<dyn Error>>;
 
@@ -660,14 +790,55 @@ mod lock_budget_regressions {
             RequestBudgetV1::unbounded(),
         );
         require(
-            catalog
-                .checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut denied)
-                .is_err(),
-            "unfunded checkpoint ran",
+            catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut denied)
+                == Ok(WalReclaimOutcome::DeferredUnfunded),
+            "unfunded checkpoint did not defer",
         )?;
         require(
             std::fs::metadata(&wal)?.len() == before,
             "unfunded checkpoint changed WAL",
+        )?;
+        require(
+            denied.usage() == WorkUsage::default(),
+            "unfunded first read changed the original work usage",
+        )?;
+        let cancelled_request = RequestBudgetV1::unbounded();
+        cancelled_request.cancel_handle().cancel();
+        let mut cancelled = WorkBudget::with_request(
+            WorkLimits {
+                reads: 65536,
+                writes: 65536,
+                bytes: 64 * 1024 * 1024,
+                mutations: 8,
+            },
+            cancelled_request,
+        );
+        require(
+            matches!(
+                catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut cancelled),
+                Err(IndexError::Cancelled)
+            ),
+            "cancelled checkpoint was deferred",
+        )?;
+        let mut expired = WorkBudget::with_request(
+            WorkLimits {
+                reads: 65536,
+                writes: 65536,
+                bytes: 64 * 1024 * 1024,
+                mutations: 8,
+            },
+            RequestBudgetV1::until(Instant::now()),
+        );
+        require(
+            matches!(
+                catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut expired),
+                Err(IndexError::ResourceLimited)
+            ),
+            "expired checkpoint was deferred",
+        )?;
+        require(
+            std::fs::metadata(&wal)?.len() == before,
+            "cancelled or expired checkpoint changed WAL",
         )?;
         let mut budget = WorkBudget::with_request(
             WorkLimits {
@@ -681,7 +852,8 @@ mod lock_budget_regressions {
         let checkpoint_io = before.checked_mul(4).ok_or("checkpoint IO overflow")?;
         for max_io in [0, checkpoint_io.checked_sub(1).ok_or("zero checkpoint IO")?] {
             require(
-                !catalog.checkpoint_wal_for_reclaim(1, max_io, &mut budget)?,
+                catalog.checkpoint_wal_for_reclaim(1, max_io, &mut budget)?
+                    == WalReclaimOutcome::DeferredUnfunded,
                 "checkpoint exceeded its original IO reservation",
             )?;
         }
@@ -699,7 +871,8 @@ mod lock_budget_regressions {
             RequestBudgetV1::unbounded(),
         );
         require(
-            !catalog.checkpoint_wal_for_reclaim(1, checkpoint_io, &mut small)?,
+            catalog.checkpoint_wal_for_reclaim(1, checkpoint_io, &mut small)?
+                == WalReclaimOutcome::DeferredUnfunded,
             "optional checkpoint blocked smaller maintenance work",
         )?;
         require(
@@ -720,12 +893,18 @@ mod lock_budget_regressions {
             ..WorkUsage::default()
         })?;
         require(
-            catalog.checkpoint_wal_for_reclaim(1, checkpoint_io, &mut budget)?,
+            catalog.checkpoint_wal_for_reclaim(1, checkpoint_io, &mut budget)?
+                == WalReclaimOutcome::Completed,
             "funded checkpoint skipped",
         )?;
         require(
             std::fs::metadata(&wal)?.len() == 0,
             "checkpoint retained WAL extents",
+        )?;
+        require(
+            catalog.checkpoint_wal_for_reclaim(1, checkpoint_io, &mut budget)?
+                == WalReclaimOutcome::BelowThreshold,
+            "empty WAL did not remain below threshold",
         )?;
         let gold: (i64, i64) = catalog.lock()?.query_row(
             "SELECT id, length(value) FROM checkpoint_gold",
@@ -738,7 +917,7 @@ mod lock_budget_regressions {
     #[test]
     fn reclaim_checkpoint_defers_real_sqlite_snapshot_without_deleting_it() -> TestResult {
         let root = tempfile::tempdir()?;
-        let catalog = SqliteCatalog::open(root.path(), Duration::ZERO)?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_secs(2))?;
         catalog.lock()?.execute_batch(
             "PRAGMA wal_autocheckpoint=0;
              CREATE TABLE checkpoint_gold(id INTEGER PRIMARY KEY);
@@ -759,12 +938,28 @@ mod lock_budget_regressions {
             },
             RequestBudgetV1::unbounded(),
         );
+        let prior_busy_ms: i64 =
+            catalog
+                .lock()?
+                .pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+        require(prior_busy_ms == 2000, "fixture busy timeout differs")?;
+        let started = Instant::now();
         require(
-            matches!(
-                catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut budget),
-                Err(IndexError::ResourceLimited)
-            ),
+            catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut budget)?
+                == WalReclaimOutcome::DeferredBusy,
             "live SQLite snapshot did not defer checkpoint",
+        )?;
+        require(
+            started.elapsed() < Duration::from_millis(1500),
+            "optional checkpoint waited through the ordinary busy timeout",
+        )?;
+        let restored_busy_ms: i64 =
+            catalog
+                .lock()?
+                .pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+        require(
+            restored_busy_ms == prior_busy_ms,
+            "busy timeout was not restored",
         )?;
         let old: i64 =
             reader.query_row("SELECT sum(id) FROM checkpoint_gold", [], |row| row.get(0))?;
@@ -772,13 +967,193 @@ mod lock_budget_regressions {
         reader.execute_batch("ROLLBACK")?;
         drop(reader);
         require(
-            catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut budget)?,
+            catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut budget)?
+                == WalReclaimOutcome::Completed,
             "checkpoint did not resume after reader release",
+        )?;
+        let completed_busy_ms: i64 =
+            catalog
+                .lock()?
+                .pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+        require(
+            completed_busy_ms == prior_busy_ms,
+            "successful checkpoint did not restore the busy timeout",
         )?;
         let current: i64 =
             catalog
                 .lock()?
                 .query_row("SELECT sum(id) FROM checkpoint_gold", [], |row| row.get(0))?;
         require(current == 18, "checkpoint lost committed rows")
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_diagnostic_regressions {
+    use std::{
+        error::Error,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::Duration,
+    };
+
+    use quanta_index_core::{
+        DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticEmitV1, DiagnosticEventKindV1,
+        DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1,
+        DiagnosticTerminalV1, RequestBudgetV1,
+        index::ports::CatalogDiagnosticPort,
+        index::{WorkBudget, WorkLimits},
+    };
+
+    use super::{SqliteCatalog, WalReclaimOutcome};
+
+    #[derive(Debug, Default)]
+    struct Clock(AtomicU64);
+
+    impl DiagnosticClockV1 for Clock {
+        fn now_ns(&self) -> u64 {
+            self.0.fetch_add(1, Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct Events(Mutex<Vec<DiagnosticEmitV1>>);
+
+    impl DiagnosticEventSinkV1 for Events {
+        fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+            let Ok(mut rows) = self.0.lock() else {
+                return false;
+            };
+            rows.push(event);
+            true
+        }
+    }
+
+    fn budget(request: RequestBudgetV1) -> WorkBudget {
+        WorkBudget::with_request(
+            WorkLimits {
+                reads: 65_536,
+                writes: 65_536,
+                bytes: 64 * 1024 * 1024,
+                mutations: 8,
+            },
+            request,
+        )
+    }
+
+    #[test]
+    fn funded_explicit_checkpoint_has_one_typed_span_and_off_keeps_result()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::ZERO)?;
+        catalog.lock()?.execute_batch(
+            "PRAGMA wal_autocheckpoint=0;
+             CREATE TABLE checkpoint_trace_gold(id INTEGER PRIMARY KEY);
+             INSERT INTO checkpoint_trace_gold VALUES(7);",
+        )?;
+
+        let clock = Arc::new(Clock::default());
+        let events = Arc::new(Events::default());
+        let context = quanta_index_core::DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([26; 16]),
+            clock.clone(),
+            events.clone(),
+        );
+        let root_span = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+        let child = context.child_context(&root_span);
+        let mut record =
+            budget(RequestBudgetV1::unbounded().with_diagnostic_context(child.clone()));
+        if catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut record)?
+            != WalReclaimOutcome::Completed
+        {
+            return Err("funded recorded checkpoint skipped".into());
+        }
+
+        let rows = events.0.lock().map_err(|error| {
+            std::io::Error::other(format!("checkpoint trace sink lock poisoned: {error}"))
+        })?;
+        let matching: Vec<_> = rows
+            .iter()
+            .filter_map(|event| {
+                let DiagnosticEventKindV1::SpanBegin {
+                    span_id,
+                    parent_span_id,
+                    stage: DiagnosticStageV1::SqliteWork,
+                    lane: DiagnosticLaneV1(26),
+                    ..
+                } = event.kind
+                else {
+                    return None;
+                };
+                Some((span_id, parent_span_id))
+            })
+            .collect();
+        let [(span_id, parent)] = matching.as_slice() else {
+            return Err("expected exactly one checkpoint SqliteWork span".into());
+        };
+        if *parent != Some(root_span.span_id()) {
+            return Err("checkpoint SqliteWork parent differs".into());
+        }
+        if rows
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    DiagnosticEventKindV1::SpanEnd {
+                        span_id: ended,
+                        outcome: DiagnosticTerminalV1::Ok,
+                    } if ended == *span_id
+                )
+            })
+            .count()
+            != 1
+        {
+            return Err("checkpoint SqliteWork terminal differs".into());
+        }
+        let prior_events = rows.len();
+        drop(rows);
+
+        let inserted = catalog
+            .lock()?
+            .execute("INSERT INTO checkpoint_trace_gold VALUES(11)", [])?;
+        if inserted != 1 {
+            return Err("checkpoint fixture insert count differs".into());
+        }
+        let outer = catalog.enter_diagnostic_scope(Some(&child));
+        let prior_clock = clock.0.load(Ordering::Relaxed);
+        let mut off = budget(RequestBudgetV1::unbounded());
+        if catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut off)?
+            != WalReclaimOutcome::Completed
+        {
+            return Err("funded Off checkpoint skipped".into());
+        }
+        if clock.0.load(Ordering::Relaxed) != prior_clock {
+            return Err("Off checkpoint read the diagnostic clock".into());
+        }
+        if events
+            .0
+            .lock()
+            .map_err(|error| {
+                std::io::Error::other(format!("checkpoint trace sink lock poisoned: {error}"))
+            })?
+            .len()
+            != prior_events
+        {
+            return Err("Off checkpoint emitted diagnostic events".into());
+        }
+        drop(outer);
+
+        let sum: i64 =
+            catalog
+                .lock()?
+                .query_row("SELECT sum(id) FROM checkpoint_trace_gold", [], |row| {
+                    row.get(0)
+                })?;
+        if sum != 18 {
+            return Err("checkpoint changed fixed SQL gold".into());
+        }
+        let _finished = root_span.finish(DiagnosticTerminalV1::Ok);
+        Ok(())
     }
 }

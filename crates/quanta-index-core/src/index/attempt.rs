@@ -106,6 +106,9 @@ impl AttemptContext<'_> {
         &mut self,
         inputs: &[ObjectBatchInput],
     ) -> Result<StagedObjectReferences, IndexError> {
+        if inputs.len() > super::ports::MAX_OBJECT_INSTALL_BATCH {
+            return Err(IndexError::ResourceLimited);
+        }
         let bytes = inputs
             .len()
             .checked_mul(std::mem::size_of::<ObjectRef>())

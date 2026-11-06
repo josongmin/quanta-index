@@ -1,5 +1,6 @@
 //! Independent SQL/registration/rollback laws for transaction-local child checks.
 use super::*;
+use crate::native::authority::registration_codec;
 use quanta_index_core::index::ObjectInstallScope;
 use quanta_index_core::index::ports::ManagedObjectInstallPort;
 
@@ -52,7 +53,7 @@ fn repeated_external_children_are_authenticated_once_per_real_transaction() -> T
             [object_key(parent.reference)],
             |row| row.get(0),
         )?;
-        let stored: RegisteredObject = serde_json::from_slice(&payload)?;
+        let stored = registration_codec::decode(&payload)?;
         check_eq!(stored.children, vec![child.reference; 4]);
         let edges: i64 = connection.query_row(
             "SELECT COUNT(*) FROM native_object_edge_v1 WHERE parent=?1",
@@ -125,8 +126,9 @@ fn hash_collisions_and_late_corrupt_children_never_acquire_authentication() -> T
     ];
     begin_registration_reads(&catalog)?;
     catalog.reserve_managed(scope, &batch, &mut admission_budget())?;
-    // Full-ref equality: first, colliding second and first again all require SQL.
-    check_eq!(end_registration_reads(&catalog)?, (4, 0, 4, 5));
+    // Full-ref equality: both distinct references are checked once, even when
+    // their first digest byte maps to the same initial window slot.
+    check_eq!(end_registration_reads(&catalog)?, (3, 0, 3, 4));
     let before = managed_install_counts(&catalog)?;
     let connection = Connection::open(catalog.path())?;
     check_eq!(
@@ -248,6 +250,156 @@ fn child_window_uses_original_memory_and_releases_before_next_phase_or_refusal()
         },
     ))));
     catalog.confirm_managed(scope, &batch, &mut funded)?;
+    check_eq!(counts.live.load(Ordering::Acquire), 0);
+    check!(!counts.invalid_release.load(Ordering::Acquire));
+    Ok(())
+}
+
+fn large_child_batch() -> Vec<RegisteredObject> {
+    (100_u8..170).map(|id| object(id, vec![])).collect()
+}
+
+#[test]
+fn large_child_window_bills_distinct_refs_once_and_preserves_physical_order() -> TestResult {
+    let mut outcomes = Vec::new();
+    for reverse in [false, true] {
+        let (_root, catalog, ingress) = managed_adoption_fixture()?;
+        let children = large_child_batch();
+        catalog.reserve_managed(
+            ObjectInstallScope::Ingress(ingress),
+            &children,
+            &mut admission_budget(),
+        )?;
+        catalog.confirm_managed(
+            ObjectInstallScope::Ingress(ingress),
+            &children,
+            &mut admission_budget(),
+        )?;
+        let attempt = admit_managed_attempt(&catalog, operation(12105, 175))?;
+        let scope = ObjectInstallScope::Attempt(attempt);
+        let mut child_refs = children
+            .iter()
+            .map(|child| child.reference)
+            .collect::<Vec<_>>();
+        if reverse {
+            child_refs.reverse();
+        }
+        // Repeats before and after the 64th distinct reference exercise the
+        // same complete set. The registered metadata retains physical order.
+        let first = *child_refs.first().ok_or("large child fixture empty")?;
+        let last = *child_refs.last().ok_or("large child fixture empty")?;
+        child_refs.insert(0, last);
+        child_refs.push(first);
+        child_refs.push(last);
+        let parent = object(50, child_refs.clone());
+
+        begin_registration_reads(&catalog)?;
+        catalog.reserve_managed(
+            scope,
+            std::slice::from_ref(&parent),
+            &mut admission_budget(),
+        )?;
+        let reserved_reads = end_registration_reads(&catalog)?;
+        check_eq!(reserved_reads, (71, 0, 71, 71));
+        begin_registration_reads(&catalog)?;
+        catalog.confirm_managed(
+            scope,
+            std::slice::from_ref(&parent),
+            &mut admission_budget(),
+        )?;
+        let confirmed_reads = end_registration_reads(&catalog)?;
+        check_eq!(confirmed_reads, (72, 0, 71, 71));
+        outcomes.push((reserved_reads, confirmed_reads));
+
+        let connection = Connection::open(catalog.path())?;
+        let payload: Vec<u8> = connection.query_row(
+            "SELECT payload FROM native_object_v1 WHERE object=?1",
+            [object_key(parent.reference)],
+            |row| row.get(0),
+        )?;
+        check_eq!(registration_codec::decode(&payload)?.children, child_refs);
+        let edge_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM native_object_edge_v1 WHERE parent=?1",
+            [object_key(parent.reference)],
+            |row| row.get(0),
+        )?;
+        check_eq!(edge_count, 70);
+
+        // A later transaction must authenticate all children anew. An exact
+        // corrupt child cannot inherit this transaction's prior success.
+        let corrupt = children.get(69).ok_or("last child absent")?.reference;
+        let old: Vec<u8> = connection.query_row(
+            "SELECT row_digest FROM native_object_v1 WHERE object=?1",
+            [object_key(corrupt)],
+            |row| row.get(0),
+        )?;
+        let before = managed_install_counts(&catalog)?;
+        check_eq!(
+            connection.execute(
+                "UPDATE native_object_v1 SET row_digest=zeroblob(32) WHERE object=?1",
+                [object_key(corrupt)],
+            )?,
+            1
+        );
+        check!(matches!(
+            catalog.confirm_managed(scope, std::slice::from_ref(&parent), &mut admission_budget()),
+            Err(IndexError::Storage(message)) if message == "native catalog row digest mismatch"
+        ));
+        check_eq!(managed_install_counts(&catalog)?, before);
+        check_eq!(
+            connection.execute(
+                "UPDATE native_object_v1 SET row_digest=?2 WHERE object=?1",
+                params![object_key(corrupt), old],
+            )?,
+            1
+        );
+    }
+    check_eq!(outcomes.first(), outcomes.get(1));
+    Ok(())
+}
+
+#[test]
+fn large_child_window_refuses_unfunded_original_scope_and_refunds() -> TestResult {
+    let (_root, catalog, ingress) = managed_adoption_fixture()?;
+    let children = large_child_batch();
+    catalog.reserve_managed(
+        ObjectInstallScope::Ingress(ingress),
+        &children,
+        &mut admission_budget(),
+    )?;
+    catalog.confirm_managed(
+        ObjectInstallScope::Ingress(ingress),
+        &children,
+        &mut admission_budget(),
+    )?;
+    let attempt = admit_managed_attempt(&catalog, operation(12106, 176))?;
+    let scope = ObjectInstallScope::Attempt(attempt);
+    let parent = object(50, children.iter().map(|child| child.reference).collect());
+    let counts = Arc::new(MemoryCounts::default());
+    let before = managed_install_counts(&catalog)?;
+    let mut denied = admission_budget();
+    denied.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+        WindowMemory {
+            counts: Arc::clone(&counts),
+            limit: 4096,
+        },
+    ))));
+    check!(matches!(
+        catalog.reserve_managed(scope, std::slice::from_ref(&parent), &mut denied),
+        Err(IndexError::ResourceLimited)
+    ));
+    check_eq!(counts.live.load(Ordering::Acquire), 0);
+    check_eq!(managed_install_counts(&catalog)?, before);
+    let mut funded = admission_budget();
+    funded.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+        WindowMemory {
+            counts: Arc::clone(&counts),
+            limit: 64 * 1024,
+        },
+    ))));
+    catalog.reserve_managed(scope, std::slice::from_ref(&parent), &mut funded)?;
+    check_eq!(counts.live.load(Ordering::Acquire), 0);
+    catalog.confirm_managed(scope, std::slice::from_ref(&parent), &mut funded)?;
     check_eq!(counts.live.load(Ordering::Acquire), 0);
     check!(!counts.invalid_release.load(Ordering::Acquire));
     Ok(())

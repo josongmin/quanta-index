@@ -10,6 +10,7 @@ use quanta_index_core::index::{
 use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
 use serde::{Deserialize, Serialize};
 
+use super::registration_codec::decode as decode_registration;
 use super::{
     SqliteCatalog, begin, cached_query_row, check_digest, decode, encode, exactly_one,
     fields_digest, int, next_fence, object_install, object_key, sql, uint,
@@ -515,6 +516,7 @@ fn reserve_row_with_fence(
 }
 
 /// Normalize and queue one object with one authenticated lifecycle read.
+#[cfg(test)]
 pub(super) fn reserve_and_enqueue(
     transaction: &Transaction<'_>,
     object: ObjectRef,
@@ -523,12 +525,27 @@ pub(super) fn reserve_and_enqueue(
     enqueue_row(transaction, &row)
 }
 
-/// Reserve through the exact transaction's conditional global counter stream.
-pub(super) fn reserve_and_enqueue_sequenced(
+/// Reserve an object under the same transaction's durable intent.
+///
+/// The caller has already written ingress or attempt custody. Keep the
+/// lifecycle row and its fence, but remove any older
+/// queue candidate while that intent protects the object. A later custody
+/// release enqueues it again in the transaction that removes its own row.
+pub(super) fn reserve_protected(
+    transaction: &Transaction<'_>,
+    object: ObjectRef,
+) -> Result<(), IndexError> {
+    let _row = reserve_row(transaction, object)?;
+    dequeue(transaction, object)
+}
+
+/// Reserve through the exact transaction's conditional global counter stream
+/// after the caller has written durable attempt intent.
+pub(super) fn reserve_protected_sequenced(
     object: ObjectRef,
     fences: &mut super::fence_counter::ReservationSequence<'_, '_>,
     budget: &mut WorkBudget,
-) -> Result<bool, IndexError> {
+) -> Result<(), IndexError> {
     fences.ensure_open()?;
     let transaction = fences.transaction();
     let result = (|| {
@@ -544,7 +561,7 @@ pub(super) fn reserve_and_enqueue_sequenced(
                 ..WorkUsage::default()
             })?;
         }
-        enqueue_row(transaction, &row)
+        dequeue(transaction, row.object)
     })();
     if result.is_err() {
         fences.refuse();
@@ -567,11 +584,12 @@ pub(super) fn adopt(connection: &Connection, object: ObjectRef) -> Result<(), In
     adopt_with_queue(connection, object, false)
 }
 
-/// An earlier child in this same confirmation packet is enqueued again before
-/// commit. Authenticate its queue row without deleting and reinserting it.
+/// An earlier child in this confirmation packet has durable reservation intent.
+/// Authenticate any existing queue row without changing it during preflight.
 ///
 /// Only the confirmation preflight may use this path: rollback covers failure,
-/// and the subsequent confirm-and-enqueue restores an absent row atomically.
+/// and the subsequent protected confirmation removes that row atomically after
+/// writing confirmation custody.
 pub(super) fn adopt_confirming_input(
     connection: &Transaction<'_>,
     object: ObjectRef,
@@ -647,12 +665,13 @@ pub(super) fn confirm_object(connection: &Connection, object: ObjectRef) -> Resu
     Ok(())
 }
 
-/// Confirm and queue under the caller's transaction using one authenticated row.
-/// No callback or other mutation separates the update from the queue check.
-pub(super) fn confirm_and_enqueue(
+/// Confirm under durable ingress or attempt custody in this transaction. An
+/// older queue candidate is authenticated and removed only after the caller
+/// has written the confirmation protection row.
+pub(super) fn confirm_protected(
     connection: &Transaction<'_>,
     object: ObjectRef,
-) -> Result<bool, IndexError> {
+) -> Result<(), IndexError> {
     let mut row = mutable_live_row(connection, object)?
         .ok_or_else(|| IndexError::Storage("confirmed object has no lifecycle".into()))?;
     if row.phase != LIVE {
@@ -662,7 +681,7 @@ pub(super) fn confirm_and_enqueue(
         row.kind = ReclaimKind::Registered;
         update_row(connection, &row)?;
     }
-    enqueue_row(connection, &row)
+    dequeue(connection, row.object)
 }
 
 /// Reuse the lifecycle owner's shape/digest validation for observation.
@@ -936,11 +955,13 @@ pub(super) fn retire(
 }
 
 pub(super) fn is_bound(connection: &Connection) -> Result<bool, IndexError> {
-    let count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM native_gc_namespace_v1", [], |row| {
-            row.get(0)
-        })
-        .map_err(|error| sql(&error))?;
+    let count: i64 = cached_query_row(
+        connection,
+        "SELECT COUNT(*) FROM native_gc_namespace_v1",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|error| sql(&error))?;
     if !(0..=1).contains(&count) {
         return Err(IndexError::Storage(
             "managed namespace binding count invalid".into(),
@@ -1088,7 +1109,7 @@ fn metadata(
         ReclaimKind::Provisional => b"qidx.native.install.v1".as_slice(),
     };
     check_digest(domain, &payload, &checksum)?;
-    let registration: RegisteredObject = decode(&payload)?;
+    let registration: RegisteredObject = decode_registration(&payload)?;
     if registration.reference != row.object {
         return Err(IndexError::Storage(
             "reclaim registration identity mismatch".into(),

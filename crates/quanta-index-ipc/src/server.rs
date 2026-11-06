@@ -449,7 +449,8 @@ pub trait ResponseEnvelope<Response>: serde::Serialize + Send + Sync + 'static {
     fn from_parts(request_id: u64, payload: Response) -> Self;
 
     /// A closed terminal result may need to cross the wire after dispatch
-    /// interruption: a typed interruption or an already durable corpus receipt.
+    /// interruption: a typed interruption, a closed ingest refusal, or an
+    /// already durable corpus receipt.
     /// This grants only a bounded reply phase, never more backend work. Other
     /// replies retain their original execution deadline, including late success.
     fn terminal_reply_phase(&self) -> bool {
@@ -555,7 +556,11 @@ impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
                 bounded.query.generation.as_ref(),
                 bounded.query.generation_selector.as_ref(),
             ),
-            Request::Hybrid(hybrid) => pinned_repo_scope(
+            Request::Hybrid(hybrid)
+            | Request::GoTestTraceFileV1(quanta_index_contract::GoTestTraceFileQueryRequestV1 {
+                query: hybrid,
+                ..
+            }) => pinned_repo_scope(
                 hybrid
                     .generation
                     .as_ref()
@@ -737,10 +742,7 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneIngestIpcResponse>
         matches!(
             &self.payload,
             quanta_index_contract::SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-        ) || matches!(
-            &self.payload,
-            quanta_index_contract::SearchPlaneIngestIpcResponse::Error(error)
-                if terminal_interruption(error.code)
+                | quanta_index_contract::SearchPlaneIngestIpcResponse::Error(_)
         )
     }
 

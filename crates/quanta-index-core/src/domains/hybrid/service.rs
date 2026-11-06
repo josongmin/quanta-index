@@ -186,6 +186,24 @@ impl HybridOrchestratorPolicy {
         semantic: &[LexicalCandidate],
         top_k: u32,
     ) -> Result<Vec<HybridCandidateV1>, CoreError> {
+        // The legacy hybrid wire has one result per candidate_id. Refuse an
+        // ID reused for another source file before RRF can combine unrelated
+        // lane ranks or attach one file's score to the other's payload.
+        let mut files_by_id = BTreeMap::new();
+        for candidate in lexical.iter().chain(semantic) {
+            let file = (
+                candidate.source_repo_id.as_str(),
+                candidate.repo_relative_path.as_str(),
+            );
+            if let Some(previous) = files_by_id.insert(candidate.candidate_id.as_str(), file)
+                && previous != file
+            {
+                return Err(CoreError::InvalidContract(format!(
+                    "hybrid: candidate ID {} names multiple source files",
+                    candidate.candidate_id
+                )));
+            }
+        }
         let lexical_ids = lexical
             .iter()
             .map(|candidate| candidate.candidate_id.as_str())
@@ -564,6 +582,50 @@ mod tests {
             .first()
             .map(|candidate| candidate.candidate_id.as_str());
         assert_eq!(top, Some("A"));
+    }
+
+    #[test]
+    fn hybrid_rrf_refuses_same_id_across_distinct_source_files() {
+        let mut source_a = cand("same-id");
+        source_a.source_repo_id = RepoId::new("source-a").expect("source a");
+        let mut source_b = cand("same-id");
+        source_b.source_repo_id = RepoId::new("source-b").expect("source b");
+        assert_eq!(source_a.repo_id, source_b.repo_id);
+        assert_eq!(source_a.revision_id, source_b.revision_id);
+        assert_eq!(source_a.manifest_generation, source_b.manifest_generation);
+        assert!(source_a.validate_source_metadata().is_ok());
+        assert!(source_b.validate_source_metadata().is_ok());
+        assert!(matches!(
+            HybridOrchestratorPolicy::fuse_rrf_candidates(&[source_a.clone()], &[source_b], 2),
+            Err(CoreError::InvalidContract(_))
+        ));
+
+        let mut other_path = source_a.clone();
+        other_path.repo_relative_path = RepoRelativePath::new("src/other.rs");
+        assert!(matches!(
+            HybridOrchestratorPolicy::fuse_rrf_candidates(&[source_a.clone()], &[other_path], 2),
+            Err(CoreError::InvalidContract(_))
+        ));
+
+        let same_file =
+            HybridOrchestratorPolicy::fuse_rrf_candidates(&[source_a.clone()], &[source_a], 1)
+                .expect("same source file");
+        assert_eq!(same_file.len(), 1);
+        assert_eq!(same_file[0].contributions.len(), 2);
+    }
+
+    #[test]
+    fn hybrid_rrf_keeps_distinct_ids_with_same_path_across_sources() {
+        let mut source_a = cand("id-a");
+        source_a.source_repo_id = RepoId::new("source-a").expect("source a");
+        let mut source_b = cand("id-b");
+        source_b.source_repo_id = RepoId::new("source-b").expect("source b");
+        assert_eq!(source_a.repo_relative_path, source_b.repo_relative_path);
+        let ranked = HybridOrchestratorPolicy::fuse_rrf_candidates(&[source_a, source_b], &[], 2)
+            .expect("distinct IDs");
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].candidate.source_repo_id.as_str(), "source-a");
+        assert_eq!(ranked[1].candidate.source_repo_id.as_str(), "source-b");
     }
 
     #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]

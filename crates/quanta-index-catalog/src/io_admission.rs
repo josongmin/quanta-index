@@ -11,12 +11,12 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use quanta_index_core::index::{IndexError, ObjectReadFile};
+use quanta_index_core::index::{IndexError, MemoryLease, ObjectReadFile};
 use quanta_index_core::{
-    CoreError, DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
+    CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
     DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceErrorV1,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, PagerCacheStatus};
 
 mod close_connection;
 
@@ -45,11 +45,80 @@ pub(crate) fn catalog_lock_span(
     )
 }
 
-struct CatalogLockHoldTrace(Option<DiagnosticSpanGuardV1>);
+struct CatalogLockHoldTrace(Option<ObservedHold>);
+
+struct ObservedHold {
+    span: Option<DiagnosticSpanGuardV1>,
+    context: DiagnosticContextV1,
+    before: rusqlite::Result<PagerCacheStatus>,
+    after: Option<rusqlite::Result<PagerCacheStatus>>,
+}
+
+fn pager_cache_delta(
+    before: rusqlite::Result<PagerCacheStatus>,
+    after: Option<rusqlite::Result<PagerCacheStatus>>,
+) -> Result<PagerCacheStatus, DiagnosticHealthCodeV1> {
+    // Preserve raw snapshot errors until this fixed diagnostic classification.
+    // No product error is replaced, and unavailable samples emit health only.
+    let (Ok(before), Some(Ok(after))) = (before, after) else {
+        return Err(DiagnosticHealthCodeV1::CounterUnavailable);
+    };
+    let (Some(hit), Some(miss), Some(write), Some(spill)) = (
+        after.hit.checked_sub(before.hit),
+        after.miss.checked_sub(before.miss),
+        after.write.checked_sub(before.write),
+        after.spill.checked_sub(before.spill),
+    ) else {
+        return Err(DiagnosticHealthCodeV1::CounterRegressed);
+    };
+    Ok(PagerCacheStatus {
+        hit,
+        miss,
+        write,
+        spill,
+    })
+}
+
+impl CatalogLockHoldTrace {
+    fn begin(diagnostics: Option<&DiagnosticContextV1>, connection: &Connection) -> Self {
+        let observed = diagnostics.and_then(|context| {
+            catalog_lock_span(Some(context), DiagnosticStageV1::CatalogLockHold).map(|span| {
+                ObservedHold {
+                    span: Some(span),
+                    context: context.clone(),
+                    before: connection.pager_cache_status(),
+                    after: None,
+                }
+            })
+        });
+        Self(observed)
+    }
+
+    fn observe_end(&mut self, connection: &Connection) {
+        if let Some(observed) = self.0.as_mut() {
+            observed.after = Some(connection.pager_cache_status());
+        }
+    }
+}
 
 impl Drop for CatalogLockHoldTrace {
     fn drop(&mut self) {
-        if let Some(span) = self.0.take() {
+        if let Some(mut observed) = self.0.take()
+            && let Some(span) = observed.span.take()
+        {
+            match pager_cache_delta(observed.before, observed.after) {
+                Ok(delta) => {
+                    for (key, value) in [
+                        (DiagnosticCounterV1::SqliteCacheHits, delta.hit),
+                        (DiagnosticCounterV1::SqliteCacheMisses, delta.miss),
+                        (DiagnosticCounterV1::SqliteCacheWrites, delta.write),
+                        (DiagnosticCounterV1::SqliteCacheSpills, delta.spill),
+                    ] {
+                        observed.context.counter(&span, key, value);
+                    }
+                }
+                Err(health) => observed.context.health(health),
+            }
             if std::thread::panicking() {
                 // An unfinished span records Aborted after the mutex releases.
                 drop(span);
@@ -182,9 +251,15 @@ pub(crate) fn is_capacity_refusal(error: &rusqlite::Error) -> bool {
     scope.is_some_and(|scope| scope.is_capacity_refusal(error))
 }
 
+#[cfg(test)]
+type CloseOnDrop = fn(Connection) -> Result<(), (Connection, rusqlite::Error)>;
+
 pub(crate) struct CatalogConnectionOwner {
     connection: Option<Mutex<Connection>>,
     admission: Option<Arc<dyn CatalogIoAdmission>>,
+    cache_memory: Option<MemoryLease>,
+    #[cfg(test)]
+    close_on_drop: Option<CloseOnDrop>,
 }
 
 impl CatalogConnectionOwner {
@@ -195,7 +270,34 @@ impl CatalogConnectionOwner {
         Self {
             connection: Some(Mutex::new(connection)),
             admission,
+            cache_memory: None,
+            #[cfg(test)]
+            close_on_drop: None,
         }
+    }
+
+    pub(crate) fn new_with_cache(
+        connection: Connection,
+        admission: Arc<dyn CatalogIoAdmission>,
+        cache_memory: MemoryLease,
+    ) -> Self {
+        Self {
+            connection: Some(Mutex::new(connection)),
+            admission: Some(admission),
+            cache_memory: Some(cache_memory),
+            #[cfg(test)]
+            close_on_drop: None,
+        }
+    }
+
+    pub(crate) fn initialization_connection(&mut self) -> Result<&mut Connection, CoreError> {
+        self.connection
+            .as_mut()
+            .ok_or_else(|| CoreError::InvalidContract("catalog connection already closed".into()))?
+            .get_mut()
+            .map_err(|error| {
+                CoreError::Storage(format!("catalog initialization mutex poisoned: {error}"))
+            })
     }
 
     pub(crate) fn mutex(&self) -> Result<&Mutex<Connection>, CoreError> {
@@ -213,12 +315,13 @@ impl CatalogConnectionOwner {
         guard: MutexGuard<'a, Connection>,
         diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> CatalogConnectionGuard<'a> {
+        // Both samples belong to this exact mutex-held connection. The first
+        // precedes native scope replacement; the second is taken in guard
+        // destruction before the mutex releases. Emission waits until after.
+        let hold = CatalogLockHoldTrace::begin(diagnostics, &guard);
         CatalogConnectionGuard {
             guard,
-            _hold: CatalogLockHoldTrace(catalog_lock_span(
-                diagnostics,
-                DiagnosticStageV1::CatalogLockHold,
-            )),
+            hold,
             _scope: ScopeLease::enter(self.admission.as_ref(), diagnostics),
         }
     }
@@ -231,11 +334,47 @@ impl CatalogConnectionOwner {
         &mut self,
         map_error: impl FnOnce(rusqlite::Error) -> E,
     ) -> Result<(), E> {
-        close_connection::close_connection_with_scope(
+        self.close_checked_with_close(Connection::close, map_error)
+    }
+
+    fn close_checked_with_close<E>(
+        &mut self,
+        close: impl FnOnce(Connection) -> Result<(), (Connection, rusqlite::Error)>,
+        map_error: impl FnOnce(rusqlite::Error) -> E,
+    ) -> Result<(), E> {
+        let result = close_connection::close_connection_with_scope(
             &mut self.connection,
             || ScopeLease::enter_close(self.admission.as_ref()),
+            close,
             map_error,
-        )
+        );
+        if result.is_ok() {
+            let _released = self.cache_memory.take();
+        }
+        result
+    }
+
+    fn quarantine_failed_cache_close(&mut self) {
+        // Keep the native handle and its named VFS/funding authority together.
+        std::mem::forget((
+            self.connection.take(),
+            self.admission.take(),
+            self.cache_memory.take(),
+        ));
+    }
+
+    #[cfg(test)]
+    fn close_for_drop(&mut self) -> Result<(), rusqlite::Error> {
+        if let Some(close) = self.close_on_drop.take() {
+            self.close_checked_with_close(close, std::convert::identity)
+        } else {
+            self.close_checked()
+        }
+    }
+
+    #[cfg(not(test))]
+    fn close_for_drop(&mut self) -> Result<(), rusqlite::Error> {
+        self.close_checked()
     }
 }
 
@@ -243,7 +382,14 @@ impl Drop for CatalogConnectionOwner {
     fn drop(&mut self) {
         // The explicit owner should have handled close failure. Destruction
         // retains the former scoped, best-effort fallback for legacy callers.
-        if self.close_checked().is_err() {
+        if self.close_for_drop().is_err() {
+            if self.cache_memory.is_some() {
+                // Native close failed with its original handle restored. A
+                // later implicit rusqlite Drop can fail silently, so retain
+                // the handle, named VFS authority, and memory charge together.
+                self.quarantine_failed_cache_close();
+                return;
+            }
             let _scope = ScopeLease::enter_close(self.admission.as_ref());
             drop(self.connection.take());
         }
@@ -254,8 +400,16 @@ pub(crate) struct CatalogConnectionGuard<'a> {
     // Rust drops fields in declaration order: release the mutex, finish the
     // hold span, then restore the VFS scope. The latter is not lock tenure.
     guard: MutexGuard<'a, Connection>,
-    _hold: CatalogLockHoldTrace,
+    hold: CatalogLockHoldTrace,
     _scope: ScopeLease,
+}
+
+impl Drop for CatalogConnectionGuard<'_> {
+    fn drop(&mut self) {
+        // Drop runs before fields are released. Only the raw SQLite snapshot
+        // happens here; the hold field emits after the guard field unlocks.
+        self.hold.observe_end(&self.guard);
+    }
 }
 
 impl Deref for CatalogConnectionGuard<'_> {
@@ -277,18 +431,55 @@ mod tests {
     use std::{
         path::PathBuf,
         sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
         },
         time::Duration,
     };
 
-    use rusqlite::{Connection, Error, ffi};
+    use rusqlite::{Connection, Error, PagerCacheStatus, ffi};
 
     use super::{
-        CatalogConnectionOwner, CatalogIoAdmission, CatalogIoScope, ScopeLease, is_capacity_refusal,
+        CatalogConnectionOwner, CatalogIoAdmission, CatalogIoScope, CatalogLockHoldTrace,
+        ObservedHold, ScopeLease, is_capacity_refusal, pager_cache_delta,
     };
     use crate::{SqliteCatalog, SystemCatalogClock};
+    use quanta_index_core::{
+        DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticEmitV1, DiagnosticEventKindV1,
+        DiagnosticEventSinkV1, DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticRootKindV1,
+        DiagnosticStageV1,
+        index::{MemoryLease, MemoryLeaseOwner},
+    };
+
+    macro_rules! check {
+        ($condition:expr $(,)?) => {{
+            if !$condition {
+                return Err(format!("assertion failed: {}", stringify!($condition)).into());
+            }
+        }};
+    }
+
+    macro_rules! check_eq {
+        ($left:expr, $right:expr $(,)?) => {{
+            let left = &$left;
+            let right = &$right;
+            if left != right {
+                return Err(format!("assertion failed: {left:?} != {right:?}").into());
+            }
+        }};
+    }
+
+    struct CacheLeaseCount(Arc<AtomicUsize>);
+
+    impl MemoryLeaseOwner for CacheLeaseCount {
+        fn release(&self, _bytes: u64) {
+            let _previous = self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn cache_lease(counter: &Arc<AtomicUsize>) -> MemoryLease {
+        MemoryLease::new(1024, Arc::new(CacheLeaseCount(Arc::clone(counter))))
+    }
 
     const TEST_CAPACITY_CODE: i32 = ffi::SQLITE_FULL | (0x51 << 8);
 
@@ -406,6 +597,185 @@ mod tests {
     }
 
     #[test]
+    fn failed_checked_close_keeps_funded_connection_then_success_refunds_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let released = Arc::new(AtomicUsize::new(0));
+        let entries = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let admission: Arc<dyn CatalogIoAdmission> = Arc::new(CloseTrackingAdmission {
+            entries: Arc::clone(&entries),
+            active: Arc::clone(&active),
+        });
+        let mut owner = CatalogConnectionOwner::new_with_cache(
+            Connection::open_in_memory()?,
+            admission,
+            cache_lease(&released),
+        );
+        let failed = owner.close_checked_with_close(
+            |connection| Err((connection, Error::InvalidQuery)),
+            std::convert::identity,
+        );
+        check!(matches!(failed, Err(Error::InvalidQuery)));
+        check!(owner.mutex().is_ok());
+        check_eq!(released.load(Ordering::SeqCst), 0);
+        check_eq!(active.load(Ordering::SeqCst), 0);
+        owner.close_checked()?;
+        check!(owner.mutex().is_err());
+        check_eq!(released.load(Ordering::SeqCst), 1);
+        owner.close_checked()?;
+        check_eq!(released.load(Ordering::SeqCst), 1);
+        check_eq!(entries.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_close_quarantine_keeps_connection_authority_and_charge()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let released = Arc::new(AtomicUsize::new(0));
+        let entries = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let admission: Arc<dyn CatalogIoAdmission> = Arc::new(CloseTrackingAdmission {
+            entries: Arc::clone(&entries),
+            active: Arc::clone(&active),
+        });
+        let weak = Arc::downgrade(&admission);
+        let mut owner = CatalogConnectionOwner::new_with_cache(
+            Connection::open_in_memory()?,
+            admission,
+            cache_lease(&released),
+        );
+        owner.close_on_drop = Some(|connection| Err((connection, Error::InvalidQuery)));
+        drop(owner);
+        check!(weak.upgrade().is_some());
+        check_eq!(released.load(Ordering::SeqCst), 0);
+        check_eq!(active.load(Ordering::SeqCst), 0);
+        check_eq!(entries.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn pager_cache_delta_requires_two_available_monotonic_snapshots() {
+        let before = PagerCacheStatus {
+            hit: 11,
+            miss: 17,
+            write: 23,
+            spill: 3,
+        };
+        let after = PagerCacheStatus {
+            hit: 18,
+            miss: 19,
+            write: 29,
+            spill: 3,
+        };
+        assert_eq!(
+            pager_cache_delta(Ok(before), Some(Ok(after))),
+            Ok(PagerCacheStatus {
+                hit: 7,
+                miss: 2,
+                write: 6,
+                spill: 0,
+            })
+        );
+        assert_eq!(
+            pager_cache_delta(Err(Error::InvalidQuery), Some(Ok(after))),
+            Err(DiagnosticHealthCodeV1::CounterUnavailable)
+        );
+        assert_eq!(
+            pager_cache_delta(Ok(before), None),
+            Err(DiagnosticHealthCodeV1::CounterUnavailable)
+        );
+        assert_eq!(
+            pager_cache_delta(Ok(before), Some(Err(Error::InvalidQuery))),
+            Err(DiagnosticHealthCodeV1::CounterUnavailable)
+        );
+        assert_eq!(
+            pager_cache_delta(Ok(before), Some(Ok(PagerCacheStatus { spill: 2, ..after }))),
+            Err(DiagnosticHealthCodeV1::CounterRegressed)
+        );
+    }
+
+    #[test]
+    fn unavailable_or_regressed_pager_status_emits_health_without_partial_counters()
+    -> Result<(), Box<dyn std::error::Error>> {
+        #[derive(Debug, Default)]
+        struct TickClock(AtomicU64);
+        impl DiagnosticClockV1 for TickClock {
+            fn now_ns(&self) -> u64 {
+                self.0.fetch_add(1, Ordering::Relaxed)
+            }
+        }
+        #[derive(Debug, Default)]
+        struct Events(Mutex<Vec<DiagnosticEmitV1>>);
+        impl DiagnosticEventSinkV1 for Events {
+            fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+                let mut rows = match self.0.lock() {
+                    Ok(rows) => rows,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                rows.push(event);
+                true
+            }
+        }
+        let first = PagerCacheStatus {
+            hit: 10,
+            miss: 10,
+            write: 10,
+            spill: 10,
+        };
+        let lower = PagerCacheStatus { spill: 9, ..first };
+        for (ordinal, before, after, expected) in [
+            (
+                1,
+                Err(Error::InvalidQuery),
+                Some(Ok(first)),
+                DiagnosticHealthCodeV1::CounterUnavailable,
+            ),
+            (
+                2,
+                Ok(first),
+                Some(Ok(lower)),
+                DiagnosticHealthCodeV1::CounterRegressed,
+            ),
+        ] {
+            let events = Arc::new(Events::default());
+            let context = quanta_index_core::DiagnosticContextV1::new(
+                DiagnosticCaptureIdV1([ordinal; 16]),
+                Arc::new(TickClock::default()),
+                events.clone(),
+            );
+            let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+            let child = context.child_context(&root);
+            let span = child.enter(DiagnosticStageV1::CatalogLockHold, DiagnosticLaneV1(0))?;
+            drop(CatalogLockHoldTrace(Some(ObservedHold {
+                span: Some(span),
+                context: child,
+                before,
+                after,
+            })));
+            let rows = match events.0.lock() {
+                Ok(rows) => rows,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            check_eq!(
+                rows.iter()
+                    .filter(|event| matches!(event.kind, DiagnosticEventKindV1::Counter { .. }))
+                    .count(),
+                0
+            );
+            check_eq!(
+                rows.iter()
+                    .filter(|event| {
+                        matches!(event.kind, DiagnosticEventKindV1::Health { code } if code == expected)
+                    })
+                    .count(),
+                1
+            );
+            drop(rows);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn native_disk_full_and_unscoped_private_code_remain_storage_errors() {
         let native_full = engine_error(ffi::SQLITE_FULL);
         let configured_full = engine_error(TEST_CAPACITY_CODE);
@@ -469,6 +839,7 @@ mod tests {
             connection: CatalogConnectionOwner::new(connection, Some(admission)),
             path: PathBuf::from(":memory:"),
             clock: Arc::new(SystemCatalogClock),
+            writer_cache: None,
         };
         catalog.close_checked()?;
         if entries.load(Ordering::SeqCst) != 1

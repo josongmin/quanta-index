@@ -14,6 +14,7 @@ from tools.benchmark.retrieval.causal_cost_timeline import (
     MAX_CONFIGURED_CAPTURE_BYTES,
     MAX_LINE_BYTES,
     SCHEMA,
+    _dispatch_v5_validators,
     _dispatch_validators,
     _schema_for_version,
     _selected_validator,
@@ -40,6 +41,35 @@ SQLITE_WRITE_GOLD = (
     ("sqlite_wal_write_calls", 11),
     ("sqlite_main_write_calls", 5),
     ("sqlite_other_write_calls", 1),
+)
+THREAD_CPU_GOLD = ("thread_cpu_ns", 7_654_321)
+SQLITE_WRITE_BOUNDARY_GOLD = (
+    ("sqlite_write_admission_calls", 19),
+    ("sqlite_write_admission_refusals", 2),
+    ("sqlite_write_admission_elapsed_ns", 2_100),
+    ("sqlite_write_lower_envelope_elapsed_ns", 3_400),
+    ("sqlite_write_post_callback_elapsed_ns", 900),
+    ("sqlite_write_post_callback_refusals", 1),
+)
+SQLITE_CACHE_GOLD = (
+    ("sqlite_cache_hits", 13),
+    ("sqlite_cache_misses", 3),
+    ("sqlite_cache_writes", 9),
+    ("sqlite_cache_spills", 2),
+)
+SQLITE_WRITER_BEFORE_GOLD = (
+    ("sqlite_page_size_bytes", 4096),
+    ("sqlite_cache_size_magnitude", 2000),
+    ("sqlite_cache_size_is_kib", 1),
+    ("sqlite_cache_spill_pages", 2000),
+    ("sqlite_wal_autocheckpoint_pages", 1000),
+)
+SQLITE_WRITER_AFTER_GOLD = (
+    ("sqlite_page_size_bytes", 4096),
+    ("sqlite_cache_size_magnitude", 8192),
+    ("sqlite_cache_size_is_kib", 1),
+    ("sqlite_cache_spill_pages", 8192),
+    ("sqlite_wal_autocheckpoint_pages", 1000),
 )
 
 
@@ -79,7 +109,7 @@ def _minimal_schema_value(spec: dict, definitions: dict) -> object:
     raise AssertionError(f"unsupported fixture schema: {spec}")
 
 
-@pytest.mark.parametrize("version,expected_kind_count", [(1, 7), (2, 13), (3, 15), (4, 15)])
+@pytest.mark.parametrize("version,expected_kind_count", [(1, 7), (2, 13), (3, 15), (4, 16)])
 def test_selected_schema_matches_original_for_every_kind_and_malformed_row(
     version: int, expected_kind_count: int
 ) -> None:
@@ -405,6 +435,13 @@ def _resequence_ann_region_rows(rows: list[dict]) -> None:
     )
 
 
+def _mark_partial_footer(rows: list[dict], *, dropped: int) -> None:
+    _resequence_ann_region_rows(rows)
+    rows[-1]["status"] = "partial"
+    rows[-1]["events_dropped"] = dropped
+    rows[-1]["events_attempted"] = rows[-1]["events_accepted"] + dropped
+
+
 def _sqlite_write_rows() -> list[dict]:
     rows = [json.loads(line) for line in _capture().splitlines()]
     rows[0]["schema_version"] = 4
@@ -423,6 +460,281 @@ def _sqlite_write_rows() -> list[dict]:
         )
     _resequence_ann_region_rows(rows)
     return rows
+
+
+def _sqlite_write_boundary_rows(gold: tuple[tuple[str, int], ...]) -> list[dict]:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    rows[2]["kind"].update(stage="sqlite_work", lane_id=22)
+    rows[3]["kind"].update(key=gold[0][0], value=gold[0][1])
+    for offset, (key, value) in enumerate(gold[1:], 1):
+        rows.insert(
+            3 + offset,
+            {
+                "record_type": "event",
+                "capture_id": CAPTURE,
+                "ts_ns": 25 + offset,
+                "kind": {"type": "counter", "span_id": 2, "key": key, "value": value},
+            },
+        )
+    _resequence_ann_region_rows(rows)
+    return rows
+
+
+def _sqlite_cache_rows(gold: tuple[tuple[str, int], ...] = SQLITE_CACHE_GOLD) -> list[dict]:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    rows[2]["kind"].update(parent_span_id=3, stage="catalog_lock_hold", lane_id=0)
+    rows[3]["kind"].update(key=gold[0][0], value=gold[0][1])
+    for offset, (key, value) in enumerate(gold[1:], 1):
+        rows.insert(
+            3 + offset,
+            {
+                "record_type": "event",
+                "capture_id": CAPTURE,
+                "ts_ns": 25 + offset,
+                "kind": {"type": "counter", "span_id": 2, "key": key, "value": value},
+            },
+        )
+    rows.insert(
+        2,
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 15,
+            "kind": {
+                "type": "span_begin",
+                "span_id": 3,
+                "parent_span_id": 1,
+                "stage": "operation",
+                "lane_id": 1,
+            },
+        },
+    )
+    rows.insert(
+        -2,
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 38,
+            "kind": {"type": "span_end", "span_id": 3, "outcome": "ok"},
+        },
+    )
+    _resequence_ann_region_rows(rows)
+    return rows
+
+
+def _sqlite_writer_settings_rows() -> list[dict]:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    rows[2]["kind"].update(stage="sqlite_work", lane_id=27)
+    rows[3]["kind"].update(
+        key=SQLITE_WRITER_BEFORE_GOLD[0][0], value=SQLITE_WRITER_BEFORE_GOLD[0][1]
+    )
+    for key, value in SQLITE_WRITER_BEFORE_GOLD[1:]:
+        rows.insert(
+            -3,
+            {
+                "record_type": "event",
+                "capture_id": CAPTURE,
+                "ts_ns": 26,
+                "kind": {"type": "counter", "span_id": 2, "key": key, "value": value},
+            },
+        )
+    rows.insert(
+        -2,
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 36,
+            "kind": {
+                "type": "span_begin",
+                "span_id": 3,
+                "parent_span_id": 1,
+                "stage": "sqlite_work",
+                "lane_id": 28,
+            },
+        },
+    )
+    for key, value in SQLITE_WRITER_AFTER_GOLD:
+        rows.insert(
+            -2,
+            {
+                "record_type": "event",
+                "capture_id": CAPTURE,
+                "ts_ns": 37,
+                "kind": {"type": "counter", "span_id": 3, "key": key, "value": value},
+            },
+        )
+    rows.insert(
+        -2,
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 38,
+            "kind": {"type": "span_end", "span_id": 3, "outcome": "ok"},
+        },
+    )
+    _resequence_ann_region_rows(rows)
+    return rows
+
+
+def _owned_renewal_rows() -> list[dict]:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    rows[2]["kind"].update(stage="sqlite_work", lane_id=29)
+    rows.pop(3)  # No unrelated counter in the renewal owner.
+    rows.insert(
+        3,
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 25,
+            "kind": {
+                "type": "owned_renewal_refusal",
+                "span_id": 2,
+                "reason": "lease_expired",
+                "now_ms": 500,
+                "lease_until_ms": 500,
+                "deadline_ms": None,
+            },
+        },
+    )
+    rows[4]["kind"]["outcome"] = "error"
+    return rows
+
+
+def test_v4_owned_renewal_refusal_preserves_exact_point_and_error_owner() -> None:
+    capture = parse(_boundary_rows(_owned_renewal_rows()))
+    expected = {
+        "span_id": 2,
+        "ts_ns": 25,
+        "reason": "lease_expired",
+        "now_ms": 500,
+        "lease_until_ms": 500,
+        "deadline_ms": None,
+    }
+    assert capture["status"] == "complete"
+    assert capture["owned_renewal_refusals"] == [expected]
+    assert summarize(capture)["owned_renewal_refusals"] == [expected]
+    instant = [
+        event
+        for event in chrome_export(capture)["traceEvents"]
+        if event.get("cat") == "owned_renewal_refusal"
+    ]
+    assert len(instant) == 1
+    assert instant[0]["name"] == "owned_renewal_refusal:lease_expired"
+    assert instant[0]["ph"] == "i"
+    assert instant[0]["args"] == {
+        "span_id": "2",
+        "reason": "lease_expired",
+        "now_ms": "500",
+        "lease_until_ms": "500",
+        "deadline_ms": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "missing_claim",
+        "not_claimed",
+        "claim_identity",
+        "claim_fence",
+        "lease_expired",
+        "missing_assignment",
+        "inactive_assignment",
+        "undispatched_assignment",
+        "execution_expired",
+        "assignment_claim",
+        "grant_mismatch",
+    ],
+)
+def test_owned_renewal_refusal_accepts_only_closed_reason_set(reason: str) -> None:
+    rows = _owned_renewal_rows()
+    rows[3]["kind"].update(reason=reason, deadline_ms=500)
+    assert parse(_boundary_rows(rows))["owned_renewal_refusals"][0]["reason"] == reason
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_legacy_capture_rejects_owned_renewal_refusal(version: int) -> None:
+    rows = _owned_renewal_rows()
+    rows[0]["schema_version"] = version
+    rows[-1]["schema_version"] = version
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(_boundary_rows(rows))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("reason", "unknown"),
+        ("now_ms", -1),
+        ("now_ms", 1 << 64),
+        ("lease_until_ms", -1),
+        ("lease_until_ms", 1 << 64),
+        ("deadline_ms", -1),
+        ("deadline_ms", 1 << 64),
+    ],
+)
+def test_owned_renewal_refusal_rejects_malformed_fields(field: str, value: object) -> None:
+    rows = _owned_renewal_rows()
+    rows[3]["kind"][field] = value
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(_boundary_rows(rows))
+
+
+def test_owned_renewal_refusal_requires_all_payload_fields() -> None:
+    rows = _owned_renewal_rows()
+    del rows[3]["kind"]["deadline_ms"]
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(_boundary_rows(rows))
+
+
+@pytest.mark.parametrize(
+    "reason,lease_until_ms,deadline_ms,expected",
+    [
+        ("lease_expired", None, None, "lease expiry"),
+        ("lease_expired", 501, None, "lease expiry"),
+        ("execution_expired", None, None, "execution expiry"),
+        ("execution_expired", None, 501, "execution expiry"),
+    ],
+)
+def test_owned_renewal_refusal_rejects_unexpired_boundary(
+    reason: str, lease_until_ms: int | None, deadline_ms: int | None, expected: str
+) -> None:
+    rows = _owned_renewal_rows()
+    rows[3]["kind"].update(
+        reason=reason, lease_until_ms=lease_until_ms, deadline_ms=deadline_ms
+    )
+    with pytest.raises(ValueError, match=expected):
+        parse(_boundary_rows(rows))
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["foreign_owner", "wrong_lane", "wrong_stage", "duplicate", "outside", "final_ok"],
+)
+def test_owned_renewal_refusal_rejects_invalid_owner_contract(failure: str) -> None:
+    rows = _owned_renewal_rows()
+    if failure == "foreign_owner":
+        rows[3]["kind"]["span_id"] = 99
+    elif failure == "wrong_lane":
+        rows[2]["kind"]["lane_id"] = 30
+    elif failure == "wrong_stage":
+        rows[2]["kind"]["stage"] = "operation"
+    elif failure == "duplicate":
+        rows.insert(4, copy.deepcopy(rows[3]))
+    elif failure == "outside":
+        rows[3]["ts_ns"] = 36
+    else:
+        rows[4]["kind"]["outcome"] = "ok"
+    with pytest.raises(ValueError):
+        parse(_boundary_rows(rows))
 
 
 def _sqlite_sync_rows() -> list[dict]:
@@ -980,6 +1292,405 @@ def test_v4_timeline_without_sqlite_write_counters_remains_complete() -> None:
     captured = parse(b"".join(map(_line, rows)))
     assert captured["status"] == "complete"
     assert captured["counters"] == [{"span_id": 2, "key": "candidates", "value": 3, "ts_ns": 25}]
+
+
+@pytest.mark.parametrize("stage", ("native_source_apply", "native_work_seal", "compaction"))
+def test_v4_thread_cpu_counter_replays_as_one_exact_span_and_perfetto_counter(stage: str) -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    rows[2]["kind"]["stage"] = stage
+    rows[3]["kind"].update(key=THREAD_CPU_GOLD[0], value=THREAD_CPU_GOLD[1])
+    captured = parse(b"".join(map(_line, rows)))
+    assert captured["status"] == "complete"
+    assert captured["counters"] == [
+        {"span_id": 2, "key": THREAD_CPU_GOLD[0], "value": THREAD_CPU_GOLD[1], "ts_ns": 25}
+    ]
+    owner = next(row for row in summarize(captured)["spans"] if row["span_id"] == 2)
+    assert owner["counters"] == dict([THREAD_CPU_GOLD])
+    viewer = [event for event in chrome_export(captured)["traceEvents"] if event["ph"] == "C"]
+    assert [(event["name"], event["args"][event["name"]]) for event in viewer] == [
+        THREAD_CPU_GOLD
+    ]
+
+
+def test_v4_thread_cpu_counter_rejects_second_interval_on_same_span() -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    rows[2]["kind"]["stage"] = "native_source_apply"
+    rows[3]["kind"].update(key=THREAD_CPU_GOLD[0], value=THREAD_CPU_GOLD[1])
+    rows.insert(
+        4,
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 26,
+            "kind": {"type": "counter", "span_id": 2, "key": THREAD_CPU_GOLD[0], "value": 1},
+        },
+    )
+    _resequence_ann_region_rows(rows)
+    with pytest.raises(ValueError, match="thread CPU counter is duplicated"):
+        parse(b"".join(map(_line, rows)))
+
+
+@pytest.mark.parametrize(
+    "stage", ("build_prepare", "semantic_prepare", "query_candidate", "sqlite_work")
+)
+def test_v4_thread_cpu_counter_rejects_unmeasured_stage(stage: str) -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    rows[2]["kind"]["stage"] = stage
+    rows[3]["kind"].update(key=THREAD_CPU_GOLD[0], value=THREAD_CPU_GOLD[1])
+    with pytest.raises(ValueError, match="thread CPU counter targets wrong stage"):
+        parse(b"".join(map(_line, rows)))
+
+
+def test_v4_thread_cpu_counter_rejects_orphan_even_in_partial_capture() -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    rows[3]["kind"].update(span_id=99, key=THREAD_CPU_GOLD[0], value=THREAD_CPU_GOLD[1])
+    rows[-1]["status"] = "partial"
+    with pytest.raises(ValueError, match="thread CPU counter has no existing owner span"):
+        parse(b"".join(map(_line, rows)))
+
+
+def test_v4_absent_thread_cpu_counter_is_not_synthesized_as_zero() -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    captured = parse(b"".join(map(_line, rows)))
+    assert all(counter["key"] != THREAD_CPU_GOLD[0] for counter in captured["counters"])
+    assert all(THREAD_CPU_GOLD[0] not in span["counters"] for span in summarize(captured)["spans"])
+    assert all(
+        event.get("name") != THREAD_CPU_GOLD[0]
+        for event in chrome_export(captured)["traceEvents"]
+    )
+
+
+@pytest.mark.parametrize("version", (1, 2, 3))
+def test_legacy_timeline_rejects_thread_cpu_counter(version: int) -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = version
+    rows[-1]["schema_version"] = version
+    rows[3]["kind"].update(key=THREAD_CPU_GOLD[0], value=THREAD_CPU_GOLD[1])
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(b"".join(map(_line, rows)))
+
+
+def test_v4_sqlite_write_boundary_counters_keep_exact_values_and_viewer_names() -> None:
+    captured = parse(b"".join(map(_line, _sqlite_write_boundary_rows(SQLITE_WRITE_BOUNDARY_GOLD))))
+    assert captured["status"] == "complete"
+    assert [(row["key"], row["value"]) for row in captured["counters"]] == list(
+        SQLITE_WRITE_BOUNDARY_GOLD
+    )
+    owner = next(row for row in summarize(captured)["spans"] if row["span_id"] == 2)
+    assert owner["counters"] == dict(SQLITE_WRITE_BOUNDARY_GOLD)
+    viewer = [event for event in chrome_export(captured)["traceEvents"] if event["ph"] == "C"]
+    assert [(event["name"], event["args"][event["name"]]) for event in viewer] == list(
+        SQLITE_WRITE_BOUNDARY_GOLD
+    )
+
+
+def test_v4_sqlite_write_boundary_capture_reaches_worker_index() -> None:
+    from tools.benchmark.retrieval.causal_cost_diagnostic import build_index, query_index
+
+    gold = SQLITE_WRITE_GOLD + SQLITE_WRITE_BOUNDARY_GOLD
+    rows = _sqlite_write_boundary_rows(gold)
+    rows[2]["kind"]["parent_span_id"] = 3
+    rows.insert(
+        2,
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 15,
+            "kind": {
+                "type": "span_begin",
+                "span_id": 3,
+                "parent_span_id": 1,
+                "stage": "operation",
+                "lane_id": 1,
+            },
+        },
+    )
+    write_end = next(
+        row
+        for row in rows
+        if row.get("kind", {}).get("type") == "span_end" and row["kind"]["span_id"] == 2
+    )
+    write_end["ts_ns"] = 45
+    operation_end_index = next(
+        index
+        for index, row in enumerate(rows)
+        if row.get("kind", {}).get("type") == "span_end" and row["kind"]["span_id"] == 1
+    )
+    rows[operation_end_index]["ts_ns"] = 50
+    rows.insert(
+        operation_end_index,
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 48,
+            "kind": {"type": "span_end", "span_id": 3, "outcome": "ok"},
+        },
+    )
+    rows[-1]["closed_ns"] = 60
+    _resequence_ann_region_rows(rows)
+
+    capture = parse(b"".join(map(_line, rows)))
+    assert capture["status"] == "complete"
+    index = build_index(capture)
+    selected = query_index(index, worker_span_id=3, stage="sqlite_work", lane=22)
+    assert selected["matched_workers"] == 1
+    assert selected["workers"]["3"]["groups"][0]["direct_counters"] == dict(gold)
+
+
+@pytest.mark.parametrize("version", (1, 2, 3))
+@pytest.mark.parametrize("key", tuple(key for key, _ in SQLITE_WRITE_BOUNDARY_GOLD))
+def test_legacy_timeline_rejects_write_boundary_counter(key: str, version: int) -> None:
+    rows = _sqlite_write_boundary_rows(((key, 1),))
+    rows[0]["schema_version"] = version
+    rows[-1]["schema_version"] = version
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(b"".join(map(_line, rows)))
+
+
+def test_v4_without_write_boundary_counters_does_not_invent_zeroes() -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    captured = parse(b"".join(map(_line, rows)))
+    assert all(key not in captured["spans"][2]["counters"] for key, _ in SQLITE_WRITE_BOUNDARY_GOLD)
+
+
+def test_v4_sqlite_cache_deltas_reach_worker_index_with_fixed_gold() -> None:
+    from tools.benchmark.retrieval.causal_cost_diagnostic import build_index, query_index
+
+    captured = parse(b"".join(map(_line, _sqlite_cache_rows())))
+    assert captured["status"] == "complete"
+    assert [(row["key"], row["value"]) for row in captured["counters"]] == list(SQLITE_CACHE_GOLD)
+    indexed = build_index(captured)
+    assert indexed["sqlite_cache_validity"] == "PAGER_WRITE_OUTCOME_NOT_OBSERVED"
+    selected = query_index(indexed, worker_span_id=3, stage="catalog_lock_hold", lane=0)
+    assert selected["matched_workers"] == 1
+    assert selected["sqlite_cache_validity"] == "PAGER_WRITE_OUTCOME_NOT_OBSERVED"
+    assert selected["workers"]["3"]["groups"][0]["direct_counters"] == dict(SQLITE_CACHE_GOLD)
+    viewer = [event for event in chrome_export(captured)["traceEvents"] if event["ph"] == "C"]
+    assert [(event["name"], event["args"][event["name"]]) for event in viewer] == list(
+        SQLITE_CACHE_GOLD
+    )
+
+
+@pytest.mark.parametrize("version", (1, 2, 3))
+@pytest.mark.parametrize("key", tuple(key for key, _ in SQLITE_CACHE_GOLD))
+def test_legacy_timeline_rejects_v4_sqlite_cache_counter(key: str, version: int) -> None:
+    rows = _sqlite_cache_rows(((key, 1),))
+    rows[0]["schema_version"] = version
+    rows[-1]["schema_version"] = version
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(b"".join(map(_line, rows)))
+
+
+def test_sqlite_cache_counter_requires_complete_catalog_hold_set() -> None:
+    for mutate in (
+        lambda rows: rows.pop(4),
+        lambda rows: rows[3]["kind"].update(lane_id=1),
+        lambda rows: rows[5]["kind"].update(value=-1),
+    ):
+        rows = _sqlite_cache_rows()
+        mutate(rows)
+        _resequence_ann_region_rows(rows)
+        with pytest.raises(ValueError, match="SQLite cache|invalid causal timeline row"):
+            parse(b"".join(map(_line, rows)))
+
+
+def test_old_v4_catalog_hold_has_unobserved_cache_not_zeroes() -> None:
+    from tools.benchmark.retrieval.causal_cost_diagnostic import build_index
+
+    rows = _sqlite_cache_rows()
+    rows = [
+        row
+        for row in rows
+        if not (
+            row.get("kind", {}).get("type") == "counter"
+            and row["kind"]["key"] in dict(SQLITE_CACHE_GOLD)
+        )
+    ]
+    _resequence_ann_region_rows(rows)
+    captured = parse(b"".join(map(_line, rows)))
+    assert not captured["spans"][2]["counters"]
+    indexed = build_index(captured)
+    assert indexed["sqlite_cache_validity"] == "NOT_OBSERVED"
+    assert not indexed["workers"]["3"]["groups"][0]["direct_counters"]
+
+
+def test_v4_catalog_writer_settings_keep_signed_unit_and_outside_worker_scope() -> None:
+    from tools.benchmark.retrieval.causal_cost_diagnostic import build_index
+
+    captured = parse(b"".join(map(_line, _sqlite_writer_settings_rows())))
+    assert captured["status"] == "complete"
+    assert captured["spans"][2]["counters"] == dict(SQLITE_WRITER_BEFORE_GOLD)
+    assert captured["spans"][3]["counters"] == dict(SQLITE_WRITER_AFTER_GOLD)
+    assert captured["spans"][2]["parent_span_id"] == captured["spans"][3]["parent_span_id"] == 1
+    indexed = build_index(captured)
+    assert indexed["worker_count"] == 0
+    assert indexed["sqlite_cache_validity"] == "NOT_OBSERVED"
+
+    positive_pages = _sqlite_writer_settings_rows()
+    for row in positive_pages:
+        kind = row.get("kind", {})
+        if kind.get("type") == "counter" and kind["span_id"] == 3:
+            if kind["key"] == "sqlite_cache_size_magnitude":
+                kind["value"] = 8192
+            elif kind["key"] == "sqlite_cache_size_is_kib":
+                kind["value"] = 0
+    pages_capture = parse(b"".join(map(_line, positive_pages)))
+    assert pages_capture["spans"][3]["counters"]["sqlite_cache_size_magnitude"] == 8192
+    assert pages_capture["spans"][3]["counters"]["sqlite_cache_size_is_kib"] == 0
+
+
+@pytest.mark.parametrize("version", (1, 2, 3))
+def test_legacy_timeline_rejects_v4_catalog_writer_settings(version: int) -> None:
+    rows = _sqlite_writer_settings_rows()
+    rows[0]["schema_version"] = version
+    rows[-1]["schema_version"] = version
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(b"".join(map(_line, rows)))
+
+
+def test_catalog_writer_settings_refuse_partial_duplicate_wrong_owner_and_unit() -> None:
+    def remove_before_counter(rows: list[dict]) -> None:
+        rows[:] = [
+            row
+            for row in rows
+            if not (
+                row.get("kind", {}).get("type") == "counter"
+                and row["kind"]["span_id"] == 2
+                and row["kind"]["key"] == "sqlite_cache_spill_pages"
+            )
+        ]
+
+    def duplicate_before_counter(rows: list[dict]) -> None:
+        duplicate = next(
+            row
+            for row in rows
+            if row.get("kind", {}).get("type") == "counter" and row["kind"]["span_id"] == 2
+        )
+        rows.insert(-3, copy.deepcopy(duplicate))
+
+    def remove_after(rows: list[dict]) -> None:
+        rows[:] = [row for row in rows if row.get("kind", {}).get("span_id") != 3]
+
+    def wrong_unit(rows: list[dict]) -> None:
+        next(
+            row
+            for row in rows
+            if row.get("kind", {}).get("key") == "sqlite_cache_size_is_kib"
+            and row["kind"]["span_id"] == 3
+        )["kind"]["value"] = 2
+
+    for mutate in (
+        remove_before_counter,
+        duplicate_before_counter,
+        remove_after,
+        wrong_unit,
+        lambda rows: rows[2]["kind"].update(parent_span_id=99),
+        lambda rows: rows[2]["kind"].update(lane_id=29),
+    ):
+        rows = _sqlite_writer_settings_rows()
+        mutate(rows)
+        _resequence_ann_region_rows(rows)
+        with pytest.raises(ValueError, match="SQLite writer settings|missing parent"):
+            parse(b"".join(map(_line, rows)))
+
+
+@pytest.mark.parametrize(
+    ("missing_span", "missing_key"),
+    ((2, "sqlite_cache_spill_pages"), (3, "sqlite_wal_autocheckpoint_pages")),
+)
+def test_partial_writer_settings_preserve_missing_counter(
+    missing_span: int, missing_key: str
+) -> None:
+    rows = _sqlite_writer_settings_rows()
+    rows = [
+        row
+        for row in rows
+        if not (
+            row.get("kind", {}).get("type") == "counter"
+            and row["kind"]["span_id"] == missing_span
+            and row["kind"]["key"] == missing_key
+        )
+    ]
+    _mark_partial_footer(rows, dropped=1)
+    captured = parse(b"".join(map(_line, rows)))
+    assert captured["status"] == "partial"
+    assert missing_key not in captured["spans"][missing_span]["counters"]
+    assert captured["footer"]["events_dropped"] == 1
+
+
+def test_partial_writer_settings_preserve_missing_after_pair() -> None:
+    rows = _sqlite_writer_settings_rows()
+    rows = [row for row in rows if row.get("kind", {}).get("span_id") != 3]
+    _mark_partial_footer(rows, dropped=7)
+    missing_pair = parse(b"".join(map(_line, rows)))
+    assert missing_pair["status"] == "partial"
+    assert 2 in missing_pair["spans"] and 3 not in missing_pair["spans"]
+
+
+def test_partial_writer_settings_preserve_truncated_prefix() -> None:
+    prefix = _sqlite_writer_settings_rows()[:4]
+    truncated = parse(b"".join(map(_line, prefix)))
+    assert truncated["status"] == "partial"
+    assert truncated["footer"] is None
+    assert truncated["spans"][2]["counters"] == {"sqlite_page_size_bytes": 4096}
+
+
+def test_partial_pager_delta_preserves_observed_prefix_and_wrong_owner_still_refuses() -> None:
+    rows = _sqlite_cache_rows()
+    rows = [
+        row
+        for row in rows
+        if not (
+            row.get("kind", {}).get("type") == "counter"
+            and row["kind"]["key"] == "sqlite_cache_spills"
+        )
+    ]
+    _mark_partial_footer(rows, dropped=1)
+    captured = parse(b"".join(map(_line, rows)))
+    assert captured["status"] == "partial"
+    assert captured["spans"][2]["counters"] == dict(SQLITE_CACHE_GOLD[:-1])
+
+    rows[3]["kind"]["lane_id"] = 1
+    with pytest.raises(ValueError, match="SQLite cache counters target wrong owner"):
+        parse(b"".join(map(_line, rows)))
+
+
+def test_partial_catalog_writer_settings_health_stays_partial() -> None:
+    rows = _sqlite_writer_settings_rows()
+    rows = [
+        row
+        for row in rows
+        if not (
+            row.get("kind", {}).get("type") == "counter"
+            and row["kind"]["span_id"] == 3
+            and row["kind"]["key"] == "sqlite_cache_spill_pages"
+        )
+    ]
+    rows.insert(
+        -2,
+        {
+            "record_type": "event",
+            "capture_id": CAPTURE,
+            "ts_ns": 39,
+            "kind": {"type": "health", "code": "counter_unavailable"},
+        },
+    )
+    _mark_partial_footer(rows, dropped=1)
+    captured = parse(b"".join(map(_line, rows)))
+    assert captured["status"] == "partial"
+    assert [row["code"] for row in captured["health"]] == ["counter_unavailable"]
 
 
 @pytest.mark.parametrize(
@@ -1925,10 +2636,17 @@ def test_counter_events_and_error_terminal_have_viewer_events(key: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "stage", ["native_source_apply", "native_source_path_install", "native_source_map_apply"]
+    "stage",
+    [
+        "native_source_apply",
+        "native_source_owner_prepare",
+        "native_source_path_validate",
+        "native_source_path_install",
+        "native_source_map_apply",
+    ],
 )
 @pytest.mark.parametrize("outcome", ["ok", "error"])
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
 def test_native_source_phase_schema_replays_success_and_refusal(
     stage: str, outcome: str, version: int
 ) -> None:
@@ -2017,6 +2735,12 @@ def test_catalog_lock_stage_preserves_terminal_outcome(stage: str, outcome: str)
 @pytest.mark.parametrize(
     "stage",
     [
+        "native_text_inventory_prepare",
+        "native_text_inventory_map_apply",
+        "native_text_inventory_diff",
+        "native_text_inventory_read",
+        "native_text_occurrence_read",
+        "native_text_posting_edit",
         "native_text_postings",
         "native_text_root",
         "native_coverage_scan",
@@ -2024,11 +2748,12 @@ def test_catalog_lock_stage_preserves_terminal_outcome(stage: str, outcome: str)
         "native_searchable_prepare",
         "native_coverage_save",
         "native_member_assemble",
+        "native_work_seal",
         "managed_object_reserve",
         "managed_object_confirm",
     ],
 )
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
 def test_native_attribution_stage_schema_replays_complete_capture(stage: str, version: int) -> None:
     rows = [json.loads(line) for line in _capture().splitlines()]
     rows[0]["schema_version"] = version
@@ -2038,3 +2763,560 @@ def test_native_attribution_stage_schema_replays_complete_capture(stage: str, ve
     assert captured["spans"][2]["stage"] == stage
     assert summarize(captured)["status"] == "complete"
     assert any(event.get("name") == stage for event in chrome_export(captured)["traceEvents"])
+
+
+def _v5_rows() -> list[dict | list]:
+    legacy = [json.loads(line) for line in _capture().splitlines()]
+    header, footer = legacy[0], legacy[-1]
+    header["schema_version"] = 5
+    footer["schema_version"] = 5
+    return [
+        header,
+        ["e", 1, CAPTURE, 10, ["b", 1, None, "operation", 0, "operation"]],
+        ["e", 2, CAPTURE, 20, ["b", 2, 1, "query_candidate", 0, None]],
+        ["e", 3, CAPTURE, 25, ["c", 2, "candidates", 3]],
+        ["e", 4, CAPTURE, 35, ["e", 2, "ok", None]],
+        ["e", 5, CAPTURE, 40, ["e", 1, "ok", None]],
+        footer,
+    ]
+
+
+def _v5_bytes(rows: list[dict | list]) -> bytes:
+    return b"".join(json.dumps(row, separators=(",", ":")).encode() + b"\n" for row in rows)
+
+
+TEXT_OCCURRENCE_DIFF_GOLD = (
+    ("text_occurrence_prior_validation_attempts", 2),
+    ("text_occurrence_next_validation_attempts", 3),
+    ("text_occurrence_ram_reuses", 1),
+    ("text_occurrence_spill_reuses", 1),
+    ("text_occurrence_equal_reuses", 1),
+    ("text_occurrence_validation_failures", 1),
+)
+
+
+def _v5_diff_rows(*, outcome: str = "ok") -> list[dict | list]:
+    rows = _v5_rows()
+    rows[2][4] = ["b", 2, 1, "native_text_inventory_diff", 2, None]
+    rows[3:4] = [
+        ["e", 0, CAPTURE, 25, ["c", 2, key, value]]
+        for key, value in TEXT_OCCURRENCE_DIFF_GOLD
+    ]
+    rows[-3][4] = ["e", 2, outcome, 1 if outcome == "error" else None]
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count, events_attempted=count,
+        events_accepted=count, events_written=count,
+    )
+    return rows
+
+
+@pytest.mark.parametrize("outcome", ("ok", "error"))
+def test_v5_text_occurrence_diff_family_replays_and_preserves_failed_span(outcome: str) -> None:
+    captured = parse(_v5_bytes(_v5_diff_rows(outcome=outcome)))
+    assert captured["status"] == "complete"
+    assert captured["spans"][2]["outcome"] == outcome
+    assert captured["spans"][2]["counters"] == dict(TEXT_OCCURRENCE_DIFF_GOLD)
+
+
+@pytest.mark.parametrize(
+    ("fault", "error"),
+    (
+        ("missing", "family is partial"),
+        ("duplicate", "duplicated"),
+        ("wrong_stage", "wrong version, stage or lane"),
+        ("wrong_lane", "wrong version, stage or lane"),
+        ("wrong_version", None),
+        ("after_end", "follows span end"),
+        ("too_many_failures", "failures exceed attempts"),
+        ("attempt_overflow", "attempts exceed u64"),
+        ("orphan", "no existing owner"),
+    ),
+)
+def test_v5_text_occurrence_diff_rejects_invalid_owner_or_family(
+    fault: str, error: str | None
+) -> None:
+    rows = _v5_diff_rows()
+    if fault == "missing":
+        del rows[3]
+    elif fault == "duplicate":
+        rows.insert(4, copy.deepcopy(rows[3]))
+    elif fault == "wrong_stage":
+        rows[2][4][3] = "native_text_inventory_read"
+    elif fault == "wrong_lane":
+        rows[2][4][4] = 1
+    elif fault == "wrong_version":
+        rows[0]["schema_version"] = rows[-1]["schema_version"] = 4
+        # Legacy rows are object-encoded; the old schema excludes this family.
+        for index, row in enumerate(rows[1:-1], 1):
+            kind = row[4]
+            if kind[0] == "b":
+                payload = {"type": "span_begin", "span_id": kind[1], "stage": kind[3], "lane_id": kind[4]}
+                payload.update({"root_kind": kind[5]} if kind[2] is None else {"parent_span_id": kind[2]})
+            elif kind[0] == "c":
+                payload = {"type": "counter", "span_id": kind[1], "key": kind[2], "value": kind[3]}
+            else:
+                payload = {"type": "span_end", "span_id": kind[1], "outcome": kind[2]}
+            rows[index] = {"record_type": "event", "output_seq": row[1], "capture_id": CAPTURE, "ts_ns": row[3], "kind": payload}
+    elif fault == "after_end":
+        rows[3], rows[-3] = rows[-3], rows[3]
+        rows[-3][3] = rows[3][3]
+    elif fault == "too_many_failures":
+        rows[8][4][3] = 6
+    elif fault == "attempt_overflow":
+        rows[3][4][3] = (1 << 64) - 1
+    else:
+        rows[3][4][1] = 99
+    count = len(rows) - 2
+    for sequence, row in enumerate(rows[1:-1], 1):
+        row["output_seq" if isinstance(row, dict) else 1] = sequence
+    rows[-1].update(last_output_seq=count, events_attempted=count, events_accepted=count, events_written=count)
+    with pytest.raises(ValueError, match=error):
+        parse(_v5_bytes(rows))
+
+
+def test_v5_text_occurrence_diff_partial_capture_keeps_unobserved_family_partial() -> None:
+    rows = _v5_diff_rows()
+    del rows[3]
+    rows[-1]["status"] = "partial"
+    count = len(rows) - 2
+    for sequence, row in enumerate(rows[1:-1], 1):
+        row[1] = sequence
+    rows[-1].update(last_output_seq=count, events_attempted=count, events_accepted=count, events_written=count)
+    captured = parse(_v5_bytes(rows))
+    assert captured["status"] == "partial"
+    assert "text_occurrence_prior_validation_attempts" not in captured["spans"][2]["counters"]
+
+
+def _v5_object_install_rows() -> list[dict | list]:
+    rows = _v5_rows()
+    rows[2][4] = ["b", 2, 1, "managed_object_install", 0, None]
+    rows[3] = [
+        "e", 3, CAPTURE, 25,
+        {
+            "type": "object_install_aggregate", "span_id": 2,
+            "phase": "file_sync", "calls": 2, "elapsed_sum_ns": 6,
+            "thread_cpu_ns": 9, "failures": 0,
+        },
+    ]
+    rows.insert(
+        4,
+        [
+            "e", 4, CAPTURE, 26,
+            {
+                "type": "object_install_aggregate", "span_id": 2,
+                "phase": "settlement", "calls": 1, "elapsed_sum_ns": 4,
+                "thread_cpu_ns": None, "failures": 1,
+            },
+        ],
+    )
+    rows.insert(5, ["e", 5, CAPTURE, 27, ["c", 2, "thread_cpu_ns", 12]])
+    rows[6][1] = 6
+    rows[7][1] = 7
+    count = len(rows) - 2
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    return rows
+
+
+def test_v5_object_install_phase_replay_summary_and_perfetto() -> None:
+    captured = parse(_v5_bytes(_v5_object_install_rows()))
+    assert captured["status"] == "complete"
+    assert captured["event_count"] == 7
+    assert [row["phase"] for row in captured["object_install_aggregates"]] == [
+        "file_sync", "settlement"
+    ]
+    packet = next(row for row in summarize(captured)["spans"] if row["span_id"] == 2)
+    assert packet["duration_ns"] == 15
+    assert packet["object_install"]["observed_elapsed_sum_ns"] == 10
+    assert packet["object_install"]["unattributed_ns"] == 5
+    assert packet["object_install"]["observed_phases"][1]["thread_cpu_ns"] is None
+    exported = chrome_export(captured)
+    phase_event = next(
+        event for event in exported["traceEvents"]
+        if event["name"] == "object_install:file_sync"
+    )
+    assert phase_event["ph"] == "i"
+    assert phase_event["args"]["elapsed_sum_ns"] == "6"
+    assert phase_event["args"]["thread_cpu_ns"] == "9"
+    assert any(
+        event["name"] == "object_install:file_sync:thread_cpu_ns"
+        and event["ph"] == "C"
+        for event in exported["traceEvents"]
+    )
+    assert not any(
+        event["name"] == "object_install:settlement:thread_cpu_ns"
+        for event in exported["traceEvents"]
+    )
+    exported_packet = next(
+        row for row in exported["quantaIndexSummary"]["spans"]
+        if row["span_id"] == "2"
+    )
+    assert exported_packet["object_install"]["unattributed_ns"] == "5"
+    assert exported["quantaIndexSummary"]["object_install_aggregates"][1][
+        "thread_cpu_ns"
+    ] is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    (
+        ("phase", "unknown", "invalid causal timeline row"),
+        ("span_id", 1, "wrong owner"),
+        ("calls", 0, "invalid causal timeline row"),
+        ("failures", 3, "failures exceed calls"),
+        ("elapsed_sum_ns", 16, "exceed packet wall"),
+    ),
+)
+def test_v5_object_install_aggregate_rejects_invalid_contract(
+    field: str, value: object, error: str
+) -> None:
+    rows = _v5_object_install_rows()
+    rows[3][4][field] = value
+    with pytest.raises(ValueError, match=error):
+        parse(_v5_bytes(rows))
+
+
+def test_v5_object_install_rejects_duplicate_phase_and_missing_cpu_field() -> None:
+    rows = _v5_object_install_rows()
+    rows[4][4]["phase"] = "file_sync"
+    with pytest.raises(ValueError, match="duplicate object install phase"):
+        parse(_v5_bytes(rows))
+    rows = _v5_object_install_rows()
+    del rows[4][4]["thread_cpu_ns"]
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(_v5_bytes(rows))
+
+
+def test_v4_rejects_v5_object_install_stage_and_aggregate() -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    for row in (rows[0], rows[-1]):
+        row["schema_version"] = 4
+    rows[2]["kind"]["stage"] = "managed_object_install"
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(_v5_bytes(rows))
+    rows[2]["kind"]["stage"] = "query_candidate"
+    rows[3]["kind"] = _v5_object_install_rows()[3][4]
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(_v5_bytes(rows))
+
+
+def test_v5_fixed_wire_matches_v4_canonical_semantics() -> None:
+    raw_v5 = _v5_bytes(_v5_rows())
+    captured = parse(raw_v5)
+    legacy = [json.loads(line) for line in _capture().splitlines()]
+    legacy[0]["schema_version"] = 4
+    legacy[-1]["schema_version"] = 4
+    prior = parse(_v5_bytes(legacy))
+    assert captured["schema_version"] == 5
+    assert captured["status"] == prior["status"] == "complete"
+    assert captured["spans"] == prior["spans"]
+    assert captured["counters"] == prior["counters"]
+    assert captured["capture_id"] == prior["capture_id"] == CAPTURE
+    assert captured["event_count"] == prior["event_count"] == 5
+    assert captured["sha256"] == hashlib.sha256(raw_v5).hexdigest()
+
+
+def test_v5_compaction_thread_cpu_keeps_exact_wire_and_rejects_async_stage() -> None:
+    rows = _v5_rows()
+    rows[2][4] = ["b", 2, 1, "compaction", 3, None]
+    rows[3][4] = ["c", 2, "thread_cpu_ns", 7]
+    captured = parse(_v5_bytes(rows))
+    assert captured["status"] == "complete"
+    assert captured["spans"][2]["parent_span_id"] == 1
+    assert captured["counters"] == [
+        {"span_id": 2, "key": "thread_cpu_ns", "value": 7, "ts_ns": 25}
+    ]
+    rows[2][4] = ["b", 2, 1, "semantic_prepare", 3, None]
+    with pytest.raises(ValueError, match="thread CPU"):
+        parse(_v5_bytes(rows))
+
+
+@pytest.mark.parametrize(
+    ("stage", "lane"),
+    (
+        ("managed_object_reserve", 0),
+        ("managed_object_confirm", 0),
+        ("sqlite_work", 3),
+        ("sqlite_work", 8),
+        ("sqlite_work", 11),
+        ("sqlite_work", 21),
+        ("sqlite_work", 26),
+    ),
+)
+def test_v5_managed_and_sqlite_thread_cpu_replays_exact_counter(
+    stage: str, lane: int
+) -> None:
+    rows = _v5_rows()
+    rows[2][4] = ["b", 2, 1, stage, lane, None]
+    rows[3][4] = ["c", 2, THREAD_CPU_GOLD[0], THREAD_CPU_GOLD[1]]
+    captured = parse(_v5_bytes(rows))
+    assert captured["status"] == "complete"
+    assert captured["counters"] == [
+        {"span_id": 2, "key": THREAD_CPU_GOLD[0], "value": THREAD_CPU_GOLD[1], "ts_ns": 25}
+    ]
+    owner = next(span for span in summarize(captured)["spans"] if span["span_id"] == 2)
+    assert owner["stage"] == stage
+    assert owner["lane_id"] == lane
+    assert owner["counters"] == dict([THREAD_CPU_GOLD])
+    viewer = [event for event in chrome_export(captured)["traceEvents"] if event["ph"] == "C"]
+    assert [(event["name"], event["args"][event["name"]]) for event in viewer] == [
+        THREAD_CPU_GOLD
+    ]
+
+
+@pytest.mark.parametrize("lane", (9, 10, 22, 27, 28))
+def test_v5_sqlite_thread_cpu_rejects_unselected_lane(lane: int) -> None:
+    rows = _v5_rows()
+    rows[2][4] = ["b", 2, 1, "sqlite_work", lane, None]
+    rows[3][4] = ["c", 2, THREAD_CPU_GOLD[0], THREAD_CPU_GOLD[1]]
+    with pytest.raises(ValueError, match="thread CPU counter targets wrong stage"):
+        parse(_v5_bytes(rows))
+
+
+@pytest.mark.parametrize("stage", ("managed_object_reserve", "managed_object_confirm"))
+def test_v4_managed_thread_cpu_remains_unselected(stage: str) -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    rows[2]["kind"]["stage"] = stage
+    rows[3]["kind"].update(key=THREAD_CPU_GOLD[0], value=THREAD_CPU_GOLD[1])
+    with pytest.raises(ValueError, match="thread CPU counter targets wrong stage"):
+        parse(b"".join(map(_line, rows)))
+
+
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "native_text_inventory_prepare",
+        "native_text_inventory_map_apply",
+        "native_text_inventory_diff",
+        "native_text_inventory_read",
+        "native_text_occurrence_read",
+        "native_text_posting_edit",
+    ),
+)
+def test_v5_inventory_stage_closes_with_thread_cpu_and_exact_parent(stage: str) -> None:
+    rows = _v5_rows()
+    rows[2][4] = ["b", 2, 1, stage, 2, None]
+    rows[3][4] = ["c", 2, "thread_cpu_ns", 7]
+    captured = parse(_v5_bytes(rows))
+    assert captured["status"] == "complete"
+    span = captured["spans"][2]
+    assert (
+        span["parent_span_id"], span["stage"], span["lane_id"],
+        span["start_ns"], span["end_ns"], span["outcome"], span["counters"]
+    ) == (1, stage, 2, 20, 35, "ok", {"thread_cpu_ns": 7})
+    assert captured["counters"] == [
+        {"span_id": 2, "key": "thread_cpu_ns", "value": 7, "ts_ns": 25}
+    ]
+    assert any(
+        event["name"] == stage and event["ph"] == "X"
+        for event in chrome_export(captured)["traceEvents"]
+    )
+
+
+@pytest.mark.parametrize(
+    "wire_kind",
+    [
+        {"type": "span_begin", "span_id": 2, "stage": "query_candidate", "lane_id": 0},
+        ["b", 2, 1, "query_candidate", 0],
+        ["b", 2, 1, "unknown_stage", 0, None],
+        ["b", 2, 1, "native_text_inventory", 2, None],
+        ["b", 2, 1, "query_candidate", True, None],
+        ["b", 2, 0, "query_candidate", 0, None],
+        ["e", 2, "ok"],
+        ["c", 2, "candidates", -1],
+        ["c", 2, "unknown_counter", 3],
+        ["x", 2, "candidates", 3],
+    ],
+)
+def test_v5_rejects_malformed_common_kind(wire_kind: object) -> None:
+    rows = _v5_rows()
+    rows[2][4] = wire_kind
+    with pytest.raises(ValueError):
+        parse(_v5_bytes(rows))
+
+
+@pytest.mark.parametrize(
+    "outcome,error_code",
+    [("ok", 0), ("aborted", 1), ("error", None), ("cancelled", None),
+     ("error", 1 << 32)],
+)
+def test_v5_span_end_rejects_outcome_code_mismatch_and_u32_overflow(
+    outcome: str, error_code: int | None
+) -> None:
+    rows = _v5_rows()
+    rows[4][4] = ["e", 2, outcome, error_code]
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(_v5_bytes(rows))
+
+
+@pytest.mark.parametrize(
+    "outcome,error_code",
+    [("ok", None), ("aborted", None), ("error", 0), ("cancelled", (1 << 32) - 1)],
+)
+def test_v5_full_schema_and_fast_dispatch_agree_on_span_end_abi(
+    outcome: str, error_code: int | None
+) -> None:
+    schema = _schema_for_version(json.loads(SCHEMA.read_text()), 5)
+    full = Draft202012Validator(schema)
+    dispatch = _dispatch_v5_validators(schema)
+    rows = _v5_rows()
+    rows[4][4] = ["e", 2, outcome, error_code]
+    event = rows[4]
+    assert full.is_valid(event)
+    assert _selected_validator(event, full, dispatch).is_valid(event)
+    for bad in (["e", 2, "ok", 1], ["e", 2, "aborted", 1],
+                ["e", 2, "error", None], ["e", 2, "cancelled", None],
+                ["e", 2, "error", 1 << 32]):
+        changed = ["e", 4, CAPTURE, 35, bad]
+        assert not full.is_valid(changed)
+        assert not _selected_validator(changed, full, dispatch).is_valid(changed)
+    assert parse(_v5_bytes(rows))["spans"][2]["outcome"] == outcome
+
+
+def test_v4_persisted_object_span_end_keeps_legacy_acceptance() -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    rows[4]["kind"].update(outcome="error")
+    assert parse(_v5_bytes(rows))["spans"][2]["outcome"] == "error"
+    rows[4]["kind"].update(outcome="ok", error_code=1)
+    assert parse(_v5_bytes(rows))["spans"][2]["outcome"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        ["e", 2, CAPTURE, 20],
+        ["e", 2, CAPTURE, 20, ["b", 2, 1, "query_candidate", 0, None], 0],
+        ["x", 2, CAPTURE, 20, ["b", 2, 1, "query_candidate", 0, None]],
+        ["e", True, CAPTURE, 20, ["b", 2, 1, "query_candidate", 0, None]],
+        ["e", 2, "f" * 32, 20, ["b", 2, 1, "query_candidate", 0, None]],
+        ["e", 2, CAPTURE, -1, ["b", 2, 1, "query_candidate", 0, None]],
+        {"record_type": "event", "output_seq": 2, "capture_id": CAPTURE, "ts_ns": 20,
+         "kind": {"type": "span_begin", "span_id": 2, "parent_span_id": 1,
+                  "stage": "query_candidate", "lane_id": 0}},
+    ],
+)
+def test_v5_rejects_malformed_or_legacy_outer_event(event: object) -> None:
+    rows = _v5_rows()
+    rows[2] = event
+    with pytest.raises(ValueError):
+        parse(_v5_bytes(rows))
+
+
+def test_v5_rejects_duplicate_rare_kind_field_and_v4_tuple_mixture() -> None:
+    rows = _v5_rows()
+    rows[2] = ["e", 2, CAPTURE, 20, {"type": "phase_identity", "span_id": 1,
+                                      "phase": "full_seal"}]
+    raw = _v5_bytes(rows).replace(b'"span_id":1,', b'"span_id":1,"span_id":1,')
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        parse(raw)
+    rows = _v5_rows()
+    rows[0]["schema_version"] = 4
+    rows[-1]["schema_version"] = 4
+    with pytest.raises(ValueError):
+        parse(_v5_bytes(rows))
+
+
+def test_v5_partial_footer_and_original_byte_cap() -> None:
+    rows = _v5_rows()
+    partial = parse(_v5_bytes(rows[:-1]))
+    assert partial["status"] == "partial"
+    assert partial["footer"] is None
+    with pytest.raises(ValueError, match="byte bound"):
+        parse(_v5_bytes(rows), max_capture_bytes=100)
+    rows[0]["max_record_bytes"] = 256
+    rows[2] = ["e", 2, CAPTURE, 20, {"type": "health", "code": "queue_overflow",
+                                     "detail": "x" * 250}]
+    with pytest.raises(ValueError, match="declared record cap"):
+        parse(_v5_bytes(rows))
+
+
+def test_v5_preserves_full_capture_id_without_numeric_conversion() -> None:
+    rows = _v5_rows()
+    capture_id = "fedcba98765432100123456789abcdef"
+    for row in rows:
+        if isinstance(row, dict):
+            row["capture_id"] = capture_id
+            if row["record_type"] == "header":
+                for field in ("stream_id", "clock_domain", "process_instance"):
+                    row[field] = capture_id
+        else:
+            row[2] = capture_id
+    assert parse(_v5_bytes(rows))["capture_id"] == capture_id
+
+
+@pytest.mark.parametrize(
+    "row_index,path",
+    [
+        (1, (1,)),       # output sequence
+        (1, (3,)),       # timestamp
+        (1, (4, 1)),    # begin span ID
+        (2, (4, 2)),    # parent span ID
+        (2, (4, 4)),    # lane ID
+        (4, (4, 1)),    # end span ID
+        (4, (4, 3)),    # end error code
+        (3, (4, 1)),    # counter span ID
+        (3, (4, 3)),    # counter value
+    ],
+)
+@pytest.mark.parametrize("bad", [1.0, True])
+def test_v5_common_numeric_fields_require_exact_json_integer(
+    row_index: int, path: tuple[int, ...], bad: object
+) -> None:
+    rows = _v5_rows()
+    if row_index == 4 and path == (4, 3):
+        rows[4][4][2] = "error"
+    slot = rows[row_index]
+    for index in path[:-1]:
+        slot = slot[index]
+    slot[path[-1]] = bad
+    with pytest.raises(ValueError):
+        parse(_v5_bytes(rows))
+
+
+def test_v5_exponent_numeric_alias_refused_after_schema_dispatch() -> None:
+    rows = _v5_rows()
+    rows[1][1] = 1.0
+    raw = _v5_bytes(rows).replace(b'"e",1.0,', b'"e",1e0,', 1)
+    schema = _schema_for_version(json.loads(SCHEMA.read_text()), 5)
+    full = Draft202012Validator(schema)
+    event = json.loads(raw.splitlines()[1])
+    fast = _selected_validator(event, full, _dispatch_v5_validators(schema))
+    assert full.is_valid(event) == fast.is_valid(event)
+    with pytest.raises(ValueError, match="exact JSON integer"):
+        parse(raw)
+
+
+def test_v5_rare_owned_renewal_keeps_object_payload_and_v4_semantics() -> None:
+    legacy = _owned_renewal_rows()
+    v4 = parse(_boundary_rows(copy.deepcopy(legacy)))
+    header, footer = legacy[0], legacy[-1]
+    header["schema_version"] = 5
+    footer["schema_version"] = 5
+    footer.update(last_output_seq=5, events_attempted=5, events_accepted=5, events_written=5)
+    rows: list[dict | list] = [
+        header,
+        ["e", 1, CAPTURE, 10, ["b", 1, None, "operation", 0, "operation"]],
+        ["e", 2, CAPTURE, 20, ["b", 2, 1, "sqlite_work", 29, None]],
+        ["e", 3, CAPTURE, 25, {
+            "type": "owned_renewal_refusal", "span_id": 2, "reason": "lease_expired",
+            "now_ms": 500, "lease_until_ms": 500, "deadline_ms": None,
+        }],
+        ["e", 4, CAPTURE, 35, ["e", 2, "error", 1]],
+        ["e", 5, CAPTURE, 40, ["e", 1, "ok", None]],
+        footer,
+    ]
+    v5 = parse(_v5_bytes(rows))
+    assert v5["status"] == "complete"
+    assert v5["owned_renewal_refusals"] == v4["owned_renewal_refusals"]
+    assert v5["spans"] == v4["spans"]

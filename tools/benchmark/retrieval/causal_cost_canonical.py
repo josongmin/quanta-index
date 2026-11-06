@@ -17,6 +17,7 @@ BINDING_WIDTHS = {
 }
 FAMILIES = (
     "sync_aggregates",
+    "object_install_aggregates",
     "object_kind_aggregates",
     "adoption_group_aggregates",
     "bm25_census_aggregates",
@@ -101,12 +102,17 @@ def canonical_profile(capture: dict, product: dict, *, execution_binding: dict) 
             owner = capture["spans"][row["span_id"]]
             if owner["outcome"] != "ok" or (
                 family in BM25_STAGES and owner["stage"] != BM25_STAGES[family]
+            ) or (
+                family == "object_install_aggregates" and owner["stage"] != "managed_object_install"
             ):
                 raise ValueError("canonical aggregate owner stage/outcome differs")
             dimension = row.get(
                 "label",
                 row.get(
-                    "kind", (row.get("reason"), row.get("refs_bucket"), row.get("bytes_bucket"))
+                    "kind",
+                    row.get(
+                        "phase", (row.get("reason"), row.get("refs_bucket"), row.get("bytes_bucket"))
+                    ),
                 ),
             )
             key = (family, row["span_id"], dimension)
@@ -246,6 +252,7 @@ def canonical_native_profile(capture: dict, product: dict, *, execution_binding:
         if not name.startswith("native_") or name.removeprefix("native_") not in observed:
             raise ValueError("canonical Native owner belongs to an unknown phase")
         observed[name.removeprefix("native_")]["owner_spans"].append(row)
+    resource_observation = product["native_resource_observation"]
     return {
         "schema_version": 2,
         "status": "diagnostic_unqualified",
@@ -258,7 +265,7 @@ def canonical_native_profile(capture: dict, product: dict, *, execution_binding:
         "corpus_digest": product["corpus_digest"],
         "config_digest": product["config_digest"],
         "foreground_workload": deepcopy(product["foreground_workload"]),
-        "native_resource_observation": deepcopy(product.get("native_resource_observation")),
+        "native_resource_observation": deepcopy(resource_observation),
         "phases": observed,
         "children": deepcopy(children),
         "scope": {
@@ -266,7 +273,11 @@ def canonical_native_profile(capture: dict, product: dict, *, execution_binding:
             "corpus": "recorded digest; no independent regeneration of source bytes",
             "phase_wall": "parent harness work envelopes; observer_ms is separate; no direct timer equality",
             "child": "two separately captured daemon clocks and cumulative install IO; no parent/child alignment or per-phase IO split",
-            "resources": "validated sampled observation and explicit unsupported axes; no continuous peak or operating qualification",
+            "resources": (
+                "not sampled; native resource observation disabled; no RSS/disk peak or operating qualification"
+                if resource_observation is None
+                else "validated sampled observation and explicit unsupported axes; no continuous peak or operating qualification"
+            ),
             "legacy_equivalence": "NOT_APPLICABLE_NATIVE",
             "performance_qualification": "NOT_RUN",
         },

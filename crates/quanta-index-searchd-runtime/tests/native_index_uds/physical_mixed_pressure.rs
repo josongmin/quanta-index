@@ -5,6 +5,9 @@ use super::*;
 use quanta_index_core::index::ports::CatalogExactHistoryPort as _;
 use quanta_index_searchd_runtime::native::{NativeRetentionConfig, NativeRetentionScope};
 
+#[path = "physical_mixed_pressure/wal_reclaim.rs"]
+mod wal_reclaim;
+
 const PRESSURE_BYTES: usize = 128 * 1024;
 const PRESSURE_MAX_STAGES: u8 = 48;
 const PRESSURE_CYCLES: u64 = 2;
@@ -116,8 +119,8 @@ fn oversized_wal_reclaim(automatic: bool) -> TestResult {
         root.path(),
         &socket,
         work_limits(),
-        mixed_capabilities(resources)?,
-        resources,
+        mixed_capabilities(&resources)?,
+        &resources,
         None,
     )?;
     let running = NativeServiceGuard::start(initial);
@@ -189,8 +192,8 @@ fn oversized_wal_reclaim(automatic: bool) -> TestResult {
         root.path(),
         &socket,
         work_limits(),
-        mixed_capabilities(resources)?,
-        resources,
+        mixed_capabilities(&resources)?,
+        &resources,
         automatic.then(test_reclaim_config),
     )?;
     let maintenance = service.maintenance_handle();
@@ -268,10 +271,10 @@ fn oversized_wal_reclaim(automatic: bool) -> TestResult {
         "5A"
     );
     drop(verify);
-    mixed_quiescent_census(root.path(), &socket, resources)
+    mixed_quiescent_census(root.path(), &socket, &resources)
 }
 
-fn mixed_capabilities(resources: NativeServiceResources) -> TestResult<NativeServiceCapabilities> {
+fn mixed_capabilities(resources: &NativeServiceResources) -> TestResult<NativeServiceCapabilities> {
     let mut capabilities = reclaim_capabilities(None)?;
     let path_need = ResourceNeed {
         provider_units: 0,
@@ -312,7 +315,7 @@ fn mixed_resources() -> NativeServiceResources {
 fn mixed_service(
     root: &std::path::Path,
     socket: &std::path::Path,
-    resources: NativeServiceResources,
+    resources: &NativeServiceResources,
     reclaim: Option<NativeReclaimConfig>,
     retention: NativeRetentionConfig,
 ) -> TestResult<NativeIndexService> {
@@ -330,7 +333,7 @@ fn mixed_service(
 fn mixed_quiescent_census(
     root: &std::path::Path,
     socket: &std::path::Path,
-    resources: NativeServiceResources,
+    resources: &NativeServiceResources,
 ) -> TestResult {
     // A retention-enabled bind starts its owned maintenance pump before it
     // returns. The directory walk and capacity snapshot are separate reads,
@@ -583,7 +586,7 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
     let running = NativeServiceGuard::start(mixed_service(
         root.path(),
         &socket,
-        resources,
+        &resources,
         Some(reclaim),
         retention.clone(),
     )?);
@@ -662,11 +665,11 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
     };
     assert_eq!(pin.view.identity, old_view);
     drop(catalog);
-    mixed_quiescent_census(root.path(), &socket, resources)?;
+    mixed_quiescent_census(root.path(), &socket, &resources)?;
     let service = mixed_service(
         root.path(),
         &socket,
-        resources,
+        &resources,
         Some(reclaim),
         retention.clone(),
     )?;
@@ -770,11 +773,11 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
         .ok_or("mixed pressure byte cap overflow")?;
     let mut capped_resources = resources;
     capped_resources.physical.inventory.max_bytes = cap_bytes;
-    mixed_quiescent_census(root.path(), &socket, capped_resources)?;
+    mixed_quiescent_census(root.path(), &socket, &capped_resources)?;
     let service = mixed_service(
         root.path(),
         &socket,
-        capped_resources,
+        &capped_resources,
         Some(reclaim),
         retention.clone(),
     )?;
@@ -864,7 +867,7 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
     }
     let pressure_active_duration = pressure_started.elapsed();
     running.stop()?;
-    mixed_quiescent_census(root.path(), &socket, capped_resources)?;
+    mixed_quiescent_census(root.path(), &socket, &capped_resources)?;
     check_pin_cutoff(pin_cutoff, "offline pin validation")?;
 
     // Explicit release is performed offline so the raw Catalog writer never
@@ -880,11 +883,11 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
     check_pin_cutoff(pin_cutoff, "pin release")?;
     drop(session);
     drop(catalog);
-    mixed_quiescent_census(root.path(), &socket, capped_resources)?;
+    mixed_quiescent_census(root.path(), &socket, &capped_resources)?;
     let service = mixed_service(
         root.path(),
         &socket,
-        capped_resources,
+        &capped_resources,
         Some(reclaim),
         retention,
     )?;
@@ -958,7 +961,7 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
     );
     assert_eq!(std::fs::read(&current_body_file)?, current_body_wire);
     running.stop()?;
-    mixed_quiescent_census(root.path(), &socket, capped_resources)?;
+    mixed_quiescent_census(root.path(), &socket, &capped_resources)?;
     if matches!(pressure_profile, PressureProfile::Extended) {
         use std::io::Write as _;
 

@@ -135,6 +135,41 @@ fn managed_lease_survives_arc_clone_and_releases_on_last_drop() -> TestResult {
 }
 
 #[test]
+fn managed_and_standalone_reads_recheck_private_names_after_open() -> TestResult {
+    for managed_reader in [false, true] {
+        for change_root in [false, true] {
+            let parent = tempfile::tempdir()?;
+            let root = parent.path().join("store");
+            let seed = FileObjectStore::open(&root)?;
+            let object = seed.put(b"existing", &[], &mut budget()?)?;
+            drop(seed);
+            let reader = if managed_reader {
+                open_managed(&root, scratch(parent.path())?)?
+            } else {
+                FileObjectStore::open(&root)?
+            };
+            let objects = root.join("objects");
+            let changed = if change_root {
+                root.as_path()
+            } else {
+                objects.as_path()
+            };
+            fs::set_permissions(changed, fs::Permissions::from_mode(0o755))?;
+            assert!(matches!(
+                reader.get(object.reference, &mut budget()?),
+                Err(IndexError::Storage(_))
+            ));
+            fs::set_permissions(changed, fs::Permissions::from_mode(0o700))?;
+            assert_eq!(
+                reader.get(object.reference, &mut budget()?)?.payload,
+                b"existing"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn path_aliases_cannot_bypass_exclusive_object_namespace() -> TestResult {
     let parent = tempfile::tempdir()?;
     let root = parent.path().join("store");

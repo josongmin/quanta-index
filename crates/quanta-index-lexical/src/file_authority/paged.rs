@@ -1,4 +1,4 @@
-//! File authority V20: bounded immutable leaves and run posting authority.
+//! File authority V21: bounded immutable leaves and run posting authority.
 //!
 //! The root contains only authenticated map descriptors. Source bodies and
 //! posting pages are selected through the shared object store. A map value
@@ -34,7 +34,7 @@ pub(super) use crate::lexical_root_names::MAX_ROOT_BYTES;
 use crate::lexical_runs::RunRegistry;
 use crate::lexical_store::{BlobRef, MapRoot, ObjectStore};
 
-pub(super) const FILE_AUTHORITY_FORMAT: u16 = 20;
+pub(super) const FILE_AUTHORITY_FORMAT: u16 = 21;
 pub(super) const MAX_RECORD_BYTES: usize = 32 * 1024;
 pub(super) const MAX_SEGMENT_DOCS: usize = 64;
 pub(super) const MAX_POSTING_PAGE_BYTES: usize = 32 * 1024;
@@ -75,7 +75,7 @@ impl<'de, T: Deserialize<'de>, const LIMIT: usize> Deserialize<'de> for BoundedV
 /// Infallible by construction: hashes the fixed policy domain and its policy digest.
 pub(super) fn policy_digest() -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"quanta-file-authority-v20-run-postings-policy\0");
+    hasher.update(b"quanta-file-authority-v21-packed-run-postings-policy\0");
     hasher.update(super::policy_digest_for_paged());
     hasher.finalize().into()
 }

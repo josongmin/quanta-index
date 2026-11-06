@@ -4,10 +4,13 @@
 mod contribution;
 mod entry_map;
 mod entry_patch;
+mod occurrence_pack;
 pub(super) use entry_map::EntryMap;
 
 use super::text_memory::{PreparedKey, PreparedRows};
-use super::text_spool::{MAX_TERM_KEY_BYTES, TextSpool};
+use super::text_occurrence::{OccurrenceCount, OccurrenceReader};
+use super::text_spool::{InventoryPartition, MAX_TERM_KEY_BYTES, TextSpool};
+use quanta_index_core::DiagnosticStageV1;
 use quanta_index_core::index::{
     AttemptContext, BaseMember, DeltaInput, Digest, IndexError, MAX_SOURCE_PATH_BYTES, MapEdit,
     MapRoot, MapValue, MemberBinding, ObjectBatchInput, ObjectRef, OwnerKey, PlanContext,
@@ -61,6 +64,8 @@ impl TextRecipe {
         hash.update(MAX_POSITIONS_PER_TERM.to_le_bytes());
         hash.update(MAX_TERM_KEY_BYTES.to_le_bytes());
         hash.update(b"sensitive+folded;indexed-runs-only;u32-positions");
+        hash.update(entry_map::LAYOUT_POLICY);
+        hash.update(super::text_occurrence::block::LAYOUT_POLICY);
         Digest(hash.finalize().into())
     }
 }
@@ -106,8 +111,9 @@ impl NativeTextIndex {
         }
     }
 
-    /// Bound per-prepare verified-body and confirmed-occurrence reuse separately.
-    /// Zero selects the uncached path for both windows.
+    /// Bound the resident verified-body and confirmed-occurrence hot windows.
+    /// A positive window may spill same-attempt confirmed occurrence identities
+    /// into the already admitted disposable text scratch. Zero disables reuse.
     /// This physical policy does not alter the canonical recipe or output identity.
     pub fn with_inventory_reuse_limit(mut self, entries: usize) -> Result<Self, IndexError> {
         if entries > quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
@@ -200,7 +206,17 @@ mod tests {
         }};
     }
 
+    mod confirmed_reuse_tests;
+    mod count_spill_tests;
+    mod diff_trace_tests;
+    mod install_envelope;
+    mod inventory_trace_tests;
+    mod map_read_window_tests;
+    mod occurrence_blocks;
+    mod occurrence_packets;
+    mod occurrence_validation_trace_tests;
     mod shared_entry_maps;
+    mod token_spool_batch;
 
     #[test]
     fn compact_contribution_has_fixed_data_all_edges_and_needs_no_object_read()
@@ -342,6 +358,36 @@ mod tests {
         ))
     }
 
+    // Fixed work envelope for the explicit multi-owner/190-row packet oracles.
+    // It funds staging, complete validation, PK promotion and cursor replay;
+    // product limits and all denial fixtures keep their original envelopes.
+    fn packet_budget() -> Result<WorkBudget, IndexError> {
+        Ok(WorkBudget::new(
+            WorkLimits {
+                reads: 1024,
+                writes: 1024,
+                bytes: 4_000_000,
+                mutations: 1024,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        ))
+    }
+
+    // Emitted by the called test port from the budget it actually receives.
+    // This detects a stage span whose child context was never passed to I/O.
+    fn observe_port_budget(budget: &WorkBudget, lane: u16) -> Result<(), IndexError> {
+        let diagnostic = budget.request().diagnostic_context().ok_or_else(|| {
+            IndexError::BackendViolation("test port did not receive diagnostic budget".into())
+        })?;
+        let span = diagnostic
+            .enter(DiagnosticStageV1::Operation, DiagnosticLaneV1(lane))
+            .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+        let _finished = span.finish(DiagnosticTerminalV1::Ok);
+        Ok(())
+    }
+
     #[test]
     fn plan_rejects_forged_source_context_before_prepare() -> Result<(), IndexError> {
         let recipe = TextRecipe::new(Digest([7; 32]));
@@ -423,9 +469,11 @@ mod tests {
         occurrence_reads: AtomicUsize,
         installs: AtomicUsize,
         install_batches: AtomicUsize,
+        install_batch_inputs: AtomicUsize,
         install_outputs: Option<Vec<ObjectRef>>,
         token_memory_at_install: Option<(Arc<TokenMemory>, u64)>,
         json_at_install: Option<JsonInstallObservation>,
+        trace_install_budget: bool,
     }
 
     struct JsonInstallObservation {
@@ -489,6 +537,9 @@ mod tests {
             budget: &mut WorkBudget,
         ) -> Result<RegisteredObject, IndexError> {
             budget.checkpoint()?;
+            if self.trace_install_budget {
+                observe_port_budget(budget, 90)?;
+            }
             if let Some(observed) = &self.json_at_install {
                 check_eq!(payload, observed.payload);
                 check!(children.is_empty());
@@ -516,7 +567,7 @@ mod tests {
 
         fn install_batch(
             &self,
-            _: &[ObjectBatchInput],
+            inputs: &[ObjectBatchInput],
             _: &dyn ObjectWriteSink,
             _: &mut WorkBudget,
         ) -> Result<quanta_index_core::index::RegisteredObjectBatch, IndexError> {
@@ -524,6 +575,9 @@ mod tests {
                 check_eq!(memory.live.load(Ordering::Relaxed), *expected_live);
             }
             let _previous = self.install_batches.fetch_add(1, Ordering::Relaxed);
+            let _previous = self
+                .install_batch_inputs
+                .fetch_add(inputs.len(), Ordering::Relaxed);
             if let Some(outputs) = &self.install_outputs {
                 return Ok(quanta_index_core::index::RegisteredObjectBatch::unscoped(
                     outputs
@@ -573,6 +627,7 @@ mod tests {
         counted_terms: MapRoot,
         term_lookups: AtomicUsize,
         map_applies: AtomicUsize,
+        trace_stream_budget: bool,
     }
 
     impl TestMaps {
@@ -702,8 +757,11 @@ mod tests {
             _: &[MapRoot],
             _: &mut dyn MapEditCursor,
             _: &dyn ObjectWriteSink,
-            _: &mut WorkBudget,
+            budget: &mut WorkBudget,
         ) -> Result<quanta_index_core::index::StagedMapRoots, IndexError> {
+            if self.trace_stream_budget {
+                observe_port_budget(budget, 91)?;
+            }
             let _previous = self.map_applies.fetch_add(1, Ordering::Relaxed);
             Err(IndexError::BackendViolation(
                 "unexpected test map write".into(),
@@ -1375,12 +1433,18 @@ mod tests {
 
     #[test]
     fn prepare_trace_preserves_result_and_work_and_closes_error_span() -> Result<(), IndexError> {
+        use quanta_index_core::DiagnosticCounterV1;
+
         #[derive(Debug, Default)]
-        struct CountingClock(AtomicU64);
+        struct CountingClock(AtomicU64, AtomicU64);
 
         impl DiagnosticClockV1 for CountingClock {
             fn now_ns(&self) -> u64 {
                 self.0.fetch_add(1, Ordering::SeqCst)
+            }
+
+            fn thread_cpu_now_ns(&self) -> Option<u64> {
+                Some(self.1.fetch_add(1, Ordering::SeqCst))
             }
         }
 
@@ -1392,7 +1456,7 @@ mod tests {
                 let Ok(mut events) = self.0.try_lock() else {
                     return false;
                 };
-                if events.len() == 32 {
+                if events.len() == 128 {
                     return false;
                 }
                 events.push(event);
@@ -1400,7 +1464,7 @@ mod tests {
             }
         }
 
-        let fixture = visitor_fixture()?;
+        let mut fixture = visitor_fixture()?;
         let index = NativeTextIndex::new(fixture.recipe);
         let scratch = TestScratch::default();
         let custody = TestCustody;
@@ -1460,6 +1524,10 @@ mod tests {
             Err(IndexError::BackendViolation(message)) if message == "unexpected test map write"
         ));
         check_eq!(clock.0.load(Ordering::SeqCst), 0);
+        check_eq!(clock.1.load(Ordering::SeqCst), 0);
+
+        fixture.objects.trace_install_budget = true;
+        fixture.maps.trace_stream_budget = true;
 
         let trace =
             DiagnosticContextV1::new(DiagnosticCaptureIdV1([31; 16]), clock.clone(), sink.clone());
@@ -1486,6 +1554,13 @@ mod tests {
         check_eq!(recorded_candidate.binding, off_candidate.binding);
         check_eq!(recorded_work.usage(), off_work.usage());
         check!(clock.0.load(Ordering::SeqCst) > 0);
+        let restored_success = recorded_work
+            .request()
+            .diagnostic_context()
+            .ok_or_else(|| IndexError::BackendViolation("successful prepare lost trace".into()))?
+            .enter(DiagnosticStageV1::Operation, DiagnosticLaneV1(92))
+            .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+        let _finished = restored_success.finish(DiagnosticTerminalV1::Ok);
 
         let mut recorded_postings_work = WorkBudget::with_request(
             limits,
@@ -1554,6 +1629,14 @@ mod tests {
             Err(IndexError::CorruptObject(_))
         ));
         check_eq!(recorded_error_work.usage(), off_error_work.usage());
+        let restored_error = recorded_error_work
+            .request()
+            .diagnostic_context()
+            .ok_or_else(|| IndexError::BackendViolation("failed prepare lost trace".into()))?
+            .enter(DiagnosticStageV1::Operation, DiagnosticLaneV1(93))
+            .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+        let _finished = restored_error.finish(DiagnosticTerminalV1::Ok);
+        let root_id = root.span_id();
         root.finish(DiagnosticTerminalV1::Ok)
             .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
 
@@ -1562,24 +1645,46 @@ mod tests {
             .lock()
             .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
         let mut stages = BTreeMap::new();
+        let mut parents = BTreeMap::new();
+        let mut port_spans = Vec::new();
         let mut lexical_outcomes = Vec::new();
         let mut postings_outcomes = Vec::new();
+        let mut postings_parent = None;
+        let mut posting_steps = Vec::new();
         let mut root_outcomes = Vec::new();
         for event in events.iter() {
-            if let DiagnosticEventKindV1::SpanBegin { span_id, stage, .. } = event.kind {
+            if let DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                parent_span_id,
+                stage,
+                lane,
+                ..
+            } = event.kind
+            {
                 let _previous = stages.insert(span_id, stage);
+                let _previous = parents.insert(span_id, parent_span_id);
+                if stage == DiagnosticStageV1::Operation && matches!(lane.0, 90 | 91) {
+                    port_spans.push((lane.0, parent_span_id));
+                } else if stage == DiagnosticStageV1::NativeTextPostings && lane.0 == 2 {
+                    check!(postings_parent.replace(span_id).is_none());
+                } else if stage == DiagnosticStageV1::NativeTextPostings
+                    && matches!(lane.0, 35..=39)
+                {
+                    posting_steps.push((lane.0, parent_span_id, span_id));
+                }
             } else if let DiagnosticEventKindV1::SpanEnd { span_id, outcome } = event.kind {
                 let stage = stages.get(&span_id);
                 if stage == Some(&DiagnosticStageV1::LexicalBuild) {
                     lexical_outcomes.push(outcome);
-                } else if stage == Some(&DiagnosticStageV1::NativeTextPostings) {
+                } else if stage == Some(&DiagnosticStageV1::NativeTextPostings)
+                    && postings_parent == Some(span_id)
+                {
                     postings_outcomes.push(outcome);
                 } else if stage == Some(&DiagnosticStageV1::NativeTextRoot) {
                     root_outcomes.push(outcome);
                 }
             }
         }
-        drop(events);
         check_eq!(
             lexical_outcomes,
             vec![
@@ -1592,7 +1697,164 @@ mod tests {
             postings_outcomes,
             vec![DiagnosticTerminalV1::Error { code: 1 }]
         );
+        check_eq!(
+            posting_steps
+                .iter()
+                .map(|(lane, _, _)| *lane)
+                .collect::<Vec<_>>(),
+            vec![35, 39]
+        );
+        for (lane, parent, span_id) in posting_steps {
+            check_eq!(parent, postings_parent);
+            let terminal = events
+                .iter()
+                .filter_map(|event| {
+                    if let DiagnosticEventKindV1::SpanEnd {
+                        span_id: ended,
+                        outcome,
+                    } = event.kind
+                    {
+                        (ended == span_id).then_some(outcome)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            check_eq!(
+                terminal,
+                vec![if lane == 35 {
+                    DiagnosticTerminalV1::Ok
+                } else {
+                    DiagnosticTerminalV1::Error { code: 1 }
+                }]
+            );
+            let cpu = events
+                .iter()
+                .filter_map(|event| {
+                    if let DiagnosticEventKindV1::Counter {
+                        span_id: owner,
+                        key: DiagnosticCounterV1::ThreadCpuNs,
+                        value,
+                    } = event.kind
+                    {
+                        (owner == span_id).then_some(value)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            check_eq!(cpu, vec![1]);
+        }
         check_eq!(root_outcomes, vec![DiagnosticTerminalV1::Ok]);
+        check_eq!(port_spans.len(), 2);
+        let lexical_spans = events
+            .iter()
+            .filter_map(|event| {
+                if let DiagnosticEventKindV1::SpanBegin {
+                    span_id,
+                    stage: DiagnosticStageV1::LexicalBuild,
+                    ..
+                } = event.kind
+                {
+                    Some(span_id)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        check_eq!(lexical_spans.len(), 3);
+        let keys = [
+            DiagnosticCounterV1::WorkReads,
+            DiagnosticCounterV1::WorkWrites,
+            DiagnosticCounterV1::WorkBytes,
+            DiagnosticCounterV1::WorkMutations,
+        ];
+        // Compare the actual prepare envelope with its original work budget,
+        // including both failure outcomes. Nested stages must not be summed.
+        for (span_id, expected) in lexical_spans.into_iter().zip([
+            recorded_work.usage(),
+            recorded_postings_work.usage(),
+            recorded_error_work.usage(),
+        ]) {
+            let end = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event.kind,
+                        DiagnosticEventKindV1::SpanEnd { span_id: ended, .. } if ended == span_id
+                    )
+                })
+                .ok_or_else(|| IndexError::BackendViolation("prepare terminal absent".into()))?;
+            let mut observed = [None; 4];
+            for (event_index, event) in events.iter().enumerate() {
+                if let DiagnosticEventKindV1::Counter {
+                    span_id: owner,
+                    key,
+                    value,
+                } = event.kind
+                    && owner == span_id
+                    && let Some(slot) = keys.iter().position(|known| *known == key)
+                {
+                    check!(event_index < end);
+                    check!(
+                        observed
+                            .get_mut(slot)
+                            .ok_or(IndexError::ResourceLimited)?
+                            .replace(value)
+                            .is_none()
+                    );
+                }
+            }
+            check_eq!(
+                observed,
+                [
+                    expected.reads,
+                    expected.writes,
+                    expected.bytes,
+                    expected.mutations
+                ]
+                .map(Some)
+            );
+        }
+        for lane in [92, 93] {
+            check!(events.iter().any(|event| matches!(
+                event.kind,
+                DiagnosticEventKindV1::SpanBegin {
+                    parent_span_id: Some(parent),
+                    stage: DiagnosticStageV1::Operation,
+                    lane: DiagnosticLaneV1(observed),
+                    ..
+                } if observed == lane && parent == root_id
+            )));
+        }
+        drop(events);
+        for (lane, parent) in port_spans {
+            let expected = if lane == 90 {
+                DiagnosticStageV1::NativeTextRoot
+            } else {
+                DiagnosticStageV1::NativeTextPostings
+            };
+            let stage_id = parent.ok_or_else(|| {
+                IndexError::BackendViolation("test port lost its stage parent".into())
+            })?;
+            check_eq!(stages.get(&stage_id), Some(&expected));
+            let outer_id = if lane == 91 {
+                let outer = parents.get(&stage_id).copied().flatten().ok_or_else(|| {
+                    IndexError::BackendViolation("posting step lost its parent".into())
+                })?;
+                check_eq!(Some(outer), postings_parent);
+                outer
+            } else {
+                stage_id
+            };
+            let lexical_id = parents.get(&outer_id).copied().flatten().ok_or_else(|| {
+                IndexError::BackendViolation("native text stage lost lexical parent".into())
+            })?;
+            check_eq!(
+                stages.get(&lexical_id),
+                Some(&DiagnosticStageV1::LexicalBuild)
+            );
+        }
         Ok(())
     }
 
@@ -1941,6 +2203,7 @@ mod tests {
                     disabled.validated_new_count(
                         fixture.term.as_slice(),
                         fixture.occurrence_ref,
+                        &spool,
                         &mut context,
                     )?,
                     2
@@ -1991,7 +2254,7 @@ mod tests {
             })
             .collect();
         fixture.maps.malformed_page = Some(MapPage::new(entries, false, Vec::new(), None));
-        let mut cursor = MapEntries::new(&fixture.maps, fixture.inventory_root);
+        let mut cursor = MapEntries::new(&fixture.objects, &fixture.maps, fixture.inventory_root);
         check!(matches!(
             cursor.next(&mut budget()?),
             Err(IndexError::BackendViolation(_))
@@ -2020,7 +2283,7 @@ mod tests {
             Vec::new(),
             None,
         ));
-        let mut cursor = MapEntries::new(&fixture.maps, fixture.inventory_root);
+        let mut cursor = MapEntries::new(&fixture.objects, &fixture.maps, fixture.inventory_root);
         let mut work = budget()?;
         for ordinal in 0..64 {
             check_eq!(
@@ -3135,19 +3398,17 @@ mod tests {
                 .join(",");
             let payload_bytes = u64::try_from(format!("{{\"positions\":[{csv}]}}").len())
                 .map_err(|_error| IndexError::ResourceLimited)?;
-            let expected_arrays = std::mem::size_of::<(u32, MapEdit)>()
+            let expected_arrays = std::mem::size_of::<(InventoryPartition, MapEdit)>()
                 .checked_mul(8)
-                .and_then(|rows| rows.checked_add(std::mem::size_of::<ObjectRef>() * 2))
+                // Sensitive/folded keys share one fixed position leaf.
+                .and_then(|rows| rows.checked_add(std::mem::size_of::<ObjectRef>()))
                 .ok_or(IndexError::ResourceLimited)?;
             let expected_arrays =
                 u64::try_from(expected_arrays).map_err(|_error| IndexError::ResourceLimited)?;
             let expected_live = OccurrenceWrites::metadata_bytes(8)?
-                .checked_add(
-                    payload_bytes
-                        .checked_mul(2)
-                        .ok_or(IndexError::ResourceLimited)?,
-                )
-                .and_then(|sum| sum.checked_add(6))
+                // One unique payload remains. Staged key grants have dropped
+                // after SQL insertion, before the residual physical install.
+                .checked_add(payload_bytes)
                 .and_then(|sum| sum.checked_add(expected_arrays))
                 .ok_or(IndexError::ResourceLimited)?;
             fixture.objects.token_memory_at_install = Some((Arc::clone(&memory), expected_live));
@@ -3166,19 +3427,30 @@ mod tests {
             // The fixture's object writer refuses the first occurrence batch.
             // Reaching it proves every token row was admitted and inserted;
             // no map root is published from this disposable attempt.
-            let result = prepare_inventory(
-                &"a ".repeat(runs),
-                &MapRoot(None).into(),
-                0,
-                &mut context,
-                &spool,
-                &mut ConfirmedOccurrences::new(0)?,
-                &mut inventory_edits,
+            let result = {
+                let mut writes = OccurrenceWrites::new();
+                let mut confirmed = ConfirmedOccurrences::new(0)?;
+                prepare_inventory(
+                    &"a ".repeat(runs),
+                    &MapRoot(None).into(),
+                    0,
+                    &mut context,
+                    &spool,
+                    &mut confirmed,
+                    &mut inventory_edits,
+                    &mut writes,
+                )
+                .and_then(|_| {
+                    writes.flush(&mut context, &spool, &mut confirmed, &mut inventory_edits)
+                })
+            };
+            check!(
+                matches!(&result,
+                    Err(IndexError::BackendViolation(message))
+                        if message == "changed-body occurrence build reached object batch"
+                ),
+                "unexpected occurrence install result: {result:?}"
             );
-            check!(matches!(result,
-                Err(IndexError::BackendViolation(message))
-                    if message == "changed-body occurrence build reached object batch"
-            ));
             check_eq!(
                 fixture.objects.install_batches.load(Ordering::Relaxed),
                 batches_before
@@ -3466,6 +3738,7 @@ mod tests {
             };
             let before = fixture.objects.install_batches.load(Ordering::Relaxed);
             let mut inventory_edits = InventoryEdits::new(0)?;
+            let mut writes = OccurrenceWrites::new();
             let result = prepare_inventory(
                 body,
                 &MapRoot(None).into(),
@@ -3474,6 +3747,7 @@ mod tests {
                 &spool,
                 &mut ConfirmedOccurrences::new(0)?,
                 &mut inventory_edits,
+                &mut writes,
             );
             check!(matches!(result, Err(IndexError::ResourceLimited)));
             check_eq!(calls.load(Ordering::Relaxed), 1);
@@ -3889,6 +4163,7 @@ mod tests {
         let scratch = TestScratch::default();
         let custody = TestCustody;
         let mut work = budget()?;
+        let spool = TextSpool::new(&scratch, &mut work)?;
         let mut confirmed = ConfirmedOccurrences::new(1)?;
         confirmed.prepare(attempt, &work)?;
         confirmed.remember(malformed, attempt, &work)?;
@@ -3902,7 +4177,12 @@ mod tests {
                 budget: &mut work,
             };
             check!(matches!(
-                confirmed.validated_new_count(fixture.term.as_slice(), malformed, &mut context),
+                confirmed.validated_new_count(
+                    fixture.term.as_slice(),
+                    malformed,
+                    &spool,
+                    &mut context
+                ),
                 Err(IndexError::CorruptObject(_))
             ));
             check_eq!(
@@ -3929,7 +4209,12 @@ mod tests {
             budget: &mut work,
         };
         check_eq!(
-            confirmed.validated_new_count(fixture.term.as_slice(), malformed, &mut context)?,
+            confirmed.validated_new_count(
+                fixture.term.as_slice(),
+                malformed,
+                &spool,
+                &mut context
+            )?,
             2
         );
         check_eq!(
@@ -3941,13 +4226,13 @@ mod tests {
         );
         context.attempt = foreign;
         check!(matches!(
-            confirmed.validated_new_count(fixture.term.as_slice(), malformed, &mut context),
+            confirmed.validated_new_count(fixture.term.as_slice(), malformed, &spool, &mut context),
             Err(IndexError::FenceLost)
         ));
         context.attempt = attempt;
         context.budget.request().cancel_handle().cancel();
         check!(matches!(
-            confirmed.validated_new_count(fixture.term.as_slice(), malformed, &mut context),
+            confirmed.validated_new_count(fixture.term.as_slice(), malformed, &spool, &mut context),
             Err(IndexError::Cancelled)
         ));
         Ok(())
@@ -3989,7 +4274,7 @@ mod tests {
         for case in 0..3 {
             let mut fixture = visitor_fixture()?;
             if case == 2 {
-                fixture.objects.install_outputs = Some(vec![reference(90), reference(99)]);
+                fixture.objects.install_outputs = Some(vec![reference(99)]);
             }
             let scratch = TestScratch::default();
             let custody = TestCustody;
@@ -3997,26 +4282,26 @@ mod tests {
             let spool = TextSpool::new(&scratch, &mut setup)?;
             // Inputs are explicit unscoped fixture data; the used flush itself
             // receives the tested scope before any SQL/cache/output arrays.
-            let mut writes = OccurrenceWrites::new(0, &setup)?;
+            let mut writes = OccurrenceWrites::new();
+            let mut inventory_edits = InventoryEdits::new(0)?;
             for key in [b"\0a", b"\x01a"] {
                 let payload =
                     super::super::text_memory::encode(&FixedOccurrence { positions: [0] }, &setup)?;
                 writes.push(
-                    PreparedKey::copy(key, &setup)?,
-                    None,
-                    reference(90),
+                    OccurrenceEdit {
+                        ordinal: 0,
+                        key: PreparedKey::copy(key, &setup)?,
+                        prior: None,
+                        identified: reference(90),
+                    },
                     payload,
-                    &setup,
+                    &spool,
+                    &mut inventory_edits,
+                    &mut setup,
                 )?;
             }
-            let edit_bytes = u64::try_from(std::mem::size_of::<(u32, MapEdit)>())
-                .map_err(|_error| IndexError::ResourceLimited)?
-                .checked_mul(2)
-                .ok_or(IndexError::ResourceLimited)?;
-            let (mut work, memory) =
-                funded_batch_budget(if case == 0 { edit_bytes } else { 1_000_000 })?;
+            let (mut work, memory) = funded_batch_budget(if case == 0 { 0 } else { 1_000_000 })?;
             let mut confirmed = ConfirmedOccurrences::new(2)?;
-            let mut inventory_edits = InventoryEdits::new(0)?;
             let mut context = AttemptContext {
                 attempt: test_attempt(fixture.ticket.view.identity.workspace),
                 objects: &fixture.objects,
@@ -4038,8 +4323,13 @@ mod tests {
                 usize::from(case != 0)
             );
             check!(confirmed.references.is_empty());
-            check_eq!(writes.pending.len(), 2);
-            check!(spool.inventory_cursor(1)?.next_edit(&mut setup)?.is_none());
+            check_eq!(writes.pending.len(), 1);
+            check_eq!(writes.fanout_rows, 2);
+            if case == 0 {
+                check!(spool.inventory_cursor(1)?.next_edit(&mut setup)?.is_none());
+            } else {
+                check!(spool.inventory_cursor(1)?.next_edit(&mut setup).is_err());
+            }
             drop(inventory_edits);
             drop(confirmed);
             drop(writes);
@@ -4780,8 +5070,11 @@ mod tests {
     #[test]
     fn funded_occurrence_json_preserves_wire_and_batch_owns_payload_until_drop()
     -> Result<(), IndexError> {
-        let (work, memory) = funded_token_budget(65_536)?;
-        let mut writes = OccurrenceWrites::new(0, &work)?;
+        let (mut work, memory) = funded_token_budget(65_536)?;
+        let scratch = TestScratch::default();
+        let spool = TextSpool::new(&scratch, &mut work)?;
+        let mut edits = InventoryEdits::new(0)?;
+        let mut writes = OccurrenceWrites::new();
         let baseline = memory.live.load(Ordering::Relaxed);
         let mut positions = PreparedPositions::new(4)?;
         for position in [0, 9, u32::MAX] {
@@ -4796,24 +5089,33 @@ mod tests {
             .ok_or(IndexError::ResourceLimited)?;
         check_eq!(memory.live.load(Ordering::Relaxed), expected);
         writes.push(
-            PreparedKey::copy(b"\0a", &work)?,
-            None,
-            reference(90),
+            OccurrenceEdit {
+                ordinal: 0,
+                key: PreparedKey::copy(b"\0a", &work)?,
+                prior: None,
+                identified: reference(90),
+            },
             payload,
-            &work,
+            &spool,
+            &mut edits,
+            &mut work,
         )?;
+        let row_backing = u64::try_from(8 * std::mem::size_of::<(InventoryPartition, MapEdit)>())
+            .map_err(|_error| IndexError::ResourceLimited)?;
         check_eq!(
             memory.live.load(Ordering::Relaxed),
             expected
                 .checked_add(2)
                 .ok_or(IndexError::ResourceLimited)?
                 .checked_add(OccurrenceWrites::metadata_bytes(8)?)
+                .and_then(|bytes| bytes.checked_add(row_backing))
                 .ok_or(IndexError::ResourceLimited)?
         );
         check_eq!(
             writes.inputs.first().map(|input| input.payload.as_slice()),
             Some(gold.as_slice())
         );
+        drop(edits);
         drop(writes);
         check_eq!(memory.live.load(Ordering::Relaxed), 0);
         check!(!memory.invalid_release.load(Ordering::Relaxed));
@@ -4988,7 +5290,7 @@ mod tests {
             .as_ptr();
         fixture.maps.malformed_page = Some(page);
         let (mut work, memory) = funded_token_budget(1)?;
-        let mut cursor = MapEntries::new(&fixture.maps, fixture.inventory_root);
+        let mut cursor = MapEntries::new(&fixture.objects, &fixture.maps, fixture.inventory_root);
         let head = cursor.next(&mut work)?.ok_or(IndexError::ResourceLimited)?;
         check!(head.get()?.0.as_ptr() == pointer);
         check_eq!(head.key()?, b"\0a");
@@ -5060,6 +5362,112 @@ mod tests {
     }
 
     #[test]
+    fn occurrence_packet_installs_identical_leaves_once_and_expands_original_edits()
+    -> Result<(), IndexError> {
+        #[derive(Serialize)]
+        struct FixedOccurrence {
+            positions: [u32; 1],
+        }
+        // Nonadjacent aliases must preserve three term edits while installing
+        // two leaves. A conflicting input or bad later output admits no hit.
+        'cases: for fault in 0..3 {
+            let mut fixture = visitor_fixture()?;
+            fixture.objects.install_outputs = Some(vec![
+                reference(90),
+                reference(if fault == 2 { 99 } else { 91 }),
+            ]);
+            let scratch = TestScratch::default();
+            let custody = TestCustody;
+            let mut work = budget()?;
+            let spool = TextSpool::new(&scratch, &mut work)?;
+            let mut confirmed = ConfirmedOccurrences::new(2)?;
+            let mut edits = InventoryEdits::new(0)?;
+            let mut writes = OccurrenceWrites::new();
+            for (key, reference, position) in [
+                ([0, b'a'], reference(90), 0),
+                ([0, b'b'], reference(91), 1),
+                ([1, b'a'], reference(90), if fault == 1 { 2 } else { 0 }),
+            ] {
+                let result = writes.push(
+                    OccurrenceEdit {
+                        ordinal: 0,
+                        key: PreparedKey::copy(&key, &work)?,
+                        prior: None,
+                        identified: reference,
+                    },
+                    super::super::text_memory::encode(
+                        &FixedOccurrence {
+                            positions: [position],
+                        },
+                        &work,
+                    )?,
+                    &spool,
+                    &mut edits,
+                    &mut work,
+                );
+                if fault == 1 && key == [1, b'a'] {
+                    check!(matches!(result, Err(IndexError::BackendViolation(_))));
+                    check!(confirmed.references.is_empty());
+                    check_eq!(fixture.objects.install_batches.load(Ordering::Relaxed), 0);
+                    edits.flush(&spool, &mut work)?;
+                    check!(spool.inventory_cursor(1)?.next_edit(&mut work).is_err());
+                    continue 'cases;
+                }
+                result?;
+            }
+            let mut context = AttemptContext {
+                attempt: test_attempt(fixture.ticket.view.identity.workspace),
+                objects: &fixture.objects,
+                maps: &fixture.maps,
+                custody: &custody,
+                scratch: &scratch,
+                budget: &mut work,
+            };
+            let result = writes.flush(&mut context, &spool, &mut confirmed, &mut edits);
+            if fault != 0 {
+                check!(matches!(result, Err(IndexError::BackendViolation(_))));
+                check!(confirmed.references.is_empty());
+                check_eq!(writes.pending.len(), 2);
+                check_eq!(
+                    fixture.objects.install_batch_inputs.load(Ordering::Relaxed),
+                    2
+                );
+                check!(
+                    spool
+                        .inventory_cursor(1)?
+                        .next_edit(context.budget)
+                        .is_err()
+                );
+                continue;
+            }
+            result?;
+            check_eq!(fixture.objects.install_batches.load(Ordering::Relaxed), 1);
+            check_eq!(
+                fixture.objects.install_batch_inputs.load(Ordering::Relaxed),
+                2
+            );
+            check_eq!(confirmed.references.len(), 2);
+            edits.flush(&spool, context.budget)?;
+            let mut cursor = spool.inventory_cursor(1)?;
+            for (key, reference) in [
+                ([0, b'a'], reference(90)),
+                ([0, b'b'], reference(91)),
+                ([1, b'a'], reference(90)),
+            ] {
+                let row = cursor
+                    .next_edit(context.budget)?
+                    .ok_or(IndexError::ResourceLimited)?;
+                check_eq!(row.root, 0);
+                check_eq!(row.edit.key.as_slice(), key);
+                check_eq!(row.edit.expected, None);
+                check_eq!(row.edit.next, Some(reference.into()));
+            }
+            check!(cursor.next_edit(context.budget)?.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn confirmed_occurrences_from_32_owners_share_one_inventory_packet() -> Result<(), IndexError> {
         #[derive(Serialize)]
         struct FixedOccurrence {
@@ -5069,7 +5477,7 @@ mod tests {
         fixture.objects.install_outputs = Some(vec![reference(90), reference(91)]);
         let scratch = TestScratch::default();
         let custody = TestCustody;
-        let mut work = budget()?;
+        let mut work = packet_budget()?;
         let spool = TextSpool::new(&scratch, &mut work)?;
         let mut confirmed = ConfirmedOccurrences::new(0)?;
         let mut inventory_edits = InventoryEdits::new(0)?;
@@ -5081,22 +5489,26 @@ mod tests {
             scratch: &scratch,
             budget: &mut work,
         };
+        let mut writes = OccurrenceWrites::new();
         for ordinal in 0..32_u32 {
             inventory_edits.ordinal = ordinal;
-            let mut writes = OccurrenceWrites::new(ordinal, context.budget)?;
             for (surface, reference) in [(0_u8, reference(90)), (1_u8, reference(91))] {
                 writes.push(
-                    PreparedKey::copy(&[surface, b'a'], context.budget)?,
-                    None,
-                    reference,
+                    OccurrenceEdit {
+                        ordinal,
+                        key: PreparedKey::copy(&[surface, b'a'], context.budget)?,
+                        prior: None,
+                        identified: reference,
+                    },
                     super::super::text_memory::encode(
                         &FixedOccurrence { positions: [0] },
                         context.budget,
                     )?,
+                    &spool,
+                    &mut inventory_edits,
                     context.budget,
                 )?;
             }
-            writes.flush(&mut context, &spool, &mut confirmed, &mut inventory_edits)?;
             if ordinal == 30 {
                 check_eq!(inventory_edits.rows.len(), 62);
                 check!(
@@ -5107,7 +5519,13 @@ mod tests {
                 );
             }
         }
-        check_eq!(fixture.objects.install_batches.load(Ordering::Relaxed), 32);
+        check_eq!(fixture.objects.install_batches.load(Ordering::Relaxed), 0);
+        writes.flush(&mut context, &spool, &mut confirmed, &mut inventory_edits)?;
+        check_eq!(fixture.objects.install_batches.load(Ordering::Relaxed), 1);
+        check_eq!(
+            fixture.objects.install_batch_inputs.load(Ordering::Relaxed),
+            2
+        );
         check_eq!(inventory_edits.rows.len(), 0);
         let mut cursor = spool.inventory_cursor(32)?;
         for ordinal in 0..32_u32 {
@@ -5187,7 +5605,7 @@ mod tests {
     #[test]
     fn inventory_delete_row_growth_keeps_old_and_new_custody_and_prior_data()
     -> Result<(), IndexError> {
-        let row = u64::try_from(std::mem::size_of::<(u32, MapEdit)>())
+        let row = u64::try_from(std::mem::size_of::<(InventoryPartition, MapEdit)>())
             .map_err(|_error| IndexError::ResourceLimited)?;
         let small = row.checked_mul(8).ok_or(IndexError::ResourceLimited)?;
         let large = row.checked_mul(16).ok_or(IndexError::ResourceLimited)?;
@@ -5222,7 +5640,7 @@ mod tests {
             };
             check_eq!(deletes.rows.len(), gold.len());
             for ((root, edit), key) in deletes.rows.as_slice().iter().zip(gold) {
-                check_eq!(*root, 0);
+                check_eq!(*root, InventoryPartition::Ready(0));
                 check_eq!(edit.key.as_slice(), &[0, *key]);
                 check_eq!(edit.expected, Some(reference(90).into()));
                 check_eq!(edit.next, None);
@@ -5247,7 +5665,7 @@ mod tests {
         deletes.push(b"\0a", reference(90), &work)?;
         postings.push(b"\0b", &[7; 32], None, Some(reference(91)), &work)?;
         let metadata = u64::try_from(
-            std::mem::size_of::<(u32, MapEdit)>()
+            std::mem::size_of::<(InventoryPartition, MapEdit)>()
                 .checked_add(std::mem::size_of::<(Vec<u8>, MapEdit)>())
                 .and_then(|row| row.checked_mul(8))
                 .ok_or(IndexError::ResourceLimited)?,
@@ -5387,8 +5805,11 @@ mod tests {
     #[test]
     fn empty_occurrence_writes_allocate_nothing_and_first_denial_releases_payload()
     -> Result<(), IndexError> {
-        let (work, memory) = funded_token_budget(3)?;
-        let mut writes = OccurrenceWrites::new(0, &work)?;
+        let (mut work, memory) = funded_token_budget(3)?;
+        let scratch = TestScratch::default();
+        let spool = TextSpool::new(&scratch, &mut budget()?)?;
+        let mut edits = InventoryEdits::new(0)?;
+        let mut writes = OccurrenceWrites::new();
         check_eq!(memory.calls.load(Ordering::Relaxed), 0);
         check_eq!(writes.inputs.capacity(), 0);
         check_eq!(writes.pending.capacity(), 0);
@@ -5396,11 +5817,16 @@ mod tests {
         let payload = super::super::text_memory::encode(&0u32, &work)?;
         check!(matches!(
             writes.push(
-                PreparedKey::copy(b"\0a", &work)?,
-                None,
-                reference(90),
+                OccurrenceEdit {
+                    ordinal: 0,
+                    key: PreparedKey::copy(b"\0a", &work)?,
+                    prior: None,
+                    identified: reference(90)
+                },
                 payload,
-                &work
+                &spool,
+                &mut edits,
+                &mut work
             ),
             Err(IndexError::ResourceLimited)
         ));
@@ -5418,51 +5844,44 @@ mod tests {
         struct FixedOccurrence {
             positions: [u32; 1],
         }
-        let mut fixture = visitor_fixture()?;
-        let payload_gold = br#"{"positions":[0]}"#;
-        let queued = OccurrenceWrites::metadata_bytes(8)?
-            .checked_add(
-                u64::try_from(payload_gold.len())
-                    .map_err(|_error| IndexError::ResourceLimited)?
-                    .checked_mul(2)
-                    .ok_or(IndexError::ResourceLimited)?,
-            )
-            .and_then(|sum| sum.checked_add(4))
-            .ok_or(IndexError::ResourceLimited)?;
-        let arrays = std::mem::size_of::<(u32, MapEdit)>()
-            .checked_mul(8)
-            .and_then(|rows| rows.checked_add(std::mem::size_of::<ObjectRef>() * 2))
-            .ok_or(IndexError::ResourceLimited)?;
-        let arrays = u64::try_from(arrays).map_err(|_error| IndexError::ResourceLimited)?;
-        let peak = queued
-            .checked_add(arrays)
-            .ok_or(IndexError::ResourceLimited)?;
         for case in 0..3 {
-            let ceiling = if case == 0 { queued } else { peak };
-            let (mut work, memory) = funded_batch_budget(ceiling)?;
+            let fixture = visitor_fixture()?;
+            let (mut work, memory) = funded_batch_budget(1_000_000)?;
             let scratch = TestScratch::default();
             let custody = TestCustody;
             let spool = TextSpool::new(&scratch, &mut work)?;
-            let mut writes = OccurrenceWrites::new(0, &work)?;
+            let mut writes = OccurrenceWrites::new();
+            let mut inventory_edits = InventoryEdits::new(0)?;
             for key in [b"\0a", b"\x01a"] {
                 let payload =
                     super::super::text_memory::encode(&FixedOccurrence { positions: [0] }, &work)?;
-                check_eq!(payload.as_slice(), payload_gold);
+                check_eq!(payload.as_slice(), br#"{"positions":[0]}"#);
                 writes.push(
-                    PreparedKey::copy(key, &work)?,
-                    None,
-                    reference(90),
+                    OccurrenceEdit {
+                        ordinal: 0,
+                        key: PreparedKey::copy(key, &work)?,
+                        prior: None,
+                        identified: reference(90),
+                    },
                     payload,
-                    &work,
+                    &spool,
+                    &mut inventory_edits,
+                    &mut work,
                 )?;
             }
-            check_eq!(memory.live.load(Ordering::Relaxed), queued);
-            fixture.objects.token_memory_at_install = Some((Arc::clone(&memory), peak));
-            let installs_before = fixture.objects.install_batches.load(Ordering::Relaxed);
-            if case == 1 {
+            check_eq!(writes.pending.len(), 1);
+            check_eq!(writes.fanout_rows, 2);
+            let denied = Arc::new(AtomicUsize::new(0));
+            if case == 0 {
+                work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+                    RefuseTokenMemory {
+                        calls: Arc::clone(&denied),
+                        requested: Arc::new(AtomicU64::new(0)),
+                    },
+                ))));
+            } else if case == 1 {
                 work.request().cancel_handle().cancel();
             }
-            let mut inventory_edits = InventoryEdits::new(0)?;
             let result = writes.flush(
                 &mut AttemptContext {
                     attempt: test_attempt(fixture.ticket.view.identity.workspace),
@@ -5477,7 +5896,10 @@ mod tests {
                 &mut inventory_edits,
             );
             match case {
-                0 => check!(matches!(result, Err(IndexError::ResourceLimited))),
+                0 => {
+                    check!(matches!(result, Err(IndexError::ResourceLimited)));
+                    check_eq!(denied.load(Ordering::Relaxed), 1);
+                }
                 1 => check!(matches!(result, Err(IndexError::Cancelled))),
                 _ => check!(matches!(result,
                     Err(IndexError::BackendViolation(message))
@@ -5486,29 +5908,27 @@ mod tests {
             }
             check_eq!(
                 fixture.objects.install_batches.load(Ordering::Relaxed),
-                if case == 2 {
-                    installs_before
-                        .checked_add(1)
-                        .ok_or(IndexError::ResourceLimited)?
-                } else {
-                    installs_before
-                },
+                usize::from(case == 2),
             );
-            check_eq!(
-                memory.retained_calls.load(Ordering::Relaxed),
-                usize::from(case == 2)
-            );
-            check_eq!(writes.pending.len(), 2);
-            check_eq!(writes.inputs.len(), 2);
-            // The attempt now owns the admitted packet until it is discarded.
+            check_eq!(writes.pending.len(), 1);
+            check_eq!(writes.inputs.len(), 1);
+            // Staged fanout is never a successful map prefix after refusal.
+            if case == 2 {
+                check!(
+                    spool
+                        .inventory_cursor(1)?
+                        .next_edit(&mut budget()?)
+                        .is_err()
+                );
+            } else {
+                check!(
+                    spool
+                        .inventory_cursor(1)?
+                        .next_edit(&mut budget()?)?
+                        .is_none()
+                );
+            }
             drop(inventory_edits);
-            check_eq!(memory.live.load(Ordering::Relaxed), queued);
-            check!(
-                spool
-                    .inventory_cursor(1)?
-                    .next_edit(&mut budget()?)?
-                    .is_none()
-            );
             drop(writes);
             check_eq!(memory.live.load(Ordering::Relaxed), 0);
             check!(!memory.invalid_release.load(Ordering::Relaxed));
@@ -5523,59 +5943,51 @@ mod tests {
         let large = OccurrenceWrites::metadata_bytes(16)?;
         let peak = small
             .checked_add(large)
-            .and_then(|sum| sum.checked_add(27))
+            .and_then(|sum| sum.checked_add(9))
             .ok_or(IndexError::ResourceLimited)?;
         for ceiling in [
             peak.checked_sub(1).ok_or(IndexError::ResourceLimited)?,
             peak,
         ] {
             let (work, memory) = funded_token_budget(ceiling)?;
-            let mut writes = OccurrenceWrites::new(0, &work)?;
+            let mut writes = OccurrenceWrites::new();
+            // Fixed one-byte payloads isolate metadata growth from SQL fanout.
             for value in 0..8u32 {
                 let payload = super::super::text_memory::encode(&value, &work)?;
-                writes.push(
-                    PreparedKey::copy(b"\0a", &work)?,
-                    None,
-                    reference(90),
+                writes.reserve_next(&work)?;
+                let (payload, grant) = payload.into_parts();
+                writes.inputs.push(ObjectBatchInput {
                     payload,
-                    &work,
-                )?;
+                    children: Vec::new(),
+                });
+                writes.pending.push(PendingOccurrence {
+                    ordinal: 0,
+                    identified: reference(90),
+                });
+                writes.payload_memory.push(grant);
             }
             check_eq!(
                 memory.live.load(Ordering::Relaxed),
-                small.checked_add(24).ok_or(IndexError::ResourceLimited)?
+                small.checked_add(8).ok_or(IndexError::ResourceLimited)?
             );
             let payload = super::super::text_memory::encode(&8u32, &work)?;
-            let result = writes.push(
-                PreparedKey::copy(b"\0a", &work)?,
-                None,
-                reference(90),
-                payload,
-                &work,
-            );
-            let (gold, expected) = if ceiling == peak {
+            let result = writes.reserve_next(&work);
+            if ceiling == peak {
                 result?;
                 check_eq!(writes.inputs.capacity(), 16);
                 check_eq!(memory.peak.load(Ordering::Relaxed), peak);
-                (
-                    b"012345678".as_slice(),
-                    large.checked_add(27).ok_or(IndexError::ResourceLimited)?,
-                )
             } else {
                 check!(matches!(result, Err(IndexError::ResourceLimited)));
                 check_eq!(writes.inputs.capacity(), 8);
-                (
-                    b"01234567".as_slice(),
-                    small.checked_add(24).ok_or(IndexError::ResourceLimited)?,
-                )
-            };
-            check_eq!(writes.inputs.len(), gold.len());
-            check_eq!(writes.pending.len(), gold.len());
-            check_eq!(writes.payload_memory.len(), gold.len());
-            for (input, byte) in writes.inputs.iter().zip(gold) {
+            }
+            check_eq!(writes.inputs.len(), 8);
+            check_eq!(writes.pending.len(), 8);
+            check_eq!(writes.payload_memory.len(), 8);
+            for (input, byte) in writes.inputs.iter().zip(b"01234567") {
                 check_eq!(input.payload.as_slice(), std::slice::from_ref(byte));
             }
-            check_eq!(memory.live.load(Ordering::Relaxed), expected);
+            check_eq!(payload.as_slice(), b"8");
+            drop(payload);
             drop(writes);
             check_eq!(memory.live.load(Ordering::Relaxed), 0);
             check!(!memory.invalid_release.load(Ordering::Relaxed));
@@ -5668,7 +6080,7 @@ pub(super) fn validate_overlay_term_membership(
         .map(|posting| {
             posting
                 .root
-                .lookup(context.maps, &owner_key, context.budget)
+                .lookup(context.objects, context.maps, &owner_key, context.budget)
         })
         .transpose()?
         .flatten();
@@ -5678,7 +6090,16 @@ pub(super) fn validate_overlay_term_membership(
         ));
     }
     if let Some(reference) = posting_ref {
-        let hit = validate_posting_hit(&owner_key, reference, key, root, recipe, context)?;
+        let mut occurrences = OccurrenceReader::new(1)?;
+        let hit = validate_posting_hit(
+            &owner_key,
+            reference,
+            key,
+            root,
+            recipe,
+            context,
+            &mut occurrences,
+        )?;
         if hit.owner != owner {
             return Err(IndexError::CorruptObject(
                 "overlay selected posting owner changed".into(),
@@ -6015,12 +6436,13 @@ struct InventoryReuse {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ConfirmedOccurrence {
     reference: ObjectRef,
-    // Filled only after the original physical read and full occurrence decode.
+    // Filled only after the original object-port read and full count validation.
     validated_count: Option<u64>,
 }
 
 struct ConfirmedOccurrences {
     references: Vec<ConfirmedOccurrence>,
+    blocks: OccurrenceReader,
     limit: usize,
     attempt: Option<quanta_index_core::index::AttemptRef>,
     // Backing is destroyed before its original allocation grant.
@@ -6036,6 +6458,11 @@ impl ConfirmedOccurrences {
         }
         Ok(Self {
             references: Vec::new(),
+            blocks: if limit == 0 {
+                OccurrenceReader::uncached()?
+            } else {
+                OccurrenceReader::new(2)?
+            },
             limit,
             attempt: None,
             memory: None,
@@ -6094,6 +6521,22 @@ impl ConfirmedOccurrences {
             .any(|entry| entry.reference == reference))
     }
 
+    fn contains_or_spill(
+        &self,
+        reference: ObjectRef,
+        attempt: quanta_index_core::index::AttemptRef,
+        spool: &TextSpool,
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        if self.contains(reference, attempt, budget)? {
+            return Ok(true);
+        }
+        if self.limit == 0 {
+            return Ok(false);
+        }
+        spool.confirmed_occurrence_contains(reference, attempt, budget)
+    }
+
     /// Called only after `put_batch` confirms the identified immutable leaf.
     fn remember(
         &mut self,
@@ -6123,27 +6566,101 @@ impl ConfirmedOccurrences {
         Ok(())
     }
 
-    /// Reuse only an occurrence authenticated by this attempt and physically
-    /// decoded once. Published/prior leaves retain the original read path.
+    /// Reuse only an occurrence confirmed by this attempt and fully validated
+    /// once. Published/prior leaves retain the original read path.
+    #[cfg(test)]
     fn validated_new_count(
         &mut self,
         key: &[u8],
         reference: ObjectRef,
+        spool: &TextSpool,
         context: &mut AttemptContext<'_>,
     ) -> Result<u64, IndexError> {
+        self.validated_new_count_observed(key, reference, spool, context, None)
+    }
+
+    fn validated_new_count_observed(
+        &mut self,
+        key: &[u8],
+        reference: ObjectRef,
+        spool: &TextSpool,
+        context: &mut AttemptContext<'_>,
+        mut totals: Option<&mut OccurrenceValidationTotals>,
+    ) -> Result<u64, IndexError> {
+        use super::text_spool::ConfirmedOccurrenceCount;
+
         context.budget.checkpoint()?;
         self.check_attempt(context.attempt)?;
         check_term_key(key)?;
+        if let Some(count) = self
+            .blocks
+            .validated_count(reference, key, context.budget)?
+        {
+            if let Some(totals) = totals.as_deref_mut() {
+                totals.ram_reuse();
+            }
+            return Ok(count.value);
+        }
         let entry = self
             .references
-            .iter_mut()
-            .find(|entry| entry.reference == reference);
-        if let Some(count) = entry.as_ref().and_then(|entry| entry.validated_count) {
+            .iter()
+            .position(|entry| entry.reference == reference);
+        if let Some(count) = entry
+            .and_then(|slot| self.references.get(slot))
+            .and_then(|entry| entry.validated_count)
+        {
+            if let Some(totals) = totals.as_deref_mut() {
+                totals.ram_reuse();
+            }
             return Ok(count);
         }
-        let count = validated_occurrence_count(key, reference, context)?;
-        if let Some(entry) = entry {
-            entry.validated_count = Some(count);
+        // Only confirmed spill rows may carry derived DATA. A disabled or
+        // unprepared memo and a missing row retain the original read path.
+        let spilled = if entry.is_none() && self.limit != 0 && self.attempt == Some(context.attempt)
+        {
+            spool.confirmed_occurrence_count(reference, context.attempt, context.budget)?
+        } else {
+            ConfirmedOccurrenceCount::Missing
+        };
+        if let ConfirmedOccurrenceCount::Validated(count) = spilled {
+            if let Some(totals) = totals.as_deref_mut() {
+                totals.spill_reuse();
+            }
+            return Ok(count);
+        }
+        let count = validated_occurrence_count(
+            key,
+            reference,
+            &mut self.blocks,
+            context,
+            totals,
+            ValidationSide::Next,
+        )?;
+        if !count.leaf {
+            // A retained block window cannot cross preparation attempts.
+            // Zero selects the original read on every count and retains no memo.
+            if self.limit != 0 {
+                self.attempt = Some(context.attempt);
+            }
+            return Ok(count.value);
+        }
+        let count = count.value;
+        if let Some(slot) = entry {
+            self.references
+                .get_mut(slot)
+                .ok_or_else(|| {
+                    IndexError::BackendViolation("confirmed occurrence slot absent".into())
+                })?
+                .validated_count = Some(count);
+        } else if matches!(spilled, ConfirmedOccurrenceCount::Unvalidated) {
+            // A storage/admission failure aborts this attempt. Never hide it
+            // behind an expensive-read fallback or reuse the failed spool.
+            spool.record_validated_occurrence_count(
+                reference,
+                context.attempt,
+                count,
+                context.budget,
+            )?;
         }
         Ok(count)
     }
@@ -6795,6 +7312,7 @@ fn read_posting(
             }
         }
     };
+    value.root.validate_for(entry_map::EntryMapUse::Posting)?;
     if value.df == 0 || value.root.inline_map().is_some_and(|map| map.len() == 0) {
         return Err(IndexError::CorruptObject(
             "native text posting metadata or edges mismatch".into(),
@@ -6814,14 +7332,6 @@ fn read_posting(
         }
     }
     Ok(value)
-}
-
-fn read_occurrence(
-    reference: ObjectRef,
-    objects: &dyn ImmutableObjectPort,
-    budget: &mut WorkBudget,
-) -> Result<super::text_occurrence::ScopedOccurrence, IndexError> {
-    super::text_occurrence::load(reference, objects, budget)
 }
 
 pub(super) struct ValidatedPostingHit {
@@ -6908,9 +7418,10 @@ fn validate_posting_hit(
     root: Root,
     recipe: TextRecipe,
     context: &mut TextReadContext<'_>,
+    occurrences: &mut OccurrenceReader,
 ) -> Result<ValidatedPostingHit, IndexError> {
     let owner = decode_posting_owner(key)?;
-    let occurrence = read_occurrence(occurrence_ref, context.objects, context.budget)?;
+    let occurrence = occurrences.load(occurrence_ref, term_key, context.objects, context.budget)?;
     let contribution_ref = context
         .maps
         .lookup(root.owners, key, context.budget)?
@@ -6961,9 +7472,10 @@ fn validate_posting_hit(
             "text source record path, edges or admission mismatch".into(),
         ));
     }
-    let inventory_ref = contribution
-        .inventory
-        .lookup(context.maps, term_key, context.budget)?;
+    let inventory_ref =
+        contribution
+            .inventory
+            .lookup(context.objects, context.maps, term_key, context.budget)?;
     if inventory_ref != Some(occurrence_ref) {
         return Err(IndexError::CorruptObject(
             "text posting differs from owner term inventory".into(),
@@ -7013,6 +7525,7 @@ impl TextPostingCursor {
     pub(super) fn next_hit(
         &mut self,
         context: &mut TextReadContext<'_>,
+        occurrences: &mut OccurrenceReader,
     ) -> Result<Option<ValidatedPostingHit>, IndexError> {
         context.budget.checkpoint()?;
         let Some(posting) = self.posting else {
@@ -7045,6 +7558,7 @@ impl TextPostingCursor {
                     self.root,
                     self.recipe,
                     context,
+                    occurrences,
                 )?;
                 self.visited = self
                     .visited
@@ -7067,6 +7581,7 @@ impl TextPostingCursor {
                 return Ok(None);
             }
             let page = posting.root.scan(
+                context.objects,
                 context.maps,
                 self.after.as_ref().map(MapPageEntry::key).transpose()?,
                 PAGE,
@@ -7094,21 +7609,29 @@ fn adjust(current: u64, old: u64, new: u64) -> Result<u64, IndexError> {
 }
 
 struct MapEntries<'a> {
+    objects: &'a dyn ImmutableObjectPort,
     maps: &'a dyn PersistentMapPort,
     root: EntryMap,
     after: Option<MapPageEntry>,
     entries: MapPageCursor,
     more: bool,
+    block: Option<entry_map::block::BlockCursor<'a>>,
 }
 
 impl<'a> MapEntries<'a> {
-    fn new(maps: &'a dyn PersistentMapPort, root: impl Into<EntryMap>) -> Self {
+    fn new(
+        objects: &'a dyn ImmutableObjectPort,
+        maps: &'a dyn PersistentMapPort,
+        root: impl Into<EntryMap>,
+    ) -> Self {
         Self {
+            objects,
             maps,
             root: root.into(),
             after: None,
             entries: MapPageCursor::default(),
             more: true,
+            block: None,
         }
     }
 
@@ -7130,12 +7653,27 @@ impl<'a> MapEntries<'a> {
             if !self.more {
                 return Ok(None);
             }
-            let page = self.root.scan(
-                self.maps,
-                self.after.as_ref().map(MapPageEntry::key).transpose()?,
-                PAGE,
-                budget,
-            )?;
+            let page = if let EntryMap::Block(reference) = self.root {
+                if self.block.is_none() {
+                    self.block = Some(entry_map::block::BlockCursor::open(
+                        self.objects,
+                        reference,
+                        budget,
+                    )?);
+                }
+                self.block
+                    .as_mut()
+                    .ok_or(IndexError::ResourceLimited)?
+                    .next_page(PAGE, budget)?
+            } else {
+                self.root.scan(
+                    self.objects,
+                    self.maps,
+                    self.after.as_ref().map(MapPageEntry::key).transpose()?,
+                    PAGE,
+                    budget,
+                )?
+            };
             if page.entries.len()
                 > usize::try_from(PAGE).map_err(|_error| IndexError::ResourceLimited)?
                 || (page.entries.is_empty() && page.has_more)
@@ -7155,6 +7693,9 @@ impl<'a> MapEntries<'a> {
             }
             self.more = page.has_more;
             self.entries = page.cursor();
+            if !self.more {
+                self.block = None;
+            }
         }
     }
 }
@@ -7186,7 +7727,7 @@ type PacketKeyMemory = [Option<quanta_index_core::index::MemoryLease>;
 
 struct InventoryEdits {
     ordinal: u32,
-    rows: PreparedRows<(u32, MapEdit)>,
+    rows: PreparedRows<(InventoryPartition, MapEdit)>,
     key_memory: PacketKeyMemory,
 }
 
@@ -7217,6 +7758,23 @@ impl InventoryEdits {
         next: Option<ObjectRef>,
         budget: &WorkBudget,
     ) -> Result<(), IndexError> {
+        self.push_partition(
+            InventoryPartition::Ready(self.ordinal),
+            key,
+            prior,
+            next,
+            budget,
+        )
+    }
+
+    fn push_partition(
+        &mut self,
+        partition: InventoryPartition,
+        key: PreparedKey,
+        prior: Option<ObjectRef>,
+        next: Option<ObjectRef>,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
         budget.checkpoint()?;
         check_term_key(key.as_slice())?;
         if prior == next {
@@ -7231,7 +7789,7 @@ impl InventoryEdits {
         let (key, grant) = key.into_parts();
         self.rows.push(
             (
-                self.ordinal,
+                partition,
                 MapEdit {
                     key,
                     expected: prior.map(Into::into),
@@ -7240,78 +7798,6 @@ impl InventoryEdits {
             ),
             budget,
         )?;
-        *custody = grant;
-        Ok(())
-    }
-
-    // Reserve the complete post-install output before the object writer runs.
-    // Empty slots cannot reach SQL: the caller fills them only after validating
-    // every returned immutable identity, or abandons the disposable attempt.
-    fn admit_confirmed(
-        &mut self,
-        count: usize,
-        spool: &TextSpool,
-        budget: &mut WorkBudget,
-    ) -> Result<usize, IndexError> {
-        if count == 0 || count > quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
-            return Err(IndexError::ResourceLimited);
-        }
-        if self
-            .rows
-            .len()
-            .checked_add(count)
-            .ok_or(IndexError::ResourceLimited)?
-            > quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
-        {
-            self.flush(spool, budget)?;
-        }
-        let start = self.rows.len();
-        for _ in 0..count {
-            self.rows.push(
-                (
-                    self.ordinal,
-                    MapEdit {
-                        key: Vec::new(),
-                        expected: None,
-                        next: None,
-                    },
-                ),
-                budget,
-            )?;
-        }
-        Ok(start)
-    }
-
-    fn set_confirmed(
-        &mut self,
-        slot: usize,
-        key: PreparedKey,
-        prior: Option<ObjectRef>,
-        next: ObjectRef,
-    ) -> Result<(), IndexError> {
-        let row = self.rows.as_mut_slice().get_mut(slot).ok_or_else(|| {
-            IndexError::BackendViolation("confirmed inventory slot missing".into())
-        })?;
-        if !row.1.key.is_empty() || row.1.expected.is_some() || row.1.next.is_some() {
-            return Err(IndexError::BackendViolation(
-                "confirmed inventory slot was already filled".into(),
-            ));
-        }
-        let custody = self
-            .key_memory
-            .get_mut(slot)
-            .ok_or(IndexError::ResourceLimited)?;
-        if custody.is_some() {
-            return Err(IndexError::BackendViolation(
-                "confirmed inventory key custody was already filled".into(),
-            ));
-        }
-        let (key, grant) = key.into_parts();
-        row.1 = MapEdit {
-            key,
-            expected: prior.map(Into::into),
-            next: Some(next.into()),
-        };
         *custody = grant;
         Ok(())
     }
@@ -7391,12 +7877,29 @@ impl PostingEdits {
     }
 }
 
-type PendingOccurrence = (PreparedKey, Option<ObjectRef>, ObjectRef);
+struct OccurrenceEdit {
+    ordinal: u32,
+    key: PreparedKey,
+    prior: Option<ObjectRef>,
+    identified: ObjectRef,
+}
+
+struct PendingOccurrence {
+    // Largest inventory ordinal among this unique leaf's SQL fanout.
+    ordinal: u32,
+    identified: ObjectRef,
+}
+
+// A byte boundary complements the canonical object-count envelope. Large
+// occurrence leaves flush earlier through the same durable installer.
+const MAX_OCCURRENCE_STAGED_BYTES: u64 = 1024 * 1024;
 
 struct OccurrenceWrites {
-    ordinal: u32,
+    pack_owners: bool,
     inputs: Vec<ObjectBatchInput>,
     pending: Vec<PendingOccurrence>,
+    fanout_rows: u64,
+    retained_bytes: u64,
     // Payload backing drops before its grants; array backing before metadata.
     payload_memory: Vec<Option<quanta_index_core::index::MemoryLease>>,
     metadata_memory: Option<quanta_index_core::index::MemoryLease>,
@@ -7419,15 +7922,16 @@ impl OccurrenceWrites {
         u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)
     }
 
-    fn new(ordinal: u32, budget: &WorkBudget) -> Result<Self, IndexError> {
-        budget.checkpoint()?;
-        Ok(Self {
-            ordinal,
+    fn new() -> Self {
+        Self {
+            pack_owners: false,
             inputs: Vec::new(),
             pending: Vec::new(),
+            fanout_rows: 0,
+            retained_bytes: 0,
             payload_memory: Vec::new(),
             metadata_memory: None,
-        })
+        }
     }
 
     fn reserve_next(&mut self, budget: &WorkBudget) -> Result<(), IndexError> {
@@ -7436,7 +7940,7 @@ impl OccurrenceWrites {
             .len()
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
-        if needed > quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
+        if needed > quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH {
             return Err(IndexError::ResourceLimited);
         }
         if needed <= self.inputs.capacity() {
@@ -7448,7 +7952,7 @@ impl OccurrenceWrites {
             .checked_mul(2)
             .ok_or(IndexError::ResourceLimited)?
             .max(needed)
-            .clamp(8, quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS);
+            .clamp(8, quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH);
         let memory = budget.reserve_memory(
             Self::metadata_bytes(capacity)?,
             quanta_index_core::index::MemoryLifetime::Temporary,
@@ -7475,25 +7979,112 @@ impl OccurrenceWrites {
         Ok(())
     }
 
+    fn needs_flush(&self, reference: ObjectRef, payload_bytes: usize) -> Result<bool, IndexError> {
+        if self.pending.iter().any(|row| row.identified == reference) {
+            return Ok(false);
+        }
+        let next = self
+            .retained_bytes
+            .checked_add(
+                u64::try_from(payload_bytes).map_err(|_error| IndexError::ResourceLimited)?,
+            )
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(!self.pending.is_empty()
+            && (self.pending.len() == quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH
+                || next > MAX_OCCURRENCE_STAGED_BYTES))
+    }
+
     fn push(
         &mut self,
-        term: PreparedKey,
-        prior: Option<ObjectRef>,
-        identified: ObjectRef,
+        edit: OccurrenceEdit,
         payload: super::text_memory::PreparedPayload,
-        budget: &WorkBudget,
+        spool: &TextSpool,
+        inventory_edits: &mut InventoryEdits,
+        budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
-        if self.inputs.len() >= quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
+        let OccurrenceEdit {
+            ordinal,
+            key: term,
+            prior,
+            identified,
+        } = edit;
+        budget.checkpoint()?;
+        if usize::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?
+            >= quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+        {
+            return Err(IndexError::BackendViolation(
+                "occurrence ordinal exceeds its inventory window".into(),
+            ));
+        }
+        check_term_key(term.as_slice())?;
+        if prior == Some(identified) {
+            return Err(IndexError::BackendViolation(
+                "inventory packet contains an unchanged edit".into(),
+            ));
+        }
+        let fanout_rows = self
+            .fanout_rows
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        let duplicate = self
+            .pending
+            .iter()
+            .position(|pending| pending.identified == identified);
+        let retained_bytes = if duplicate.is_some() {
+            self.retained_bytes
+        } else {
+            self.retained_bytes
+                .checked_add(
+                    u64::try_from(payload.as_slice().len())
+                        .map_err(|_error| IndexError::ResourceLimited)?,
+                )
+                .ok_or(IndexError::ResourceLimited)?
+        };
+        if retained_bytes > MAX_OCCURRENCE_STAGED_BYTES {
             return Err(IndexError::ResourceLimited);
         }
-        self.reserve_next(budget)?;
-        let (payload, memory) = payload.into_parts();
-        self.inputs.push(ObjectBatchInput {
-            payload,
-            children: Vec::new(),
-        });
-        self.pending.push((term, prior, identified));
-        self.payload_memory.push(memory);
+        if let Some(slot) = duplicate {
+            let earlier = self.inputs.get(slot).ok_or(IndexError::ResourceLimited)?;
+            if earlier.payload.as_slice() != payload.as_slice() || !earlier.children.is_empty() {
+                return Err(IndexError::BackendViolation(
+                    "native text repeated occurrence identity has different input".into(),
+                ));
+            }
+        } else {
+            self.reserve_next(budget)?;
+        }
+        // Logical fanout is bounded by the existing scratch/work limits, not
+        // retained as aliases in RAM. Planned rows cannot be read as map edits.
+        inventory_edits.push_partition(
+            InventoryPartition::Planned(ordinal),
+            term,
+            prior,
+            Some(identified),
+            budget,
+        )?;
+        if inventory_edits.rows.len() == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
+            inventory_edits.flush(spool, budget)?;
+        }
+        if let Some(slot) = duplicate {
+            let pending = self
+                .pending
+                .get_mut(slot)
+                .ok_or(IndexError::ResourceLimited)?;
+            pending.ordinal = pending.ordinal.max(ordinal);
+        } else {
+            let (payload, memory) = payload.into_parts();
+            self.inputs.push(ObjectBatchInput {
+                payload,
+                children: Vec::new(),
+            });
+            self.pending.push(PendingOccurrence {
+                ordinal,
+                identified,
+            });
+            self.payload_memory.push(memory);
+        }
+        self.fanout_rows = fanout_rows;
+        self.retained_bytes = retained_bytes;
         Ok(())
     }
 
@@ -7504,6 +8095,7 @@ impl OccurrenceWrites {
         confirmed: &mut ConfirmedOccurrences,
         inventory_edits: &mut InventoryEdits,
     ) -> Result<(), IndexError> {
+        context.budget.checkpoint()?;
         if self.inputs.len() != self.pending.len() || self.inputs.len() != self.payload_memory.len()
         {
             return Err(IndexError::BackendViolation(
@@ -7511,57 +8103,62 @@ impl OccurrenceWrites {
             ));
         }
         if self.pending.is_empty() {
+            if self.fanout_rows != 0 || self.retained_bytes != 0 {
+                return Err(IndexError::BackendViolation(
+                    "native occurrence fanout has no physical packet".into(),
+                ));
+            }
             return Ok(());
         }
-        // Core admits its retained reference output before installation.
-        // Reserve the shared edit slots before durable occurrence installation.
-        // A denied row envelope must not leave newly installed objects behind.
-        if inventory_edits.ordinal != self.ordinal {
-            return Err(IndexError::BackendViolation(
-                "native occurrence inventory ordinal changed".into(),
-            ));
+        if self.pending.len() > quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH {
+            return Err(IndexError::ResourceLimited);
         }
-        let first = inventory_edits.admit_confirmed(self.pending.len(), spool, context.budget)?;
-        // Cache backing is admitted before the durable install; remembering a
-        // confirmed result can neither grow nor introduce a late quota refusal.
+        // Every allocation and SQL PK migration is admitted before durable
+        // installation. One unique payload is kept for each physical output.
         confirmed.prepare(context.attempt, context.budget)?;
-        let references = context.put_batch(&self.inputs)?;
-        if references.len() != self.pending.len() {
+        inventory_edits.flush(spool, context.budget)?;
+        let mut references =
+            [ObjectRef(Digest([0; 32])); quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH];
+        for (slot, pending) in self.pending.iter().enumerate() {
+            *references
+                .get_mut(slot)
+                .ok_or(IndexError::ResourceLimited)? = pending.identified;
+        }
+        let references = references
+            .get(..self.pending.len())
+            .ok_or(IndexError::ResourceLimited)?;
+        let confirmation = spool.admit_inventory_confirmation(
+            references,
+            self.fanout_rows,
+            context.attempt,
+            confirmed.limit != 0,
+            context.budget,
+        )?;
+        let installed = context.put_batch(&self.inputs)?;
+        if installed.len() != references.len() {
             return Err(IndexError::BackendViolation(
                 "native text changed occurrence batch lost ordinal output".into(),
             ));
         }
-        // Validate the complete ordinal output before admitting any cache hit.
-        // A malformed later output must not leave a reusable successful prefix.
-        for ((_, _, identified), installed) in self.pending.iter().zip(references.iter()) {
+        // A malformed later output must leave every logical row Planned.
+        for (expected, actual) in references.iter().zip(installed.iter()) {
             context.budget.checkpoint()?;
-            if identified != installed {
+            if expected != actual {
                 return Err(IndexError::BackendViolation(
                     "native text occurrence identity changed during installation".into(),
                 ));
             }
         }
-        for (slot, ((key, prior, identified), installed)) in
-            self.pending.drain(..).zip(references).enumerate()
-        {
-            if identified != installed {
-                return Err(IndexError::BackendViolation(
-                    "native text occurrence identity changed during installation".into(),
-                ));
-            }
-            confirmed.remember(installed, context.attempt, context.budget)?;
-            inventory_edits.set_confirmed(
-                first.checked_add(slot).ok_or(IndexError::ResourceLimited)?,
-                key,
-                prior,
-                installed,
-            )?;
+        confirmation.finish(context.budget)?;
+        for reference in references {
+            confirmed.remember(*reference, context.attempt, context.budget)?;
         }
+        drop(installed);
         self.inputs.clear();
+        self.pending.clear();
         self.payload_memory.clear();
-        if inventory_edits.rows.len() == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
-            inventory_edits.flush(spool, context.budget)?;
-        }
+        self.fanout_rows = 0;
+        self.retained_bytes = 0;
         Ok(())
     }
 }
@@ -7657,6 +8254,7 @@ fn prepare_inventory(
     spool: &TextSpool,
     confirmed: &mut ConfirmedOccurrences,
     inventory_edits: &mut InventoryEdits,
+    writes: &mut OccurrenceWrites,
 ) -> Result<(bool, u64, u64), IndexError> {
     context.budget.checkpoint()?;
     if inventory_edits.ordinal != ordinal {
@@ -7664,44 +8262,198 @@ fn prepare_inventory(
             "native inventory ordinal changed during preparation".into(),
         ));
     }
-    spool.reset_tokens(context.budget)?;
-    let indexed_tokens = visit_indexed_token_batches(body, context.budget, |rows, budget| {
-        spool.token_batch(rows, budget)
-    })?;
+    let diagnostic = context.budget.request().diagnostic_context().cloned();
+    let indexed_tokens = observe_attempt_on_lane(
+        context,
+        diagnostic.as_ref(),
+        DiagnosticStageV1::NativeTextInventoryPrepare,
+        quanta_index_core::DiagnosticLaneV1(34),
+        |_child, context| {
+            spool.reset_tokens(context.budget)?;
+            visit_indexed_token_batches(body, context.budget, |rows, budget| {
+                spool.token_batch(rows, budget)
+            })
+        },
+    )?;
 
     // Merge two sorted file-local inventories. Unchanged occurrence identities
     // stay reachable from the prior COW root; only changed keys become map edits.
-    let mut old_cursor = MapEntries::new(context.maps, prior_inventory);
-    let mut old = old_cursor.next(context.budget)?;
-    let mut writes = OccurrenceWrites::new(ordinal, context.budget)?;
-    let mut changed = false;
-    let mut after = None;
-    let mut term_count = 0_u64;
-    loop {
-        let terms =
-            spool.token_term_page(after.as_ref().map(PreparedKey::as_slice), context.budget)?;
-        if terms.is_empty() {
-            break;
-        }
-        after = terms
-            .last()
-            .map(|key| PreparedKey::copy(key.as_slice(), context.budget))
-            .transpose()?;
-        for term in terms {
-            context.budget.checkpoint()?;
-            term_count = term_count
-                .checked_add(1)
-                .ok_or(IndexError::ResourceLimited)?;
-            check_term_key(term.as_slice())?;
-            while old
-                .as_ref()
-                .map(MapPageEntry::key)
-                .transpose()?
-                .is_some_and(|key| key < term.as_slice())
-            {
-                let entry = old.take().ok_or_else(|| {
-                    IndexError::BackendViolation("native text old inventory lost entry".into())
-                })?;
+    let (changed, term_count) = observe_attempt_on_lane(
+        context,
+        diagnostic.as_ref(),
+        DiagnosticStageV1::NativeTextInventoryPrepare,
+        quanta_index_core::DiagnosticLaneV1(35),
+        |_child, context| {
+            if writes.pack_owners && *prior_inventory == EntryMap::default() {
+                let count = occurrence_pack::prepare_owner_blocks(
+                    ordinal,
+                    context,
+                    spool,
+                    confirmed,
+                    inventory_edits,
+                    writes,
+                )?;
+                return Ok((count != 0, count));
+            }
+            let mut occurrences = if confirmed.limit == 0 {
+                OccurrenceReader::uncached()?
+            } else {
+                OccurrenceReader::new(2)?
+            };
+            let mut old_cursor = MapEntries::new(context.objects, context.maps, prior_inventory);
+            let mut old = old_cursor.next(context.budget)?;
+            let mut changed = false;
+            let mut term_count = 0_u64;
+            // Reborrow the existing authority with the visitor's original
+            // budget. No context or grant escapes the live token cursor.
+            let attempt = context.attempt;
+            let objects = context.objects;
+            let maps = context.maps;
+            let custody = context.custody;
+            let scratch = context.scratch;
+            spool.visit_token_groups(
+                usize::try_from(MAX_POSITIONS_PER_TERM)
+                    .map_err(|_error| IndexError::ResourceLimited)?,
+                context.budget,
+                |term, positions, budget| {
+                    let mut group_context = AttemptContext {
+                        attempt,
+                        objects,
+                        maps,
+                        custody,
+                        scratch,
+                        budget,
+                    };
+                    let context = &mut group_context;
+                    context.budget.checkpoint()?;
+                    term_count = term_count
+                        .checked_add(1)
+                        .ok_or(IndexError::ResourceLimited)?;
+                    check_term_key(term.as_slice())?;
+                    while old
+                        .as_ref()
+                        .map(MapPageEntry::key)
+                        .transpose()?
+                        .is_some_and(|key| key < term.as_slice())
+                    {
+                        let entry = old.take().ok_or_else(|| {
+                            IndexError::BackendViolation(
+                                "native text old inventory lost entry".into(),
+                            )
+                        })?;
+                        let (key, reference) = entry.object_parts()?;
+                        inventory_edits.push(key, *reference, context.budget)?;
+                        changed = true;
+                        if inventory_edits.rows.len()
+                            == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+                        {
+                            inventory_edits.flush(spool, context.budget)?;
+                        }
+                        old = old_cursor.next(context.budget)?;
+                    }
+                    let previous = if old
+                        .as_ref()
+                        .map(MapPageEntry::key)
+                        .transpose()?
+                        .is_some_and(|key| key == term.as_slice())
+                    {
+                        let entry = old.take().ok_or_else(|| {
+                            IndexError::BackendViolation(
+                                "native text old inventory lost match".into(),
+                            )
+                        })?;
+                        let reference = *entry.object_parts()?.1;
+                        old = old_cursor.next(context.budget)?;
+                        Some(reference)
+                    } else {
+                        None
+                    };
+                    if positions.as_slice().is_empty() {
+                        return Err(IndexError::BackendViolation(
+                            "native text token term has no positions".into(),
+                        ));
+                    }
+                    let payload =
+                        super::text_memory::encode(&positions.occurrence, context.budget)?;
+                    let identified =
+                        context
+                            .objects
+                            .identify(payload.as_slice(), &[], context.budget)?;
+                    if previous == Some(identified.reference) {
+                        return Ok(());
+                    }
+                    // The current policy accepts both leaf and block DATA.
+                    // A delta keeps the authenticated block identity when the
+                    // selected term's positions have not changed.
+                    if let Some(reference) = previous {
+                        let prior = occurrences.load(
+                            reference,
+                            term.as_slice(),
+                            context.objects,
+                            context.budget,
+                        )?;
+                        if prior.positions.iter().eq(positions.as_slice()) {
+                            return Ok(());
+                        }
+                    }
+                    drop(positions);
+                    changed = true;
+                    // A pending leaf has not reached confirmation. Keep its
+                    // attempt fence without querying the guaranteed SQL miss;
+                    // push still verifies the duplicate payload before staging.
+                    let pending = writes
+                        .pending
+                        .iter()
+                        .any(|row| row.identified == identified.reference);
+                    if pending {
+                        confirmed.check_attempt(context.attempt)?;
+                    }
+                    if !pending
+                        && confirmed.contains_or_spill(
+                            identified.reference,
+                            context.attempt,
+                            spool,
+                            context.budget,
+                        )?
+                    {
+                        inventory_edits.push_prepared(
+                            term,
+                            previous,
+                            Some(identified.reference),
+                            context.budget,
+                        )?;
+                        if inventory_edits.rows.len()
+                            == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+                        {
+                            inventory_edits.flush(spool, context.budget)?;
+                        }
+                        return Ok(());
+                    }
+                    if writes.needs_flush(identified.reference, payload.as_slice().len())? {
+                        writes.flush(context, spool, confirmed, inventory_edits)?;
+                    }
+                    writes.push(
+                        OccurrenceEdit {
+                            ordinal,
+                            key: term,
+                            prior: previous,
+                            identified: identified.reference,
+                        },
+                        payload,
+                        spool,
+                        inventory_edits,
+                        context.budget,
+                    )?;
+                    if writes.pending.len()
+                        == quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH
+                    {
+                        writes.flush(context, spool, confirmed, inventory_edits)?;
+                    }
+                    Ok(())
+                },
+            )?;
+            while let Some(entry) = old {
+                context.budget.checkpoint()?;
                 let (key, reference) = entry.object_parts()?;
                 inventory_edits.push(key, *reference, context.budget)?;
                 changed = true;
@@ -7710,87 +8462,180 @@ fn prepare_inventory(
                 }
                 old = old_cursor.next(context.budget)?;
             }
-            let previous = if old
-                .as_ref()
-                .map(MapPageEntry::key)
-                .transpose()?
-                .is_some_and(|key| key == term.as_slice())
-            {
-                let entry = old.take().ok_or_else(|| {
-                    IndexError::BackendViolation("native text old inventory lost match".into())
-                })?;
-                let reference = *entry.object_parts()?.1;
-                old = old_cursor.next(context.budget)?;
-                Some(reference)
-            } else {
-                None
-            };
-            let positions = spool.positions(
-                term.as_slice(),
-                usize::try_from(MAX_POSITIONS_PER_TERM)
-                    .map_err(|_error| IndexError::ResourceLimited)?,
-                context.budget,
-            )?;
-            if positions.as_slice().is_empty() {
-                return Err(IndexError::BackendViolation(
-                    "native text token term has no positions".into(),
-                ));
-            }
-            let payload = super::text_memory::encode(&positions.occurrence, context.budget)?;
-            drop(positions);
-            let identified = context
-                .objects
-                .identify(payload.as_slice(), &[], context.budget)?;
-            if previous == Some(identified.reference) {
-                continue;
-            }
-            changed = true;
-            if confirmed.contains(identified.reference, context.attempt, context.budget)? {
-                inventory_edits.push_prepared(
-                    term,
-                    previous,
-                    Some(identified.reference),
-                    context.budget,
-                )?;
-                if inventory_edits.rows.len() == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
-                    inventory_edits.flush(spool, context.budget)?;
-                }
-                continue;
-            }
-            writes.push(
-                term,
-                previous,
-                identified.reference,
-                payload,
-                context.budget,
-            )?;
-            if writes.pending.len() == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
-                writes.flush(context, spool, confirmed, inventory_edits)?;
-            }
-        }
-    }
-    while let Some(entry) = old {
-        context.budget.checkpoint()?;
-        let (key, reference) = entry.object_parts()?;
-        inventory_edits.push(key, *reference, context.budget)?;
-        changed = true;
-        if inventory_edits.rows.len() == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
-            inventory_edits.flush(spool, context.budget)?;
-        }
-        old = old_cursor.next(context.budget)?;
-    }
-    writes.flush(context, spool, confirmed, inventory_edits)?;
+            Ok((changed, term_count))
+        },
+    )?;
     Ok((changed, indexed_tokens, term_count))
+}
+
+#[derive(Clone, Copy)]
+enum ValidationSide {
+    Prior,
+    Next,
+}
+
+#[derive(Default)]
+struct OccurrenceValidationTotals {
+    prior_validation_attempts: u64,
+    next_validation_attempts: u64,
+    ram_reuses: u64,
+    spill_reuses: u64,
+    equal_reuses: u64,
+    validation_failures: u64,
+    overflowed: bool,
+}
+
+impl OccurrenceValidationTotals {
+    fn increment(value: &mut u64, overflowed: &mut bool) {
+        if let Some(next) = value.checked_add(1) {
+            *value = next;
+        } else {
+            *overflowed = true;
+        }
+    }
+
+    fn attempt(&mut self, side: ValidationSide) {
+        let value = match side {
+            ValidationSide::Prior => &mut self.prior_validation_attempts,
+            ValidationSide::Next => &mut self.next_validation_attempts,
+        };
+        Self::increment(value, &mut self.overflowed);
+    }
+
+    fn ram_reuse(&mut self) {
+        Self::increment(&mut self.ram_reuses, &mut self.overflowed);
+    }
+
+    fn spill_reuse(&mut self) {
+        Self::increment(&mut self.spill_reuses, &mut self.overflowed);
+    }
+
+    fn equal_reuse(&mut self) {
+        Self::increment(&mut self.equal_reuses, &mut self.overflowed);
+    }
+
+    fn validation_failure(&mut self) {
+        Self::increment(&mut self.validation_failures, &mut self.overflowed);
+    }
+
+    fn emit(
+        &self,
+        diagnostic: &quanta_index_core::DiagnosticContextV1,
+        span: &quanta_index_core::DiagnosticSpanGuardV1,
+    ) {
+        use quanta_index_core::DiagnosticCounterV1;
+
+        if self.overflowed {
+            diagnostic.health(quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow);
+            return;
+        }
+        for (key, value) in [
+            (
+                DiagnosticCounterV1::TextOccurrencePriorValidationAttempts,
+                self.prior_validation_attempts,
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceNextValidationAttempts,
+                self.next_validation_attempts,
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceRamReuses,
+                self.ram_reuses,
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceSpillReuses,
+                self.spill_reuses,
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceEqualReuses,
+                self.equal_reuses,
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceValidationFailures,
+                self.validation_failures,
+            ),
+        ] {
+            diagnostic.counter(span, key, value);
+        }
+    }
 }
 
 fn validated_occurrence_count(
     key: &[u8],
     reference: ObjectRef,
+    occurrences: &mut OccurrenceReader,
     context: &mut AttemptContext<'_>,
-) -> Result<u64, IndexError> {
-    check_term_key(key)?;
-    let occurrence = read_occurrence(reference, context.objects, context.budget)?;
-    u64::try_from(occurrence.positions.len()).map_err(|_error| IndexError::ResourceLimited)
+    mut totals: Option<&mut OccurrenceValidationTotals>,
+    side: ValidationSide,
+) -> Result<OccurrenceCount, IndexError> {
+    let diagnostic = context.budget.request().diagnostic_context().cloned();
+    observe_text_step(
+        diagnostic.as_ref(),
+        DiagnosticStageV1::NativeTextOccurrenceRead,
+        31,
+        context,
+        |context| {
+            check_term_key(key)?;
+            let retained = occurrences.contains(reference);
+            if !retained && let Some(totals) = totals.as_deref_mut() {
+                totals.attempt(side);
+            }
+            let result = occurrences.count(reference, key, context.objects, context.budget);
+            if result.is_ok()
+                && retained
+                && let Some(totals) = totals.as_deref_mut()
+            {
+                totals.ram_reuse();
+            }
+            if result.is_err()
+                && !retained
+                && let Some(totals) = totals
+            {
+                totals.validation_failure();
+            }
+            result
+        },
+    )
+}
+
+fn read_diff_inventory_entry(
+    cursor: &mut MapEntries<'_>,
+    context: &mut AttemptContext<'_>,
+) -> Result<Option<MapPageEntry>, IndexError> {
+    // Buffered rows and terminal EOF perform no map-port fetch. Avoid three
+    // events and clock reads per row; keep attribution at the actual page fill.
+    if !cursor.entries.is_empty()
+        || !cursor.more
+        || cursor
+            .root
+            .inline_map()
+            .is_some_and(|small| small.len() == 0)
+    {
+        return cursor.next(context.budget);
+    }
+    let diagnostic = context.budget.request().diagnostic_context().cloned();
+    observe_text_step(
+        diagnostic.as_ref(),
+        DiagnosticStageV1::NativeTextInventoryRead,
+        30,
+        context,
+        |context| cursor.next(context.budget),
+    )
+}
+
+fn flush_diff_posting_edits(
+    rows: &mut PostingEdits,
+    spool: &TextSpool,
+    context: &mut AttemptContext<'_>,
+) -> Result<(), IndexError> {
+    let diagnostic = context.budget.request().diagnostic_context().cloned();
+    observe_text_step(
+        diagnostic.as_ref(),
+        DiagnosticStageV1::NativeTextPostingEdit,
+        33,
+        context,
+        |context| rows.flush(spool, context.budget),
+    )
 }
 
 fn diff_inventory(
@@ -7802,16 +8647,95 @@ fn diff_inventory(
     posting_rows: &mut PostingEdits,
     confirmed: &mut ConfirmedOccurrences,
 ) -> Result<(), IndexError> {
+    let diagnostic = context.budget.request().diagnostic_context().cloned();
+    let Some(diagnostic) = diagnostic.as_ref() else {
+        return diff_inventory_inner(
+            owner,
+            (prior, next),
+            context,
+            spool,
+            posting_rows,
+            confirmed,
+            None,
+        );
+    };
+    let Some(span) =
+        crate::causal_profile::enter_span(diagnostic, DiagnosticStageV1::NativeTextInventoryDiff)
+    else {
+        // A missing owner must not attribute its children to an outer span.
+        // Reuse the existing explicit-mask path while preserving product work.
+        return observe_attempt(
+            context,
+            None,
+            DiagnosticStageV1::NativeTextInventoryDiff,
+            |_diagnostic, context| {
+                diff_inventory_inner(
+                    owner,
+                    (prior, next),
+                    context,
+                    spool,
+                    posting_rows,
+                    confirmed,
+                    None,
+                )
+            },
+        );
+    };
+    let child = diagnostic.child_context(&span);
+    let mut totals = OccurrenceValidationTotals::default();
+    let before = context.budget.usage();
+    let result = {
+        let mut scoped_budget = context.budget.scoped_diagnostic_context(Some(child));
+        let mut scoped_context = AttemptContext {
+            attempt: context.attempt,
+            objects: context.objects,
+            maps: context.maps,
+            custody: context.custody,
+            scratch: context.scratch,
+            budget: &mut scoped_budget,
+        };
+        let result = diff_inventory_inner(
+            owner,
+            (prior, next),
+            &mut scoped_context,
+            spool,
+            posting_rows,
+            confirmed,
+            Some(&mut totals),
+        );
+        scoped_context
+            .budget
+            .record_diagnostic_usage_delta(before, &span);
+        result
+    };
+    totals.emit(diagnostic, &span);
+    let _finished = span.finish(quanta_index_core::DiagnosticTerminalV1::from_result(
+        &result,
+    ));
+    result
+}
+
+fn diff_inventory_inner(
+    owner: &[u8],
+    (prior, next): (Option<&Contribution>, Option<&Contribution>),
+    context: &mut AttemptContext<'_>,
+    spool: &TextSpool,
+    posting_rows: &mut PostingEdits,
+    confirmed: &mut ConfirmedOccurrences,
+    mut totals: Option<&mut OccurrenceValidationTotals>,
+) -> Result<(), IndexError> {
     let mut before = MapEntries::new(
+        context.objects,
         context.maps,
         prior.map_or_else(EntryMap::default, |value| value.inventory),
     );
     let mut after = MapEntries::new(
+        context.objects,
         context.maps,
         next.map_or_else(EntryMap::default, |value| value.inventory),
     );
-    let mut old = before.next(context.budget)?;
-    let mut new = after.next(context.budget)?;
+    let mut old = read_diff_inventory_entry(&mut before, context)?;
+    let mut new = read_diff_inventory_entry(&mut after, context)?;
     let mut old_tokens = 0u64;
     let mut new_tokens = 0u64;
     while old.is_some() || new.is_some() {
@@ -7821,13 +8745,30 @@ fn diff_inventory(
             new.as_ref().map(MapPageEntry::object_parts).transpose()?,
         ) {
             (Some((old_key, old_ref)), Some((new_key, new_ref))) if old_key == new_key => {
-                let old_count = validated_occurrence_count(old_key, *old_ref, context)?;
+                let old_count = validated_occurrence_count(
+                    old_key,
+                    *old_ref,
+                    &mut confirmed.blocks,
+                    context,
+                    totals.as_deref_mut(),
+                    ValidationSide::Prior,
+                )?
+                .value;
                 // One immutable identity has one decoded value. Both contribution
                 // totals are still checked after the complete inventory merge.
                 let new_count = if old_ref == new_ref {
+                    if let Some(totals) = totals.as_deref_mut() {
+                        totals.equal_reuse();
+                    }
                     old_count
                 } else {
-                    confirmed.validated_new_count(new_key, *new_ref, context)?
+                    confirmed.validated_new_count_observed(
+                        new_key,
+                        *new_ref,
+                        spool,
+                        context,
+                        totals.as_deref_mut(),
+                    )?
                 };
                 if old_key.first() == Some(&0) {
                     old_tokens = old_tokens
@@ -7846,48 +8787,76 @@ fn diff_inventory(
                         context.budget,
                     )?;
                 }
-                old = before.next(context.budget)?;
-                new = after.next(context.budget)?;
+                old = read_diff_inventory_entry(&mut before, context)?;
+                new = read_diff_inventory_entry(&mut after, context)?;
             }
             (Some((old_key, old_ref)), Some((new_key, _))) if old_key < new_key => {
-                let count = validated_occurrence_count(old_key, *old_ref, context)?;
+                let count = validated_occurrence_count(
+                    old_key,
+                    *old_ref,
+                    &mut confirmed.blocks,
+                    context,
+                    totals.as_deref_mut(),
+                    ValidationSide::Prior,
+                )?
+                .value;
                 if old_key.first() == Some(&0) {
                     old_tokens = old_tokens
                         .checked_add(count)
                         .ok_or(IndexError::ResourceLimited)?;
                 }
                 posting_rows.push(old_key, owner, Some(*old_ref), None, context.budget)?;
-                old = before.next(context.budget)?;
+                old = read_diff_inventory_entry(&mut before, context)?;
             }
             (Some((old_key, old_ref)), None) => {
-                let count = validated_occurrence_count(old_key, *old_ref, context)?;
+                let count = validated_occurrence_count(
+                    old_key,
+                    *old_ref,
+                    &mut confirmed.blocks,
+                    context,
+                    totals.as_deref_mut(),
+                    ValidationSide::Prior,
+                )?
+                .value;
                 if old_key.first() == Some(&0) {
                     old_tokens = old_tokens
                         .checked_add(count)
                         .ok_or(IndexError::ResourceLimited)?;
                 }
                 posting_rows.push(old_key, owner, Some(*old_ref), None, context.budget)?;
-                old = before.next(context.budget)?;
+                old = read_diff_inventory_entry(&mut before, context)?;
             }
             (Some((old_key, _)), Some((new_key, new_ref))) if old_key > new_key => {
-                let count = confirmed.validated_new_count(new_key, *new_ref, context)?;
+                let count = confirmed.validated_new_count_observed(
+                    new_key,
+                    *new_ref,
+                    spool,
+                    context,
+                    totals.as_deref_mut(),
+                )?;
                 if new_key.first() == Some(&0) {
                     new_tokens = new_tokens
                         .checked_add(count)
                         .ok_or(IndexError::ResourceLimited)?;
                 }
                 posting_rows.push(new_key, owner, None, Some(*new_ref), context.budget)?;
-                new = after.next(context.budget)?;
+                new = read_diff_inventory_entry(&mut after, context)?;
             }
             (None, Some((new_key, new_ref))) => {
-                let count = confirmed.validated_new_count(new_key, *new_ref, context)?;
+                let count = confirmed.validated_new_count_observed(
+                    new_key,
+                    *new_ref,
+                    spool,
+                    context,
+                    totals.as_deref_mut(),
+                )?;
                 if new_key.first() == Some(&0) {
                     new_tokens = new_tokens
                         .checked_add(count)
                         .ok_or(IndexError::ResourceLimited)?;
                 }
                 posting_rows.push(new_key, owner, None, Some(*new_ref), context.budget)?;
-                new = after.next(context.budget)?;
+                new = read_diff_inventory_entry(&mut after, context)?;
             }
             (None, None) => break,
             (Some(_), Some(_)) => {
@@ -7897,7 +8866,7 @@ fn diff_inventory(
             }
         }
         if posting_rows.rows.len() == 64 {
-            posting_rows.flush(spool, context.budget)?;
+            flush_diff_posting_edits(posting_rows, spool, context)?;
         }
     }
     if prior.is_some_and(|value| value.indexed_tokens != old_tokens)
@@ -7966,6 +8935,7 @@ struct InventoryBatch {
     bases: PreparedRows<EntryMap>,
     counts: PreparedRows<u64>,
     inventory_edits: InventoryEdits,
+    occurrence_writes: OccurrenceWrites,
     posting_edits: PostingEdits,
     limit: usize,
     source_bytes: u64,
@@ -7985,6 +8955,7 @@ impl InventoryBatch {
             bases: PreparedRows::new(limit)?,
             counts: PreparedRows::new(limit)?,
             inventory_edits: InventoryEdits::new(0)?,
+            occurrence_writes: OccurrenceWrites::new(),
             posting_edits: PostingEdits::new()?,
             limit,
             source_bytes: 0,
@@ -8029,6 +9000,11 @@ impl InventoryBatch {
             ));
         }
         if self.rows.len() == 0 {
+            if !self.occurrence_writes.pending.is_empty() {
+                return Err(IndexError::BackendViolation(
+                    "occurrence packet has no inventory owners".into(),
+                ));
+            }
             return Ok(());
         }
         if self
@@ -8041,17 +9017,51 @@ impl InventoryBatch {
                 "inventory batch contains an unfinished owner".into(),
             ));
         }
+        if self.occurrence_writes.pending.iter().any(|pending| {
+            !usize::try_from(pending.ordinal).is_ok_and(|ordinal| ordinal < self.bases.len())
+        }) {
+            return Err(IndexError::BackendViolation(
+                "occurrence packet lost its inventory ordinal".into(),
+            ));
+        }
+        // File boundaries do not end a physical packet. Confirm the bounded
+        // residual before a mixed-root cursor can expose any of its leaves.
+        if !self.occurrence_writes.pending.is_empty() {
+            let diagnostic = context.budget.request().diagnostic_context().cloned();
+            observe_attempt(
+                context,
+                diagnostic.as_ref(),
+                quanta_index_core::DiagnosticStageV1::NativeTextInventoryPrepare,
+                |_child, context| {
+                    self.occurrence_writes.flush(
+                        context,
+                        spool,
+                        &mut inventories.occurrences,
+                        &mut self.inventory_edits,
+                    )
+                },
+            )?;
+        }
         // Mixed-root SQL rows must exist before either root cursor reads them.
         self.inventory_edits.flush(spool, context.budget)?;
         let roots = if self.bases.len() == 0 {
             None
         } else {
-            Some(entry_patch::apply(
-                self.bases.as_slice(),
-                self.counts.as_slice(),
-                &mut spool.inventory_cursor(self.bases.len())?,
-                |slot| spool.inventory_root_cursor(slot),
+            let diagnostic = context.budget.request().diagnostic_context().cloned();
+            Some(observe_attempt(
                 context,
+                diagnostic.as_ref(),
+                quanta_index_core::DiagnosticStageV1::NativeTextInventoryMapApply,
+                |_child, context| {
+                    entry_patch::apply(
+                        entry_map::EntryMapUse::Inventory,
+                        self.bases.as_slice(),
+                        self.counts.as_slice(),
+                        &mut spool.inventory_cursor(self.bases.len())?,
+                        |slot| spool.inventory_root_cursor(slot),
+                        context,
+                    )
+                },
             )?)
         };
         // All roots must be confirmed before any owner transition is completed.
@@ -8115,7 +9125,7 @@ impl InventoryBatch {
                 &mut inventories.occurrences,
             )?;
         }
-        self.posting_edits.flush(spool, context.budget)?;
+        flush_diff_posting_edits(&mut self.posting_edits, spool, context)?;
         if self.bases.len() != 0 {
             spool.reset_inventories(context.budget)?;
         }
@@ -8279,20 +9289,31 @@ impl InventoryBatch {
                 let ordinal = self.bases.len();
                 self.bases.push(base, context.budget)?;
                 self.counts.push(0, context.budget)?;
-                let body = source_body(record, context)?;
-                let text = std::str::from_utf8(&body.payload).map_err(|_error| {
-                    IndexError::CorruptObject("text-admitted source body is not UTF-8".into())
-                })?;
-                self.inventory_edits.ordinal =
-                    u32::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?;
-                let (changed, tokens, count) = prepare_inventory(
-                    text,
-                    &base,
-                    u32::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?,
+                let diagnostic = context.budget.request().diagnostic_context().cloned();
+                let (changed, tokens, count) = observe_attempt(
                     context,
-                    spool,
-                    &mut inventories.occurrences,
-                    &mut self.inventory_edits,
+                    diagnostic.as_ref(),
+                    quanta_index_core::DiagnosticStageV1::NativeTextInventoryPrepare,
+                    |_child, context| {
+                        let body = source_body(record, context)?;
+                        let text = std::str::from_utf8(&body.payload).map_err(|_error| {
+                            IndexError::CorruptObject(
+                                "text-admitted source body is not UTF-8".into(),
+                            )
+                        })?;
+                        self.inventory_edits.ordinal =
+                            u32::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?;
+                        prepare_inventory(
+                            text,
+                            &base,
+                            u32::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?,
+                            context,
+                            spool,
+                            &mut inventories.occurrences,
+                            &mut self.inventory_edits,
+                            &mut self.occurrence_writes,
+                        )
+                    },
                 )?;
                 self.source_bytes = self
                     .source_bytes
@@ -8454,6 +9475,7 @@ fn finish_change(
 fn inline_posting(
     value: &Posting,
 ) -> Result<Option<quanta_index_core::index::MapValue>, IndexError> {
+    value.root.validate_for(entry_map::EntryMapUse::Posting)?;
     if let Some(small) = value.root.inline_map() {
         if small.len() == 1 && value.df == 1 {
             let (key, child) = small.entry(0)?.ok_or_else(|| {
@@ -8472,15 +9494,83 @@ fn inline_posting(
     }
 }
 
+/// Attribute a bounded text step without changing the work grant or outcome.
+/// Off executes the original closure directly, without clock or context work.
+fn observe_text_step<T>(
+    diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    stage: DiagnosticStageV1,
+    lane: u16,
+    context: &mut AttemptContext<'_>,
+    operation: impl FnOnce(&mut AttemptContext<'_>) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    let Some(diagnostic) = diagnostic else {
+        return operation(context);
+    };
+    let span = match diagnostic.enter(stage, quanta_index_core::DiagnosticLaneV1(lane)) {
+        Ok(span) => span,
+        Err(error) => {
+            diagnostic.health(match error {
+                quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                    quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
+                }
+                quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
+                    quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
+                }
+                quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                    quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
+                }
+                quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
+                    quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
+                }
+            });
+            return operation(context);
+        }
+    };
+    let child = diagnostic.child_context(&span);
+    // Per-object read/edit spans remain time-only. Postings has only bounded
+    // page steps, where work deltas distinguish map build from wrapper writes.
+    let before = (stage == DiagnosticStageV1::NativeTextPostings).then(|| context.budget.usage());
+    let result = {
+        let mut scoped_budget = context.budget.scoped_diagnostic_context(Some(child));
+        let mut scoped_context = AttemptContext {
+            attempt: context.attempt,
+            objects: context.objects,
+            maps: context.maps,
+            custody: context.custody,
+            scratch: context.scratch,
+            budget: &mut scoped_budget,
+        };
+        let result = operation(&mut scoped_context);
+        if let Some(before) = before {
+            scoped_context
+                .budget
+                .record_diagnostic_usage_delta(before, &span);
+        }
+        result
+    };
+    let _finished = span.finish(quanta_index_core::DiagnosticTerminalV1::from_result(
+        &result,
+    ));
+    result
+}
+
 fn apply_postings(
     root: &mut Root,
     context: &mut AttemptContext<'_>,
     spool: &TextSpool,
+    diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
 ) -> Result<(), IndexError> {
     let mut after = None;
     loop {
-        let terms =
-            spool.posting_term_page(after.as_ref().map(PreparedKey::as_slice), context.budget)?;
+        let terms = observe_text_step(
+            diagnostic,
+            DiagnosticStageV1::NativeTextPostings,
+            35,
+            context,
+            |context| {
+                spool.posting_term_page(after.as_ref().map(PreparedKey::as_slice), context.budget)
+            },
+        )?;
         if terms.is_empty() {
             break;
         }
@@ -8539,84 +9629,151 @@ fn apply_postings(
         top_rows
             .try_reserve_exact(length)
             .map_err(|_error| IndexError::ResourceLimited)?;
-        for term in terms.iter() {
-            check_term_key(term.as_slice())?;
-            let old_wrapper = context
-                .maps
-                .lookup(root.terms, term.as_slice(), context.budget)?;
-            let prior = old_wrapper
-                .map(|reference| read_posting(reference, context.objects, context.budget))
-                .transpose()?;
-            let df = spool.posting_cardinality(
-                term.as_slice(),
-                prior.map_or(0, |posting| posting.df),
-                context.budget,
-            )?;
-            metadata.push((
-                PreparedKey::copy(term.as_slice(), context.budget)?,
-                old_wrapper,
-                df,
-            ));
-            bases.push(prior.map_or_else(EntryMap::default, |posting| posting.root));
-            counts.push(df);
-        }
-        let roots = entry_patch::apply(
-            &bases,
-            &counts,
-            &mut spool.posting_cursor(terms),
-            |slot| {
-                Ok(spool.posting_root_cursor(
-                    metadata
-                        .get(slot)
-                        .ok_or(IndexError::ResourceLimited)?
-                        .0
-                        .as_slice(),
-                ))
-            },
+        observe_text_step(
+            diagnostic,
+            DiagnosticStageV1::NativeTextPostings,
+            35,
             context,
+            |context| {
+                for term in terms.iter() {
+                    check_term_key(term.as_slice())?;
+                    let old_wrapper =
+                        context
+                            .maps
+                            .lookup(root.terms, term.as_slice(), context.budget)?;
+                    let prior = old_wrapper
+                        .map(|reference| read_posting(reference, context.objects, context.budget))
+                        .transpose()?;
+                    metadata.push((
+                        PreparedKey::copy(term.as_slice(), context.budget)?,
+                        old_wrapper,
+                        prior.map_or(0, |posting| posting.df),
+                    ));
+                    bases.push(prior.map_or_else(EntryMap::default, |posting| posting.root));
+                }
+                Ok(())
+            },
+        )?;
+        // Authenticate every base and key before reading page-wide deltas.
+        // The scratch SQL scope ends before the independent edit stream runs.
+        let cardinalities = observe_text_step(
+            diagnostic,
+            DiagnosticStageV1::NativeTextPostings,
+            36,
+            context,
+            |context| spool.posting_cardinalities(&terms, context.budget),
+        )?;
+        for (slot, (_, _, df)) in metadata.iter_mut().enumerate() {
+            *df = cardinalities.df(slot, *df)?;
+            counts.push(*df);
+        }
+        drop(cardinalities);
+        let roots = observe_text_step(
+            diagnostic,
+            DiagnosticStageV1::NativeTextPostings,
+            37,
+            context,
+            |context| {
+                entry_patch::apply(
+                    entry_map::EntryMapUse::Posting,
+                    &bases,
+                    &counts,
+                    &mut spool.posting_cursor(terms),
+                    |slot| {
+                        Ok(spool.posting_root_cursor(
+                            metadata
+                                .get(slot)
+                                .ok_or(IndexError::ResourceLimited)?
+                                .0
+                                .as_slice(),
+                        ))
+                    },
+                    context,
+                )
+            },
         )?;
         if roots.len() != metadata.len() {
             return Err(IndexError::BackendViolation(
                 "native text posting batch lost ordinal output".into(),
             ));
         }
-        for ((term, old_wrapper, df), new_root) in
-            metadata.into_iter().zip(roots.as_slice().iter().copied())
-        {
-            if df != 0 {
-                if let Some(value) = inline_posting(&Posting { root: new_root, df })? {
-                    if old_wrapper != Some(value) {
-                        let custody = key_memory
-                            .get_mut(top_rows.len())
-                            .ok_or(IndexError::ResourceLimited)?;
-                        let (key, grant) = term.into_parts();
+        observe_text_step(
+            diagnostic,
+            DiagnosticStageV1::NativeTextPostings,
+            38,
+            context,
+            |context| {
+                for ((term, old_wrapper, df), new_root) in
+                    metadata.into_iter().zip(roots.as_slice().iter().copied())
+                {
+                    if df != 0 {
+                        if let Some(value) = inline_posting(&Posting { root: new_root, df })? {
+                            if old_wrapper != Some(value) {
+                                let custody = key_memory
+                                    .get_mut(top_rows.len())
+                                    .ok_or(IndexError::ResourceLimited)?;
+                                let (key, grant) = term.into_parts();
+                                *custody = grant;
+                                top_rows.push((
+                                    0,
+                                    MapEdit {
+                                        key,
+                                        expected: old_wrapper,
+                                        next: Some(value),
+                                    },
+                                ));
+                            }
+                            continue;
+                        }
+                        let payload = super::text_memory::encode(
+                            &Posting { root: new_root, df },
+                            context.budget,
+                        )?;
+                        let children = posting_children(&Posting { root: new_root, df })?;
+                        let identified = context.objects.identify(
+                            payload.as_slice(),
+                            children.as_slice(),
+                            context.budget,
+                        )?;
+                        // Only top rows from earlier successful put_batch calls can hit.
+                        // This prepare's original attempt retains custody; the final
+                        // parent-map install still authenticates every registered child.
+                        if spool.has_confirmed_posting(identified.reference, context.budget)? {
+                            if old_wrapper != Some(identified.reference.into()) {
+                                let custody =
+                                    key_memory.get_mut(top_rows.len()).ok_or_else(|| {
+                                        IndexError::BackendViolation(
+                                            "posting reused key exceeds page".into(),
+                                        )
+                                    })?;
+                                let (key, grant) = term.into_parts();
+                                *custody = grant;
+                                top_rows.push((
+                                    0,
+                                    MapEdit {
+                                        key,
+                                        expected: old_wrapper,
+                                        next: Some((identified.reference).into()),
+                                    },
+                                ));
+                            }
+                            continue;
+                        }
+                        let custody = payload_memory.get_mut(wrappers.len()).ok_or_else(|| {
+                            IndexError::BackendViolation(
+                                "posting payload custody exceeds page".into(),
+                            )
+                        })?;
+                        let (payload, grant) = payload.into_parts();
                         *custody = grant;
-                        top_rows.push((
-                            0,
-                            MapEdit {
-                                key,
-                                expected: old_wrapper,
-                                next: Some(value),
-                            },
-                        ));
-                    }
-                    continue;
-                }
-                let payload =
-                    super::text_memory::encode(&Posting { root: new_root, df }, context.budget)?;
-                let children = posting_children(&Posting { root: new_root, df })?;
-                let identified = context.objects.identify(
-                    payload.as_slice(),
-                    children.as_slice(),
-                    context.budget,
-                )?;
-                // Only top rows from earlier successful put_batch calls can hit.
-                // This prepare's original attempt retains custody; the final
-                // parent-map install still authenticates every registered child.
-                if spool.has_confirmed_posting(identified.reference, context.budget)? {
-                    if old_wrapper != Some(identified.reference.into()) {
+                        wrappers.push(ObjectBatchInput {
+                            payload,
+                            children: children.as_slice().to_vec(),
+                        });
+                        wrapper_keys.push((term, old_wrapper));
+                    } else if old_wrapper.is_some() {
                         let custody = key_memory.get_mut(top_rows.len()).ok_or_else(|| {
-                            IndexError::BackendViolation("posting reused key exceeds page".into())
+                            IndexError::BackendViolation("posting key custody exceeds page".into())
                         })?;
                         let (key, grant) = term.into_parts();
                         *custody = grant;
@@ -8625,64 +9782,49 @@ fn apply_postings(
                             MapEdit {
                                 key,
                                 expected: old_wrapper,
-                                next: Some((identified.reference).into()),
+                                next: None,
                             },
                         ));
                     }
-                    continue;
                 }
-                let custody = payload_memory.get_mut(wrappers.len()).ok_or_else(|| {
-                    IndexError::BackendViolation("posting payload custody exceeds page".into())
-                })?;
-                let (payload, grant) = payload.into_parts();
-                *custody = grant;
-                wrappers.push(ObjectBatchInput {
-                    payload,
-                    children: children.as_slice().to_vec(),
-                });
-                wrapper_keys.push((term, old_wrapper));
-            } else if old_wrapper.is_some() {
-                let custody = key_memory.get_mut(top_rows.len()).ok_or_else(|| {
-                    IndexError::BackendViolation("posting key custody exceeds page".into())
-                })?;
-                let (key, grant) = term.into_parts();
-                *custody = grant;
-                top_rows.push((
-                    0,
-                    MapEdit {
-                        key,
-                        expected: old_wrapper,
-                        next: None,
-                    },
-                ));
-            }
-        }
-        let new_wrappers = context.put_batch(&wrappers)?;
-        if new_wrappers.len() != wrapper_keys.len() {
-            return Err(IndexError::BackendViolation(
-                "native text wrapper batch lost ordinal output".into(),
-            ));
-        }
-        for ((term, old_wrapper), next) in wrapper_keys.into_iter().zip(new_wrappers) {
-            if old_wrapper != Some(next.into()) {
-                let custody = key_memory.get_mut(top_rows.len()).ok_or_else(|| {
-                    IndexError::BackendViolation("posting key custody exceeds page".into())
-                })?;
-                let (key, grant) = term.into_parts();
-                *custody = grant;
-                top_rows.push((
-                    0,
-                    MapEdit {
-                        key,
-                        expected: old_wrapper,
-                        next: Some((next).into()),
-                    },
-                ));
-            }
-        }
-        if !top_rows.is_empty() {
-            spool.top_batch(&top_rows, context.budget)?;
-        }
+                Ok(())
+            },
+        )?;
+        observe_text_step(
+            diagnostic,
+            DiagnosticStageV1::NativeTextPostings,
+            39,
+            context,
+            |context| {
+                let new_wrappers = context.put_batch(&wrappers)?;
+                if new_wrappers.len() != wrapper_keys.len() {
+                    return Err(IndexError::BackendViolation(
+                        "native text wrapper batch lost ordinal output".into(),
+                    ));
+                }
+                for ((term, old_wrapper), next) in wrapper_keys.into_iter().zip(new_wrappers) {
+                    if old_wrapper != Some(next.into()) {
+                        let custody = key_memory.get_mut(top_rows.len()).ok_or_else(|| {
+                            IndexError::BackendViolation("posting key custody exceeds page".into())
+                        })?;
+                        let (key, grant) = term.into_parts();
+                        *custody = grant;
+                        top_rows.push((
+                            0,
+                            MapEdit {
+                                key,
+                                expected: old_wrapper,
+                                next: Some((next).into()),
+                            },
+                        ));
+                    }
+                }
+                if !top_rows.is_empty() {
+                    spool.top_batch(&top_rows, context.budget)?;
+                }
+                Ok(())
+            },
+        )?;
         drop(top_rows);
         drop(wrappers);
         drop(bases);
@@ -8692,7 +9834,13 @@ fn apply_postings(
         drop(key_memory);
         drop(array_memory);
     }
-    let roots = context.apply_stream(&[root.terms, root.owners], &mut spool.top_cursor())?;
+    let roots = observe_text_step(
+        diagnostic,
+        DiagnosticStageV1::NativeTextPostings,
+        39,
+        context,
+        |context| context.apply_stream(&[root.terms, root.owners], &mut spool.top_cursor()),
+    )?;
     let mut roots = roots.into_iter();
     root.terms = roots
         .next()
@@ -8706,6 +9854,69 @@ fn apply_postings(
         ));
     }
     Ok(())
+}
+
+/// Bind the budget seen by the actual map/object ports to the observed stage.
+/// The scoped request restores on return or unwind; no authority or work changes.
+fn observe_attempt<T>(
+    context: &mut AttemptContext<'_>,
+    diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    stage: quanta_index_core::DiagnosticStageV1,
+    operation: impl FnOnce(
+        Option<&quanta_index_core::DiagnosticContextV1>,
+        &mut AttemptContext<'_>,
+    ) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    observe_attempt_on_lane(
+        context,
+        diagnostic,
+        stage,
+        quanta_index_core::DiagnosticLaneV1(2),
+        operation,
+    )
+}
+
+fn observe_attempt_on_lane<T>(
+    context: &mut AttemptContext<'_>,
+    diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    stage: quanta_index_core::DiagnosticStageV1,
+    lane: quanta_index_core::DiagnosticLaneV1,
+    operation: impl FnOnce(
+        Option<&quanta_index_core::DiagnosticContextV1>,
+        &mut AttemptContext<'_>,
+    ) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    // An explicit mask must still hide an enclosing diagnostic context.
+    // Fully disabled tracing needs neither a scoped budget nor a request clone.
+    if diagnostic.is_none() && context.budget.request().diagnostic_context().is_none() {
+        return operation(None, context);
+    }
+    crate::causal_profile::observe_result_with_span_on_lane(
+        diagnostic,
+        stage,
+        lane,
+        |child, span| {
+            let mut scoped_budget = context.budget.scoped_diagnostic_override(child.cloned());
+            let before = span
+                .filter(|_span| lane.0 == 2)
+                .map(|_span| scoped_budget.usage());
+            let mut scoped_context = AttemptContext {
+                attempt: context.attempt,
+                objects: context.objects,
+                maps: context.maps,
+                custody: context.custody,
+                scratch: context.scratch,
+                budget: &mut scoped_budget,
+            };
+            let result = operation(child, &mut scoped_context);
+            if let (Some(before), Some(span)) = (before, span) {
+                scoped_context
+                    .budget
+                    .record_diagnostic_usage_delta(before, span);
+            }
+            result
+        },
+    )
 }
 
 impl IndexBuildPort for NativeTextIndex {
@@ -8784,10 +9995,11 @@ impl IndexBuildPort for NativeTextIndex {
     ) -> IndexFuture<'a, TextCandidate> {
         Box::pin(async move {
             let diagnostic = context.budget.request().diagnostic_context().cloned();
-            crate::causal_profile::observe_result(
+            observe_attempt(
+                context,
                 diagnostic.as_ref(),
                 quanta_index_core::DiagnosticStageV1::LexicalBuild,
-                |diagnostic| {
+                |diagnostic, context| {
                     let mut root = plan
                         .base
                         .as_ref()
@@ -8823,11 +10035,37 @@ impl IndexBuildPort for NativeTextIndex {
                                 },
                             });
                         }
+                        // Reuse the canonical DATA reader only inside this one
+                        // funded prepare. Empty/no-op paths allocate no window.
+                        // The original source cursor keeps its original port.
+                        let maps = context.maps;
+                        let read_window = if next_change.is_some() {
+                            maps.scoped_reads(context.budget)?
+                        } else {
+                            None
+                        };
+                        let mut build_context = AttemptContext {
+                            attempt: context.attempt,
+                            objects: context.objects,
+                            maps: read_window.as_deref().unwrap_or(maps),
+                            custody: context.custody,
+                            scratch: context.scratch,
+                            budget: &mut *context.budget,
+                        };
+                        let context = &mut build_context;
                         let spool = TextSpool::new(context.scratch, context.budget)?;
                         let mut contributions = ContributionWrites::new()?;
                         let mut inventories =
                             InventoryReuse::new(self.recipe, self.inventory_reuse_limit)?;
                         let mut batch = InventoryBatch::new(self.inventory_batch_limit)?;
+                        // Initial population also reaches this adapter as a
+                        // Patch after publishing an empty profile. The prior
+                        // source binding, rather than corpus size or tier,
+                        // selects the same bounded construction strategy.
+                        batch.occurrence_writes.pack_owners =
+                            matches!(&plan.input, DeltaInput::Bootstrap)
+                                || matches!(&plan.input, DeltaInput::Patch(delta)
+                                    if delta.prior.owners.0.is_none());
                         while let Some(change) = next_change {
                             context.budget.checkpoint()?;
                             batch.push_change(
@@ -8848,16 +10086,18 @@ impl IndexBuildPort for NativeTextIndex {
                             &mut inventories,
                         )?;
                         contributions.flush(context, &spool)?;
-                        crate::causal_profile::observe_result(
+                        observe_attempt(
+                            context,
                             diagnostic,
                             quanta_index_core::DiagnosticStageV1::NativeTextPostings,
-                            |_child| apply_postings(&mut root, context, &spool),
+                            |child, context| apply_postings(&mut root, context, &spool, child),
                         )?;
                     }
-                    let (artifact, logical_commitment) = crate::causal_profile::observe_result(
+                    let (artifact, logical_commitment) = observe_attempt(
+                        context,
                         diagnostic,
                         quanta_index_core::DiagnosticStageV1::NativeTextRoot,
-                        |_child| write_root(root, context),
+                        |_child, context| write_root(root, context),
                     )?;
                     Ok(TextCandidate {
                         binding: MemberBinding {
@@ -8994,7 +10234,8 @@ impl NativeTextIndex {
         F: for<'hit> FnMut(TextTermHit<'hit>) -> Result<(), IndexError>,
     {
         let mut cursor = self.posting_cursor(member, case, term, &mut context)?;
-        while let Some(hit) = cursor.next_hit(&mut context)? {
+        let mut occurrences = OccurrenceReader::new(1)?;
+        while let Some(hit) = cursor.next_hit(&mut context, &mut occurrences)? {
             visitor(TextTermHit {
                 owner: hit.owner,
                 source: hit.source_record,

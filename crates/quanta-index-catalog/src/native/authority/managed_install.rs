@@ -1,14 +1,15 @@
 //! Original-budget catalog side of a paired managed object installation.
 use super::{
     SqliteCatalog, at_most_one, begin, bootstrap, cached_execute, canonical_object, check_attempt,
-    confirmed_ingress_object, encode, fields_digest, ingress_intent, object_install, object_key,
-    operation_key, reclaim, register_confirmed_preflighted_children,
+    confirmed_ingress_object, fields_digest, ingress_intent, object_install, object_key,
+    operation_key, reclaim, register_confirmed_preflighted_children, registration_codec,
     require_intent_with_attempt_key, require_open_ingress, require_registered_edges,
     require_reserved_ingress_intent, require_reserved_intent, sql, try_insert_ingress_intent,
     try_insert_object_intent,
 };
 use quanta_index_core::index::{
-    IndexError, ObjectInstallScope, ObjectRef, RegisteredObject, WorkBudget, WorkUsage,
+    Digest, IndexError, MAX_RECLAIM_CHILDREN, ObjectInstallScope, ObjectRef, RegisteredObject,
+    WorkBudget, WorkUsage,
 };
 use quanta_index_core::{
     DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1,
@@ -16,11 +17,11 @@ use quanta_index_core::{
 };
 use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
 
-pub(super) const MAX_OBJECTS: usize = 256;
-const PROTECT_ATTEMPT_OBJECT_SQL: &str = "INSERT OR IGNORE INTO native_attempt_object_v1(operation,fence,object,row_digest) VALUES (?1,?2,?3,?4)";
+pub(super) const MAX_OBJECTS: usize = quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH;
+const PROTECT_ATTEMPT_OBJECT_SQL: &str = "INSERT OR IGNORE INTO native_attempt_object_v1(operation_id,fence,object,row_digest) VALUES ((SELECT operation_id FROM native_operation_v1 WHERE operation=?1),?2,?3,?4)";
 
-// Count the same canonical JSON that `encode` writes, without retaining a
-// throwaway payload merely to estimate the existing work fee.
+// Retain the original conservative JSON work fee independently of the private
+// registration storage codec, without allocating a throwaway JSON payload.
 #[derive(Default)]
 struct EncodedLength {
     bytes: u64,
@@ -179,40 +180,142 @@ fn require_child_charged(
     Ok(registration)
 }
 
-/// A fixed data window, not registration authority. The billing plan and
-/// completed transaction preflight use separate instances and original grants.
+/// An exact transaction-local data window, not registration authority. The
+/// billing plan and completed preflight use separate instances and grants.
+#[derive(Clone, Copy)]
+struct ChildWindowCapacity {
+    slots: usize,
+    limit: usize,
+}
+
+enum ChildSlot {
+    Present,
+    Vacant(usize),
+    Full,
+}
+
 struct ChildWindow {
-    references: [Option<ObjectRef>; 64],
+    references: Vec<Option<ObjectRef>>,
+    stored: usize,
+    limit: usize,
+    // The table dies before its original temporary reservation.
     _memory: Option<quanta_index_core::index::MemoryLease>,
 }
 impl ChildWindow {
-    fn new(budget: &WorkBudget) -> Result<Self, IndexError> {
+    fn capacity(objects: &[RegisteredObject]) -> Result<ChildWindowCapacity, IndexError> {
+        let maximum = objects
+            .iter()
+            .map(|object| object.children.len())
+            .max()
+            .unwrap_or(0);
+        if maximum <= 64 {
+            return Ok(ChildWindowCapacity {
+                slots: 64,
+                limit: 64,
+            });
+        }
+        let total = objects.iter().try_fold(0_usize, |total, object| {
+            total
+                .checked_add(object.children.len())
+                .ok_or(IndexError::ResourceLimited)
+        })?;
+        let limit = total.clamp(64, MAX_RECLAIM_CHILDREN);
+        let slots = limit
+            .checked_mul(2)
+            .and_then(usize::checked_next_power_of_two)
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(ChildWindowCapacity { slots, limit })
+    }
+
+    fn new(capacity: ChildWindowCapacity, budget: &WorkBudget) -> Result<Self, IndexError> {
+        let bytes = capacity
+            .slots
+            .checked_mul(std::mem::size_of::<Option<ObjectRef>>())
+            .ok_or(IndexError::ResourceLimited)?;
         let memory = budget.reserve_memory(
-            u64::try_from(std::mem::size_of::<[Option<ObjectRef>; 64]>())
-                .map_err(|_error| IndexError::ResourceLimited)?,
+            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
             quanta_index_core::index::MemoryLifetime::Temporary,
         )?;
+        let mut references = Vec::new();
+        references
+            .try_reserve_exact(capacity.slots)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        references.resize(capacity.slots, None);
         Ok(Self {
-            references: [None; 64],
+            references,
+            stored: 0,
+            limit: capacity.limit,
             _memory: memory,
         })
     }
-    fn slot(reference: ObjectRef) -> Result<usize, IndexError> {
-        let byte = reference.0.0.first().ok_or(IndexError::ResourceLimited)?;
-        Ok(usize::from(*byte & 63))
-    }
-    fn contains(&self, reference: ObjectRef) -> Result<bool, IndexError> {
-        Ok(self
-            .references
-            .get(Self::slot(reference)?)
+
+    fn start(&self, reference: ObjectRef) -> Result<usize, IndexError> {
+        let bytes = &reference.0.0;
+        let first: [u8; 8] = bytes
+            .get(..8)
             .ok_or(IndexError::ResourceLimited)?
-            == &Some(reference))
+            .try_into()
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        let last: [u8; 8] = bytes
+            .get(24..32)
+            .ok_or(IndexError::ResourceLimited)?
+            .try_into()
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        let hash = u64::from_be_bytes(first) ^ u64::from_be_bytes(last).rotate_left(17);
+        let slots =
+            u64::try_from(self.references.len()).map_err(|_error| IndexError::ResourceLimited)?;
+        usize::try_from(hash.checked_rem(slots).ok_or(IndexError::ResourceLimited)?)
+            .map_err(|_error| IndexError::ResourceLimited)
     }
+
+    fn locate(&self, reference: ObjectRef) -> Result<ChildSlot, IndexError> {
+        let start = self.start(reference)?;
+        for probe in 0..self.references.len() {
+            let slot = start
+                .wrapping_add(probe)
+                .checked_rem(self.references.len())
+                .ok_or(IndexError::ResourceLimited)?;
+            match self
+                .references
+                .get(slot)
+                .ok_or(IndexError::ResourceLimited)?
+            {
+                Some(stored) if *stored == reference => return Ok(ChildSlot::Present),
+                None => return Ok(ChildSlot::Vacant(slot)),
+                Some(_) => {}
+            }
+        }
+        Ok(ChildSlot::Full)
+    }
+
+    fn contains(&self, reference: ObjectRef) -> Result<bool, IndexError> {
+        Ok(matches!(self.locate(reference)?, ChildSlot::Present))
+    }
+
     fn remember(&mut self, reference: ObjectRef) -> Result<(), IndexError> {
-        *self
-            .references
-            .get_mut(Self::slot(reference)?)
-            .ok_or(IndexError::ResourceLimited)? = Some(reference);
+        match self.locate(reference)? {
+            ChildSlot::Present => return Ok(()),
+            ChildSlot::Vacant(_) | ChildSlot::Full if self.stored == self.limit => {
+                // Never evict a completed proof. A miss after saturation takes
+                // the original full authentication path on every occurrence.
+                return Ok(());
+            }
+            ChildSlot::Vacant(slot) => {
+                *self
+                    .references
+                    .get_mut(slot)
+                    .ok_or(IndexError::ResourceLimited)? = Some(reference);
+                self.stored = self
+                    .stored
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+            }
+            ChildSlot::Full => {
+                return Err(IndexError::BackendViolation(
+                    "child proof table filled early".into(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -220,13 +323,18 @@ impl ChildWindow {
 /// Completed metadata, complete edge-ledger and GC adoption checks borrowed
 /// from one actual locked transaction.
 ///
-/// A collision merely repeats the checks. Nothing can serialize or carry this authority into another transaction.
+/// Collisions probe by full reference; saturation repeats the original checks.
+/// Nothing can serialize or carry this authority into another transaction.
 struct AdoptedChildrenInTransaction<'tx, 'conn> {
     transaction: &'tx Transaction<'conn>,
     completed: Option<ChildWindow>,
+    capacity: ChildWindowCapacity,
 }
 impl<'tx, 'conn> AdoptedChildrenInTransaction<'tx, 'conn> {
-    fn new(transaction: &'tx Transaction<'conn>) -> Result<Self, IndexError> {
+    fn new(
+        transaction: &'tx Transaction<'conn>,
+        capacity: ChildWindowCapacity,
+    ) -> Result<Self, IndexError> {
         if transaction.is_autocommit() {
             return Err(IndexError::BackendViolation(
                 "child preflight requires a transaction".into(),
@@ -235,6 +343,7 @@ impl<'tx, 'conn> AdoptedChildrenInTransaction<'tx, 'conn> {
         Ok(Self {
             transaction,
             completed: None,
+            capacity,
         })
     }
     fn require(&mut self, child: ObjectRef, budget: &mut WorkBudget) -> Result<(), IndexError> {
@@ -245,7 +354,7 @@ impl<'tx, 'conn> AdoptedChildrenInTransaction<'tx, 'conn> {
             return Ok(());
         }
         if self.completed.is_none() {
-            self.completed = Some(ChildWindow::new(budget)?);
+            self.completed = Some(ChildWindow::new(self.capacity, budget)?);
         }
         let _registered = require_child_charged(self.transaction, child, budget)?;
         reclaim::adopt(self.transaction, child)?;
@@ -274,9 +383,61 @@ impl<'tx, 'conn> PreflightedRegistrationChildren<'tx, 'conn> {
     }
 }
 
+/// Exact packet-prefix membership without heap allocation. This remains a
+/// data hint; canonical and transaction-bound child checks retain authority.
+struct InputPrefix {
+    sorted: [ObjectRef; MAX_OBJECTS],
+    len: usize,
+}
+
+impl InputPrefix {
+    fn new() -> Self {
+        Self {
+            sorted: [ObjectRef(Digest([0; 32])); MAX_OBJECTS],
+            len: 0,
+        }
+    }
+
+    fn contains(&self, reference: ObjectRef) -> Result<bool, IndexError> {
+        Ok(self
+            .sorted
+            .get(..self.len)
+            .ok_or(IndexError::ResourceLimited)?
+            .binary_search(&reference)
+            .is_ok())
+    }
+
+    fn insert(&mut self, reference: ObjectRef) -> Result<bool, IndexError> {
+        let position = match self
+            .sorted
+            .get(..self.len)
+            .ok_or(IndexError::ResourceLimited)?
+            .binary_search(&reference)
+        {
+            Ok(_prior) => return Ok(false),
+            Err(position) => position,
+        };
+        let next = self.len.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        let sorted = self
+            .sorted
+            .get_mut(..next)
+            .ok_or(IndexError::ResourceLimited)?;
+        sorted.copy_within(
+            position..self.len,
+            position.checked_add(1).ok_or(IndexError::ResourceLimited)?,
+        );
+        *sorted
+            .get_mut(position)
+            .ok_or(IndexError::ResourceLimited)? = reference;
+        self.len = next;
+        Ok(true)
+    }
+}
+
 fn preflight_registration_children<'tx, 'conn>(
     transaction: &'tx Transaction<'conn>,
     objects: &'tx [RegisteredObject],
+    capacity: ChildWindowCapacity,
     budget: &mut WorkBudget,
 ) -> Result<PreflightedRegistrationChildren<'tx, 'conn>, IndexError> {
     if transaction.is_autocommit() {
@@ -284,23 +445,22 @@ fn preflight_registration_children<'tx, 'conn>(
             "object confirmation requires a transaction".into(),
         ));
     }
-    let mut adopted = AdoptedChildrenInTransaction::new(transaction)?;
-    let mut earlier = std::collections::BTreeSet::new();
+    let mut adopted = AdoptedChildrenInTransaction::new(transaction, capacity)?;
+    let mut earlier = InputPrefix::new();
     let mut unique = true;
     for object in objects {
         for child in &object.children {
             // Earlier input registrations are authenticated by the complete
             // same-transaction confirmation preflight. There is no SQL metadata
-            // read or JSON decode here to bill a second time. Each input is
-            // confirmed and enqueued later in this transaction; preserve an
-            // authenticated queue row instead of deleting and reinserting it.
-            if earlier.contains(child) {
+            // read or JSON decode here to bill a second time. Keep any existing
+            // queue row through preflight; protected confirmation removes it.
+            if earlier.contains(*child)? {
                 reclaim::adopt_confirming_input(transaction, *child)?;
             } else {
                 adopted.require(*child, budget)?;
             }
         }
-        unique &= earlier.insert(object.reference);
+        unique &= earlier.insert(object.reference)?;
     }
     Ok(PreflightedRegistrationChildren {
         transaction,
@@ -317,7 +477,7 @@ pub(super) fn adopt_registered_inputs(
     objects: &[RegisteredObject],
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    if objects.len() > 256 {
+    if objects.len() > MAX_OBJECTS {
         return Err(IndexError::ResourceLimited);
     }
     budget.checkpoint()?;
@@ -350,7 +510,7 @@ pub(super) fn adopt_registered_inputs(
         })?;
     }
     require_open_ingress(&tx, stage)?;
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = InputPrefix::new();
     for object in objects {
         budget.checkpoint()?;
         if object.bytes == 0
@@ -359,7 +519,7 @@ pub(super) fn adopt_registered_inputs(
         {
             return Err(IndexError::ResourceLimited);
         }
-        if object.children.contains(&object.reference) || !seen.insert(object.reference) {
+        if object.children.contains(&object.reference) || !seen.insert(object.reference)? {
             return Err(IndexError::InvalidInput(
                 "duplicate or self-referencing ingress adoption".into(),
             ));
@@ -445,7 +605,7 @@ fn reserve_charged<'tx, 'conn, 'input>(
             ..WorkUsage::default()
         })?;
         object_install::require_reserved(transaction, object)?;
-        encode(object)?
+        registration_codec::encode(object)?
     };
     Ok(ReservedInTransaction {
         transaction,
@@ -503,23 +663,26 @@ fn reserve_ingress(
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
     require_open_ingress(connection, stage)?;
-    let mut earlier = std::collections::BTreeSet::new();
+    let mut earlier = InputPrefix::new();
     for object in objects {
         budget.checkpoint()?;
         let canonical = object_install::checked_object(object)?;
-        if !earlier.insert(canonical.reference) {
+        if !earlier.insert(canonical.reference)? {
             return Err(IndexError::InvalidInput(
                 "duplicate ingress reservation".into(),
             ));
         }
         for child in &canonical.children {
-            if !earlier.contains(child) {
+            // An earlier input has durable ingress intent in this transaction.
+            // No other writer can change its lifecycle here; external children
+            // still need full adoption.
+            if !earlier.contains(*child)? {
                 let _registered = require_child_charged(connection, *child, budget)?;
+                reclaim::adopt(connection, *child)?;
             }
-            reclaim::adopt(connection, *child)?;
         }
         reserve_charged(connection, &canonical, budget)?.bind_ingress(stage, budget)?;
-        let _queued = reclaim::reserve_and_enqueue(connection, canonical.reference)?;
+        reclaim::reserve_protected(connection, canonical.reference)?;
     }
     Ok(())
 }
@@ -528,26 +691,29 @@ fn confirm_ingress(
     connection: &Transaction<'_>,
     stage: quanta_index_core::index::IngressRef,
     objects: &[RegisteredObject],
+    capacity: ChildWindowCapacity,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
     require_open_ingress(connection, stage)?;
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = InputPrefix::new();
     for object in objects {
         budget.checkpoint()?;
-        if !seen.insert(object.reference) {
+        if !seen.insert(object.reference)? {
             return Err(IndexError::InvalidInput(
                 "duplicate ingress confirmation".into(),
             ));
         }
         if ingress_intent(connection, stage.operation, object)?
-            != Some(encode(&object_install::checked_object(object)?)?)
+            != Some(registration_codec::encode(
+                &object_install::checked_object(object)?,
+            )?)
         {
             return Err(IndexError::BackendViolation(
                 "ingress confirmation lacks matching allocation intent".into(),
             ));
         }
     }
-    let proof = preflight_registration_children(connection, objects, budget)?;
+    let proof = preflight_registration_children(connection, objects, capacity, budget)?;
     let registered = register_confirmed_preflighted_children(proof)?;
     let operation = operation_key(stage.operation)?;
     for object in objects {
@@ -566,7 +732,7 @@ fn confirm_ingress(
                 "confirmed ingress object missing".into(),
             ));
         }
-        let _queued = reclaim::confirm_and_enqueue(connection, object.reference)?;
+        reclaim::confirm_protected(connection, object.reference)?;
     }
     Ok(())
 }
@@ -575,29 +741,30 @@ fn reserve_attempt(
     connection: &Transaction<'_>,
     attempt: quanta_index_core::index::AttemptRef,
     objects: &[RegisteredObject],
+    capacity: ChildWindowCapacity,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    let (_operation, _adopted, _earlier) = observe_sqlite(budget, 4, |budget| {
+    let (_operation, _adopted) = observe_sqlite(budget, 4, |budget| {
         let operation = check_attempt(connection, attempt)?;
-        let mut adopted = AdoptedChildrenInTransaction::new(connection)?;
+        let mut adopted = AdoptedChildrenInTransaction::new(connection, capacity)?;
         // Complete child-first authentication before writing any input intent.
-        let mut earlier = std::collections::BTreeSet::new();
+        let mut earlier = InputPrefix::new();
         for object in objects {
             budget.checkpoint()?;
             let canonical = object_install::checked_object(object)?;
-            if !earlier.insert(canonical.reference) {
+            if !earlier.insert(canonical.reference)? {
                 return Err(IndexError::InvalidInput(
                     "duplicate managed attempt reservation".into(),
                 ));
             }
             for child in &canonical.children {
-                if !earlier.contains(child) {
+                if !earlier.contains(*child)? {
                     adopted.require(*child, budget)?;
                 }
             }
         }
-        // Preserve the original cache/data lifetime through reservation writes.
-        Ok((operation, adopted, earlier))
+        // Preserve the completed child proof through reservation writes.
+        Ok((operation, adopted))
     })?;
     observe_sqlite(budget, 5, |budget| {
         // The locked transaction and exact input remain unchanged across spans.
@@ -610,11 +777,7 @@ fn reserve_attempt(
                     let canonical = canonical_object(object)?;
                     reserve_charged(connection, &canonical, budget)?
                         .bind_attempt(attempt, budget)?;
-                    let _queued = reclaim::reserve_and_enqueue_sequenced(
-                        canonical.reference,
-                        fences,
-                        budget,
-                    )?;
+                    reclaim::reserve_protected_sequenced(canonical.reference, fences, budget)?;
                 }
                 Ok(())
             },
@@ -626,6 +789,7 @@ fn confirm_attempt(
     connection: &Transaction<'_>,
     attempt: quanta_index_core::index::AttemptRef,
     objects: &[RegisteredObject],
+    capacity: ChildWindowCapacity,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
     let (attempt_key, proof) = observe_sqlite(budget, 6, |budget| {
@@ -635,7 +799,7 @@ fn confirm_attempt(
             budget.checkpoint()?;
             require_intent_with_attempt_key(connection, attempt, object, &mut attempt_key)?;
         }
-        let proof = preflight_registration_children(connection, objects, budget)?;
+        let proof = preflight_registration_children(connection, objects, capacity, budget)?;
         let attempt_key = attempt_key.ok_or_else(|| {
             IndexError::BackendViolation("managed confirmation attempt key missing".into())
         })?;
@@ -685,7 +849,7 @@ fn confirm_attempt(
             }
             for object in packet {
                 budget.checkpoint()?;
-                let _queued = reclaim::confirm_and_enqueue(connection, object.reference)?;
+                reclaim::confirm_protected(connection, object.reference)?;
             }
         }
         Ok(())
@@ -754,6 +918,9 @@ pub(super) fn install(
         ..WorkUsage::default()
     })?;
     reclaim::require_bound(&tx)?;
+    // Planning and actual child preflight must use one deterministic capacity
+    // policy, or omitted-adoption work credits could exceed executed savings.
+    let child_capacity = ChildWindow::capacity(objects)?;
     // This bounded, allocation-free check selects the same unique-input proof
     // path as the child preflight. Duplicate and bootstrap paths retain their
     // original confirmation checks and conservative admission.
@@ -766,29 +933,32 @@ pub(super) fn install(
                 .all(|prior| prior.reference != object.reference)
         });
     let attempt_reservation = !confirming && matches!(scope, ObjectInstallScope::Attempt(_));
-    let mut earlier_reserved = std::collections::BTreeSet::new();
     // Predict only actually omitted reservation adoptions. This data window is
     // destroyed before preflight; it is never a completed authentication proof.
-    let mut planned =
-        if attempt_reservation && objects.iter().any(|object| !object.children.is_empty()) {
-            Some(ChildWindow::new(budget)?)
-        } else {
-            None
-        };
+    let mut planned: Option<ChildWindow> = None;
+    let mut earlier_reserved = InputPrefix::new();
     for object in objects {
         // Only Attempt reservation queues every input after the full preflight.
         // Ingress queues incrementally and retains its original child adoption.
-        let omitted_reserved_adoptions = if let Some(planned) = planned.as_mut() {
+        let omitted_reserved_adoptions = if attempt_reservation {
             let mut count = 0_u64;
             for child in &object.children {
                 budget.checkpoint()?;
-                if earlier_reserved.contains(child) || planned.contains(*child)? {
+                if earlier_reserved.contains(*child)? {
                     count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
                 } else {
-                    planned.remember(*child)?;
+                    if planned.is_none() {
+                        planned = Some(ChildWindow::new(child_capacity, budget)?);
+                    }
+                    let window = planned.as_mut().ok_or(IndexError::ResourceLimited)?;
+                    if window.contains(*child)? {
+                        count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                    } else {
+                        window.remember(*child)?;
+                    }
                 }
             }
-            let _new = earlier_reserved.insert(object.reference);
+            let _new = earlier_reserved.insert(object.reference)?;
             count
         } else {
             0
@@ -807,12 +977,14 @@ pub(super) fn install(
         (ObjectInstallScope::Ingress(stage), false) => {
             reserve_ingress(&tx, stage, objects, budget)?;
         }
-        (ObjectInstallScope::Ingress(stage), true) => confirm_ingress(&tx, stage, objects, budget)?,
+        (ObjectInstallScope::Ingress(stage), true) => {
+            confirm_ingress(&tx, stage, objects, child_capacity, budget)?;
+        }
         (ObjectInstallScope::Attempt(attempt), false) => {
-            reserve_attempt(&tx, attempt, objects, budget)?;
+            reserve_attempt(&tx, attempt, objects, child_capacity, budget)?;
         }
         (ObjectInstallScope::Attempt(attempt), true) => {
-            confirm_attempt(&tx, attempt, objects, budget)?;
+            confirm_attempt(&tx, attempt, objects, child_capacity, budget)?;
         }
         (ObjectInstallScope::Bootstrap(stage), false) => {
             let [object] = objects else {
@@ -887,6 +1059,93 @@ mod tests {
         ))
     }
 
+    fn check_window(condition: bool, reason: &str) -> Result<(), IndexError> {
+        if condition {
+            Ok(())
+        } else {
+            Err(IndexError::BackendViolation(reason.into()))
+        }
+    }
+
+    #[test]
+    fn exact_child_window_retains_full_proofs_and_rechecks_after_saturation()
+    -> Result<(), IndexError> {
+        // Each input respects the 4096-child immutable wire bound. Their
+        // combined 4097 occurrences exercise the transaction-window cap.
+        let parent = object(4096, 131_089)?;
+        let first = *parent.children.first().ok_or(IndexError::ResourceLimited)?;
+        let mut collision = first;
+        *collision
+            .0
+            .0
+            .get_mut(8)
+            .ok_or(IndexError::ResourceLimited)? = 1;
+        let second = RegisteredObject::unscoped(ObjectRef(Digest([254; 32])), 49, vec![collision]);
+        let capacity = ChildWindow::capacity(&[parent.clone(), second])?;
+        check_window(
+            capacity.slots == 8192,
+            "large child table slot bound differs",
+        )?;
+        check_window(capacity.limit == 4096, "large child proof bound differs")?;
+        let mut window = ChildWindow::new(capacity, &budget(u64::MAX))?;
+        for reference in parent.children.iter().take(4095) {
+            window.remember(*reference)?;
+        }
+        // Same hash start, different full identity: both must remain present.
+        window.remember(collision)?;
+        check_window(window.stored == 4096, "large child table was not full")?;
+        check_window(window.contains(first)?, "collision displaced first proof")?;
+        check_window(
+            window.contains(collision)?,
+            "collision proof was not retained",
+        )?;
+        let extra = *parent.children.last().ok_or(IndexError::ResourceLimited)?;
+        check_window(
+            !window.contains(extra)?,
+            "unstored child appeared before insert",
+        )?;
+        window.remember(extra)?;
+        check_window(
+            !window.contains(extra)?,
+            "full table retained an extra child",
+        )?;
+        for reference in parent.children.iter().take(4095) {
+            check_window(window.contains(*reference)?, "full table lost an old proof")?;
+        }
+        check_window(
+            window.contains(collision)?,
+            "full table lost collision proof",
+        )?;
+
+        let small = object(64, 2065)?;
+        let capacity = ChildWindow::capacity(std::slice::from_ref(&small))?;
+        check_window(capacity.slots == 64, "small child table slot bound differs")?;
+        check_window(capacity.limit == 64, "small child proof bound differs")?;
+        let mut window = ChildWindow::new(capacity, &budget(u64::MAX))?;
+        for reference in &small.children {
+            window.remember(*reference)?;
+        }
+        let extra = ObjectRef(Digest([238; 32]));
+        check_window(
+            !window.contains(extra)?,
+            "small table contains foreign child",
+        )?;
+        window.remember(extra)?;
+        check_window(
+            !window.contains(extra)?,
+            "small full table retained extra child",
+        )?;
+        check_window(
+            window.contains(*small.children.first().ok_or(IndexError::ResourceLimited)?)?,
+            "small full table lost first proof",
+        )?;
+        check_window(
+            window.contains(*small.children.last().ok_or(IndexError::ResourceLimited)?)?,
+            "small full table lost last proof",
+        )?;
+        Ok(())
+    }
+
     fn scope(reference: ObjectRef) -> ObjectInstallScope {
         ObjectInstallScope::Bootstrap(BootstrapRef {
             workspace: WorkspaceKey {
@@ -906,7 +1165,7 @@ mod tests {
         for children in [0_usize, 1, 64, 4096] {
             for bytes in [0_u64, u64::MAX] {
                 let object = object(children, bytes)?;
-                let canonical = encode(&object)?;
+                let canonical = super::super::encode(&object)?;
                 let length =
                     u64::try_from(canonical.len()).map_err(|_error| IndexError::ResourceLimited)?;
                 if encoded_object_len(&object)? != length {

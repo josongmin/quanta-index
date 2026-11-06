@@ -50,6 +50,8 @@ pub(crate) const COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID: &str = "cluster_record_id"
 pub(crate) const COLUMN_MEMBERSHIP_AUTHORITY_DIGEST: &str = "authority_digest";
 pub(crate) const COLUMN_MEMBERSHIP_OWNER_KIND: &str = "owner_kind";
 pub(crate) const COLUMN_MEMBERSHIP_OWNER_ID: &str = "owner_id";
+pub(crate) const COLUMN_MEMBERSHIP_SOURCE_REPO_ID: &str = "source_repo_id";
+pub(crate) const COLUMN_MEMBERSHIP_REPO_RELATIVE_PATH: &str = "repo_relative_path";
 pub(crate) const COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID: &str = "member_symbol_id";
 pub(crate) const COLUMN_MEMBERSHIP_ORDINAL: &str = "ordinal";
 pub(crate) const COLUMN_MEMBERSHIP_MEMBER_COUNT: &str = "member_count";
@@ -61,6 +63,7 @@ pub(crate) const COLUMN_MEMBERSHIP_CONTENT_DIGEST: &str = "membership_content_di
 pub(crate) const COLUMN_EMBEDDING_ID: &str = "embedding_id";
 pub(crate) const COLUMN_RECORD_ID: &str = "record_id";
 pub(crate) const COLUMN_REPO_RELATIVE_PATH: &str = "repo_relative_path";
+pub(crate) const COLUMN_SOURCE_REPO_ID: &str = "source_repo_id";
 pub(crate) const COLUMN_OWNER_ID: &str = "owner_id";
 pub(crate) const COLUMN_OWNER_KIND: &str = "owner_kind";
 pub(crate) const COLUMN_CORPUS_KIND: &str = "corpus_kind";
@@ -89,6 +92,7 @@ pub(crate) fn semantic_schema(dimension: i32) -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new(COLUMN_EMBEDDING_ID, DataType::Utf8, false),
         Field::new(COLUMN_RECORD_ID, DataType::Utf8, false),
+        Field::new(COLUMN_SOURCE_REPO_ID, DataType::Utf8, false),
         Field::new(COLUMN_REPO_RELATIVE_PATH, DataType::Utf8, false),
         Field::new(COLUMN_OWNER_ID, DataType::Utf8, false),
         Field::new(COLUMN_OWNER_KIND, DataType::Utf8, false),
@@ -127,6 +131,8 @@ pub(crate) fn cluster_membership_schema() -> SchemaRef {
         Field::new(COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, DataType::Utf8, false),
         Field::new(COLUMN_MEMBERSHIP_OWNER_KIND, DataType::Utf8, false),
         Field::new(COLUMN_MEMBERSHIP_OWNER_ID, DataType::Utf8, false),
+        Field::new(COLUMN_MEMBERSHIP_SOURCE_REPO_ID, DataType::Utf8, false),
+        Field::new(COLUMN_MEMBERSHIP_REPO_RELATIVE_PATH, DataType::Utf8, false),
         Field::new(COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, DataType::Utf8, false),
         Field::new(COLUMN_MEMBERSHIP_ORDINAL, DataType::UInt32, false),
         Field::new(COLUMN_MEMBERSHIP_MEMBER_COUNT, DataType::UInt32, false),

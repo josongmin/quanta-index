@@ -76,6 +76,9 @@ def _native_inputs(args: argparse.Namespace) -> dict | None:
     if type(getattr(args, "native_mixed_load", False)) is not bool:
         raise ValueError("native mixed load must be an explicit boolean selection")
     selected_trace_mode = getattr(args, "native_trace_mode", None)
+    resource_sampling = getattr(args, "native_resource_sampling", None)
+    if resource_sampling not in (None, "off", "periodic"):
+        raise ValueError("native resource sampling must be off or periodic")
     trace_limit = getattr(args, "trace_max_output_bytes", None)
     if trace_limit is not None and (
         type(trace_limit) is not int or not 6144 <= trace_limit <= MAX_CONFIGURED_CAPTURE_BYTES
@@ -93,6 +96,7 @@ def _native_inputs(args: argparse.Namespace) -> dict | None:
             or args.native_churn_cycles != 0
             or getattr(args, "native_mixed_load", False)
             or selected_trace_mode is not None
+            or resource_sampling is not None
             or trace_limit is not None
             or getattr(args, "linux_cgroup_parent", None) is not None
         ):
@@ -136,6 +140,8 @@ def _native_inputs(args: argparse.Namespace) -> dict | None:
             "native mixed load requires Large seed42 and the fixed explicit work limits"
         )
     if getattr(args, "native_mixed_load", False):
+        if resource_sampling == "off":
+            raise ValueError("Native mixed load requires periodic resource sampling")
         if selected_trace_mode == "record":
             raise ValueError("Native mixed load requires Off trace mode")
         if getattr(args, "timeline", False):
@@ -220,8 +226,20 @@ def _linux_execution_observation(
     }
 
 
-def _native_environment(workload: dict, churn: int, *, mixed: bool = False) -> dict[str, str]:
-    selected = {"QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1": "1"}
+def _native_environment(
+    workload: dict, churn: int, *, mixed: bool = False, resource_sampling: bool = True
+) -> dict[str, str]:
+    if type(resource_sampling) is not bool:
+        raise ValueError("native resource sampling must be an explicit boolean")
+    if mixed and not resource_sampling:
+        raise ValueError("Native mixed load requires periodic resource sampling")
+    selected = {
+        # Existing failure-only diagnostics retain the original budget's first
+        # denial. Successful publications emit nothing and keep the Off path.
+        "QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1": "1",
+    }
+    if resource_sampling:
+        selected["QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1"] = "1"
     if workload["mode"] == "explicit":
         selected["QUANTA_INDEX_NATIVE_WORK_LIMITS_JSON"] = canonical(
             workload["work_limits"]
@@ -234,6 +252,7 @@ def _native_environment(workload: dict, churn: int, *, mixed: bool = False) -> d
         "QUANTA_INDEX_NATIVE_WORK_LIMITS_JSON",
         "QUANTA_INDEX_NATIVE_CHURN_CYCLES",
         "QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1",
+        "QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1",
         "QUANTA_INDEX_NATIVE_MIXED_LOAD_V1",
         "QUANTA_INDEX_NATIVE_RECORD_CAPTURE_V1",
     ):
@@ -345,6 +364,7 @@ def _unavailable_timeline_summary(status: dict) -> dict:
         "orphan_events": None,
         "spans": [],
         "sync_aggregates": [],
+        "object_install_aggregates": [],
         "object_kind_aggregates": [],
         "adoption_group_aggregates": [],
         "bm25_census_aggregates": [],
@@ -426,9 +446,7 @@ def export_timeline(
             )
         }
         if execution.get("backend") == "index-native":
-            status["execution"]["native_temporary_root"] = execution.get(
-                "native_temporary_root"
-            )
+            status["execution"]["native_temporary_root"] = execution.get("native_temporary_root")
             status["execution"]["linux_resource_observation"] = execution.get(
                 "linux_resource_observation"
             )
@@ -628,6 +646,7 @@ def capture(args: argparse.Namespace) -> dict:
             native_workload,
             args.native_churn_cycles,
             mixed=getattr(args, "native_mixed_load", False),
+            resource_sampling=getattr(args, "native_resource_sampling", None) != "off",
         )
     )
     mixed = bool(getattr(args, "native_mixed_load", False))
@@ -720,6 +739,8 @@ def capture(args: argparse.Namespace) -> dict:
     # A canonical capture must not enable the legacy stderr marker pipeline,
     # even when the launching shell has opted into that older diagnostic path.
     environment.pop("QUANTA_INDEX_CAUSAL_PROFILE_V1", None)
+    if native_workload is not None:
+        environment.pop("QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1", None)
     environment.update(native_environment)
     if native_temporary_root is not None:
         environment["TMPDIR"] = str(native_temporary_root)
@@ -974,7 +995,9 @@ def capture(args: argparse.Namespace) -> dict:
                 expected_mixed_load=mixed,
                 expected_trace_mode=trace_mode,
                 expected_trace_max_output_bytes=trace_limit,
-                expected_resource_sampling=True,
+                expected_resource_sampling=(
+                    native_environment.get("QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1") == "1"
+                ),
                 child_records=child_inputs,
                 linux_resource_observation=linux_observation,
             )
@@ -1223,6 +1246,14 @@ def main() -> int:
     parser.add_argument("--native-churn-cycles", type=int, default=0)
     parser.add_argument("--native-trace-mode", choices=("off", "record"))
     parser.add_argument(
+        "--native-resource-sampling",
+        choices=("off", "periodic"),
+        help=(
+            "Native observer selection; periodic is the default and required for mixed load; "
+            "off isolates timing without native RSS/allocated-disk peak evidence"
+        ),
+    )
+    parser.add_argument(
         "--trace-max-output-bytes",
         type=int,
         help="explicit Native Record output and replay cap, 6144..=1073741824 bytes",
@@ -1264,6 +1295,7 @@ def main() -> int:
                 or args.native_churn_cycles != 0
                 or args.native_mixed_load
                 or args.native_trace_mode is not None
+                or args.native_resource_sampling is not None
                 or any(
                     value is not None
                     for value in (

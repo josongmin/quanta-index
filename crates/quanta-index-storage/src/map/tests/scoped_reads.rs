@@ -104,3 +104,132 @@ fn scoped_reader_reuses_only_its_own_successful_physical_gets() -> TestResult {
     check_eq!(fresh.physical_gets(), physical);
     Ok(())
 }
+
+#[test]
+fn scoped_paged_scan_reuses_authenticated_nodes_without_changing_pages_or_work() -> TestResult {
+    let directory = TestDir::new();
+    let store = FileObjectStore::open(&directory.0)?;
+    let mut setup = budget()?;
+    let object = value(&store, b"paged-scan-value", &mut setup)?;
+    let edits = (0_u8..3)
+        .map(|key| MapEdit::objects(vec![key], None, Some(object)))
+        .collect::<Vec<_>>();
+    let root = store
+        .apply(MapRoot(None), &edits, &RecordingSink::default(), &mut setup)?
+        .root;
+    let mut plain = budget()?;
+    let mut scoped_work = budget()?;
+    let tracker = array_scope(MemoryLifetime::Retained, Some(0), &mut scoped_work);
+    {
+        let scoped = super::super::scoped_reads::ScopedReads::new(&store, &scoped_work)?;
+        let mut after = None;
+        for key in 0_u8..3 {
+            let expected = store.scan(root, after.as_deref(), 1, &mut plain)?;
+            let actual = scoped.scan(root, after.as_deref(), 1, &mut scoped_work)?;
+            check_eq!(actual, expected);
+            check_eq!(actual.entries.as_slice(), &[(vec![key], object.into())]);
+            check_eq!(actual.has_more, key < 2);
+            check_eq!(scoped_work.usage(), plain.usage());
+            // Three inline terminal keys share one authenticated map node.
+            check_eq!(scoped.physical_gets(), 1);
+            after = actual.entries.last().map(|(key, _value)| key.clone());
+        }
+        let expected = store.scan(root, None, 1, &mut plain)?;
+        let repeated = scoped.scan(root, None, 1, &mut scoped_work)?;
+        check_eq!(repeated, expected);
+        check_eq!(scoped_work.usage(), plain.usage());
+        check_eq!(scoped.physical_gets(), 1);
+        drop(repeated);
+        drop(expected);
+
+        let mut unfunded = WorkBudget::new(
+            WorkLimits {
+                reads: 0,
+                writes: u64::MAX,
+                bytes: u64::MAX,
+                mutations: u64::MAX,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        check_eq!(
+            scoped.scan(root, None, 1, &mut unfunded),
+            Err(IndexError::ResourceLimited)
+        );
+        check_eq!(unfunded.usage().reads, 0);
+        check_eq!(scoped.physical_gets(), 1);
+        let mut cancelled = budget()?;
+        cancelled.request().cancel_handle().cancel();
+        check_eq!(
+            scoped.scan(root, None, 1, &mut cancelled),
+            Err(IndexError::Cancelled)
+        );
+        check_eq!(cancelled.usage(), WorkUsage::default());
+        check_eq!(scoped.physical_gets(), 1);
+        check!(tracker.live.load(Ordering::Relaxed) > 0);
+    }
+    check_eq!(tracker.live.load(Ordering::Relaxed), 0);
+
+    let mut fresh_work = budget()?;
+    let fresh = super::super::scoped_reads::ScopedReads::new(&store, &fresh_work)?;
+    check_eq!(fresh.physical_gets(), 0);
+    let page = fresh.scan(root, None, 1, &mut fresh_work)?;
+    check_eq!(page.entries.as_slice(), &[(vec![0], object.into())]);
+    check_eq!(fresh.physical_gets(), 1);
+    Ok(())
+}
+
+#[test]
+fn scoped_multilevel_scan_preserves_page_boundaries_and_logical_work() -> TestResult {
+    const KEYS: usize = 130;
+    const PAGE_SIZE: usize = 7;
+
+    let directory = TestDir::new();
+    let store = FileObjectStore::open(&directory.0)?;
+    let mut setup = budget()?;
+    let object = value(&store, b"multilevel-scan-value", &mut setup)?;
+    let edits = (0..KEYS)
+        .map(|key| {
+            Ok(MapEdit::objects(
+                u16::try_from(key)?.to_be_bytes().to_vec(),
+                None,
+                Some(object),
+            ))
+        })
+        .collect::<Result<Vec<_>, std::num::TryFromIntError>>()?;
+    let root = store
+        .apply(MapRoot(None), &edits, &RecordingSink::default(), &mut setup)?
+        .root;
+    let mut plain = budget()?;
+    let mut scoped_work = budget()?;
+    let scoped = super::super::scoped_reads::ScopedReads::new(&store, &scoped_work)?;
+    let page_limit = u32::try_from(PAGE_SIZE)?;
+    let mut after = None;
+    for start in (0..KEYS).step_by(PAGE_SIZE) {
+        let expected = store.scan(root, after.as_deref(), page_limit, &mut plain)?;
+        let actual = scoped.scan(root, after.as_deref(), page_limit, &mut scoped_work)?;
+        let end = start.saturating_add(PAGE_SIZE).min(KEYS);
+        let golden = (start..end)
+            .map(|key| {
+                Ok((
+                    u16::try_from(key)?.to_be_bytes().to_vec(),
+                    MapValue::from(object),
+                ))
+            })
+            .collect::<Result<Vec<_>, std::num::TryFromIntError>>()?;
+        check_eq!(actual, expected);
+        check_eq!(actual.entries, golden);
+        check_eq!(actual.has_more, end < KEYS);
+        check_eq!(scoped_work.usage(), plain.usage());
+        after = actual.entries.last().map(|(key, _value)| key.clone());
+    }
+    check!(scoped.physical_gets() > 1);
+    let expected = store.scan(root, after.as_deref(), page_limit, &mut plain)?;
+    let actual = scoped.scan(root, after.as_deref(), page_limit, &mut scoped_work)?;
+    check!(actual.entries.is_empty());
+    check!(!actual.has_more);
+    check_eq!(actual, expected);
+    check_eq!(scoped_work.usage(), plain.usage());
+    Ok(())
+}

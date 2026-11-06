@@ -105,7 +105,10 @@ impl PublicationOutputPermit for SidecarOutputPermit {
         if self.staging.is_some() || self.mutation.is_some() || self.reserved_output.is_none() {
             return Err(CoreError::InvalidContract("sidecar already bound".into()));
         }
-        self.binder.validate_held_allowance(&self.held_parent)?;
+        // The directory walk and create claim each authenticate the current
+        // root. Funding validation does not need another reopen before them.
+        self.binder
+            .validate_held_allowance_accounting(&self.held_parent)?;
         self.binder.ensure_private_parent_directories(target)?;
         let ticket = self.reserved_output.take().ok_or_else(|| {
             CoreError::InvalidContract("sidecar reserved output disappeared".into())
@@ -143,7 +146,7 @@ impl PublicationOutputPermit for SidecarOutputPermit {
     }
 
     fn committed(&mut self, writer: File, actual_encoded_bytes: u64) -> Result<(), CoreError> {
-        let settlement = (|| {
+        let validation = (|| {
             if actual_encoded_bytes > self.bound {
                 return Err(CoreError::InvalidContract("sidecar exceeded bound".into()));
             }
@@ -156,20 +159,21 @@ impl PublicationOutputPermit for SidecarOutputPermit {
                     "sidecar encoded width differs from writer".into(),
                 ));
             }
-            let target = self.target()?.to_owned();
-            self.mutation()?
-                .replaced_and_synced(&writer, &target)
-                .map(|_retained| ())
+            Ok(())
         })();
-        if let Err(primary) = settlement {
+        if let Err(primary) = validation {
             return match self.retire_writer_preserving_pending(writer) {
                 Ok(()) => Err(primary),
                 Err(retirement) => Err(with_retirement_context(primary, &retirement)),
             };
         }
-        // The binder owns this identity; the actual writer FD is transferred
-        // below before we take a settled lease.
+        // The caller completed durable promotion before committed(). Retire
+        // its actual writer, then authenticate the binder's original pin and
+        // destination without repeating the file and parent sync protocol.
         self.mutation()?.confirmed_safe_writer_fd_retired(writer)?;
+        let _retained = self
+            .mutation()?
+            .settle_after_external_file_and_parent_sync()?;
         self.settled_lease = Some(self.mutation()?.take_owned_lease()?);
         // The reader lease now retains the inode charge. Retire the settled
         // writer's namespace claim before this output can move or be removed.

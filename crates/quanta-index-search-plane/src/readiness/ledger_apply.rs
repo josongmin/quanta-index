@@ -318,7 +318,8 @@ impl Ledger {
                     now,
                     |state| {
                         state.replace_scope_parse_trees(
-                            scope.scope.repo_relative_path.as_str(),
+                            &scope.scope.source_file,
+                            &payload.repo_id,
                             scope
                                 .trees
                                 .into_iter()

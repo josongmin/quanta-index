@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -154,6 +155,7 @@ def capture_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNa
         native_work_limits_json=None,
         native_churn_cycles=0,
         native_mixed_load=False,
+        native_resource_sampling=None,
         native_trace_mode=None,
         cwd=source,
         binary=binary,
@@ -252,6 +254,7 @@ def native_capture_fixture(capture_fixture, tmp_path, monkeypatch, request) -> S
         "QUANTA_INDEX_NATIVE_WORK_LIMITS_JSON",
         "QUANTA_INDEX_NATIVE_CHURN_CYCLES",
         "QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1",
+        "QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1",
         "QUANTA_INDEX_NATIVE_MIXED_LOAD_V1",
         "QUANTA_INDEX_NATIVE_RECORD_CAPTURE_V1",
     ):
@@ -266,7 +269,12 @@ def native_capture_fixture(capture_fixture, tmp_path, monkeypatch, request) -> S
     fixture_root.mkdir()
     summary, _children, _workload = _native_product_fixture(fixture_root, sampling=True)
     summary["detail"]["daemon_sha256"] = args.native_daemon_sha256
-    state.update(native_after_run=None, native_command=None, native_environment=None)
+    state.update(
+        native_after_run=None,
+        native_command=None,
+        native_environment=None,
+        sampled_resource_observation=deepcopy(summary["detail"]["native_resource_observation"]),
+    )
 
     def run(command, **kwargs):
         assert "QUANTA_INDEX_CAUSAL_PROFILE_V1" not in kwargs["env"]
@@ -290,6 +298,7 @@ def native_capture_fixture(capture_fixture, tmp_path, monkeypatch, request) -> S
             off_summary["detail"]["daemon_sha256"] = hashlib.sha256(daemon.read_bytes()).hexdigest()
             if args.tier == "large":
                 off_summary["detail"].update(tier="large", seed=42, file_count=4096)
+                off_summary["detail"]["source_mutation_count"]["full"] = 4096
                 off_summary["detail"]["foreground_workload"] = {
                     "mode": "explicit",
                     "work_limits": {
@@ -304,7 +313,11 @@ def native_capture_fixture(capture_fixture, tmp_path, monkeypatch, request) -> S
         else:
             children = args.out_root / "causal-timeline.jsonl.native-small-children"
             shutil.copytree(fixture_root / "children", children)
-            custody = summary["detail"]["child_trace_files"]
+            recorded_summary = deepcopy(summary)
+            if args.native_resource_sampling == "off":
+                recorded_summary["detail"].pop("native_resource_observation")
+                recorded_summary.pop("host")
+            custody = recorded_summary["detail"]["child_trace_files"]
             custody["directory"] = str(children)
             for row in custody["captures"]:
                 row["path"] = str(children / f"{row['role']}.jsonl")
@@ -312,7 +325,7 @@ def native_capture_fixture(capture_fixture, tmp_path, monkeypatch, request) -> S
                 metadata = Path(row["stderr_tail"]["path"]).stat()
                 row["stderr_tail"]["file_device"] = metadata.st_dev
                 row["stderr_tail"]["file_inode"] = metadata.st_ino
-            (artifact / "summary.json").write_text(json.dumps(summary))
+            (artifact / "summary.json").write_text(json.dumps(recorded_summary))
             (args.out_root / "causal-timeline.jsonl").write_bytes(
                 _timeline(tuple(f"native_{phase}" for phase in NATIVE_PHASE_GOLD))
             )
@@ -542,7 +555,9 @@ def test_native_linux_cgroup_uses_one_qualified_owner_and_keeps_memory_scope(
         "allocated_disk_peak": None,
     }
     assert seen_observations
-    assert all(observation == result["linux_resource_observation"] for observation in seen_observations)
+    assert all(
+        observation == result["linux_resource_observation"] for observation in seen_observations
+    )
     status = json.loads((args.out_root / "timeline-status.json").read_text())
     assert status["execution"]["linux_resource_observation"] == result["linux_resource_observation"]
     assert status["execution"]["native_temporary_root"] == result["native_temporary_root"]
@@ -650,9 +665,7 @@ def test_native_mixed_linux_outer_rss_exceedance_refuses_product(
     original = causal_cost_capture.linux_process.run
 
     def over_cap(command, **options):
-        return replace(
-            original(command, **options), peak_tree_rss_bytes=2 * 1024**3 + 1
-        )
+        return replace(original(command, **options), peak_tree_rss_bytes=2 * 1024**3 + 1)
 
     monkeypatch.setattr(causal_cost_capture.linux_process, "run", over_cap)
     result = capture(args)
@@ -836,6 +849,8 @@ def test_native_ordinary_off_keeps_product_and_build_binding_without_trace(
     assert command[command.index("--trace-mode") + 1] == "off"
     assert "--trace-out" not in command
     assert "QUANTA_INDEX_NATIVE_MIXED_LOAD_V1" not in state["native_environment"]
+    assert state["native_environment"]["QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1"] == "1"
+    assert result["native_environment"]["QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1"] == "1"
     status = json.loads((args.out_root / "timeline-status.json").read_bytes())
     assert status["source_binding"] == (
         "observed_local_build_and_execution" if managed else "UNPROVEN"
@@ -843,6 +858,107 @@ def test_native_ordinary_off_keeps_product_and_build_binding_without_trace(
     assert status["raw_placeholder"] is True
     assert status["reason"] == "Native ordinary Off has no canonical timeline"
     assert status["execution"]["native_trace_mode"] == "off"
+
+
+@pytest.mark.parametrize("sampling", [False, True])
+def test_native_environment_selects_resource_sampling_without_changing_work_diagnostics(
+    native_capture_fixture: SimpleNamespace, sampling: bool
+) -> None:
+    workload = {"mode": "fixed", "work_limits": {}}
+    selected = causal_cost_capture._native_environment(workload, 0, resource_sampling=sampling)
+    assert selected.get("QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1") == ("1" if sampling else None)
+    assert selected["QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1"] == "1"
+
+
+def test_native_record_explicit_resource_sampling_off_keeps_product_and_canonical_gold(
+    native_capture_fixture: SimpleNamespace,
+) -> None:
+    args, state = native_capture_fixture.args, native_capture_fixture.state
+    args.native_resource_sampling = "off"
+    result = capture(args)
+    assert result["status"] == "PARTIAL_DIAGNOSTIC"
+    assert result["product_status"] == "PRODUCT_ARTIFACT_VERIFIED"
+    assert result["canonical_profile_status"] == "VERIFIED"
+    assert result["native_trace_mode"] == "record"
+    assert "QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1" not in state["native_environment"]
+    assert "QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1" not in result["native_environment"]
+    assert state["native_environment"]["QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1"] == "1"
+    profile = json.loads((args.out_root / "canonical-profile.json").read_text())
+    assert profile["native_resource_observation"] is None
+    assert (
+        "native_resource_observation"
+        not in json.loads((args.out_root / "artifact/summary.json").read_text())["detail"]
+    )
+
+
+def test_native_record_explicit_resource_sampling_off_refuses_forged_sampled_evidence(
+    native_capture_fixture: SimpleNamespace,
+) -> None:
+    args, state = native_capture_fixture.args, native_capture_fixture.state
+    args.native_resource_sampling = "off"
+
+    def forge_sample() -> None:
+        path = args.out_root / "artifact/summary.json"
+        summary = json.loads(path.read_text())
+        summary["detail"]["native_resource_observation"] = state["sampled_resource_observation"]
+        path.write_text(json.dumps(summary))
+
+    state["native_after_run"] = forge_sample
+    result = capture(args)
+    assert result["status"] == "FAILED"
+    assert result["product_status"] != "PRODUCT_ARTIFACT_VERIFIED"
+    assert "resource sampling" in result["reason"]
+    assert not (args.out_root / "canonical-profile.json").exists()
+
+
+def test_native_resource_sampling_off_refuses_inherited_sampler_before_output(
+    native_capture_fixture: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, state = native_capture_fixture.args, native_capture_fixture.state
+    args.native_resource_sampling = "off"
+    monkeypatch.setenv("QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1", "1")
+    with pytest.raises(ValueError, match="inherited QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1"):
+        capture(args)
+    assert state["native_command"] is None
+    assert not args.out_root.exists()
+
+
+@pytest.mark.parametrize("sampling", ["off", "periodic"])
+def test_legacy_cli_refuses_explicit_native_resource_sampling_before_output(
+    capture_fixture: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    sampling: str,
+) -> None:
+    args, state = capture_fixture.args, capture_fixture.state
+    command = [
+        "causal-cost-capture",
+        "--cwd",
+        str(args.cwd),
+        "--source-revision",
+        args.source_revision,
+        "--backend",
+        "legacy",
+        "--tier",
+        args.tier,
+        "--seed",
+        str(args.seed),
+        "--binary",
+        str(args.binary),
+        "--binary-sha256",
+        args.binary_sha256,
+        "--max-seconds",
+        str(args.max_seconds),
+        "--out-root",
+        str(args.out_root),
+        "--native-resource-sampling",
+        sampling,
+    ]
+    monkeypatch.setattr(sys, "argv", command)
+    with pytest.raises(SystemExit) as refusal:
+        causal_cost_capture.main()
+    assert refusal.value.code == 2
+    assert state["replays"] == state["product_validations"] == 0
+    assert not args.out_root.exists()
 
 
 @pytest.mark.parametrize(
@@ -1051,6 +1167,7 @@ def test_native_mixed_off_cli_validates_actual_product_shape_without_canonical_c
     assert result["native_environment"]["QUANTA_INDEX_NATIVE_MIXED_LOAD_V1"] == "1"
     assert result["native_environment"]["QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1"] == "1"
     assert state["native_environment"]["QUANTA_INDEX_NATIVE_MIXED_LOAD_V1"] == "1"
+    assert state["native_environment"]["QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1"] == "1"
     assert "QUANTA_INDEX_CAUSAL_PROFILE_V1" not in state["native_environment"]
     command = state["native_command"]
     assert command[command.index("--trace-mode") + 1] == "off"
@@ -1062,6 +1179,21 @@ def test_native_mixed_off_cli_validates_actual_product_shape_without_canonical_c
     assert status["execution"]["native_mixed_load"] is True
     assert status["execution"]["product_status"] == "PRODUCT_ARTIFACT_VERIFIED"
     assert state["replays"] == state["product_validations"] == 0
+
+
+def test_native_mixed_cli_refuses_resource_sampling_off_before_output(
+    native_capture_fixture: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, state = native_capture_fixture.args, native_capture_fixture.state
+    _select_native_mixed(args)
+    command = _native_mixed_argv(args, managed=True)
+    command.extend(["--native-resource-sampling", "off"])
+    monkeypatch.setattr(sys, "argv", command)
+    with pytest.raises(SystemExit) as refusal:
+        causal_cost_capture.main()
+    assert refusal.value.code == 2
+    assert state["native_command"] is None
+    assert not args.out_root.exists()
 
 
 @pytest.mark.parametrize("fault", ["partial_publisher", "unexpected_timeline"])
@@ -1195,6 +1327,7 @@ def test_native_capture_replays_real_product_and_canonical_validators(
     assert bound_daemon.is_absolute()
     assert hashlib.sha256(bound_daemon.read_bytes()).hexdigest() == result["native_daemon_sha256"]
     assert state["native_environment"]["QUANTA_INDEX_NATIVE_RESOURCE_SAMPLING_V1"] == "1"
+    assert state["native_environment"]["QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1"] == "1"
     assert "QUANTA_INDEX_NATIVE_WORK_LIMITS_JSON" not in state["native_environment"]
     assert "QUANTA_INDEX_NATIVE_CHURN_CYCLES" not in state["native_environment"]
     profile = json.loads((args.out_root / "canonical-profile.json").read_text())
@@ -1324,14 +1457,23 @@ def test_native_profile_refuses_invalid_inputs_before_output(native_capture_fixt
     assert native_capture_fixture.state["native_command"] is None
 
 
-def test_native_capture_refuses_inherited_mixed_profile_before_output(
-    native_capture_fixture, monkeypatch
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("QUANTA_INDEX_NATIVE_MIXED_LOAD_V1", "1"),
+        ("QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1", "0"),
+        ("QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1", "invalid"),
+    ],
+)
+def test_native_capture_refuses_inherited_profile_conflict_before_output(
+    native_capture_fixture, monkeypatch, key, value
 ):
     args = native_capture_fixture.args
-    monkeypatch.setenv("QUANTA_INDEX_NATIVE_MIXED_LOAD_V1", "1")
-    with pytest.raises(ValueError, match="inherited QUANTA_INDEX_NATIVE_MIXED_LOAD_V1"):
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError, match=f"inherited {key}"):
         capture(args)
     assert not args.out_root.exists()
+    assert native_capture_fixture.state["native_command"] is None
 
 
 def test_capture_accepts_one_unchanged_executable_and_input_epoch(

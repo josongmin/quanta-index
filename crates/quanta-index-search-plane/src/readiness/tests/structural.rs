@@ -124,3 +124,50 @@ fn structural_replace_scope_failure_preserves_existing_parse_tree_set() -> TestR
     }
     Ok(())
 }
+
+#[test]
+fn structural_scope_preserves_same_path_in_another_source_repository() -> TestResult {
+    use crate::readiness::StructuralAuthorityState;
+    use crate::readiness::tests::support::chunk_record;
+    use quanta_index_contract::{RepoId, RepoRelativePath, SourceFileKey};
+
+    let target = repo_id();
+    let file_a = SourceFileKey {
+        source_repo_id: RepoId::new("source-a")?,
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+    };
+    let file_b = SourceFileKey {
+        source_repo_id: RepoId::new("source-b")?,
+        repo_relative_path: file_a.repo_relative_path.clone(),
+    };
+    let text = "fn main() {}";
+    let mut a = chunk_record("src/lib.rs", text)?;
+    a.chunk_id = ChunkId::new("source-a-chunk");
+    let mut b = a.clone();
+    b.chunk_id = ChunkId::new("source-b-chunk");
+    let mut state = StructuralAuthorityState::default();
+    state.replace_file_chunks(&file_a, &target, vec![a.clone()]);
+    state.replace_file_chunks(&file_b, &target, vec![b.clone()]);
+    state.upsert_parse_tree(a.chunk_id.clone(), parse_tree_record(text)?)?;
+    state.upsert_parse_tree(b.chunk_id.clone(), parse_tree_record(text)?)?;
+    let before = state.parse_trees().clone();
+    let error = state
+        .replace_scope_parse_trees(
+            &file_a,
+            &target,
+            vec![(b.chunk_id.clone(), parse_tree_record(text)?)],
+        )
+        .expect_err("foreign source tree must refuse before pruning");
+    expect_decode_fail(error, "reason=scope_chunk_owner_mismatch")?;
+    assert_eq!(state.parse_trees(), &before);
+    state.replace_scope_parse_trees(
+        &file_a,
+        &target,
+        vec![(a.chunk_id.clone(), parse_tree_record(text)?)],
+    )?;
+    assert!(state.parse_trees().contains_key(&b.chunk_id));
+    state.tombstone_scope_parse_trees(&file_a, &target);
+    assert!(!state.parse_trees().contains_key(&a.chunk_id));
+    assert!(state.parse_trees().contains_key(&b.chunk_id));
+    Ok(())
+}

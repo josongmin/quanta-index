@@ -401,6 +401,7 @@ fn native_config(root: &Path, socket: &Path, workload: NativeForegroundWorkload)
             "bytes":workload.limits.bytes,
             "mutations":workload.limits.mutations},
         "resources":{
+            "catalog_writer_cache_kib": 49152,
             "physical":{
                 "inventory":{"max_bytes":68_719_476_736_u64,"max_files":200_000,
                     "max_pending":4096,"max_entries":500_000,"max_depth":8,
@@ -420,6 +421,7 @@ fn native_config(root: &Path, socket: &Path, workload: NativeForegroundWorkload)
             "format":vec![75_u8;16]},"admission_policy":vec![31_u8;32],
             "bm25":{"k1":1.2,"b":0.75},"read_need":unit},
         "maintenance":{"interval_ms":20,"max_steps_per_round":1,"child_limit":32,
+            "wal_reclaim":{"trigger_bytes":8_388_608,"min_interval_ms":1_000},
             "work_limits":{"reads":1_000_000,"writes":1_000_000,
                 "bytes":536_870_912,"mutations":1_000_000},
             "round_timeout_ms":2_000,"head_probe_every":4}
@@ -1732,6 +1734,24 @@ fn write_index_native_artifacts_inner(
 mod product_tests {
     use super::*;
 
+    fn trace_rows(path: &Path) -> Result<Vec<Value>> {
+        let rows: Vec<Value> = fs::read_to_string(path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<std::result::Result<_, _>>()?;
+        let schema_version = rows
+            .first()
+            .and_then(|row| row.get("schema_version"))
+            .and_then(Value::as_u64)
+            .context("capture schema version absent")?;
+        rows.into_iter()
+            .map(|row| {
+                quanta_index_searchd::trace_wire::normalize_record(schema_version, row)
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
     pub(super) fn required_field<'a>(value: &'a Value, path: &str) -> Result<&'a Value> {
         value
             .pointer(path)
@@ -2209,10 +2229,7 @@ mod product_tests {
             "native record capture left events unwritten"
         );
 
-        let rows: Vec<Value> = fs::read_to_string(trace_path)?
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<std::result::Result<_, _>>()?;
+        let rows = trace_rows(&trace_path)?;
         for name in [
             "native_full_event_ack",
             "native_reopen",

@@ -185,6 +185,25 @@ pub(crate) fn route_posting_key(route: &[u8], segment_key: u64) -> Result<(u8, &
                 1,
                 "term route length",
             )?));
+            if length == 0 {
+                if route.len() != 45 {
+                    return Err(corrupt("long term route width differs"));
+                }
+                let raw_length = usize::from(u16::from_be_bytes(read_fixed::<2>(
+                    route,
+                    3,
+                    "long term length",
+                )?));
+                if raw_length < 246 {
+                    return Err(corrupt("long term route length differs"));
+                }
+                return Ok((
+                    surface,
+                    route
+                        .get(5..37)
+                        .ok_or_else(|| corrupt("long term digest missing"))?,
+                ));
+            }
             if route.len() != length.saturating_add(11) {
                 return Err(corrupt("term route length differs"));
             }
@@ -229,6 +248,32 @@ mod tests {
     use super::{PostingPage, route_posting_key};
     use crate::text_authority::paged_segment::BuiltPosting;
     use crate::text_authority::paged_wire::{gram_prefix, route_key, term_prefix};
+
+    #[test]
+    fn long_term_route_stays_within_page_key_bound_and_keeps_raw_page_term()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let short = "x".repeat(245);
+        let long = "x".repeat(246);
+        let other = format!("{}y", "x".repeat(245));
+        let short_route = route_key(&term_prefix(3, &short)?, 7);
+        let long_route = route_key(&term_prefix(3, &long)?, 7);
+        let other_route = route_key(&term_prefix(3, &other)?, 7);
+        assert_eq!(short_route.len(), 256);
+        assert_eq!(long_route.len(), 45);
+        assert_ne!(long_route, other_route);
+        assert_eq!(route_posting_key(&short_route, 7)?.1, short.as_bytes());
+        assert_eq!(route_posting_key(&long_route, 7)?.1.len(), 32);
+        let row = BuiltPosting {
+            surface: 3,
+            key: long.as_bytes().to_vec(),
+            bytes: vec![1],
+        };
+        let page_bytes = PostingPage::encode(7, &[&row])?;
+        let page = PostingPage::decode(&page_bytes, 7)?;
+        assert_eq!(page.posting(3, long.as_bytes()), Some(&[1][..]));
+        assert_eq!(page.posting(3, other.as_bytes()), None);
+        Ok(())
+    }
 
     #[test]
     fn distinct_rows_share_one_page_and_selected_key_is_exact()

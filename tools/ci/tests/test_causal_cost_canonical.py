@@ -191,6 +191,70 @@ def test_profile_uses_verified_flow_and_preserves_unavailable_io_and_nested_cloc
     assert "wall_share" not in phase
 
 
+def test_profile_retains_packet_components_without_summing_parent_cpu():
+    capture, product, binding = fixture()
+    capture["spans"][8] = {
+        **copy.deepcopy(capture["spans"][4]),
+        "span_id": 8,
+        "parent_span_id": 4,
+        "stage": "managed_object_install",
+        "start_ns": 42,
+        "end_ns": 60,
+        "counters": {"thread_cpu_ns": 7},
+    }
+    gold = [
+        {
+            "span_id": 8,
+            "ts_ns": 59,
+            "phase": phase,
+            "calls": 2,
+            "elapsed_sum_ns": wall,
+            "thread_cpu_ns": cpu,
+            "failures": 0,
+        }
+        for phase, wall, cpu in (("write", 3, 1), ("barrier", 9, None))
+    ]
+    capture["object_install_aggregates"] = copy.deepcopy(gold)
+    profile = canonical_profile(capture, product, execution_binding=binding)
+    phase = profile["phases"]["full_ingest_seal"]
+    assert phase["object_install_aggregates"] == gold
+    packet = next(row for row in phase["owner_spans"] if row["span_id"] == 8)
+    assert packet["counters"]["thread_cpu_ns"] == 7
+    assert phase["duration_ns"] == 100
+    assert profile["status"] == "diagnostic_unqualified"
+
+
+@pytest.mark.parametrize("fault", ("owner", "duplicate", "failed"))
+def test_profile_refuses_invalid_packet_owner_or_repeated_component(fault):
+    capture, product, binding = fixture()
+    capture["spans"][8] = {
+        **copy.deepcopy(capture["spans"][4]),
+        "span_id": 8,
+        "parent_span_id": 4,
+        "stage": "managed_object_install",
+        "start_ns": 42,
+        "end_ns": 60,
+    }
+    row = {
+        "span_id": 8,
+        "ts_ns": 59,
+        "phase": "write",
+        "calls": 1,
+        "elapsed_sum_ns": 3,
+        "thread_cpu_ns": None,
+        "failures": 0,
+    }
+    capture["object_install_aggregates"] = [row]
+    if fault == "owner":
+        capture["spans"][8]["stage"] = "lexical_build"
+    elif fault == "failed":
+        capture["spans"][8]["outcome"] = "error"
+    else:
+        capture["object_install_aggregates"].append(copy.deepcopy(row))
+    with pytest.raises(ValueError, match="owner|repeats"):
+        canonical_profile(capture, product, execution_binding=binding)
+
+
 def test_native_phase_wire_is_parseable_without_legacy_profile_promotion():
     capture, product, binding = fixture(phase_name="native_full_event_ack")
     assert owner_phase(capture, 4) == "native_full_event_ack"
@@ -215,6 +279,7 @@ def _native_fixture() -> tuple[dict, dict, dict]:
                     "mutations": 1,
                 },
             },
+            "native_resource_observation": None,
             "phases": {"full_event_ack": {"completed": True, "wall_ms": 1.0, "observer_ms": 0.0}},
             "children": {"first": {"capture_id": "1" * 32}, "reopen": {"capture_id": "2" * 32}},
         }
@@ -238,6 +303,10 @@ def test_native_profile_retains_validated_resource_observations_without_aliasing
     assert (
         result["native_resource_observation"]["epochs"][0]["child_rss"]["sampled_max_bytes"] == 8192
     )
+    assert result["scope"]["resources"] == (
+        "validated sampled observation and explicit unsupported axes; "
+        "no continuous peak or operating qualification"
+    )
     assert result["scope"]["performance_qualification"] == "NOT_RUN"
 
 
@@ -246,6 +315,11 @@ def test_native_canonical_keeps_parent_phases_and_child_clocks_separate():
     result = canonical_profile(capture, product, execution_binding=binding)
     assert result["phases"]["full_event_ack"]["duration_ns"] == 100
     assert result["children"]["first"]["capture_id"] == "1" * 32
+    assert result["native_resource_observation"] is None
+    assert result["scope"]["resources"] == (
+        "not sampled; native resource observation disabled; "
+        "no RSS/disk peak or operating qualification"
+    )
     assert result["scope"]["legacy_equivalence"] == "NOT_APPLICABLE_NATIVE"
     assert result["scope"]["performance_qualification"] == "NOT_RUN"
 

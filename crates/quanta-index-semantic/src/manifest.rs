@@ -55,7 +55,9 @@ fn is_canonical_sha256_v1(value: &str) -> bool {
 /// `12` = generation-wide `record_id` and `embedding_id` uniqueness at seal.
 /// Older artifacts cannot prove those identities and must be rebuilt.
 /// `13` = complete embedding policy and view policy identity in the seal.
-pub(crate) const FORMAT_VERSION: u32 = 13;
+/// `14` = a required canonical source repository column in every semantic row.
+/// Older generations cannot recover federated source ownership and require reindexing.
+pub(crate) const FORMAT_VERSION: u32 = 14;
 
 /// The dense lane's index contract, sealed with the generation (QI-BB-027).
 ///
@@ -1036,10 +1038,10 @@ mod tests {
             SemanticManifest::decode(&bytes),
             Err(CoreError::Storage(_))
         ));
-        // A full pre-uniqueness manifest must be rebuilt, even if its old
-        // shape is otherwise identical to the current one.
+        // A full manifest without source-repo columns must be rebuilt, even
+        // if its old shape is otherwise identical to the current one.
         let mut stale = manifest(300, ann_seal(300));
-        stale.format_version = 11;
+        stale.format_version = 13;
         let stale_bytes = stale.encode().expect("encode old shape");
         assert!(matches!(
             SemanticManifest::decode(&stale_bytes),

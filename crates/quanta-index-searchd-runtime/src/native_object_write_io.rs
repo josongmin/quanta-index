@@ -139,19 +139,14 @@ impl ObjectWriteIoPort for NativeObjectWriteIo {
         path.try_reserve_exact(path_bytes)
             .map_err(|_error| IndexError::ResourceLimited)?;
         path.push(temporary);
-        // Immutable installation never authorizes replacing an existing inode.
-        if self
-            .common
-            .path_observation(target)
-            .map_err(|error| index_error_at(&error, budget, "object_write.path_observation"))?
-            .is_some()
-        {
-            return Err(IndexError::FenceLost);
-        }
+        // The claim's fresh anchored observation enforces immutable output.
+        // A separate preflight would walk the namespace twice and could race
+        // with an existing target before the replacement-capable claim.
         let mut mutation = self
             .common
-            .begin_create(target)
-            .map_err(|error| index_error_at(&error, budget, "object_write.begin_create"))?;
+            .begin_create_if_absent(target)
+            .map_err(|error| index_error_at(&error, budget, "object_write.begin_create"))?
+            .ok_or(IndexError::FenceLost)?;
         mutation
             .reserve_end(max_bytes)
             .map_err(|error| index_error_at(&error, budget, "object_write.reserve_end"))?;
@@ -961,6 +956,90 @@ mod tests {
         require(
             read.open(&target, &mut budget()?).is_err() && capacity.snapshot()? == pending,
             "symlink granted reader admission or refunded capacity",
+        )?;
+        Ok(())
+    }
+    #[test]
+    fn existing_target_refuses_before_reservation_or_external_write() -> TestResult {
+        let (_directory, root, capacity, common) = fixture(128)?;
+        let baseline = capacity.snapshot()?;
+        let target = root.join("winner-source");
+        let temporary = root.join(".tmp-existing-object");
+        let io = NativeObjectWriteIo::new(Arc::clone(&common));
+        require(
+            matches!(
+                io.begin(&target, &temporary, 9, &mut budget()?),
+                Err(IndexError::FenceLost)
+            ),
+            "existing target was not refused as a lost immutable fence",
+        )?;
+        require(
+            fs::read(&target)? == b"winner"
+                && !temporary.exists()
+                && capacity.snapshot()? == baseline
+                && common.is_quiescent()?,
+            "existing target changed, created a temp, or retained a reservation",
+        )?;
+        Ok(())
+    }
+    #[test]
+    fn retargeted_shard_and_symlink_leaf_refuse_without_conflict_conversion() -> TestResult {
+        let (_directory, root, capacity, common) = fixture(128)?;
+        let parent = root.join("shard");
+        fs::create_dir(&parent)?;
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700))?;
+        let retired = root.join("retired-shard");
+        fs::rename(&parent, &retired)?;
+        std::os::unix::fs::symlink(&retired, &parent)?;
+        let target = parent.join("object");
+        let temporary = root.join(".tmp-retargeted-object");
+        let io = NativeObjectWriteIo::new(Arc::clone(&common));
+        let baseline = capacity.snapshot()?;
+        require(
+            matches!(
+                io.begin(&target, &temporary, 9, &mut budget()?),
+                Err(IndexError::Storage(_))
+            ),
+            "symlink-retargeted shard was accepted or converted to an existing-target conflict",
+        )?;
+        std::os::unix::fs::symlink(root.join("winner-source"), root.join("symlink-leaf"))?;
+        require(
+            matches!(
+                io.begin(&root.join("symlink-leaf"), &temporary, 9, &mut budget()?),
+                Err(IndexError::Storage(_))
+            ),
+            "symlink leaf was accepted or converted to an existing-target conflict",
+        )?;
+        require(
+            !temporary.exists() && capacity.snapshot()? == baseline && common.is_quiescent()?,
+            "invalid namespace created a temp or retained a reservation",
+        )?;
+        Ok(())
+    }
+    #[test]
+    fn retargeted_root_refuses_before_output_reservation() -> TestResult {
+        let (_directory, root, capacity, common) = fixture(128)?;
+        let baseline = capacity.snapshot()?;
+        let retired = root.with_extension("retired");
+        fs::rename(&root, &retired)?;
+        fs::create_dir(&root)?;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+        let target = root.join("object");
+        let temporary = root.join(".tmp-object");
+        let io = NativeObjectWriteIo::new(Arc::clone(&common));
+        require(
+            matches!(
+                io.begin(&target, &temporary, 9, &mut budget()?),
+                Err(IndexError::Storage(_))
+            ),
+            "retargeted root was accepted or converted to an existing-target conflict",
+        )?;
+        require(
+            !target.exists()
+                && !temporary.exists()
+                && capacity.snapshot()? == baseline
+                && common.is_quiescent()?,
+            "retargeted root created output or retained a reservation",
         )?;
         Ok(())
     }

@@ -823,7 +823,10 @@ fn publish_active_auxiliary_fixture(
     .replace_tree(
         SearchScopeKey {
             doc_surface: SearchScopeSurface::Chunk,
-            repo_relative_path: RepoRelativePath::new(owned_chunk.path.clone()),
+            source_file: quanta_index_contract::SourceFileKey {
+                source_repo_id: identity.repo_id.clone(),
+                repo_relative_path: RepoRelativePath::new(owned_chunk.path.clone()),
+            },
         },
         format!("fixture:structural:{}", owned_chunk.chunk_id),
         chunk_id.clone(),
@@ -2234,6 +2237,39 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     );
     assert!(receipt.semantic_content.is_some());
 
+    let trace_files = session
+        .client()
+        .search()
+        .hybrid()
+        .native("sphinx")
+        .semantic_text("sphinx quartz vaults\nserver.go:7")
+        .pinned(quanta_index_contract::GenerationPin::new(
+            identity.repo_id.clone(),
+            identity.revision_id.clone(),
+            identity.generation,
+        ))
+        .top_k(10)
+        .go_test_trace_file("/tmp/repo/server.go:7: panic sphinx", 10)
+        .expect("selected Go trace file route through SDK");
+    assert_eq!(trace_files.generation.repo_id, identity.repo_id);
+    assert_eq!(
+        trace_files.generation.manifest_generation,
+        identity.generation
+    );
+    assert_eq!(
+        trace_files.frame_class,
+        quanta_index_contract::GoTestTraceFrameClassV1::Unresolved
+    );
+    assert!(!trace_files.results.is_empty());
+    assert!(trace_files.results.iter().all(|hit| {
+        let candidate = hit.representative().expect("original lane witness");
+        candidate.repo_id == identity.repo_id
+            && candidate.revision_id == identity.revision_id
+            && candidate.manifest_generation == identity.generation
+            && candidate.source_repo_id == hit.file.source_repo_id
+            && candidate.repo_relative_path == hit.file.repo_relative_path
+    }));
+
     // Lexical route finds the distinctive term in its source span.
     let lexical = query_route(&RouteQuery {
         client: session.client(),
@@ -2429,6 +2465,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             task_id: "T1".to_string(),
             query: "sphinx quartz vaults".to_string(),
             query_sha256: sha256_hex(b"sphinx quartz vaults"),
+            semantic_input: None,
         }],
         pack_sha256: "d".repeat(64),
         comparison_contract: serde_json::json!({
@@ -2891,6 +2928,7 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     .expect("manifest writes");
 
     let query = "sphinx quartz vaults";
+    let semantic_text = "panic: sphinx quartz vaults\nserver.go:17";
     let pack_path = evidence.join("query-pack.json");
     std::fs::write(
         &pack_path,
@@ -2916,7 +2954,14 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
             "tasks": [{
                 "task_id": "T1",
                 "query": query,
-                "query_sha256": sha256_hex(query.as_bytes())
+                "query_sha256": sha256_hex(query.as_bytes()),
+                "semantic_input": {
+                    "profile": "go_test_excerpt_v1",
+                    "text": semantic_text,
+                    "text_sha256": sha256_hex(semantic_text.as_bytes()),
+                    "failure_excerpt": semantic_text,
+                    "failure_excerpt_sha256": sha256_hex(semantic_text.as_bytes())
+                }
             }]
         }))
         .expect("pack renders"),
@@ -2946,7 +2991,7 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
         "--routes",
         "lexical,semantic,hybrid",
         "--query-input-policy",
-        "native",
+        "natural_language",
         "--top-k",
         "10",
         "--state-root",
@@ -3052,6 +3097,16 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
         }
     }
     assert_eq!(record["results"].as_array().expect("results").len(), 3);
+    for result in record["results"].as_array().expect("results") {
+        assert_eq!(
+            result["query_identity"]["original_query_sha256"],
+            sha256_hex(query.as_bytes())
+        );
+        assert_eq!(
+            result["query_identity"]["semantic_text_sha256"],
+            sha256_hex(semantic_text.as_bytes())
+        );
+    }
     assert_eq!(record["span_accounting_version"], 1);
     let metrics: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&metrics_out).expect("phase metrics bytes"))
@@ -3502,6 +3557,10 @@ fn verify_rank_study_runner(original_command: &Command, original_pack: &Path, ev
     pack["comparison_contract"]["top_k"] = serde_json::json!(1);
     pack["tasks"][0]["query"] = serde_json::json!("pub");
     pack["tasks"][0]["query_sha256"] = serde_json::json!(sha256_hex(b"pub"));
+    let _semantic_input = pack["tasks"][0]
+        .as_object_mut()
+        .expect("blind task object")
+        .remove("semantic_input");
     let pack_path = evidence.join("rank-study-pack.json");
     std::fs::write(
         &pack_path,
@@ -4267,4 +4326,143 @@ fn homonymous_symbols_stay_distinct_units_on_the_symbol_route() {
         seen_ids.len() <= 2 && !seen_ids.is_empty(),
         "at most the two homonyms, each at most once: {seen_ids:?}"
     );
+}
+
+#[test]
+fn real_daemon_go_trace_preserves_source_file_owners() {
+    use quanta_index_contract::{GoTestTraceFrameClassV1, RepoId, SourcePublicationEvent};
+    use quanta_index_sdk::SearchCorpusBatch;
+
+    let fixture = tempfile::tempdir().expect("federated source fixture");
+    let identity = BatchIdentity::new(
+        "aggregate-index",
+        "aggregate-rev",
+        1,
+        "manifest:federated-file-identity".to_string(),
+    )
+    .expect("aggregate identity");
+    let mut batch = SearchCorpusBatch::replace_generation(
+        identity.repo_id.clone(),
+        identity.revision_id.clone(),
+        identity.generation,
+        identity.manifest_digest.clone(),
+    )
+    .source_event(SourcePublicationEvent {
+        stream_id: "federated-source-fixture".to_string(),
+        event_id: "federated-initial".to_string(),
+        expected_base_event_id: None,
+        payload_sha256: [0; 32],
+    });
+    for (owner, text) in [
+        (
+            "source-a",
+            "package fixture\nfunc Alpha() string { return \"needle\" }\n",
+        ),
+        (
+            "source-b",
+            "package fixture\nfunc Beta() string { return \"needle plus context\" }\n",
+        ),
+    ] {
+        let repo = fixture.path().join(owner);
+        write_repo(&repo, &[("src/main.go", text)]);
+        let manifest = load_manifest(&repo.join("manifest.json")).expect("source manifest");
+        let files = load_corpus(&repo, &manifest, &CorpusLimits::default()).expect("source files");
+        let (mut chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("source chunk");
+        // The fixture declares generation-global IDs, as the public ingest contract requires.
+        for chunk in chunks.values_mut().flatten() {
+            chunk.chunk_id = format!("{owner}-chunk");
+        }
+        let source_identity = BatchIdentity::new(
+            owner,
+            identity.revision_id.as_str(),
+            1,
+            format!("manifest:{owner}"),
+        )
+        .expect("source identity");
+        let (source_batch, _) = assemble_fixture_batch(&source_identity, &chunks, &files)
+            .expect("source-bound fixture batch");
+        for scope in source_batch.replace_scopes() {
+            batch = batch.replace_scope(
+                scope.coverage.clone(),
+                scope.source_bytes.clone(),
+                scope.chunks.clone(),
+                scope.symbols.clone(),
+            );
+        }
+        for scope in source_batch.semantic_replace_scopes() {
+            batch = batch.replace_semantic_scope(
+                scope.scope.clone(),
+                scope.scope_digest.clone(),
+                scope.sources.clone(),
+                scope.cluster_memberships.clone(),
+            );
+        }
+    }
+    let state = fixture.path().join("state");
+    let session = boot_session(&state, &identity);
+    let (_receipt, _ack, _observation, _timings) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish federated sources");
+    let pin = quanta_index_contract::GenerationPin::new(
+        identity.repo_id.clone(),
+        identity.revision_id.clone(),
+        identity.generation,
+    );
+    let query = || {
+        session
+            .client()
+            .search()
+            .hybrid()
+            .native("needle")
+            .semantic_text("needle")
+            .pinned(pin.clone())
+            .top_k(20)
+    };
+    let result = query()
+        .go_test_trace_file("src/main.go:2: panic", 2)
+        .expect("Go file SDK");
+    assert_eq!(result.frame_class, GoTestTraceFrameClassV1::Exact);
+    assert_eq!(result.results.len(), 2);
+    assert!(result.results.iter().all(|hit| !hit.source_frame));
+    let owners = result
+        .results
+        .iter()
+        .map(|hit| {
+            assert_eq!(hit.file.repo_relative_path.as_str(), "src/main.go");
+            assert!(
+                hit.lexical.is_some() && hit.dense.is_some(),
+                "both executed lanes must witness each source"
+            );
+            for witness in [hit.lexical.as_ref(), hit.dense.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                assert_eq!(witness.candidate.source_repo_id, hit.file.source_repo_id);
+                assert_eq!(
+                    witness.candidate.repo_relative_path,
+                    hit.file.repo_relative_path
+                );
+            }
+            hit.file.source_repo_id.as_str()
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(owners, BTreeSet::from(["source-a", "source-b"]));
+    let scoped = query()
+        .go_test_trace_file_with_source_context(
+            RepoId::new("source-a").expect("source owner"),
+            "src/main.go:2: panic",
+            2,
+        )
+        .expect("owner-bound hint SDK");
+    assert_eq!(scoped.results.len(), 2);
+    assert_eq!(
+        scoped.results.iter().filter(|hit| hit.source_frame).count(),
+        1
+    );
+    assert!(
+        scoped
+            .results
+            .iter()
+            .any(|hit| hit.source_frame && hit.file.source_repo_id.as_str() == "source-a")
+    );
+    session.stop().expect("owned daemon stop");
 }

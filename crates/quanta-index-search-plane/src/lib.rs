@@ -53,7 +53,11 @@ pub use observability::{
     BoundedQueryObsStore, HISTOGRAM_BUCKET_BOUNDS, MAX_OBS_ERRORS, MAX_OBS_SAMPLES,
     ObservabilityScrape, QueryObsSink,
 };
-pub use quanta_index_core::RequestBudgetV1;
+pub use quanta_index_core::{RequestBudgetV1, SemanticAdmissionEngine, SemanticInputClass};
+pub use quanta_index_core::{
+    TraceFileEvidenceV1, TraceFileHitV1, TraceFileKeyV1, TraceFileLaneWitnessV1,
+    TraceFileRankPolicyV1, TraceSourceFrameClassV1,
+};
 pub use quanta_index_lq_obs::{MetricSample, ObsError};
 pub use quarantine::{
     OrphanedSealedGenerationV1, QUARANTINE_TARGET_STILL_REFERENCED_CODE, QuarantineService,

@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
-use quanta_index_catalog::SqliteCatalog;
+use quanta_index_catalog::{SqliteCatalog, WalReclaimOutcome};
 use quanta_index_contract::{
     SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
     index::{IndexInstanceId, OperationKey, OperationStatus, SubmitOutcome, ViewSelection},
@@ -22,7 +22,6 @@ use quanta_index_contract::{
         NativeLiteralPage, NativePathPage, NativeProjectionRead,
     },
 };
-use quanta_index_core::RequestBudgetV1;
 use quanta_index_core::index::{
     BootstrapRef, IndexError, MAX_RECLAIM_DRAIN_PAGE, ObjectRef, QueryCoverage, QueryOutcome,
     WorkBudget, WorkLimits,
@@ -34,6 +33,7 @@ use quanta_index_core::index::{
     },
     validate_read_ticket_lease,
 };
+use quanta_index_core::{CoreError, RequestBudgetV1};
 use quanta_index_ipc::{
     IpcPlane, IpcServerCounters, ServerAdmissionPolicy, ShutdownHandle, SocketAccessPolicy,
     UdsServer,
@@ -52,7 +52,8 @@ use quanta_index_repomap::native::{
     FilePathPage, NativeFileMap, NativePathReader, PathReadRequest,
 };
 use quanta_index_searchd::app::{
-    runtime::StateRootLease, state_format::STATE_ROOT_LEASE_FILE_NAME,
+    runtime::{RuntimeRetirementPort, StateRootLease},
+    state_format::STATE_ROOT_LEASE_FILE_NAME,
 };
 use quanta_index_semantic::native::{SearchResult, SemanticReadRequest};
 use quanta_index_storage::{
@@ -77,10 +78,12 @@ pub use crate::native_resources::{
 pub use crate::native_retention::{NativeRetentionConfig, NativeRetentionScope};
 pub use crate::native_semantic_result::ScopedNativeSemanticResult;
 pub use crate::native_text_result::ScopedNativeTextResult;
+pub use crate::native_wal_reclaim::NativeWalReclaimPolicy;
 pub use crate::native_worker::{
     NativeLaneSnapshot, NativeWorkerObservation, NativeWorkerSnapshot, NativeWorkerStatus,
 };
 use crate::{
+    native_catalog_retirement::NativeCatalogRetirement,
     native_object_read_io::NativeObjectReadIo,
     native_object_reclaim_io::NativeObjectReclaimIo,
     native_object_write_io::NativeObjectWriteIo,
@@ -94,6 +97,7 @@ use crate::{
     publication_file_capacity::{InodeObservation, PublicationFileCapacity},
     publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity},
 };
+pub use quanta_index_catalog::CatalogWriterCachePolicy;
 
 const PROTECTED_CORE_DISPATCH_SLOTS: usize = 2;
 
@@ -588,10 +592,15 @@ impl NativeDispatcher {
                 .catalog
                 .checkpoint_wal_for_reclaim(1, self.interactive_need.io_bytes, budget)
             {
-                Ok(_) => {}
+                Ok(
+                    WalReclaimOutcome::BelowThreshold
+                    | WalReclaimOutcome::DeferredUnfunded
+                    | WalReclaimOutcome::DeferredBusy
+                    | WalReclaimOutcome::Completed,
+                ) => {}
                 Err(IndexError::ResourceLimited) => {
-                    // A busy snapshot or finite checkpoint allowance can defer
-                    // this optional step. An expired request cannot continue.
+                    // Preserve explicit cleanup's existing finite native
+                    // refusal handling; expiry cannot authorize the discard.
                     budget.checkpoint()?;
                 }
                 Err(error) => return Err(error),
@@ -1247,7 +1256,7 @@ pub(super) struct NativeBootAuthority {
 pub(super) fn prepare_native_boot_authority(
     lease: Arc<StateRootLease>,
     socket_path: &Path,
-    resources: NativeServiceResources,
+    resources: &NativeServiceResources,
     request: &RequestBudgetV1,
 ) -> Result<NativeBootAuthority> {
     let root = lease.state_root_identity_v1();
@@ -1369,6 +1378,7 @@ pub struct NativeIndexService {
     owned_work_enabled: bool,
     maintenance_enabled: bool,
     object_io_observation: Option<Arc<ObjectIoObservation>>,
+    catalog_retirement: Arc<NativeCatalogRetirement>,
 }
 
 /// In-process maintenance authority retained under the same state-root lease.
@@ -1427,7 +1437,7 @@ impl NativeIndexMaintenance {
         budget.bind_memory_scope(reservation.memory_scope());
         budget.checkpoint()?;
         let _physical = self.io.enter_maintenance_scope()?;
-        let _checkpointed = self.catalog.checkpoint_wal_for_reclaim(
+        let _wal_outcome = self.catalog.checkpoint_wal_for_reclaim(
             self.wal_checkpoint_bytes,
             self.control_need.io_bytes,
             budget,
@@ -1458,6 +1468,7 @@ pub(super) fn validate_automatic_reclaim(
     owned_pump: bool,
 ) -> Result<(), IndexError> {
     config.validate()?;
+    config.wal_reclaim.validate(plan.control.io_bytes)?;
     if plan.control.memory_bytes < GC_STEP_MIN_MEMORY_BYTES
         || plan.control.io_bytes < GC_STEP_MIN_IO_BYTES
     {
@@ -1515,6 +1526,9 @@ pub struct NativeServiceResources {
     pub physical: NativePhysicalProfile,
     pub scratch_reserved_bytes: u64,
     pub read_ticket_lease: Duration,
+    /// Explicit retained ledger commitment for the single Catalog writer
+    /// connection. Its configured cache size is a hint, not an RSS cap.
+    pub catalog_writer_cache: CatalogWriterCachePolicy,
     /// Logical aggregate concurrency estimates. These are not measured RSS,
     /// WAL, disk or provider charges.
     pub execution: NativeResourcePlan,
@@ -1547,7 +1561,7 @@ impl NativeServiceCapabilities {
     /// No state root, socket, worker or catalog is opened here.
     pub(super) fn validate_resources(
         &self,
-        resources: NativeServiceResources,
+        resources: &NativeServiceResources,
         maintenance: Option<NativeReclaimConfig>,
         retention: Option<&NativeRetentionConfig>,
     ) -> Result<(ResourceNeed, ResourceNeed)> {
@@ -1570,6 +1584,16 @@ impl NativeServiceCapabilities {
         }
         let _validated_lease_ms = validate_read_ticket_lease(resources.read_ticket_lease)?;
         resources.execution.validate()?;
+        resources.catalog_writer_cache.validate()?;
+        if resources.catalog_writer_cache.reservation_bytes()?
+            > resources
+                .execution
+                .retained_memory_headroom(self.pump.is_some(), maintenance.is_some())?
+        {
+            return Err(anyhow::anyhow!(
+                "Catalog writer cache exceeds native retained-memory headroom"
+            ));
+        }
         if let Some(config) = maintenance {
             validate_automatic_reclaim(config, resources.execution, self.pump.is_some())?;
         }
@@ -1793,7 +1817,7 @@ impl NativeIndexService {
         socket_path: &Path,
         limits: WorkLimits,
         descriptors: NativeAdapterDescriptors,
-        resources: NativeServiceResources,
+        resources: &NativeServiceResources,
     ) -> Result<Self> {
         let mut registry = AdapterRegistry::new();
         // These are typed descriptors, not implicit default profile members.
@@ -1843,7 +1867,7 @@ impl NativeIndexService {
         socket_path: &Path,
         limits: WorkLimits,
         registry: AdapterRegistry,
-        resources: NativeServiceResources,
+        resources: &NativeServiceResources,
     ) -> Result<Self> {
         Self::bind_with_registry_and_pump(
             state_root,
@@ -1863,7 +1887,7 @@ impl NativeIndexService {
         limits: WorkLimits,
         registry: AdapterRegistry,
         queries: QueryAdapterRegistry<PlannedTextRead, TextReadResult>,
-        resources: NativeServiceResources,
+        resources: &NativeServiceResources,
     ) -> Result<Self> {
         Self::bind_with_capabilities(
             state_root,
@@ -1892,7 +1916,7 @@ impl NativeIndexService {
         socket_path: &Path,
         limits: WorkLimits,
         registry: AdapterRegistry,
-        resources: NativeServiceResources,
+        resources: &NativeServiceResources,
         pump: Option<NativePumpConfig>,
     ) -> Result<Self> {
         Self::bind_with_capabilities(
@@ -1919,7 +1943,7 @@ impl NativeIndexService {
         socket_path: &Path,
         limits: WorkLimits,
         capabilities: NativeServiceCapabilities,
-        resources: NativeServiceResources,
+        resources: &NativeServiceResources,
     ) -> Result<Self> {
         Self::bind_with_capabilities_and_maintenance(
             state_root,
@@ -1938,7 +1962,7 @@ impl NativeIndexService {
         socket_path: &Path,
         limits: WorkLimits,
         capabilities: NativeServiceCapabilities,
-        resources: NativeServiceResources,
+        resources: &NativeServiceResources,
         maintenance: Option<NativeReclaimConfig>,
     ) -> Result<Self> {
         Self::bind_with_retention(
@@ -1959,7 +1983,7 @@ impl NativeIndexService {
         socket_path: &Path,
         limits: WorkLimits,
         capabilities: NativeServiceCapabilities,
-        resources: NativeServiceResources,
+        resources: &NativeServiceResources,
         maintenance: Option<NativeReclaimConfig>,
         retention: Option<NativeRetentionConfig>,
     ) -> Result<Self> {
@@ -1987,7 +2011,7 @@ impl NativeIndexService {
         socket_path: &Path,
         limits: WorkLimits,
         capabilities: NativeServiceCapabilities,
-        resources: NativeServiceResources,
+        resources: &NativeServiceResources,
         maintenance: Option<NativeReclaimConfig>,
         retention: Option<NativeRetentionConfig>,
     ) -> Result<Self> {
@@ -2010,6 +2034,8 @@ impl NativeIndexService {
             pump.is_some(),
             maintenance.is_some(),
         )?;
+        let catalog_cache_memory =
+            ledger.reserve_catalog_cache(resources.catalog_writer_cache.reservation_bytes()?)?;
         let NativeBootAuthority {
             lease,
             physical,
@@ -2051,9 +2077,21 @@ impl NativeIndexService {
             .enter_maintenance_scope()
             .context("admit native Catalog recovery funding")?;
         let catalog = Arc::new(
-            SqliteCatalog::open_with_io_admission(root, Duration::from_secs(2), io.clone())
-                .context("open admitted native Catalog and recover")?,
+            SqliteCatalog::open_with_io_admission_and_writer_cache(
+                root,
+                Duration::from_secs(2),
+                io.clone(),
+                resources.catalog_writer_cache,
+                catalog_cache_memory,
+            )
+            .context("open admitted native Catalog and recover")?,
         );
+        if let Some(observation) = catalog.writer_cache_observation() {
+            crate::native_catalog_cache_diagnostics::record_catalog_writer_cache(
+                diagnostic_context.as_ref(),
+                &observation,
+            );
+        }
         // Retire one bounded page before creating this process's session.
         // OS lock custody decides death; remaining backlog retains the existing
         // recovery cursor contract and explicit maintenance authority.
@@ -2149,7 +2187,6 @@ impl NativeIndexService {
                     objects: Arc::clone(&dispatcher.objects),
                     control_need: dispatcher.control_need,
                     io: Arc::clone(&dispatcher.io),
-                    wal_checkpoint_bytes: dispatcher.wal_checkpoint_bytes,
                     diagnostic_context,
                 }),
                 pump,
@@ -2160,6 +2197,11 @@ impl NativeIndexService {
         } else {
             None
         };
+        let catalog_retirement = Arc::new(NativeCatalogRetirement::new(
+            Arc::clone(&dispatcher.catalog),
+            Arc::clone(&io),
+            Arc::clone(&lease),
+        ));
         Ok(Self {
             server,
             dispatcher,
@@ -2170,12 +2212,19 @@ impl NativeIndexService {
             owned_work_enabled,
             maintenance_enabled,
             object_io_observation,
+            catalog_retirement,
         })
     }
 
     #[must_use]
     pub fn shutdown_handle(&self) -> ShutdownHandle {
         self.server.shutdown_handle()
+    }
+
+    /// Retry a failed checked close after external maintenance aliases retire.
+    #[must_use]
+    pub fn retirement_handle(&self) -> Arc<dyn RuntimeRetirementPort> {
+        self.catalog_retirement.clone()
     }
 
     /// The handle remains readable after `run` consumes this service. Its
@@ -2234,12 +2283,16 @@ impl NativeIndexService {
                 )))
             }
         });
+        let retirement = self.catalog_retirement.clone();
+        drop(self);
+        let retirement_result = retirement.retire();
         finish_native_service(
             server_result.map_err(Into::into),
             read_sessions_result,
             pump_result,
             worker_result,
             provider_result,
+            retirement_result,
         )
     }
 }
@@ -2250,6 +2303,7 @@ fn finish_native_service(
     pump: Result<(), IndexError>,
     worker: Result<(), IndexError>,
     provider: Result<(), IndexError>,
+    retirement: Result<(), CoreError>,
 ) -> Result<()> {
     let mut failures = Vec::new();
     if let Err(error) = server {
@@ -2266,6 +2320,9 @@ fn finish_native_service(
     }
     if let Err(error) = provider {
         failures.push(format!("native provider drain failed: {error}"));
+    }
+    if let Err(error) = retirement {
+        failures.push(format!("native Catalog retirement failed: {error}"));
     }
     if failures.is_empty() {
         Ok(())
@@ -2634,6 +2691,7 @@ mod native_closeout_tests {
             Err(IndexError::Storage("owned settlement failed".into())),
             Err(IndexError::Storage("worker failed".into())),
             Err(IndexError::Storage("physical provider unfinished".into())),
+            Err(CoreError::NotReady("Catalog consumer remains".into())),
         );
         let Err(error) = result else {
             return Err("all failures must be returned".into());
@@ -2644,6 +2702,7 @@ mod native_closeout_tests {
             || !message.contains("owned settlement failed")
             || !message.contains("worker failed")
             || !message.contains("physical provider unfinished")
+            || !message.contains("Catalog consumer remains")
         {
             return Err(format!("native closeout lost a failure: {message}").into());
         }

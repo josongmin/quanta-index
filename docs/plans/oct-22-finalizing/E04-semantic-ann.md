@@ -2,6 +2,59 @@
 
 상태는 [SSOT E04](README.md#e04). 원 요구 R18–R22, 종전 W2-13을 소유한다. 기존 SEARCH의 confirmed failure 수리와 단일 제품 큐를 유지하며 Catalog/VFS/Common/FD는 PHYSICAL 경계다.
 
+## Current RCA — 2026-10-28
+
+최신 성능 실행 b19668ad의 원4K Record는 SourceAdvance30.001s 초과로
+FAILED이며 사후 Published/provider0다. 완전한23556-event 캡처에서 Source
+요청 비용을 분리했지만 성공 worker0이라 후반 처리량은 NOT_RUN이다.
+기존 Off 원4K의2715/4096 실패와 [같은 원장](VALIDATION.md#e07-fulltail-rca-20261028)에서 구분한다.
+이후 be31193f의 ingress 동일 transaction GC 큐 왕복 제거는 Catalog strict·
+264/264·실제 daemon3/3으로 [VERIFIED](VALIDATION.md#e07-ingress-queue-20261028)다.
+이 코드 수리를 Source30s/worker1200s 전체 수용으로 올리지 않는다.
+현재 직접 잔여는 Source 비용과 후반 worker 저장 처리량 두 경계이며 E07의
+단일 큐를 공유한다. [RCA·수정 선택 조건](E07-performance-operations.md#rca-solution-20261028)에 따라
+spill과 행 쓰기 증폭을 먼저 구분한다. 아래 과거 source별 기록은 최신 결과를 덮어쓰지 않는다.
+
+최신 Source DATA 충돌 처리·테스트 기대값 수리·원4K 결과는
+[단일 검증 원장](VALIDATION.md#e04-source-data-collision-20261027), 현재 상태·잔여는
+[SSOT 에픽 행](README.md#e04)을 따른다. 아래 checkpoint·prefix 기록은 각 과거 source 범위다.
+
+현재 checkpoint 계측과 실행 상태는 [단일 검증 원장](VALIDATION.md#e07-checkpoint-source-rca-20261027)을 따른다.
+77cb의 실제 진단은 SourceAdvance30.001s에서 실패했고 provider0이다. 완전한
+capture의 request5532에서 Catalog15.21s·backfill2.63s·lexical13.91s를 구분했으며,
+이 값들은 겹치는 구간이다. 완료되지 않은 source를 worker128/full4K 수용으로
+표시하지 않는다. phase-parent 전달은 기존 diagnostic context로 보완했으며,
+3bf033bb에서 strict·owning8/8·실제 Source/coverage/no-op3/3이 통과했다. 새 실제128/128과 complete/loss0 capture에서 실제 parent 귀속도 확인했다.
+SourceAdvance24.7669s 게시 성공은 전체4K 수용과 구분한다. 이 항목은 E04/E07 공용1회 작업이며 새 병렬 큐가 아니다.
+제품 원30s/1Mreads/512MiB·내구성·고정 품질 조건과 다른 에픽의 소유권을 유지한다.
+
+추가 정적 감사에서 실제 pinned-query의 paged map scan이 기존 scoped DATA 캐시를
+우회하는 경로1건을 수리했다. source c3f482a7의 Storage strict·회귀5/5·실제
+Kernel query/ANN pin/reopen8/8은 [같은 검증 원장](VALIDATION.md#e07-scoped-scan-reuse-20261027)에 있다.
+SourceAdvance와 worker 저장 경로는 이 수정의 consumer가 아니며,원4K 처리량 해결로
+표시하지 않는다. coverage-save는 보류된 COW DAG의 실제 설치 단계라 비용이 크며,
+동일 transaction에서 제거 가능한 중복 DML은 이번 감사에서 확인되지 않았다.
+
+추가 코드 감사에서 `materialized=None` stale delta 정리의 중복 member 읽기와
+owner별 COW apply를 확인해 단일 bounded apply로 수정했다. 기존 최대64개·artifact
+인증·정확 CAS·원 검증 순서를 유지하며,후반 손상/거절 때 directory는 그대로다.
+[영향 검증](VALIDATION.md#e04-stale-delta-batch-20261027)은 source38dd3190에서
+Semantic strict·maintenance20/20·실제 Kernel16/16이 VERIFIED다. 완료된 query 캐시
+수리와 별도 범위로 닫으며,원4K의 `materialized=Some` 처리량 실패와 구분한다.
+
+
+동일 콜백의 `reserve_end→start` 중복 live 인증은 native 전용 결합 경로로
+수리했다. 매 쓰기/SHM의 root·lock 검사와 독립 public start 인증은 유지한다.
+source70312101의 Runtime strict·관련119/119와 오프라인 심볼 도구16/16이
+통과했다. [현재 코드·검증](VALIDATION.md#e07-native-stack-and-callback-rca-20261027).
+추가 적대 감사에서 ANN seal/readback·coverage identity 검사를 안전하게 생략할
+근거는 발견되지 않았다. 이들 경계를 제거한 최적화는 적용하지 않는다.
+별도 심볼 바이너리의 기존 prefix 진단은1/1 통과,Source27.5961s 게시와 목표128
+대비 실제 완료132개·complete/loss0 capture를 확인했다. Source 객체 읽기와
+worker Catalog WAL 쓰기의 live admission 경로가 실제 함수 스택에 보인다.
+일반 bench와 TEXT가 달라 과거 주소 소급 해석·개선율 비교는 거절한다.
+원4K 전체·정식 overhead/운영 수용은 아직 열려 있다.
+
 ## Reuse and authority
 
 NativeSemantic directory·bounded region/delta/member COW·Lance file-set·embedding/provider·selected source/projection 인증·Kernel materialization/CAS·SDK/query/overlay route를 재사용한다. semantic desired/covered/searchable와 ANN approximate/exact/capped/incomplete를 구분한다.
@@ -230,13 +283,16 @@ child graph,wire,writer,Catalog 권한을 새로 만들지 않는다. 모든 쓰
 
 직접 주소 슬롯은 입력 크기에 비례하되 최대32768개,보유 DATA는4MiB로 제한한다.
 테이블은 원 budget의 임시 메모리를 예약한 뒤 생성하고 DATA/테이블을 lease보다 먼저
-해제한다. hash 충돌은 full identity 비교 뒤 eviction이며 잘못된 hit가 아니다.
+해제한다. 현재 충돌 처리는 두 고정 후보 슬롯에서 full identity를 비교하며 빈
+슬롯을 먼저 쓴다. 두 후보가 차거나 대체 슬롯이 byte cap을 넘으면 기존 primary
+교체로 돌아간다. 잘못된 hit·슬롯/4MiB 증가가 아니다.
 hit도 원 read/wire/decode 논리 비용과 취소/deadline을 유지한다. table lock은 대기하지
 않고 resource 거절한다. 재시도·재시작마다 새 window이며 persisted/global cache가 아니다.
 Materialize/Projection/Reconfigure는 기존 읽기 경로다.
 
-SourceResync 호출부까지 포함한 최종 Source/rebase/resync/lifecycle 집중 배치는
-48/48을 통과했다. 이후 추가한 table-memory 거절을 포함한 private 읽기 회귀는
+2026-10-23의 당시 SourceResync 호출부까지 포함한 Source/rebase/resync/lifecycle 집중 배치는
+해당 source에서48/48을 통과했다. 최신 충돌 처리의 후속 통합 결과는
+[현재 검증 원장](VALIDATION.md#e04-source-data-collision-20261027)을 따른다. 이후 추가한 table-memory 거절을 포함한 private 읽기 회귀는
 9/9 통과했다. 두 결과의 중복8개를 별도 테스트 수로 더하지 않는다.
 해당 배치의 생산 Kernel strict·hexagonal·영향 서식/공백 검사는 통과했다. 원4K 성능 개선과
 전체 E04 수용은 이 로컬 결과로 완료 처리하지 않는다. WAL auto-checkpoint나

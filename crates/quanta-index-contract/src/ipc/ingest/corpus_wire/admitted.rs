@@ -19,8 +19,7 @@ use super::{
 use crate::ipc::semantic_source::{SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1};
 use crate::lex::SymbolRecord;
 use crate::{
-    ChunkRecord, RepoId, RepoRelativePath, RevisionId, SourceFileCoverage, SourceFileKey,
-    SourcePublicationEvent,
+    ChunkRecord, RepoId, RevisionId, SourceFileCoverage, SourceFileKey, SourcePublicationEvent,
 };
 
 /// Per-call finite limits; no limit is inferred from encoded frame length.
@@ -108,7 +107,6 @@ pub(super) trait CorpusDecodePolicy<'de> {
         map: &mut M,
         fields: &'static [&'static str],
     ) -> Result<Option<&'static str>, M::Error>;
-    fn next_path<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoRelativePath, M::Error>;
     fn next_coverage<M: MapAccess<'de>>(&self, map: &mut M)
     -> Result<SourceFileCoverage, M::Error>;
     fn next_source_bytes<M: MapAccess<'de>>(&self, map: &mut M) -> Result<Vec<u8>, M::Error>;
@@ -152,9 +150,6 @@ impl<'de> CorpusDecodePolicy<'de> for Ordinary {
         fields: &'static [&'static str],
     ) -> Result<Option<&'static str>, M::Error> {
         map.next_key_seed(CorpusFieldKeySeed { fields })
-    }
-    fn next_path<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoRelativePath, M::Error> {
-        map.next_value()
     }
     fn next_coverage<M: MapAccess<'de>>(
         &self,
@@ -231,12 +226,6 @@ impl<'de, A: SourceIdentityDecodeAdmissionV1 + ?Sized> CorpusDecodePolicy<'de> f
         fields: &'static [&'static str],
     ) -> Result<Option<&'static str>, M::Error> {
         map.next_key_seed(AdmittedFieldKeySeed(CorpusFieldKeySeed { fields }))
-    }
-    fn next_path<M: MapAccess<'de>>(&self, map: &mut M) -> Result<RepoRelativePath, M::Error> {
-        map.next_value_seed(RepoRelativePath::deserialize_seed_with_admission_v1(
-            self.admission,
-            self.limits.text_bytes,
-        ))
     }
     fn next_coverage<M: MapAccess<'de>>(
         &self,

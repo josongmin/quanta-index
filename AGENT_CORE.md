@@ -13,7 +13,8 @@ Implementation and verification protocol.
 - Propagate errors with context. Do not replace them with defaults or quiet partial success.
 - Prefer an explicit typed failure or `NotImplemented` over an unproved fallback.
 - Do not promote a focused green rail to repository-wide qualification.
-- Indexing SSOT: `docs/plans/oct-22-finalizing/README.md`; exit: `docs/plans/oct-22-finalizing/DOD.md`. Update epic rows; reuse completed work.
+- Closeout SSOT: `docs/plans/oct-22-finalizing/README.md`; exit: its `DOD.md`.
+- Native indexing RCA: `docs/plans/nov-5-indexing-bugbash/README.md`. Reuse completed work.
 
 ## Design Defaults
 

@@ -10,13 +10,14 @@ use crate::{
     ActiveGenerationResolutionV1, ClusterMembershipBatchReadRequestV1,
     ClusterMembershipBatchReadResponseV1, CurrentGenerationRequest, DiagnosticAttemptFieldV1,
     GenerationPin, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest,
-    ProcessReadinessV1, ProcessRequestEventsRequestV1, ProcessRequestEventsV1,
-    QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
-    QuarantineInventoryV1, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
-    RepoMapActiveHeadResponseV2, RepoMapQueryRequest, RepoMapQueryResponse,
-    RepoMapTerminalReceiptV2, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadObservationV1,
+    GoTestTraceFileQueryRequestV1, GoTestTraceFileQueryResponseV1, HistoryQueryRequest,
+    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest, ProcessReadinessV1,
+    ProcessRequestEventsRequestV1, ProcessRequestEventsV1, QuarantineDiscardAck,
+    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
+    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2,
+    RepoMapQueryRequest, RepoMapQueryResponse, RepoMapTerminalReceiptV2,
+    RuntimeMetadataQueryRequest, SearchCorpusActiveHeadObservationV1,
     SearchCorpusGenerationReservationRequestV1, SearchCorpusGenerationReservationV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
@@ -41,6 +42,7 @@ const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
     "Semantic",
     "SemanticWorkBoundedV1",
     "Hybrid",
+    "GoTestTraceFileV1",
     "HybridSeed",
     "History",
     "RuntimeMetadata",
@@ -57,6 +59,7 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Semantic",
     "SemanticWorkBoundedV1",
     "Hybrid",
+    "GoTestTraceFileV1",
     "HybridSeed",
     "History",
     "RuntimeMetadata",
@@ -255,6 +258,7 @@ pub enum SearchPlaneQueryIpcRequest {
     Semantic(SemanticQueryRequest),
     SemanticWorkBoundedV1(SemanticWorkBoundedQueryRequestV1),
     Hybrid(HybridQueryRequest),
+    GoTestTraceFileV1(GoTestTraceFileQueryRequestV1),
     HybridSeed(HybridSeedQueryRequest),
     History(HistoryQueryRequest),
     RuntimeMetadata(RuntimeMetadataQueryRequest),
@@ -279,6 +283,7 @@ pub enum SearchPlaneQueryIpcResponse {
     Semantic(SemanticQueryResponse),
     SemanticWorkBoundedV1(SemanticWorkBoundedQueryResponseV1),
     Hybrid(HybridQueryResponse),
+    GoTestTraceFileV1(GoTestTraceFileQueryResponseV1),
     HybridSeed(HybridSeedQueryResponse),
     History(SearchPlaneHistoryQueryResponse),
     RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse),
@@ -293,7 +298,7 @@ impl SearchPlaneQueryIpcResponse {
     /// Stamp the transport request id onto the carried explanation (S21-10),
     /// so a typed payload correlates without its envelope. Only the five
     /// explanation-carrying variants (`Semantic`, `SemanticWorkBoundedV1`,
-    /// `Hybrid`, `HybridSeed`, `Explain`) change; every other variant has no explanation to stamp
+    /// `Hybrid`, `GoTestTraceFileV1`, `HybridSeed`, `Explain`) change; every other variant has no explanation to stamp
     /// and is left untouched.
     pub fn stamp_request_id(&mut self, request_id: u64) {
         let explanation = match self {
@@ -302,6 +307,9 @@ impl SearchPlaneQueryIpcResponse {
                 Some(&mut response.query.explanation)
             }
             SearchPlaneQueryIpcResponse::Hybrid(response) => Some(&mut response.explanation),
+            SearchPlaneQueryIpcResponse::GoTestTraceFileV1(response) => {
+                Some(&mut response.explanation)
+            }
             SearchPlaneQueryIpcResponse::HybridSeed(response) => Some(&mut response.explanation),
             SearchPlaneQueryIpcResponse::Explain(response) => Some(&mut response.explanation),
             SearchPlaneQueryIpcResponse::Text(_)
@@ -650,6 +658,12 @@ impl Serialize for SearchPlaneQueryIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::GoTestTraceFileV1(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcRequest",
+                "GoTestTraceFileV1",
+                payload,
+                serializer,
+            ),
             Self::HybridSeed(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcRequest",
                 "HybridSeed",
@@ -740,6 +754,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestVisitor {
                             SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(map.next_value()?)
                         }
                         "Hybrid" => SearchPlaneQueryIpcRequest::Hybrid(map.next_value()?),
+                        "GoTestTraceFileV1" => {
+                            SearchPlaneQueryIpcRequest::GoTestTraceFileV1(map.next_value()?)
+                        }
                         "HybridSeed" => SearchPlaneQueryIpcRequest::HybridSeed(map.next_value()?),
                         "History" => SearchPlaneQueryIpcRequest::History(map.next_value()?),
                         "RuntimeMetadata" => {
@@ -890,6 +907,12 @@ impl Serialize for SearchPlaneQueryIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::GoTestTraceFileV1(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcResponse",
+                "GoTestTraceFileV1",
+                payload,
+                serializer,
+            ),
             Self::HybridSeed(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcResponse",
                 "HybridSeed",
@@ -988,6 +1011,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcResponseVisitor {
                             SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(map.next_value()?)
                         }
                         "Hybrid" => SearchPlaneQueryIpcResponse::Hybrid(map.next_value()?),
+                        "GoTestTraceFileV1" => {
+                            SearchPlaneQueryIpcResponse::GoTestTraceFileV1(map.next_value()?)
+                        }
                         "HybridSeed" => SearchPlaneQueryIpcResponse::HybridSeed(map.next_value()?),
                         "History" => SearchPlaneQueryIpcResponse::History(map.next_value()?),
                         "RuntimeMetadata" => {
@@ -2549,6 +2575,19 @@ mod tests {
                 true,
             ),
             (
+                "GoTestTraceFileV1",
+                SearchPlaneQueryIpcResponse::GoTestTraceFileV1(GoTestTraceFileQueryResponseV1 {
+                    selected_active_head: None,
+                    generation: pin(),
+                    results: Vec::new(),
+                    lexical_window: window(),
+                    dense_window: window(),
+                    frame_class: crate::GoTestTraceFrameClassV1::Unresolved,
+                    explanation: crate::SearchExplanation::empty(),
+                }),
+                true,
+            ),
+            (
                 "HybridSeed",
                 SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
                     selected_active_head: None,
@@ -2622,6 +2661,7 @@ mod tests {
                     Some(r.query.explanation.request_id)
                 }
                 SearchPlaneQueryIpcResponse::Hybrid(r) => Some(r.explanation.request_id),
+                SearchPlaneQueryIpcResponse::GoTestTraceFileV1(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::HybridSeed(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::Explain(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)

@@ -688,10 +688,11 @@ fn stop_with_sigterm(child: &mut Child) -> Result<(), Box<dyn Error>> {
 }
 
 fn read_trace_rows(path: &Path) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
-    std::fs::read_to_string(path)?
+    let rows = std::fs::read_to_string(path)?
         .lines()
         .map(|line| serde_json::from_str(line).map_err(Into::into))
-        .collect()
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    normalize_trace_rows(rows)
 }
 
 fn read_trace_prefix_rows(path: &Path) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
@@ -700,11 +701,29 @@ fn read_trace_prefix_rows(path: &Path) -> Result<Vec<serde_json::Value>, Box<dyn
         Some(index) => index.checked_add(1).ok_or("trace prefix length overflow")?,
         None => 0,
     };
-    raw.get(..end)
+    let rows = raw
+        .get(..end)
         .ok_or("trace prefix exceeds input length")?
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
         .map(|line| serde_json::from_slice(line).map_err(Into::into))
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    normalize_trace_rows(rows)
+}
+
+fn normalize_trace_rows(
+    rows: Vec<serde_json::Value>,
+) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
+    let schema_version = rows
+        .first()
+        .and_then(|row| row.get("schema_version"))
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("trace schema version absent")?;
+    rows.into_iter()
+        .map(|row| {
+            quanta_index_searchd::trace_wire::normalize_record(schema_version, row)
+                .map_err(Into::into)
+        })
         .collect()
 }
 

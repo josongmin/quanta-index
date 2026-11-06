@@ -126,6 +126,7 @@ pub enum quanta_index_sdk::binding::ExpectedQueryResponseV1
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::ActiveGenerationSnapshot
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::ClusterMembershipRead
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Explain
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::GoTestTraceFileV1
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::History
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Hybrid
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::HybridSeed
@@ -439,7 +440,6 @@ pub quanta_index_sdk::preparation::PreparationError::InvalidSource(&'static str)
 pub quanta_index_sdk::preparation::PreparationError::InvalidUtf8
 pub quanta_index_sdk::preparation::PreparationError::LimitExceeded(&'static str)
 pub quanta_index_sdk::preparation::PreparationError::ManifestConflict
-pub quanta_index_sdk::preparation::PreparationError::PathOwnershipConflict
 pub quanta_index_sdk::preparation::PreparationError::SourceDigestMismatch
 impl core::clone::Clone for quanta_index_sdk::preparation::PreparationError
 pub fn quanta_index_sdk::preparation::PreparationError::clone(&self) -> quanta_index_sdk::preparation::PreparationError
@@ -851,6 +851,7 @@ pub enum quanta_index_sdk::ExpectedQueryResponseV1
 pub quanta_index_sdk::ExpectedQueryResponseV1::ActiveGenerationSnapshot
 pub quanta_index_sdk::ExpectedQueryResponseV1::ClusterMembershipRead
 pub quanta_index_sdk::ExpectedQueryResponseV1::Explain
+pub quanta_index_sdk::ExpectedQueryResponseV1::GoTestTraceFileV1
 pub quanta_index_sdk::ExpectedQueryResponseV1::History
 pub quanta_index_sdk::ExpectedQueryResponseV1::Hybrid
 pub quanta_index_sdk::ExpectedQueryResponseV1::HybridSeed
@@ -1375,6 +1376,8 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool,
 pub struct quanta_index_sdk::HybridQueryBuilder<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>
 pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::go_test_trace_file(self, failure_excerpt: impl core::convert::Into<alloc::string::String>, file_top_k: u32) -> core::result::Result<quanta_index_contract::results::go_test_trace_file::GoTestTraceFileQueryResponseV1, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::go_test_trace_file_with_source_context(self, source_repo_id: quanta_index_contract_base::ids::RepoId, failure_excerpt: impl core::convert::Into<alloc::string::String>, file_top_k: u32) -> core::result::Result<quanta_index_contract::results::go_test_trace_file::GoTestTraceFileQueryResponseV1, quanta_index_sdk::SdkError>
 impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::active(self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K>
 pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::exact_repo_relative_path(self, path: quanta_index_contract_base::query::constraints::ExactRepoRelativePathV1) -> Self
@@ -1906,6 +1909,7 @@ pub fn quanta_index_sdk::SearchNamespace<'a>::cluster_membership_read_v1(&self, 
 pub fn quanta_index_sdk::SearchNamespace<'a>::explain(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: quanta_index_contract_base::results::candidates::LexicalCandidate) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::explain_hybrid_under_queries(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, row: quanta_index_contract::results::query_responses::HybridCandidateV1, text_query: quanta_index_contract_base::query::requests::TextQueryRequest, semantic_query_text: impl core::convert::Into<alloc::string::String>) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::explain_under_query(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: quanta_index_contract_base::results::candidates::LexicalCandidate, text_query: quanta_index_contract_base::query::requests::TextQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::SearchNamespace<'a>::go_test_trace_file_request(&self, request: quanta_index_contract::query::go_test_trace_file::GoTestTraceFileQueryRequestV1) -> core::result::Result<quanta_index_contract::results::go_test_trace_file::GoTestTraceFileQueryResponseV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid(&self) -> quanta_index_sdk::HybridQueryBuilder<'a>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_request(&self, request: quanta_index_contract::query::requests::HybridQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_seed(&self) -> quanta_index_sdk::HybridSeedQueryBuilder<'a>

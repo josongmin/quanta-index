@@ -35,6 +35,7 @@ use rusqlite::{OpenFlags, OptionalExtension, params};
 use super::{SearchdConfig, build_runtime_with_lexical_builder, build_runtime_with_parts};
 
 type TestResult = Result<(), Box<dyn Error>>;
+type ChildJournalState = (i64, Option<i64>);
 
 // Keep the original thread panic payload in the test error. String payloads
 // remain readable; other payloads retain their concrete type for inspection.
@@ -447,7 +448,7 @@ fn open_child_journal_reader(root: &Path) -> Result<rusqlite::Connection, Box<dy
 fn child_journal_state(
     connection: &rusqlite::Connection,
     key: &IdempotencyKeyV1,
-) -> Result<Option<(i64, Option<i64>)>, Box<dyn Error>> {
+) -> Result<Option<ChildJournalState>, Box<dyn Error>> {
     let generation = i64::try_from(key.generation.get())?;
     Ok(connection
         .query_row(
@@ -892,7 +893,7 @@ fn timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_r
     )?;
     let reopened_catalog = reopened_catalog.ok_or("runtime did not lend its replay journal")?;
     let second_driver = RunningRuntime::start(second_runtime);
-    let _control = wait_for_control(root.path())?;
+    let control = wait_for_control(root.path())?;
     if wait_for_committed(reopened_catalog.as_ref(), &key)? != original {
         return Err("runtime reassembly changed the committed operation receipt".into());
     }
@@ -940,6 +941,6 @@ fn timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_r
         return Err("digest conflict mutated the journal or re-applied the original".into());
     }
     drop(reopened_catalog);
-    drop(_control);
+    drop(control);
     second_driver.stop()
 }

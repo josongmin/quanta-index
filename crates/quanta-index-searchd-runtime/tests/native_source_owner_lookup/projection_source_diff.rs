@@ -129,7 +129,7 @@ fn run_case() -> TestResult {
         &socket,
         limits(),
         descriptors(),
-        resources(),
+        &resources(),
     )?);
     let client = NativeUdsClient::new(socket.clone());
     let NativeIndexResponse::Created(genesis) = client.request(
@@ -373,7 +373,7 @@ fn run_case() -> TestResult {
         &socket,
         limits(),
         descriptors(),
-        resources(),
+        &resources(),
     )?);
     check_eq!(
         diff(&client, ViewSelection::Exact(deleted), None, 1)?,

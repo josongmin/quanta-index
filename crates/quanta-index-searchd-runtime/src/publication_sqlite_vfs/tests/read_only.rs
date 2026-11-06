@@ -142,9 +142,9 @@ fn crash_left_wal_writer_child() -> TestResult {
     let connection = Connection::open(catalog_dir(&root).join(CATALOG_FILE_NAME))?;
     connection.execute_batch("PRAGMA wal_autocheckpoint=0;")?;
     // Independent Native18 golden: SHA256(capture-format.v1\0 || compact JSON
-    // [1,18,2,bytes(source-capture-v2\0),[7;32]]). Only the WAL changes; never
+    // [1,18,2,bytes(source-capture-v2\0),1,[7;32]]). Only the WAL changes; never
     // compute this expected checksum with the verifier under test.
-    let gold = "37edc79b60722764ec2f00ee70531b76116ffc7405d43f282266d04a7f3993af";
+    let gold = "d240ff8800f7b6af1148741ddeceb2e10f3c887f151519508895b92e2da6d1da";
     let digest = gold
         .as_bytes()
         .chunks_exact(2)

@@ -11,7 +11,11 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark.retrieval import arb_adapter
-from tools.benchmark.retrieval.arb_adapter import ArbAdapterRefusal, adapt
+from tools.benchmark.retrieval.arb_adapter import (
+    ArbAdapterRefusal,
+    adapt,
+    prepare_go_trace_semantic_text,
+)
 from tools.benchmark.retrieval.query_plan import (
     QueryPlanError,
     natural_language_terms,
@@ -108,6 +112,79 @@ def test_rule_is_frozen_and_documented():
     assert (
         arb_adapter.RULE_SHA256 == hashlib.sha256(arb_adapter.RULE_TEXT.encode("utf-8")).hexdigest()
     )
+
+
+def test_go_trace_semantic_text_preserves_diagnostic_and_lexical_seed():
+    sample = _trace_sample(
+        '$ go test ./...\n'
+        'go: downloading example.org/module v1.0.0\n'
+        '--- FAIL: TestRouteRedirectTrailingSlash (0.00s)\n'
+        '    routes_test.go:189: \n'
+        '        Error Trace:\t/Users/runner/gin/routes_test.go:189\n'
+        '        Error:      \tNot equal: \n'
+        '            expected: "/api/path"\n'
+        '            actual  : "../../../api%2523%253F/path"\n'
+        'FAIL\tgithub.com/gin-gonic/gin 0.010s\n'
+        'FAIL'
+    )
+    before = copy.deepcopy(sample)
+    lexical = adapt(sample)
+    text = prepare_go_trace_semantic_text(sample["query"])
+    assert text == (
+        '--- FAIL: TestRouteRedirectTrailingSlash\n'
+        '    routes_test.go:189: \n'
+        '        Error Trace:\troutes_test.go:189\n'
+        '        Error:      \tNot equal: \n'
+        '            expected: "/api/path"\n'
+        '            actual  : "../../../api%2523%253F/path"'
+    )
+    assert adapt(sample) == lexical
+    assert sample == before
+
+
+def test_go_trace_semantic_text_uses_only_public_diagnostic_fields():
+    query = {
+        "command": "go test ./binding",
+        "failure_excerpt": '$ go test ./binding\n    binding_test.go:12: parsing "1;2;3": invalid syntax',
+        "run_strategy": "go_test_package",
+        "source_type": "local_test_reproduction",
+    }
+    expected = 'binding_test.go:12: parsing "1;2;3": invalid syntax'
+    assert prepare_go_trace_semantic_text(query) == expected
+    query["run_strategy"] = {"root_cause_files": ["poison.go"]}
+    query["source_type"] = "different"
+    assert prepare_go_trace_semantic_text(query) == expected
+
+
+@pytest.mark.parametrize(
+    "query,code",
+    [
+        (None, "ARB_GO_TRACE_INVALID_QUERY"),
+        ([], "ARB_GO_TRACE_INVALID_QUERY"),
+        ({"failure_excerpt": "failure"}, "ARB_GO_TRACE_UNSUPPORTED_COMMAND"),
+        ({"command": "go vet ./.", "failure_excerpt": "failure"}, "ARB_GO_TRACE_UNSUPPORTED_COMMAND"),
+        ({"command": "go testx ./.", "failure_excerpt": "failure"}, "ARB_GO_TRACE_UNSUPPORTED_COMMAND"),
+        ({"command": "go test ./.", "failure_excerpt": None}, "ARB_GO_TRACE_INVALID_EXCERPT"),
+        ({"command": "go test ./.", "failure_excerpt": "  \n "}, "ARB_GO_TRACE_INVALID_EXCERPT"),
+        ({"command": "go test ./.", "failure_excerpt": "bad\0trace"}, "ARB_GO_TRACE_INVALID_EXCERPT"),
+        ({"command": "go test ./.", "failure_excerpt": "\ud800"}, "ARB_GO_TRACE_INVALID_EXCERPT"),
+        ({"command": "go test ./.", "failure_excerpt": "$ go test ./...\nPASS\nok\tpkg 0.01s"}, "ARB_GO_TRACE_EMPTY"),
+        ({"command": "go test ./.", "failure_excerpt": "한" * 5462}, "ARB_GO_TRACE_TOO_LONG"),
+    ],
+)
+def test_go_trace_semantic_text_typed_refusals(query, code):
+    with pytest.raises(ArbAdapterRefusal) as caught:
+        prepare_go_trace_semantic_text(query)
+    assert caught.value.code == code
+
+
+def test_go_trace_semantic_text_byte_limit_is_inclusive():
+    query = {"command": "go test ./.", "failure_excerpt": "x" * 16384}
+    assert prepare_go_trace_semantic_text(query) == query["failure_excerpt"]
+    query["failure_excerpt"] += "x"
+    with pytest.raises(ArbAdapterRefusal) as caught:
+        prepare_go_trace_semantic_text(query)
+    assert caught.value.code == "ARB_GO_TRACE_TOO_LONG"
 
 
 def test_adapt_is_deterministic_and_does_not_mutate_input():

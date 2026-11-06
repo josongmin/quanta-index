@@ -106,6 +106,10 @@ fn corpus(pin: &GenerationPin) -> Result<SearchCorpusBatch, Box<dyn Error>> {
             corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
             owner_kind: OwnerDocKind::Chunk,
             owner_id: chunk_id.clone(),
+            source_file: SourceFileKey {
+                source_repo_id: pin.repo_id.clone(),
+                repo_relative_path: RepoRelativePath::new(&path),
+            },
         };
         let semantic_source = SemanticSourceRecordV1 {
             record_id: chunk_id.clone(),
@@ -114,7 +118,7 @@ fn corpus(pin: &GenerationPin) -> Result<SearchCorpusBatch, Box<dyn Error>> {
             owner_id: chunk_id.clone(),
             source_doc_id: chunk_id.clone(),
             parent_owner_id: Some(chunk_id),
-            repo_relative_path: RepoRelativePath::new(&path),
+            source_file: semantic_scope.source_file.clone(),
             language: Some(language.as_str().to_string()),
             package: None,
             symbol_kind: None,

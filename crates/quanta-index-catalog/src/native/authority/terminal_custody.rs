@@ -10,6 +10,7 @@ use quanta_index_core::index::{
 };
 use rusqlite::{Connection, OptionalExtension as _, params};
 
+use super::registration_codec::decode as decode_registration;
 use super::{
     SqliteCatalog, begin, check_digest, decode, exactly_one, fields_digest, int,
     lifetime::max_workspace_key_bytes, object_install::MAX_METADATA_BYTES_SQL, object_key,
@@ -120,14 +121,14 @@ fn next_in_table(
             "SELECT CASE WHEN typeof(object)='blob' AND length(object)=32 THEN 32 END,
              CASE WHEN typeof(payload)='blob' AND length(payload) BETWEEN 1 AND {MAX_METADATA_BYTES_SQL} THEN length(payload) END,
              CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN 32 END
-             FROM {} WHERE operation=?1{exclusion} ORDER BY {} LIMIT 1",
+             FROM {} WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1){exclusion} ORDER BY {} LIMIT 1",
             kind.table(),
             kind.order()
         ),
         CustodyKind::OperationObject | CustodyKind::AttemptObject => format!(
             "SELECT CASE WHEN typeof(object)='blob' AND length(object)=32 THEN 32 END,
              CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN 32 END
-             FROM {} WHERE operation=?1{exclusion} ORDER BY {} LIMIT 1",
+             FROM {} WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1){exclusion} ORDER BY {} LIMIT 1",
             kind.table(),
             kind.order()
         ),
@@ -160,17 +161,17 @@ fn next_in_table(
     })?;
     let query = match kind {
         CustodyKind::OperationObject => format!(
-            "SELECT object,row_digest FROM {} WHERE operation=?1{exclusion} ORDER BY {} LIMIT 1",
+            "SELECT object,row_digest FROM {} WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1){exclusion} ORDER BY {} LIMIT 1",
             kind.table(),
             kind.order()
         ),
         CustodyKind::AttemptObject => format!(
-            "SELECT fence,object,row_digest FROM {} WHERE operation=?1 ORDER BY {} LIMIT 1",
+            "SELECT fence,object,row_digest FROM {} WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) ORDER BY {} LIMIT 1",
             kind.table(),
             kind.order()
         ),
         CustodyKind::ObjectIntent => format!(
-            "SELECT fence,object,payload,row_digest FROM {} WHERE operation=?1 ORDER BY {} LIMIT 1",
+            "SELECT fence,object,payload,row_digest FROM {} WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) ORDER BY {} LIMIT 1",
             kind.table(),
             kind.order()
         ),
@@ -248,7 +249,8 @@ fn next_in_table(
             let payload =
                 payload.ok_or_else(|| IndexError::Storage("missing intent payload".into()))?;
             check_digest(b"qidx.native.intent.v1", &payload, &row_digest)?;
-            let registration: quanta_index_core::index::RegisteredObject = decode(&payload)?;
+            let registration: quanta_index_core::index::RegisteredObject =
+                decode_registration(&payload)?;
             if object_key(registration.reference) != object {
                 return Err(IndexError::Storage("intent object key mismatch".into()));
             }
@@ -292,15 +294,15 @@ fn delete_row(
     })?;
     let changed = match row.kind {
         CustodyKind::OperationObject => connection.execute(
-            "DELETE FROM native_operation_object_v1 WHERE operation=?1 AND object=?2",
+            "DELETE FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND object=?2",
             params![operation, &row.object],
         ),
         CustodyKind::AttemptObject => connection.execute(
-            "DELETE FROM native_attempt_object_v1 WHERE operation=?1 AND fence=?2 AND object=?3",
+            "DELETE FROM native_attempt_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND fence=?2 AND object=?3",
             params![operation, row.fence, &row.object],
         ),
         CustodyKind::ObjectIntent => connection.execute(
-            "DELETE FROM native_object_intent_v1 WHERE operation=?1 AND fence=?2 AND object=?3",
+            "DELETE FROM native_object_intent_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND fence=?2 AND object=?3",
             params![operation, row.fence, &row.object],
         ),
     }
@@ -555,14 +557,24 @@ mod tests {
     -> Result<(), Box<dyn Error>> {
         let connection = Connection::open_in_memory()?;
         connection.execute_batch(
-            "CREATE TABLE native_object_intent_v1 (
-                operation BLOB, fence INTEGER, object BLOB, payload BLOB, row_digest BLOB
+            "CREATE TABLE native_operation_v1 (
+                operation_id INTEGER PRIMARY KEY NOT NULL,
+                operation BLOB UNIQUE NOT NULL
+            );
+            CREATE TABLE native_object_intent_v1 (
+                operation_id INTEGER NOT NULL, fence INTEGER, object BLOB,
+                payload BLOB, row_digest BLOB,
+                FOREIGN KEY(operation_id) REFERENCES native_operation_v1(operation_id)
             );",
         )?;
         let operation = vec![7_u8; 32];
+        let _parent = connection.execute(
+            "INSERT INTO native_operation_v1(operation_id,operation) VALUES (1,?1)",
+            params![&operation],
+        )?;
         let _changed = connection.execute(
-            "INSERT INTO native_object_intent_v1 VALUES (?1,1,zeroblob(32),zeroblob(?2),zeroblob(32))",
-            params![&operation, MAX_METADATA_BYTES_SQL + 1],
+            "INSERT INTO native_object_intent_v1 VALUES (1,1,zeroblob(32),zeroblob(?1),zeroblob(32))",
+            params![MAX_METADATA_BYTES_SQL + 1],
         )?;
         let mut ample = budget(2_000_000)?;
         check!(matches!(

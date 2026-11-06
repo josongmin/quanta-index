@@ -10,6 +10,8 @@ use quanta_index_core::index::{
 };
 use quanta_index_storage::FileObjectStore;
 
+use crate::native_wal_reclaim::NativeWalReclaimPolicy;
+
 const MAX_STEPS_PER_ROUND: u32 = 8;
 const MAX_HEAD_PROBE_PERIOD: u32 = 1024;
 const MAX_HEAD_REVISIT: Duration = Duration::from_secs(300);
@@ -64,6 +66,8 @@ impl ReclaimAttempt {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeReclaimConfig {
     pub interval: Duration,
+    /// Independent optional WAL truncation cadence; never inferred from GC reserve.
+    pub wal_reclaim: NativeWalReclaimPolicy,
     pub max_steps_per_round: u32,
     pub child_limit: u32,
     pub work_limits: WorkLimits,
@@ -75,6 +79,8 @@ pub struct NativeReclaimConfig {
 
 impl NativeReclaimConfig {
     pub fn validate(&self) -> Result<(), IndexError> {
+        // Validate shape here; service assembly checks the actual Control IO bound.
+        self.wal_reclaim.validate(u64::MAX)?;
         if self.interval < MIN_INTERVAL || self.interval > MAX_INTERVAL {
             return Err(IndexError::InvalidInput(
                 "native reclaim interval must be 10ms..=60s".into(),
@@ -489,6 +495,10 @@ mod tests {
     fn config() -> NativeReclaimConfig {
         NativeReclaimConfig {
             interval: Duration::from_millis(20),
+            wal_reclaim: NativeWalReclaimPolicy {
+                trigger_bytes: 8 * 1024 * 1024,
+                min_interval: Duration::from_secs(1),
+            },
             max_steps_per_round: 1,
             child_limit: 1,
             work_limits: WorkLimits {

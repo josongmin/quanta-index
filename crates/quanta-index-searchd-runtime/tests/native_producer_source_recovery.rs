@@ -105,6 +105,9 @@ fn resources() -> NativeServiceResources {
         provider_units: 0,
     };
     NativeServiceResources {
+        catalog_writer_cache: quanta_index_searchd_runtime::native::CatalogWriterCachePolicy {
+            kib: 2048,
+        },
         physical: native_physical_profile::profile(),
         scratch_reserved_bytes: 16 * 1024 * 1024 * 1024,
         read_ticket_lease: Duration::from_secs(30),
@@ -384,7 +387,7 @@ fn producer_page_rebuilds_resync_baseline_over_real_uds() -> TestResult {
                 format: instance(30).format,
             },
         },
-        resources(),
+        &resources(),
     )?;
     let running = RunningService::start(service);
     let client = NativeUdsClient::new(socket.clone());
@@ -493,7 +496,7 @@ fn producer_page_rebuilds_resync_baseline_over_real_uds() -> TestResult {
                 format: instance(30).format,
             },
         },
-        resources(),
+        &resources(),
     )?;
     let running = RunningService::start(reopened_service);
     let pending_page = client.list_producer_source_owners(
@@ -877,7 +880,7 @@ fn producer_page_rebuilds_resync_baseline_over_real_uds() -> TestResult {
                 format: instance(30).format,
             },
         },
-        resources(),
+        &resources(),
     )?;
     let running = RunningService::start(restarted);
     let reopened = NativeUdsClient::new(socket);

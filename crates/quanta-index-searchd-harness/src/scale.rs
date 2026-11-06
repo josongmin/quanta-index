@@ -4574,6 +4574,24 @@ mod tests {
         SourcePublicationEvent,
     };
 
+    fn trace_rows(path: &std::path::Path) -> AnyResult<Vec<Value>> {
+        let rows: Vec<Value> = fs::read_to_string(path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        let schema_version = rows
+            .first()
+            .and_then(|row| row.get("schema_version"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| anyhow::anyhow!("capture schema version absent"))?;
+        rows.into_iter()
+            .map(|row| {
+                quanta_index_searchd::trace_wire::normalize_record(schema_version, row)
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
     // Result-returning tests retain each independent predicate and report the failed
     // values through the test error, without panicking in a Result function.
     macro_rules! ensure_predicate {
@@ -5572,10 +5590,7 @@ mod tests {
             closed.status,
             quanta_index_searchd::DiagnosticCaptureStatusV1::Complete
         );
-        let rows: Vec<Value> = fs::read_to_string(trace_path)?
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<Result<_, _>>()?;
+        let rows = trace_rows(&trace_path)?;
         let events = rows
             .iter()
             .filter(|row| row["record_type"] == "event")
@@ -5629,10 +5644,7 @@ mod tests {
             closed.status,
             quanta_index_searchd::DiagnosticCaptureStatusV1::Complete
         );
-        let rows: Vec<Value> = fs::read_to_string(trace_path)?
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<Result<_, _>>()?;
+        let rows = trace_rows(&trace_path)?;
         let events = rows
             .iter()
             .filter(|row| row["record_type"] == "event")
@@ -5690,10 +5702,7 @@ mod tests {
             closed.status,
             quanta_index_searchd::DiagnosticCaptureStatusV1::Complete
         );
-        let rows: Vec<Value> = fs::read_to_string(trace_path)?
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<Result<_, _>>()?;
+        let rows = trace_rows(&trace_path)?;
         ensure_predicate!(
             rows.iter()
                 .all(|row| { row["record_type"] != "event" || row["kind"]["type"] != "health" })
@@ -5892,10 +5901,7 @@ mod tests {
             quanta_index_searchd::DiagnosticCaptureStatusV1::Complete
         );
 
-        let rows: Vec<Value> = fs::read_to_string(trace_path)?
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<Result<_, _>>()?;
+        let rows = trace_rows(&trace_path)?;
         let events = rows
             .iter()
             .filter(|row| row["record_type"] == "event")

@@ -84,14 +84,15 @@ impl QueryLexicalObservation {
     fn posting(
         &mut self,
         cursor: &mut TextPostingCursor,
+        occurrences: &mut super::text_occurrence::OccurrenceReader,
         context: &mut TextReadContext<'_>,
     ) -> Result<Option<ValidatedPostingHit>, IndexError> {
         let Some(_span) = self.span.as_ref() else {
-            return cursor.next_hit(context);
+            return cursor.next_hit(context, occurrences);
         };
         Self::add(&mut self.posting_calls, Some(1), &mut self.overflowed);
         let started = Instant::now();
-        let result = cursor.next_hit(context);
+        let result = cursor.next_hit(context, occurrences);
         if matches!(&result, Ok(Some(_))) {
             Self::add(&mut self.posting_hits, Some(1), &mut self.overflowed);
         }
@@ -763,6 +764,7 @@ impl NativeTextIndex {
         observation: &mut QueryLexicalObservation,
     ) -> Result<NativeTextRanking, IndexError> {
         let TextContentExecution { top_k, policy } = execution;
+        let mut occurrences = super::text_occurrence::OccurrenceReader::new(64)?;
         if let Some((corpus, _)) = overlay {
             corpus.validate_binding(context.ticket.view.identity, member)?;
         }
@@ -1115,7 +1117,7 @@ impl NativeTextIndex {
         }
         let view = context.ticket.view.identity;
         for cursor in cursors.iter_mut() {
-            heads.push(observation.posting(cursor, &mut context)?);
+            heads.push(observation.posting(cursor, &mut occurrences, &mut context)?);
         }
         let mut matched = 0u64;
         let mut phrase_candidates = [0u32; MAX_QUERY_NODES];
@@ -1383,7 +1385,7 @@ impl NativeTextIndex {
             // validation of malformed pages and declared DF on every branch.
             for (cursor, head) in cursors.iter_mut().zip(heads.iter_mut()) {
                 if head.as_ref().is_some_and(|hit| hit.owner == owner) {
-                    *head = observation.posting(cursor, &mut context)?;
+                    *head = observation.posting(cursor, &mut occurrences, &mut context)?;
                 }
             }
             if admitted.as_ref().is_some_and(|row| row.owner == owner) {

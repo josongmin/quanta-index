@@ -2,11 +2,12 @@
 
 use super::{
     MapEntries, PreparedRows,
-    entry_map::{EntryMap, INLINE_ENTRIES, SmallMap},
+    entry_map::{BlockDraft, EntryMap, EntryMapUse, INLINE_ENTRIES, SmallMap},
 };
 use quanta_index_core::index::{
-    AttemptContext, Digest, IndexError, MapRoot, OrdinalMapEdit, WorkBudget, WorkUsage,
-    ports::MapEditCursor,
+    AttemptContext, Digest, IndexError, MapPageEntry, MapRoot, ObjectRef, OrdinalMapEdit,
+    StagedObjectBatch, WorkBudget, WorkUsage,
+    ports::{ImmutableObjectPort, MapEditCursor, PersistentMapPort},
 };
 use sha2::{Digest as _, Sha256};
 
@@ -83,13 +84,21 @@ impl RootInput<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Plan {
-    small: Option<SmallMap>,
-    stamp: Option<Stamp>,
+enum Shape {
+    Small,
+    Block(Option<BlockDraft>),
+    Tree,
 }
 
-fn resolve_small(
+struct Plan {
+    shape: Shape,
+    small: SmallMap,
+    stamp: Option<Stamp>,
+    block_slot: Option<usize>,
+}
+
+fn resolve_bounded(
+    usage: EntryMapUse,
     prior: &EntryMap,
     count: u64,
     edits: &mut dyn MapEditCursor,
@@ -100,10 +109,17 @@ fn resolve_small(
         previous: None,
         digest: Edits::new(),
     };
-    let mut before = MapEntries::new(context.maps, prior);
+    let mut before = MapEntries::new(context.objects, context.maps, prior);
     let mut old = before.next(context.budget)?;
     let mut delta = input.next(context.budget)?;
     let mut small = Some(SmallMap::default());
+    let mut block = if usage == EntryMapUse::Inventory
+        && count > u64::try_from(INLINE_ENTRIES).map_err(|_error| IndexError::ResourceLimited)?
+    {
+        Some(BlockDraft::new(context.budget)?)
+    } else {
+        None
+    };
     let mut actual = 0_u64;
     while old.is_some() || delta.is_some() {
         context.budget.checkpoint()?;
@@ -151,7 +167,28 @@ fn resolve_small(
             if let Some(map) = small.as_mut()
                 && !map.push(key, value)?
             {
+                // Preserve Small's original funding envelope. A short map
+                // needs a block only when a key actually exceeds Small's shape.
+                if usage == EntryMapUse::Inventory && block.is_none() && key.len() <= 1024 {
+                    let mut draft = BlockDraft::new(context.budget)?;
+                    for slot in 0..map.len() {
+                        let (prior_key, prior_value) = map.entry(slot)?.ok_or_else(|| {
+                            IndexError::BackendViolation("bounded entry seed missing".into())
+                        })?;
+                        if !draft.push(prior_key, prior_value, context.budget)? {
+                            return Err(IndexError::BackendViolation(
+                                "Small entries exceed bounded block seed".into(),
+                            ));
+                        }
+                    }
+                    block = Some(draft);
+                }
                 small = None;
+            }
+            if let Some(draft) = block.as_mut()
+                && !draft.push(key, value, context.budget)?
+            {
+                block = None;
             }
         }
         if ordering != std::cmp::Ordering::Greater {
@@ -167,8 +204,14 @@ fn resolve_small(
         ));
     }
     Ok(Plan {
-        small,
+        shape: if small.is_some() {
+            Shape::Small
+        } else {
+            block.map_or(Shape::Tree, |block| Shape::Block(Some(block)))
+        },
+        small: small.unwrap_or_default(),
         stamp: Some(input.digest.finish()),
+        block_slot: None,
     })
 }
 
@@ -180,8 +223,12 @@ struct MapInput<'a> {
     input: &'a mut dyn MapEditCursor,
     priors: &'a [EntryMap],
     plans: &'a [Plan],
+    objects: &'a dyn ImmutableObjectPort,
+    maps: &'a dyn PersistentMapPort,
     root: usize,
     old_slot: usize,
+    old_cursor: Option<MapEntries<'a>>,
+    old: Option<MapPageEntry>,
     head: Option<OrdinalMapEdit>,
     previous: Option<OrdinalMapEdit>,
     digest: Edits,
@@ -247,6 +294,8 @@ impl MapInput<'_> {
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
         self.old_slot = 0;
+        self.old_cursor = None;
+        self.old = None;
         self.digest = Edits::new();
         Ok(())
     }
@@ -268,7 +317,7 @@ impl MapEditCursor for MapInput<'_> {
             if self
                 .plans
                 .get(self.root)
-                .is_some_and(|plan| plan.small.is_some())
+                .is_some_and(|plan| !matches!(&plan.shape, Shape::Tree))
             {
                 if has_delta {
                     let _edit = self.take(budget)?;
@@ -277,14 +326,31 @@ impl MapEditCursor for MapInput<'_> {
                 self.close()?;
                 continue;
             }
-            let Some(small) = prior.inline_map() else {
+            if matches!(prior, EntryMap::Tree(_)) {
                 if has_delta {
                     return self.take(budget).map(Some);
                 }
                 self.close()?;
                 continue;
+            }
+            if matches!(prior, EntryMap::Block(_)) && self.old_cursor.is_none() {
+                self.old_cursor = Some(MapEntries::new(self.objects, self.maps, prior));
+            }
+            if let Some(cursor) = self.old_cursor.as_mut()
+                && self.old.is_none()
+            {
+                self.old = cursor.next(budget)?;
+            }
+            let small = prior.inline_map();
+            let old = if let Some(small) = small.as_ref() {
+                small.entry(self.old_slot)?
+            } else {
+                self.old
+                    .as_ref()
+                    .map(MapPageEntry::object_parts)
+                    .transpose()?
+                    .map(|(key, value)| (key.as_slice(), *value))
             };
-            let old = small.entry(self.old_slot)?;
             let order = match (old, if has_delta { self.head.as_ref() } else { None }) {
                 (Some((key, _)), Some(edit)) => key.cmp(&edit.edit.key),
                 (Some(_), None) => std::cmp::Ordering::Less,
@@ -296,14 +362,18 @@ impl MapEditCursor for MapInput<'_> {
             };
             if order == std::cmp::Ordering::Less {
                 let (key, value) = old.ok_or_else(|| {
-                    IndexError::BackendViolation("inline base entry missing".into())
+                    IndexError::BackendViolation("bounded base entry missing".into())
                 })?;
-                self.old_slot = self
-                    .old_slot
-                    .checked_add(1)
-                    .ok_or(IndexError::ResourceLimited)?;
-                return OrdinalMapEdit::copy_object_key(root, key, None, Some(value), budget)
-                    .map(Some);
+                let result = OrdinalMapEdit::copy_object_key(root, key, None, Some(value), budget)?;
+                if small.is_some() {
+                    self.old_slot = self
+                        .old_slot
+                        .checked_add(1)
+                        .ok_or(IndexError::ResourceLimited)?;
+                } else {
+                    self.old = None;
+                }
+                return Ok(Some(result));
             }
             let expected = if order == std::cmp::Ordering::Equal {
                 old.map(|(_, value)| value)
@@ -315,10 +385,14 @@ impl MapEditCursor for MapInput<'_> {
                 return Err(IndexError::Conflict);
             }
             if order == std::cmp::Ordering::Equal {
-                self.old_slot = self
-                    .old_slot
-                    .checked_add(1)
-                    .ok_or(IndexError::ResourceLimited)?;
+                if small.is_some() {
+                    self.old_slot = self
+                        .old_slot
+                        .checked_add(1)
+                        .ok_or(IndexError::ResourceLimited)?;
+                } else {
+                    self.old = None;
+                }
             }
             if let Some(value) = edit
                 .edit
@@ -340,6 +414,7 @@ impl MapEditCursor for MapInput<'_> {
 }
 
 pub(super) fn apply<C: MapEditCursor>(
+    usage: EntryMapUse,
     priors: &[EntryMap],
     counts: &[u64],
     input: &mut dyn MapEditCursor,
@@ -356,11 +431,13 @@ pub(super) fn apply<C: MapEditCursor>(
     let mut result = PreparedRows::new(priors.len())?;
     // Admit every retained slot before reading a base or creating any map.
     for prior in priors {
-        prior.validate()?;
+        prior.validate_for(usage)?;
         plans.push(
             Plan {
-                small: None,
+                shape: Shape::Tree,
+                small: SmallMap::default(),
                 stamp: None,
+                block_slot: None,
             },
             context.budget,
         )?;
@@ -368,9 +445,14 @@ pub(super) fn apply<C: MapEditCursor>(
         result.push(EntryMap::default(), context.budget)?;
     }
     for (slot, (prior, count)) in priors.iter().zip(counts).enumerate() {
-        if *count <= u64::try_from(INLINE_ENTRIES).map_err(|_error| IndexError::ResourceLimited)? {
-            let plan = resolve_small(prior, *count, &mut root_cursor(slot)?, context)?;
-            if plan.small.is_some() {
+        let bound = if usage == EntryMapUse::Inventory {
+            512
+        } else {
+            INLINE_ENTRIES
+        };
+        if *count <= u64::try_from(bound).map_err(|_error| IndexError::ResourceLimited)? {
+            let plan = resolve_bounded(usage, prior, *count, &mut root_cursor(slot)?, context)?;
+            if !matches!(&plan.shape, Shape::Tree) {
                 *bases
                     .as_mut_slice()
                     .get_mut(slot)
@@ -382,13 +464,20 @@ pub(super) fn apply<C: MapEditCursor>(
                 .ok_or(IndexError::ResourceLimited)? = plan;
         }
     }
-    let needs_tree = plans.as_slice().iter().any(|plan| plan.small.is_none());
+    let needs_tree = plans
+        .as_slice()
+        .iter()
+        .any(|plan| matches!(&plan.shape, Shape::Tree));
     let mut checked = MapInput {
         input,
         priors,
         plans: plans.as_slice(),
+        objects: context.objects,
+        maps: context.maps,
         root: 0,
         old_slot: 0,
+        old_cursor: None,
+        old: None,
         head: None,
         previous: None,
         digest: Edits::new(),
@@ -410,6 +499,61 @@ pub(super) fn apply<C: MapEditCursor>(
             "map consumer did not complete original entry edits".into(),
         ));
     }
+    drop(checked);
+    let block_count = plans
+        .as_slice()
+        .iter()
+        .filter(|plan| matches!(&plan.shape, Shape::Block(_)))
+        .count();
+    let mut staged = if block_count == 0 {
+        None
+    } else {
+        Some(StagedObjectBatch::new(block_count, context.budget)?)
+    };
+    for plan in plans.as_mut_slice() {
+        if let Shape::Block(draft) = &mut plan.shape {
+            let batch = staged
+                .as_mut()
+                .ok_or_else(|| IndexError::BackendViolation("entry block batch missing".into()))?;
+            let draft = draft
+                .take()
+                .ok_or_else(|| IndexError::BackendViolation("entry block draft missing".into()))?;
+            plan.block_slot = Some(draft.stage(batch, context.budget)?);
+        }
+    }
+    let mut expected = if block_count == 0 {
+        None
+    } else {
+        Some(PreparedRows::<ObjectRef>::new(block_count)?)
+    };
+    if let (Some(batch), Some(expected)) = (staged.as_ref(), expected.as_mut()) {
+        for input in batch.inputs() {
+            let registration =
+                context
+                    .objects
+                    .identify(&input.payload, &input.children, context.budget)?;
+            expected.push(registration.reference, context.budget)?;
+        }
+    }
+    let installed = if let Some(batch) = staged.as_ref() {
+        let installed = context.put_batch(batch.inputs())?;
+        let expected = expected
+            .as_ref()
+            .ok_or_else(|| IndexError::BackendViolation("entry block identities missing".into()))?;
+        if installed.len() != expected.len()
+            || installed
+                .iter()
+                .zip(expected.as_slice())
+                .any(|(actual, expected)| actual != expected)
+        {
+            return Err(IndexError::BackendViolation(
+                "entry block identity changed during installation".into(),
+            ));
+        }
+        Some(installed)
+    } else {
+        None
+    };
     for (slot, ((plan, count), output)) in plans
         .as_slice()
         .iter()
@@ -417,22 +561,33 @@ pub(super) fn apply<C: MapEditCursor>(
         .zip(result.as_mut_slice())
         .enumerate()
     {
-        *output = if let Some(small) = plan.small {
-            EntryMap::inline(&small)
-        } else {
-            let root = roots
-                .as_ref()
-                .and_then(|roots| roots.get(slot))
-                .copied()
-                .ok_or_else(|| {
-                    IndexError::BackendViolation("entry-map batch lost a root".into())
-                })?;
-            if (*count == 0) != root.0.is_none() {
-                return Err(IndexError::CorruptObject(
-                    "entry-map cardinality and root disagree".into(),
-                ));
+        *output = match &plan.shape {
+            Shape::Small => EntryMap::inline(&plan.small),
+            Shape::Block(_) => {
+                let reference = installed
+                    .as_ref()
+                    .and_then(|refs| plan.block_slot.and_then(|slot| refs.get(slot)))
+                    .copied()
+                    .ok_or_else(|| {
+                        IndexError::BackendViolation("entry block root missing".into())
+                    })?;
+                EntryMap::Block(reference)
             }
-            EntryMap::from(root)
+            Shape::Tree => {
+                let root = roots
+                    .as_ref()
+                    .and_then(|roots| roots.get(slot))
+                    .copied()
+                    .ok_or_else(|| {
+                        IndexError::BackendViolation("entry-map batch lost a root".into())
+                    })?;
+                if (*count == 0) != root.0.is_none() {
+                    return Err(IndexError::CorruptObject(
+                        "entry-map cardinality and root disagree".into(),
+                    ));
+                }
+                EntryMap::from(root)
+            }
         };
     }
     Ok(result)

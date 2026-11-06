@@ -22,9 +22,9 @@ trait MutationSetPolicyV3<'a> {
     fn tombstone_file(&mut self, key: &'a SourceFileKey) -> bool;
     fn replaced_file(&self, key: &'a SourceFileKey) -> bool;
     fn candidate(&mut self, id: &'a str) -> bool;
-    fn replace_semantic(&mut self, key: (&'a str, &'a str, &'a str)) -> bool;
-    fn tombstone_semantic(&mut self, key: (&'a str, &'a str, &'a str)) -> bool;
-    fn replaced_semantic(&self, key: (&'a str, &'a str, &'a str)) -> bool;
+    fn replace_semantic(&mut self, key: (&'a str, &'a str, &'a str, &'a SourceFileKey)) -> bool;
+    fn tombstone_semantic(&mut self, key: (&'a str, &'a str, &'a str, &'a SourceFileKey)) -> bool;
+    fn replaced_semantic(&self, key: (&'a str, &'a str, &'a str, &'a SourceFileKey)) -> bool;
 }
 
 #[derive(Default)]
@@ -32,8 +32,8 @@ struct OrdinaryMutationSetsV3<'a> {
     replace_files: BTreeSet<&'a SourceFileKey>,
     tombstone_files: BTreeSet<&'a SourceFileKey>,
     candidates: BTreeSet<&'a str>,
-    replace_semantic: BTreeSet<(&'a str, &'a str, &'a str)>,
-    tombstone_semantic: BTreeSet<(&'a str, &'a str, &'a str)>,
+    replace_semantic: BTreeSet<(&'a str, &'a str, &'a str, &'a SourceFileKey)>,
+    tombstone_semantic: BTreeSet<(&'a str, &'a str, &'a str, &'a SourceFileKey)>,
 }
 
 impl<'a> MutationSetPolicyV3<'a> for OrdinaryMutationSetsV3<'a> {
@@ -49,13 +49,13 @@ impl<'a> MutationSetPolicyV3<'a> for OrdinaryMutationSetsV3<'a> {
     fn candidate(&mut self, id: &'a str) -> bool {
         self.candidates.insert(id)
     }
-    fn replace_semantic(&mut self, key: (&'a str, &'a str, &'a str)) -> bool {
+    fn replace_semantic(&mut self, key: (&'a str, &'a str, &'a str, &'a SourceFileKey)) -> bool {
         self.replace_semantic.insert(key)
     }
-    fn tombstone_semantic(&mut self, key: (&'a str, &'a str, &'a str)) -> bool {
+    fn tombstone_semantic(&mut self, key: (&'a str, &'a str, &'a str, &'a SourceFileKey)) -> bool {
         self.tombstone_semantic.insert(key)
     }
-    fn replaced_semantic(&self, key: (&'a str, &'a str, &'a str)) -> bool {
+    fn replaced_semantic(&self, key: (&'a str, &'a str, &'a str, &'a SourceFileKey)) -> bool {
         self.replace_semantic.contains(&key)
     }
 }
@@ -77,13 +77,13 @@ impl<'a> MutationSetPolicyV3<'a> for CertifiedMutationSetsV3 {
     fn candidate(&mut self, _: &'a str) -> bool {
         true
     }
-    fn replace_semantic(&mut self, _: (&'a str, &'a str, &'a str)) -> bool {
+    fn replace_semantic(&mut self, _: (&'a str, &'a str, &'a str, &'a SourceFileKey)) -> bool {
         true
     }
-    fn tombstone_semantic(&mut self, _: (&'a str, &'a str, &'a str)) -> bool {
+    fn tombstone_semantic(&mut self, _: (&'a str, &'a str, &'a str, &'a SourceFileKey)) -> bool {
         true
     }
-    fn replaced_semantic(&self, _: (&'a str, &'a str, &'a str)) -> bool {
+    fn replaced_semantic(&self, _: (&'a str, &'a str, &'a str, &'a SourceFileKey)) -> bool {
         false
     }
 }
@@ -671,7 +671,16 @@ where
             scope.scope.corpus_kind.as_code_str(),
             scope.scope.owner_kind.as_code_str(),
             scope.scope.owner_id.as_str(),
+            &scope.scope.source_file,
         );
+        if scope.scope.source_file.validate().is_err()
+            || scope
+                .sources
+                .iter()
+                .any(|record| record.source_file != scope.scope.source_file)
+        {
+            return Err(SearchCorpusSurfaceMutationConflictV1::RecordSourceMismatch.into());
+        }
         let surface = SearchScopeSurface::for_semantic_owner_v1(
             scope.scope.owner_kind,
             scope.scope.corpus_kind,
@@ -690,7 +699,11 @@ where
             scope.corpus_kind.as_code_str(),
             scope.owner_kind.as_code_str(),
             scope.owner_id.as_str(),
+            &scope.source_file,
         );
+        if scope.source_file.validate().is_err() {
+            return Err(SearchCorpusSurfaceMutationConflictV1::InvalidCoverage.into());
+        }
         let surface =
             SearchScopeSurface::for_semantic_owner_v1(scope.owner_kind, scope.corpus_kind);
         if !sets.tombstone_semantic(key) {

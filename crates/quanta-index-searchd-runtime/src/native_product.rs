@@ -58,7 +58,8 @@ use signal_hook::{
 use crate::native::{
     FixedPumpPolicy, NativeIndexService, NativePhysicalProfile, NativePumpConfig, NativePumpScope,
     NativeReclaimConfig, NativeResourcePlan, NativeRetentionConfig, NativeRetentionScope,
-    NativeServiceCapabilities, NativeServiceResources, validate_automatic_reclaim,
+    NativeServiceCapabilities, NativeServiceResources, NativeWalReclaimPolicy,
+    validate_automatic_reclaim,
 };
 use crate::native_effort::NativeEffortConfiguration;
 
@@ -175,6 +176,7 @@ struct ResourcesConfig {
     physical: NativePhysicalProfile,
     scratch_reserved_bytes: u64,
     read_ticket_lease_ms: u64,
+    catalog_writer_cache_kib: u32,
     execution: ExecutionConfig,
 }
 
@@ -188,10 +190,15 @@ impl ResourcesConfig {
         let _lease_millis = validate_read_ticket_lease(read_ticket_lease)?;
         let execution = self.execution.into_plan();
         execution.validate()?;
+        let catalog_writer_cache = crate::native::CatalogWriterCachePolicy {
+            kib: self.catalog_writer_cache_kib,
+        };
+        catalog_writer_cache.validate()?;
         Ok(NativeServiceResources {
             physical: self.physical,
             scratch_reserved_bytes: self.scratch_reserved_bytes,
             read_ticket_lease,
+            catalog_writer_cache,
             execution,
         })
     }
@@ -244,7 +251,7 @@ struct ValidatedGraphConfig {
 }
 
 impl GraphConfig {
-    fn validate(self, resources: NativeServiceResources) -> Result<ValidatedGraphConfig> {
+    fn validate(self, resources: &NativeServiceResources) -> Result<ValidatedGraphConfig> {
         let read_need: ResourceNeed = self.read_need.into();
         let _reader = NativeGraphReader::new(read_need)?;
         if !read_need.fits(resources.execution.interactive) {
@@ -598,7 +605,7 @@ fn chunk_owner_memory_envelope(
 }
 
 impl SemanticConfig {
-    fn validate(self, resources: NativeServiceResources) -> Result<ValidatedSemanticConfig> {
+    fn validate(self, resources: &NativeServiceResources) -> Result<ValidatedSemanticConfig> {
         let declared_scope_count = self.scopes.len();
         if declared_scope_count == 0 || declared_scope_count > 1024 {
             bail!("native Semantic needs 1..=1024 explicit scopes");
@@ -810,6 +817,7 @@ fn tenant_id_hex(tenant: TenantId) -> Result<String> {
 #[serde(deny_unknown_fields)]
 struct MaintenanceConfig {
     interval_ms: u64,
+    wal_reclaim: WalReclaimConfig,
     max_steps_per_round: u32,
     child_limit: u32,
     work_limits: WorkLimitsConfig,
@@ -821,6 +829,10 @@ impl MaintenanceConfig {
     fn validate(self, plan: NativeResourcePlan, owned_pump: bool) -> Result<NativeReclaimConfig> {
         let config = NativeReclaimConfig {
             interval: Duration::from_millis(self.interval_ms),
+            wal_reclaim: NativeWalReclaimPolicy {
+                trigger_bytes: self.wal_reclaim.trigger_bytes,
+                min_interval: Duration::from_millis(self.wal_reclaim.min_interval_ms),
+            },
             max_steps_per_round: self.max_steps_per_round,
             child_limit: self.child_limit,
             work_limits: self.work_limits.validate()?,
@@ -830,6 +842,13 @@ impl MaintenanceConfig {
         validate_automatic_reclaim(config, plan, owned_pump)?;
         Ok(config)
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WalReclaimConfig {
+    trigger_bytes: u64,
+    min_interval_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -980,11 +999,11 @@ impl NativeServeConfigV1 {
         }
         let semantic = self
             .semantic
-            .map(|config| config.validate(resources))
+            .map(|config| config.validate(&resources))
             .transpose()?;
         let graph = self
             .graph
-            .map(|config| config.validate(resources))
+            .map(|config| config.validate(&resources))
             .transpose()?;
         if owned_work.is_some() && semantic.is_none() {
             bail!("native owned work requires a configured Semantic owner adapter");
@@ -1017,10 +1036,12 @@ impl NativeServeConfigV1 {
             .map(crate::native_read_sessions::NativeReadSessions::required_memory)
             .transpose()?
             .unwrap_or(0);
+        let cache_bytes = resources.catalog_writer_cache.reservation_bytes()?;
         let escaping_bytes = semantic
             .as_ref()
             .map_or(0, |config| config.provider_escaping_bytes)
             .checked_add(read_session_bytes)
+            .and_then(|bytes| bytes.checked_add(cache_bytes))
             .ok_or_else(|| anyhow!("native retained memory allowance overflow"))?;
         if escaping_bytes
             > resources
@@ -1028,7 +1049,7 @@ impl NativeServeConfigV1 {
                 .retained_memory_headroom(owned_work.is_some(), maintenance.is_some())?
         {
             bail!(
-                "native provider and read-session retained buffers require headroom beyond protected execution floors"
+                "native provider, read-session, and Catalog writer-cache retained buffers require headroom beyond protected execution floors"
             );
         }
         let literal = self.literal.descriptor();
@@ -1510,7 +1531,7 @@ fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
         provider_attempt_pool,
     };
     let _needs = capabilities.validate_resources(
-        config.resources,
+        &config.resources,
         config.maintenance,
         config.retention.as_ref(),
     )?;
@@ -1546,7 +1567,7 @@ fn bind(
                 &config.state_root,
             )?),
             &config.socket_path,
-            config.resources,
+            &config.resources,
             request,
         )?,
     };
@@ -1555,7 +1576,7 @@ fn bind(
         &config.socket_path,
         config.limits,
         capabilities,
-        config.resources,
+        &config.resources,
         config.maintenance,
         config.retention.clone(),
     )?;

@@ -7,10 +7,10 @@ use quanta_index_core::index::{
 };
 use rusqlite::{Connection, OptionalExtension as _, params};
 
+use super::registration_codec::{decode as decode_registration, encode as encode_registration};
 use super::{
-    begin, current_view, decode, digest, encode, ensure_roots, exactly_one, fields_digest, int,
-    next_fence, object_install, object_key, register_confirmed, sql, uint, workspace_key,
-    write_view,
+    begin, current_view, digest, encode, ensure_roots, exactly_one, fields_digest, int, next_fence,
+    object_install, object_key, register_confirmed, sql, uint, workspace_key, write_view,
 };
 
 struct StageRow {
@@ -79,7 +79,7 @@ fn read_stage(
     {
         return Err(IndexError::Storage("bootstrap row digest mismatch".into()));
     }
-    let object: RegisteredObject = decode(&payload)?;
+    let object: RegisteredObject = decode_registration(&payload)?;
     let stage = BootstrapRef {
         workspace,
         epoch: uint(epoch)?,
@@ -146,7 +146,7 @@ fn read_install(
             "bootstrap object row digest mismatch".into(),
         ));
     }
-    let registration: RegisteredObject = decode(&payload)?;
+    let registration: RegisteredObject = decode_registration(&payload)?;
     if registration.reference != stage.profile || object != object_key(stage.profile) {
         return Err(IndexError::Storage(
             "bootstrap object identity mismatch".into(),
@@ -223,7 +223,7 @@ pub(super) fn begin_bootstrap(
     let epoch = int(epoch)?;
     let fence = int(fence)?;
     let profile = object_key(object.reference);
-    let encoded = encode(&object)?;
+    let encoded = encode_registration(&object)?;
     let changed = tx.execute(
         "INSERT INTO native_bootstrap_v1(workspace,epoch,fence,profile,payload,row_digest) VALUES (?1,?2,?3,?4,?5,?6)",
         params![&key, epoch, fence, &profile, &encoded,
@@ -261,7 +261,7 @@ pub(super) fn reserve_bootstrap_tx(
     if read_install(tx, stage)?.is_none() {
         let key = workspace_key(stage.workspace)?;
         let object_key = object_key(object.reference);
-        let payload = encode(object)?;
+        let payload = encode_registration(object)?;
         let changed = tx.execute(
             "INSERT INTO native_bootstrap_object_v1(workspace,object,payload,confirmed,row_digest) VALUES (?1,?2,?3,0,?4)",
             params![&key, &object_key, &payload, install_digest(&key, &object_key, &payload, 0)?],
@@ -297,7 +297,7 @@ pub(super) fn confirm_bootstrap_tx(
     register_confirmed(tx, std::slice::from_ref(object))?;
     let key = workspace_key(stage.workspace)?;
     let object_key = object_key(object.reference);
-    let payload = encode(object)?;
+    let payload = encode_registration(object)?;
     let changed = tx
         .execute(
             "UPDATE native_bootstrap_object_v1 SET confirmed=1,row_digest=?2 WHERE workspace=?1",

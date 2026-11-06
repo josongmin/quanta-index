@@ -4724,6 +4724,14 @@ def _validate_ingest_diagnostic(
         )
         for key, value in stages.items():
             if (
+                detailed_file_authority
+                and key == "file_authority_source_write_ns"
+                and value is None
+            ):
+                # Paged publication measures the complete file authority stage;
+                # its public observation contract leaves this child unmeasured.
+                continue
+            if (
                 detailed_authority
                 and key.startswith("text_authority_")
                 and key != "text_authority_ns"
@@ -4748,7 +4756,8 @@ def _validate_ingest_diagnostic(
         if detailed_file_authority and (
             stages["prep_file_authority_preflight_ns"] + stages["prep_coverage_write_ns"]
             > stages["preparation_ns"]
-            or stages["file_authority_source_write_ns"] > stages["file_authority_ns"]
+            or stages["file_authority_source_write_ns"] is not None
+            and stages["file_authority_source_write_ns"] > stages["file_authority_ns"]
         ):
             raise RunError("ingest preparation/file authority child clocks exceed parent")
         outer = sum(

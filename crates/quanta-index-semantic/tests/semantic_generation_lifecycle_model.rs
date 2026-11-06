@@ -93,11 +93,12 @@ impl ModelCorpus {
     }
 }
 
-type OwnerKey = (ModelCorpus, OwnerDocKind, String);
+type OwnerKey = (ModelCorpus, OwnerDocKind, String, String);
 
 #[derive(Clone, Debug)]
 struct TombstoneSpec {
     owner: &'static str,
+    path: &'static str,
 }
 
 impl RecordSpec {
@@ -216,11 +217,17 @@ impl LifecycleModel {
                 ModelCorpus::Symbol,
                 OwnerDocKind::Symbol,
                 tombstone.owner.into(),
+                tombstone.path.into(),
             ));
         }
         for record in replacements {
             let _prior = state.records_by_owner.insert(
-                (record.corpus, record.kind, record.owner.into()),
+                (
+                    record.corpus,
+                    record.kind,
+                    record.owner.into(),
+                    record.path.into(),
+                ),
                 record.id.to_string(),
             );
         }
@@ -282,6 +289,7 @@ impl LifecycleModel {
                             SemanticCorpusKindV1::SymbolCard,
                             OwnerDocKind::Symbol,
                             tombstone.owner,
+                            tombstone.path,
                         )
                     })
                     .collect();
@@ -497,6 +505,7 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
             }],
             tombstones: vec![TombstoneSpec {
                 owner: "symbol:Session::gamma",
+                path: "src/session.rs",
             }],
             seal: true,
         },
@@ -666,6 +675,11 @@ fn generated_lifecycle_trace(seed: u64, base: u64) -> Vec<LifecycleCommand> {
         replacements: vec![gamma],
         tombstones: vec![TombstoneSpec {
             owner: "symbol:Generated::beta",
+            path: if seed & 1 == 0 {
+                "src/generated_even.rs"
+            } else {
+                "src/generated_odd.rs"
+            },
         }],
         seal: true,
     });

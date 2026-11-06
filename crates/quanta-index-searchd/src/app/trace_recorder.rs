@@ -14,12 +14,15 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use nix::time::{ClockId, clock_gettime};
 use quanta_index_core::diagnostic_trace::{
     DiagnosticAnnIndexKindV1, DiagnosticAnnRegionPhaseV1, DiagnosticCaptureIdV1, DiagnosticClockV1,
     DiagnosticContextV1, DiagnosticEmitV1, DiagnosticEventKindV1, DiagnosticEventSinkV1,
     DiagnosticRootKindV1, DiagnosticTerminalV1,
 };
 use serde_json::{Map, Value, json};
+
+use crate::trace_wire::{known_counter_name, known_stage_name};
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -73,6 +76,19 @@ impl DiagnosticCaptureLimitsV1 {
 #[derive(Debug)]
 struct MonotonicClock(Instant);
 
+fn timespec_ns(seconds: i128, nanoseconds: i128) -> Option<u64> {
+    let Ok(seconds) = u64::try_from(seconds) else {
+        return None;
+    };
+    let Ok(nanoseconds) = u64::try_from(nanoseconds) else {
+        return None;
+    };
+    if nanoseconds >= 1_000_000_000 {
+        return None;
+    }
+    seconds.checked_mul(1_000_000_000)?.checked_add(nanoseconds)
+}
+
 impl DiagnosticClockV1 for MonotonicClock {
     fn now_ns(&self) -> u64 {
         let elapsed = self.0.elapsed();
@@ -80,6 +96,14 @@ impl DiagnosticClockV1 for MonotonicClock {
             .as_secs()
             .saturating_mul(1_000_000_000)
             .saturating_add(u64::from(elapsed.subsec_nanos()))
+    }
+
+    fn thread_cpu_now_ns(&self) -> Option<u64> {
+        // This observation is optional: failure leaves the counter absent.
+        let Ok(now) = clock_gettime(ClockId::CLOCK_THREAD_CPUTIME_ID) else {
+            return None;
+        };
+        timespec_ns(i128::from(now.tv_sec()), i128::from(now.tv_nsec()))
     }
 }
 
@@ -474,7 +498,7 @@ struct WriterSummary {
     unwritten: u64,
 }
 
-const TIMELINE_SCHEMA_VERSION: u64 = 4;
+const TIMELINE_SCHEMA_VERSION: u64 = 5;
 
 fn write_capture(
     file: File,
@@ -511,6 +535,7 @@ fn write_capture(
     // The output cap bounds this set by the number of written begin records.
     // `open` alone cannot detect a span ID reused after its first end.
     let mut seen = BTreeSet::new();
+    let mut renewal_refusals = BTreeSet::new();
     // A counter may be emitted more than once for one owner span. The number
     // of keys is bounded by the number of written records under the output cap.
     let mut counter_totals = BTreeMap::new();
@@ -519,6 +544,9 @@ fn write_capture(
     let mut encoded = Vec::new();
     let mut sealed = false;
     let mut invalid = false;
+    // Once an accepted event is unwritten, keep only the preceding contiguous
+    // prefix. A later, shorter end must not be written without its begin.
+    let mut output_stopped = false;
     // Make accepted records visible during a long, quiet capture. This is a
     // buffered flush only: crash durability remains outside the capture
     // contract, and fsync is reserved for the completed footer.
@@ -542,12 +570,18 @@ fn write_capture(
             break;
         };
         invalid |= matches!(event.kind, DiagnosticEventKindV1::Health { .. });
-        let Some(seq) = written.checked_add(1) else {
+        if output_stopped {
             unwritten = unwritten.saturating_add(1);
             continue;
-        };
-        let Some(record) = event_json(event, seq) else {
+        }
+        let Some(seq) = written.checked_add(1) else {
             unwritten = unwritten.saturating_add(1);
+            output_stopped = true;
+            continue;
+        };
+        let Some(record) = wire_event_json(event, seq) else {
+            unwritten = unwritten.saturating_add(1);
+            output_stopped = true;
             continue;
         };
         encoded.clear();
@@ -561,6 +595,7 @@ fn write_capture(
             || bytes.saturating_add(size).saturating_add(1024) > limits.max_output_bytes
         {
             unwritten = unwritten.saturating_add(1);
+            output_stopped = true;
             continue;
         }
         output.write_all(&encoded)?;
@@ -577,8 +612,13 @@ fn write_capture(
                     invalid = true;
                 }
             }
-            DiagnosticEventKindV1::SpanEnd { span_id, .. } => {
+            DiagnosticEventKindV1::SpanEnd { span_id, outcome } => {
                 if !open.remove(&span_id.get()) {
+                    invalid = true;
+                }
+                if renewal_refusals.contains(&span_id.get())
+                    && !matches!(outcome, DiagnosticTerminalV1::Error { .. })
+                {
                     invalid = true;
                 }
             }
@@ -600,11 +640,17 @@ fn write_capture(
                     invalid = true;
                 }
             }
+            DiagnosticEventKindV1::OwnedRenewalRefusal { span_id, .. } => {
+                if !open.contains(&span_id.get()) || !renewal_refusals.insert(span_id.get()) {
+                    invalid = true;
+                }
+            }
             DiagnosticEventKindV1::RequestIdentity { .. }
             | DiagnosticEventKindV1::PhaseIdentity { .. }
             | DiagnosticEventKindV1::AnnRegionObservation { .. }
             | DiagnosticEventKindV1::SqliteSyncObservation { .. }
             | DiagnosticEventKindV1::SyncAggregate { .. }
+            | DiagnosticEventKindV1::ObjectInstallAggregate { .. }
             | DiagnosticEventKindV1::ObjectKindAggregate { .. }
             | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
             | DiagnosticEventKindV1::Bm25CensusAggregate { .. }
@@ -823,6 +869,36 @@ fn event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
             "posix_result":observation.posix_result,
             "posix_errno":observation.posix_errno,
         }}),
+        DiagnosticEventKindV1::OwnedRenewalRefusal {
+            span_id,
+            observation,
+        } => {
+            use quanta_index_core::DiagnosticOwnedRenewalRefusalReasonV1;
+            let valid = match observation.reason {
+                DiagnosticOwnedRenewalRefusalReasonV1::LeaseExpired => observation
+                    .lease_until_ms
+                    .is_some_and(|lease| observation.now_ms >= lease),
+                DiagnosticOwnedRenewalRefusalReasonV1::ExecutionExpired => observation
+                    .deadline_ms
+                    .is_some_and(|deadline| observation.now_ms >= deadline),
+                DiagnosticOwnedRenewalRefusalReasonV1::MissingClaim
+                | DiagnosticOwnedRenewalRefusalReasonV1::NotClaimed
+                | DiagnosticOwnedRenewalRefusalReasonV1::ClaimIdentity
+                | DiagnosticOwnedRenewalRefusalReasonV1::ClaimFence
+                | DiagnosticOwnedRenewalRefusalReasonV1::MissingAssignment
+                | DiagnosticOwnedRenewalRefusalReasonV1::InactiveAssignment
+                | DiagnosticOwnedRenewalRefusalReasonV1::UndispatchedAssignment
+                | DiagnosticOwnedRenewalRefusalReasonV1::AssignmentClaim
+                | DiagnosticOwnedRenewalRefusalReasonV1::GrantMismatch => true,
+            };
+            if !valid {
+                return None;
+            }
+            json!({"type":"owned_renewal_refusal", "span_id":span_id.get(),
+                "reason":observation.reason.as_str(), "now_ms":observation.now_ms,
+                "lease_until_ms":observation.lease_until_ms,
+                "deadline_ms":observation.deadline_ms})
+        }
         DiagnosticEventKindV1::SyncAggregate {
             span_id,
             label,
@@ -833,6 +909,16 @@ fn event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
         } => json!({"type":"sync_aggregate", "span_id":span_id.get(), "label":label.as_str(),
             "calls":calls, "elapsed_sum_ns":elapsed_sum_ns, "elapsed_max_ns":elapsed_max_ns,
             "failures":failures}),
+        DiagnosticEventKindV1::ObjectInstallAggregate {
+            span_id,
+            phase,
+            calls,
+            elapsed_sum_ns,
+            thread_cpu_ns,
+            failures,
+        } => json!({"type":"object_install_aggregate", "span_id":span_id.get(),
+            "phase":phase.as_str(), "calls":calls, "elapsed_sum_ns":elapsed_sum_ns,
+            "thread_cpu_ns":thread_cpu_ns, "failures":failures}),
         DiagnosticEventKindV1::ObjectKindAggregate {
             span_id,
             kind,
@@ -926,6 +1012,12 @@ fn event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
                 quanta_index_core::diagnostic_trace::DiagnosticHealthCodeV1::UnlinkedAttempt => {
                     "unlinked_attempt"
                 }
+                quanta_index_core::diagnostic_trace::DiagnosticHealthCodeV1::CounterUnavailable => {
+                    "counter_unavailable"
+                }
+                quanta_index_core::diagnostic_trace::DiagnosticHealthCodeV1::CounterRegressed => {
+                    "counter_regressed"
+                }
             };
             json!({"type":"health", "code":code})
         }
@@ -935,179 +1027,72 @@ fn event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
     )
 }
 
-fn known_stage_name(stage: quanta_index_core::DiagnosticStageV1) -> Option<&'static str> {
-    use quanta_index_core::DiagnosticStageV1;
-    match stage {
-        DiagnosticStageV1::Request => Some("request"),
-        DiagnosticStageV1::Operation => Some("operation"),
-        DiagnosticStageV1::ClientAttempt => Some("client_attempt"),
-        DiagnosticStageV1::Ingress => Some("ingress"),
-        DiagnosticStageV1::QueueWait => Some("queue_wait"),
-        DiagnosticStageV1::Dispatch => Some("dispatch"),
-        DiagnosticStageV1::Backend => Some("backend"),
-        DiagnosticStageV1::Encode => Some("encode"),
-        DiagnosticStageV1::Write => Some("write"),
-        DiagnosticStageV1::BuildPreflight => Some("build_preflight"),
-        DiagnosticStageV1::BuildPrepare => Some("build_prepare"),
-        DiagnosticStageV1::SemanticPrepare => Some("semantic_prepare"),
-        DiagnosticStageV1::SemanticStream => Some("semantic_stream"),
-        DiagnosticStageV1::SemanticDelete => Some("semantic_delete"),
-        DiagnosticStageV1::SemanticAppend => Some("semantic_append"),
-        DiagnosticStageV1::SemanticSeal => Some("semantic_seal"),
-        DiagnosticStageV1::SemanticPromote => Some("semantic_promote"),
-        DiagnosticStageV1::SemanticBuild => Some("semantic_build"),
-        DiagnosticStageV1::LexicalBuild => Some("lexical_build"),
-        DiagnosticStageV1::NativeTextPostings => Some("native_text_postings"),
-        DiagnosticStageV1::NativeTextRoot => Some("native_text_root"),
-        DiagnosticStageV1::NativeCoverageScan => Some("native_coverage_scan"),
-        DiagnosticStageV1::NativeCoverageMapApply => Some("native_coverage_map_apply"),
-        DiagnosticStageV1::NativeSearchablePrepare => Some("native_searchable_prepare"),
-        DiagnosticStageV1::NativeCoverageSave => Some("native_coverage_save"),
-        DiagnosticStageV1::NativeMemberAssemble => Some("native_member_assemble"),
-        DiagnosticStageV1::Bm25CensusBuild => Some("bm25_census_build"),
-        DiagnosticStageV1::Bm25LiveBuild => Some("bm25_live_build"),
-        DiagnosticStageV1::Bm25Boundary => Some("bm25_boundary"),
-        DiagnosticStageV1::Finalize => Some("finalize"),
-        DiagnosticStageV1::Activate => Some("activate"),
-        DiagnosticStageV1::CatalogLockWait => Some("catalog_lock_wait"),
-        DiagnosticStageV1::CatalogLockHold => Some("catalog_lock_hold"),
-        DiagnosticStageV1::RetentionPairLockWait => Some("retention_pair_lock_wait"),
-        DiagnosticStageV1::RetentionPairLockHold => Some("retention_pair_lock_hold"),
-        DiagnosticStageV1::RetentionRootLockWait => Some("retention_root_lock_wait"),
-        DiagnosticStageV1::RetentionRootLockHold => Some("retention_root_lock_hold"),
-        DiagnosticStageV1::RetentionRootSnapshot => Some("retention_root_snapshot"),
-        DiagnosticStageV1::SourceTransactionOne => Some("source_transaction_one"),
-        DiagnosticStageV1::SourceTransactionTwo => Some("source_transaction_two"),
-        DiagnosticStageV1::NativeSourceApply => Some("native_source_apply"),
-        DiagnosticStageV1::NativeSourcePathInstall => Some("native_source_path_install"),
-        DiagnosticStageV1::NativeSourceMapApply => Some("native_source_map_apply"),
-        DiagnosticStageV1::RetentionPlan => Some("retention_plan"),
-        DiagnosticStageV1::RetentionMeasure => Some("retention_measure"),
-        DiagnosticStageV1::RetentionWrite => Some("retention_write"),
-        DiagnosticStageV1::RetentionReap => Some("retention_reap"),
-        DiagnosticStageV1::ClosureRead => Some("closure_read"),
-        DiagnosticStageV1::ClosureHash => Some("closure_hash"),
-        DiagnosticStageV1::ClosureDecode => Some("closure_decode"),
-        DiagnosticStageV1::SqliteWork => Some("sqlite_work"),
-        DiagnosticStageV1::PhysicalInodeCensus => Some("physical_inode_census"),
-        DiagnosticStageV1::ManagedObjectReserve => Some("managed_object_reserve"),
-        DiagnosticStageV1::ManagedObjectConfirm => Some("managed_object_confirm"),
-        DiagnosticStageV1::NativePublish => Some("native_publish"),
-        DiagnosticStageV1::FilePublish => Some("file_publish"),
-        DiagnosticStageV1::LexicalSeal => Some("lexical_seal"),
-        DiagnosticStageV1::LexicalProof => Some("lexical_proof"),
-        DiagnosticStageV1::Compaction => Some("compaction"),
-        DiagnosticStageV1::QueryParse => Some("query_parse"),
-        DiagnosticStageV1::QueryPlan => Some("query_plan"),
-        DiagnosticStageV1::QueryReadView => Some("query_read_view"),
-        DiagnosticStageV1::QueryOverlaySnapshot => Some("query_overlay_snapshot"),
-        DiagnosticStageV1::QueryFast => Some("query_fast"),
-        DiagnosticStageV1::QueryDeep => Some("query_deep"),
-        DiagnosticStageV1::QueryLexical => Some("query_lexical"),
-        DiagnosticStageV1::QueryEmbedding => Some("query_embedding"),
-        DiagnosticStageV1::QueryOverlayEmbedding => Some("query_overlay_embedding"),
-        DiagnosticStageV1::QueryCandidate => Some("query_candidate"),
-        DiagnosticStageV1::QueryVerify => Some("query_verify"),
-        DiagnosticStageV1::QueryRank => Some("query_rank"),
-        DiagnosticStageV1::QueryProject => Some("query_project"),
-        DiagnosticStageV1::HarnessPhase => Some("harness_phase"),
-        DiagnosticStageV1::ObserverSetup => Some("observer_setup"),
-        DiagnosticStageV1::ObserverSample => Some("observer_sample"),
-        DiagnosticStageV1::ObserverTeardown => Some("observer_teardown"),
-        DiagnosticStageV1::ArtifactWrite => Some("artifact_write"),
-        DiagnosticStageV1::RuntimeBoot => Some("runtime_boot"),
-        DiagnosticStageV1::BootRestore => Some("boot_restore"),
-        DiagnosticStageV1::BootReclaim => Some("boot_reclaim"),
-        DiagnosticStageV1::BootInventory => Some("boot_inventory"),
-        DiagnosticStageV1::BootActiveProof => Some("boot_active_proof"),
-        DiagnosticStageV1::RuntimeMaintenance => Some("runtime_maintenance"),
-        DiagnosticStageV1::RuntimeStop => Some("runtime_stop"),
-        DiagnosticStageV1::RuntimeJoin => Some("runtime_join"),
-        _ => None,
-    }
-}
-
-fn known_counter_name(counter: quanta_index_core::DiagnosticCounterV1) -> Option<&'static str> {
-    use quanta_index_core::DiagnosticCounterV1;
-    match counter {
-        DiagnosticCounterV1::FilesVisited => Some("files_visited"),
-        DiagnosticCounterV1::FilesRead => Some("files_read"),
-        DiagnosticCounterV1::FilesHashed => Some("files_hashed"),
-        DiagnosticCounterV1::FilesDecoded => Some("files_decoded"),
-        DiagnosticCounterV1::InodesVisited => Some("inodes_visited"),
-        DiagnosticCounterV1::UniqueInodes => Some("unique_inodes"),
-        DiagnosticCounterV1::BytesRead => Some("bytes_read"),
-        DiagnosticCounterV1::BytesHashed => Some("bytes_hashed"),
-        DiagnosticCounterV1::BytesDecoded => Some("bytes_decoded"),
-        DiagnosticCounterV1::WorkReads => Some("work_reads"),
-        DiagnosticCounterV1::WorkWrites => Some("work_writes"),
-        DiagnosticCounterV1::WorkBytes => Some("work_bytes"),
-        DiagnosticCounterV1::WorkMutations => Some("work_mutations"),
-        DiagnosticCounterV1::SqliteRows => Some("sqlite_rows"),
-        DiagnosticCounterV1::SqliteBatches => Some("sqlite_batches"),
-        DiagnosticCounterV1::SqliteWriteCalls => Some("sqlite_write_calls"),
-        DiagnosticCounterV1::SqliteWriteRequestedBytes => Some("sqlite_write_requested_bytes"),
-        DiagnosticCounterV1::SqliteWriteFailures => Some("sqlite_write_failures"),
-        DiagnosticCounterV1::SqliteWalWriteCalls => Some("sqlite_wal_write_calls"),
-        DiagnosticCounterV1::SqliteMainWriteCalls => Some("sqlite_main_write_calls"),
-        DiagnosticCounterV1::SqliteOtherWriteCalls => Some("sqlite_other_write_calls"),
-        DiagnosticCounterV1::SqliteElapsedNs => Some("sqlite_elapsed_ns"),
-        DiagnosticCounterV1::QueryPostingCalls => Some("query_posting_calls"),
-        DiagnosticCounterV1::QueryPostingHits => Some("query_posting_hits"),
-        DiagnosticCounterV1::QueryPostingElapsedNs => Some("query_posting_elapsed_ns"),
-        DiagnosticCounterV1::QueryPhraseChecks => Some("query_phrase_checks"),
-        DiagnosticCounterV1::QueryPhraseElapsedNs => Some("query_phrase_elapsed_ns"),
-        DiagnosticCounterV1::Candidates => Some("candidates"),
-        DiagnosticCounterV1::CandidatesVerified => Some("candidates_verified"),
-        DiagnosticCounterV1::Matches => Some("matches"),
-        DiagnosticCounterV1::RejectedAtGuard => Some("rejected_at_guard"),
-        DiagnosticCounterV1::SyncCalls => Some("sync_calls"),
-        DiagnosticCounterV1::SyncFailures => Some("sync_failures"),
-        DiagnosticCounterV1::SyncElapsedNs => Some("sync_elapsed_ns"),
-        DiagnosticCounterV1::SqliteSyncOverwrite => Some("sqlite_sync_overwrite"),
-        DiagnosticCounterV1::SqliteSyncGrowth => Some("sqlite_sync_growth"),
-        DiagnosticCounterV1::SqliteSyncTruncate => Some("sqlite_sync_truncate"),
-        DiagnosticCounterV1::SqliteSyncCreate => Some("sqlite_sync_create"),
-        DiagnosticCounterV1::SqliteSyncNoMutation => Some("sqlite_sync_no_mutation"),
-        DiagnosticCounterV1::SqliteSyncUnclassified => Some("sqlite_sync_unclassified"),
-        DiagnosticCounterV1::NewObjects => Some("new_objects"),
-        DiagnosticCounterV1::ReusedObjects => Some("reused_objects"),
-        DiagnosticCounterV1::CompactedDocuments => Some("compacted_documents"),
-        DiagnosticCounterV1::CompactedSegments => Some("compacted_segments"),
-        DiagnosticCounterV1::CompactedBytes => Some("compacted_bytes"),
-        DiagnosticCounterV1::PostingMutations => Some("posting_mutations"),
-        DiagnosticCounterV1::MapPageMutations => Some("map_page_mutations"),
-        DiagnosticCounterV1::ManagedObjectInputs => Some("managed_object_inputs"),
-        DiagnosticCounterV1::InvalidAttemptTokens => Some("invalid_attempt_tokens"),
-        DiagnosticCounterV1::UniqueClosureRefs => Some("unique_closure_refs"),
-        DiagnosticCounterV1::ClosureDependencyEdges => Some("closure_dependency_edges"),
-        DiagnosticCounterV1::ClosureAuthenticatedBytes => Some("closure_authenticated_bytes"),
-        DiagnosticCounterV1::PhysicalBytesMeasured => Some("physical_bytes_measured"),
-        DiagnosticCounterV1::RetainedPairs => Some("retained_pairs"),
-        DiagnosticCounterV1::MeasureCalls => Some("measure_calls"),
-        DiagnosticCounterV1::RemovedRoots => Some("removed_roots"),
-        DiagnosticCounterV1::SemanticWindows => Some("semantic_windows"),
-        DiagnosticCounterV1::SemanticOwnerScopes => Some("semantic_owner_scopes"),
-        DiagnosticCounterV1::SemanticDeleteCalls => Some("semantic_delete_calls"),
-        DiagnosticCounterV1::SemanticAppendCalls => Some("semantic_append_calls"),
-        DiagnosticCounterV1::SemanticRowsAppended => Some("semantic_rows_appended"),
-        DiagnosticCounterV1::SemanticRowsDeleted => Some("semantic_rows_deleted"),
-        DiagnosticCounterV1::SemanticVectorBytes => Some("semantic_vector_bytes"),
-        DiagnosticCounterV1::QueryAdmittedLimit => Some("query_admitted_limit"),
-        DiagnosticCounterV1::QueryReadLimit => Some("query_read_limit"),
-        DiagnosticCounterV1::QueryByteLimit => Some("query_byte_limit"),
-        DiagnosticCounterV1::RegexLiteralCount => Some("regex_literal_count"),
-        DiagnosticCounterV1::RegexAlternativeCount => Some("regex_alternative_count"),
-        DiagnosticCounterV1::RegexNecessaryGramCount => Some("regex_necessary_gram_count"),
-        DiagnosticCounterV1::ClosureReadElapsedNs => Some("closure_read_elapsed_ns"),
-        DiagnosticCounterV1::ClosureHashElapsedNs => Some("closure_hash_elapsed_ns"),
-        DiagnosticCounterV1::ClosureDecodeElapsedNs => Some("closure_decode_elapsed_ns"),
-        DiagnosticCounterV1::QueueDropped => Some("queue_dropped"),
-        DiagnosticCounterV1::QueueAccepted => Some("queue_accepted"),
-        DiagnosticCounterV1::OutputWritten => Some("output_written"),
-        DiagnosticCounterV1::OutputUnwritten => Some("output_unwritten"),
-        _ => None,
-    }
+/// Emit the V5 tuple directly for the high-volume kinds. Rare kinds reuse the
+/// canonical object constructor; they keep their existing closed payload.
+fn wire_event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
+    let kind = match event.kind {
+        DiagnosticEventKindV1::SpanBegin {
+            span_id,
+            parent_span_id,
+            root_kind,
+            stage,
+            lane,
+        } => {
+            let root = root_kind.map(|root| match root {
+                DiagnosticRootKindV1::Request => "request",
+                DiagnosticRootKindV1::Operation => "operation",
+                DiagnosticRootKindV1::Capture => "capture",
+            });
+            json!([
+                "b",
+                span_id.get(),
+                parent_span_id.map(quanta_index_core::DiagnosticSpanIdV1::get),
+                known_stage_name(stage)?,
+                lane.0,
+                root
+            ])
+        }
+        DiagnosticEventKindV1::SpanEnd { span_id, outcome } => {
+            let (name, code) = match outcome {
+                DiagnosticTerminalV1::Ok => ("ok", None),
+                DiagnosticTerminalV1::Error { code } => ("error", Some(code)),
+                DiagnosticTerminalV1::Cancelled { code } => ("cancelled", Some(code)),
+                DiagnosticTerminalV1::Aborted => ("aborted", None),
+            };
+            json!(["e", span_id.get(), name, code])
+        }
+        DiagnosticEventKindV1::Counter {
+            span_id,
+            key,
+            value,
+        } => json!(["c", span_id.get(), known_counter_name(key)?, value]),
+        DiagnosticEventKindV1::RequestIdentity { .. }
+        | DiagnosticEventKindV1::PhaseIdentity { .. }
+        | DiagnosticEventKindV1::AnnRegionObservation { .. }
+        | DiagnosticEventKindV1::SqliteSyncObservation { .. }
+        | DiagnosticEventKindV1::OwnedRenewalRefusal { .. }
+        | DiagnosticEventKindV1::SyncAggregate { .. }
+        | DiagnosticEventKindV1::ObjectInstallAggregate { .. }
+        | DiagnosticEventKindV1::ObjectKindAggregate { .. }
+        | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
+        | DiagnosticEventKindV1::Bm25CensusAggregate { .. }
+        | DiagnosticEventKindV1::Bm25BoundaryAggregate { .. }
+        | DiagnosticEventKindV1::Bm25LiveBuildAggregate { .. }
+        | DiagnosticEventKindV1::Link { .. }
+        | DiagnosticEventKindV1::Health { .. } => {
+            let Value::Object(mut record) = event_json(event, output_seq)? else {
+                return None;
+            };
+            record.remove("kind")?
+        }
+    };
+    Some(json!([
+        "e",
+        output_seq,
+        hex_id(event.capture_id.0),
+        event.ts_ns,
+        kind
+    ]))
 }
 
 const fn occupancy_bucket_name(
@@ -1145,16 +1130,40 @@ fn hex_ref(reference: [u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod owned_renewal;
     use quanta_index_core::diagnostic_trace::{
         DiagnosticAdoptionFlushReasonV1, DiagnosticAnnRegionObservationV1,
-        DiagnosticBm25BoundaryLabelV1, DiagnosticHealthCodeV1, DiagnosticObjectKindV1,
-        DiagnosticOccupancyBucketV1, DiagnosticSqliteSyncObservationV1, DiagnosticSyncLabelV1,
+        DiagnosticBm25BoundaryLabelV1, DiagnosticHealthCodeV1, DiagnosticObjectInstallPhaseV1,
+        DiagnosticObjectKindV1, DiagnosticOccupancyBucketV1, DiagnosticSqliteSyncObservationV1,
+        DiagnosticSyncLabelV1,
     };
     use quanta_index_core::{
         DiagnosticCounterV1, DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticSpanIdV1,
         DiagnosticStageV1, DiagnosticTerminalV1,
     };
     use std::num::NonZeroU64;
+
+    fn decoded_records(text: &str) -> Vec<Value> {
+        text.lines()
+            .map(|line| {
+                let raw = serde_json::from_str(line).expect("JSONL record");
+                crate::trace_wire::normalize_record(TIMELINE_SCHEMA_VERSION, raw)
+                    .expect("V5 wire record")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn thread_cpu_timespec_conversion_rejects_invalid_and_overflowing_values() {
+        assert_eq!(timespec_ns(0, 0), Some(0));
+        assert_eq!(timespec_ns(1, 999_999_999), Some(1_999_999_999));
+        assert_eq!(timespec_ns(18_446_744_073, 709_551_615), Some(u64::MAX));
+        assert_eq!(timespec_ns(-1, 0), None);
+        assert_eq!(timespec_ns(0, -1), None);
+        assert_eq!(timespec_ns(0, 1_000_000_000), None);
+        assert_eq!(timespec_ns(18_446_744_073, 709_551_616), None);
+        assert_eq!(timespec_ns(18_446_744_074, 0), None);
+    }
 
     #[test]
     fn stage_and_counter_names_match_complete_prechange_vocabulary() {
@@ -1243,6 +1252,15 @@ mod tests {
                 "source_transaction_two",
             ),
             (DiagnosticStageV1::NativeSourceApply, "native_source_apply"),
+            (DiagnosticStageV1::NativeWorkSeal, "native_work_seal"),
+            (
+                DiagnosticStageV1::NativeSourceOwnerPrepare,
+                "native_source_owner_prepare",
+            ),
+            (
+                DiagnosticStageV1::NativeSourcePathValidate,
+                "native_source_path_validate",
+            ),
             (
                 DiagnosticStageV1::NativeSourcePathInstall,
                 "native_source_path_install",
@@ -1266,6 +1284,10 @@ mod tests {
             (
                 DiagnosticStageV1::ManagedObjectReserve,
                 "managed_object_reserve",
+            ),
+            (
+                DiagnosticStageV1::ManagedObjectInstall,
+                "managed_object_install",
             ),
             (
                 DiagnosticStageV1::ManagedObjectConfirm,
@@ -1308,6 +1330,30 @@ mod tests {
             (DiagnosticStageV1::RuntimeMaintenance, "runtime_maintenance"),
             (DiagnosticStageV1::RuntimeStop, "runtime_stop"),
             (DiagnosticStageV1::RuntimeJoin, "runtime_join"),
+            (
+                DiagnosticStageV1::NativeTextInventoryPrepare,
+                "native_text_inventory_prepare",
+            ),
+            (
+                DiagnosticStageV1::NativeTextInventoryMapApply,
+                "native_text_inventory_map_apply",
+            ),
+            (
+                DiagnosticStageV1::NativeTextInventoryDiff,
+                "native_text_inventory_diff",
+            ),
+            (
+                DiagnosticStageV1::NativeTextInventoryRead,
+                "native_text_inventory_read",
+            ),
+            (
+                DiagnosticStageV1::NativeTextOccurrenceRead,
+                "native_text_occurrence_read",
+            ),
+            (
+                DiagnosticStageV1::NativeTextPostingEdit,
+                "native_text_posting_edit",
+            ),
         ];
         for (variant, name) in stage_golden {
             assert_eq!(known_stage_name(variant), Some(name));
@@ -1326,6 +1372,7 @@ mod tests {
         expected.sort_unstable();
         assert_eq!(actual, expected);
         let counter_golden = [
+            (DiagnosticCounterV1::ThreadCpuNs, "thread_cpu_ns"),
             (DiagnosticCounterV1::FilesVisited, "files_visited"),
             (DiagnosticCounterV1::FilesRead, "files_read"),
             (DiagnosticCounterV1::FilesHashed, "files_hashed"),
@@ -1361,6 +1408,63 @@ mod tests {
             (
                 DiagnosticCounterV1::SqliteOtherWriteCalls,
                 "sqlite_other_write_calls",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWriteAdmissionCalls,
+                "sqlite_write_admission_calls",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWriteAdmissionRefusals,
+                "sqlite_write_admission_refusals",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWriteAdmissionElapsedNs,
+                "sqlite_write_admission_elapsed_ns",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWriteLowerEnvelopeElapsedNs,
+                "sqlite_write_lower_envelope_elapsed_ns",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWritePostCallbackElapsedNs,
+                "sqlite_write_post_callback_elapsed_ns",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWritePostCallbackRefusals,
+                "sqlite_write_post_callback_refusals",
+            ),
+            (DiagnosticCounterV1::SqliteCacheHits, "sqlite_cache_hits"),
+            (
+                DiagnosticCounterV1::SqliteCacheMisses,
+                "sqlite_cache_misses",
+            ),
+            (
+                DiagnosticCounterV1::SqliteCacheWrites,
+                "sqlite_cache_writes",
+            ),
+            (
+                DiagnosticCounterV1::SqliteCacheSpills,
+                "sqlite_cache_spills",
+            ),
+            (
+                DiagnosticCounterV1::SqlitePageSizeBytes,
+                "sqlite_page_size_bytes",
+            ),
+            (
+                DiagnosticCounterV1::SqliteCacheSizeMagnitude,
+                "sqlite_cache_size_magnitude",
+            ),
+            (
+                DiagnosticCounterV1::SqliteCacheSizeIsKib,
+                "sqlite_cache_size_is_kib",
+            ),
+            (
+                DiagnosticCounterV1::SqliteCacheSpillPages,
+                "sqlite_cache_spill_pages",
+            ),
+            (
+                DiagnosticCounterV1::SqliteWalAutocheckpointPages,
+                "sqlite_wal_autocheckpoint_pages",
             ),
             (DiagnosticCounterV1::SqliteElapsedNs, "sqlite_elapsed_ns"),
             (
@@ -1421,6 +1525,30 @@ mod tests {
             (
                 DiagnosticCounterV1::ManagedObjectInputs,
                 "managed_object_inputs",
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrencePriorValidationAttempts,
+                "text_occurrence_prior_validation_attempts",
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceNextValidationAttempts,
+                "text_occurrence_next_validation_attempts",
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceRamReuses,
+                "text_occurrence_ram_reuses",
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceSpillReuses,
+                "text_occurrence_spill_reuses",
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceEqualReuses,
+                "text_occurrence_equal_reuses",
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceValidationFailures,
+                "text_occurrence_validation_failures",
             ),
             (
                 DiagnosticCounterV1::InvalidAttemptTokens,
@@ -1534,7 +1662,7 @@ mod tests {
                     lane: DiagnosticLaneV1(3),
                 },
                 1,
-                br#"{"capture_id":"03030303030303030303030303030303","kind":{"lane_id":3,"span_id":7,"stage":"managed_object_reserve","type":"span_begin"},"output_seq":1,"record_type":"event","ts_ns":11}"#.as_slice(),
+                br#"["e",1,"03030303030303030303030303030303",11,["b",7,null,"managed_object_reserve",3,null]]"#.as_slice(),
             ),
             (
                 DiagnosticEventKindV1::Counter {
@@ -1543,21 +1671,75 @@ mod tests {
                     value: 9,
                 },
                 2,
-                br#"{"capture_id":"03030303030303030303030303030303","kind":{"key":"managed_object_inputs","span_id":7,"type":"counter","value":9},"output_seq":2,"record_type":"event","ts_ns":11}"#.as_slice(),
+                br#"["e",2,"03030303030303030303030303030303",11,["c",7,"managed_object_inputs",9]]"#.as_slice(),
+            ),
+            (
+                DiagnosticEventKindV1::SpanEnd {
+                    span_id,
+                    outcome: DiagnosticTerminalV1::Error { code: 1 },
+                },
+                3,
+                br#"["e",3,"03030303030303030303030303030303",11,["e",7,"error",1]]"#.as_slice(),
+            ),
+            (
+                DiagnosticEventKindV1::SpanEnd {
+                    span_id,
+                    outcome: DiagnosticTerminalV1::Ok,
+                },
+                4,
+                br#"["e",4,"03030303030303030303030303030303",11,["e",7,"ok",null]]"#.as_slice(),
+            ),
+        ] {
+            let event = DiagnosticEmitV1 {
+                capture_id: DiagnosticCaptureIdV1([3; 16]),
+                ts_ns: 11,
+                kind,
+            };
+            let record = wire_event_json(event, output_seq).expect("closed event");
+            encoded.clear();
+            serde_json::to_writer(&mut encoded, &record).expect("encode event");
+            assert_eq!(encoded.as_slice(), expected);
+            assert_eq!(
+                crate::trace_wire::normalize_record(TIMELINE_SCHEMA_VERSION, record)
+                    .expect("normalize V5 event"),
+                event_json(event, output_seq).expect("canonical event")
+            );
+        }
+    }
+
+    #[test]
+    fn sqlite_cache_health_codes_preserve_invalid_capture_wire_names() {
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../tools/benchmark/retrieval/causal_timeline.schema.json"
+        ))
+        .expect("timeline schema");
+        let admitted = json_path(&schema, &["$defs", "health", "properties", "code", "enum"])
+            .as_array()
+            .expect("closed health vocabulary");
+        for (code, name) in [
+            (
+                DiagnosticHealthCodeV1::CounterUnavailable,
+                "counter_unavailable",
+            ),
+            (
+                DiagnosticHealthCodeV1::CounterRegressed,
+                "counter_regressed",
             ),
         ] {
             let record = event_json(
                 DiagnosticEmitV1 {
                     capture_id: DiagnosticCaptureIdV1([3; 16]),
                     ts_ns: 11,
-                    kind,
+                    kind: DiagnosticEventKindV1::Health { code },
                 },
-                output_seq,
+                1,
             )
-            .expect("closed event");
-            encoded.clear();
-            serde_json::to_writer(&mut encoded, &record).expect("encode event");
-            assert_eq!(encoded.as_slice(), expected);
+            .expect("cache health event");
+            assert_eq!(
+                record.get("kind"),
+                Some(&json!({"type":"health", "code":name}))
+            );
+            assert!(admitted.contains(&json!(name)), "schema omits {name}");
         }
     }
     #[test]
@@ -1589,6 +1771,14 @@ mod tests {
                 DiagnosticTerminalV1::Error { code: 1 },
             ),
             (
+                DiagnosticStageV1::NativeSourceOwnerPrepare,
+                DiagnosticTerminalV1::Ok,
+            ),
+            (
+                DiagnosticStageV1::NativeSourcePathValidate,
+                DiagnosticTerminalV1::Error { code: 1 },
+            ),
+            (
                 DiagnosticStageV1::NativeSourcePathInstall,
                 DiagnosticTerminalV1::Ok,
             ),
@@ -1609,13 +1799,19 @@ mod tests {
         drop(lease);
         let closed = capture.close(Duration::from_secs(2)).expect("close");
         assert_eq!(closed.status, DiagnosticCaptureStatusV1::Complete);
-        assert_eq!(closed.events_written, 8);
-        assert_eq!(closed.events_attempted, 8);
         let text = std::fs::read_to_string(path).expect("read");
-        let records: Vec<Value> = text
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("json"))
-            .collect();
+        let records = decoded_records(&text);
+        let cpu_counters = records
+            .iter()
+            .filter(|row| {
+                row.get("kind").and_then(|kind| kind.get("key")) == Some(&json!("thread_cpu_ns"))
+            })
+            .count();
+        // OS clock failure is an optional missing counter, never a capture failure.
+        assert!(cpu_counters <= 4);
+        let cpu_counters = u64::try_from(cpu_counters).expect("bounded counter count");
+        assert_eq!(closed.events_written, 12 + cpu_counters);
+        assert_eq!(closed.events_attempted, 12 + cpu_counters);
         let stages: Vec<&str> = records
             .iter()
             .filter_map(|row| {
@@ -1629,6 +1825,8 @@ mod tests {
             [
                 "operation",
                 "native_source_apply",
+                "native_source_owner_prepare",
+                "native_source_path_validate",
                 "native_source_path_install",
                 "native_source_map_apply"
             ]
@@ -1642,7 +1840,7 @@ mod tests {
                     .and_then(Value::as_str)
                     == Some("error"))
                 .count(),
-            3
+            4
         );
     }
 
@@ -1658,6 +1856,63 @@ mod tests {
         fn now_ns(&self) -> u64 {
             self.0.load(Ordering::Acquire)
         }
+    }
+
+    #[derive(Debug)]
+    struct CpuClock(AtomicU64);
+
+    impl DiagnosticClockV1 for CpuClock {
+        fn now_ns(&self) -> u64 {
+            self.0.load(Ordering::Acquire)
+        }
+
+        fn thread_cpu_now_ns(&self) -> Option<u64> {
+            Some(self.0.fetch_add(7, Ordering::AcqRel))
+        }
+    }
+
+    #[test]
+    fn coarse_span_thread_cpu_counter_roundtrips_in_complete_capture() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("trace.jsonl");
+        let mut capture = DiagnosticCaptureV1::start_with_clock_and_writer_hook(
+            path.clone(),
+            DiagnosticCaptureLimitsV1::default(),
+            Arc::new(CpuClock(AtomicU64::new(100))),
+            None,
+        )
+        .expect("start");
+        let lease = capture.lease().expect("lease");
+        let root = lease
+            .context()
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(3))
+            .expect("root");
+        let context = lease.context().child_context(&root);
+        context
+            .enter(
+                DiagnosticStageV1::NativeSourceOwnerPrepare,
+                DiagnosticLaneV1(3),
+            )
+            .expect("coarse span")
+            .finish(DiagnosticTerminalV1::Ok)
+            .expect("finish coarse span");
+        root.finish(DiagnosticTerminalV1::Ok).expect("finish root");
+        drop(context);
+        drop(lease);
+        let closed = capture.close(Duration::from_secs(2)).expect("close");
+        assert_eq!(closed.status, DiagnosticCaptureStatusV1::Complete);
+        let records = decoded_records(&std::fs::read_to_string(path).expect("read"));
+        let cpu: Vec<&Value> = records
+            .iter()
+            .filter(|row| {
+                row.get("kind").and_then(|kind| kind.get("key")) == Some(&json!("thread_cpu_ns"))
+            })
+            .collect();
+        assert_eq!(cpu.len(), 1);
+        assert_eq!(
+            json_path(cpu.first().expect("one CPU sample"), &["kind", "value"]),
+            &json!(7)
+        );
     }
 
     #[derive(Debug)]
@@ -1811,7 +2066,7 @@ mod tests {
                 &schema,
                 &["$defs", "header", "properties", "schema_version", "const"]
             ),
-            json!(4)
+            json!(5)
         );
         let span_id = DiagnosticSpanIdV1::from_nonzero(NonZeroU64::new(7).expect("span"));
         let emit = |observation| {
@@ -1871,8 +2126,12 @@ mod tests {
             })
             .is_none()
         );
+        let event_slots = json_path(&schema, &["$defs", "event", "prefixItems"])
+            .as_array()
+            .expect("V5 event tuple slots");
+        let kind_slot = event_slots.get(4).expect("V5 kind slot");
         assert!(
-            json_path(&schema, &["$defs", "event", "properties", "kind", "oneOf"])
+            json_path(kind_slot, &["oneOf"])
                 .as_array()
                 .expect("closed event variants")
                 .contains(&json!({"$ref":"#/$defs/annRegionObservation"}))
@@ -1946,6 +2205,30 @@ mod tests {
             ),
             (DiagnosticStageV1::NativeTextRoot, "native_text_root"),
             (
+                DiagnosticStageV1::NativeTextInventoryPrepare,
+                "native_text_inventory_prepare",
+            ),
+            (
+                DiagnosticStageV1::NativeTextInventoryMapApply,
+                "native_text_inventory_map_apply",
+            ),
+            (
+                DiagnosticStageV1::NativeTextInventoryDiff,
+                "native_text_inventory_diff",
+            ),
+            (
+                DiagnosticStageV1::NativeTextInventoryRead,
+                "native_text_inventory_read",
+            ),
+            (
+                DiagnosticStageV1::NativeTextOccurrenceRead,
+                "native_text_occurrence_read",
+            ),
+            (
+                DiagnosticStageV1::NativeTextPostingEdit,
+                "native_text_posting_edit",
+            ),
+            (
                 DiagnosticStageV1::NativeCoverageScan,
                 "native_coverage_scan",
             ),
@@ -1968,6 +2251,10 @@ mod tests {
             (
                 DiagnosticStageV1::ManagedObjectReserve,
                 "managed_object_reserve",
+            ),
+            (
+                DiagnosticStageV1::ManagedObjectInstall,
+                "managed_object_install",
             ),
             (
                 DiagnosticStageV1::ManagedObjectConfirm,
@@ -2036,6 +2323,45 @@ mod tests {
                 json!({"type":"sync_aggregate", "span_id":7, "label":label.as_str(),
                     "calls":3, "elapsed_sum_ns":20, "elapsed_max_ns":12, "failures":1})
             );
+        }
+
+        let schema_phases = json_path(
+            &schema,
+            &[
+                "$defs",
+                "objectInstallAggregate",
+                "properties",
+                "phase",
+                "enum",
+            ],
+        )
+        .as_array()
+        .expect("closed object install phases");
+        let phases: Vec<Value> = DiagnosticObjectInstallPhaseV1::ALL
+            .iter()
+            .map(|phase| json!(phase.as_str()))
+            .collect();
+        assert_eq!(schema_phases, &phases);
+        for phase in DiagnosticObjectInstallPhaseV1::ALL {
+            let kind = DiagnosticEventKindV1::ObjectInstallAggregate {
+                span_id,
+                phase,
+                calls: 3,
+                elapsed_sum_ns: 20,
+                thread_cpu_ns: Some(11),
+                failures: 1,
+            };
+            let record = event_json(event(kind), 2).expect("object install event");
+            assert_eq!(
+                *record.get("kind").expect("record kind"),
+                json!({"type":"object_install_aggregate", "span_id":7,
+                    "phase":phase.as_str(), "calls":3, "elapsed_sum_ns":20,
+                    "thread_cpu_ns":11, "failures":1})
+            );
+            let compact = wire_event_json(event(kind), 2).expect("V5 event");
+            let normalized = crate::trace_wire::normalize_record(TIMELINE_SCHEMA_VERSION, compact)
+                .expect("V5 object install event");
+            assert_eq!(normalized, record);
         }
 
         let schema_kinds = json_path(
@@ -2327,10 +2653,15 @@ mod tests {
         assert_eq!(closed.events_attempted, 2);
         assert_eq!(closed.events_written, 2);
         let text = std::fs::read_to_string(path).expect("read");
-        let records: Vec<Value> = text
+        let wire: Vec<Value> = text
             .lines()
-            .map(|line| serde_json::from_str(line).expect("json"))
+            .map(|line| serde_json::from_str(line).expect("wire JSON"))
             .collect();
+        assert!(wire.first().is_some_and(Value::is_object));
+        assert!(wire.get(1).is_some_and(Value::is_array));
+        assert!(wire.get(2).is_some_and(Value::is_array));
+        assert!(wire.get(3).is_some_and(Value::is_object));
+        let records = decoded_records(&text);
         assert_eq!(records.len(), 4);
         assert_eq!(
             *records
@@ -2593,7 +2924,11 @@ mod tests {
         assert_eq!(closed.status, DiagnosticCaptureStatusV1::Invalid);
         let text = std::fs::read_to_string(path).expect("read");
         assert!(text.contains("\"code\":\"clock_regressed\""));
-        assert!(!text.contains("\"type\":\"span_end\""));
+        assert!(
+            !decoded_records(&text)
+                .iter()
+                .any(|record| { record.pointer("/kind/type") == Some(&json!("span_end")) })
+        );
     }
 
     #[test]
@@ -2660,6 +2995,115 @@ mod tests {
     }
 
     #[test]
+    fn output_cap_keeps_a_prefix_when_a_short_end_would_fit_after_its_begin_is_lost() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("trace.jsonl");
+        let capture_id = DiagnosticCaptureIdV1([4; 16]);
+        let capture_hex = hex_id(capture_id.0);
+        let header = json!({"record_type":"header", "schema_version":TIMELINE_SCHEMA_VERSION,
+            "capture_id":capture_hex.as_str(), "stream_id":capture_hex.as_str(),
+            "clock_domain":capture_hex.as_str(), "process_instance":capture_hex.as_str(),
+            "started_ns":0, "max_record_bytes":512,
+            "max_counters_per_event":1, "coverage":[]});
+        let header_bytes = serde_json::to_vec(&header).expect("header JSON").len() + 1;
+        let wire_bytes = |event: DiagnosticEmitV1, seq: usize| {
+            serde_json::to_vec(
+                &wire_event_json(event, u64::try_from(seq).expect("bounded output sequence"))
+                    .expect("closed event"),
+            )
+            .expect("event JSON")
+            .len()
+                + 1
+        };
+        let event = |kind| DiagnosticEmitV1 {
+            capture_id,
+            ts_ns: 11,
+            kind,
+        };
+        let span_id = |id| DiagnosticSpanIdV1::from_nonzero(NonZeroU64::new(id).expect("span"));
+        let begin = |id, stage| {
+            event(DiagnosticEventKindV1::SpanBegin {
+                span_id: span_id(id),
+                parent_span_id: None,
+                root_kind: Some(DiagnosticRootKindV1::Operation),
+                stage,
+                lane: DiagnosticLaneV1(1),
+            })
+        };
+        let end = |id| {
+            event(DiagnosticEventKindV1::SpanEnd {
+                span_id: span_id(id),
+                outcome: DiagnosticTerminalV1::Ok,
+            })
+        };
+        let mut prefix = Vec::new();
+        let mut prefix_bytes = 0_usize;
+        let mut id = 1_u64;
+        let (lost_begin, short_end, cap) = loop {
+            let lost_begin = begin(id, DiagnosticStageV1::NativeTextInventoryPrepare);
+            let short_end = end(id);
+            let next_seq = prefix.len() + 1;
+            let end_bytes = wire_bytes(short_end, next_seq);
+            let begin_bytes = wire_bytes(lost_begin, next_seq);
+            assert!(begin_bytes > end_bytes);
+            let cap = header_bytes + prefix_bytes + end_bytes + 1024;
+            if cap >= 2560 {
+                break (lost_begin, short_end, cap);
+            }
+            let prior_begin = begin(id, DiagnosticStageV1::Operation);
+            prefix_bytes += wire_bytes(prior_begin, next_seq);
+            prefix.push(prior_begin);
+            let prior_end = end(id);
+            prefix_bytes += wire_bytes(prior_end, next_seq + 1);
+            prefix.push(prior_end);
+            id = id.checked_add(1).expect("bounded span ID");
+        };
+        let limits = DiagnosticCaptureLimitsV1 {
+            queue_records: 1024,
+            max_record_bytes: 512,
+            max_output_bytes: u64::try_from(cap).expect("bounded output cap"),
+        }
+        .validate()
+        .expect("admitted output cap");
+        let total = prefix.len() + 2;
+        let (sender, receiver) = mpsc::sync_channel(total + 1);
+        for item in prefix.iter().copied().chain([lost_begin, short_end]) {
+            sender.send(QueueItem::Event(item)).expect("queue event");
+        }
+        sender.send(QueueItem::Seal).expect("queue seal");
+        let counts = SinkCounts::default();
+        let total = u64::try_from(total).expect("bounded event count");
+        counts.attempted.store(total, Ordering::Release);
+        counts.accepted.store(total, Ordering::Release);
+        let summary = write_capture(
+            File::create(&path).expect("capture file"),
+            &receiver,
+            capture_id,
+            limits,
+            &counts,
+            &AtomicUsize::new(0),
+            &FakeClock(AtomicU64::new(20)),
+        )
+        .expect("closed capture");
+        assert_eq!(summary.status, DiagnosticCaptureStatusV1::Partial);
+        assert_eq!(
+            summary.written,
+            u64::try_from(prefix.len()).expect("bounded prefix")
+        );
+        assert_eq!(summary.unwritten, 2);
+        let rows = decoded_records(&std::fs::read_to_string(path).expect("capture text"));
+        assert_eq!(rows.len(), prefix.len() + 2);
+        assert_eq!(
+            rows.last().and_then(|row| row.get("open_spans")),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            rows.last().and_then(|row| row.get("status")),
+            Some(&json!("partial"))
+        );
+    }
+
+    #[test]
     fn fake_clock_and_stalled_writer_preserve_retryable_close_barrier() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("trace.jsonl");
@@ -2691,10 +3135,7 @@ mod tests {
         let closed = capture.close(Duration::from_secs(2)).expect("retry close");
         assert_eq!(closed.status, DiagnosticCaptureStatusV1::Complete);
         let text = std::fs::read_to_string(path).expect("read");
-        let records: Vec<Value> = text
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("json"))
-            .collect();
+        let records = decoded_records(&text);
         assert_eq!(
             *records
                 .get(1)

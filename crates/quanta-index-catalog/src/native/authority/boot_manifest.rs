@@ -175,7 +175,7 @@ pub(super) fn validate_custody(
         let object = object_key(object);
         let expected = fields_digest(b"qidx.native.opobject.v1", &(&operation, &object))?;
         let valid: Option<bool> = connection.query_row(
-            "SELECT row_digest FROM native_operation_object_v1 WHERE operation=?1 AND object=?2",
+            "SELECT row_digest FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND object=?2",
             params![&operation,&object], |row| Ok(matches!(row.get_ref(0)?,ValueRef::Blob(digest) if digest == expected)),
         ).optional().map_err(|error| sql(&error))?;
         if valid != Some(true) {
@@ -332,8 +332,8 @@ fn protect(
         let object = object_key(object);
         let _inserted = connection
             .execute(
-                "INSERT INTO native_operation_object_v1(operation,object,row_digest)
-             VALUES (?1,?2,?3) ON CONFLICT(operation,object) DO NOTHING",
+                "INSERT INTO native_operation_object_v1(operation_id,object,row_digest)
+             VALUES ((SELECT operation_id FROM native_operation_v1 WHERE operation=?1),?2,?3) ON CONFLICT(operation_id,object) DO NOTHING",
                 params![
                     &operation,
                     &object,
@@ -343,7 +343,7 @@ fn protect(
             .map_err(|error| sql(&error))?;
         let expected = fields_digest(b"qidx.native.opobject.v1", &(&operation, &object))?;
         let valid: bool = connection.query_row(
-            "SELECT row_digest FROM native_operation_object_v1 WHERE operation=?1 AND object=?2",
+            "SELECT row_digest FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND object=?2",
             params![&operation,&object], |row| Ok(matches!(row.get_ref(0)?, ValueRef::Blob(digest) if digest == expected)),
         ).map_err(|error| sql(&error))?;
         if !valid {

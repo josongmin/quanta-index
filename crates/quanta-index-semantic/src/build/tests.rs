@@ -17,7 +17,8 @@ use quanta_index_contract::{
     EmbeddingNormalization, EmbeddingRecord, GenerationPin, IngestStageDurations,
     ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey,
     SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
-    SemanticSourceScopeKeyV1, SemanticTombstoneScope, SourceRoleV1, SymbolId, lex::LanguageCode,
+    SemanticSourceScopeKeyV1, SemanticTombstoneScope, SourceFileKey, SourceRoleV1, SymbolId,
+    lex::LanguageCode,
 };
 use quanta_index_core::{
     CoreError, DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticCounterV1,
@@ -87,6 +88,13 @@ fn model_contract() -> EmbeddingModelContract {
 fn scope(path: &str) -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
+        source_file: source_file(path),
+    }
+}
+
+fn source_file(path: &str) -> SourceFileKey {
+    SourceFileKey {
+        source_repo_id: RepoId::new("source-repo").expect("fixture source repo"),
         repo_relative_path: RepoRelativePath::new(path),
     }
 }
@@ -95,11 +103,13 @@ fn semantic_scope(
     corpus_kind: SemanticCorpusKindV1,
     owner_kind: OwnerDocKind,
     owner_id: &str,
+    path: &str,
 ) -> SemanticSourceScopeKeyV1 {
     SemanticSourceScopeKeyV1 {
         corpus_kind,
         owner_kind,
         owner_id: owner_id.to_string(),
+        source_file: source_file(path),
     }
 }
 
@@ -137,7 +147,7 @@ fn embedding(
         parent_owner_id: (corpus_kind == SemanticCorpusKindV1::RawCodeFallback)
             .then(|| owner_id.to_string().into_boxed_str()),
         source_doc_id: format!("doc-{id}").into_boxed_str(),
-        repo_relative_path: RepoRelativePath::new(path),
+        source_file: source_file(path),
         language: LanguageCode::new("rust").map_err(std::string::ToString::to_string)?,
         package: Some("crate".to_string().into_boxed_str()),
         symbol_kind: None,
@@ -733,11 +743,11 @@ fn semantic_scope_authority_allows_distinct_owners_on_same_path() -> TestResult 
     admit_scope_authority(&batch)?;
 
     batch.replace_scopes.push(SemanticReplaceScope {
-        scope: scope("src/other.rs"),
-        scope_digest: "scope:src/other.rs:symbol-a".to_string(),
+        scope: scope("src/shared.rs"),
+        scope_digest: "scope:src/shared.rs:symbol-a".to_string(),
         embeddings: vec![embedding(
             "symbol-a-duplicate",
-            "src/other.rs",
+            "src/shared.rs",
             OwnerDocKind::Chunk,
             "owner-symbol-a",
             SemanticCorpusKindV1::RawCodeFallback,
@@ -756,6 +766,84 @@ fn semantic_scope_authority_allows_distinct_owners_on_same_path() -> TestResult 
 }
 
 #[test]
+fn federated_same_path_owner_tombstone_preserves_foreign_source() -> TestResult {
+    let temp = tempdir()?;
+    let root = temp.path();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let path = "src/shared.rs";
+    let first_generation = ManifestGeneration::new(181);
+    let second_generation = ManifestGeneration::new(182);
+    let mut initial = batch(first_generation, path, "local", vec![1.0, 0.0, 0.0], true)?;
+    initial.replace_scopes[0].embeddings[0].owner_id = "same-owner".into();
+    let mut foreign = embedding(
+        "foreign",
+        path,
+        OwnerDocKind::Chunk,
+        "same-owner",
+        SemanticCorpusKindV1::RawCodeFallback,
+        vec![0.0, 1.0, 0.0],
+    )?;
+    foreign.source_file.source_repo_id = RepoId::new("foreign-repo")?;
+    initial.replace_scopes.push(SemanticReplaceScope {
+        scope: SearchScopeKey {
+            doc_surface: SearchScopeSurface::Chunk,
+            source_file: foreign.source_file.clone(),
+        },
+        scope_digest: "foreign-scope".to_string(),
+        embeddings: vec![foreign],
+        cluster_memberships: Vec::new(),
+    });
+    build(&runtime, root, &initial)?;
+    let opened = crate::run_blocking(
+        &runtime,
+        open_generation(root, &repo_id(), &revision_id(), first_generation, None),
+    )?;
+    let hits = crate::run_blocking(
+        &runtime,
+        opened.search_hits_filtered_async(&[1.0, 0.0, 0.0], 2, None, unbounded_watch()),
+    )?;
+    let owners = hits
+        .iter()
+        .map(|hit| hit.candidate.source_repo_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        owners,
+        ["source-repo", "foreign-repo"].into_iter().collect()
+    );
+
+    let mut delta = batch(second_generation, path, "unused", vec![1.0, 0.0, 0.0], true)?;
+    delta.mode = BatchIngestMode::Delta;
+    delta.base_generation = Some(first_generation);
+    delta.replace_scopes.clear();
+    delta.tombstone_scopes = vec![SemanticTombstoneScope {
+        semantic_scope: semantic_scope(
+            SemanticCorpusKindV1::RawCodeFallback,
+            OwnerDocKind::Chunk,
+            "same-owner",
+            path,
+        ),
+    }];
+    let (_tally, report) =
+        build_reported(&runtime, root, &delta, SemanticStreamWindowPolicy::DEFAULT)?;
+    assert_eq!(report.semantic_delete_calls, 1);
+    assert_eq!(report.semantic_delete_commits, 1);
+    let opened = crate::run_blocking(
+        &runtime,
+        open_generation(root, &repo_id(), &revision_id(), second_generation, None),
+    )?;
+    let hits = crate::run_blocking(
+        &runtime,
+        opened.search_hits_filtered_async(&[1.0, 0.0, 0.0], 2, None, unbounded_watch()),
+    )?;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].record_id, "record-foreign");
+    assert_eq!(hits[0].candidate.source_repo_id.as_str(), "foreign-repo");
+    Ok(())
+}
+
+#[test]
 fn semantic_scope_authority_rejects_empty_tombstone_owner() -> TestResult {
     let mut batch = batch(
         ManifestGeneration::new(45),
@@ -766,7 +854,12 @@ fn semantic_scope_authority_rejects_empty_tombstone_owner() -> TestResult {
     )?;
     batch.replace_scopes.clear();
     batch.tombstone_scopes = vec![SemanticTombstoneScope {
-        semantic_scope: semantic_scope(SemanticCorpusKindV1::SymbolCard, OwnerDocKind::Symbol, ""),
+        semantic_scope: semantic_scope(
+            SemanticCorpusKindV1::SymbolCard,
+            OwnerDocKind::Symbol,
+            "",
+            "src/shared.rs",
+        ),
     }];
     let error = admit_scope_authority(&batch)
         .expect_err("empty tombstone owner must refuse before deletion");
@@ -1381,6 +1474,7 @@ fn scv2_02_same_path_delete_one_owner_keeps_other() -> TestResult {
                 SemanticCorpusKindV1::SymbolCard,
                 OwnerDocKind::Symbol,
                 "symbol-a",
+                "src/shared.rs",
             ),
         }],
         seal: true,
@@ -1731,6 +1825,7 @@ fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestRes
         corpus_kind: SemanticCorpusKindV1::ClusterCard,
         owner_kind: OwnerDocKind::Module,
         owner_id: "cluster-owner".to_string(),
+        source_file: source_file("src/cluster.rs"),
     };
     let cluster_batch = |generation: ManifestGeneration,
                          base_generation: Option<ManifestGeneration>,
@@ -1935,6 +2030,163 @@ fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestRes
     Ok(())
 }
 
+#[test]
+fn federated_cluster_tombstone_preserves_foreign_source_membership() -> TestResult {
+    let temp = tempdir()?;
+    let root = temp.path();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let path = "src/shared.rs";
+    let base_generation = ManifestGeneration::new(211);
+    let tombstone_generation = ManifestGeneration::new(212);
+    let foreign_repo = RepoId::new("foreign-repo")?;
+    let cluster_replace =
+        |id: &str, source_repo_id: RepoId| -> Result<SemanticReplaceScope, String> {
+            let mut record = embedding(
+                id,
+                path,
+                OwnerDocKind::Module,
+                "shared-owner",
+                SemanticCorpusKindV1::ClusterCard,
+                vec![1.0, 0.0, 0.0],
+            )?;
+            record.source_file.source_repo_id = source_repo_id;
+            Ok(SemanticReplaceScope {
+                scope: SearchScopeKey {
+                    doc_surface: SearchScopeSurface::Chunk,
+                    source_file: record.source_file.clone(),
+                },
+                scope_digest: format!("scope:{id}"),
+                embeddings: vec![record],
+                cluster_memberships: vec![ClusterMembershipReplaceV1 {
+                    cluster_record_id: format!("record-{id}"),
+                    authority_digest: format!("auth:{id}"),
+                    members: vec![SymbolId::new(format!("symbol:{id}"))],
+                }],
+            })
+        };
+    build(
+        &runtime,
+        root,
+        &SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: base_generation,
+            base_generation: None,
+            manifest_digest: "manifest:211".to_string(),
+            batch_digest: "batch:211".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(),
+            required_corpora: vec![SemanticCorpusKindV1::ClusterCard],
+            corpus_policy_digest: Some("policy:cluster:v1".to_string()),
+            clear_surfaces: Vec::new(),
+            replace_scopes: vec![
+                cluster_replace("local", source_file(path).source_repo_id)?,
+                cluster_replace("foreign", foreign_repo.clone())?,
+            ],
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        },
+    )?;
+    let base = crate::run_blocking(
+        &runtime,
+        open_generation(root, &repo_id(), &revision_id(), base_generation, None),
+    )?;
+    let initial_hits = crate::run_blocking(
+        &runtime,
+        base.search_hits_filtered_async(&[1.0, 0.0, 0.0], 2, None, unbounded_watch()),
+    )?;
+    assert_eq!(
+        initial_hits
+            .iter()
+            .map(|hit| hit.record_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["record-local", "record-foreign"].into_iter().collect()
+    );
+    drop(base);
+
+    build(
+        &runtime,
+        root,
+        &SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: tombstone_generation,
+            base_generation: Some(base_generation),
+            manifest_digest: "manifest:212".to_string(),
+            batch_digest: "batch:212".to_string(),
+            mode: BatchIngestMode::Delta,
+            model_contract: model_contract(),
+            required_corpora: Vec::new(),
+            corpus_policy_digest: Some("policy:cluster:v1".to_string()),
+            clear_surfaces: Vec::new(),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: vec![SemanticTombstoneScope {
+                semantic_scope: semantic_scope(
+                    SemanticCorpusKindV1::ClusterCard,
+                    OwnerDocKind::Module,
+                    "shared-owner",
+                    path,
+                ),
+            }],
+            seal: true,
+        },
+    )?;
+    let opened = crate::run_blocking(
+        &runtime,
+        open_generation(root, &repo_id(), &revision_id(), tombstone_generation, None),
+    )?;
+    let hits = crate::run_blocking(
+        &runtime,
+        opened.search_hits_filtered_async(&[1.0, 0.0, 0.0], 2, None, unbounded_watch()),
+    )?;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].record_id, "record-foreign");
+    assert_eq!(hits[0].candidate.source_repo_id, foreign_repo);
+    drop(opened);
+
+    let searcher = crate::SemanticAdapter::with_state_root(root.to_path_buf())?.open(
+        &repo_id(),
+        &revision_id(),
+        tombstone_generation,
+    )?;
+    for (record_id, authority_digest, expected_available) in [
+        ("record-local", "auth:local", false),
+        ("record-foreign", "auth:foreign", true),
+    ] {
+        let outcome = searcher
+            .cluster_membership_batch_read(&ClusterMembershipBatchReadRequestV1::single_v1(
+                ClusterMembershipReadRequestV1 {
+                    cluster_record_id: record_id.to_string(),
+                    generation: GenerationPin::new(repo_id(), revision_id(), tombstone_generation),
+                    expected_authority_digest: authority_digest.to_string(),
+                    limit: 2,
+                },
+            ))?
+            .outcomes
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                CoreError::InvalidContract("single membership batch returned no outcome".into())
+            })?;
+        if expected_available {
+            assert!(matches!(
+                outcome,
+                ClusterMembershipReadOutcomeV1::Available(snapshot)
+                    if snapshot.members == [SymbolId::new("symbol:foreign")]
+            ));
+        } else {
+            assert!(matches!(
+                outcome,
+                ClusterMembershipReadOutcomeV1::Rejected(rejection)
+                    if rejection.failure == ClusterMembershipReadFailureV1::CurrentGenerationMissing
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A same-cardinality content mutation after the seal is a new dataset
 /// version on disk; the sealed manifest's file commitment refuses it at
 /// cold open (QI-BB-017) without re-deriving the row root.
@@ -2087,7 +2339,8 @@ fn independent_row_root(records: &[&EmbeddingRecord]) -> String {
             bytes(&mut leaf, record.record_id.as_bytes());
             bytes(&mut leaf, record.embedding_id.as_str().as_bytes());
             for required in [
-                record.repo_relative_path.as_str(),
+                record.source_file.source_repo_id.as_str(),
+                record.source_file.repo_relative_path.as_str(),
                 record.owner_id.as_ref(),
                 record.owner_kind.as_code_str(),
                 record.corpus_kind.as_code_str(),
@@ -2321,7 +2574,7 @@ fn a_refused_third_window_seals_nothing_and_leaves_no_partial_rows() -> TestResu
             record.embedding_id = EmbeddingId::new(format!("second-{index}"));
             record.record_id = format!("record-second-{index}").into_boxed_str();
             record.owner_id = format!("owner-second-{index}").into_boxed_str();
-            record.repo_relative_path = RepoRelativePath::new(&path);
+            record.source_file.repo_relative_path = RepoRelativePath::new(&path);
         }
     }
     scopes[2].embeddings[0].vector = vec![1.0, 1.0, 0.0];
@@ -2373,7 +2626,7 @@ fn a_refused_third_window_seals_nothing_and_leaves_no_partial_rows() -> TestResu
     third[0].embeddings[0].embedding_id = EmbeddingId::new("third-0");
     third[0].embeddings[0].record_id = "record-third-0".to_string().into_boxed_str();
     third[0].embeddings[0].owner_id = "owner-third-0".to_string().into_boxed_str();
-    third[0].embeddings[0].repo_relative_path = RepoRelativePath::new(path);
+    third[0].embeddings[0].source_file.repo_relative_path = RepoRelativePath::new(path);
     build(&runtime, &root, &streamed_batch(generation, third, true))?;
     assert!(!generation_dir.join(STAGING_DIR_NAME).exists());
     let loaded = crate::run_blocking(
@@ -2541,8 +2794,8 @@ fn semantic_trace_retains_completed_window_counters_on_later_source_error() -> T
 }
 
 // CASE-COVERS: RBR-10 step 1 — a fresh streamed ingest reports the batch's
-// own owner/window counts (one logical delete per scope, one native delete
-// and append per window), the storage durations nest inside the
+// own owner/window counts (one logical delete per scope, no physical delete
+// for a proven empty origin, one append per window), the storage durations nest inside the
 // stream pass, and embedding stays unmeasured.
 #[test]
 fn ingest_stage_report_matches_fresh_batch_owner_and_window_counts() -> TestResult {
@@ -2570,16 +2823,22 @@ fn ingest_stage_report_matches_fresh_batch_owner_and_window_counts() -> TestResu
         "one delete call per replace scope"
     );
     assert_eq!(
-        report.semantic_delete_commits, 2,
-        "one successful native delete per admitted window"
+        report.semantic_delete_commits, 0,
+        "fresh empty tables require no physical owner delete"
     );
     assert_eq!(report.semantic_append_calls, 2, "one append per window");
-    // The membership delete pass runs per replace scope regardless of
-    // corpus kind: four calls, none of which commit (no ClusterCard
-    // owners exist to delete), and nothing to append.
+    // The membership delete pass counts each logical replace scope. The
+    // fresh empty origin commits no semantic or membership delete.
     assert_eq!(report.membership_delete_calls, 4);
     assert_eq!(report.membership_delete_commits, 0);
     assert_eq!(report.membership_append_calls, 0);
+    assert_eq!(report.durations.semantic_delete, 0);
+    assert_eq!(report.durations.membership_delete, 0);
+    assert_eq!(
+        crate::run_blocking(&runtime, promoted_row_count(temp.path(), generation))?,
+        4,
+        "later fresh windows append distinct owners without a prior-row delete"
+    );
     assert!(
         report.durations.embedding.is_none(),
         "embedding is owned by the caller above this crate"
@@ -2591,6 +2850,49 @@ fn ingest_stage_report_matches_fresh_batch_owner_and_window_counts() -> TestResu
                 .semantic_delete
                 .saturating_add(report.durations.semantic_append),
         "storage-operation durations are sub-intervals of the stream pass"
+    );
+    Ok(())
+}
+
+#[test]
+fn fresh_empty_origin_skips_physical_clear_and_tombstone_deletes() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let temp = tempdir()?;
+    let generation = ManifestGeneration::new(823);
+    let mut candidate = batch(
+        generation,
+        "src/absent.rs",
+        "unused",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
+    candidate.replace_scopes.clear();
+    candidate.clear_surfaces = vec![SearchScopeSurface::File];
+    candidate.tombstone_scopes = vec![SemanticTombstoneScope {
+        semantic_scope: semantic_scope(
+            SemanticCorpusKindV1::SymbolCard,
+            OwnerDocKind::Symbol,
+            "absent-owner",
+            "src/absent.rs",
+        ),
+    }];
+    let (_tally, report) = build_reported(
+        &runtime,
+        temp.path(),
+        &candidate,
+        SemanticStreamWindowPolicy::DEFAULT,
+    )?;
+    assert_eq!(report.semantic_delete_calls, 2);
+    assert_eq!(report.membership_delete_calls, 2);
+    assert_eq!(report.semantic_delete_commits, 0);
+    assert_eq!(report.membership_delete_commits, 0);
+    assert_eq!(report.durations.semantic_delete, 0);
+    assert_eq!(report.durations.membership_delete, 0);
+    assert_eq!(
+        crate::run_blocking(&runtime, promoted_row_count(temp.path(), generation))?,
+        0
     );
     Ok(())
 }
@@ -2616,9 +2918,8 @@ fn ingest_stage_report_replace_of_existing_owners_counts_owner_deletes() -> Test
         one_owner,
     )?;
 
-    // The same two owners arrive again with fresh rows: delete-before-append
-    // is unconditional in this build path, so the replace pass deletes each
-    // owner scope once and commits one delete per owner.
+    // The same two owners arrive again with fresh rows: target dataset custody
+    // requires delete-before-append even though this generation has no base.
     let mut replacement = streamed_scopes(2, 1)?;
     for (index, replace_scope) in replacement.iter_mut().enumerate() {
         for record in &mut replace_scope.embeddings {
@@ -2629,6 +2930,7 @@ fn ingest_stage_report_replace_of_existing_owners_counts_owner_deletes() -> Test
     }
     let mut replacement_batch = streamed_batch(generation, replacement, false);
     replacement_batch.batch_digest = "batch:822:replace".to_string();
+    assert_eq!(replacement_batch.base_generation, None);
     let (_tally, report) = build_reported(&runtime, &root, &replacement_batch, one_owner)?;
 
     assert!(
@@ -2733,8 +3035,8 @@ fn ingest_stage_report_is_deterministic_for_the_same_input() -> TestResult {
     assert_eq!(first.windows, 3);
     assert_eq!(first.semantic_delete_calls, 3);
     assert_eq!(
-        first.semantic_delete_commits, 3,
-        "one native delete per two-owner window"
+        first.semantic_delete_commits, 0,
+        "both fresh roots avoid native deletes"
     );
     assert_eq!(first.semantic_append_calls, 3);
     Ok(())
@@ -2746,13 +3048,20 @@ fn ingest_stage_report_is_deterministic_for_the_same_input() -> TestResult {
 fn delete_predicate_byte_oracle_covers_quotes_unicode_groups_and_boundaries() -> TestResult {
     use std::collections::BTreeSet;
     let tuples = BTreeSet::from([
-        ("ClusterCard", "Module", "한'글"),
-        ("ClusterCard", "Module", "x"),
-        ("ClusterCard", "RepoMap", "x"),
-        ("SymbolCard", "Symbol", "x"),
+        (
+            "source-repo",
+            "src/한'글.rs",
+            "ClusterCard",
+            "Module",
+            "한'글",
+        ),
+        ("source-repo", "src/한'글.rs", "ClusterCard", "Module", "x"),
+        ("foreign-repo", "src/한'글.rs", "ClusterCard", "Module", "x"),
+        ("source-repo", "src/other.rs", "ClusterCard", "RepoMap", "x"),
+        ("source-repo", "src/한'글.rs", "SymbolCard", "Symbol", "x"),
     ]);
-    let semantic = "(corpus_kind = 'ClusterCard' AND owner_kind = 'Module' AND owner_id IN ('x', '한''글')) OR (corpus_kind = 'ClusterCard' AND owner_kind = 'RepoMap' AND owner_id IN ('x')) OR (corpus_kind = 'SymbolCard' AND owner_kind = 'Symbol' AND owner_id IN ('x'))";
-    let membership = "(owner_kind = 'Module' AND owner_id IN ('x', '한''글')) OR (owner_kind = 'RepoMap' AND owner_id IN ('x'))";
+    let semantic = "(source_repo_id = 'foreign-repo' AND repo_relative_path = 'src/한''글.rs' AND corpus_kind = 'ClusterCard' AND owner_kind = 'Module' AND owner_id IN ('x')) OR (source_repo_id = 'source-repo' AND repo_relative_path = 'src/other.rs' AND corpus_kind = 'ClusterCard' AND owner_kind = 'RepoMap' AND owner_id IN ('x')) OR (source_repo_id = 'source-repo' AND repo_relative_path = 'src/한''글.rs' AND corpus_kind = 'ClusterCard' AND owner_kind = 'Module' AND owner_id IN ('x', '한''글')) OR (source_repo_id = 'source-repo' AND repo_relative_path = 'src/한''글.rs' AND corpus_kind = 'SymbolCard' AND owner_kind = 'Symbol' AND owner_id IN ('x'))";
+    let membership = "(source_repo_id = 'foreign-repo' AND repo_relative_path = 'src/한''글.rs' AND owner_kind = 'Module' AND owner_id IN ('x')) OR (source_repo_id = 'source-repo' AND repo_relative_path = 'src/other.rs' AND owner_kind = 'RepoMap' AND owner_id IN ('x')) OR (source_repo_id = 'source-repo' AND repo_relative_path = 'src/한''글.rs' AND owner_kind = 'Module' AND owner_id IN ('x', '한''글'))";
     assert_eq!(
         super::delete_predicate_bytes(&tuples)?,
         (semantic.len(), membership.len())
@@ -2769,10 +3078,12 @@ fn delete_predicate_byte_oracle_covers_quotes_unicode_groups_and_boundaries() ->
     assert!(super::add_predicate_bytes(usize::MAX, 1).is_err());
     // Fixed SQL syntax is independent of the sizing implementation.
     let overhead =
-        "(corpus_kind = 'RawCodeFallback' AND owner_kind = 'Chunk' AND owner_id IN (''))".len();
+        "(source_repo_id = 'source-repo' AND repo_relative_path = 'src/large.rs' AND corpus_kind = 'RawCodeFallback' AND owner_kind = 'Chunk' AND owner_id IN (''))".len();
     let mut id = "a".repeat(32 * 1024 * 1024 - overhead);
     assert_eq!(
         super::delete_predicate_bytes(&BTreeSet::from([(
+            "source-repo",
+            "src/large.rs",
             "RawCodeFallback",
             "Chunk",
             id.as_str()
@@ -2781,10 +3092,170 @@ fn delete_predicate_byte_oracle_covers_quotes_unicode_groups_and_boundaries() ->
     );
     id.push('a');
     assert!(matches!(super::delete_predicate_bytes(&BTreeSet::from([
-        ("RawCodeFallback", "Chunk", id.as_str()),
+        ("source-repo", "src/large.rs", "RawCodeFallback", "Chunk", id.as_str()),
     ])), Err(CoreError::InvalidContract(message)) if message.contains("delete predicate")));
     let empty = BTreeSet::new();
     assert_eq!(super::delete_predicate_bytes(&empty)?, (0, 0));
+    Ok(())
+}
+
+#[test]
+fn distinct_source_delete_batches_bound_backend_depth_and_preserve_union() -> TestResult {
+    use std::collections::BTreeSet;
+
+    let paths = (0..641)
+        .map(|index| format!("src/file-{index:04}.rs"))
+        .collect::<Vec<_>>();
+    let scopes = paths
+        .iter()
+        .map(|path| {
+            (
+                "source-repo",
+                path.as_str(),
+                "RawCodeFallback",
+                "Chunk",
+                "shared-owner",
+            )
+        })
+        .chain(std::iter::once((
+            "foreign-repo",
+            "src/file-0000.rs",
+            "RawCodeFallback",
+            "Chunk",
+            "shared-owner",
+        )))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        super::semantic_scope_delete_predicate(&scopes)
+            .expect("nonempty unsplit fixture")
+            .matches(" OR ")
+            .count(),
+        641,
+        "distinct source keys must form 642 separate OR clauses"
+    );
+    let batches = super::plan_delete_scope_batches(&scopes)?;
+    assert_eq!(batches.len(), 11);
+    assert!(
+        batches
+            .iter()
+            .all(|batch| !batch.is_empty() && batch.len() <= 64)
+    );
+    assert_eq!(
+        batches
+            .iter()
+            .flat_map(|batch| batch.iter().copied())
+            .collect::<BTreeSet<_>>(),
+        scopes
+    );
+    for batch in &batches {
+        let (semantic_bytes, membership_bytes) = super::delete_predicate_bytes(batch)?;
+        assert_eq!(
+            super::semantic_scope_delete_predicate(batch)
+                .expect("nonempty exact batch")
+                .len(),
+            semantic_bytes
+        );
+        assert_eq!(membership_bytes, 0);
+        assert!(semantic_bytes <= super::MAX_DELETE_PREDICATE_BYTES);
+    }
+    Ok(())
+}
+
+#[test]
+fn large_distinct_source_deletes_preserve_foreign_same_path_owner() -> TestResult {
+    let temp = tempdir()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let path = "src/file-0000.rs";
+    let base_generation = ManifestGeneration::new(251);
+    let delta_generation = ManifestGeneration::new(252);
+    let mut initial = batch(base_generation, path, "unused", vec![1.0, 0.0, 0.0], true)?;
+    initial.replace_scopes = (0..640)
+        .map(|index| -> Result<SemanticReplaceScope, String> {
+            let id = format!("local-{index:04}");
+            let local_path = format!("src/file-{index:04}.rs");
+            Ok(SemanticReplaceScope {
+                scope: scope(&local_path),
+                scope_digest: format!("scope:{local_path}"),
+                embeddings: vec![embedding(
+                    &id,
+                    &local_path,
+                    OwnerDocKind::Chunk,
+                    "shared-owner",
+                    SemanticCorpusKindV1::RawCodeFallback,
+                    vec![1.0, 0.0, 0.0],
+                )?],
+                cluster_memberships: Vec::new(),
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let mut foreign = embedding(
+        "foreign",
+        path,
+        OwnerDocKind::Chunk,
+        "shared-owner",
+        SemanticCorpusKindV1::RawCodeFallback,
+        vec![0.0, 1.0, 0.0],
+    )?;
+    foreign.source_file.source_repo_id = RepoId::new("foreign-repo")?;
+    initial.replace_scopes.insert(
+        0,
+        SemanticReplaceScope {
+            scope: SearchScopeKey {
+                doc_surface: SearchScopeSurface::Chunk,
+                source_file: foreign.source_file.clone(),
+            },
+            scope_digest: "foreign-scope".to_string(),
+            embeddings: vec![foreign],
+            cluster_memberships: Vec::new(),
+        },
+    );
+    let mut source =
+        ResidentScopeSource::new(&initial.replace_scopes, SemanticStreamWindowPolicy::DEFAULT)?;
+    assert_eq!(
+        source
+            .next_window()?
+            .expect("one admitted window")
+            .scopes()
+            .len(),
+        641,
+        "the regression must exercise more than Lance's 500-depth limit in one window"
+    );
+    build(&runtime, temp.path(), &initial)?;
+
+    let mut delta = batch(delta_generation, path, "unused", vec![1.0, 0.0, 0.0], true)?;
+    delta.mode = BatchIngestMode::Delta;
+    delta.base_generation = Some(base_generation);
+    delta.replace_scopes.clear();
+    delta.tombstone_scopes = (0..640)
+        .map(|index| SemanticTombstoneScope {
+            semantic_scope: semantic_scope(
+                SemanticCorpusKindV1::RawCodeFallback,
+                OwnerDocKind::Chunk,
+                "shared-owner",
+                &format!("src/file-{index:04}.rs"),
+            ),
+        })
+        .collect();
+    build(&runtime, temp.path(), &delta)?;
+    let opened = crate::run_blocking(
+        &runtime,
+        open_generation(
+            temp.path(),
+            &repo_id(),
+            &revision_id(),
+            delta_generation,
+            None,
+        ),
+    )?;
+    let hits = crate::run_blocking(
+        &runtime,
+        opened.search_hits_filtered_async(&[0.0, 1.0, 0.0], 2, None, unbounded_watch()),
+    )?;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].record_id, "record-foreign");
+    assert_eq!(hits[0].candidate.source_repo_id.as_str(), "foreign-repo");
     Ok(())
 }
 
@@ -2827,6 +3298,7 @@ fn oversized_delete_predicates_refuse_before_preparing_generation_storage() -> T
             SemanticCorpusKindV1::ClusterCard,
             OwnerDocKind::Module,
             &large_id,
+            "src/huge.rs",
         ),
     }];
     let header = SemanticIngestHeaderV1::of_batch(&candidate);
@@ -3052,7 +3524,12 @@ fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> T
         .map(|index| {
             let row = &seed.embeddings[index];
             SemanticTombstoneScope {
-                semantic_scope: semantic_scope(row.corpus_kind, row.owner_kind, &row.owner_id),
+                semantic_scope: semantic_scope(
+                    row.corpus_kind,
+                    row.owner_kind,
+                    &row.owner_id,
+                    row.source_file.repo_relative_path.as_str(),
+                ),
             }
         })
         .collect();

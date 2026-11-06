@@ -166,9 +166,11 @@ mod tests {
         staged.base_generation = Some(ManifestGeneration::new(1));
         staged.seal = false;
         current_source_fixture::finish_batch(&mut staged).expect("staged body binding");
-        let _durations = adapter
-            .build_fixture_batch(&staged)
-            .expect("unsealed build");
+        assert!(matches!(
+            adapter.build_fixture_batch(&staged),
+            Err(quanta_index_core::CoreError::InvalidContract(message))
+                if message.contains("source-event publication requires a sealed batch")
+        ));
         assert_eq!(adapter.maintenance_stats().expect("staged stats"), stats);
 
         let adapter = adapter.with_maintenance_policy(

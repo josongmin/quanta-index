@@ -396,6 +396,7 @@ fn a_delta_that_shrinks_below_the_floor_drops_the_inherited_index() -> TestResul
                 corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
                 owner_kind: OwnerDocKind::Chunk,
                 owner_id: format!("owner-drop-{seed}"),
+                source_file: search_scope_v1("src/drop.rs").source_file,
             })
         })
         .collect::<Vec<_>>();
@@ -679,6 +680,7 @@ fn deleting_every_row_of_an_appended_segment_reseals_the_survivors() -> TestResu
                 corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
                 owner_kind: OwnerDocKind::Chunk,
                 owner_id: format!("owner-new-{seed}"),
+                source_file: search_scope_v1("src/new.rs").source_file,
             })
         })
         .collect::<Vec<_>>();
@@ -826,6 +828,7 @@ fn multibatch_delete_and_append_retrains_after_segment_contraction() -> TestResu
                 corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
                 owner_kind: OwnerDocKind::Chunk,
                 owner_id: format!("owner-new-{seed}"),
+                source_file: search_scope_v1("src/new.rs").source_file,
             })
         })
         .collect::<Vec<_>>();
@@ -985,6 +988,7 @@ fn contracted_successor_refuses_a_forged_base_row_root() -> TestResult {
                 corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
                 owner_kind: OwnerDocKind::Chunk,
                 owner_id: format!("owner-new-{seed}"),
+                source_file: search_scope_v1("src/new.rs").source_file,
             })
         })
         .collect::<Vec<_>>();

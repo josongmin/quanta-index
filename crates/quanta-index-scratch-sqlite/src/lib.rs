@@ -97,9 +97,20 @@ fn sql(error: &rusqlite::Error) -> IndexError {
 }
 
 fn pragma(db: &Connection, statement: &str) -> Result<u64, IndexError> {
-    let value: i64 = db
-        .query_row(statement, [], |row| row.get(0))
-        .map_err(|error| sql(&error))?;
+    // Only these read-only probes fetch their counters at sqlite3_step time.
+    // page_size emits a prepare-time constant; setters must execute anew too.
+    // Cache the bounded programs, never their values or admission decisions.
+    let value: i64 = if matches!(
+        statement,
+        "PRAGMA main.page_count" | "PRAGMA main.freelist_count" | "PRAGMA main.max_page_count"
+    ) {
+        db.prepare_cached(statement)
+            .map_err(|error| sql(&error))?
+            .query_row([], |row| row.get(0))
+    } else {
+        db.query_row(statement, [], |row| row.get(0))
+    }
+    .map_err(|error| sql(&error))?;
     u64::try_from(value)
         .map_err(|_error| IndexError::Storage("negative scratch page counter".into()))
 }
@@ -450,6 +461,52 @@ mod tests {
         ));
         check!(allocation.reserved_bytes()? > 256 * 1024);
         check_eq!(allocation.shared_bytes(), allocation.reserved_bytes()?);
+        Ok(())
+    }
+
+    #[test]
+    fn reused_page_probes_observe_growth_freelist_and_changed_cap() -> Result<(), IndexError> {
+        let allocation = TestAllocation::new(256 * 1024, 1024 * 1024, false)?;
+        let db = allocation.open()?;
+        configure(&db, &allocation)?;
+        db.execute_batch("CREATE TABLE rows(value BLOB);")
+            .map_err(|error| sql(&error))?;
+        let initial_pages = pragma(&db, "PRAGMA main.page_count")?;
+        let initial_free = pragma(&db, "PRAGMA main.freelist_count")?;
+        reserve_for_write(&db, &allocation, 1, &mut budget()?)?;
+        db.execute_batch("INSERT INTO rows VALUES (zeroblob(32768));")
+            .map_err(|error| sql(&error))?;
+        check!(pragma(&db, "PRAGMA main.page_count")? > initial_pages);
+        db.execute_batch("DELETE FROM rows;")
+            .map_err(|error| sql(&error))?;
+        check!(pragma(&db, "PRAGMA main.freelist_count")? > initial_free);
+
+        // A bypass after the probe was prepared still fails the live check.
+        db.execute_batch("PRAGMA main.max_page_count=256;")
+            .map_err(|error| sql(&error))?;
+        check!(matches!(
+            reserve_for_write(&db, &allocation, 1, &mut budget()?),
+            Err(IndexError::Storage(_))
+        ));
+        check_eq!(allocation.reserved_bytes()?, 256 * 1024);
+        Ok(())
+    }
+
+    #[test]
+    fn page_size_change_after_initial_probe_is_not_hidden() -> Result<(), IndexError> {
+        let allocation = TestAllocation::new(256 * 1024, 1024 * 1024, false)?;
+        let db = allocation.open()?;
+        configure(&db, &allocation)?;
+        reserve_for_write(&db, &allocation, 1, &mut budget()?)?;
+        // No DDL: expiring cached statements could mask a stale constant.
+        db.execute_batch("PRAGMA main.page_size=8192;")
+            .map_err(|error| sql(&error))?;
+        check_eq!(pragma(&db, "PRAGMA main.page_size")?, 8192);
+        check!(matches!(
+            reserve_for_write(&db, &allocation, 1, &mut budget()?),
+            Err(IndexError::Storage(_))
+        ));
+        check_eq!(allocation.reserved_bytes()?, 256 * 1024);
         Ok(())
     }
 

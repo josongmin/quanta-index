@@ -177,7 +177,9 @@ impl PublicationResourcePermit for HeldPublicationPermit {
                 "publication output class does not match held parent".into(),
             ));
         }
-        self.binder.validate_held_allowance(&self.held)?;
+        // The sidecar constructor revalidates the live root before returning
+        // output authority; reconciliation authenticates its own filesystem I/O.
+        self.binder.validate_held_allowance_accounting(&self.held)?;
         self.deletions.reconcile_retired_control_creates()?;
         sidecar_output_permit(Arc::clone(&self.deletions), Arc::clone(&self.held), request)
     }

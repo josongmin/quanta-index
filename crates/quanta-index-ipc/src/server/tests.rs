@@ -3626,6 +3626,7 @@ fn late_query_cancel_reply_preserves_typed_id_and_memory_hook() -> TestRes {
 enum LateIngestReply {
     SearchCorpusReceipt,
     HistoryReceipt,
+    Refusal(quanta_index_contract::SearchPlaneErrorCodeV2),
 }
 
 struct LateIngestDispatcher {
@@ -3663,7 +3664,7 @@ impl
                     membership_root_digest: format!("sha256:{}", "1".repeat(64)),
                 })
             }
-            LateIngestReply::HistoryReceipt => None,
+            LateIngestReply::HistoryReceipt | LateIngestReply::Refusal(_) => None,
         };
         let receipt = BatchPublishReceipt {
             generation: ManifestGeneration::new(7),
@@ -3705,6 +3706,13 @@ impl
             }
             LateIngestReply::HistoryReceipt => {
                 SearchPlaneIngestIpcResponse::HistoryReceipt(receipt)
+            }
+            LateIngestReply::Refusal(code) => {
+                SearchPlaneIngestIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError {
+                    code,
+                    message: "closed ingest refusal".to_string(),
+                    repair: None,
+                })
             }
         }
     }
@@ -3803,18 +3811,31 @@ fn late_ingest_reply_case(reply: LateIngestReply) -> TestRes {
             let mut one = [0];
             matches!(client.read(&mut one), Ok(0))
         }
+        LateIngestReply::Refusal(expected) => {
+            let response: SearchPlaneIngestIpcResponseEnvelope =
+                decode_response(&mut client).map_err(|error| error.to_string())?;
+            if response.request_id != 74
+                || !matches!(&response.payload, SearchPlaneIngestIpcResponse::Error(error)
+                    if error.code == expected && error.message == "closed ingest refusal")
+            {
+                return Err(format!("late ingest refusal changed: {response:?}"));
+            }
+            true
+        }
     };
     drop(client);
     let reason = server
         .join()
         .map_err(|_panic_payload| "server panicked".to_string())?;
     let expected_reason = match reply {
-        LateIngestReply::SearchCorpusReceipt => matches!(reason, ConnectionCloseReason::PeerClosed),
+        LateIngestReply::SearchCorpusReceipt | LateIngestReply::Refusal(_) => {
+            matches!(reason, ConnectionCloseReason::PeerClosed)
+        }
         LateIngestReply::HistoryReceipt => {
             matches!(reason, ConnectionCloseReason::ResponseEncodeFailed(IpcError::Io(ref error)) if error.kind() == std::io::ErrorKind::TimedOut)
         }
     };
-    let expected_memory = matches!(reply, LateIngestReply::SearchCorpusReceipt);
+    let expected_memory = !matches!(reply, LateIngestReply::HistoryReceipt);
     if !result
         || !expected_reason
         || !original_deadline_observed.load(Ordering::Acquire)
@@ -3839,6 +3860,13 @@ fn late_durable_search_corpus_receipt_uses_bounded_reply_phase() -> TestRes {
 #[test]
 fn late_wrong_kind_ingest_receipt_still_writes_no_frame() -> TestRes {
     late_ingest_reply_case(LateIngestReply::HistoryReceipt)
+}
+
+#[test]
+fn late_retention_exhaustion_preserves_typed_ingest_refusal() -> TestRes {
+    late_ingest_reply_case(LateIngestReply::Refusal(
+        quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+    ))
 }
 
 struct PeerHangupTerminalDispatcher {

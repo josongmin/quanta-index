@@ -784,7 +784,7 @@ impl DirectoryDeleteTicket {
                 .get_mut(&inode)
                 .ok_or_else(|| contract("deleted child inode missing"))?
                 .tombstone_synced = true;
-            state.may_have_tombstones = true;
+            state.retirement_scan_needed = true;
             drop(state);
             self.tombstone_cursor = self
                 .tombstone_cursor

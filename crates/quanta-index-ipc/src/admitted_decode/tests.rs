@@ -1269,6 +1269,10 @@ fn nested_semantic_scope_text_and_collection_limits_abort_actual_cbor() -> TestR
             corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
             owner_kind: OwnerDocKind::File,
             owner_id: "ab".into(),
+            source_file: quanta_index_contract::SourceFileKey {
+                source_repo_id: source.repo_id.clone(),
+                repo_relative_path: quanta_index_contract::RepoRelativePath::new("ab"),
+            },
         });
     let mut wire = Vec::new();
     ciborium::into_writer(&source, &mut wire)?;

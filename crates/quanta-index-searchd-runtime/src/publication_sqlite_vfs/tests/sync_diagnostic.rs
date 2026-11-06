@@ -11,6 +11,21 @@ use quanta_index_core::{
     index::{WorkBudget, WorkLimits},
 };
 
+// Exercise the same timing boundaries as RouterCallback while keeping the
+// existing independent lower-write count and byte gold unchanged.
+fn observe_write(owner: NonZeroU64, flags: i32, amount: i64, sqlite_result: i32) {
+    use self::diagnostic::write_timing::CallbackTiming;
+
+    if let Some(timing) = CallbackTiming::begin(owner, 1, EventKind::BeforeWrite) {
+        timing.finish(&Ok(None));
+    }
+    let timing = CallbackTiming::begin(owner, 1, EventKind::AfterWrite);
+    diagnostic::write(owner, flags, amount, sqlite_result);
+    if let Some(timing) = timing {
+        timing.finish(&Ok(None));
+    }
+}
+
 #[derive(Debug, Default)]
 struct Clock(AtomicU64);
 impl DiagnosticClockV1 for Clock {
@@ -91,7 +106,7 @@ fn native_write_sink_reentry_never_borrows_active_scope() -> TestResult {
     let child = context.child_context(&root);
     {
         let _scope = diagnostic::Scope::enter(owner, Some(&child));
-        diagnostic::write(
+        observe_write(
             owner,
             rusqlite::ffi::SQLITE_OPEN_WAL,
             4,
@@ -848,6 +863,12 @@ fn native_sync_class_probe_is_off_for_foreign_scopes_and_unlinked_is_unknown() -
     require(
         write_counters
             == [
+                (DiagnosticCounterV1::SqliteWriteAdmissionCalls, 0),
+                (DiagnosticCounterV1::SqliteWriteAdmissionRefusals, 0),
+                (DiagnosticCounterV1::SqliteWriteAdmissionElapsedNs, 0),
+                (DiagnosticCounterV1::SqliteWriteLowerEnvelopeElapsedNs, 0),
+                (DiagnosticCounterV1::SqliteWritePostCallbackElapsedNs, 0),
+                (DiagnosticCounterV1::SqliteWritePostCallbackRefusals, 0),
                 (DiagnosticCounterV1::SqliteWriteCalls, 0),
                 (DiagnosticCounterV1::SqliteWriteRequestedBytes, 0),
                 (DiagnosticCounterV1::SqliteWriteFailures, 0),
@@ -890,7 +911,7 @@ fn native_write_scope_uses_exact_additive_gold_and_restores_nested_owner() -> Te
     let owner = NonZeroU64::new(1).ok_or("zero scope")?;
     let foreign = NonZeroU64::new(2).ok_or("zero scope")?;
     let outer = diagnostic::Scope::enter(owner, Some(&child));
-    diagnostic::write(
+    observe_write(
         owner,
         rusqlite::ffi::SQLITE_OPEN_WAL,
         12,
@@ -899,31 +920,31 @@ fn native_write_scope_uses_exact_additive_gold_and_restores_nested_owner() -> Te
     let before_mask = clock.0.load(Ordering::Relaxed);
     {
         let _off = diagnostic::Scope::enter(owner, None);
-        diagnostic::write(
+        observe_write(
             owner,
             rusqlite::ffi::SQLITE_OPEN_WAL,
             99,
             rusqlite::ffi::SQLITE_OK,
         );
-        diagnostic::write(foreign, 0, 99, rusqlite::ffi::SQLITE_OK);
+        observe_write(foreign, 0, 99, rusqlite::ffi::SQLITE_OK);
     }
-    diagnostic::write(foreign, 0, 99, rusqlite::ffi::SQLITE_OK);
+    observe_write(foreign, 0, 99, rusqlite::ffi::SQLITE_OK);
     require(
         clock.0.load(Ordering::Relaxed) == before_mask,
         "Off/foreign write touched the clock",
     )?;
     {
         let _nested = diagnostic::Scope::enter(foreign, Some(&child));
-        diagnostic::write(foreign, 0, 5, rusqlite::ffi::SQLITE_OK);
-        diagnostic::write(owner, 0, 99, rusqlite::ffi::SQLITE_OK);
+        observe_write(foreign, 0, 5, rusqlite::ffi::SQLITE_OK);
+        observe_write(owner, 0, 99, rusqlite::ffi::SQLITE_OK);
     }
-    diagnostic::write(
+    observe_write(
         owner,
         rusqlite::ffi::SQLITE_OPEN_MAIN_DB,
         8,
         rusqlite::ffi::SQLITE_IOERR_WRITE,
     );
-    diagnostic::write(owner, 0, 3, rusqlite::ffi::SQLITE_OK);
+    observe_write(owner, 0, 3, rusqlite::ffi::SQLITE_OK);
     drop(outer);
     let _finished = root.finish(DiagnosticTerminalV1::Ok);
     let rows = events
@@ -978,9 +999,39 @@ fn native_write_scope_uses_exact_additive_gold_and_restores_nested_owner() -> Te
                 }
             })
             .collect();
+        let reached: Vec<_> = actual
+            .iter()
+            .copied()
+            .filter(|(key, _)| keys.contains(key))
+            .collect();
         require(
-            actual == keys.into_iter().zip(gold).collect::<Vec<_>>(),
+            reached == keys.into_iter().zip(gold).collect::<Vec<_>>(),
             "native write six-counter gold differs",
+        )?;
+        let timing_keys = [
+            DiagnosticCounterV1::SqliteWriteAdmissionCalls,
+            DiagnosticCounterV1::SqliteWriteAdmissionRefusals,
+            DiagnosticCounterV1::SqliteWriteAdmissionElapsedNs,
+            DiagnosticCounterV1::SqliteWriteLowerEnvelopeElapsedNs,
+            DiagnosticCounterV1::SqliteWritePostCallbackElapsedNs,
+            DiagnosticCounterV1::SqliteWritePostCallbackRefusals,
+        ];
+        let timing: Vec<_> = actual
+            .iter()
+            .copied()
+            .filter(|(key, _)| timing_keys.contains(key))
+            .collect();
+        // The fixture clock advances by exactly one nanosecond per call.
+        // Each reached write has four boundary samples and three unit gaps.
+        let [calls, _, _, _, _, _] = gold;
+        require(
+            timing
+                == timing_keys
+                    .into_iter()
+                    .zip([calls, 0, calls, calls, calls, 0])
+                    .collect::<Vec<_>>()
+                && actual.len() == 12,
+            "native write fixed callback-time gold differs",
         )?;
         require(
             rows.iter().filter(|row| matches!(row.kind, DiagnosticEventKindV1::SpanEnd { span_id, outcome: DiagnosticTerminalV1::Ok } if span_id == span)).count() == 1,
@@ -1008,12 +1059,12 @@ fn native_write_invalid_amount_or_overflow_reports_health_without_partial_counte
     let owner = NonZeroU64::new(1).ok_or("zero scope")?;
     {
         let _scope = diagnostic::Scope::enter(owner, Some(&child));
-        diagnostic::write(owner, 0, -1, rusqlite::ffi::SQLITE_OK);
+        observe_write(owner, 0, -1, rusqlite::ffi::SQLITE_OK);
     }
     {
         let _scope = diagnostic::Scope::enter(owner, Some(&child));
         for amount in [i64::MAX, i64::MAX, 2] {
-            diagnostic::write(owner, 0, amount, rusqlite::ffi::SQLITE_OK);
+            observe_write(owner, 0, amount, rusqlite::ffi::SQLITE_OK);
         }
     }
     let _finished = root.finish(DiagnosticTerminalV1::Ok);
@@ -1067,7 +1118,7 @@ fn native_write_unwinding_restores_scope_and_aborts_pending_sync() -> TestResult
     let owner = NonZeroU64::new(1).ok_or("zero scope")?;
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _scope = diagnostic::Scope::enter(owner, Some(&child));
-        diagnostic::write(owner, 0, 4, rusqlite::ffi::SQLITE_IOERR_WRITE);
+        observe_write(owner, 0, 4, rusqlite::ffi::SQLITE_IOERR_WRITE);
         diagnostic::before(owner, 7, rusqlite::ffi::SQLITE_OPEN_WAL, || {
             diagnostic::MutationClass::NoMutation
         });
@@ -1323,7 +1374,11 @@ fn protection_write_arm(packet: bool) -> Result<[u64; 6], Box<dyn std::error::Er
         let digest = key.checked_add(1).ok_or("digest parameter overflow")?;
         write!(packet_sql, "(?1,?2,?{key},?{digest})")?;
     }
-    let mut parameters: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 + 2 * TARGETS);
+    let parameter_capacity = TARGETS
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(2))
+        .ok_or("packet parameter capacity overflow")?;
+    let mut parameters: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(parameter_capacity);
     let fence = 1_i64;
     parameters.push(&operation);
     parameters.push(&fence);
@@ -1497,7 +1552,9 @@ fn real_protection_packet_vs_cached_scalar_exposes_statement_journal_writes() ->
     // "Other" includes all native writes outside WAL and main DB. A decrease
     // is evidence for this fixed fixture, not proof every such write was a
     // statement subjournal write or that end-to-end latency improves.
-    if packet[5] > scalar[5] && packet[0] > scalar[0] && packet[1] > scalar[1] {
+    let [packet_calls, packet_bytes, _, _, _, packet_other] = packet;
+    let [scalar_calls, scalar_bytes, _, _, _, scalar_other] = scalar;
+    if packet_other > scalar_other && packet_calls > scalar_calls && packet_bytes > scalar_bytes {
         Ok(())
     } else {
         Err(std::io::Error::other(format!(
@@ -1578,7 +1635,8 @@ fn real_wal_commit_and_budgeted_checkpoint_keep_off_result_and_cost() -> TestRes
             .map_err(|error| std::io::Error::other(error.to_string()))?
             .len();
         require(
-            catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut budget)?,
+            catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut budget)?
+                == quanta_index_catalog::WalReclaimOutcome::Completed,
             "budgeted checkpoint skipped the real WAL",
         )?;
         usages.push(budget.usage());
@@ -1668,26 +1726,17 @@ fn real_wal_commit_and_budgeted_checkpoint_keep_off_result_and_cost() -> TestRes
                         )?;
                         let observations: Vec<_> = events
                             .iter()
-                            .filter_map(|event| match event.kind {
-                                DiagnosticEventKindV1::SqliteSyncObservation {
+                            .filter_map(|event| {
+                                if let DiagnosticEventKindV1::SqliteSyncObservation {
                                     span_id,
                                     observation,
-                                } if span_id == id => Some(observation),
-                                DiagnosticEventKindV1::SpanBegin { .. }
-                                | DiagnosticEventKindV1::SpanEnd { .. }
-                                | DiagnosticEventKindV1::RequestIdentity { .. }
-                                | DiagnosticEventKindV1::PhaseIdentity { .. }
-                                | DiagnosticEventKindV1::Counter { .. }
-                                | DiagnosticEventKindV1::AnnRegionObservation { .. }
-                                | DiagnosticEventKindV1::SqliteSyncObservation { .. }
-                                | DiagnosticEventKindV1::SyncAggregate { .. }
-                                | DiagnosticEventKindV1::ObjectKindAggregate { .. }
-                                | DiagnosticEventKindV1::AdoptionGroupAggregate { .. }
-                                | DiagnosticEventKindV1::Bm25CensusAggregate { .. }
-                                | DiagnosticEventKindV1::Bm25BoundaryAggregate { .. }
-                                | DiagnosticEventKindV1::Bm25LiveBuildAggregate { .. }
-                                | DiagnosticEventKindV1::Link { .. }
-                                | DiagnosticEventKindV1::Health { .. } => None,
+                                } = event.kind
+                                    && span_id == id
+                                {
+                                    Some(observation)
+                                } else {
+                                    None
+                                }
                             })
                             .collect();
                         require(
@@ -2003,7 +2052,8 @@ fn legacy_catalog_context_records_native_sync_and_preserves_explicit_off() -> Te
                 RequestBudgetV1::for_duration(Duration::from_secs(30)),
             );
             require(
-                catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut budget)?,
+                catalog.checkpoint_wal_for_reclaim(1, 64 * 1024 * 1024, &mut budget)?
+                    == quanta_index_catalog::WalReclaimOutcome::Completed,
                 "legacy fixture produced no real checkpoint",
             )?;
             require(

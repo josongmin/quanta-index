@@ -22,11 +22,14 @@ from pathlib import Path
 from typing import Any
 
 from tools.benchmark import evidence as benchmark_evidence
-from tools.benchmark.retrieval import arb_corpus_custody, evaluator, run
+from tools.benchmark.retrieval import arb_adapter, arb_corpus_custody, evaluator, run
 
 ROUTES = ("lexical", "semantic", "hybrid")
 BUDGETS = (4000, 8000, 16000, 32000)
 RELEASES = ("v2_trace2code", "v2_code2test", "v2_edit2ripple")
+GIN_PROFILE = "gin88_v1"
+GO_TRANSFER_PROFILE = "go_trace_transfer_v1"
+GO_TRANSFER_REPOS = {"caddyserver/caddy": 7, "etcd-io/etcd": 4}
 
 
 class ScoringRefusal(ValueError):
@@ -276,6 +279,14 @@ def bind_record_identity(record: dict[str, Any], spec: dict[str, Any], arm: dict
     for capture in record["captures"].values():
         require(capture["system"] == "quanta", "record contains non-Quanta capture")
         require(capture["execution_profile"] == profile, "record execution profile mismatch")
+    require(
+        run._quanta_semantic_capture_identity_matches(
+            {"record": {"system": "quanta", "run": record}},
+            spec.get("embedder", "potion-code"),
+            set(spec.get("routes", ROUTES)),
+        ),
+        "record encoder model revision differs from spec.embedder",
+    )
 
 
 def bind_identity(
@@ -287,6 +298,7 @@ def bind_identity(
     source_manifest: dict[str, Any],
     index: dict[str, Any],
     baseline,
+    selection_profile: str = GIN_PROFILE,
 ) -> list[str]:
     """Bind independent raw sample, official gold, source universe and adapted query."""
     sid = case["sample_id"]
@@ -294,7 +306,16 @@ def bind_identity(
     adapted_sha = case.get("adapted_query_sha256", original_sha)
     raw_text = baseline.query_text_for_eval(sample)
     require(sample.get("id") == sid, "raw sample ID mismatch")
-    require(sample.get("repo") == "gin-gonic/gin", "raw sample repository mismatch")
+    if selection_profile == GO_TRANSFER_PROFILE:
+        require(
+            sample.get("repo") in GO_TRANSFER_REPOS
+            and case.get("source_repo") == sample["repo"]
+            and sample.get("task_type") == "trace2code",
+            "raw sample repository/profile mismatch",
+        )
+    else:
+        require(selection_profile == GIN_PROFILE, "unknown sample selection profile")
+        require(sample.get("repo") == "gin-gonic/gin", "raw sample repository mismatch")
     require(sample.get("base_commit") == case["base_commit"], "raw sample base commit mismatch")
     require(sha256(raw_text.encode()) == original_sha, "raw query digest mismatch")
     gold = baseline.target_gold_files(sample)
@@ -342,6 +363,30 @@ def bind_identity(
     require(
         pack["tasks"][0]["query"] == suite["tasks"][0]["query"], "pack query differs from suite"
     )
+    suite_semantic = suite["tasks"][0].get("semantic_input")
+    pack_semantic = pack["tasks"][0].get("semantic_input")
+    has_semantic = selection_profile == GO_TRANSFER_PROFILE or "semantic_input_sha256" in case
+    if has_semantic:
+        require(sample.get("task_type") == "trace2code", "semantic input requires trace2code")
+        expected_semantic = arb_adapter.prepare_go_trace_semantic_text(sample["query"])
+        expected_input = {
+            "profile": "go_test_excerpt_v1",
+            "text": expected_semantic,
+            "text_sha256": sha256(expected_semantic.encode("utf-8")),
+            "failure_excerpt": sample["query"]["failure_excerpt"],
+            "failure_excerpt_sha256": sha256(sample["query"]["failure_excerpt"].encode("utf-8")),
+        }
+        require(
+            suite_semantic == expected_input and pack_semantic == expected_input,
+            "Go trace semantic input differs from pinned raw query",
+        )
+        if "semantic_input_sha256" in case:
+            require(
+                case["semantic_input_sha256"] == expected_input["text_sha256"],
+                "case semantic input digest mismatch",
+            )
+    else:
+        require(suite_semantic is None and pack_semantic is None, "unmarked semantic input")
     require(
         spec["top_k"] == 100 and spec["routes"] == list(ROUTES), "spec collection policy mismatch"
     )
@@ -359,8 +404,9 @@ def bind_identity(
 
 
 def load_samples(
-    b06: Path, policy: dict[str, Any]
+    b06: Path, policy: dict[str, Any], selection_profile: str = GIN_PROFILE
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    require(selection_profile in (GIN_PROFILE, GO_TRANSFER_PROFILE), "unknown sample selection profile")
     samples: dict[str, dict[str, Any]] = {}
     release_by_id: dict[str, str] = {}
     for release in RELEASES:
@@ -374,7 +420,12 @@ def load_samples(
                 benchmark_evidence.canonical_json(sample)
             except (benchmark_evidence.EvidenceError, UnicodeError) as exc:
                 raise ScoringRefusal(f"invalid official sample JSONL: {release}: {exc}") from exc
-            if sample.get("repo") != "gin-gonic/gin":
+            selected_repo = (
+                sample.get("repo") == "gin-gonic/gin"
+                if selection_profile == GIN_PROFILE
+                else release == "v2_trace2code" and sample.get("repo") in GO_TRANSFER_REPOS
+            )
+            if not selected_repo:
                 continue
             require(
                 sample.get("task_type") == release.removeprefix("v2_"),
@@ -385,24 +436,33 @@ def load_samples(
             samples[sid] = sample
             release_by_id[sid] = release
             selected_count += 1
-        require(
-            selected_count
-            == policy["sample_selection"]["expected_counts"][release.removeprefix("v2_")],
-            f"official sample count differs from release: {release}",
+        expected_count = (
+            policy["sample_selection"]["expected_counts"][release.removeprefix("v2_")]
+            if selection_profile == GIN_PROFILE
+            else sum(GO_TRANSFER_REPOS.values()) if release == "v2_trace2code" else 0
         )
-    require(
-        len(samples) == policy["sample_selection"]["expected_counts"]["total"],
-        "official denominator mismatch",
-    )
+        require(selected_count == expected_count, f"official sample count differs from release: {release}")
+    if selection_profile == GIN_PROFILE:
+        expected_total = policy["sample_selection"]["expected_counts"]["total"]
+    else:
+        expected_total = sum(GO_TRANSFER_REPOS.values())
+        counts = Counter(sample["repo"] for sample in samples.values())
+        require(dict(counts) == GO_TRANSFER_REPOS, "Go transfer repository roster mismatch")
+    require(len(samples) == expected_total, "official denominator mismatch")
     return samples, release_by_id
 
 
-def case_context(case: dict[str, Any], sample: dict[str, Any], index: dict[str, Any], baseline):
+def case_context(
+    case: dict[str, Any], sample: dict[str, Any], index: dict[str, Any], baseline,
+    selection_profile: str = GIN_PROFILE,
+):
     spec = read_pinned(Path(case["spec"]), case["spec_sha256"])
     suite = read_pinned(Path(case["suite"]), case["suite_sha256"])
     pack = read_pinned(Path(case["pack"]), case["pack_sha256"])
     source_manifest = read_pinned(Path(case["manifest"]), case["manifest_sha256"])
-    gold = bind_identity(case, sample, suite, pack, spec, source_manifest, index, baseline)
+    gold = bind_identity(
+        case, sample, suite, pack, spec, source_manifest, index, baseline, selection_profile
+    )
     repo = Path(spec["repo"])
     require(repo.is_dir(), f"source checkout missing: {repo}")
     validated_suite, validated_pack, source = evaluator.validate_suite(repo, suite)
@@ -487,7 +547,9 @@ def capture_specs(
     return out, sha256(raw)
 
 
-def arm_denominators(arm: dict[str, Any], accepted_cases: int) -> tuple[int, int, int]:
+def arm_denominators(
+    arm: dict[str, Any], accepted_cases: int, selection_profile: str = GIN_PROFILE
+) -> tuple[int, int, int]:
     requested = arm.get("requested_denominator", arm.get("denominator_original"))
     accepted = arm.get(
         "current_v3_plan_accepted", arm.get("current_v3_plan_accepted_from_original88")
@@ -497,8 +559,10 @@ def arm_denominators(arm: dict[str, Any], accepted_cases: int) -> tuple[int, int
         all(type(value) is int for value in (requested, accepted, refused)),
         "arm denominators must be integers",
     )
+    denominator = 88 if selection_profile == GIN_PROFILE else sum(GO_TRANSFER_REPOS.values())
+    require(selection_profile in (GIN_PROFILE, GO_TRANSFER_PROFILE), "unknown sample selection profile")
     require(
-        (requested, accepted, refused) == (88, accepted_cases, 88 - accepted_cases),
+        (requested, accepted, refused) == (denominator, accepted_cases, denominator - accepted_cases),
         "arm denominator/refusal mismatch",
     )
     return requested, accepted, refused
@@ -528,7 +592,8 @@ def score_arm(
         amendment_sha == sha256(read_regular(b06 / "policy_amendments.json")),
         "arm policy amendment digest mismatch",
     )
-    samples, release_by_id = load_samples(b06, policy)
+    selection_profile = arm.get("selection_profile", GIN_PROFILE)
+    samples, release_by_id = load_samples(b06, policy, selection_profile)
     official_sources = arm.get("official_source_files", arm.get("original_samples"))
     require(isinstance(official_sources, dict), "arm has no official sample source map")
     for release in RELEASES:
@@ -544,10 +609,22 @@ def score_arm(
             == (b06 / "data/benchmark" / release / "samples.jsonl").resolve(),
             f"arm sample path mismatch: {release}",
         )
-    index_rows = read_strict(b06 / "samples_index.json")[0]
-    index = {row["sample_id"]: row for row in index_rows}
-    require(len(index_rows) == len(index), "duplicate sample index ID")
-    require(set(index) == set(samples), "sample index differs from official gin sample IDs")
+    if selection_profile == GIN_PROFILE:
+        index_rows = read_strict(b06 / "samples_index.json")[0]
+        index = {row["sample_id"]: row for row in index_rows}
+        require(len(index_rows) == len(index), "duplicate sample index ID")
+        require(set(index) == set(samples), "sample index differs from official gin sample IDs")
+    else:
+        # The B06 index is Gin-specific. Derive the transfer binding solely from
+        # the pinned sample and the pinned official baseline implementation.
+        index = {
+            sid: {
+                "base_commit": sample["base_commit"],
+                "query_sha256": sha256(baseline.query_text_for_eval(sample).encode()),
+                "arb_gold_files": baseline.target_gold_files(sample),
+            }
+            for sid, sample in samples.items()
+        }
     cases = arm["cases"]
     case_ids = [case["sample_id"] for case in cases]
     require(
@@ -555,7 +632,7 @@ def score_arm(
         "arm case IDs invalid",
     )
     require(set(records) <= set(case_ids), "record index contains unknown arm sample")
-    requested, accepted, refused = arm_denominators(arm, len(cases))
+    requested, accepted, refused = arm_denominators(arm, len(cases), selection_profile)
     prepared_specs, preparation_sha = capture_specs(
         preparation_path, arm_path, sha256(arm_raw), cases, arm["source_pair_revision"]
     )
@@ -595,7 +672,7 @@ def score_arm(
             continue
         context = None
         try:
-            context = case_context(case, sample, index, baseline)
+            context = case_context(case, sample, index, baseline, selection_profile)
         except (ScoringRefusal, evaluator.EvidenceError, KeyError, ValueError) as exc:
             rows.extend(
                 {
@@ -681,12 +758,29 @@ def score_arm(
     corpus = None
     corpus_reason = "official archive and extracted corpus bytes have no independent custody proof"
     if corpus_work_root is not None:
-        selected_by_release = {release: set() for release in RELEASES}
+        selected_by_release: dict[str, set[str] | dict[str, set[str]]] = (
+            {release: set() for release in RELEASES}
+            if selection_profile == GIN_PROFILE
+            else {"v2_trace2code": {}}
+        )
         for case in cases:
             sid = case["sample_id"]
-            selected_by_release[release_by_id[sid]].add(samples[sid]["base_commit"])
+            release = release_by_id[sid]
+            if selection_profile == GIN_PROFILE:
+                selected_by_release[release].add(samples[sid]["base_commit"])
+            else:
+                selected_by_release[release].setdefault(samples[sid]["repo"], set()).add(
+                    samples[sid]["base_commit"]
+                )
         try:
-            corpus = arb_corpus_custody.restore(b06, policy, selected_by_release, corpus_work_root)
+            corpus_policy = (
+                policy if selection_profile == GIN_PROFILE else {
+                    "arb": {"releases": {"v2_trace2code": policy["arb"]["releases"]["v2_trace2code"]}}
+                }
+            )
+            corpus = arb_corpus_custody.restore(
+                b06, corpus_policy, selected_by_release, corpus_work_root
+            )
         except (arb_corpus_custody.CorpusBlocked, OSError, ValueError, tarfile.TarError) as exc:
             corpus_reason = str(exc)
     if corpus is not None:
@@ -795,6 +889,7 @@ def score_arm(
     return {
         "schema_version": 1,
         "arm": arm.get("arm", "original_text_current_v3"),
+        **({"selection_profile": selection_profile} if selection_profile == GO_TRANSFER_PROFILE else {}),
         "arm_manifest_sha256": sha256(arm_raw),
         "record_index_sha256": sha256(record_index_raw),
         "capture_preparation_sha256": preparation_sha,

@@ -1,5 +1,60 @@
 //! Independent logical commitments and canonical inline shape rejection.
 use super::*;
+use crate::index::WorkBudgetDenial;
+use crate::{BudgetInterruptionV1, RequestBudgetV1, RequestExecutionObserverV1};
+
+#[derive(Debug)]
+struct CommitmentObserver {
+    calls: AtomicUsize,
+    cancel_at: AtomicUsize,
+}
+
+impl CommitmentObserver {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            cancel_at: AtomicUsize::new(usize::MAX),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl RequestExecutionObserverV1 for CommitmentObserver {
+    fn interruption(&self) -> Option<BudgetInterruptionV1> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        (call >= self.cancel_at.load(Ordering::SeqCst)).then_some(BudgetInterruptionV1::Cancelled)
+    }
+}
+
+fn observed_budget(observer: Arc<CommitmentObserver>) -> Result<WorkBudget, IndexError> {
+    let backing = Arc::new(RecordMemory {
+        capacity: 1_000_000,
+        live: AtomicU64::new(0),
+        invalid: AtomicBool::new(false),
+    });
+    let memory = MemoryScope::new(Arc::new(RecordScope(backing)));
+    let request = RequestBudgetV1::observing_execution_admitted(observer, &memory)?;
+    Ok(WorkBudget::with_request(
+        WorkLimits {
+            reads: 1_000,
+            writes: 0,
+            bytes: 100_000,
+            mutations: 1_000,
+        },
+        request,
+    ))
+}
+
+fn long_row() -> OwnerMutation {
+    row(
+        Some(ObjectRef(Digest([255; 32]))),
+        Some(ObjectRef(Digest([7; 32]))),
+        9,
+    )
+}
 
 fn row(expected: Option<ObjectRef>, next: Option<ObjectRef>, id: u8) -> OwnerMutation {
     OwnerMutation {
@@ -161,11 +216,7 @@ fn inline_digest_mismatch_and_original_cancellation_stay_terminal() -> Result<()
 #[test]
 fn budgeted_commitment_refusal_keeps_original_digest_and_canonical_matching_is_exact()
 -> Result<(), IndexError> {
-    let item = row(
-        Some(ObjectRef(Digest([255; 32]))),
-        Some(ObjectRef(Digest([7; 32]))),
-        9,
-    );
+    let item = long_row();
     let bytes =
         serde_json::to_vec(&item).map_err(|error| IndexError::InvalidInput(error.to_string()))?;
     let mut digest = OwnerMutationDigest::default();
@@ -181,6 +232,7 @@ fn budgeted_commitment_refusal_keeps_original_digest_and_canonical_matching_is_e
     );
     check_eq!(digest.finish(), original);
     check_eq!(digest.count(), 0);
+    check_eq!(work.first_denial(), Some(WorkBudgetDenial::Bytes));
     let mut work = budget()?;
     digest.push_budgeted(&item, &mut work)?;
     check_eq!(digest.finish(), commitment(std::slice::from_ref(&item))?);
@@ -199,6 +251,112 @@ fn budgeted_commitment_refusal_keeps_original_digest_and_canonical_matching_is_e
     let mut longer = bytes;
     longer.push(b' ');
     check!(!canonical::matches(&item, &longer, &work)?);
+    Ok(())
+}
+
+#[test]
+fn canonical_commitment_polls_by_bounded_bytes_not_json_fragments() -> Result<(), IndexError> {
+    struct Fragments(usize);
+    impl std::io::Write for Fragments {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += 1;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let item = long_row();
+    let bytes =
+        serde_json::to_vec(&item).map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+    check!(bytes.len() > 256);
+    let mut fragments = Fragments(0);
+    serde_json::to_writer(&mut fragments, &item)
+        .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+    let observer = Arc::new(CommitmentObserver::new());
+    let mut work = observed_budget(observer.clone())?;
+    let before = observer.calls();
+    let mut digest = OwnerMutationDigest::default();
+    digest.push_budgeted(&item, &mut work)?;
+    let polls = observer.calls() - before;
+    let per_pass = 2 + bytes.len() / 256;
+    check!(polls <= 2 * per_pass + 1); // count pass, charge, hash pass
+    check!(polls >= 5); // initial and completion on both passes, plus charge
+    check!(polls < fragments.0);
+    check_eq!(digest.finish(), commitment(std::slice::from_ref(&item))?);
+    check_eq!(
+        work.usage().bytes,
+        u64::try_from(bytes.len()).map_err(|_error| IndexError::ResourceLimited)?
+    );
+    Ok(())
+}
+
+#[test]
+fn canonical_commitment_cancellation_at_start_mid_and_completion_keeps_digest()
+-> Result<(), IndexError> {
+    let item = long_row();
+    let bytes =
+        serde_json::to_vec(&item).map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+    check!(bytes.len() > 256);
+    let per_pass = 2 + bytes.len() / 256;
+    for (cancel_on_relative_call, charged) in [
+        (1, false),
+        (per_pass + 3, true), // after charge, at the first hash byte boundary
+        (2 * per_pass + 1, true), // final hash checkpoint, before digest commit
+    ] {
+        let observer = Arc::new(CommitmentObserver::new());
+        let mut work = observed_budget(observer.clone())?;
+        let mut digest = OwnerMutationDigest::default();
+        digest.push(&row(None, None, 1))?;
+        let original = digest.finish();
+        let before = observer.calls();
+        observer
+            .cancel_at
+            .store(before + cancel_on_relative_call, Ordering::SeqCst);
+        check_eq!(
+            digest.push_budgeted(&item, &mut work),
+            Err(IndexError::Cancelled)
+        );
+        check_eq!(digest.finish(), original);
+        check_eq!(digest.count(), 1);
+        check_eq!(work.first_denial(), Some(WorkBudgetDenial::Cancelled));
+        check_eq!(
+            work.usage().bytes,
+            if charged {
+                u64::try_from(bytes.len()).map_err(|_error| IndexError::ResourceLimited)?
+            } else {
+                0
+            }
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn canonical_commitment_expired_deadline_refuses_before_charge_or_digest_change()
+-> Result<(), IndexError> {
+    let item = long_row();
+    let mut digest = OwnerMutationDigest::default();
+    digest.push(&row(None, None, 1))?;
+    let original = digest.finish();
+    let mut work = WorkBudget::new(
+        WorkLimits {
+            reads: 1_000,
+            writes: 0,
+            bytes: 100_000,
+            mutations: 1_000,
+        },
+        Instant::now(),
+    );
+    check_eq!(
+        digest.push_budgeted(&item, &mut work),
+        Err(IndexError::ResourceLimited)
+    );
+    check_eq!(work.first_denial(), Some(WorkBudgetDenial::Deadline));
+    check_eq!(work.usage().bytes, 0);
+    check_eq!(digest.finish(), original);
+    check_eq!(digest.count(), 1);
     Ok(())
 }
 

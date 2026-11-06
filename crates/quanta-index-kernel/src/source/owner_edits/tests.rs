@@ -90,6 +90,77 @@ fn spool<'a>(fixture: &'a Fixture, work: &mut WorkBudget) -> TestResult<OwnerEdi
 }
 
 #[test]
+fn grouped_owner_transition_refuses_unbound_or_unreserved_writes_before_sql() -> TestResult {
+    let fixture = fixture()?;
+    let (mut work, _ledger) = crate::path_staging::tests::budget(u64::MAX)?;
+    let mutation = fixture.mutations.first().ok_or("owner mutation missing")?;
+    let old_path = "src/old.rs";
+    let new_path = "src/new.rs";
+
+    let unbound =
+        fixture
+            .paths
+            .append_owner_transition(mutation, Some(old_path), Some(new_path), &mut work);
+    if !matches!(unbound, Err(IndexError::BackendViolation(_))) {
+        return Err("grouped owner write accepted without spool transaction".into());
+    }
+
+    let held_pages = fixture
+        .paths
+        .allocation
+        .reserved_bytes()?
+        .checked_div(4096)
+        .ok_or("scratch page size is zero")?;
+    let oversized = held_pages.checked_add(1).ok_or("page count overflow")?;
+    let db = fixture.paths.connection.scoped(&work)?;
+    let installed: i64 = db.query_row(
+        &format!("PRAGMA main.max_page_count={oversized}"),
+        [],
+        |row| row.get(0),
+    )?;
+    if installed <= i64::try_from(held_pages)? {
+        return Err("test did not install an oversized scratch page cap".into());
+    }
+    drop(db);
+
+    fixture.paths.begin_owner_spool(&work)?;
+    let unreserved =
+        fixture
+            .paths
+            .append_owner_transition(mutation, Some(old_path), Some(new_path), &mut work);
+    if !matches!(unreserved, Err(IndexError::Storage(_))) {
+        return Err("grouped owner write accepted a page cap beyond reservation".into());
+    }
+    let db = fixture.paths.connection.scoped(&work)?;
+    let path_rows: i64 = db.query_row("SELECT COUNT(*) FROM path_edits", [], |row| row.get(0))?;
+    let owner_rows: i64 = db.query_row("SELECT COUNT(*) FROM owner_edits", [], |row| row.get(0))?;
+    if path_rows != 0 || owner_rows != 0 {
+        return Err("refused grouped owner write changed scratch rows".into());
+    }
+
+    drop(db);
+    drop(fixture);
+
+    let accepted = self::fixture()?;
+    let (mut accepted_work, _accepted_ledger) = crate::path_staging::tests::budget(u64::MAX)?;
+    let mutation = accepted.mutations.first().ok_or("owner mutation missing")?;
+    accepted.paths.begin_owner_spool(&accepted_work)?;
+    accepted.paths.append_owner_transition(
+        mutation,
+        Some(old_path),
+        Some(new_path),
+        &mut accepted_work,
+    )?;
+    let db = accepted.paths.connection.scoped(&accepted_work)?;
+    let path_rows: i64 = db.query_row("SELECT COUNT(*) FROM path_edits", [], |row| row.get(0))?;
+    let owner_rows: i64 = db.query_row("SELECT COUNT(*) FROM owner_edits", [], |row| row.get(0))?;
+    if path_rows != 2 || owner_rows != 1 {
+        return Err("grouped owner write lost a path or owner edit".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn complete_owner_spool_matches_original_and_preserves_refusal_position() -> TestResult {
     let fixture = fixture()?;
     let (mut work, _ledger) = crate::path_staging::tests::budget(u64::MAX)?;
@@ -174,7 +245,7 @@ fn owner_spool_rejects_missing_changed_extra_and_malformed_rows() -> TestResult 
             .first()
             .ok_or("original mutation missing")?;
         let key = owner_map_key(mutation.owner);
-        let db = fixture.paths.connection.scoped()?;
+        let db = fixture.paths.connection.scoped(&work)?;
         let changed = match fault {
             "missing" => db.execute(
                 "DELETE FROM owner_edits WHERE owner=?1",

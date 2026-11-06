@@ -446,7 +446,7 @@ fn accepted_raw_publication_supplies_later_delta_removal_baseline() -> Result<()
 #[test]
 fn explicit_semantic_fixture_is_preserved_and_owns_complete_pending_corpus() -> Result<()> {
     let chunks = vec![chunk("one", "alpha", None)?];
-    let mut semantic = super::super::semantic_source_scopes_for_chunk_records(&chunks);
+    let mut semantic = super::super::semantic_source_scopes_for_chunk_records(&repo()?, &chunks);
     semantic[0].scope_digest = "explicit-test-owner".into();
     let mut state = CorpusPublicationState::default();
     state.stage_fixture(&repo()?, chunks.clone(), Vec::new(), semantic.clone())?;

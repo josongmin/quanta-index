@@ -170,6 +170,26 @@ pub(super) struct PreparedPayload {
 }
 
 impl PreparedPayload {
+    pub(super) fn from_staged(
+        payload: quanta_index_core::index::StagedPayload,
+    ) -> Result<Self, IndexError> {
+        let capacity = u64::try_from(payload.bytes.capacity())
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        if payload
+            .memory
+            .as_ref()
+            .is_some_and(|grant| grant.bytes() < capacity)
+        {
+            return Err(IndexError::BackendViolation(
+                "staged text payload exceeds its allocation grant".into(),
+            ));
+        }
+        Ok(Self {
+            bytes: payload.bytes,
+            memory: payload.memory,
+        })
+    }
+
     pub(super) fn as_slice(&self) -> &[u8] {
         &self.bytes
     }

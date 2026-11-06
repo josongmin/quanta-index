@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://quanta-index.invalid/schemas/causal-timeline-v4.json",
+  "$id": "https://quanta-index.invalid/schemas/causal-timeline-v5.json",
   "title": "Quanta Index causal timeline JSONL record",
   "description": "One bounded record per JSONL line. The first record is a header and the final record is a footer. Event sequence is writer order, not causal order.",
   "oneOf": [
@@ -29,15 +29,24 @@
       "enum": [
         "files_visited", "files_read", "files_hashed", "files_decoded",
         "inodes_visited", "unique_inodes", "physical_bytes_measured", "bytes_read", "bytes_hashed",
-        "bytes_decoded", "work_reads", "work_writes", "work_bytes", "work_mutations", "sqlite_rows", "sqlite_batches", "sqlite_elapsed_ns",
+        "bytes_decoded", "work_reads", "work_writes", "work_bytes", "work_mutations", "thread_cpu_ns", "sqlite_rows", "sqlite_batches", "sqlite_elapsed_ns",
         "sqlite_write_calls", "sqlite_write_requested_bytes", "sqlite_write_failures",
         "sqlite_wal_write_calls", "sqlite_main_write_calls", "sqlite_other_write_calls",
+        "sqlite_write_admission_calls", "sqlite_write_admission_refusals", "sqlite_write_admission_elapsed_ns",
+        "sqlite_write_lower_envelope_elapsed_ns", "sqlite_write_post_callback_elapsed_ns", "sqlite_write_post_callback_refusals",
+        "sqlite_cache_hits", "sqlite_cache_misses", "sqlite_cache_writes", "sqlite_cache_spills",
+        "sqlite_page_size_bytes", "sqlite_cache_size_magnitude", "sqlite_cache_size_is_kib",
+        "sqlite_cache_spill_pages", "sqlite_wal_autocheckpoint_pages",
         "query_posting_calls", "query_posting_hits", "query_posting_elapsed_ns", "query_phrase_checks", "query_phrase_elapsed_ns",
         "candidates",
         "candidates_verified", "matches", "rejected_at_guard", "sync_calls",
         "sync_failures", "sync_elapsed_ns", "new_objects", "reused_objects",
         "compacted_documents", "compacted_segments", "compacted_bytes", "posting_mutations",
-        "map_page_mutations", "managed_object_inputs", "invalid_attempt_tokens", "unique_closure_refs",
+        "map_page_mutations", "managed_object_inputs",
+        "text_occurrence_prior_validation_attempts", "text_occurrence_next_validation_attempts",
+        "text_occurrence_ram_reuses", "text_occurrence_spill_reuses",
+        "text_occurrence_equal_reuses", "text_occurrence_validation_failures",
+        "invalid_attempt_tokens", "unique_closure_refs",
         "closure_dependency_edges", "closure_authenticated_bytes", "closure_read_elapsed_ns",
         "closure_hash_elapsed_ns", "closure_decode_elapsed_ns", "queue_dropped", "queue_accepted",
         "output_written", "output_unwritten", "retained_pairs", "measure_calls",
@@ -60,7 +69,7 @@
       ],
       "properties": {
         "record_type": { "const": "header" },
-        "schema_version": { "const": 4 },
+        "schema_version": { "const": 5 },
         "capture_id": { "$ref": "#/$defs/id128" },
         "stream_id": { "$ref": "#/$defs/id128" },
         "clock_domain": { "$ref": "#/$defs/id128" },
@@ -78,6 +87,77 @@
       }
     },
     "event": {
+      "type": "array",
+      "prefixItems": [
+        { "const": "e" },
+        { "type": "integer", "minimum": 1 },
+        { "$ref": "#/$defs/id128" },
+        { "type": "integer", "minimum": 0 },
+        {
+          "oneOf": [
+            { "$ref": "#/$defs/spanBeginV5" },
+            { "$ref": "#/$defs/spanEndV5" },
+            { "$ref": "#/$defs/counterV5" },
+            { "$ref": "#/$defs/requestIdentity" },
+            { "$ref": "#/$defs/phaseIdentity" },
+            { "$ref": "#/$defs/annRegionObservation" },
+            { "$ref": "#/$defs/sqliteSyncObservation" },
+            { "$ref": "#/$defs/objectInstallAggregate" },
+            { "$ref": "#/$defs/syncAggregate" },
+            { "$ref": "#/$defs/objectKindAggregate" },
+            { "$ref": "#/$defs/adoptionGroupAggregate" },
+            { "$ref": "#/$defs/bm25CensusAggregate" },
+            { "$ref": "#/$defs/bm25BoundaryAggregate" },
+            { "$ref": "#/$defs/bm25LiveBuildAggregate" },
+            { "$ref": "#/$defs/ownedRenewalRefusal" },
+            { "$ref": "#/$defs/link" },
+            { "$ref": "#/$defs/health" }
+          ]
+        }
+      ],
+      "minItems": 5,
+      "maxItems": 5
+    },
+    "spanBeginV5": {
+      "type": "array",
+      "prefixItems": [
+        { "const": "b" },
+        { "$ref": "#/$defs/spanId" },
+        { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/spanId" }] },
+        { "$ref": "#/$defs/spanBegin/properties/stage" },
+        { "$ref": "#/$defs/spanBegin/properties/lane_id" },
+        { "enum": [null, "request", "operation", "capture"] }
+      ],
+      "minItems": 6,
+      "maxItems": 6
+    },
+    "spanEndV5": {
+      "type": "array",
+      "prefixItems": [
+        { "const": "e" },
+        { "$ref": "#/$defs/spanId" },
+        { "$ref": "#/$defs/spanEnd/properties/outcome" },
+        { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/spanEnd/properties/error_code" }] }
+      ],
+      "minItems": 4,
+      "maxItems": 4,
+      "oneOf": [
+        { "prefixItems": [{}, {}, { "enum": ["ok", "aborted"] }, { "type": "null" }] },
+        { "prefixItems": [{}, {}, { "enum": ["error", "cancelled"] }, { "$ref": "#/$defs/spanEnd/properties/error_code" }] }
+      ]
+    },
+    "counterV5": {
+      "type": "array",
+      "prefixItems": [
+        { "const": "c" },
+        { "$ref": "#/$defs/spanId" },
+        { "$ref": "#/$defs/counterKey" },
+        { "$ref": "#/$defs/counter/properties/value" }
+      ],
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "legacyEvent": {
       "type": "object",
       "additionalProperties": false,
       "required": ["record_type", "output_seq", "capture_id", "ts_ns", "kind"],
@@ -101,6 +181,7 @@
             { "$ref": "#/$defs/bm25CensusAggregate" },
             { "$ref": "#/$defs/bm25BoundaryAggregate" },
             { "$ref": "#/$defs/bm25LiveBuildAggregate" },
+            { "$ref": "#/$defs/ownedRenewalRefusal" },
             { "$ref": "#/$defs/link" },
             { "$ref": "#/$defs/health" }
           ]
@@ -122,18 +203,21 @@
             "request", "operation", "client_attempt", "ingress", "queue_wait",
             "dispatch", "backend", "encode", "write", "build_preflight",
             "build_prepare", "semantic_build", "lexical_build",
+            "native_text_inventory_prepare", "native_text_inventory_map_apply", "native_text_inventory_diff",
+            "native_text_inventory_read", "native_text_occurrence_read", "native_text_posting_edit",
             "native_text_postings", "native_text_root",
             "native_coverage_scan", "native_coverage_map_apply",
-            "native_searchable_prepare", "native_coverage_save", "native_member_assemble", "finalize",
+            "native_searchable_prepare", "native_coverage_save", "native_member_assemble", "native_work_seal", "finalize",
             "bm25_census_build", "bm25_live_build", "bm25_boundary",
             "activate", "catalog_lock_wait", "catalog_lock_hold",
             "retention_pair_lock_wait", "retention_pair_lock_hold",
             "retention_root_lock_wait", "retention_root_lock_hold",
             "retention_root_snapshot", "source_transaction_one", "source_transaction_two",
-            "native_source_apply", "native_source_path_install", "native_source_map_apply",
+            "native_source_apply", "native_source_owner_prepare", "native_source_path_validate",
+            "native_source_path_install", "native_source_map_apply",
             "retention_plan", "retention_measure",
             "closure_read", "closure_hash", "closure_decode", "sqlite_work",
-            "physical_inode_census", "managed_object_reserve", "managed_object_confirm",
+            "physical_inode_census", "managed_object_reserve", "managed_object_confirm", "managed_object_install",
             "native_publish", "file_publish", "lexical_seal",
             "lexical_proof", "compaction",
             "query_parse", "query_plan", "query_read_view",
@@ -262,6 +346,23 @@
         }
       }
     },
+    "objectInstallAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "phase", "calls", "elapsed_sum_ns", "thread_cpu_ns", "failures"],
+      "properties": {
+        "type": { "const": "object_install_aggregate" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "phase": { "enum": [
+          "child_validation", "namespace_and_create", "write", "file_sync",
+          "publish_and_retire", "directory_sync", "barrier", "settlement", "existing"
+        ] },
+        "calls": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
+        "elapsed_sum_ns": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "thread_cpu_ns": { "type": ["integer", "null"], "minimum": 0, "maximum": 18446744073709551615 },
+        "failures": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+      }
+    },
     "syncAggregate": {
       "type": "object",
       "additionalProperties": false,
@@ -276,6 +377,7 @@
             "coverage_orphan_directory", "history_layout_directory", "atomic_file",
             "atomic_parent", "atomic_at_file", "atomic_at_parent", "sealed_leftover_directory",
             "pool_new_directory_full", "pool_new_parent_full", "pool_adoption_full_barrier",
+            "pool_new_directory_posix", "pool_new_parent_posix",
             "pool_data_file_posix", "pool_object_file_full", "pool_control_file_full",
             "pool_data_shard_posix", "pool_object_shard_full", "pool_control_parent_full",
             "pool_reused_file_posix", "pool_reused_shard_posix", "pool_adoption_journal_full",
@@ -375,6 +477,26 @@
         "retained_estimate_bytes": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
       }
     },
+    "ownedRenewalRefusal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "span_id", "reason", "now_ms", "lease_until_ms", "deadline_ms"],
+      "properties": {
+        "type": { "const": "owned_renewal_refusal" },
+        "span_id": { "$ref": "#/$defs/spanId" },
+        "reason": {
+          "enum": [
+            "missing_claim", "not_claimed", "claim_identity", "claim_fence",
+            "lease_expired", "missing_assignment", "inactive_assignment",
+            "undispatched_assignment", "execution_expired", "assignment_claim",
+            "grant_mismatch"
+          ]
+        },
+        "now_ms": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "lease_until_ms": { "type": ["integer", "null"], "minimum": 0, "maximum": 18446744073709551615 },
+        "deadline_ms": { "type": ["integer", "null"], "minimum": 0, "maximum": 18446744073709551615 }
+      }
+    },
     "link": {
       "type": "object",
       "additionalProperties": false,
@@ -397,7 +519,7 @@
             "invalid_attempt_token", "duplicate_attempt_token", "unlinked_attempt",
             "span_id_exhausted", "clock_regressed", "missing_parent_span", "counter_overflow",
             "queue_overflow", "record_too_large", "producer_after_close",
-            "foreign_capture_span"
+            "foreign_capture_span", "counter_unavailable", "counter_regressed"
           ]
         },
         "count": { "type": "integer", "minimum": 1 },
@@ -414,7 +536,7 @@
       ],
       "properties": {
         "record_type": { "const": "footer" },
-        "schema_version": { "const": 4 },
+        "schema_version": { "const": 5 },
         "capture_id": { "$ref": "#/$defs/id128" },
         "closed_ns": { "type": "integer", "minimum": 0 },
         "status": { "enum": ["complete", "partial", "invalid"] },

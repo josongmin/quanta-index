@@ -2,8 +2,20 @@
 
 use quanta_index_core::index::{
     IndexError, MapPage, MapRoot, MemoryLifetime, ObjectRef, WorkBudget, WorkUsage,
-    ports::PersistentMapPort,
+    ports::{ImmutableObjectPort, PersistentMapPort},
 };
+
+pub(super) mod block;
+pub(super) use block::BlockDraft;
+
+pub(super) const LAYOUT_POLICY: &[u8] =
+    b"entry-map:inventory-small8-32/positional-QITXEM01-512-16384-1024;posting-small8-32/tree\0";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum EntryMapUse {
+    Inventory,
+    Posting,
+}
 
 pub(super) const INLINE_ENTRIES: usize = 8;
 const INLINE_KEY_BYTES: usize = 32;
@@ -122,23 +134,30 @@ impl SmallMap {
     }
 }
 
-/// The root's explicit presence selects the tree form. Inline rows must be
-/// empty for a tree; the decoder rejects overlapping/noncanonical forms.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(in crate::native) struct EntryMap {
-    tree: MapRoot,
-    small: SmallMap,
+/// One current persisted representation; empty maps are always Small0.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "bounded fixed metadata stays Copy for admission-controlled decoding without boxed owners"
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::native) enum EntryMap {
+    Small(SmallMap),
+    Block(ObjectRef),
+    Tree(ObjectRef),
 }
-quanta_index_contract::native_serde_struct!(EntryMap {
-    tree: MapRoot,
-    small: SmallMap
+quanta_index_contract::native_serde_enum!(EntryMap {
+    units { }
+    newtypes { Small = 0 => SmallMap, Block = 1 => ObjectRef, Tree = 2 => ObjectRef }
+    records { }
 });
+impl Default for EntryMap {
+    fn default() -> Self {
+        Self::Small(SmallMap::default())
+    }
+}
 impl From<MapRoot> for EntryMap {
     fn from(root: MapRoot) -> Self {
-        Self {
-            tree: root,
-            small: SmallMap::default(),
-        }
+        root.0.map_or_else(Self::default, Self::Tree)
     }
 }
 impl From<&EntryMap> for EntryMap {
@@ -149,48 +168,63 @@ impl From<&EntryMap> for EntryMap {
 
 impl EntryMap {
     pub(super) fn inline(small: &SmallMap) -> Self {
-        Self {
-            tree: MapRoot(None),
-            small: *small,
-        }
+        Self::Small(*small)
     }
     pub(super) fn inline_map(&self) -> Option<SmallMap> {
-        self.tree.0.is_none().then_some(self.small)
+        match self {
+            Self::Small(small) => Some(*small),
+            Self::Block(_) | Self::Tree(_) => None,
+        }
     }
     pub(super) fn tree_base(&self) -> MapRoot {
-        self.tree
+        MapRoot(match self {
+            Self::Tree(reference) => Some(*reference),
+            Self::Small(_) | Self::Block(_) => None,
+        })
     }
     pub(super) fn validate(&self) -> Result<(), IndexError> {
-        self.small.validate()?;
-        if self.tree.0.is_some() && self.small.len() != 0 {
+        match self {
+            Self::Small(small) => small.validate(),
+            Self::Block(_) | Self::Tree(_) => Ok(()),
+        }
+    }
+    pub(super) fn validate_for(&self, usage: EntryMapUse) -> Result<(), IndexError> {
+        self.validate()?;
+        if usage == EntryMapUse::Posting && matches!(self, Self::Block(_)) {
             return Err(IndexError::CorruptObject(
-                "tree entry map contains inline rows".into(),
+                "block inventory is not a posting representation".into(),
             ));
         }
         Ok(())
     }
     pub(super) fn children(&self) -> Result<impl Iterator<Item = ObjectRef>, IndexError> {
         self.validate()?;
-        Ok(self.tree.0.into_iter().chain(
-            self.small
-                .rows
-                .into_iter()
-                .flatten()
-                .map(|entry| entry.value),
-        ))
+        let (root, small) = match self {
+            Self::Small(small) => (None, *small),
+            Self::Block(reference) | Self::Tree(reference) => {
+                (Some(*reference), SmallMap::default())
+            }
+        };
+        Ok(root
+            .into_iter()
+            .chain(small.rows.into_iter().flatten().map(|entry| entry.value)))
     }
 
     pub(in crate::native) fn lookup(
         &self,
+        objects: &dyn ImmutableObjectPort,
         maps: &dyn PersistentMapPort,
         key: &[u8],
         budget: &mut WorkBudget,
     ) -> Result<Option<ObjectRef>, IndexError> {
         self.validate()?;
-        if self.tree.0.is_some() {
-            return maps.lookup_object(self.tree, key, budget);
-        }
-        let small = &self.small;
+        let small = match self {
+            Self::Small(small) => small,
+            Self::Tree(reference) => {
+                return maps.lookup_object(MapRoot(Some(*reference)), key, budget);
+            }
+            Self::Block(reference) => return block::lookup(objects, *reference, key, budget),
+        };
         budget.checkpoint()?;
         small.validate()?;
         budget.charge(WorkUsage {
@@ -212,16 +246,22 @@ impl EntryMap {
 
     pub(super) fn scan(
         &self,
+        objects: &dyn ImmutableObjectPort,
         maps: &dyn PersistentMapPort,
         after: Option<&[u8]>,
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<MapPage, IndexError> {
         self.validate()?;
-        if self.tree.0.is_some() {
-            return maps.scan(self.tree, after, limit, budget);
-        }
-        let small = &self.small;
+        let small = match self {
+            Self::Small(small) => small,
+            Self::Tree(reference) => {
+                return maps.scan(MapRoot(Some(*reference)), after, limit, budget);
+            }
+            Self::Block(reference) => {
+                return block::scan(objects, *reference, after, limit, budget);
+            }
+        };
         budget.checkpoint()?;
         if limit == 0 || limit > 4096 {
             return Err(IndexError::InvalidInput(
@@ -236,12 +276,12 @@ impl EntryMap {
             MapPage::allocation_bytes(capacity)?,
             MemoryLifetime::Retained,
         )?;
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(capacity)
-            .map_err(|_error| IndexError::ResourceLimited)?;
         let mut leases = Vec::new();
         leases
+            .try_reserve_exact(capacity)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        let mut entries = Vec::new();
+        entries
             .try_reserve_exact(capacity)
             .map_err(|_error| IndexError::ResourceLimited)?;
         let mut has_more = false;

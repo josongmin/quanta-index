@@ -19,7 +19,7 @@ memchr.workspace = true
 # Name resolution for the socket access knobs (`getgrnam_r` / `getpwnam_r`,
 # QI-BB-014) and the process resident-memory probe (`getrusage`, QI-BB-016);
 # the safe wrapper, so this crate stays free of `unsafe`.
-nix = { workspace = true, features = ["resource"] }
+nix = { workspace = true, features = ["resource", "time"] }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-embed = { version = "0.1.0", path = "../quanta-index-embed" }

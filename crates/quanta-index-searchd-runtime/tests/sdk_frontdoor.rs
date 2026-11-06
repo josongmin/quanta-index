@@ -487,7 +487,7 @@ fn with_semantic_sources_from_chunks(mut batch: SearchCorpusBatch) -> SearchCorp
         .iter()
         .flat_map(|scope| scope.chunks.iter().cloned())
         .collect();
-    for scope in semantic_source_scopes_for_chunk_records(&chunks) {
+    for scope in semantic_source_scopes_for_chunk_records(batch.repo_id(), &chunks) {
         batch = batch.replace_semantic_scope(
             scope.scope,
             scope.scope_digest,
@@ -1143,7 +1143,10 @@ fn publish_runtime_catalog_batch(socket: &Path) -> TestResult {
 fn structural_scope() -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
-        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        source_file: quanta_index_contract::SourceFileKey {
+            source_repo_id: repo(),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        },
     }
 }
 

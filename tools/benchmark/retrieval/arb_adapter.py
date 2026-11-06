@@ -154,6 +154,63 @@ class ArbAdapterRefusal(ValueError):
         self.code = code
 
 
+GO_TRACE_SEMANTIC_MAX_TEXT_BYTES = 16 * 1024
+
+_GO_TEST_COMMAND = re.compile(r"^\s*go test(?:\s|$)")
+_GO_TEST_RUNNER = re.compile(r"^\s*(?:\$\s*)?go test(?:\s|$)")
+_GO_DOWNLOAD = re.compile(r"^\s*go: downloading\s+")
+_GO_RESULT = re.compile(r"^\s*(?:FAIL|PASS)\s*$")
+_GO_PACKAGE_RESULT = re.compile(
+    r"^\s*(?:FAIL|ok|\?)\s+\S+\s+(?:[\d.]+s|\[build failed\]|\[no test files\])\s*$"
+)
+_GO_ELAPSED = re.compile(r"\s+\([\d.]+s\)\s*$")
+_GO_FRAME_PATH = re.compile(r"/(?:[^/\s:\t]+/)+([^/\s:\t]+\.go:\d+)")
+
+
+def prepare_go_trace_semantic_text(query: dict[str, object]) -> str:
+    """Prepare a bounded semantic query from the public Go failure trace.
+
+    The lexical adapter remains frozen. This independently admits the original
+    trace, removes Go runner noise, and keeps error text, quotes, and frame
+    basenames/line numbers. There is no truncation or gold-field access.
+    """
+    if not isinstance(query, dict):
+        raise ArbAdapterRefusal("ARB_GO_TRACE_INVALID_QUERY", "query must be a JSON object")
+    command = query.get("command")
+    trace = query.get("failure_excerpt")
+    if not isinstance(command, str) or _GO_TEST_COMMAND.match(command) is None:
+        raise ArbAdapterRefusal("ARB_GO_TRACE_UNSUPPORTED_COMMAND", "command must be go test")
+    if not isinstance(trace, str) or not trace.strip():
+        raise ArbAdapterRefusal("ARB_GO_TRACE_INVALID_EXCERPT", "failure_excerpt must be nonempty text")
+    try:
+        trace_bytes = trace.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ArbAdapterRefusal("ARB_GO_TRACE_INVALID_EXCERPT", "failure_excerpt must be UTF-8") from exc
+    if "\0" in trace:
+        raise ArbAdapterRefusal("ARB_GO_TRACE_INVALID_EXCERPT", "failure_excerpt contains NUL")
+    if len(trace_bytes) > GO_TRACE_SEMANTIC_MAX_TEXT_BYTES:
+        raise ArbAdapterRefusal("ARB_GO_TRACE_TOO_LONG", "failure_excerpt exceeds 16 KiB")
+
+    kept: list[str] = []
+    for line in trace.splitlines():
+        if (
+            _GO_TEST_RUNNER.match(line)
+            or _GO_DOWNLOAD.match(line)
+            or _GO_RESULT.match(line)
+            or _GO_PACKAGE_RESULT.match(line)
+        ):
+            continue
+        line = _GO_ELAPSED.sub("", line)
+        line = _GO_FRAME_PATH.sub(r"\1", line)
+        kept.append(line)
+    text = "\n".join(kept).strip()
+    if not text:
+        raise ArbAdapterRefusal("ARB_GO_TRACE_EMPTY", "failure_excerpt has no diagnostic content")
+    if len(text.encode("utf-8")) > GO_TRACE_SEMANTIC_MAX_TEXT_BYTES:
+        raise ArbAdapterRefusal("ARB_GO_TRACE_TOO_LONG", "semantic text exceeds 16 KiB")
+    return text
+
+
 def official_query_text(query: Any) -> str:
     """ARB ``baseline.query_text_for_eval`` bytes for a query dict."""
     return json.dumps(query or {}, ensure_ascii=False, sort_keys=True)

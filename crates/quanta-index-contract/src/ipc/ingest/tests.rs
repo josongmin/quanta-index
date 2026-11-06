@@ -216,7 +216,10 @@ fn fixture_embedding_record() -> EmbeddingRecord {
         corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
         parent_owner_id: Some("file:src/main.rs".to_string().into_boxed_str()),
         source_doc_id: "doc-1".to_string().into_boxed_str(),
-        repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        source_file: SourceFileKey {
+            source_repo_id: fixture_repo_id(),
+            repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        },
         language: LanguageCode::from_code_str("rust").unwrap_or_else(|| std::process::abort()),
         package: None,
         symbol_kind: None,
@@ -311,7 +314,10 @@ fn fixture_parse_tree_record() -> ParseTreeRecord {
 fn fixture_scope_key() -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::File,
-        repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        source_file: SourceFileKey {
+            source_repo_id: fixture_repo_id(),
+            repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        },
     }
 }
 
@@ -412,6 +418,10 @@ fn fixture_semantic_batch() -> SemanticIngestBatch {
                 corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
                 owner_kind: OwnerDocKind::Chunk,
                 owner_id: "owner-old".to_string(),
+                source_file: SourceFileKey {
+                    source_repo_id: fixture_repo_id(),
+                    repo_relative_path: RepoRelativePath::new("src/old.rs"),
+                },
             },
         }],
         seal: false,
@@ -602,7 +612,10 @@ fn fixture_structural_batch() -> StructuralIngestBatch {
         tombstone_scopes: vec![StructuralTombstoneScope {
             scope: SearchScopeKey {
                 doc_surface: SearchScopeSurface::Chunk,
-                repo_relative_path: RepoRelativePath::new("src/old.rs"),
+                source_file: SourceFileKey {
+                    source_repo_id: fixture_repo_id(),
+                    repo_relative_path: RepoRelativePath::new("src/old.rs"),
+                },
             },
         }],
         seal: true,
@@ -640,6 +653,27 @@ fn semantic_ingest_batch_round_trip() -> TestRes {
     let bytes = encode(&batch)?;
     let decoded: SemanticIngestBatch = decode(&bytes)?;
     assert_eq!(decoded, batch);
+    Ok(())
+}
+
+#[test]
+fn semantic_replace_scope_refuses_foreign_embedding_source_file() -> TestRes {
+    let mut scope = fixture_semantic_batch()
+        .replace_scopes
+        .into_iter()
+        .next()
+        .ok_or("semantic replace fixture is empty")?;
+    scope.embeddings[0].source_file.source_repo_id = RepoId::new("foreign")?;
+    assert!(serde_json::to_value(&scope).is_err());
+
+    let valid = fixture_semantic_batch()
+        .replace_scopes
+        .into_iter()
+        .next()
+        .ok_or("semantic replace fixture is empty")?;
+    let mut wire = serde_json::to_value(valid)?;
+    wire["embeddings"][0]["source_file"]["source_repo_id"] = serde_json::json!("foreign");
+    assert!(serde_json::from_value::<SemanticReplaceScope>(wire).is_err());
     Ok(())
 }
 
@@ -705,7 +739,10 @@ fn old_incomplete_batches_and_receipts_are_refused_v1() -> TestRes {
 
     let old_path = SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
-        repo_relative_path: RepoRelativePath::new("src/old.rs"),
+        source_file: SourceFileKey {
+            source_repo_id: fixture_repo_id(),
+            repo_relative_path: RepoRelativePath::new("src/old.rs"),
+        },
     };
     let legacy_only = serde_json::json!({"scope": old_path});
     let legacy_only_cbor = encode(&legacy_only)?;

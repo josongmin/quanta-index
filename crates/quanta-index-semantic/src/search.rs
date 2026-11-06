@@ -39,7 +39,7 @@ use quanta_index_contract::{
     ClusterMembershipReadOutcomeV1, ClusterMembershipReadRejectionV1,
     ClusterMembershipReadRequestV1, ClusterMembershipSnapshotV1, EmbeddingNormalization,
     GenerationPin, LexicalCandidate, ManifestGeneration, OwnerDocKind, QueryConstraintSetV1,
-    RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1, SymbolId,
+    RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1, SourceFileKey, SymbolId,
     canonical_order::{CanonicalOrderBreakV1, first_canonical_order_break_v1},
     cluster_membership_content_digest_v1,
 };
@@ -61,7 +61,7 @@ use crate::layout::{
     COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID, COLUMN_MEMBERSHIP_CONTENT_DIGEST,
     COLUMN_MEMBERSHIP_MEMBER_COUNT, COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, COLUMN_MEMBERSHIP_ORDINAL,
     COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH,
-    COLUMN_SNIPPET, COLUMN_START_LINE, TABLE_NAME, dataset_uri,
+    COLUMN_SNIPPET, COLUMN_SOURCE_REPO_ID, COLUMN_START_LINE, TABLE_NAME, dataset_uri,
 };
 use crate::manifest::{SemanticManifest, VectorIndexSealV1};
 use crate::sealed_manifest::verify_sealed_manifest_with_admission;
@@ -599,6 +599,7 @@ fn extract_hits(
     out: &mut Vec<SemanticSearchHit>,
 ) -> Result<(), CoreError> {
     let id_col = column_as::<StringArray>(batch, COLUMN_EMBEDDING_ID, "Utf8")?;
+    let source_repo_col = column_as::<StringArray>(batch, COLUMN_SOURCE_REPO_ID, "Utf8")?;
     let path_col = column_as::<StringArray>(batch, COLUMN_REPO_RELATIVE_PATH, "Utf8")?;
     let start_col = column_as::<UInt32Array>(batch, COLUMN_START_LINE, "UInt32")?;
     let end_col = column_as::<UInt32Array>(batch, COLUMN_END_LINE, "UInt32")?;
@@ -618,15 +619,28 @@ fn extract_hits(
         let end_line = end_col.value(row);
         let distance = distance_col.value(row);
         let score = cosine_distance_to_score_v1(distance, &id)?;
+        let source_file = SourceFileKey {
+            source_repo_id: RepoId::new(source_repo_col.value(row)).map_err(|error| {
+                CoreError::Storage(format!(
+                    "semantic: invalid source_repo_id on record {id}: {error}"
+                ))
+            })?,
+            repo_relative_path: RepoRelativePath::new(path),
+        };
+        source_file.validate().map_err(|error| {
+            CoreError::Storage(format!(
+                "semantic: invalid source path on record {id}: {error}"
+            ))
+        })?;
         let candidate = LexicalCandidate {
-            source_repo_id: repo_id.clone(),
+            source_repo_id: source_file.source_repo_id,
             source: None,
             preview: None,
             candidate_id: id.clone(),
             repo_id: repo_id.clone(),
             revision_id: revision_id.clone(),
             manifest_generation: generation,
-            repo_relative_path: RepoRelativePath::new(path),
+            repo_relative_path: source_file.repo_relative_path,
             start_line,
             end_line,
             score,

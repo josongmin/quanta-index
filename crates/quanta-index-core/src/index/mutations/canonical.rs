@@ -5,6 +5,10 @@ use sha2::{Digest as _, Sha256};
 
 use super::{IndexError, OwnerMutation, WorkBudget};
 
+// Bound cancellation/deadline observation by canonical bytes, not by serde's
+// fragment count. A single large Write buffer is split at this boundary.
+const CHECKPOINT_BYTES: usize = 256;
+
 enum Target<'a> {
     Count,
     Hash(&'a mut Sha256),
@@ -15,25 +19,16 @@ struct Writer<'a> {
     len: usize,
     equal: bool,
     budget: Option<&'a WorkBudget>,
+    since_checkpoint: usize,
     error: Option<IndexError>,
 }
-impl Write for Writer<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let next = self
-            .budget
-            .map_or(Ok(()), WorkBudget::checkpoint)
-            .and_then(|()| {
-                self.len
-                    .checked_add(bytes.len())
-                    .ok_or(IndexError::ResourceLimited)
-            });
-        let next = match next {
-            Ok(next) => next,
-            Err(error) => {
-                self.error = Some(error);
-                return Err(io::Error::other("mutation commitment refused"));
-            }
-        };
+impl Writer<'_> {
+    fn refuse(&mut self, error: IndexError) -> io::Error {
+        self.error = Some(error);
+        io::Error::other("mutation commitment refused")
+    }
+
+    fn apply(&mut self, bytes: &[u8], next: usize) {
         match &mut self.target {
             Target::Count => {}
             Target::Hash(hash) => hash.update(bytes),
@@ -42,6 +37,48 @@ impl Write for Writer<'_> {
             }
         }
         self.len = next;
+    }
+}
+impl Write for Writer<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let Some(next) = self.len.checked_add(bytes.len()) else {
+            if let Some(budget) = self.budget
+                && let Err(error) = budget.checkpoint()
+            {
+                return Err(self.refuse(error));
+            }
+            return Err(self.refuse(IndexError::ResourceLimited));
+        };
+        let Some(budget) = self.budget else {
+            self.apply(bytes, next);
+            return Ok(bytes.len());
+        };
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            let available = CHECKPOINT_BYTES
+                .checked_sub(self.since_checkpoint)
+                .filter(|bytes| *bytes != 0)
+                .ok_or_else(|| self.refuse(IndexError::ResourceLimited))?;
+            let take = remaining.len().min(available);
+            let (chunk, rest) = remaining.split_at(take);
+            let chunk_end = self
+                .len
+                .checked_add(take)
+                .ok_or_else(|| self.refuse(IndexError::ResourceLimited))?;
+            let since_checkpoint = self
+                .since_checkpoint
+                .checked_add(take)
+                .ok_or_else(|| self.refuse(IndexError::ResourceLimited))?;
+            self.apply(chunk, chunk_end);
+            self.since_checkpoint = since_checkpoint;
+            if self.since_checkpoint == CHECKPOINT_BYTES {
+                if let Err(error) = budget.checkpoint() {
+                    return Err(self.refuse(error));
+                }
+                self.since_checkpoint = 0;
+            }
+            remaining = rest;
+        }
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -53,11 +90,15 @@ fn write(
     target: Target<'_>,
     budget: Option<&WorkBudget>,
 ) -> Result<(u64, bool), IndexError> {
+    if let Some(budget) = budget {
+        budget.checkpoint()?;
+    }
     let mut writer = Writer {
         target,
         len: 0,
         equal: true,
         budget,
+        since_checkpoint: 0,
         error: None,
     };
     let result = serde_json::to_writer(&mut writer, mutation);
@@ -66,6 +107,9 @@ fn write(
     }
     result
         .map_err(|error| IndexError::InvalidInput(format!("owner mutation encoding: {error}")))?;
+    if let Some(budget) = writer.budget {
+        budget.checkpoint()?;
+    }
     let complete = match writer.target {
         Target::Compare(expected) => expected.len() == writer.len,
         Target::Count | Target::Hash(_) => true,

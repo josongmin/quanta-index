@@ -714,4 +714,60 @@ mod tests {
         )?;
         Ok(())
     }
+
+    #[test]
+    fn committed_foreign_destination_closes_writer_and_retains_pending_charge() -> TestResult {
+        let (_directory, root, authority, binder) = fixture()?;
+        let baseline = authority.snapshot()?;
+        let admission = CanonicalDurableControlFileAdmission::new(
+            Arc::new(PublicationFileDeletions::new(binder)),
+            3,
+        )?;
+        let mut permit = admission.reserve_output(3)?;
+        let staging = root.join("foreign.tmp");
+        let target = root.join("foreign.json");
+        let saved = root.join("original.json");
+        permit.bind_output(&staging, &target)?;
+        permit.creation_started()?;
+        let mut writer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&staging)?;
+        permit.created(&writer, &staging)?;
+        writer.write_all(b"abc")?;
+        writer.sync_all()?;
+        permit.before_replace()?;
+        fs::rename(&staging, &target)?;
+        File::open(&root)?.sync_all()?;
+        // A same-width replacement cannot authenticate the original inode.
+        fs::rename(&target, &saved)?;
+        fs::write(&target, b"xyz")?;
+        File::open(&target)?.sync_all()?;
+        File::open(&root)?.sync_all()?;
+        let actual_writer_fd = writer.as_raw_fd();
+        require(
+            matches!(
+                permit.committed(writer, 3),
+                Err(CoreError::InvalidContract(_))
+            ),
+            "committed accepted a foreign destination inode",
+        )?;
+        require(
+            fs::metadata(format!("/dev/fd/{actual_writer_fd}")).is_err(),
+            "failed destination authentication retained the actual writer FD",
+        )?;
+        drop(permit);
+        require_eq(&fs::read(&target)?, &b"xyz".to_vec())?;
+        require_eq(&fs::read(&saved)?, &b"abc".to_vec())?;
+        let observed = authority.snapshot()?;
+        require_eq(&observed.used_bytes, &(baseline.used_bytes + 3))?;
+        require_eq(&observed.used_files, &(baseline.used_files + 1))?;
+        require(
+            observed.uncertain_pending > baseline.uncertain_pending,
+            "foreign destination authentication refunded pending custody",
+        )?;
+        Ok(())
+    }
 }

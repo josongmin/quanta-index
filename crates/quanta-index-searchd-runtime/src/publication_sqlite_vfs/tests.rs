@@ -11,11 +11,17 @@ use rusqlite::{Connection, OpenFlags};
 use crate::publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity};
 
 mod boot_candidate;
+mod checkpoint_diagnostic;
+mod checkpoint_refusal;
+mod checkpoint_write;
+mod lazy_scratch_diagnostic;
 mod native_retirement;
 mod read_only;
 mod root_identity;
 mod service;
 mod sync_diagnostic;
+mod wal_frame_write;
+mod write_timing_diagnostic;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -595,21 +601,41 @@ fn held_wal_reader_refuses_append_before_exceeding_shared_capacity() -> TestResu
 }
 
 #[test]
-fn poisoned_adapter_refuses_new_sync_and_open_admission() -> TestResult {
+fn poisoned_adapter_refuses_new_sync_open_and_mutation_admission() -> TestResult {
     let fixture = fixture(16 * 1024 * 1024)?;
+    let mut handles = BTreeMap::new();
+    let _previous = handles.insert(
+        1,
+        Handle {
+            path: fixture.root.join("poisoned.sqlite3"),
+            opening: None,
+            reader: None,
+            mutation: None,
+            mutation_parent: None,
+            shm: None,
+            delete_on_close: false,
+            main_retired: false,
+            sync_mutation: diagnostic::MutationClass::NoMutation,
+        },
+    );
     let adapter = Adapter {
         common: Arc::clone(&fixture.common),
         scope: fixture.vfs.scope,
-        funding_policy: FundingPolicy::Unqualified,
+        funding_policy: FundingPolicy::HeldParent,
         temp_nonce: [0; 16],
         refusal_diagnostics: false,
         state: Mutex::new(AdapterState {
-            handles: BTreeMap::new(),
+            handles,
             deletes: BTreeMap::new(),
             poisoned: true,
         }),
     };
-    for kind in [EventKind::BeforeSync, EventKind::BeforeOpen] {
+    for kind in [
+        EventKind::BeforeSync,
+        EventKind::BeforeOpen,
+        EventKind::BeforeWrite,
+        EventKind::BeforeTruncate,
+    ] {
         let result = adapter.on_event(Event {
             kind,
             scope_id: fixture.vfs.scope,
@@ -632,6 +658,70 @@ fn poisoned_adapter_refuses_new_sync_and_open_admission() -> TestResult {
             "poisoned adapter accepted new native I/O",
         )?;
     }
+    Ok(())
+}
+
+#[test]
+fn poisoned_live_writer_refuses_commit_without_changing_file() -> TestResult {
+    let fixture = fixture(16 * 1024 * 1024)?;
+    let scope = fixture.vfs.scope();
+    let path = fixture.root.join("poisoned-live.sqlite3");
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
+    let writer = Connection::open_with_flags_and_vfs(&path, flags, fixture.vfs.name())?;
+    writer.execute_batch(
+        "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=FULL; \
+         CREATE TABLE poison_gold(value INTEGER); INSERT INTO poison_gold VALUES(7);",
+    )?;
+    writer.execute_batch("BEGIN IMMEDIATE; UPDATE poison_gold SET value=11;")?;
+    let before = fs::read(&path)?;
+    let adapter = {
+        let scopes = fixture
+            .vfs
+            .router
+            .scopes
+            .lock()
+            .map_err(|error| std::io::Error::other(format!("VFS scope lock: {error}")))?;
+        Arc::clone(
+            &scopes
+                .get(&fixture.vfs.scope)
+                .ok_or("missing VFS scope")?
+                .adapter,
+        )
+    };
+    {
+        let mut state = adapter
+            .state
+            .lock()
+            .map_err(|error| std::io::Error::other(format!("VFS handle lock: {error}")))?;
+        state.poisoned = true;
+    }
+    let denied = writer.execute_batch("COMMIT");
+    let after = fs::read(&path)?;
+    {
+        let mut state = adapter
+            .state
+            .lock()
+            .map_err(|error| std::io::Error::other(format!("VFS handle lock: {error}")))?;
+        state.poisoned = false;
+    }
+    require(
+        matches!(denied, Err(rusqlite::Error::SqliteFailure(error, _))
+            if error.code == rusqlite::ErrorCode::SystemIoFailure),
+        "poisoned live writer did not return SQLite I/O refusal",
+    )?;
+    require(before == after, "poisoned live writer changed main file")?;
+    drop(writer);
+    fixture.vfs.drain_retirements()?;
+    let recovered = Connection::open_with_flags_and_vfs(&path, flags, fixture.vfs.name())?;
+    recovered.execute_batch("UPDATE poison_gold SET value=13;")?;
+    let value: i64 = recovered.query_row("SELECT value FROM poison_gold", [], |row| row.get(0))?;
+    require(
+        value == 13,
+        "healthy writer did not resume after test-only poison reset",
+    )?;
+    drop(recovered);
+    fixture.vfs.drain_retirements()?;
+    drop(scope);
     Ok(())
 }
 

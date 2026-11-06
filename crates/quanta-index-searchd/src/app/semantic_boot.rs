@@ -103,7 +103,9 @@ mod tests {
     }
 
     fn embedding(id: &str, path: &str, vector: Vec<f32>) -> Result<EmbeddingRecord, String> {
-        legacy_chunk_embedding_record_v1(id, path, vector)
+        let mut record = legacy_chunk_embedding_record_v1(id, path, vector)?;
+        record.source_file.source_repo_id = repo_id();
+        Ok(record)
     }
 
     fn batch(
@@ -125,7 +127,10 @@ mod tests {
             vec![SemanticReplaceScope {
                 scope: SearchScopeKey {
                     doc_surface: SearchScopeSurface::Chunk,
-                    repo_relative_path: RepoRelativePath::new(path),
+                    source_file: quanta_index_contract::SourceFileKey {
+                        source_repo_id: repo_id(),
+                        repo_relative_path: RepoRelativePath::new(path),
+                    },
                 },
                 scope_digest: format!("scope:{path}"),
                 embeddings: vec![embedding(id, path, vector)?],

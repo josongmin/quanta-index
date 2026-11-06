@@ -325,7 +325,9 @@ pub(crate) mod failpoint {
 #[cfg(not(any(test, debug_assertions)))]
 pub(crate) mod failpoint {
     /// Release builds carry no hold: the lane issues its query at once.
-    pub(crate) async fn hold_dense_lane_if_armed() {}
+    pub(crate) fn hold_dense_lane_if_armed() -> std::future::Ready<()> {
+        std::future::ready(())
+    }
 }
 
 #[cfg(test)]

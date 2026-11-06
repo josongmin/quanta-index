@@ -26,7 +26,7 @@ use imbl::OrdMap;
 use quanta_index_contract::{
     AuxEpochV1, ChunkId, DirtyIngestBatch, DirtyMutation, HistoryIngestBatch, HistoryRefMutation,
     ManifestGeneration, RepoId, RevisionId, RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
-    SearchPlaneTrackKind, SearchScopeSurface, StructuralIngestBatch,
+    SearchPlaneTrackKind, SearchScopeSurface, SourceFileKey, StructuralIngestBatch,
     lex::{CommitRecord, CommitSha, DiffHunkRecord},
 };
 use quanta_index_core::{
@@ -434,33 +434,36 @@ pub(crate) fn structural_transition(
     let generation = generation_key(&batch.repo_id, &batch.revision_id, batch.generation);
     let empty = StructuralAuthorityState::default();
     let state = current.unwrap_or(&empty);
-    let chunk_ids_at = |path: &str| -> BTreeSet<ChunkId> {
+    let chunk_ids_at = |file: &SourceFileKey| -> BTreeSet<ChunkId> {
         state
             .chunks()
             .iter()
-            .filter(|(_chunk_id, chunk)| chunk.repo_relative_path.as_str() == path)
+            .filter(|(_, chunk)| {
+                chunk.repo_relative_path == file.repo_relative_path
+                    && chunk.searchable_repo_id(&batch.repo_id) == &file.source_repo_id
+            })
             .map(|(chunk_id, _chunk)| chunk_id.clone())
             .collect()
     };
     let mut removed = BTreeSet::new();
     let mut upserts = Vec::new();
     for scope in &batch.replace_scopes {
-        let path = scope.scope.repo_relative_path.as_str();
+        let file = &scope.scope.source_file;
         for tree in &scope.trees {
             verify_parse_tree_against_chunk_map(
                 state.chunks(),
                 &tree.chunk_id,
                 &tree.record,
-                Some(path),
+                Some((file, &batch.repo_id)),
             )?;
         }
-        removed.extend(chunk_ids_at(path));
+        removed.extend(chunk_ids_at(file));
         for tree in &scope.trees {
             upserts.push((tree.chunk_id.clone(), tree.record.clone()));
         }
     }
     for scope in &batch.tombstone_scopes {
-        removed.extend(chunk_ids_at(scope.scope.repo_relative_path.as_str()));
+        removed.extend(chunk_ids_at(&scope.scope.source_file));
     }
     // Trees after the batch: current minus removed plus upserts.
     let upserted: BTreeSet<&ChunkId> = upserts.iter().map(|(chunk_id, _tree)| chunk_id).collect();

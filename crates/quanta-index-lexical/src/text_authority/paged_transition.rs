@@ -29,6 +29,62 @@ use crate::text_authority::paged_writer::{
 use crate::text_authority::types::AddedTextDoc;
 
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
+// This optional verifier-local witness never replaces the independent route
+// diff or the authenticated closure traversal. Account for B-tree nodes and
+// allocator overhead conservatively; a large transition uses map_get instead.
+const MAX_ROUTE_WITNESS_BYTES: usize = 4 * 1024 * 1024;
+const ROUTE_WITNESS_SEGMENT_CHARGE: usize = 256;
+const ROUTE_WITNESS_OBJECT_CHARGE: usize = 256;
+
+pub(super) struct RouteWitness {
+    roots: BTreeMap<u64, BTreeSet<crate::lexical_store::ObjectRef>>,
+    charged_bytes: usize,
+}
+
+impl RouteWitness {
+    fn new() -> Self {
+        Self {
+            roots: BTreeMap::new(),
+            charged_bytes: 0,
+        }
+    }
+
+    pub(super) fn roots(
+        &self,
+        segment_key: u64,
+    ) -> Option<&BTreeSet<crate::lexical_store::ObjectRef>> {
+        self.roots.get(&segment_key)
+    }
+
+    fn add(
+        &mut self,
+        segment_key: u64,
+        root: &crate::lexical_store::ObjectRef,
+        limit_bytes: usize,
+    ) -> bool {
+        let new_segment = !self.roots.contains_key(&segment_key);
+        let new_object = new_segment
+            || self
+                .roots
+                .get(&segment_key)
+                .is_none_or(|roots| !roots.contains(root));
+        let charge = usize::from(new_segment) * ROUTE_WITNESS_SEGMENT_CHARGE
+            + usize::from(new_object) * ROUTE_WITNESS_OBJECT_CHARGE;
+        let Some(total) = self.charged_bytes.checked_add(charge) else {
+            return false;
+        };
+        if total > limit_bytes {
+            return false;
+        }
+        let _inserted = self
+            .roots
+            .entry(segment_key)
+            .or_default()
+            .insert(root.clone());
+        self.charged_bytes = total;
+        true
+    }
+}
 
 struct CleanSelection {
     segments: BTreeSet<u64>,
@@ -465,7 +521,7 @@ pub(crate) fn verify_transition_for_seal_with_policy(
             }
         }
     }
-    verify_route_diff(
+    let route_witness = verify_route_diff(
         store,
         old,
         root,
@@ -535,20 +591,28 @@ pub(crate) fn verify_transition_for_seal_with_policy(
             })
             .transpose()?
             .flatten();
+        let segment_key = u64::from_be_bytes(
+            key.as_slice()
+                .try_into()
+                .map_err(|_width| corrupt("changed segment key width differs"))?,
+        );
         let index_encoded_bytes = if let Some(bytes) = inherited_bytes {
             bytes
+        } else if segment_key >= first_new_segment_id
+            && let Some(witness) = route_witness
+                .as_ref()
+                .filter(|witness| witness.roots(segment_key).is_some())
+        {
+            super::paged_verify::independently_count_segment_index_from_verified_route_diff(
+                store, root, &key, &reference, witness, budget,
+            )?
         } else {
             super::paged_verify::independently_count_segment_index(
                 store, root, &key, &reference, budget,
             )?
         };
         if genuinely_new {
-            let id = u64::from_be_bytes(
-                key.as_slice()
-                    .try_into()
-                    .map_err(|_width| corrupt("changed segment key width differs"))?,
-            );
-            let _previous = new_segment_index_bytes.insert(id, index_encoded_bytes);
+            let _previous = new_segment_index_bytes.insert(segment_key, index_encoded_bytes);
         }
         added.push(SegmentInput {
             key,
@@ -1395,7 +1459,48 @@ fn verify_route_diff(
     first_new_segment_id: u64,
     removed_segments: &BTreeSet<u64>,
     budget: Option<&RequestBudgetV1>,
-) -> Result<(), CoreError> {
+) -> Result<Option<RouteWitness>, CoreError> {
+    verify_route_diff_with_witness_limit(
+        store,
+        old,
+        root,
+        first_new_segment_id,
+        removed_segments,
+        budget,
+        MAX_ROUTE_WITNESS_BYTES,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn verify_route_diff_for_test(
+    store: &ObjectStore,
+    old: &NativeRoot,
+    root: &NativeRoot,
+    first_new_segment_id: u64,
+    removed_segments: &BTreeSet<u64>,
+    witness_limit_bytes: usize,
+) -> Result<Option<RouteWitness>, CoreError> {
+    verify_route_diff_with_witness_limit(
+        store,
+        old,
+        root,
+        first_new_segment_id,
+        removed_segments,
+        None,
+        witness_limit_bytes,
+    )
+}
+
+fn verify_route_diff_with_witness_limit(
+    store: &ObjectStore,
+    old: &NativeRoot,
+    root: &NativeRoot,
+    first_new_segment_id: u64,
+    removed_segments: &BTreeSet<u64>,
+    budget: Option<&RequestBudgetV1>,
+    witness_limit_bytes: usize,
+) -> Result<Option<RouteWitness>, CoreError> {
+    let mut witness = Some(RouteWitness::new());
     for (before, after, kind) in [
         (
             &old.gram_routes,
@@ -1429,6 +1534,13 @@ fn verify_route_diff(
                 {
                     if reference.root.kind != kind {
                         return Err(corrupt("new route posting kind differs"));
+                    }
+                    if let Some(retained) = witness.as_mut()
+                        && !retained.add(segment_key, &reference.root, witness_limit_bytes)
+                    {
+                        // Preserve the independent hash/count proof and use
+                        // the original point-lookups for this large transition.
+                        witness = None;
                     }
                     let (hash, count) = added_hashes
                         .entry(segment_key)
@@ -1478,7 +1590,7 @@ fn verify_route_diff(
             return Err(corrupt("route additions have unknown segment"));
         }
     }
-    Ok(())
+    Ok(witness)
 }
 
 fn route_map(root: &NativeRoot, surface: u8) -> Result<&MapRoot, CoreError> {

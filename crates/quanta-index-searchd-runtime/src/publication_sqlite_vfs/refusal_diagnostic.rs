@@ -595,18 +595,29 @@ mod tests {
             io.finish(&Err::<(), _>(Refusal::Io));
         });
         require(lines.len() == 2, "mapped observations missing")?;
-        let capacity: serde_json::Value = serde_json::from_slice(&lines[0])?;
-        let io: serde_json::Value = serde_json::from_slice(&lines[1])?;
+        let capacity: serde_json::Value =
+            serde_json::from_slice(lines.first().ok_or("capacity observation absent")?)?;
+        let io: serde_json::Value =
+            serde_json::from_slice(lines.get(1).ok_or("Io observation absent")?)?;
         require(
-            capacity["detail"] == "budget detail",
+            capacity.get("detail").and_then(serde_json::Value::as_str) == Some("budget detail"),
             "budget detail was lost",
         )?;
         require(
-            capacity["mapped_refusal"] == "Capacity",
+            capacity
+                .get("mapped_refusal")
+                .and_then(serde_json::Value::as_str)
+                == Some("Capacity"),
             "budget mapping differs",
         )?;
-        require(io["detail"] == "actual Io", "Io detail was lost")?;
-        require(io["core_variant"] == "Storage", "Io variant differs")?;
+        require(
+            io.get("detail").and_then(serde_json::Value::as_str) == Some("actual Io"),
+            "Io detail was lost",
+        )?;
+        require(
+            io.get("core_variant").and_then(serde_json::Value::as_str) == Some("Storage"),
+            "Io variant differs",
+        )?;
         Ok(())
     }
 

@@ -245,6 +245,8 @@ pub enum QueryPlanError {
     InvalidSymbolName,
     /// The natural-language plan produced no tokens after tokenization.
     EmptyTokenPlan,
+    /// Go trace semantic input needs the natural-language lexical policy.
+    SemanticInputRequiresNaturalLanguage,
     /// The distinct-token count exceeded the configured maximum.
     TokenLimitExceeded {
         /// Observed distinct token count.
@@ -307,6 +309,7 @@ impl QueryPlanError {
             Self::UnsupportedPolicy(_) => "RBR_QUERY_POLICY_UNSUPPORTED",
             Self::InvalidSymbolName => "RBR_QUERY_SYMBOL_NAME_INVALID",
             Self::EmptyTokenPlan => "RBR_QUERY_NO_INDEXABLE_TOKENS",
+            Self::SemanticInputRequiresNaturalLanguage => "RBR_QUERY_SEMANTIC_INPUT_REQUIRES_NL",
             Self::TokenLimitExceeded { .. } => "RBR_QUERY_TOKEN_LIMIT_EXCEEDED",
             Self::InvalidNlConfig { .. } => "RBR_QUERY_NL_CONFIG_INVALID",
             Self::TokenCharacterLimitExceeded { .. } => "RBR_QUERY_TOKEN_CHAR_LIMIT_EXCEEDED",
@@ -335,6 +338,12 @@ impl std::fmt::Display for QueryPlanError {
             ),
             Self::EmptyTokenPlan => {
                 write!(f, "natural-language plan produced no tokens")
+            }
+            Self::SemanticInputRequiresNaturalLanguage => {
+                write!(
+                    f,
+                    "Go trace semantic input requires the natural-language policy"
+                )
             }
             Self::TokenLimitExceeded { tokens, max_tokens } => {
                 write!(
@@ -408,7 +417,7 @@ pub struct QueryPlan {
     /// Exact lexical-lane request (DSL text, literal phrase, or token-OR
     /// plan depending on the policy).
     pub lexical_request: String,
-    /// Exact semantic-lane text (the raw query under every policy).
+    /// Exact semantic-lane text (raw query unless the blind task binds an explicit input).
     pub semantic_text: String,
     /// SHA-256 of the raw query bytes.
     pub original_query_sha256: String,

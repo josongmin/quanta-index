@@ -7,8 +7,8 @@ use super::*;
 use quanta_index_contract::lex::{SymbolKindCode, SymbolRelationship, SymbolSpan};
 use quanta_index_contract::{
     CapabilityStatusV1, ClusterMembershipReplaceV1, ManifestGeneration, OwnerDocKind, RepoId,
-    RevisionId, SemanticCorpusKindV1, SemanticSourceRecordV1, SourcePublicationEvent, SourceRoleV1,
-    SymbolId,
+    RepoRelativePath, RevisionId, SemanticCorpusKindV1, SemanticSourceRecordV1,
+    SourcePublicationEvent, SourceRoleV1, SymbolId,
 };
 
 fn budgets(chunk: usize) -> PreparationBudgets {
@@ -276,7 +276,7 @@ fn full_reconciliation_handles_move_delete_and_recipe_change() {
 }
 
 #[test]
-fn duplicate_keys_and_path_owner_conflicts_are_rejected() {
+fn duplicate_file_keys_refuse_but_same_path_distinct_owners_survive() {
     let one = prepare("same.txt", b"x", "v1", 8);
     let two = prepare("same.txt", b"x", "v1", 8);
     let empty = PriorSourceManifest::new(Vec::new()).unwrap();
@@ -289,18 +289,76 @@ fn duplicate_keys_and_path_owner_conflicts_are_rejected() {
         ),
         Err(PreparationError::DuplicateSource)
     ));
-    let mut other = prepare("same.txt", b"y", "v1", 8);
-    other.context.stable_key = "other".into();
-    other.context.source.file.source_repo_id = RepoId::new("other").unwrap();
-    assert!(matches!(
-        reconcile_complete_universe(
-            &empty,
-            CompleteSourceSet::new(vec![one, other]),
-            intent(None),
-            4096
-        ),
-        Err(PreparationError::PathOwnershipConflict)
-    ));
+    let mut other_context = context("same.txt", b"y", "v1", 8);
+    other_context.stable_key = "other".into();
+    other_context.source.file.source_repo_id = RepoId::new("other").unwrap();
+    let other = PlainTextAdapter
+        .prepare(TextSource {
+            context: other_context,
+            bytes: b"y",
+        })
+        .expect("prepare a distinct source owner before computing coverage and units");
+    let changes = reconcile_complete_universe(
+        &empty,
+        CompleteSourceSet::new(vec![one, other]),
+        intent(None),
+        4096,
+    )
+    .expect("distinct source-file identities survive one path");
+    assert_eq!(changes.next_manifest().entries().len(), 2);
+    assert_eq!(
+        changes
+            .next_manifest()
+            .entries()
+            .iter()
+            .map(|entry| entry.source().file.source_repo_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["other", "source"])
+    );
+}
+
+#[test]
+fn same_path_foreign_owner_removal_tombstones_only_its_semantic_scope() {
+    let source = semantic_source("card");
+    let mut foreign_context = source.context.clone();
+    foreign_context.stable_key = "foreign-stable-key".into();
+    foreign_context.source.file.source_repo_id = RepoId::new("foreign").unwrap();
+    let mut foreign_semantic = source.semantic.clone();
+    foreign_semantic[0].scope.source_file = foreign_context.source.file.clone();
+    foreign_semantic[0].sources[0].source_file = foreign_context.source.file.clone();
+    foreign_semantic[0].sources[0].record_id = "record-foreign".into();
+    let foreign_scope = foreign_semantic[0].scope.clone();
+    let foreign = PreparedSource::from_lexical(
+        foreign_context,
+        b"source".to_vec(),
+        LanguageCode::new("text").unwrap(),
+        Vec::new(),
+        Vec::new(),
+        SymbolCoverage::NotRequested,
+        foreign_semantic,
+    )
+    .unwrap();
+    let initial = reconcile_complete_universe(
+        &PriorSourceManifest::new(Vec::new()).unwrap(),
+        CompleteSourceSet::new(vec![source.clone(), foreign.clone()]),
+        intent(None),
+        64 * 1024,
+    )
+    .unwrap();
+    let removal = reconcile_complete_universe(
+        initial.next_manifest(),
+        CompleteSourceSet::new(vec![source.clone()]),
+        intent(Some(1)),
+        64 * 1024,
+    )
+    .unwrap();
+    assert_eq!(removal.tombstones(), &[foreign.source().file.clone()]);
+    assert_eq!(removal.semantic_tombstones(), &[foreign_scope]);
+    assert_eq!(removal.next_manifest().entries().len(), 1);
+    assert_eq!(
+        removal.next_manifest().entries()[0].source().file,
+        source.source().file
+    );
 }
 
 #[test]
@@ -311,6 +369,7 @@ fn prior_manifest_serialization_is_sorted_and_rejects_duplicate_semantic_keys() 
         corpus_kind: SemanticCorpusKindV1::DocumentLeaf,
         owner_kind: OwnerDocKind::File,
         owner_id: "file-a".into(),
+        source_file: a.source().file.clone(),
     };
     let entry = |source: &PreparedSource, semantic_scopes| {
         PriorSourceEntry::new(
@@ -379,6 +438,7 @@ fn deleted_source_keeps_old_semantic_scope_for_tombstone() {
         corpus_kind: SemanticCorpusKindV1::DocumentLeaf,
         owner_kind: OwnerDocKind::File,
         owner_id: "old-doc".into(),
+        source_file: old.source().file.clone(),
     };
     let prior = PriorSourceManifest::new(vec![
         PriorSourceEntry::new(
@@ -408,6 +468,7 @@ fn custom_constructor_rejects_unbacked_cluster_membership_and_cbor_oversize() {
             corpus_kind: SemanticCorpusKindV1::ClusterCard,
             owner_kind: OwnerDocKind::File,
             owner_id: "cluster".into(),
+            source_file: context.source.file.clone(),
         },
         scope_digest: "digest".into(),
         sources: Vec::new(),
@@ -467,6 +528,7 @@ fn try_semantic_source_with_budget(
         corpus_kind: SemanticCorpusKindV1::SymbolCard,
         owner_kind: OwnerDocKind::Symbol,
         owner_id: "symbol-1".into(),
+        source_file: context.source.file.clone(),
     };
     let record = SemanticSourceRecordV1 {
         record_id: "record-1".into(),
@@ -475,7 +537,7 @@ fn try_semantic_source_with_budget(
         owner_id: scope.owner_id.clone(),
         source_doc_id: "doc-1".into(),
         parent_owner_id: None,
-        repo_relative_path: context.source.file.repo_relative_path.clone(),
+        source_file: context.source.file.clone(),
         language: Some("text".into()),
         package: None,
         symbol_kind: Some("function".into()),
@@ -514,6 +576,7 @@ fn cluster_source(reversed: bool, changed_member: bool, bytes: &[u8]) -> Prepare
         corpus_kind: SemanticCorpusKindV1::ClusterCard,
         owner_kind: OwnerDocKind::Module,
         owner_id: "cluster".into(),
+        source_file: context.source.file.clone(),
     };
     let mut records = Vec::new();
     let mut memberships = Vec::new();

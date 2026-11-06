@@ -39,7 +39,7 @@ impl PathScratch {
     pub(super) fn begin_owner_spool(&self, budget: &WorkBudget) -> Result<(), IndexError> {
         budget.checkpoint()?;
         self.connection
-            .scoped()?
+            .scoped(budget)?
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|error| scratch_error(&error))
     }
@@ -49,14 +49,35 @@ impl PathScratch {
         mutation: &OwnerMutation,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
+        Self::charge_owner_edit(budget)?;
+        let db = self.connection.scoped(budget)?;
+        quanta_index_scratch_sqlite::reserve_for_write(&db, self.allocation.as_ref(), 160, budget)?;
+        Self::insert_owner_edit(&db, mutation)
+    }
+
+    pub(super) fn append_owner_edit_reserved(
+        db: &rusqlite::Connection,
+        mutation: &OwnerMutation,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        Self::charge_owner_edit(budget)?;
+        budget.checkpoint()?;
+        Self::insert_owner_edit(db, mutation)
+    }
+
+    fn charge_owner_edit(budget: &mut WorkBudget) -> Result<(), IndexError> {
         budget.charge(WorkUsage {
             writes: 1,
             mutations: 1,
             bytes: 160,
             ..WorkUsage::default()
-        })?;
-        let db = self.connection.scoped()?;
-        quanta_index_scratch_sqlite::reserve_for_write(&db, self.allocation.as_ref(), 160, budget)?;
+        })
+    }
+
+    fn insert_owner_edit(
+        db: &rusqlite::Connection,
+        mutation: &OwnerMutation,
+    ) -> Result<(), IndexError> {
         let expected = mutation.expected.map(|reference| reference.0.0);
         let next = mutation.next.map(|reference| reference.0.0);
         let changed = db
@@ -87,7 +108,7 @@ impl PathScratch {
         }
         budget.checkpoint()?;
         self.connection
-            .scoped()?
+            .scoped(budget)?
             .execute_batch("COMMIT")
             .map_err(|error| scratch_error(&error))?;
         let capacity = usize::try_from(expected.count.min(PAGE_ROWS))
@@ -158,7 +179,7 @@ impl OwnerEditCursor<'_> {
         } else {
             &[]
         };
-        let db = self.scratch.connection.scoped()?;
+        let db = self.scratch.connection.scoped(budget)?;
         let mut statement = db
             .prepare_cached(OWNER_EDIT_SQL)
             .map_err(|error| scratch_error(&error))?;
@@ -216,7 +237,7 @@ impl OwnerEditCursor<'_> {
             let rows: i64 = self
                 .scratch
                 .connection
-                .scoped()?
+                .scoped(budget)?
                 .prepare_cached("SELECT COUNT(*) FROM owner_edits")
                 .map_err(|error| scratch_error(&error))?
                 .query_row([], |row| row.get(0))

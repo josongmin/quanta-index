@@ -44,8 +44,9 @@ impl LiteralEditSpool {
         let owned_db = ScratchConnection::open(
             &allocation.path().join("literal.sqlite"),
             allocation.as_ref(),
+            budget,
         )?;
-        let db = owned_db.scoped()?;
+        let db = owned_db.scoped(budget)?;
         db.execute_batch(
             "PRAGMA page_size=4096; PRAGMA cache_size=-2048;
             PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA journal_mode=OFF;
@@ -103,14 +104,14 @@ impl LiteralEditSpool {
             .checked_add(128)
             .ok_or(IndexError::ResourceLimited)?;
         quanta_index_scratch_sqlite::reserve_for_write(
-            &*self.db.scoped()?,
+            &*self.db.scoped(budget)?,
             self.allocation.as_ref(),
             incoming,
             budget,
         )?;
         let inserted = self
             .db
-            .scoped()?
+            .scoped(budget)?
             .execute(
                 "INSERT INTO edits(surface,k,p,n) VALUES (?1,?2,?3,?4)",
                 params![
@@ -159,14 +160,14 @@ impl LiteralEditSpool {
             .checked_add(3 + 128)
             .ok_or(IndexError::ResourceLimited)?;
         quanta_index_scratch_sqlite::reserve_for_write(
-            &*self.db.scoped()?,
+            &*self.db.scoped(budget)?,
             self.allocation.as_ref(),
             incoming,
             budget,
         )?;
         let inserted = self
             .db
-            .scoped()?
+            .scoped(budget)?
             .execute(
                 "INSERT INTO posting(g,k,p,n) VALUES (?1,?2,?3,?4)",
                 params![
@@ -207,7 +208,7 @@ impl LiteralEditSpool {
         } else {
             "SELECT g FROM posting GROUP BY g ORDER BY g LIMIT 64"
         };
-        let io_scope = self.db.scoped()?;
+        let io_scope = self.db.scoped(budget)?;
         let mut statement = io_scope.prepare(query).map_err(|error| sql(&error))?;
         let mut rows = if let Some(after) = after {
             statement
@@ -239,7 +240,7 @@ impl LiteralEditSpool {
             reads: 1,
             ..WorkUsage::default()
         })?;
-        let (add, remove): (i64, i64) = self.db.scoped()?.query_row(
+        let (add, remove): (i64, i64) = self.db.scoped(budget)?.query_row(
             "SELECT COALESCE(SUM(n IS NOT NULL),0),COALESCE(SUM(p IS NOT NULL),0) FROM posting WHERE g=?1",
             params![gram.as_slice()], |row| Ok((row.get(0)?,row.get(1)?))).map_err(|error| sql(&error))?;
         let add = u64::try_from(add)
@@ -293,7 +294,7 @@ impl MapEditCursor for PostingCursor<'_> {
                 .as_ref()
                 .map(|position| position.edit.key.as_slice())
             {
-                self.spool.db.scoped()?.query_row(
+                self.spool.db.scoped(budget)?.query_row(
                     POSTING_AFTER_SQL,
                     params![gram.as_slice(), after],
                     |row| {
@@ -303,7 +304,7 @@ impl MapEditCursor for PostingCursor<'_> {
                     },
                 )
             } else {
-                self.spool.db.scoped()?.query_row(
+                self.spool.db.scoped(budget)?.query_row(
                     "SELECT k,p,n FROM posting WHERE g=?1 ORDER BY k LIMIT 1",
                     params![gram.as_slice()],
                     |row| {
@@ -349,7 +350,7 @@ impl MapEditCursor for TopCursor<'_> {
                 .as_ref()
                 .map(|position| position.edit.key.as_slice())
             {
-                self.spool.db.scoped()?.query_row(
+                self.spool.db.scoped(budget)?.query_row(
                     TOP_AFTER_SQL,
                     params![self.surface, after],
                     |row| {
@@ -362,7 +363,7 @@ impl MapEditCursor for TopCursor<'_> {
                     },
                 )
             } else {
-                self.spool.db.scoped()?.query_row(
+                self.spool.db.scoped(budget)?.query_row(
                     "SELECT k,p,n FROM edits WHERE surface=?1 ORDER BY k LIMIT 1",
                     params![self.surface],
                     |row| {
@@ -530,11 +531,11 @@ mod tests {
         let spool = LiteralEditSpool::new(&TestScratch, &mut work)?;
         let target = [255_u8, 255, 0];
         {
-            let io_scope = spool.db.scoped()?;
+            let io_scope = spool.db.scoped(&work)?;
             let mut posting = io_scope
                 .prepare("INSERT INTO posting(g,k) VALUES(?1,?2)")
                 .map_err(|error| sql(&error))?;
-            let io_scope = spool.db.scoped()?;
+            let io_scope = spool.db.scoped(&work)?;
             let mut top = io_scope
                 .prepare("INSERT INTO edits(surface,k) VALUES(0,?1)")
                 .map_err(|error| sql(&error))?;
@@ -558,9 +559,9 @@ mod tests {
         let early_args: [&dyn ToSql; 1] = [&early_gram];
         let late_args: [&dyn ToSql; 1] = [&late_gram];
         let (early_keys, early_steps) =
-            probe_keyset(&*spool.db.scoped()?, GRAM_AFTER_SQL, &early_args)?;
+            probe_keyset(&*spool.db.scoped(&work)?, GRAM_AFTER_SQL, &early_args)?;
         let (late_keys, late_steps) =
-            probe_keyset(&*spool.db.scoped()?, GRAM_AFTER_SQL, &late_args)?;
+            probe_keyset(&*spool.db.scoped(&work)?, GRAM_AFTER_SQL, &late_args)?;
         let expected_early: Vec<Vec<u8>> = (10_u16..74)
             .map(|number| {
                 let key = number.to_be_bytes();
@@ -591,8 +592,10 @@ mod tests {
                 } else {
                     ([&surface, &early], [&surface, &late])
                 };
-            let (early_keys, early_steps) = probe_keyset(&*spool.db.scoped()?, query, &early_args)?;
-            let (late_keys, late_steps) = probe_keyset(&*spool.db.scoped()?, query, &late_args)?;
+            let (early_keys, early_steps) =
+                probe_keyset(&*spool.db.scoped(&work)?, query, &early_args)?;
+            let (late_keys, late_steps) =
+                probe_keyset(&*spool.db.scoped(&work)?, query, &late_args)?;
             check_eq!(early_keys, vec![10_u16.to_be_bytes().to_vec()]);
             check_eq!(late_keys, vec![4097_u16.to_be_bytes().to_vec()]);
             check!(late_steps <= early_steps.saturating_add(128));
@@ -796,7 +799,7 @@ mod tests {
             let spool = LiteralEditSpool::new(&TestScratch, &mut work)?;
             spool
                 .db
-                .scoped()?
+                .scoped(&work)?
                 .execute_batch(statement)
                 .map_err(|error| sql(&error))?;
             let mut cursor: Box<dyn MapEditCursor + '_> = if posting {
@@ -853,7 +856,7 @@ mod tests {
         }
         spool
             .db
-            .scoped()?
+            .scoped(&work)?
             .execute_batch("INSERT INTO posting VALUES(x'000102',x'01',NULL,zeroblob(32))")
             .map_err(|error| sql(&error))?;
         if !matches!(
@@ -882,7 +885,7 @@ mod tests {
         let spool = LiteralEditSpool::new(&TestScratch, &mut work)?;
         spool
             .db
-            .scoped()?
+            .scoped(&work)?
             .execute_batch("INSERT INTO posting VALUES(zeroblob(4),x'01',NULL,zeroblob(32))")
             .map_err(|error| sql(&error))?;
         if !matches!(
@@ -913,7 +916,7 @@ mod tests {
         let mut budget = budget()?;
         let spool = LiteralEditSpool::new(&TestScratch, &mut budget)?;
         let refused = quanta_index_scratch_sqlite::reserve_for_write(
-            &*spool.db.scoped()?,
+            &*spool.db.scoped(&budget)?,
             spool.allocation.as_ref(),
             SCRATCH_MAX_BYTES,
             &mut budget,
@@ -921,16 +924,16 @@ mod tests {
         check_eq!(refused, Err(IndexError::ResourceLimited));
         let untouched: i64 = spool
             .db
-            .scoped()?
+            .scoped(&budget)?
             .query_row("SELECT count(*) FROM edits", [], |row| row.get(0))
             .map_err(|error| sql(&error))?;
         check_eq!(untouched, 0);
         let _limit: u32 = spool
             .db
-            .scoped()?
+            .scoped(&budget)?
             .query_row("PRAGMA max_page_count=8", [], |row| row.get(0))
             .map_err(|error| sql(&error))?;
-        let failed = spool.db.scoped()?.execute(
+        let failed = spool.db.scoped(&budget)?.execute(
             "INSERT INTO edits(surface,k,n) VALUES(0,x'01',zeroblob(1048576))",
             [],
         );

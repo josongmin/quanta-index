@@ -157,6 +157,119 @@ def test_path_module_is_resolved_under_declaring_module(tmp_path: Path):
     assert keys(root) == ["demo: owner::rows, peer"]
 
 
+def test_inline_test_path_modules_use_the_nested_module_directory(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\nmod peer;\n",
+            "owner.rs": (
+                "#[cfg(test)]\nmod tests {\n"
+                '    #[path = "count.rs"]\n    mod count;\n'
+                '    #[path = "overlay.rs"]\n    mod overlay;\n}\n'
+            ),
+            "owner/tests/count.rs": "fn check() { crate::peer::edge(); }\n",
+            "owner/tests/overlay.rs": "fn check() { crate::peer::edge(); }\n",
+            "peer.rs": "pub(crate) fn edge() {}\n",
+        },
+    )
+    loaded = MODULE.load_crate(root)
+    assert "owner::tests::count" not in loaded.modules
+    assert "owner::tests::overlay" not in loaded.modules
+    assert keys(root) == []
+
+
+def test_nested_inline_production_path_keeps_its_cycle(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\nmod peer;\n",
+            "owner.rs": (
+                "mod inner {\n    mod nested {\n"
+                '        #[path = "rows.rs"]\n        mod rows;\n    }\n}\n'
+            ),
+            "owner/inner/nested/rows.rs": (
+                "pub(crate) struct Row;\n"
+                "pub(crate) fn peer() -> crate::peer::Peer { crate::peer::Peer }\n"
+            ),
+            "peer.rs": (
+                "pub(crate) struct Peer;\n"
+                "pub(crate) fn row() -> crate::owner::inner::nested::rows::Row { "
+                "crate::owner::inner::nested::rows::Row }\n"
+            ),
+        },
+    )
+    assert keys(root) == ["demo: owner::inner::nested::rows, peer"]
+
+
+def test_path_alias_reparents_already_scanned_descendants(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\nmod peer;\n",
+            "owner.rs": '#[path = "boot.rs"]\nmod boot;\n',
+            "boot.rs": '#[path = "boot/rows.rs"]\nmod rows;\n',
+            "boot/rows.rs": (
+                "pub(crate) struct Row;\n"
+                "pub(crate) fn peer() -> crate::peer::Peer { crate::peer::Peer }\n"
+            ),
+            "peer.rs": (
+                "pub(crate) struct Peer;\n"
+                "pub(crate) fn row() -> crate::owner::boot::rows::Row { "
+                "crate::owner::boot::rows::Row }\n"
+            ),
+        },
+    )
+    assert keys(root) == ["demo: owner::boot::rows, peer"]
+
+
+def test_missing_inline_path_source_is_refused(tmp_path: Path):
+    import pytest
+
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\n",
+            "owner.rs": 'mod inner {\n    #[path = "missing.rs"]\n    mod rows;\n}\n',
+            "missing.rs": "fn unrelated() {}\n",
+        },
+    )
+    with pytest.raises(ValueError, match="declared Rust path module has no source"):
+        keys(root)
+
+
+def test_inline_path_override_is_not_guessed_from_the_module_name(tmp_path: Path):
+    import pytest
+
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\n",
+            "owner.rs": (
+                '#[path = "elsewhere"]\nmod inner {\n    #[path = "rows.rs"]\n    mod rows;\n}\n'
+            ),
+            "owner/inner/rows.rs": "fn decoy() {}\n",
+        },
+    )
+    with pytest.raises(ValueError, match="unsupported Rust inline module path override"):
+        keys(root)
+
+
+def test_recursive_external_path_sources_are_refused(tmp_path: Path):
+    import pytest
+
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\n",
+            "owner.rs": '#[path = "../tests/support/a.rs"]\nmod fixture;\n',
+            "../tests/support/a.rs": '#[path = "b.rs"]\nmod b;\n',
+            "../tests/support/b.rs": '#[path = "a.rs"]\nmod a;\n',
+        },
+    )
+    with pytest.raises(ValueError, match="recursive Rust path module source"):
+        keys(root)
+
+
 def test_cfg_test_path_module_does_not_add_production_edge(tmp_path: Path):
     root = crate(
         tmp_path,
@@ -188,10 +301,14 @@ def test_cfg_test_subtree_can_declare_fixture_outside_src(tmp_path: Path):
             "lib.rs": "#[cfg(test)]\nmod owner;\nmod peer;\n",
             "owner.rs": "mod tests;\n",
             "owner/tests.rs": '#[path = "../../tests/support/fixture.rs"]\nmod fixture;\n',
-            "../tests/support/fixture.rs": "fn edge() { crate::peer::edge(); }\n",
+            "../tests/support/fixture.rs": (
+                '#[path = "helper.rs"]\nmod helper;\nfn edge() { crate::peer::edge(); }\n'
+            ),
+            "../tests/support/helper.rs": "fn check() { crate::peer::edge(); }\n",
             "peer.rs": "fn edge() {}\n",
         },
     )
+    assert "owner::tests::fixture::helper" not in MODULE.load_crate(root).modules
     assert keys(root) == []
 
 
@@ -421,10 +538,7 @@ def test_inline_test_child_does_not_hide_same_named_production_module(tmp_path: 
         tmp_path,
         {
             "lib.rs": "mod owner;\nmod peer;\n",
-            "owner.rs": (
-                "pub(crate) mod shared;\n"
-                "#[cfg(test)]\nmod tests {\n    mod shared;\n}\n"
-            ),
+            "owner.rs": ("pub(crate) mod shared;\n#[cfg(test)]\nmod tests {\n    mod shared;\n}\n"),
             "owner/shared.rs": "pub(crate) struct S; pub(crate) fn p() -> crate::peer::P { crate::peer::P }\n",
             "owner/tests/shared.rs": "fn helper() {}\n",
             "peer.rs": "pub(crate) struct P; pub(crate) fn s() -> crate::owner::shared::S { crate::owner::shared::S }\n",

@@ -42,8 +42,8 @@ impl<'a> AttemptObjectReads<'a> {
         objects: &'a dyn ImmutableObjectPort,
         slot_hint: u64,
     ) -> Result<Self, IndexError> {
-        // Small windows do not pay for a corpus-sized table. Direct addressing
-        // bounds lookup work and makes collisions ordinary eviction, not trust.
+        // Small windows do not pay for a corpus-sized table. Two candidate
+        // slots bound lookup work; collisions remain eviction, not trust.
         let slots = slot_hint.saturating_mul(8).min(MAX_SLOTS);
         let slots = usize::try_from(slots).map_err(|_error| IndexError::ResourceLimited)?;
         Ok(Self::with_bounds(
@@ -96,21 +96,30 @@ impl<'a> AttemptObjectReads<'a> {
         })
     }
 
-    fn slot(&self, reference: ObjectRef) -> Result<usize, IndexError> {
-        let prefix: [u8; 4] = reference
-            .0
-            .0
+    fn slots(&self, reference: ObjectRef) -> Result<[usize; 2], IndexError> {
+        let digest = &reference.0.0;
+        let prefix: [u8; 4] = digest
             .get(..4)
+            .ok_or(IndexError::ResourceLimited)?
+            .try_into()
+            .map_err(|_width| IndexError::ResourceLimited)?;
+        let alternate: [u8; 4] = digest
+            .get(4..8)
             .ok_or(IndexError::ResourceLimited)?
             .try_into()
             .map_err(|_width| IndexError::ResourceLimited)?;
         let prefix = usize::try_from(u32::from_le_bytes(prefix))
             .map_err(|_width| IndexError::ResourceLimited)?;
+        let alternate = usize::try_from(u32::from_le_bytes(alternate))
+            .map_err(|_width| IndexError::ResourceLimited)?;
         let mask = self
             .slot_limit
             .checked_sub(1)
             .ok_or(IndexError::ResourceLimited)?;
-        Ok(prefix & mask)
+        let primary = prefix & mask;
+        // With a power-of-two table, the alternate is distinct unless there
+        // is only one slot. This preserves the one-slot eviction contract.
+        Ok([primary, primary ^ ((alternate & mask) | (mask & 1))])
     }
 
     fn retain(&self, object: &StoredObject, budget: &WorkBudget) -> Result<(), IndexError> {
@@ -126,18 +135,40 @@ impl<'a> AttemptObjectReads<'a> {
         if bytes > self.byte_limit {
             return Ok(());
         }
-        let slot = self.slot(object.registration.reference)?;
+        let reference = object.registration.reference;
+        let candidates = self.slots(reference)?;
+        let [primary, _] = candidates;
         let mut window = self.lock()?;
-        let old_bytes = window
-            .slots
-            .get(slot)
-            .and_then(Option::as_ref)
-            .map_or(0, |entry| entry.bytes);
-        let retained = window
-            .retained
-            .checked_sub(old_bytes)
-            .and_then(|used| used.checked_add(bytes))
-            .ok_or(IndexError::ResourceLimited)?;
+        let same = candidates.into_iter().find(|&slot| {
+            window
+                .slots
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_some_and(|entry| entry.object.registration.reference == reference)
+        });
+        let vacant = candidates
+            .into_iter()
+            .find(|&slot| window.slots.get(slot).is_none_or(Option::is_none));
+        let mut slot = same.or(vacant).unwrap_or(primary);
+        let retained_after = |slot: usize| {
+            let old_bytes = window
+                .slots
+                .get(slot)
+                .and_then(Option::as_ref)
+                .map_or(0, |entry| entry.bytes);
+            window
+                .retained
+                .checked_sub(old_bytes)
+                .and_then(|used| used.checked_add(bytes))
+                .ok_or(IndexError::ResourceLimited)
+        };
+        let mut retained = retained_after(slot)?;
+        if retained > self.byte_limit && same.is_none() && slot != primary {
+            // A vacant alternate must not make the old primary-replacement
+            // path lose an object that still fits within the same byte cap.
+            slot = primary;
+            retained = retained_after(slot)?;
+        }
         if retained > self.byte_limit {
             return Ok(());
         }
@@ -231,13 +262,17 @@ impl ImmutableObjectPort for AttemptObjectReads<'_> {
             return self.objects.get(reference, budget);
         }
         budget.checkpoint()?;
-        let hit = self
-            .lock()?
-            .slots
-            .get(self.slot(reference)?)
-            .and_then(Option::as_ref)
-            .filter(|entry| entry.object.registration.reference == reference)
-            .map(|entry| entry.object.clone());
+        let candidates = self.slots(reference)?;
+        let window = self.lock()?;
+        let hit = candidates.into_iter().find_map(|slot| {
+            window
+                .slots
+                .get(slot)
+                .and_then(Option::as_ref)
+                .filter(|entry| entry.object.registration.reference == reference)
+                .map(|entry| entry.object.clone())
+        });
+        drop(window);
         if let Some(object) = hit {
             let object = self.objects.read_retained(&object, budget)?;
             if object.registration.reference != reference {
@@ -255,6 +290,24 @@ impl ImmutableObjectPort for AttemptObjectReads<'_> {
         }
         self.retain(&object, budget)?;
         Ok(object)
+    }
+
+    fn read_retained(
+        &self,
+        object: &StoredObject,
+        budget: &mut WorkBudget,
+    ) -> Result<StoredObject, IndexError> {
+        // The caller already owns this DATA within the protected attempt. Do
+        // not make its reuse depend on whether the bounded lookup window kept
+        // the slot. The selected port retains its original charge and refusal.
+        budget.checkpoint()?;
+        let retained = self.objects.read_retained(object, budget)?;
+        if retained.registration.reference != object.registration.reference {
+            return Err(IndexError::CorruptObject(
+                "retained object reference mismatch".into(),
+            ));
+        }
+        Ok(retained)
     }
 }
 

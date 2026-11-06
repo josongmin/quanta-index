@@ -42,6 +42,12 @@ pub struct DiagnosticLaneV1(pub u16);
 pub trait DiagnosticClockV1: fmt::Debug + Send + Sync {
     /// Monotonic nanoseconds since the capture origin.
     fn now_ns(&self) -> u64;
+
+    /// CPU nanoseconds consumed by the calling thread. Unavailable is distinct
+    /// from zero; this clock must not be used for cross-thread durations.
+    fn thread_cpu_now_ns(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Closed stage vocabulary for the tracing contract.
@@ -89,6 +95,8 @@ pub enum DiagnosticStageV1 {
     SourceTransactionOne,
     SourceTransactionTwo,
     NativeSourceApply,
+    NativeSourceOwnerPrepare,
+    NativeSourcePathValidate,
     NativeSourcePathInstall,
     NativeSourceMapApply,
     RetentionPlan,
@@ -101,7 +109,11 @@ pub enum DiagnosticStageV1 {
     SqliteWork,
     PhysicalInodeCensus,
     ManagedObjectReserve,
+    /// Synchronous managed-object install packet, including all physical phases.
+    ManagedObjectInstall,
     ManagedObjectConfirm,
+    /// Synchronous work-spool sealing before native publication begins.
+    NativeWorkSeal,
     NativePublish,
     FilePublish,
     LexicalSeal,
@@ -133,6 +145,18 @@ pub enum DiagnosticStageV1 {
     RuntimeMaintenance,
     RuntimeStop,
     RuntimeJoin,
+    /// Synchronous native text source and inventory preparation.
+    NativeTextInventoryPrepare,
+    /// Synchronous native text inventory map application.
+    NativeTextInventoryMapApply,
+    /// Synchronous native text inventory diff construction.
+    NativeTextInventoryDiff,
+    /// Inventory cursor work beneath a native text diff.
+    NativeTextInventoryRead,
+    /// Object-port occurrence read and complete count validation, excluding memo hits.
+    NativeTextOccurrenceRead,
+    /// Native text posting edit admission or bounded scratch flush.
+    NativeTextPostingEdit,
 }
 
 /// Root authority is explicit and independent of the product request ID.
@@ -225,10 +249,12 @@ pub enum DiagnosticSyncLabelV1 {
     PoolAdoptionJournalFull,
     PoolSyncAll,
     StateSyncAll,
+    PoolNewDirectoryPosix,
+    PoolNewParentPosix,
 }
 
 impl DiagnosticSyncLabelV1 {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 28] = [
         Self::GenerationDirectory,
         Self::PublicationDirectory,
         Self::PublicationParent,
@@ -255,6 +281,8 @@ impl DiagnosticSyncLabelV1 {
         Self::PoolAdoptionJournalFull,
         Self::PoolSyncAll,
         Self::StateSyncAll,
+        Self::PoolNewDirectoryPosix,
+        Self::PoolNewParentPosix,
     ];
 
     #[must_use]
@@ -286,6 +314,8 @@ impl DiagnosticSyncLabelV1 {
             Self::PoolAdoptionJournalFull => "pool_adoption_journal_full",
             Self::PoolSyncAll => "pool_sync_all",
             Self::StateSyncAll => "state_sync_all",
+            Self::PoolNewDirectoryPosix => "pool_new_directory_posix",
+            Self::PoolNewParentPosix => "pool_new_parent_posix",
         }
     }
 }
@@ -334,6 +364,11 @@ impl DiagnosticTerminalV1 {
 /// since its last successful settlement. A reached native sync span emits
 /// exactly one of them with value 1, independent of the sync result. This is
 /// not evidence of a stable parent, durability credit, or permission to skip.
+/// The six `SqliteWrite*` admission/envelope keys are aggregate Record-scope
+/// observations at native write callback boundaries. Their elapsed values are
+/// neither CPU time nor device service time; the lower envelope includes
+/// Rust/C glue, lower `xWrite`, and the post-write size/FD witness, but excludes
+/// the C pre-`BeforeWrite` witness.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum DiagnosticCounterV1 {
@@ -368,6 +403,9 @@ pub enum DiagnosticCounterV1 {
     WorkWrites,
     WorkBytes,
     WorkMutations,
+    /// CPU consumed by the same thread within one observed span. Nested spans
+    /// overlap and their values must not be added together.
+    ThreadCpuNs,
     SqliteRows,
     SqliteBatches,
     /// Reached lower-VFS xWrite calls in one diagnostic I/O scope. WAL, main
@@ -381,6 +419,27 @@ pub enum DiagnosticCounterV1 {
     SqliteWalWriteCalls,
     SqliteMainWriteCalls,
     SqliteOtherWriteCalls,
+    SqliteWriteAdmissionCalls,
+    SqliteWriteAdmissionRefusals,
+    SqliteWriteAdmissionElapsedNs,
+    SqliteWriteLowerEnvelopeElapsedNs,
+    SqliteWritePostCallbackElapsedNs,
+    SqliteWritePostCallbackRefusals,
+    /// Same-connection pager deltas during one Catalog connection lock.
+    /// Cache writes/spills count dirty pages, not VFS calls, bytes, or commits.
+    /// All four keys are present together only after two successful snapshots.
+    SqliteCacheHits,
+    SqliteCacheMisses,
+    SqliteCacheWrites,
+    SqliteCacheSpills,
+    /// Actual connection-opening settings. Cache size magnitude is paired with
+    /// `IsKib` (0: pages, 1: KiB); these are not allocation or RSS measurements.
+    /// A settings observation carries all five keys together.
+    SqlitePageSizeBytes,
+    SqliteCacheSizeMagnitude,
+    SqliteCacheSizeIsKib,
+    SqliteCacheSpillPages,
+    SqliteWalAutocheckpointPages,
     /// Native lexical query aggregate; not per-hit spans or physical I/O.
     QueryPostingCalls,
     QueryPostingHits,
@@ -410,6 +469,17 @@ pub enum DiagnosticCounterV1 {
     /// Entries passed to one reached managed reserve/confirm call, including
     /// retries and refusals. Not newly created files or confirmed registrations.
     ManagedObjectInputs,
+    /// Reached full occurrence-count validation calls on each inventory side.
+    /// Includes failed calls; not physical I/O or unique-reference counts.
+    TextOccurrencePriorValidationAttempts,
+    TextOccurrenceNextValidationAttempts,
+    /// Reuse of already validated counts within the same prepare attempt.
+    TextOccurrenceRamReuses,
+    TextOccurrenceSpillReuses,
+    /// Next count reused from the already validated identical prior reference.
+    TextOccurrenceEqualReuses,
+    /// Failed prior/next full-count validation calls, excluding memo lookup errors.
+    TextOccurrenceValidationFailures,
     InvalidAttemptTokens,
     UniqueClosureRefs,
     ClosureDependencyEdges,
@@ -480,6 +550,50 @@ pub struct DiagnosticSqliteSyncObservationV1 {
     pub posix_errno: Option<i32>,
 }
 
+/// The first original predicate that refused one owned claim renewal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticOwnedRenewalRefusalReasonV1 {
+    MissingClaim,
+    NotClaimed,
+    ClaimIdentity,
+    ClaimFence,
+    LeaseExpired,
+    MissingAssignment,
+    InactiveAssignment,
+    UndispatchedAssignment,
+    ExecutionExpired,
+    AssignmentClaim,
+    GrantMismatch,
+}
+
+impl DiagnosticOwnedRenewalRefusalReasonV1 {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingClaim => "missing_claim",
+            Self::NotClaimed => "not_claimed",
+            Self::ClaimIdentity => "claim_identity",
+            Self::ClaimFence => "claim_fence",
+            Self::LeaseExpired => "lease_expired",
+            Self::MissingAssignment => "missing_assignment",
+            Self::InactiveAssignment => "inactive_assignment",
+            Self::UndispatchedAssignment => "undispatched_assignment",
+            Self::ExecutionExpired => "execution_expired",
+            Self::AssignmentClaim => "assignment_claim",
+            Self::GrantMismatch => "grant_mismatch",
+        }
+    }
+}
+
+/// Values already read by the refusing transaction, never another clock sample.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticOwnedRenewalRefusalV1 {
+    pub reason: DiagnosticOwnedRenewalRefusalReasonV1,
+    pub now_ms: u64,
+    pub lease_until_ms: Option<u64>,
+    pub deadline_ms: Option<u64>,
+}
+
 /// Closed lexical object kinds used for bounded publication attribution.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(usize)]
@@ -547,6 +661,50 @@ impl DiagnosticObjectKindV1 {
     }
 }
 
+/// Disjoint physical phases within one managed-object install packet.
+/// An aggregate contains only intervals actually reached by that packet.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum DiagnosticObjectInstallPhaseV1 {
+    ChildValidation,
+    NamespaceAndCreate,
+    Write,
+    FileSync,
+    PublishAndRetire,
+    DirectorySync,
+    Barrier,
+    Settlement,
+    Existing,
+}
+
+impl DiagnosticObjectInstallPhaseV1 {
+    pub const ALL: [Self; 9] = [
+        Self::ChildValidation,
+        Self::NamespaceAndCreate,
+        Self::Write,
+        Self::FileSync,
+        Self::PublishAndRetire,
+        Self::DirectorySync,
+        Self::Barrier,
+        Self::Settlement,
+        Self::Existing,
+    ];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ChildValidation => "child_validation",
+            Self::NamespaceAndCreate => "namespace_and_create",
+            Self::Write => "write",
+            Self::FileSync => "file_sync",
+            Self::PublishAndRetire => "publish_and_retire",
+            Self::DirectorySync => "directory_sync",
+            Self::Barrier => "barrier",
+            Self::Settlement => "settlement",
+            Self::Existing => "existing",
+        }
+    }
+}
+
 /// A reference that may point to another stream or process clock.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct DiagnosticTraceRefV1 {
@@ -591,12 +749,24 @@ pub enum DiagnosticEventKindV1 {
         span_id: DiagnosticSpanIdV1,
         observation: DiagnosticSqliteSyncObservationV1,
     },
+    OwnedRenewalRefusal {
+        span_id: DiagnosticSpanIdV1,
+        observation: DiagnosticOwnedRenewalRefusalV1,
+    },
     SyncAggregate {
         span_id: DiagnosticSpanIdV1,
         label: DiagnosticSyncLabelV1,
         calls: u64,
         elapsed_sum_ns: u64,
         elapsed_max_ns: u64,
+        failures: u64,
+    },
+    ObjectInstallAggregate {
+        span_id: DiagnosticSpanIdV1,
+        phase: DiagnosticObjectInstallPhaseV1,
+        calls: u64,
+        elapsed_sum_ns: u64,
+        thread_cpu_ns: Option<u64>,
         failures: u64,
     },
     ObjectKindAggregate {
@@ -670,6 +840,10 @@ pub enum DiagnosticHealthCodeV1 {
     MissingParentSpan,
     ClockRegressed,
     CounterOverflow,
+    /// An observation API failed; missing counters must not be read as zero.
+    CounterUnavailable,
+    /// A cumulative observation decreased inside one owned interval.
+    CounterRegressed,
     InvalidAttemptToken,
     DuplicateAttemptToken,
     UnlinkedAttempt,
@@ -726,6 +900,21 @@ pub struct DiagnosticContextV1 {
 }
 
 impl DiagnosticContextV1 {
+    /// Sample this capture's clock for diagnostic duration accounting only.
+    /// This emits no event and grants no span, storage, or capacity authority.
+    /// Callers must check subtraction and report invalid samples as health.
+    #[must_use]
+    pub fn clock_now_ns(&self) -> u64 {
+        self.session.clock.now_ns()
+    }
+
+    /// Sample CPU consumed by this calling thread for diagnostic accounting.
+    /// The result is optional and must only be differenced on the same thread.
+    #[must_use]
+    pub fn clock_thread_cpu_now_ns(&self) -> Option<u64> {
+        self.session.clock.thread_cpu_now_ns()
+    }
+
     /// Create a process-local capture context. Root spans are created explicitly
     /// with [`Self::enter_root`]; construction itself emits no event.
     #[must_use]
@@ -855,6 +1044,25 @@ impl DiagnosticContextV1 {
         });
     }
 
+    /// Observe refusal under the synchronous caller bound to this context.
+    ///
+    /// The Catalog scope must end before its caller span. This records no
+    /// authority and neither changes a refusal nor samples the business clock.
+    pub fn owned_renewal_refusal(&self, observation: DiagnosticOwnedRenewalRefusalV1) {
+        if self.invalid_parent {
+            self.health(DiagnosticHealthCodeV1::ForeignCaptureSpan);
+            return;
+        }
+        let Some(span_id) = self.parent_span_id else {
+            self.health(DiagnosticHealthCodeV1::MissingParentSpan);
+            return;
+        };
+        self.emit(DiagnosticEventKindV1::OwnedRenewalRefusal {
+            span_id,
+            observation,
+        });
+    }
+
     /// Attach one bounded per-label sync summary to its owning span.
     pub fn sync_aggregate(
         &self,
@@ -875,6 +1083,31 @@ impl DiagnosticContextV1 {
             calls,
             elapsed_sum_ns,
             elapsed_max_ns,
+            failures,
+        });
+    }
+
+    /// Attach one bounded, disjoint physical-phase summary to its install span.
+    /// The producer owns checked accumulation and emits at most once per phase.
+    pub fn object_install_aggregate(
+        &self,
+        span: &DiagnosticSpanGuardV1,
+        phase: DiagnosticObjectInstallPhaseV1,
+        calls: u64,
+        elapsed_sum_ns: u64,
+        thread_cpu_ns: Option<u64>,
+        failures: u64,
+    ) {
+        if !self.owns_span(span) {
+            self.health(DiagnosticHealthCodeV1::ForeignCaptureSpan);
+            return;
+        }
+        self.emit(DiagnosticEventKindV1::ObjectInstallAggregate {
+            span_id: span.span_id,
+            phase,
+            calls,
+            elapsed_sum_ns,
+            thread_cpu_ns,
             failures,
         });
     }
@@ -1114,6 +1347,10 @@ impl DiagnosticContextV1 {
             .map(DiagnosticSpanIdV1)
             .ok_or(DiagnosticTraceErrorV1::SpanIdentityExhausted)?;
         let started_ns = self.session.clock.now_ns();
+        let thread_cpu_started = observes_thread_cpu(stage, lane)
+            .then(|| self.session.clock.thread_cpu_now_ns())
+            .flatten()
+            .map(|cpu_ns| (std::thread::current().id(), cpu_ns));
         self.emit_at(
             started_ns,
             DiagnosticEventKindV1::SpanBegin {
@@ -1128,6 +1365,7 @@ impl DiagnosticContextV1 {
             context: self.clone(),
             span_id,
             started_ns,
+            thread_cpu_started,
             finished: false,
         })
     }
@@ -1143,6 +1381,43 @@ impl DiagnosticContextV1 {
             kind,
         });
     }
+}
+
+/// Only synchronous boundaries have an attributable calling-thread interval.
+/// `BuildPrepare` can cross an await; the same end thread would not prove that
+/// unrelated tasks did not run inside its interval.
+fn observes_thread_cpu(stage: DiagnosticStageV1, lane: DiagnosticLaneV1) -> bool {
+    // The SQL I/O envelope (lane 22) may be entered per read/probe. Keep it
+    // unmeasured while observing the bounded synchronous transaction/sync work.
+    if stage == DiagnosticStageV1::SqliteWork {
+        return matches!(lane.0, 3..=8 | 11..=12 | 15..=16 | 21 | 25..=26);
+    }
+    matches!(
+        stage,
+        DiagnosticStageV1::NativeSourceApply
+            | DiagnosticStageV1::NativeSourceOwnerPrepare
+            | DiagnosticStageV1::NativeSourcePathValidate
+            | DiagnosticStageV1::NativeSourceMapApply
+            | DiagnosticStageV1::LexicalBuild
+            | DiagnosticStageV1::NativeTextPostings
+            | DiagnosticStageV1::NativeTextRoot
+            | DiagnosticStageV1::NativeTextInventoryPrepare
+            | DiagnosticStageV1::NativeTextInventoryMapApply
+            | DiagnosticStageV1::NativeTextInventoryDiff
+            | DiagnosticStageV1::NativeTextInventoryRead
+            | DiagnosticStageV1::NativeTextOccurrenceRead
+            | DiagnosticStageV1::NativeTextPostingEdit
+            | DiagnosticStageV1::NativeCoverageScan
+            | DiagnosticStageV1::NativeCoverageMapApply
+            | DiagnosticStageV1::NativeCoverageSave
+            | DiagnosticStageV1::NativeMemberAssemble
+            | DiagnosticStageV1::NativeWorkSeal
+            | DiagnosticStageV1::NativePublish
+            | DiagnosticStageV1::ManagedObjectReserve
+            | DiagnosticStageV1::ManagedObjectInstall
+            | DiagnosticStageV1::ManagedObjectConfirm
+            | DiagnosticStageV1::Compaction
+    )
 }
 
 /// Bounded aggregate emitted by physical inode census walkers.
@@ -1286,6 +1561,7 @@ pub struct DiagnosticSpanGuardV1 {
     context: DiagnosticContextV1,
     span_id: DiagnosticSpanIdV1,
     started_ns: u64,
+    thread_cpu_started: Option<(std::thread::ThreadId, u64)>,
     finished: bool,
 }
 
@@ -1312,10 +1588,36 @@ impl DiagnosticSpanGuardV1 {
         )
     }
 
+    fn thread_cpu_delta(&self) -> Option<u64> {
+        let (thread, started_ns) = self.thread_cpu_started?;
+        if thread != std::thread::current().id() {
+            return None;
+        }
+        self.context
+            .session
+            .clock
+            .thread_cpu_now_ns()?
+            .checked_sub(started_ns)
+    }
+
+    fn emit_thread_cpu(&self, ended_ns: u64, elapsed_ns: Option<u64>) {
+        if let Some(value) = elapsed_ns {
+            self.context.emit_at(
+                ended_ns,
+                DiagnosticEventKindV1::Counter {
+                    span_id: self.span_id,
+                    key: DiagnosticCounterV1::ThreadCpuNs,
+                    value,
+                },
+            );
+        }
+    }
+
     /// Finish exactly once. A clock regression invalidates the capture and
     /// permanently closes the guard without fabricating an end timestamp.
     /// The error is recorded as capture health before it is returned.
     pub fn finish(mut self, outcome: DiagnosticTerminalV1) -> Result<(), DiagnosticTraceErrorV1> {
+        let thread_cpu_elapsed_ns = self.thread_cpu_delta();
         let ended_ns = self.context.session.clock.now_ns();
         if ended_ns < self.started_ns {
             self.finished = true;
@@ -1327,6 +1629,7 @@ impl DiagnosticSpanGuardV1 {
             );
             return Err(DiagnosticTraceErrorV1::ClockRegressed);
         }
+        self.emit_thread_cpu(ended_ns, thread_cpu_elapsed_ns);
         self.context.emit_at(
             ended_ns,
             DiagnosticEventKindV1::SpanEnd {
@@ -1342,8 +1645,10 @@ impl DiagnosticSpanGuardV1 {
 impl Drop for DiagnosticSpanGuardV1 {
     fn drop(&mut self) {
         if !self.finished {
+            let thread_cpu_elapsed_ns = self.thread_cpu_delta();
             let ended_ns = self.context.session.clock.now_ns();
             if ended_ns >= self.started_ns {
+                self.emit_thread_cpu(ended_ns, thread_cpu_elapsed_ns);
                 self.context.emit_at(
                     ended_ns,
                     DiagnosticEventKindV1::SpanEnd {
@@ -1450,6 +1755,7 @@ const fn root_stage(kind: DiagnosticRootKindV1) -> DiagnosticStageV1 {
 
 #[cfg(test)]
 mod tests {
+    mod owned_renewal;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -1483,6 +1789,36 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct CpuClock {
+        wall: AtomicU64,
+        cpu: AtomicU64,
+        cpu_calls: AtomicUsize,
+        available: bool,
+    }
+
+    impl CpuClock {
+        fn new(available: bool) -> Self {
+            Self {
+                wall: AtomicU64::new(10),
+                cpu: AtomicU64::new(100),
+                cpu_calls: AtomicUsize::new(0),
+                available,
+            }
+        }
+    }
+
+    impl DiagnosticClockV1 for CpuClock {
+        fn now_ns(&self) -> u64 {
+            self.wall.load(Ordering::Relaxed)
+        }
+
+        fn thread_cpu_now_ns(&self) -> Option<u64> {
+            let _prior = self.cpu_calls.fetch_add(1, Ordering::Relaxed);
+            self.available.then(|| self.cpu.load(Ordering::Relaxed))
+        }
+    }
+
     #[derive(Debug, Default)]
     struct TestSink(Mutex<Vec<DiagnosticEmitV1>>);
 
@@ -1507,6 +1843,276 @@ mod tests {
         let context =
             DiagnosticContextV1::new(DiagnosticCaptureIdV1([7; 16]), clock.clone(), sink.clone());
         (context, clock, sink)
+    }
+
+    fn cpu_context(available: bool) -> (DiagnosticContextV1, Arc<CpuClock>, Arc<TestSink>) {
+        let clock = Arc::new(CpuClock::new(available));
+        let sink = Arc::new(TestSink::default());
+        let context =
+            DiagnosticContextV1::new(DiagnosticCaptureIdV1([8; 16]), clock.clone(), sink.clone());
+        (context, clock, sink)
+    }
+
+    #[test]
+    fn coarse_span_cpu_counter_precedes_terminal_at_same_wall_timestamp() {
+        for stage in [
+            DiagnosticStageV1::NativeTextPostings,
+            DiagnosticStageV1::NativeTextInventoryPrepare,
+            DiagnosticStageV1::NativeTextInventoryMapApply,
+            DiagnosticStageV1::NativeTextInventoryDiff,
+            DiagnosticStageV1::NativeTextInventoryRead,
+            DiagnosticStageV1::NativeTextOccurrenceRead,
+            DiagnosticStageV1::NativeTextPostingEdit,
+            DiagnosticStageV1::NativeWorkSeal,
+            DiagnosticStageV1::ManagedObjectReserve,
+            DiagnosticStageV1::ManagedObjectInstall,
+            DiagnosticStageV1::ManagedObjectConfirm,
+            DiagnosticStageV1::SqliteWork,
+            DiagnosticStageV1::Compaction,
+        ] {
+            let (context, clock, sink) = cpu_context(true);
+            let root = context
+                .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+                .expect("root");
+            let child = context
+                .child_context(&root)
+                .enter(stage, DiagnosticLaneV1(3))
+                .expect("coarse child");
+            let child_id = child.span_id();
+            clock.cpu.store(107, Ordering::Relaxed);
+            clock.wall.store(22, Ordering::Relaxed);
+            child.finish(DiagnosticTerminalV1::Ok).expect("finish");
+            root.finish(DiagnosticTerminalV1::Ok).expect("root finish");
+
+            let events = recorded_events(&sink);
+            assert_eq!(clock.cpu_calls.load(Ordering::Relaxed), 2);
+            assert_eq!(events.len(), 5);
+            assert_eq!(recorded_event(&events, 2).ts_ns, 22);
+            assert!(matches!(
+                recorded_event(&events, 2).kind,
+                DiagnosticEventKindV1::Counter {
+                    span_id,
+                    key: DiagnosticCounterV1::ThreadCpuNs,
+                    value: 7
+                } if span_id == child_id
+            ));
+            assert_eq!(recorded_event(&events, 3).ts_ns, 22);
+            assert!(matches!(
+                recorded_event(&events, 3).kind,
+                DiagnosticEventKindV1::SpanEnd {
+                    span_id,
+                    outcome: DiagnosticTerminalV1::Ok
+                } if span_id == child_id
+            ));
+        }
+    }
+
+    #[test]
+    fn diagnostic_thread_cpu_sample_preserves_unavailable_state() {
+        let (available, _, _) = cpu_context(true);
+        assert_eq!(available.clock_thread_cpu_now_ns(), Some(100));
+        let (unavailable, _, _) = cpu_context(false);
+        assert_eq!(unavailable.clock_thread_cpu_now_ns(), None);
+    }
+
+    #[test]
+    fn dropped_coarse_span_records_cpu_and_aborted_terminal_once() {
+        let (context, clock, sink) = cpu_context(true);
+        let root = context
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+            .expect("root");
+        let child = context
+            .child_context(&root)
+            .enter(DiagnosticStageV1::NativeSourceApply, DiagnosticLaneV1(3))
+            .expect("source");
+        let child_id = child.span_id();
+        clock.cpu.store(105, Ordering::Relaxed);
+        clock.wall.store(15, Ordering::Relaxed);
+        drop(child);
+        root.finish(DiagnosticTerminalV1::Ok).expect("root finish");
+        let events = recorded_events(&sink);
+        assert_eq!(clock.cpu_calls.load(Ordering::Relaxed), 2);
+        assert!(matches!(
+            recorded_event(&events, 2).kind,
+            DiagnosticEventKindV1::Counter {
+                span_id,
+                key: DiagnosticCounterV1::ThreadCpuNs,
+                value: 5
+            } if span_id == child_id
+        ));
+        assert!(matches!(
+            recorded_event(&events, 3).kind,
+            DiagnosticEventKindV1::SpanEnd {
+                span_id,
+                outcome: DiagnosticTerminalV1::Aborted
+            } if span_id == child_id
+        ));
+    }
+
+    #[test]
+    fn unavailable_or_regressed_cpu_is_absent_without_health_or_zero_counter() {
+        for available in [false, true] {
+            let (context, clock, sink) = cpu_context(available);
+            let root = context
+                .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+                .expect("root");
+            let child = context
+                .child_context(&root)
+                .enter(
+                    DiagnosticStageV1::NativeCoverageMapApply,
+                    DiagnosticLaneV1(3),
+                )
+                .expect("coverage");
+            clock.cpu.store(90, Ordering::Relaxed);
+            clock.wall.store(20, Ordering::Relaxed);
+            child.finish(DiagnosticTerminalV1::Ok).expect("finish");
+            root.finish(DiagnosticTerminalV1::Ok).expect("root finish");
+            assert!(recorded_events(&sink).iter().all(|event| !matches!(
+                event.kind,
+                DiagnosticEventKindV1::Counter { .. } | DiagnosticEventKindV1::Health { .. }
+            )));
+            assert_eq!(
+                clock.cpu_calls.load(Ordering::Relaxed),
+                if available { 2 } else { 1 }
+            );
+        }
+    }
+
+    #[test]
+    fn wall_clock_regression_keeps_health_and_omits_cpu_counter() {
+        let (context, clock, sink) = cpu_context(true);
+        let root = context
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+            .expect("root");
+        let child = context
+            .child_context(&root)
+            .enter(DiagnosticStageV1::NativeTextRoot, DiagnosticLaneV1(3))
+            .expect("text root");
+        clock.cpu.store(110, Ordering::Relaxed);
+        clock.wall.store(9, Ordering::Relaxed);
+        assert_eq!(
+            child.finish(DiagnosticTerminalV1::Ok),
+            Err(DiagnosticTraceErrorV1::ClockRegressed)
+        );
+        clock.wall.store(10, Ordering::Relaxed);
+        root.finish(DiagnosticTerminalV1::Ok).expect("root finish");
+        let events = recorded_events(&sink);
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            DiagnosticEventKindV1::Health {
+                code: DiagnosticHealthCodeV1::ClockRegressed
+            }
+        )));
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event.kind, DiagnosticEventKindV1::Counter { .. }))
+        );
+    }
+
+    #[test]
+    fn moved_span_omits_thread_cpu_but_keeps_terminal() {
+        let (context, clock, sink) = cpu_context(true);
+        let root = context
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+            .expect("root");
+        let child = context
+            .child_context(&root)
+            .enter(
+                DiagnosticStageV1::NativeSourceOwnerPrepare,
+                DiagnosticLaneV1(3),
+            )
+            .expect("owner");
+        let child_id = child.span_id();
+        clock.cpu.store(110, Ordering::Relaxed);
+        clock.wall.store(20, Ordering::Relaxed);
+        std::thread::spawn(move || child.finish(DiagnosticTerminalV1::Ok))
+            .join()
+            .expect("worker")
+            .expect("finish");
+        root.finish(DiagnosticTerminalV1::Ok).expect("root finish");
+        let events = recorded_events(&sink);
+        assert_eq!(clock.cpu_calls.load(Ordering::Relaxed), 1);
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event.kind, DiagnosticEventKindV1::Counter { .. }))
+        );
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            DiagnosticEventKindV1::SpanEnd {
+                span_id,
+                outcome: DiagnosticTerminalV1::Ok,
+            } if span_id == child_id
+        )));
+    }
+
+    #[test]
+    fn async_build_and_high_frequency_sql_spans_do_not_sample_thread_cpu() {
+        let (context, clock, sink) = cpu_context(true);
+        let root = context
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+            .expect("root");
+        for (stage, lane) in [
+            (DiagnosticStageV1::BuildPrepare, 3),
+            (DiagnosticStageV1::SqliteWork, 9),
+            (DiagnosticStageV1::SqliteWork, 10),
+            (DiagnosticStageV1::SqliteWork, 22),
+            (DiagnosticStageV1::SqliteWork, 27),
+            (DiagnosticStageV1::SqliteWork, 28),
+        ] {
+            let child = context
+                .child_context(&root)
+                .enter(stage, DiagnosticLaneV1(lane))
+                .expect("untimed CPU stage");
+            child.finish(DiagnosticTerminalV1::Ok).expect("finish");
+        }
+        root.finish(DiagnosticTerminalV1::Ok).expect("root finish");
+        assert_eq!(clock.cpu_calls.load(Ordering::Relaxed), 0);
+        assert!(
+            recorded_events(&sink)
+                .iter()
+                .all(|event| !matches!(event.kind, DiagnosticEventKindV1::Counter { .. }))
+        );
+    }
+
+    #[test]
+    fn synchronous_sql_sync_and_settlement_lanes_observe_calling_thread_cpu() {
+        for lane in [11, 12, 21, 25] {
+            let (context, clock, sink) = cpu_context(true);
+            let root = context
+                .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+                .expect("root");
+            let child = context
+                .child_context(&root)
+                .enter(DiagnosticStageV1::SqliteWork, DiagnosticLaneV1(lane))
+                .expect("synchronous SQL child");
+            let child_id = child.span_id();
+            clock.cpu.store(107, Ordering::Relaxed);
+            clock.wall.store(22, Ordering::Relaxed);
+            child.finish(DiagnosticTerminalV1::Ok).expect("finish");
+            root.finish(DiagnosticTerminalV1::Ok).expect("root finish");
+            assert_eq!(clock.cpu_calls.load(Ordering::Relaxed), 2);
+            assert!(recorded_events(&sink).iter().any(|event| matches!(
+                event.kind,
+                DiagnosticEventKindV1::Counter {
+                    span_id,
+                    key: DiagnosticCounterV1::ThreadCpuNs,
+                    value: 7,
+                } if span_id == child_id
+            )));
+        }
+    }
+
+    #[test]
+    fn clock_sample_uses_capture_clock_without_emitting_or_claiming_span() {
+        let (context, clock, sink) = context();
+        assert_eq!(context.clock_now_ns(), 10);
+        let cloned = context.clone();
+        clock.advance(7);
+        assert_eq!(cloned.clock_now_ns(), 17);
+        assert_eq!(context.clock_now_ns(), 17);
+        assert!(recorded_events(&sink).is_empty());
     }
 
     #[test]
@@ -1741,6 +2347,14 @@ mod tests {
             20,
             1,
         );
+        context.object_install_aggregate(
+            &owner,
+            DiagnosticObjectInstallPhaseV1::FileSync,
+            2,
+            19,
+            Some(7),
+            1,
+        );
         context.object_kind_aggregate(&owner, DiagnosticObjectKindV1::NativeTrigrams, 4, 2);
         context.adoption_group_aggregate(
             &owner,
@@ -1768,6 +2382,17 @@ mod tests {
         )));
         assert!(events.iter().any(|event| matches!(
             event.kind,
+            DiagnosticEventKindV1::ObjectInstallAggregate {
+                phase: DiagnosticObjectInstallPhaseV1::FileSync,
+                calls: 2,
+                elapsed_sum_ns: 19,
+                thread_cpu_ns: Some(7),
+                failures: 1,
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
             DiagnosticEventKindV1::ObjectKindAggregate {
                 kind: DiagnosticObjectKindV1::NativeTrigrams,
                 new_objects: 4,
@@ -1786,6 +2411,34 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn object_install_aggregate_rejects_foreign_span_without_emitting_payload() {
+        let (owner_context, _, sink) = context();
+        let owner = owner_context
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(3))
+            .expect("owner span");
+        let (foreign, _, foreign_sink) = context();
+        foreign.object_install_aggregate(
+            &owner,
+            DiagnosticObjectInstallPhaseV1::Existing,
+            1,
+            11,
+            None,
+            0,
+        );
+        owner.finish(DiagnosticTerminalV1::Ok).expect("finish");
+        assert!(recorded_events(&sink).iter().all(|event| !matches!(
+            event.kind,
+            DiagnosticEventKindV1::ObjectInstallAggregate { .. }
+        )));
+        assert!(matches!(
+            recorded_event(&recorded_events(&foreign_sink), 0).kind,
+            DiagnosticEventKindV1::Health {
+                code: DiagnosticHealthCodeV1::ForeignCaptureSpan
+            }
+        ));
     }
 
     #[test]

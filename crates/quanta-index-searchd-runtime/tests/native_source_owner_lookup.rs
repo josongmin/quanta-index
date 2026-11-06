@@ -124,6 +124,9 @@ fn resources() -> NativeServiceResources {
         provider_units: 0,
     };
     NativeServiceResources {
+        catalog_writer_cache: quanta_index_searchd_runtime::native::CatalogWriterCachePolicy {
+            kib: 2048,
+        },
         physical: native_physical_profile::profile(),
         scratch_reserved_bytes: 16 * 1024 * 1024 * 1024,
         read_ticket_lease: Duration::from_secs(30),
@@ -280,7 +283,7 @@ fn run_owner_lookup_case() -> TestResult {
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
     let socket = root.path().join("native.sock");
     let service =
-        NativeIndexService::bind(root.path(), &socket, limits(), descriptors(), resources())?;
+        NativeIndexService::bind(root.path(), &socket, limits(), descriptors(), &resources())?;
     let running = RunningService::start(service);
     let client = NativeUdsClient::new(socket);
     let created = client.request(

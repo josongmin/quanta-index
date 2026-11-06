@@ -137,6 +137,10 @@ fn batch(input: &Publication, stream: &str) -> TestResult<SearchCorpusBatch> {
                     corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
                     owner_kind: OwnerDocKind::Chunk,
                     owner_id: id.into(),
+                    source_file: SourceFileKey {
+                        source_repo_id: repo.clone(),
+                        repo_relative_path: RepoRelativePath::new(row(id).path),
+                    },
                 });
         }
     }
@@ -162,7 +166,7 @@ fn batch(input: &Publication, stream: &str) -> TestResult<SearchCorpusBatch> {
             }],
             Vec::new(),
         )?;
-        for semantic in semantic_source_scopes_for_chunk_records(&scope.chunks) {
+        for semantic in semantic_source_scopes_for_chunk_records(&repo, &scope.chunks) {
             batch = batch.replace_semantic_scope(
                 semantic.scope,
                 semantic.scope_digest,

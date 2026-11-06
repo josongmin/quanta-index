@@ -65,8 +65,9 @@ impl InventoryScratch {
         let owned_db = ScratchConnection::open(
             &allocation.path().join("inventory.sqlite"),
             allocation.as_ref(),
+            budget,
         )?;
-        let db = owned_db.scoped()?;
+        let db = owned_db.scoped(budget)?;
         db.execute_batch(&format!(
             "PRAGMA page_size=4096;
              PRAGMA cache_size={SCRATCH_CACHE_KIB};
@@ -147,7 +148,7 @@ impl InventoryScratch {
         self.reserve_write(128, budget)?;
         let inserted = self
             .db
-            .scoped()?
+            .scoped(budget)?
             .execute(
                 "INSERT INTO owner(key,prior,next_source) VALUES (?1,?2,?3)",
                 params![
@@ -183,7 +184,7 @@ impl InventoryScratch {
         self.reserve_write(incoming, budget)?;
         let changed = self
             .db
-            .scoped()?
+            .scoped(budget)?
             .execute(
                 "UPDATE path SET prior=?2,has_prior=1 WHERE key=?1 AND has_prior=0",
                 params![path, (prior.0).0.as_slice()],
@@ -214,7 +215,7 @@ impl InventoryScratch {
         self.reserve_write(incoming, budget)?;
         let changed = self
             .db
-            .scoped()?
+            .scoped(budget)?
             .execute(
                 "UPDATE path SET has_next=1 WHERE key=?1 AND has_next=0",
                 params![path],
@@ -241,7 +242,7 @@ impl InventoryScratch {
         self.reserve_write(incoming, budget)?;
         let _inserted = self
             .db
-            .scoped()?
+            .scoped(budget)?
             .execute("INSERT OR IGNORE INTO path(key) VALUES (?1)", params![path])
             .map_err(|error| sql_error(&error))?;
         Ok(())
@@ -285,7 +286,7 @@ impl InventoryScratch {
                 .ok_or(IndexError::ResourceLimited)?,
             budget,
         )?;
-        let updated_owner = self.db.scoped()?.execute(
+        let updated_owner = self.db.scoped(budget)?.execute(
             "UPDATE owner SET next_ref=?2 WHERE key=?1 AND next_source IS NOT NULL AND next_ref IS NULL",
             params![owner, (next.0).0.as_slice()],
         ).map_err(|error| sql_error(&error))?;
@@ -298,7 +299,7 @@ impl InventoryScratch {
         )?;
         let updated_path = self
             .db
-            .scoped()?
+            .scoped(budget)?
             .execute(
                 "UPDATE path SET next_ref=?2 WHERE key=?1 AND has_next=1 AND next_ref IS NULL",
                 params![path, (next.0).0.as_slice()],
@@ -318,7 +319,7 @@ impl InventoryScratch {
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         quanta_index_scratch_sqlite::reserve_for_write(
-            &*self.db.scoped()?,
+            &*self.db.scoped(budget)?,
             self.allocation.as_ref(),
             incoming_bytes,
             budget,
@@ -339,7 +340,7 @@ impl InventoryScratch {
         } else {
             "SELECT key,prior,next_source,next_ref FROM owner ORDER BY key LIMIT 1"
         };
-        let io_scope = self.db.scoped()?;
+        let io_scope = self.db.scoped(budget)?;
         let mut statement = io_scope.prepare(sql).map_err(|error| sql_error(&error))?;
         let mut rows = if let Some(after) = after {
             statement
@@ -375,7 +376,7 @@ impl InventoryScratch {
         } else {
             "SELECT key,prior,next_ref FROM path ORDER BY key LIMIT 1"
         };
-        let io_scope = self.db.scoped()?;
+        let io_scope = self.db.scoped(budget)?;
         let mut statement = io_scope.prepare(sql).map_err(|error| sql_error(&error))?;
         let mut rows = if let Some(after) = after {
             statement
@@ -711,19 +712,21 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut work = budget()?;
         let scratch = InventoryScratch::open(&TestScratch, &mut work)?;
-        let page_size: u32 = scratch
-            .db
-            .scoped()?
-            .query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        let page_size: u32 =
+            scratch
+                .db
+                .scoped(&work)?
+                .query_row("PRAGMA page_size", [], |row| row.get(0))?;
         let max_pages: u32 =
             scratch
                 .db
-                .scoped()?
+                .scoped(&work)?
                 .query_row("PRAGMA max_page_count", [], |row| row.get(0))?;
-        let temp_store: u32 = scratch
-            .db
-            .scoped()?
-            .query_row("PRAGMA temp_store", [], |row| row.get(0))?;
+        let temp_store: u32 =
+            scratch
+                .db
+                .scoped(&work)?
+                .query_row("PRAGMA temp_store", [], |row| row.get(0))?;
         check_eq!(page_size, SCRATCH_PAGE_SIZE);
         check!(
             u64::from(max_pages)
@@ -736,11 +739,11 @@ mod tests {
         let _smaller_limit: u32 =
             scratch
                 .db
-                .scoped()?
+                .scoped(&work)?
                 .query_row("PRAGMA max_page_count=8", [], |row| row.get(0))?;
         let inserted = scratch
             .db
-            .scoped()?
+            .scoped(&work)?
             .execute("INSERT INTO path(key) VALUES (zeroblob(1048576))", []);
         let Err(error) = inserted else {
             return Err("configured main-page cap accepted an oversized write".into());

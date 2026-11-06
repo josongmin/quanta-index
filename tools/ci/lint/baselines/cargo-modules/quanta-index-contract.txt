@@ -945,6 +945,11 @@ crate quanta_index_contract
 │   ├── mod expression: pub(self)
 │   │   └── type LqQuery: pub
 │   ├── mod filters: pub(self)
+│   ├── mod go_test_trace_file: pub(self)
+│   │   ├── struct GoTestTraceFileQueryRequestV1: pub
+│   │   ├── struct GoTestTraceSourceFramesV1: pub
+│   │   └── struct RequestVisitor: pub(self)
+│   │       └── type Value: pub(self)
 │   ├── mod history_cursor: pub(self)
 │   │   ├── struct HistoryCursor: pub
 │   │   ├── enum HistoryCursorOrderV1: pub
@@ -1219,6 +1224,12 @@ crate quanta_index_contract
 │   │   ├── struct SearchExplanationVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   └── struct WeightsHashError: pub
+│   ├── mod go_test_trace_file: pub(self)
+│   │   ├── struct GoTestTraceFileHitV1: pub
+│   │   ├── struct GoTestTraceFileLaneWitnessV1: pub
+│   │   ├── struct GoTestTraceFileQueryResponseV1: pub
+│   │   ├── enum GoTestTraceFrameClassV1: pub
+│   │   └── struct WireResponse: pub(self)
 │   └── mod query_responses: pub(self)
 │       ├── enum FileOwnerProjectionErrorV1: pub
 │       ├── struct FileOwnerProjectionRow: pub

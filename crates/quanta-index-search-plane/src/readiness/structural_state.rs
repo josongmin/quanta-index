@@ -32,7 +32,7 @@ pub(crate) fn verify_parse_tree_against_chunk_map(
     chunks: &OrdMap<ChunkId, ChunkRecord>,
     chunk_id: &ChunkId,
     record: &ParseTreeRecord,
-    expected_scope_path: Option<&str>,
+    expected_scope: Option<(&SourceFileKey, &RepoId)>,
 ) -> Result<(), CoreError> {
     let chunk = chunks.get(chunk_id).ok_or_else(|| {
         structural_parse_tree_decode_fail(format!(
@@ -40,14 +40,22 @@ pub(crate) fn verify_parse_tree_against_chunk_map(
             chunk_id.as_str()
         ))
     })?;
-    if let Some(expected_path) = expected_scope_path
-        && chunk.repo_relative_path.as_str() != expected_path
+    if let Some((file, _target_repo)) = expected_scope
+        && chunk.repo_relative_path != file.repo_relative_path
     {
         return Err(structural_parse_tree_decode_fail(format!(
             "STR_PARSE_TREE_DECODE_FAIL{{reason=scope_chunk_path_mismatch, chunk_id=\"{}\", expected_scope=\"{}\", observed_path=\"{}\"}}",
             chunk_id.as_str(),
-            expected_path,
+            file.repo_relative_path.as_str(),
             chunk.repo_relative_path.as_str(),
+        )));
+    }
+    if let Some((file, target_repo)) = expected_scope
+        && chunk.searchable_repo_id(target_repo) != &file.source_repo_id
+    {
+        return Err(structural_parse_tree_decode_fail(format!(
+            "STR_PARSE_TREE_DECODE_FAIL{{reason=scope_chunk_owner_mismatch, chunk_id=\"{}\"}}",
+            chunk_id.as_str(),
         )));
     }
     let expected_hash = compute_parse_tree_source_hash(chunk.text.as_ref());
@@ -64,7 +72,7 @@ pub(crate) fn verify_parse_tree_against_chunk_map(
 ///
 /// The record maps are private: a parse tree is written only after it
 /// was verified against the chunk it names, and scope-level replace or
-/// tombstone removes by path through the methods here; nothing else
+/// tombstone removes by source file through the methods here; nothing else
 /// writes them.
 #[derive(Clone, Debug, Default)]
 pub struct StructuralAuthorityState {
@@ -191,36 +199,47 @@ impl StructuralAuthorityState {
         let _removed = self.parse_trees.remove(chunk_id);
     }
 
-    /// Replace every parse tree at `path` with `trees`, each verified
-    /// against its chunk and the scope path before anything is removed.
+    /// Replace parse trees from one exact source file after validating all inputs.
     pub(crate) fn replace_scope_parse_trees(
         &mut self,
-        path: &str,
+        file: &SourceFileKey,
+        target_repo: &RepoId,
         trees: Vec<(ChunkId, ParseTreeRecord)>,
     ) -> Result<(), CoreError> {
         for (chunk_id, record) in &trees {
-            verify_parse_tree_against_chunk_map(&self.chunks, chunk_id, record, Some(path))?;
+            verify_parse_tree_against_chunk_map(
+                &self.chunks,
+                chunk_id,
+                record,
+                Some((file, target_repo)),
+            )?;
         }
-        self.tombstone_scope_parse_trees(path);
+        self.tombstone_scope_parse_trees(file, target_repo);
         for (chunk_id, record) in trees {
             self.restore_parse_tree(chunk_id, record);
         }
         Ok(())
     }
 
-    /// Drop every parse tree whose chunk sits at `path`.
-    pub(crate) fn tombstone_scope_parse_trees(&mut self, path: &str) {
-        for chunk_id in self.chunk_ids_at_path(path) {
+    /// Remove this source file's trees while preserving other source owners.
+    pub(crate) fn tombstone_scope_parse_trees(
+        &mut self,
+        file: &SourceFileKey,
+        target_repo: &RepoId,
+    ) {
+        for chunk_id in self.chunk_ids_at_file(file, target_repo) {
             self.remove_parse_tree(&chunk_id);
         }
     }
 
-    /// The chunk ids of one path in the chunk universe.
-    fn chunk_ids_at_path(&self, path: &str) -> BTreeSet<ChunkId> {
+    fn chunk_ids_at_file(&self, file: &SourceFileKey, target_repo: &RepoId) -> BTreeSet<ChunkId> {
         self.chunks
             .iter()
-            .filter(|(_chunk_id, chunk)| chunk.repo_relative_path.as_str() == path)
-            .map(|(chunk_id, _chunk)| chunk_id.clone())
+            .filter(|(_, chunk)| {
+                chunk.repo_relative_path == file.repo_relative_path
+                    && chunk.searchable_repo_id(target_repo) == &file.source_repo_id
+            })
+            .map(|(chunk_id, _)| chunk_id.clone())
             .collect()
     }
 

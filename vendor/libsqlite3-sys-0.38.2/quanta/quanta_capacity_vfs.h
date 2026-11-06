@@ -93,6 +93,14 @@ int qiv_drain_retirements(void);
  * must retain the caller's inode charge; never retry the numeric descriptor. */
 int qiv_close_owned_fd(int descriptor);
 
+/* Only a live controlled WAL handle may combine its canonical frame header
+ * and page into one actual xWrite. Admission still gates that complete write. */
+int qiv_can_pack_wal_frame(sqlite3_file *file);
+
+/* Checkpoint batching requires both original live controlled handles in the
+ * current scope. Every resulting xWrite still runs the normal admission. */
+int qiv_can_batch_checkpoint_pages(sqlite3_file *database, sqlite3_file *wal);
+
 #ifdef QUANTA_CAPACITY_VFS_TEST_HOOKS
 /* Open an existing database read-write through the named VFS, then probe one
  * SHM region with xShmMap(bExtend=0). The caller must hold a registered root
@@ -102,6 +110,7 @@ int qiv_test_first_shm_read_map(const char *path, int *mapping_present);
 int qiv_test_native_sync_probe_reset(void);
 /* Process-serial test hook. Borrows a live regular-file FD; never closes it. */
 int qiv_test_native_sync_syscall_outcomes(int descriptor);
+int qiv_test_packed_wal_frame(void);
 #endif
 
 /* Called from pinned robust_close. The actual osClose and record retirement

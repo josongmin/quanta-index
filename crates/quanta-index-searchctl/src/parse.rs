@@ -1,11 +1,11 @@
 use crate::{CliError, CliResult, prometheus_is_metrics_only};
 use quanta_index_contract::{
-    ContinuationTokenV2, ExplainCandidateV1, GenerationPin, HistoryOrderV1, HistoryQueryRequest,
-    HybridCandidateV1, HybridQueryRequest, HybridSeedQueryRequest, LexicalCandidate,
-    ManifestGeneration, ProcessRequestEventPlaneV1, QueryConstraintSetV1, RepoId, RepoMapDocType,
-    RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest,
-    SemanticQueryRequest, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
-    TextQuerySyntax,
+    ContinuationTokenV2, ExplainCandidateV1, GenerationPin, GoTestTraceFileQueryRequestV1,
+    HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
+    HybridSeedQueryRequest, LexicalCandidate, ManifestGeneration, ProcessRequestEventPlaneV1,
+    QueryConstraintSetV1, RepoId, RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest,
+    RevisionId, RuntimeMetadataQueryRequest, SemanticQueryRequest, StructuralQueryRequest,
+    SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
     ipc::{
         QuarantineTargetV1, QuarantinedGenerationEntryV1, QuarantinedRepoMapFileEntryV1,
         SearchPlaneTrackKind,
@@ -44,6 +44,7 @@ pub(super) enum CommandKind {
     Symbol,
     Semantic,
     Hybrid,
+    GoTestTraceFileV1,
     HybridSeed,
     Explain,
     RepoMap,
@@ -118,6 +119,7 @@ pub(super) enum CliRequest {
     Semantic(SemanticQueryRequest),
     /// QI-BB-018: two independent lanes fused by RRF.
     Hybrid(HybridQueryRequest),
+    GoTestTraceFileV1(GoTestTraceFileQueryRequestV1),
     HybridSeed(HybridSeedQueryRequest),
     Explain {
         generation: GenerationPin,
@@ -187,6 +189,10 @@ impl ParsedCommand {
                 parse_semantic(&mut common, &mut rest)?,
             ),
             "hybrid" => (CommandKind::Hybrid, parse_hybrid(&mut common, &mut rest)?),
+            "go-test-trace-file" => (
+                CommandKind::GoTestTraceFileV1,
+                parse_go_test_trace_file(&mut common, &mut rest)?,
+            ),
             "hybrid-seed" => (
                 CommandKind::HybridSeed,
                 parse_hybrid_seed(&mut common, &mut rest)?,
@@ -224,7 +230,7 @@ impl ParsedCommand {
             ),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|events|generation-status|doctor|metrics|quarantine"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|go-test-trace-file|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|events|generation-status|doctor|metrics|quarantine"
                 )));
             }
         };
@@ -858,6 +864,59 @@ fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliR
         generation_selector: None,
         top_k,
     }))
+}
+
+/// Preserve the hybrid lane arguments while naming the failure trace and file cap.
+fn parse_go_test_trace_file(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<CliRequest> {
+    let mut hybrid_args = VecDeque::new();
+    let mut failure_excerpt = None;
+    let mut failure_source_repo_id = None;
+    let mut file_top_k = None;
+    while let Some(flag) = rest.pop_front() {
+        match flag.as_str() {
+            "--failure-excerpt" => {
+                if failure_excerpt.is_some() {
+                    return Err(CliError::usage("duplicate --failure-excerpt".to_string()));
+                }
+                failure_excerpt = Some(take_value(rest, "--failure-excerpt")?);
+            }
+            "--file-top-k" => {
+                if file_top_k.is_some() {
+                    return Err(CliError::usage("duplicate --file-top-k".to_string()));
+                }
+                file_top_k = Some(parse_u32_flag(rest, "--file-top-k")?);
+            }
+            "--failure-source-repo-id" => {
+                if failure_source_repo_id.is_some() {
+                    return Err(CliError::usage(
+                        "duplicate --failure-source-repo-id".to_string(),
+                    ));
+                }
+                let value = take_value(rest, "--failure-source-repo-id")?;
+                failure_source_repo_id = Some(RepoId::new(value).map_err(|error| {
+                    CliError::usage(format!("invalid --failure-source-repo-id: {error}"))
+                })?);
+            }
+            _ => hybrid_args.push_back(flag),
+        }
+    }
+    let CliRequest::Hybrid(query) = parse_hybrid(common, &mut hybrid_args)? else {
+        unreachable!("hybrid parser returns a hybrid request")
+    };
+    let request = GoTestTraceFileQueryRequestV1 {
+        query,
+        failure_excerpt: failure_excerpt
+            .ok_or_else(|| CliError::usage("missing --failure-excerpt".to_string()))?,
+        failure_source_repo_id,
+        top_k: file_top_k.ok_or_else(|| CliError::usage("missing --file-top-k".to_string()))?,
+    };
+    request
+        .validate_v1()
+        .map_err(|failure| CliError::usage(failure.to_string()))?;
+    Ok(CliRequest::GoTestTraceFileV1(request))
 }
 
 fn parse_hybrid_seed(

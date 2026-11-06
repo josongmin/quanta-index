@@ -94,7 +94,8 @@ fn batch_with_base(
         parent_chunk_id: None,
         source_repo_id: None,
     };
-    let semantic_scopes = semantic_source_scopes_for_chunk_records(std::slice::from_ref(&chunk));
+    let semantic_scopes =
+        semantic_source_scopes_for_chunk_records(&RepoId::new(REPO)?, std::slice::from_ref(&chunk));
     let scope = fixture_source_scope_v1(
         SourceFileKey {
             source_repo_id: RepoId::new(REPO)?,

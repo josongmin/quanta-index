@@ -14,8 +14,8 @@ use quanta_index_contract::{
     RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
     RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
     RepoTopicEntry, RepoTopicIngestBatch, SemanticCorpusKindV1, SemanticSourceRecordV1,
-    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1, TextQuerySyntax,
-    lex::LanguageCode,
+    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceFileKey, SourceRoleV1,
+    TextQuerySyntax, lex::LanguageCode,
 };
 use quanta_index_searchd_harness::{E2eQueryResult, E2eRuntime};
 
@@ -95,13 +95,22 @@ fn replacement_chunk(id: &str, path: &str, source_repo_id: &str) -> AnyResult<Ch
     })
 }
 
-fn semantic_source_scope(path: &str, generation: u64) -> SemanticSourceReplaceScopeV1 {
+fn semantic_source_scope(
+    path: &str,
+    generation: u64,
+    source_repo_id: &str,
+) -> AnyResult<SemanticSourceReplaceScopeV1> {
     let owner_id = format!("predicate-lifecycle:g{generation}:{path}");
-    SemanticSourceReplaceScopeV1 {
+    let source_file = SourceFileKey {
+        source_repo_id: RepoId::new(source_repo_id)?,
+        repo_relative_path: RepoRelativePath::new(path),
+    };
+    Ok(SemanticSourceReplaceScopeV1 {
         scope: SemanticSourceScopeKeyV1 {
             corpus_kind: SemanticCorpusKindV1::SymbolCard,
             owner_kind: OwnerDocKind::Symbol,
             owner_id: owner_id.clone(),
+            source_file: source_file.clone(),
         },
         scope_digest: format!("predicate-lifecycle:semantic-scope:g{generation}:{path}"),
         sources: vec![SemanticSourceRecordV1 {
@@ -111,7 +120,7 @@ fn semantic_source_scope(path: &str, generation: u64) -> SemanticSourceReplaceSc
             owner_id,
             source_doc_id: format!("predicate-lifecycle:semantic-doc:g{generation}:{path}"),
             parent_owner_id: None,
-            repo_relative_path: RepoRelativePath::new(path),
+            source_file,
             language: Some("rust".to_string()),
             package: Some("predicate-lifecycle".to_string()),
             symbol_kind: Some("function".to_string()),
@@ -126,7 +135,7 @@ fn semantic_source_scope(path: &str, generation: u64) -> SemanticSourceReplaceSc
             text: format!("{NEEDLE} semantic source {path}"),
         }],
         cluster_memberships: Vec::new(),
-    }
+    })
 }
 
 fn publish_initial_text_generation(rt: &mut E2eRuntime) -> AnyResult<()> {
@@ -146,8 +155,8 @@ fn publish_initial_text_generation(rt: &mut E2eRuntime) -> AnyResult<()> {
         ],
         Vec::new(),
         vec![
-            semantic_source_scope(ALPHA_PATH, generation.get()),
-            semantic_source_scope(BETA_PATH, generation.get()),
+            semantic_source_scope(ALPHA_PATH, generation.get(), "authority-alpha")?,
+            semantic_source_scope(BETA_PATH, generation.get(), "authority-beta")?,
         ],
     )
 }

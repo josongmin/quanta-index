@@ -283,7 +283,7 @@ fn eligible(record: &EmbeddingRecord, query: &Query) -> bool {
             .constraints
             .repo_relative_path_exact
             .as_ref()
-            .is_none_or(|path| path.as_str() == record.repo_relative_path.as_str())
+            .is_none_or(|path| path.as_str() == record.source_file.repo_relative_path.as_str())
 }
 fn cosine(left: &[f32], right: &[f32]) -> Result<f64, CoreError> {
     if left.len() != right.len() || left.is_empty() {
@@ -461,7 +461,8 @@ fn served_output(
             || hit.owner_kind != record.owner_kind
             || hit.corpus_kind != Some(record.corpus_kind)
             || hit.authority_digest != record.authority_digest.as_ref()
-            || hit.candidate.repo_relative_path != record.repo_relative_path
+            || hit.candidate.repo_relative_path != record.source_file.repo_relative_path
+            || hit.candidate.source_repo_id != record.source_file.source_repo_id
             || hit.candidate.start_line != record.start_line
             || hit.candidate.end_line != record.end_line
             || hit.candidate.snippet != record.snippet.as_ref()

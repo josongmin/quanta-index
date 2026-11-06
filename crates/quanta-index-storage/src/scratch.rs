@@ -1140,7 +1140,10 @@ mod tests {
                 "budgeted-cleanup-fixture"
             }
 
-            fn enter_scope(&self) -> Box<dyn quanta_index_core::index::ScratchIoScope> {
+            fn enter_scope(
+                &self,
+                _diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
+            ) -> Box<dyn quanta_index_core::index::ScratchIoScope> {
                 struct Scope;
                 impl quanta_index_core::index::ScratchIoScope for Scope {
                     fn is_capacity_refusal(&self, _: i32) -> bool {
@@ -1297,7 +1300,10 @@ mod tests {
             fn driver_name(&self) -> &'static str {
                 "unused-wrong-namespace-fixture"
             }
-            fn enter_scope(&self) -> Box<dyn quanta_index_core::index::ScratchIoScope> {
+            fn enter_scope(
+                &self,
+                _diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
+            ) -> Box<dyn quanta_index_core::index::ScratchIoScope> {
                 struct Scope;
                 impl quanta_index_core::index::ScratchIoScope for Scope {
                     fn is_capacity_refusal(&self, _: i32) -> bool {
@@ -1360,7 +1366,10 @@ mod tests {
             fn driver_name(&self) -> &'static str {
                 "unused-fixture-driver"
             }
-            fn enter_scope(&self) -> Box<dyn quanta_index_core::index::ScratchIoScope> {
+            fn enter_scope(
+                &self,
+                _diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
+            ) -> Box<dyn quanta_index_core::index::ScratchIoScope> {
                 Box::new(Scope)
             }
             fn acquire_namespace(

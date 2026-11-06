@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use quanta_index_contract::{
     BatchIngestMode, CapabilityStatusV1, ManifestGeneration, OwnerDocKind, RawFallbackReasonV1,
     RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SemanticCorpusKindV1,
-    SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
+    SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceFileKey,
     SourcePublicationEvent, SourceRoleV1, source_event_payload_sha256,
     validate_semantic_source_record_v1,
 };
@@ -54,6 +54,10 @@ fn fixture_scope_key(owner_id: &str) -> SemanticSourceScopeKeyV1 {
         corpus_kind: SemanticCorpusKindV1::SymbolCard,
         owner_kind: OwnerDocKind::Symbol,
         owner_id: owner_id.to_string(),
+        source_file: SourceFileKey {
+            source_repo_id: RepoId::new("repo-1").expect("fixture source repo"),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        },
     }
 }
 
@@ -65,7 +69,7 @@ fn fixture_semantic_source_record() -> SemanticSourceRecordV1 {
         owner_id: "symbol-1".to_string(),
         source_doc_id: "doc-1".to_string(),
         parent_owner_id: None,
-        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        source_file: fixture_scope_key("symbol-1").source_file,
         language: Some("rust".to_string()),
         package: Some("crate".to_string()),
         symbol_kind: Some("function".to_string()),
@@ -117,6 +121,37 @@ fn fixture_search_corpus_batch() -> Result<SearchCorpusIngestBatch, Box<dyn std:
     };
     batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
     Ok(batch)
+}
+
+#[test]
+fn same_path_different_source_owners_remain_distinct_in_semantic_mutations() -> TestRes {
+    let mut two_replaces = fixture_search_corpus_batch()?;
+    let mut foreign = two_replaces.semantic_replace_scopes[0].clone();
+    foreign.scope.source_file.source_repo_id = RepoId::new("repo-2")?;
+    foreign.sources[0].source_file = foreign.scope.source_file.clone();
+    foreign.sources[0].record_id = "record-2".to_string();
+    two_replaces.semantic_replace_scopes.push(foreign);
+    two_replaces.validate_surface_mutations_v1()?;
+
+    let mut wrong_owner_delete = fixture_search_corpus_batch()?;
+    let mut foreign_tombstone = wrong_owner_delete.semantic_replace_scopes[0].scope.clone();
+    foreign_tombstone.source_file.source_repo_id = RepoId::new("repo-2")?;
+    wrong_owner_delete
+        .semantic_tombstone_scopes
+        .push(foreign_tombstone);
+    wrong_owner_delete.validate_surface_mutations_v1()?;
+
+    let mut mismatched_record = fixture_search_corpus_batch()?;
+    mismatched_record.semantic_replace_scopes[0].sources[0]
+        .source_file
+        .source_repo_id = RepoId::new("repo-2")?;
+    assert!(mismatched_record.validate_surface_mutations_v1().is_err());
+    assert!(serde_json::to_value(&mismatched_record.semantic_replace_scopes[0]).is_err());
+
+    let mut mismatched_wire = serde_json::to_value(&two_replaces.semantic_replace_scopes[0])?;
+    mismatched_wire["sources"][0]["source_file"]["source_repo_id"] = json!("repo-2");
+    assert!(serde_json::from_value::<SemanticSourceReplaceScopeV1>(mismatched_wire).is_err());
+    Ok(())
 }
 
 #[test]
@@ -296,7 +331,7 @@ fn semantic_source_record_has_no_vector_field() -> TestRes {
         owner_id,
         source_doc_id,
         parent_owner_id,
-        repo_relative_path,
+        source_file,
         language,
         package,
         symbol_kind,
@@ -317,7 +352,7 @@ fn semantic_source_record_has_no_vector_field() -> TestRes {
         owner_id,
         source_doc_id,
         parent_owner_id,
-        repo_relative_path,
+        source_file,
         language,
         package,
         symbol_kind,

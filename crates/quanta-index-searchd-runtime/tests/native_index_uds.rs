@@ -17,6 +17,9 @@ mod physical_mixed_pressure;
 #[path = "native_index_uds/read_sessions.rs"]
 mod read_sessions;
 
+#[path = "native_index_uds/text_entry_maps.rs"]
+mod text_entry_maps;
+
 use std::fmt::Write as _;
 use std::{
     error::Error,
@@ -76,7 +79,8 @@ use quanta_index_sdk::native_uds::{NativeUdsClient, NativeUdsError};
 use quanta_index_searchd_runtime::native::{
     FixedPumpPolicy, NativeAdapterDescriptors, NativeIndexService, NativePumpConfig,
     NativePumpScope, NativeReclaimConfig, NativeResourceObservation, NativeResourcePlan,
-    NativeServiceCapabilities, NativeServiceResources, NativeWorkerObservation, NativeWorkerStatus,
+    NativeServiceCapabilities, NativeServiceResources, NativeWalReclaimPolicy,
+    NativeWorkerObservation, NativeWorkerStatus,
 };
 use quanta_index_semantic::native::{
     NativeSemantic, NativeSemanticReadConfig, NativeSemanticReader, SearchResult,
@@ -104,6 +108,9 @@ fn test_resources() -> NativeServiceResources {
         provider_units: 0,
     };
     NativeServiceResources {
+        catalog_writer_cache: quanta_index_searchd_runtime::native::CatalogWriterCachePolicy {
+            kib: 2048,
+        },
         physical: native_physical_profile::profile(),
         scratch_reserved_bytes: 16 * 1024 * 1024 * 1024,
         read_ticket_lease: Duration::from_secs(30),
@@ -132,7 +139,7 @@ fn bind_service(
     limits: WorkLimits,
     descriptors: NativeAdapterDescriptors,
 ) -> anyhow::Result<NativeIndexService> {
-    NativeIndexService::bind(root, socket, limits, descriptors, test_resources())
+    NativeIndexService::bind(root, socket, limits, descriptors, &test_resources())
 }
 
 fn bind_service_with_registry(
@@ -171,7 +178,7 @@ fn bind_service_with_registry(
             pump: None,
             provider_attempt_pool: None,
         },
-        resources,
+        &resources,
     )
 }
 
@@ -346,6 +353,10 @@ fn work_limits() -> WorkLimits {
 fn test_reclaim_config() -> NativeReclaimConfig {
     NativeReclaimConfig {
         interval: Duration::from_millis(20),
+        wal_reclaim: NativeWalReclaimPolicy {
+            trigger_bytes: 8 * 1024 * 1024,
+            min_interval: Duration::from_secs(1),
+        },
         max_steps_per_round: 1,
         child_limit: 32,
         work_limits: work_limits(),
@@ -377,7 +388,7 @@ fn native_reclaim_step_refuses_insufficient_control_envelope_without_reservation
         &socket,
         work_limits(),
         descriptors(),
-        resources,
+        &resources,
     )?;
     let maintenance = service.maintenance_handle();
     let observation = service.resource_observation();
@@ -424,6 +435,8 @@ fn native_reclaim_step_refuses_insufficient_control_envelope_without_reservation
         &mut WorkBudget::with_request(work_limits(), budget()),
     )?;
     assert_eq!(queued_after, queued_before);
+    drop(catalog);
+    drop(maintenance);
     running.stop()
 }
 
@@ -643,6 +656,8 @@ fn native_reclaim_step_physically_removes_discarded_source_record_and_body() -> 
             .iter()
             .any(|item| { item.object() == record || item.object() == content })
     );
+    drop(catalog);
+    drop(maintenance);
     running.stop()
 }
 
@@ -793,7 +808,7 @@ fn native_uds_unregistered_literal_and_path_readers_refuse_selected_profile() ->
         &socket,
         work_limits(),
         tokio_literal_registry()?,
-        test_resources(),
+        &test_resources(),
     )?;
     let observation = service.resource_observation();
     let running = NativeServiceGuard::start(service);
@@ -856,6 +871,7 @@ fn native_uds_unregistered_literal_and_path_readers_refuse_selected_profile() ->
         |row| row.get(0),
     )?;
     assert_eq!(pins, 0);
+    drop(catalog);
     running.stop()
 }
 
@@ -927,7 +943,7 @@ fn native_uds_same_kind_instances_resolve_separate_stored_specs() -> TestResult 
             pump: None,
             provider_attempt_pool: None,
         },
-        resources,
+        &resources,
     )?;
     let observation = service.resource_observation();
     let running = NativeServiceGuard::start(service);
@@ -991,6 +1007,7 @@ fn native_uds_same_kind_instances_resolve_separate_stored_specs() -> TestResult 
         |row| row.get(0),
     )?;
     assert_eq!(pins, 0);
+    drop(catalog);
     running.stop()
 }
 
@@ -1206,7 +1223,7 @@ fn native_uds_literal_reader_failure_releases_pin_and_reservation() -> TestResul
             pump: None,
             provider_attempt_pool: None,
         },
-        resources,
+        &resources,
     )?;
     let observation = service.resource_observation();
     let running = NativeServiceGuard::start(service);
@@ -1258,6 +1275,7 @@ fn native_uds_literal_reader_failure_releases_pin_and_reservation() -> TestResul
         |row| row.get(0),
     )?;
     assert_eq!(pins, 0);
+    drop(catalog);
     running.stop()
 }
 
@@ -1299,13 +1317,14 @@ fn native_floor_only_memory_closes_replies_and_releases_pin_and_charges() -> Tes
             .checked_add(resources.execution.interactive.memory_bytes)
             .and_then(|bytes| bytes.checked_add(resources.execution.core.memory_bytes))
             .and_then(|bytes| bytes.checked_add(resources.execution.enrichment.memory_bytes))
-            .ok_or("floor-only fixture memory overflow")?;
+            .and_then(|bytes| bytes.checked_add(2048 * 1024))
+            .ok_or("floor-and-cache-only fixture memory overflow")?;
         let service = NativeIndexService::bind(
             root.path(),
             &socket,
             work_limits(),
             descriptors(),
-            resources,
+            &resources,
         )?;
         let observation = service.resource_observation();
         let running = NativeServiceGuard::start(service);
@@ -1330,8 +1349,8 @@ fn native_floor_only_memory_closes_replies_and_releases_pin_and_charges() -> Tes
         }
         let after = observation.observe()?;
         assert_eq!(after.reserved, ResourceNeed::default());
-        assert_eq!(after.live_memory_bytes, 0);
-        assert_eq!(after.retained_memory_bytes, 0);
+        assert_eq!(after.live_memory_bytes, 2048 * 1024);
+        assert_eq!(after.retained_memory_bytes, 2048 * 1024);
         assert_eq!(after.pending_escape_bytes, 0);
         let pins: i64 = rusqlite::Connection::open_with_flags(
             quanta_index_catalog::catalog_dir(root.path())
@@ -1410,7 +1429,7 @@ fn native_literal_path_reader_ceiling_refuses_before_state_creation() -> TestRes
                     pump: None,
                     provider_attempt_pool: None,
                 },
-                resources,
+                &resources,
             )
             .is_err()
         );
@@ -1489,6 +1508,42 @@ impl Drop for NativeServiceGuard {
             drop(thread.join());
         }
     }
+}
+
+#[test]
+fn native_catalog_retirement_retries_after_maintenance_alias_releases_cache() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let cache_bytes = test_resources().catalog_writer_cache.reservation_bytes()?;
+    let service = bind_service(root.path(), &socket, work_limits(), descriptors())?;
+    let maintenance = service.maintenance_handle();
+    let retirement = service.retirement_handle();
+    let resources = service.resource_observation();
+    let shutdown = service.shutdown_handle();
+    assert_eq!(resources.observe()?.retained_memory_bytes, cache_bytes);
+    let thread = std::thread::spawn(move || service.run(Duration::from_millis(5)));
+    shutdown.trigger();
+    let stopped = thread
+        .join()
+        .map_err(|_panic| "native service thread panicked")?;
+    assert!(
+        stopped.as_ref().is_err_and(|error| error
+            .to_string()
+            .contains("native Catalog consumers remain")),
+        "maintenance alias did not refuse checked retirement: {stopped:?}"
+    );
+    assert_eq!(resources.observe()?.retained_memory_bytes, cache_bytes);
+    assert!(
+        bind_service(root.path(), &socket, work_limits(), descriptors()).is_err(),
+        "root reopened while maintenance alias still held its lease"
+    );
+    drop(maintenance);
+    retirement.retire()?;
+    retirement.retire()?;
+    assert_eq!(resources.observe()?.retained_memory_bytes, 0);
+    let reopened = bind_service(root.path(), &socket, work_limits(), descriptors())?;
+    drop(reopened);
+    Ok(())
 }
 
 struct PauseGate {
@@ -2380,7 +2435,7 @@ fn bind_native_text_service(
     bind_native_text_service_with_resources(
         root,
         socket,
-        resources,
+        &resources,
         resources.execution.interactive,
     )
 }
@@ -2388,7 +2443,7 @@ fn bind_native_text_service(
 fn bind_native_text_service_with_resources(
     root: &std::path::Path,
     socket: &std::path::Path,
-    resources: NativeServiceResources,
+    resources: &NativeServiceResources,
     read_need: ResourceNeed,
 ) -> anyhow::Result<NativeIndexService> {
     let recipe = TextRecipe::new(Digest([31; 32]));
@@ -2444,7 +2499,7 @@ fn native_uds_text_query_uses_selected_reader_need_below_interactive_envelope() 
     let service = NativeServiceGuard::start(bind_native_text_service_with_resources(
         root.path(),
         &socket,
-        resources,
+        &resources,
         read_need,
     )?);
     let client = NativeUdsClient::new(socket);
@@ -3455,7 +3510,7 @@ fn native_automatic_retention_advances_floor_releases_custody_and_preserves_pin_
         &socket,
         work_limits(),
         capabilities,
-        resources,
+        &resources,
         Some(reclaim),
         Some(retention.clone()),
     )?;
@@ -3514,7 +3569,7 @@ fn native_automatic_retention_advances_floor_releases_custody_and_preserves_pin_
             &socket,
             work_limits(),
             capabilities,
-            resources,
+            &resources,
             Some(reclaim),
             Some(retention.clone()),
         )
@@ -3603,6 +3658,8 @@ fn native_automatic_retention_advances_floor_releases_custody_and_preserves_pin_
         if Instant::now() >= deadline {
             let worker = running.observation.observe(Duration::from_secs(1));
             let resources = running.resources.observe();
+            drop(connection);
+            drop(catalog);
             let shutdown = running.stop();
             return Err(format!("automatic retention failed to settle floor/custody: expected_floor={}, observed_floor={observed_floor}, next_custody={next_custody:?}, other_history={other_history}, worker={worker:?}, resources={resources:?}, shutdown={shutdown:?}", four.sequence).into());
         }
@@ -3648,12 +3705,13 @@ fn native_automatic_retention_advances_floor_releases_custody_and_preserves_pin_
         &socket,
         work_limits(),
         capabilities,
-        resources,
+        &resources,
         Some(reclaim),
         Some(retention),
     )
     .map_err(|error| format!("retention restart after raw pin release: {error:#}"))?;
     let maintenance = service.maintenance_handle();
+    let retirement = service.retirement_handle();
     let running = NativeServiceGuard::start(service);
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(10))
@@ -3766,8 +3824,10 @@ fn native_automatic_retention_advances_floor_releases_custody_and_preserves_pin_
             maintenance.reclaim_step(before_body, config.child_limit, &mut probe_budget);
         let probe_elapsed = probe_started.elapsed();
         let probe_usage = probe_budget.usage();
+        drop(maintenance);
+        let retirement_retry = retirement.retire();
         return Err(format!(
-            "automatic physical retention did not remove old record/body: targets(object,lifecycle,all_reference_counts,parent_prefixes)={targets:?}, pinned_history_views_pins_work={history_and_pins:?}, queue_count={queue_count:?}, queue_first8={queued:?}, worker={worker:?}, resources={resources:?}, shutdown={shutdown:?}, admitted_queue_probe={queue_probe:?}, probe_elapsed={probe_elapsed:?}, probe_usage={probe_usage:?}"
+            "automatic physical retention did not remove old record/body: targets(object,lifecycle,all_reference_counts,parent_prefixes)={targets:?}, pinned_history_views_pins_work={history_and_pins:?}, queue_count={queue_count:?}, queue_first8={queued:?}, worker={worker:?}, resources={resources:?}, shutdown={shutdown:?}, admitted_queue_probe={queue_probe:?}, probe_elapsed={probe_elapsed:?}, probe_usage={probe_usage:?}, retirement_retry={retirement_retry:?}"
         ).into());
     }
     assert_eq!(
@@ -3810,7 +3870,8 @@ fn native_bind_rejects_unusable_read_lease_before_format_creation() -> TestResul
             &root.path().join("native.sock"),
             work_limits(),
             descriptors(),
-            NativeServiceResources {
+            &NativeServiceResources {
+                catalog_writer_cache: test_resources().catalog_writer_cache,
                 physical: native_physical_profile::profile(),
                 scratch_reserved_bytes: 16 * 1024 * 1024 * 1024,
                 read_ticket_lease: lease,
@@ -3938,7 +3999,7 @@ fn native_physical_staging_pressure(byte_cap: bool, raise_cap: bool) -> TestResu
         &socket,
         work_limits(),
         descriptors(),
-        resources,
+        &resources,
     )?;
     check_native_physical_census(&service, root.path())?;
     let running = NativeServiceGuard::start(service);
@@ -4023,7 +4084,7 @@ fn native_physical_staging_pressure(byte_cap: bool, raise_cap: bool) -> TestResu
         &socket,
         work_limits(),
         descriptors(),
-        recovery_resources,
+        &recovery_resources,
     )
     .map_err(|error| format!("pressure first recovery bind: {error:#}"))?;
     check_native_physical_census(&reopened, root.path())?;
@@ -4071,14 +4132,14 @@ fn native_physical_staging_pressure(byte_cap: bool, raise_cap: bool) -> TestResu
         client
             .discard_input(next_ingress, &budget())
             .map_err(|error| format!("same-cap subsequent discard: {error:?}"))?;
-        running.stop()?;
         drop(maintenance);
+        running.stop()?;
         let reopened = NativeIndexService::bind(
             root.path(),
             &socket,
             work_limits(),
             descriptors(),
-            resources,
+            &resources,
         )
         .map_err(|error| format!("same-cap final recovery bind: {error:#}"))?;
         check_native_physical_census(&reopened, root.path())?;
@@ -4112,8 +4173,8 @@ fn native_physical_staging_pressure(byte_cap: bool, raise_cap: bool) -> TestResu
         Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::FenceLost
     ));
     client.discard_input(refenced, &budget())?;
-    running.stop()?;
     drop(maintenance);
+    running.stop()?;
     let reopened = bind_service(root.path(), &socket, work_limits(), descriptors())?;
     check_native_physical_census(&reopened, root.path())?;
     drop(reopened);
@@ -4161,7 +4222,7 @@ fn native_physical_repeated_boot_retires_dead_sessions_under_the_same_file_cap()
             &socket,
             work_limits(),
             descriptors(),
-            resources,
+            &resources,
         )
         .map_err(|error| format!("same-cap repeated boot {restart}: {error:#}"))?;
         check_native_physical_census(&service, root.path())?;
@@ -4206,7 +4267,7 @@ fn native_physical_automatic_session_recovery_drains_backlog_and_preserves_live_
         &socket,
         work_limits(),
         reclaim_capabilities(None)?,
-        resources,
+        &resources,
         Some(test_reclaim_config()),
     )?;
     let running = NativeServiceGuard::start(service);
@@ -4252,7 +4313,7 @@ fn native_physical_invalid_profile_refuses_before_root_mutation() -> TestResult 
             &root.path().join("native.sock"),
             work_limits(),
             descriptors(),
-            resources,
+            &resources,
         );
         assert!(refused.is_err());
         assert!(std::fs::read_dir(root.path())?.next().is_none());
@@ -4297,7 +4358,7 @@ fn native_physical_over_cap_reopen_preserves_existing_state() -> TestResult {
             &socket,
             work_limits(),
             descriptors(),
-            resources,
+            &resources,
         )
         .err()
         .ok_or("over-cap root was admitted")?;
@@ -4323,7 +4384,7 @@ fn native_bind_rejects_overcommitted_class_floors_before_format_creation() -> Te
         &root.path().join("native.sock"),
         work_limits(),
         descriptors(),
-        resources,
+        &resources,
     );
     assert!(result.is_err());
     assert!(!root.path().join(".native-index-v18").exists());
@@ -4521,6 +4582,7 @@ fn native_kill_reopen_retains_view_and_reclaims_owned_scratch() -> TestResult {
         .map_err(|error| format!("first post-kill native bind: {error:#}"))?;
     assert!(!scratch_orphan.exists());
     let maintenance = service.maintenance_handle();
+    let retirement = service.retirement_handle();
     let shutdown = service.shutdown_handle();
     let worker = std::thread::spawn(move || service.run(Duration::from_millis(5)));
     let _recovery = maintenance.recover_read_sessions(
@@ -4538,9 +4600,15 @@ fn native_kill_reopen_retains_view_and_reclaims_owned_scratch() -> TestResult {
     )?;
     assert_eq!(latest.identity, genesis);
     shutdown.trigger();
-    worker
+    let stopped = worker
         .join()
-        .map_err(|_panic| "native reopen server thread panicked")??;
+        .map_err(|_panic| "native reopen server thread panicked")?;
+    assert!(
+        stopped.as_ref().is_err_and(|error| error
+            .to_string()
+            .contains("native Catalog consumers remain")),
+        "maintenance alias must make checked retirement report NotReady: {stopped:?}"
+    );
     let _post_shutdown_recovery = maintenance.recover_read_sessions(
         None,
         256,
@@ -4556,6 +4624,7 @@ fn native_kill_reopen_retains_view_and_reclaims_owned_scratch() -> TestResult {
         .is_err()
     );
     drop(maintenance);
+    retirement.retire()?;
     // Boot and explicit recovery may split the work. Durable rows and real
     // lock paths establish both outcomes after all admitted owners retire.
     assert_eq!(session_counts(dead_session_id)?, (0, 0));
@@ -4828,7 +4897,7 @@ fn bind_native_semantic_service_with_input(
             pump,
             provider_attempt_pool: None,
         },
-        resources,
+        &resources,
     )?;
     Ok((service, spec))
 }
@@ -5768,7 +5837,7 @@ fn native_owned_pump_automatically_reclaims_discarded_inputs_without_manual_step
         &socket,
         work_limits(),
         reclaim_capabilities(Some(pump))?,
-        resources,
+        &resources,
         Some(test_reclaim_config()),
     )?;
     let running = NativeServiceGuard::start(service);
@@ -5854,7 +5923,7 @@ fn native_automatic_reclaim_without_owned_pump_deletes_only_discarded_source() -
         &socket,
         work_limits(),
         reclaim_capabilities(None)?,
-        resources,
+        &resources,
         Some(test_reclaim_config()),
     )?;
     let running = NativeServiceGuard::start(service);
@@ -5945,7 +6014,7 @@ fn native_automatic_reclaim_invalid_config_and_missing_floor_refuse_before_state
             &socket,
             work_limits(),
             reclaim_capabilities(None)?,
-            resources,
+            &resources,
             Some(config),
         );
         assert!(result.is_err(), "{case} accepted");
@@ -6063,7 +6132,7 @@ fn native_automatic_reclaim_resumes_prepared_partial_child_drain_after_service_r
         &socket,
         work_limits(),
         reclaim_capabilities(None)?,
-        resources,
+        &resources,
         None,
     )?;
     let first = preparation.maintenance_handle().reclaim_step(
@@ -6104,7 +6173,7 @@ fn native_automatic_reclaim_resumes_prepared_partial_child_drain_after_service_r
             &socket,
             work_limits(),
             reclaim_capabilities(None)?,
-            resources,
+            &resources,
             Some(test_reclaim_config()),
         )?);
     let connection = rusqlite::Connection::open_with_flags(
@@ -6172,7 +6241,7 @@ fn native_response_frame_pressure_releases_data_without_dispatch_slots() -> Test
         &socket,
         work_limits(),
         descriptors(),
-        test_resources(),
+        &test_resources(),
     )?;
     let observation = service.resource_observation();
     let running = NativeServiceGuard::start(service);
@@ -6209,7 +6278,7 @@ fn native_response_frame_pressure_releases_data_without_dispatch_slots() -> Test
     let mut held = None;
     while Instant::now() < deadline {
         let snapshot = observation.observe()?;
-        if snapshot.live_memory_bytes > 0
+        if snapshot.live_memory_bytes > 2048 * 1024
             && snapshot.live_memory_bytes == snapshot.retained_memory_bytes
             && snapshot.reserved == ResourceNeed::default()
             && snapshot.pending_escape_bytes == 0
@@ -6230,16 +6299,16 @@ fn native_response_frame_pressure_releases_data_without_dispatch_slots() -> Test
     let _sender_outcome = writer.join().map_err(|_panic| "pressure sender panicked")?;
     drop(stream);
     let held = held.ok_or("no data-only response backing observed under real socket pressure")?;
-    assert!(held.live_memory_bytes > 0);
+    assert!(held.live_memory_bytes > 2048 * 1024);
     let released_by = Instant::now()
         .checked_add(Duration::from_secs(5))
         .ok_or("release deadline overflow")?;
-    while observation.observe()?.live_memory_bytes != 0 && Instant::now() < released_by {
+    while observation.observe()?.live_memory_bytes != 2048 * 1024 && Instant::now() < released_by {
         std::thread::sleep(Duration::from_millis(10));
     }
     let released = observation.observe()?;
-    assert_eq!(released.live_memory_bytes, 0);
-    assert_eq!(released.retained_memory_bytes, 0);
+    assert_eq!(released.live_memory_bytes, 2048 * 1024);
+    assert_eq!(released.retained_memory_bytes, 2048 * 1024);
     assert_eq!(released.pending_escape_bytes, 0);
     assert_eq!(released.reserved, ResourceNeed::default());
     running.stop()

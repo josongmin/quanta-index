@@ -4,8 +4,8 @@ use super::super::semantic_source::{SemanticSourceReplaceScopeV1, SemanticSource
 use crate::lex::SymbolRecord;
 use crate::semantic_kinds::SemanticCorpusKindV1;
 use crate::{
-    ChunkRecord, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
-    SourceFileCoverage, SourceFileKey, SourcePublicationEvent,
+    ChunkRecord, ManifestGeneration, OwnerDocKind, RepoId, RevisionId, SourceFileCoverage,
+    SourceFileKey, SourcePublicationEvent,
 };
 use core::fmt;
 use serde::{
@@ -61,7 +61,7 @@ impl Visitor<'_> for CorpusFieldKeySeed {
 #[cfg(test)]
 mod corpus_field_key_tests {
     use super::{CorpusFieldKeySeed, SEARCH_SCOPE_KEY_FIELDS, SearchScopeKey, SearchScopeSurface};
-    use crate::RepoRelativePath;
+    use crate::{RepoId, RepoRelativePath, SourceFileKey};
     use serde::de::{DeserializeSeed, value};
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -106,12 +106,14 @@ mod corpus_field_key_tests {
 
     #[test]
     fn fixed_json_and_cbor_map_wires_preserve_key_behavior() -> TestRes {
-        const JSON_SCOPE: &str = r#"{"doc_surface":"File","repo_relative_path":"src/main.rs"}"#;
-        const CBOR_SCOPE: &[u8] =
-            b"\xa2\x6bdoc_surface\x64File\x72repo_relative_path\x6bsrc/main.rs";
+        const JSON_SCOPE: &str = r#"{"doc_surface":"File","source_file":{"source_repo_id":"repo","repo_relative_path":"src/main.rs"}}"#;
+        const CBOR_SCOPE: &[u8] = b"\xa2\x6bdoc_surface\x64File\x6bsource_file\xa2\x6esource_repo_id\x64repo\x72repo_relative_path\x6bsrc/main.rs";
         let expected = SearchScopeKey {
             doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/main.rs"),
+            source_file: SourceFileKey {
+                source_repo_id: RepoId::new("repo")?,
+                repo_relative_path: RepoRelativePath::new("src/main.rs"),
+            },
         };
         let json: SearchScopeKey = serde_json::from_str(JSON_SCOPE)?;
         let cbor: SearchScopeKey = ciborium::from_reader(CBOR_SCOPE)?;
@@ -142,12 +144,10 @@ mod corpus_field_key_tests {
         // An indefinite text key concatenates to the known "doc_surface"
         // spelling. Identifier decoding intentionally accepts only finite
         // text keys, matching the canonical writer's wire form.
-        const INDEFINITE_TEXT_KEY: &[u8] =
-            b"\xa2\x7f\x64doc_\x67surface\xff\x64File\x72repo_relative_path\x6bsrc/main.rs";
+        const INDEFINITE_TEXT_KEY: &[u8] = b"\xa2\x7f\x64doc_\x67surface\xff\x64File\x6bsource_file\xa2\x6esource_repo_id\x64repo\x72repo_relative_path\x6bsrc/main.rs";
         // CBOR byte strings are not text keys, even if their bytes spell a
         // known field name.
-        const BYTE_STRING_KEY: &[u8] =
-            b"\xa2\x4bdoc_surface\x64File\x72repo_relative_path\x6bsrc/main.rs";
+        const BYTE_STRING_KEY: &[u8] = b"\xa2\x4bdoc_surface\x64File\x6bsource_file\xa2\x6esource_repo_id\x64repo\x72repo_relative_path\x6bsrc/main.rs";
         for wire in [INDEFINITE_TEXT_KEY, BYTE_STRING_KEY] {
             assert!(
                 ciborium::from_reader::<SearchScopeKey, _>(wire).is_err(),
@@ -415,10 +415,10 @@ impl std::error::Error for SearchCorpusSurfaceMutationConflictV1 {}
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct SearchScopeKey {
     pub doc_surface: SearchScopeSurface,
-    pub repo_relative_path: RepoRelativePath,
+    pub source_file: SourceFileKey,
 }
 
-const SEARCH_SCOPE_KEY_FIELDS: &[&str] = &["doc_surface", "repo_relative_path"];
+const SEARCH_SCOPE_KEY_FIELDS: &[&str] = &["doc_surface", "source_file"];
 
 impl Serialize for SearchScopeKey {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -427,7 +427,7 @@ impl Serialize for SearchScopeKey {
     {
         let mut state = serializer.serialize_struct("SearchScopeKey", 2)?;
         state.serialize_field("doc_surface", &self.doc_surface)?;
-        state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
+        state.serialize_field("source_file", &self.source_file)?;
         state.end()
     }
 }
@@ -446,7 +446,7 @@ impl<'de, P: CorpusDecodePolicy<'de>> Visitor<'de> for SearchScopeKeyVisitor<P> 
         A: MapAccess<'de>,
     {
         let mut doc_surface: Option<SearchScopeSurface> = None;
-        let mut repo_relative_path: Option<RepoRelativePath> = None;
+        let mut source_file: Option<SourceFileKey> = None;
         while let Some(key) = self.0.next_field(&mut map, SEARCH_SCOPE_KEY_FIELDS)? {
             match key {
                 "doc_surface" => {
@@ -455,19 +455,18 @@ impl<'de, P: CorpusDecodePolicy<'de>> Visitor<'de> for SearchScopeKeyVisitor<P> 
                     }
                     doc_surface = Some(map.next_value()?);
                 }
-                "repo_relative_path" => {
-                    if repo_relative_path.is_some() {
-                        return Err(de::Error::duplicate_field("repo_relative_path"));
+                "source_file" => {
+                    if source_file.is_some() {
+                        return Err(de::Error::duplicate_field("source_file"));
                     }
-                    repo_relative_path = Some(self.0.next_path(&mut map)?);
+                    source_file = Some(self.0.next_file(&mut map)?);
                 }
                 other => return Err(de::Error::unknown_field(other, SEARCH_SCOPE_KEY_FIELDS)),
             }
         }
         Ok(SearchScopeKey {
             doc_surface: doc_surface.ok_or_else(|| de::Error::missing_field("doc_surface"))?,
-            repo_relative_path: repo_relative_path
-                .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
+            source_file: source_file.ok_or_else(|| de::Error::missing_field("source_file"))?,
         })
     }
 }

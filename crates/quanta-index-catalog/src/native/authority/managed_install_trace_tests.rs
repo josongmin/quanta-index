@@ -291,7 +291,7 @@ mod managed_install_trace_tests {
             for object in &objects {
                 let key = object_key(object.reference);
                 let stored: Vec<u8> = guard.query_row(
-                    "SELECT row_digest FROM native_attempt_object_v1 WHERE operation=?1 AND fence=?2 AND object=?3",
+                    "SELECT row_digest FROM native_attempt_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND fence=?2 AND object=?3",
                     params![&operation, fence, &key],
                     |row| row.get(0),
                 )?;
@@ -326,7 +326,7 @@ mod managed_install_trace_tests {
             check!(!object_install::registered_matches(&guard, object)?);
             object_install::require_reserved(&guard, object)?;
             let protected: i64 = guard.query_row(
-                "SELECT COUNT(*) FROM native_attempt_object_v1 WHERE operation=?1 AND fence=?2 AND object=?3",
+                "SELECT COUNT(*) FROM native_attempt_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND fence=?2 AND object=?3",
                 params![operation_key(attempt.operation)?, int(attempt.fence)?, object_key(object.reference)],
                 |row| row.get(0),
             )?;
@@ -420,7 +420,7 @@ mod managed_install_trace_tests {
         )?;
         drop(guard);
         check_eq!(provisional, 0);
-        check_eq!(queued, 2);
+        check_eq!(queued, 0);
         Ok(())
     }
 
@@ -433,6 +433,12 @@ mod managed_install_trace_tests {
         let mut budget = admission_budget();
         catalog.reserve_managed(scope, std::slice::from_ref(&object), &mut budget)?;
         catalog.confirm_managed(scope, std::slice::from_ref(&object), &mut budget)?;
+        {
+            // Exercise a genuine pre-existing candidate independently of the
+            // protected reservation policy, including its rollback custody.
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            reclaim::release(&guard, object.reference)?;
+        }
 
         let key = object_key(object.reference);
         let (generation, kind): (i64, i64) = {
@@ -495,6 +501,7 @@ mod managed_install_trace_tests {
             params![&key],
             |row| row.get(0),
         )?;
+        drop(guard);
         check_eq!(queued, 1);
         Ok(())
     }
@@ -578,10 +585,12 @@ mod managed_install_trace_tests {
         Ok(())
     }
 
+    type QueueRows = Vec<(Vec<u8>, Vec<u8>)>;
+
     fn confirmation_queue_rows(
         catalog: &SqliteCatalog,
         objects: &[RegisteredObject; 2],
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Box<dyn Error>> {
+    ) -> Result<QueueRows, Box<dyn Error>> {
         let guard = catalog.lock().map_err(|error| error.to_string())?;
         let mut statement = guard.prepare(
             "SELECT object,row_digest FROM native_gc_queue_v1
@@ -594,7 +603,10 @@ mod managed_install_trace_tests {
             ],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let collected = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        drop(guard);
+        Ok(collected)
     }
 
     #[test]
@@ -611,10 +623,11 @@ mod managed_install_trace_tests {
             let mut budget = admission_budget();
             catalog.reserve_managed(scope, &objects, &mut budget)?;
             {
-                // Ingress reservation adopts the child and may remove its queue
-                // row. Exercise an explicitly queued candidate in both scopes.
+                // Seed independently released candidates in both scopes. A new
+                // managed reservation itself has durable intent protection.
                 let guard = catalog.lock().map_err(|error| error.to_string())?;
                 reclaim::release(&guard, leaf.reference)?;
+                reclaim::release(&guard, objects[1].reference)?;
             }
             let gold = confirmation_queue_rows(&catalog, &objects)?;
             check_eq!(gold.len(), 2);
@@ -665,10 +678,10 @@ mod managed_install_trace_tests {
                 guard.execute_batch("DROP TRIGGER reject_queue_parent")?;
             }
             catalog.confirm_managed(scope, &objects, &mut budget)?;
-            check_eq!(confirmation_queue_rows(&catalog, &objects)?, gold);
+            check!(confirmation_queue_rows(&catalog, &objects)?.is_empty());
             drop(catalog);
             let reopened = open(directory.path())?;
-            check_eq!(confirmation_queue_rows(&reopened, &objects)?, gold);
+            check!(confirmation_queue_rows(&reopened, &objects)?.is_empty());
             let guard = reopened.lock().map_err(|error| error.to_string())?;
             for object in &objects {
                 check!(object_install::confirmed_matches(&guard, object)?);
@@ -679,7 +692,7 @@ mod managed_install_trace_tests {
     }
 
     #[test]
-    fn confirming_child_without_queue_is_reenqueued_before_commit() -> TestResult {
+    fn confirming_child_without_queue_keeps_durable_protection_without_candidate() -> TestResult {
         for ingress_scope in [false, true] {
             let (_directory, catalog, ingress) = managed_adoption_fixture()?;
             let scope = if ingress_scope {
@@ -695,7 +708,8 @@ mod managed_install_trace_tests {
                 let guard = catalog.lock().map_err(|error| error.to_string())?;
                 reclaim::release(&guard, leaf.reference)?;
             }
-            let gold = confirmation_queue_rows(&catalog, &objects)?;
+            let queued = confirmation_queue_rows(&catalog, &objects)?;
+            check_eq!(queued.len(), 1);
             {
                 let guard = catalog.lock().map_err(|error| error.to_string())?;
                 check_eq!(
@@ -707,7 +721,7 @@ mod managed_install_trace_tests {
                 );
             }
             catalog.confirm_managed(scope, &objects, &mut budget)?;
-            check_eq!(confirmation_queue_rows(&catalog, &objects)?, gold);
+            check!(confirmation_queue_rows(&catalog, &objects)?.is_empty());
             let guard = catalog.lock().map_err(|error| error.to_string())?;
             for object in &objects {
                 check!(object_install::confirmed_matches(&guard, object)?);

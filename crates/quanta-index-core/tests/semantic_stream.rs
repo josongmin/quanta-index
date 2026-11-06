@@ -18,7 +18,7 @@ use quanta_index_contract::{
     EmbeddingId, EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord,
     ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey,
     SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
-    SourceRoleV1, SymbolId,
+    SourceFileKey, SourceRoleV1, SymbolId,
 };
 use quanta_index_core::{
     CoreError, ResidentScopeSource, SEMANTIC_STREAM_OWNER_SCOPE_OVER_WINDOW_CODE,
@@ -36,6 +36,13 @@ const DIMENSION: usize = 4;
 /// Bytes one row's vector occupies at [`DIMENSION`].
 const ROW_BYTES: u64 = 16;
 
+fn source_file(owner: &str, path: &str) -> SourceFileKey {
+    SourceFileKey {
+        source_repo_id: RepoId::new(owner).expect("fixture owner"),
+        repo_relative_path: RepoRelativePath::new(path),
+    }
+}
+
 fn record(
     id: &str,
     path: &str,
@@ -51,7 +58,7 @@ fn record(
         corpus_kind,
         parent_owner_id: None,
         source_doc_id: format!("doc-{id}").into_boxed_str(),
-        repo_relative_path: RepoRelativePath::new(path),
+        source_file: source_file("repo", path),
         language: LanguageCode::new("rust")
             .map_err(|err| -> Box<dyn std::error::Error> { format!("language: {err}").into() })?,
         package: None,
@@ -87,10 +94,14 @@ fn chunk(id: &str, path: &str) -> Result<EmbeddingRecord, Box<dyn std::error::Er
 }
 
 fn scope(path: &str, embeddings: Vec<EmbeddingRecord>) -> SemanticReplaceScope {
+    let file = embeddings
+        .first()
+        .map(|embedding| embedding.source_file.clone())
+        .unwrap_or_else(|| source_file("repo", path));
     SemanticReplaceScope {
         scope: SearchScopeKey {
             doc_surface: SearchScopeSurface::Chunk,
-            repo_relative_path: RepoRelativePath::new(path),
+            source_file: file,
         },
         scope_digest: format!("scope:{path}"),
         embeddings,
@@ -226,6 +237,48 @@ fn placement_joins_within_both_ceilings_and_opens_the_next_window_past_either() 
     Ok(())
 }
 
+#[test]
+fn same_owner_text_in_distinct_source_repositories_counts_as_two_scopes() -> TestResult {
+    let path = "src/shared.rs";
+    let mut source_a = record(
+        "a",
+        path,
+        OwnerDocKind::OwnerMap,
+        "shared-owner",
+        SemanticCorpusKindV1::ClusterCard,
+    )?;
+    source_a.source_file = source_file("repo-a", path);
+    let mut source_b = record(
+        "b",
+        path,
+        OwnerDocKind::OwnerMap,
+        "shared-owner",
+        SemanticCorpusKindV1::ClusterCard,
+    )?;
+    source_b.source_file = source_file("repo-b", path);
+    let scopes = vec![scope(path, vec![source_a]), scope(path, vec![source_b])];
+    let residency = Arc::new(SemanticWindowResidencyV1::default());
+    let window = SemanticScopeWindowV1::lease(scopes.clone(), &residency)?;
+    let fill = SemanticStreamWindowPolicy::DEFAULT.admit(&window)?;
+    if fill.owner_scopes != 2 {
+        return Err("distinct source files collapsed into one owner scope".into());
+    }
+    drop(window);
+
+    let one_scope = SemanticStreamWindowPolicy::new(1, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES)?;
+    let mut source = ResidentScopeSource::new(&scopes, one_scope)?;
+    let first = source.next_window()?.ok_or("first source owner")?;
+    if first.scopes()[0].scope.source_file.source_repo_id.as_str() != "repo-a" {
+        return Err("first source owner changed".into());
+    }
+    drop(first);
+    let second = source.next_window()?.ok_or("second source owner")?;
+    if second.scopes()[0].scope.source_file.source_repo_id.as_str() != "repo-b" {
+        return Err("second source owner changed".into());
+    }
+    Ok(())
+}
+
 // CASE-COVERS: a resident batch of legacy chunk rows (one owner each)
 // streams under a two-owner window as ceil(rows / 2) windows; a path whose
 // rows span windows is issued as one replace scope per window; the rows
@@ -256,7 +309,14 @@ fn resident_scopes_stream_by_owner_under_the_scope_ceiling() -> TestResult {
             window
                 .scopes()
                 .iter()
-                .map(|scope| scope.scope.repo_relative_path.as_str().to_string())
+                .map(|scope| {
+                    scope
+                        .scope
+                        .source_file
+                        .repo_relative_path
+                        .as_str()
+                        .to_string()
+                })
                 .collect(),
             ids(&window),
         ));
@@ -351,7 +411,7 @@ fn owners_travel_whole_with_their_memberships_and_an_oversize_owner_is_refused()
             .iter()
             .flat_map(|scope| {
                 scope.embeddings.iter().map(|record| {
-                    let (_corpus, _kind, owner_id) = owner_key_v1(record);
+                    let (_corpus, _kind, owner_id, _source_file) = owner_key_v1(record);
                     owner_id.to_string()
                 })
             })

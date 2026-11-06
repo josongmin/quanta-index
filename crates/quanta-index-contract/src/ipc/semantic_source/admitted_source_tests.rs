@@ -1,9 +1,12 @@
 use std::cell::Cell;
 
-use quanta_index_contract_base::{DecodeBackingAdmissionV1, DecodeBackingRefusalV1};
-use serde::de::DeserializeSeed;
+use quanta_index_contract_base::{
+    DecodeBackingAdmissionV1, DecodeBackingRefusalV1, SourceIdentityDecodeAdmissionV1,
+};
+use serde::{Deserialize, Deserializer, de::DeserializeSeed};
 
 use super::{SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1};
+use crate::{RepoId, RevisionId};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -125,6 +128,21 @@ impl DecodeBackingAdmissionV1 for TestAdmission {
     }
 }
 
+impl SourceIdentityDecodeAdmissionV1 for TestAdmission {
+    fn decode_repo_id_v1<'de, D: Deserializer<'de>>(&self, decoder: D) -> Result<RepoId, D::Error> {
+        RepoId::deserialize(decoder)
+    }
+
+    fn decode_revision_id_v1<'de, D: Deserializer<'de>>(
+        &self,
+        _decoder: D,
+    ) -> Result<RevisionId, D::Error> {
+        Err(serde::de::Error::custom(
+            "semantic source has no revision-id field",
+        ))
+    }
+}
+
 fn decode_scope(
     wire: &str,
     admission: &TestAdmission,
@@ -167,17 +185,17 @@ fn decode_replace(
     Ok(value)
 }
 
-const SCOPE: &str = r#"{"corpus_kind":"SymbolCard","owner_kind":"Symbol","owner_id":"symbol-1"}"#;
-const RECORD: &str = r#"{"record_id":"record-1","corpus_kind":"SymbolCard","owner_kind":"Symbol","owner_id":"symbol-1","source_doc_id":"doc-1","parent_owner_id":null,"repo_relative_path":"src/lib.rs","language":"rust","package":"crate","symbol_kind":"function","visibility":"pub","source_role":"CardText","generated":false,"capability_status":"Full","raw_fallback_reason":null,"authority_digest":"auth:sha256:1","render_policy_digest":"render:sha256:1","card_schema_version":1,"text":"pub fn demo() {}"}"#;
-const REPLACE: &str = r#"{"scope":{"corpus_kind":"SymbolCard","owner_kind":"Symbol","owner_id":"symbol-1"},"scope_digest":"scope:semantic:1","sources":[{"record_id":"record-1","corpus_kind":"SymbolCard","owner_kind":"Symbol","owner_id":"symbol-1","source_doc_id":"doc-1","parent_owner_id":null,"repo_relative_path":"src/lib.rs","language":"rust","package":"crate","symbol_kind":"function","visibility":"pub","source_role":"CardText","generated":false,"capability_status":"Full","raw_fallback_reason":null,"authority_digest":"auth:sha256:1","render_policy_digest":"render:sha256:1","card_schema_version":1,"text":"pub fn demo() {}"}],"cluster_memberships":[]}"#;
-const REPLACE_CLUSTER: &str = r#"{"scope":{"corpus_kind":"ClusterCard","owner_kind":"Symbol","owner_id":"cluster-1"},"scope_digest":"scope:cluster:1","sources":[],"cluster_memberships":[{"cluster_record_id":"cluster-1","authority_digest":"auth-1","members":["symbol-1"]}]}"#;
+const SCOPE: &str = r#"{"corpus_kind":"SymbolCard","owner_kind":"Symbol","owner_id":"symbol-1","source_file":{"source_repo_id":"repo","repo_relative_path":"src/lib.rs"}}"#;
+const RECORD: &str = r#"{"record_id":"record-1","corpus_kind":"SymbolCard","owner_kind":"Symbol","owner_id":"symbol-1","source_doc_id":"doc-1","parent_owner_id":null,"source_file":{"source_repo_id":"repo","repo_relative_path":"src/lib.rs"},"language":"rust","package":"crate","symbol_kind":"function","visibility":"pub","source_role":"CardText","generated":false,"capability_status":"Full","raw_fallback_reason":null,"authority_digest":"auth:sha256:1","render_policy_digest":"render:sha256:1","card_schema_version":1,"text":"pub fn demo() {}"}"#;
+const REPLACE: &str = r#"{"scope":{"corpus_kind":"SymbolCard","owner_kind":"Symbol","owner_id":"symbol-1","source_file":{"source_repo_id":"repo","repo_relative_path":"src/lib.rs"}},"scope_digest":"scope:semantic:1","sources":[{"record_id":"record-1","corpus_kind":"SymbolCard","owner_kind":"Symbol","owner_id":"symbol-1","source_doc_id":"doc-1","parent_owner_id":null,"source_file":{"source_repo_id":"repo","repo_relative_path":"src/lib.rs"},"language":"rust","package":"crate","symbol_kind":"function","visibility":"pub","source_role":"CardText","generated":false,"capability_status":"Full","raw_fallback_reason":null,"authority_digest":"auth:sha256:1","render_policy_digest":"render:sha256:1","card_schema_version":1,"text":"pub fn demo() {}"}],"cluster_memberships":[]}"#;
+const REPLACE_CLUSTER: &str = r#"{"scope":{"corpus_kind":"ClusterCard","owner_kind":"Symbol","owner_id":"cluster-1","source_file":{"source_repo_id":"repo","repo_relative_path":"src/lib.rs"}},"scope_digest":"scope:cluster:1","sources":[],"cluster_memberships":[{"cluster_record_id":"cluster-1","authority_digest":"auth-1","members":["symbol-1"]}]}"#;
 
 #[test]
 fn admitted_scope_record_and_replace_match_fixed_public_wires() -> TestResult {
     let scope_admission = TestAdmission::new(usize::MAX);
     let scope = decode_scope(SCOPE, &scope_admission)?;
     if scope != serde_json::from_str::<SemanticSourceScopeKeyV1>(SCOPE)?
-        || scope_admission.text_reservations.get() != 1
+        || scope_admission.text_reservations.get() != 2
         || scope_admission.aborted.get()
     {
         return Err("scope admitted wire or owner_id birth differs".into());
@@ -202,7 +220,7 @@ fn admitted_scope_record_and_replace_match_fixed_public_wires() -> TestResult {
     let replace = decode_replace(REPLACE, &replace_admission, 64, 1)?;
     if replace != serde_json::from_str::<SemanticSourceReplaceScopeV1>(REPLACE)?
         || replace.sources.len() != 1
-        || replace_admission.text_reservations.get() != 13
+        || replace_admission.text_reservations.get() != 14
         || replace_admission.sequence_reservations.get() != 1
         || replace_admission.aborted.get()
     {
@@ -223,7 +241,7 @@ fn admitted_replace_reuses_bounded_cluster_membership_seed() -> TestResult {
     let admitted = decode_replace(REPLACE_CLUSTER, &admission, 64, 1)?;
     let ordinary: SemanticSourceReplaceScopeV1 = serde_json::from_str(REPLACE_CLUSTER)?;
     if admitted != ordinary
-        || admission.text_reservations.get() != 5
+        || admission.text_reservations.get() != 6
         || admission.sequence_reservations.get() != 2
         || admission.aborted.get()
     {
@@ -275,6 +293,14 @@ fn admitted_semantic_source_refuses_bounds_and_partial_nested_inputs() {
 #[test]
 fn admitted_semantic_source_preserves_required_and_closed_fields() {
     let absent_optional = RECORD.replace("\"parent_owner_id\":null,", "");
+    let absent_file = RECORD.replace(
+        "\"source_file\":{\"source_repo_id\":\"repo\",\"repo_relative_path\":\"src/lib.rs\"},",
+        "",
+    );
+    let path_only = RECORD.replace(
+        "\"source_file\":{\"source_repo_id\":\"repo\",\"repo_relative_path\":\"src/lib.rs\"}",
+        "\"repo_relative_path\":\"src/lib.rs\"",
+    );
     let duplicate = RECORD.replace(
         "\"record_id\":\"record-1\"",
         "\"record_id\":\"record-1\",\"record_id\":\"record-2\"",
@@ -291,7 +317,13 @@ fn admitted_semantic_source_preserves_required_and_closed_fields() {
         "\"scope_digest\":\"scope:semantic:1\"",
         "\"scope_digest\":\"scope:semantic:1\",\"scope_digest\":\"other\"",
     );
-    for wire in [&absent_optional, &duplicate, &invalid_role] {
+    for wire in [
+        &absent_optional,
+        &absent_file,
+        &path_only,
+        &duplicate,
+        &invalid_role,
+    ] {
         let admission = TestAdmission::new(usize::MAX);
         assert!(
             decode_record(wire, &admission, 64).is_err() && admission.aborted.get(),

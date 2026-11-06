@@ -139,6 +139,7 @@ where
         | CliRequest::Symbol(_)
         | CliRequest::Semantic(_)
         | CliRequest::Hybrid(_)
+        | CliRequest::GoTestTraceFileV1(_)
         | CliRequest::HybridSeed(_)
         | CliRequest::Explain { .. }
         | CliRequest::RepoMap(_)
@@ -190,6 +191,12 @@ fn dispatch_query_request(
             client
                 .search()
                 .hybrid_request(hybrid)
+                .map_err(map_sdk_error)?,
+        ),
+        CliRequest::GoTestTraceFileV1(request) => SearchPlaneQueryIpcResponse::GoTestTraceFileV1(
+            client
+                .search()
+                .go_test_trace_file_request(request)
                 .map_err(map_sdk_error)?,
         ),
         CliRequest::HybridSeed(hybrid) => SearchPlaneQueryIpcResponse::HybridSeed(
@@ -459,6 +466,7 @@ Read-only subcommands:
   symbol           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
   semantic         --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
   hybrid           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --semantic-query-text TEXT --top-k N
+  go-test-trace-file --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --semantic-query-text TEXT --top-k N --failure-excerpt TEXT [--failure-source-repo-id ID] --file-top-k N
   hybrid-seed      --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
   explain          --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|- [--syntax native|sourcegraph --query-text TEXT]
   explain          --repo-id ID --revision-id REV --manifest-generation N --hybrid-candidate-json PATH|- --syntax native|sourcegraph --query-text TEXT --semantic-query-text TEXT --top-k N
@@ -478,6 +486,11 @@ lexical lane over `--query-text` and the dense lane over the embedded
 `--semantic-query-text` — and fuses their union by reciprocal rank fusion, so a
 document with no lexical overlap can enter the page on dense relevance alone.
 Each row carries its fused score and the rank and raw score every lane gave it.
+`go-test-trace-file` uses the two hybrid lanes to rank Go production files from
+a test failure before `_test.go` files and docs. A parsed frame in the raw
+`--failure-excerpt` is a query-bound ranking hint, not call-stack authority.
+`--failure-source-repo-id` binds a parsed source frame to its repository; omit
+it to suppress frame promotion when the failure owner is unknown.
 `semantic --scope-query` is the other shape: the dense lane is confined to the
 lexical universe the scope query matches (a lexical-scoped rerank), so a
 document the scope does not match can never enter its page.

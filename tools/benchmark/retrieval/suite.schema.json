@@ -144,6 +144,18 @@
         "split": {"enum": ["train", "eval"]},
         "query": {"type": "string", "minLength": 1},
         "query_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "semantic_input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "text", "text_sha256", "failure_excerpt", "failure_excerpt_sha256"],
+          "properties": {
+            "profile": {"const": "go_test_excerpt_v1"},
+            "text": {"type": "string", "minLength": 1},
+            "text_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "failure_excerpt": {"type": "string", "minLength": 1},
+            "failure_excerpt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        },
         "query_family_id": {
           "type": "string", "minLength": 1,
           "description": "Paraphrase family. One family must not appear in both train and eval."

@@ -26,7 +26,14 @@ from tools.benchmark.retrieval.causal_cost_timeline import (
 EVENT = "native_owned_work_refusal"
 TRACE_ID = re.compile(r"[0-9a-f]{32}\Z")
 PHASE_STAGES = frozenset(
-    {"build_prepare", "finalize", "semantic_prepare", "native_coverage_save", "native_publish"}
+    {
+        "build_prepare",
+        "finalize",
+        "semantic_prepare",
+        "native_coverage_save",
+        "native_work_seal",
+        "native_publish",
+    }
 )
 WRITE_KEYS = (
     "sqlite_write_calls",
@@ -36,6 +43,26 @@ WRITE_KEYS = (
     "sqlite_main_write_calls",
     "sqlite_other_write_calls",
 )
+WRITE_CALLBACK_KEYS = (
+    "sqlite_write_admission_calls",
+    "sqlite_write_admission_refusals",
+    "sqlite_write_admission_elapsed_ns",
+    "sqlite_write_lower_envelope_elapsed_ns",
+    "sqlite_write_post_callback_elapsed_ns",
+    "sqlite_write_post_callback_refusals",
+)
+CACHE_KEYS = (
+    "sqlite_cache_hits",
+    "sqlite_cache_misses",
+    "sqlite_cache_writes",
+    "sqlite_cache_spills",
+)
+WRITE_ERROR_KEYS = (
+    "sqlite_write_failures",
+    "sqlite_write_admission_refusals",
+    "sqlite_write_post_callback_refusals",
+)
+SPAN_OUTCOMES = ("ok", "error", "cancelled", "aborted")
 RECORD_KEYS = frozenset(
     {
         "event",
@@ -55,18 +82,92 @@ MAX_RECORD_BYTES = 256 * 1024
 MAX_STDERR_BYTES = 16 * 1024 * 1024
 MAX_INDEX_BYTES = 128 * 1024 * 1024
 SCOPE = {
-    "time": "inclusive per-group unions; groups can overlap and are not additive CPU",
+    "time": "inclusive per-group wall unions; groups can overlap and are not additive. thread_cpu_ns is optional per-span only and omitted from worker group direct_counters, even when every span has it",
     "phase": "nearest daemon worker descendant phase, not cross-process harness phase",
     "sqlite": "lane11/12 sync includes VFS witness; lane22 bytes are requested, not successful or device bytes",
+    "sqlite_write_callbacks": "lane22 callback timing is OBSERVED only when all six callback counters are present; their absence is NOT_OBSERVED, never zero. Admission, lower envelope, and post callback are exact observed wall intervals, not CPU or device service time; do not add them to lane22 span wall or other overlapping lanes. The lower envelope includes Rust/C glue, xWrite, size and FD witness, but excludes the C witness before BeforeWrite",
+    "sqlite_cache": "CatalogLockHold/lane0 carries all four pager cache deltas when OBSERVED; their absence is NOT_OBSERVED, never zero. Any recorded lower write failure, admission refusal or post-callback refusal makes all cache deltas PAGER_WRITE_UNDEFINED_AFTER_WRITE_ERROR for this capture. Missing callback timing is PAGER_WRITE_OUTCOME_NOT_OBSERVED. OBSERVED describes raw snapshots with no recorded write error; it does not prove callback-preceding C refusals were impossible. Hits, misses, dirty-page writes and mid-transaction spill pages are not xWrite calls, bytes, CPU, COMMIT duration, or additive with parent/child spans",
+    "backfill": "lane25 is an observed VFS CKPT_START-to-CKPT_DONE window; aborted spans stop at scope end, not DONE; descendant lane22 writes are requested, not device bytes or checkpoint success",
+    "commit_overlap": "lane3 COMMIT and lane25 overlap is temporal only; unions are nonadditive and do not identify automatic or explicit checkpoint origin",
     "outcome": "worker trace terminal is not public WorkStatus Completed",
     "qualification": "no source/binary custody or Off/Record timing qualification",
 }
+
+
+def _intersection_ns(first: list[tuple[int, int]], second: list[tuple[int, int]]) -> int:
+    """Intersect two interval unions; nested and concurrent spans count once."""
+    events = []
+    for intervals, dimension in ((first, 0), (second, 1)):
+        for start, end in intervals:
+            if end > start:
+                events.append((start, dimension, 1))
+                events.append((end, dimension, -1))
+    active = [0, 0]
+    previous = None
+    total = 0
+    for timestamp, dimension, delta in sorted(events):
+        if previous is not None and active[0] and active[1]:
+            total += timestamp - previous
+        active[dimension] += delta
+        previous = timestamp
+    return total
 
 
 def _natural(value: Any, label: str, *, positive: bool = False) -> int:
     if type(value) is not int or value < (1 if positive else 0):
         raise ValueError(f"{label} must be a {'positive' if positive else 'nonnegative'} integer")
     return value
+
+
+def _write_counters(counters: dict[str, Any], label: str) -> bool:
+    """Validate one lane22 segment or cached group; absent callback data is unobserved."""
+    if set(WRITE_KEYS) - set(counters):
+        raise ValueError(f"{label} has missing SQLite write counters")
+    values = {key: _natural(counters[key], f"{label} {key}") for key in WRITE_KEYS}
+    calls = values["sqlite_write_calls"]
+    if (
+        calls != sum(values[key] for key in WRITE_KEYS[3:])
+        or values["sqlite_write_failures"] > calls
+    ):
+        raise ValueError(f"{label} has inconsistent SQLite write partition")
+    observed = set(counters) & set(WRITE_CALLBACK_KEYS)
+    if not observed:
+        return False
+    if observed != set(WRITE_CALLBACK_KEYS):
+        raise ValueError(f"{label} has partial SQLite callback timing")
+    callback = {
+        key: _natural(counters[key], f"{label} SQLite callback timing {key}")
+        for key in WRITE_CALLBACK_KEYS
+    }
+    admissions = callback["sqlite_write_admission_calls"]
+    refusals = callback["sqlite_write_admission_refusals"]
+    if (
+        admissions - refusals != calls
+        or callback["sqlite_write_post_callback_refusals"] > calls
+        or (
+            calls == 0
+            and (
+                callback["sqlite_write_lower_envelope_elapsed_ns"] != 0
+                or callback["sqlite_write_post_callback_elapsed_ns"] != 0
+            )
+        )
+        or (admissions == 0 and callback["sqlite_write_admission_elapsed_ns"] != 0)
+    ):
+        raise ValueError(f"{label} has inconsistent SQLite callback timing")
+    return True
+
+
+def _cache_counters(counters: dict[str, Any], stage: str, lane: int, label: str) -> bool:
+    observed = set(counters) & set(CACHE_KEYS)
+    if not observed:
+        return False
+    if stage != "catalog_lock_hold" or lane != 0:
+        raise ValueError(f"{label} has SQLite cache counters on wrong stage or lane")
+    if observed != set(CACHE_KEYS):
+        raise ValueError(f"{label} has partial SQLite cache counters")
+    for key in CACHE_KEYS:
+        _natural(counters[key], f"{label} {key}")
+    return True
 
 
 def _complete(capture: dict[str, Any]) -> tuple[str, dict[int, dict[str, Any]]]:
@@ -80,7 +181,8 @@ def _complete(capture: dict[str, Any]) -> tuple[str, dict[int, dict[str, Any]]]:
         or not TRACE_ID.fullmatch(capture_id)
         or not isinstance(digest, str)
         or not re.fullmatch(r"[0-9a-f]{64}", digest)
-        or capture.get("schema_version") != 4
+        or type(capture.get("schema_version")) is not int
+        or capture.get("schema_version") not in (4, 5)
         or not isinstance(footer, dict)
         or footer.get("capture_id") != capture_id
         or footer.get("status") != "complete"
@@ -324,15 +426,28 @@ def build_index(capture: dict[str, Any], *, refusal_log: str | None = None) -> d
     buckets: dict[int, dict[tuple[str, int, str], list[dict[str, Any]]]] = {
         worker_id: defaultdict(list) for worker_id in workers
     }
+    backfill_windows: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    backfill_outcomes: dict[int, dict[str, int]] = defaultdict(
+        lambda: dict.fromkeys(SPAN_OUTCOMES, 0)
+    )
+    commit_windows: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    write_spans: dict[int, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
     for span_id, span in spans.items():
         start = _natural(span.get("start_ns"), f"span {span_id} start")
         end = _natural(span.get("end_ns"), f"span {span_id} end")
-        if end < start or not isinstance(span.get("outcome"), str):
+        if end < start or span.get("outcome") not in SPAN_OUTCOMES:
             raise ValueError(f"span {span_id} is open or regressed")
         parent = span.get("parent_span_id")
         if parent is not None:
             if parent not in spans:
                 raise ValueError(f"span {span_id} has missing parent")
+            ancestor = spans[parent]
+            if not ancestor["start_ns"] <= start <= end <= ancestor["end_ns"]:
+                raise ValueError(f"span {span_id} escapes parent interval")
+        if isinstance(span.get("counters"), dict):
+            _cache_counters(
+                span["counters"], span.get("stage"), span.get("lane_id"), f"span {span_id}"
+            )
         worker_id = owner(span_id)
         if worker_id is None or worker_id == span_id:
             continue
@@ -340,11 +455,33 @@ def build_index(capture: dict[str, Any], *, refusal_log: str | None = None) -> d
         if not worker_span["start_ns"] <= start <= end <= worker_span["end_ns"]:
             raise ValueError(f"span {span_id} escapes owned worker interval")
         stage, lane = span.get("stage"), span.get("lane_id")
-        if not isinstance(stage, str) or not stage or type(lane) is not int:
+        if (
+            not isinstance(stage, str)
+            or not stage
+            or type(lane) is not int
+            or not 0 <= lane <= 65535
+        ):
             raise ValueError(f"span {span_id} has invalid stage or lane")
         if not isinstance(span.get("counters"), dict):
             raise ValueError(f"span {span_id} has invalid counters")
         buckets[worker_id][(stage, lane, phase(span_id, worker_id))].append(span)
+        if stage == "sqlite_work":
+            if lane == 25:
+                backfill_windows[worker_id].append((start, end))
+                backfill_outcomes[worker_id][span["outcome"]] += 1
+            elif lane == 3:
+                commit_windows[worker_id].append((start, end))
+            elif lane == 22:
+                write_spans[worker_id].append((span_id, span))
+
+    def checkpoint_owner(span_id: int, worker_id: int) -> int | None:
+        cursor = spans[span_id].get("parent_span_id")
+        while cursor is not None and cursor != worker_id:
+            ancestor = spans[cursor]
+            if ancestor["stage"] == "sqlite_work" and ancestor["lane_id"] == 25:
+                return cursor
+            cursor = ancestor.get("parent_span_id")
+        return None
 
     result_workers: dict[str, dict[str, Any]] = {}
     for worker_id in sorted(workers):
@@ -353,21 +490,28 @@ def build_index(capture: dict[str, Any], *, refusal_log: str | None = None) -> d
         for (stage, lane, nearest_phase), rows in sorted(buckets[worker_id].items()):
             intervals = [(row["start_ns"], row["end_ns"]) for row in rows]
             counters: dict[str, int] = defaultdict(int)
+            callback_observed: bool | None = None
+            cache_observed: bool | None = None
             for row in rows:
+                if stage == "sqlite_work" and lane == 22:
+                    observed = _write_counters(row["counters"], "SQLite AfterWrite aggregate")
+                    if callback_observed is not None and callback_observed != observed:
+                        raise ValueError("SQLite callback timing is partial within one group")
+                    callback_observed = observed
+                if stage == "catalog_lock_hold" and lane == 0:
+                    observed = _cache_counters(row["counters"], stage, lane, "Catalog lock hold")
+                    if cache_observed is not None and cache_observed != observed:
+                        raise ValueError("SQLite cache counters are partial within one group")
+                    cache_observed = observed
                 for key, value in row["counters"].items():
                     if not isinstance(key, str):
                         raise ValueError("counter key is not a string")
-                    counters[key] += _natural(value, f"counter {key}")
-                if stage == "sqlite_work" and lane == 22:
-                    if set(WRITE_KEYS) - set(row["counters"]):
-                        raise ValueError("SQLite AfterWrite aggregate has missing counters")
-                    if (
-                        row["counters"]["sqlite_write_calls"]
-                        != sum(row["counters"][key] for key in WRITE_KEYS[3:])
-                        or row["counters"]["sqlite_write_failures"]
-                        > row["counters"]["sqlite_write_calls"]
-                    ):
-                        raise ValueError("SQLite write count partition is inconsistent")
+                    observed = _natural(value, f"counter {key}")
+                    if key != "thread_cpu_ns":
+                        counters[key] += observed
+            if stage == "sqlite_work" and lane == 22:
+                _write_counters(counters, "SQLite write group")
+            _cache_counters(counters, stage, lane, "SQLite cache group")
             groups.append(
                 {
                     "stage": stage,
@@ -380,16 +524,67 @@ def build_index(capture: dict[str, Any], *, refusal_log: str | None = None) -> d
                     "direct_counters": dict(sorted(counters.items())),
                 }
             )
+        windows = backfill_windows[worker_id]
+        commits = commit_windows[worker_id]
+        writes = dict.fromkeys(WRITE_KEYS, 0)
+        for span_id, span in write_spans[worker_id]:
+            if checkpoint_owner(span_id, worker_id) is not None:
+                for key in WRITE_KEYS:
+                    writes[key] += span["counters"][key]
+        commit_union = _union_ns(commits)
+        overlap = _intersection_ns(commits, windows)
         result_workers[str(worker_id)] = {
             "span_id": worker_id,
             "parent_span_id": worker["parent_span_id"],
             "outcome": worker["outcome"],
             "duration_ns": worker["end_ns"] - worker["start_ns"],
             "groups": groups,
+            "backfill": {
+                "window_count": len(windows),
+                "window_outcomes": backfill_outcomes[worker_id],
+                "window_union_ns": _union_ns(windows),
+                "descendant_write_counters": writes,
+                "commit_union_ns": commit_union,
+                "commit_overlap_ns": overlap,
+                "commit_minus_backfill_ns": commit_union - overlap,
+            },
         }
     refusals = _join_refusals(capture_id, spans, result_workers, refusal_log)
+    cache_seen = any(
+        isinstance(span.get("counters"), dict) and set(CACHE_KEYS) <= span["counters"].keys()
+        for span in spans.values()
+    )
+    write_failed = any(
+        isinstance(span.get("counters"), dict)
+        and any(span["counters"].get(key, 0) > 0 for key in WRITE_ERROR_KEYS)
+        for span in spans.values()
+    )
+    observed_writes = [
+        span
+        for span in spans.values()
+        if span.get("stage") == "sqlite_work" and span.get("lane_id") == 22
+    ]
+    # Check every reached scope, including those outside owned workers. Absent
+    # legacy callback data cannot establish zero admission/post refusals.
+    callback_coverage = (
+        [
+            _write_counters(span["counters"], "capture SQLite write scope")
+            for span in observed_writes
+        ]
+        if cache_seen
+        else []
+    )
+    cache_validity = (
+        "NOT_OBSERVED"
+        if not cache_seen
+        else "PAGER_WRITE_UNDEFINED_AFTER_WRITE_ERROR"
+        if write_failed
+        else "PAGER_WRITE_OUTCOME_NOT_OBSERVED"
+        if not callback_coverage or not all(callback_coverage)
+        else "OBSERVED"
+    )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "UNBOUND_DIAGNOSTIC_ONLY",
         "capture": {
             "capture_id": capture_id,
@@ -401,6 +596,7 @@ def build_index(capture: dict[str, Any], *, refusal_log: str | None = None) -> d
             "truncated_tail": capture["truncated_tail"],
         },
         "source_binary_binding": "NOT_PROVIDED",
+        "sqlite_cache_validity": cache_validity,
         "worker_count": len(result_workers),
         "workers": result_workers,
         "refusals": refusals,
@@ -415,16 +611,17 @@ def _validate_index(index: dict[str, Any]) -> None:
         "status",
         "capture",
         "source_binary_binding",
+        "sqlite_cache_validity",
         "worker_count",
         "workers",
         "refusals",
         "scope",
     }:
         raise ValueError("cached worker index envelope is malformed")
+    if type(index["schema_version"]) is not int or index["schema_version"] != 2:
+        raise ValueError("unsupported cached worker index schema; rebuild from qtrace")
     if (
-        type(index["schema_version"]) is not int
-        or index["schema_version"] != 1
-        or index["status"] != "UNBOUND_DIAGNOSTIC_ONLY"
+        index["status"] != "UNBOUND_DIAGNOSTIC_ONLY"
         or index["source_binary_binding"] != "NOT_PROVIDED"
     ):
         raise ValueError("cached worker index claims unsupported authority")
@@ -450,7 +647,7 @@ def _validate_index(index: dict[str, Any]) -> None:
         or not isinstance(digest, str)
         or not re.fullmatch(r"[0-9a-f]{64}", digest)
         or type(capture["schema_version"]) is not int
-        or capture["schema_version"] != 4
+        or capture["schema_version"] not in (4, 5)
         or capture["status"] != "complete"
         or capture["health"] != []
         or capture["truncated_tail"] is not False
@@ -466,6 +663,14 @@ def _validate_index(index: dict[str, Any]) -> None:
     scope = index["scope"]
     if scope != SCOPE:
         raise ValueError("cached worker index lacks interpretation scope")
+    cache_validity = index["sqlite_cache_validity"]
+    if cache_validity not in (
+        "NOT_OBSERVED",
+        "OBSERVED",
+        "PAGER_WRITE_OUTCOME_NOT_OBSERVED",
+        "PAGER_WRITE_UNDEFINED_AFTER_WRITE_ERROR",
+    ):
+        raise ValueError("cached SQLite cache validity is malformed")
     workers = index["workers"]
     if not isinstance(workers, dict) or _natural(index["worker_count"], "worker count") != len(
         workers
@@ -478,6 +683,7 @@ def _validate_index(index: dict[str, Any]) -> None:
             "outcome",
             "duration_ns",
             "groups",
+            "backfill",
         }:
             raise ValueError("cached worker row is malformed")
         span_id = _natural(worker["span_id"], "worker span ID", positive=True)
@@ -509,7 +715,7 @@ def _validate_index(index: dict[str, Any]) -> None:
                 not isinstance(stage, str)
                 or not stage
                 or type(lane) is not int
-                or lane < 0
+                or not 0 <= lane <= 65535
                 or not isinstance(phase, str)
                 or phase not in PHASE_STAGES | {"outside_phase"}
                 or (stage, lane, phase) in seen_groups
@@ -528,14 +734,90 @@ def _validate_index(index: dict[str, Any]) -> None:
                 for name, value in counters.items()
             ):
                 raise ValueError("cached worker counters are malformed")
+            if "thread_cpu_ns" in counters:
+                raise ValueError("cached worker group carries a per-span CPU counter")
             if stage == "sqlite_work" and lane == 22:
-                if (
-                    set(WRITE_KEYS) - set(counters)
-                    or counters["sqlite_write_calls"]
-                    != sum(counters[key] for key in WRITE_KEYS[3:])
-                    or counters["sqlite_write_failures"] > counters["sqlite_write_calls"]
-                ):
-                    raise ValueError("cached SQLite write-call partition differs")
+                _write_counters(counters, "cached SQLite write group")
+            if (
+                _cache_counters(counters, stage, lane, "cached SQLite cache group")
+                and cache_validity == "NOT_OBSERVED"
+            ):
+                raise ValueError("cached SQLite cache validity contradicts observed counters")
+            if any(counters.get(key, 0) > 0 for key in WRITE_ERROR_KEYS) and cache_validity in (
+                "OBSERVED",
+                "PAGER_WRITE_OUTCOME_NOT_OBSERVED",
+            ):
+                raise ValueError("cached SQLite cache validity ignores write failure")
+            if (
+                stage == "sqlite_work"
+                and lane == 22
+                and cache_validity == "OBSERVED"
+                and not set(WRITE_CALLBACK_KEYS) <= counters.keys()
+            ):
+                raise ValueError("cached SQLite cache validity ignores missing callback timing")
+        backfill = worker["backfill"]
+        if not isinstance(backfill, dict) or set(backfill) != {
+            "window_count",
+            "window_outcomes",
+            "window_union_ns",
+            "descendant_write_counters",
+            "commit_union_ns",
+            "commit_overlap_ns",
+            "commit_minus_backfill_ns",
+        }:
+            raise ValueError("cached backfill projection is malformed")
+        windows = [
+            group
+            for group in worker["groups"]
+            if group["stage"] == "sqlite_work" and group["lane_id"] == 25
+        ]
+        commits = [
+            group
+            for group in worker["groups"]
+            if group["stage"] == "sqlite_work" and group["lane_id"] == 3
+        ]
+        writes = [
+            group
+            for group in worker["groups"]
+            if group["stage"] == "sqlite_work" and group["lane_id"] == 22
+        ]
+        count = _natural(backfill["window_count"], "backfill window count")
+        outcomes = backfill["window_outcomes"]
+        if (
+            not isinstance(outcomes, dict)
+            or set(outcomes) != set(SPAN_OUTCOMES)
+            or sum(_natural(value, f"backfill {key} count") for key, value in outcomes.items())
+            != count
+        ):
+            raise ValueError("cached backfill terminal counts differ")
+        window_union = _natural(backfill["window_union_ns"], "backfill union")
+        commit_union = _natural(backfill["commit_union_ns"], "COMMIT union")
+        overlap = _natural(backfill["commit_overlap_ns"], "COMMIT/backfill overlap")
+        remainder = _natural(backfill["commit_minus_backfill_ns"], "COMMIT outside backfill")
+        if (
+            count != sum(group["count"] for group in windows)
+            or window_union > min(duration, sum(group["union_ns"] for group in windows))
+            or window_union < max((group["union_ns"] for group in windows), default=0)
+            or commit_union > min(duration, sum(group["union_ns"] for group in commits))
+            or commit_union < max((group["union_ns"] for group in commits), default=0)
+            or overlap > min(window_union, commit_union)
+            or remainder != commit_union - overlap
+        ):
+            raise ValueError("cached backfill timing contradicts groups")
+        descendant = backfill["descendant_write_counters"]
+        if (
+            not isinstance(descendant, dict)
+            or set(descendant) != set(WRITE_KEYS)
+            or any(
+                _natural(value, f"backfill {key}")
+                > sum(group["direct_counters"][key] for group in writes)
+                for key, value in descendant.items()
+            )
+            or descendant["sqlite_write_calls"] != sum(descendant[key] for key in WRITE_KEYS[3:])
+            or descendant["sqlite_write_failures"] > descendant["sqlite_write_calls"]
+            or (count == 0 and any(descendant.values()))
+        ):
+            raise ValueError("cached backfill write partition differs")
     refusals = index["refusals"]
     if (
         not isinstance(refusals, dict)
@@ -662,6 +944,7 @@ def query_index(
     return {
         "status": index["status"],
         "capture": index["capture"],
+        "sqlite_cache_validity": index["sqlite_cache_validity"],
         "matched_workers": len(selected),
         "workers": selected,
         "refusals": {
@@ -682,6 +965,19 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--out", type=Path, required=True)
     build.add_argument("--stderr", type=Path)
     build.add_argument("--max-capture-bytes", type=int, default=MAX_CAPTURE_BYTES)
+    observed = commands.add_parser(
+        "closed-workers", help="report observed closed scopes without complete-capture custody"
+    )
+    observed.add_argument("--input", type=Path, required=True)
+    observed.add_argument("--out", type=Path, required=True)
+    observed.add_argument("--max-capture-bytes", type=int, default=MAX_CAPTURE_BYTES)
+    maintenance = commands.add_parser(
+        "closed-maintenance",
+        help="report observed closed runtime maintenance scopes without complete-capture custody",
+    )
+    maintenance.add_argument("--input", type=Path, required=True)
+    maintenance.add_argument("--out", type=Path, required=True)
+    maintenance.add_argument("--max-capture-bytes", type=int, default=MAX_CAPTURE_BYTES)
     query = commands.add_parser("query", help="query a cached diagnostic index")
     query.add_argument("--index", type=Path, required=True)
     query.add_argument("--worker-span-id", type=int)
@@ -689,18 +985,30 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--lane", type=int)
     query.add_argument("--refusals-only", action="store_true")
     args = parser.parse_args(argv)
-    if args.command == "build":
+    if args.command in ("build", "closed-workers", "closed-maintenance"):
         with args.input.open("rb") as stream:
             if os.fstat(stream.fileno()).st_size > args.max_capture_bytes:
                 raise ValueError("capture exceeds configured offline replay bound")
             capture = parse_stream(stream, max_capture_bytes=args.max_capture_bytes)
         raw_log = None
-        if args.stderr is not None:
+        if args.command == "build" and args.stderr is not None:
             with args.stderr.open("rb") as stream:
                 if os.fstat(stream.fileno()).st_size > MAX_STDERR_BYTES:
                     raise ValueError("stderr exceeds diagnostic input bound")
                 raw_log = stream.read().decode("utf-8")
-        result = build_index(capture, refusal_log=raw_log)
+        if args.command in ("closed-workers", "closed-maintenance"):
+            from tools.benchmark.retrieval.causal_cost_worker_scopes import (
+                build_closed_maintenance_report,
+                build_closed_worker_report,
+            )
+
+            result = (
+                build_closed_maintenance_report(capture)
+                if args.command == "closed-maintenance"
+                else build_closed_worker_report(capture)
+            )
+        else:
+            result = build_index(capture, refusal_log=raw_log)
         descriptor = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(result, stream, separators=(",", ":"), sort_keys=True, allow_nan=False)

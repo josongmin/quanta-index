@@ -16,7 +16,7 @@ use std::{
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::{
     CancelHandleV1, DiagnosticContextV1, DiagnosticLaneV1, DiagnosticSpanGuardV1,
-    DiagnosticStageV1, DiagnosticTerminalV1, RequestBudgetV1,
+    DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceRefV1, RequestBudgetV1,
     index::{
         IndexError, OwnedReadyOutcome, OwnedWorkPolicy, OwnedWorkReport, Refusal, UpdateKind,
         WorkBudget, WorkBudgetDenial, WorkspaceKey,
@@ -35,6 +35,7 @@ use crate::{
     native_resources::{NativeClassScheduler, NativeResourceLedger, NativeResourceSnapshot},
     native_retention::{NativeRetentionConfig, NativeRetentionDriver},
     native_scratch_io::NativeScratchIo,
+    native_wal_reclaim::NativeWalReclaimSchedule,
     native_worker::{
         NativeOperationWorker, NativeWorkerSnapshot, OwnedRunHandle, OwnedRunSkip, OwnedRunStart,
     },
@@ -53,7 +54,6 @@ pub(super) struct NativePumpServices {
     pub maintenance_scheduler: Arc<NativeClassScheduler>,
     pub control_need: ResourceNeed,
     pub io: Arc<NativeScratchIo>,
-    pub wal_checkpoint_bytes: u64,
     pub diagnostic_context: Option<DiagnosticContextV1>,
 }
 
@@ -479,13 +479,16 @@ fn pump_loop(
     })?;
     let mut reclaim = reclaim
         .map(|config| {
-            NativeReclaimDriver::new(config, Instant::now()).map(|driver| (driver, config))
+            let now = Instant::now();
+            let driver = NativeReclaimDriver::new(config, now)?;
+            let wal = NativeWalReclaimSchedule::new(config.wal_reclaim, now)?;
+            Ok::<_, IndexError>((driver, config, wal))
         })
         .transpose()?;
     let mut retention = retention
         .map(|config| NativeRetentionDriver::new(config).map(|driver| (driver, Instant::now())))
         .transpose()?;
-    let read_session_limits = reclaim.as_ref().map(|(_, config)| config.work_limits);
+    let read_session_limits = reclaim.as_ref().map(|(_, config, _)| config.work_limits);
     let mut next_read_sweep = Instant::now();
     let mut runs = ActiveRuns::new(Arc::clone(stop));
     if let Some(config) = config {
@@ -505,8 +508,8 @@ fn pump_loop(
             if let Some((driver, next_due)) = &mut retention {
                 run_retention_due(dispatcher, driver, next_due, stop, active_reclaim)?;
             }
-            if let Some((driver, config)) = &mut reclaim {
-                run_reclaim_due(dispatcher, driver, *config, stop, active_reclaim)?;
+            if let Some((driver, config, wal)) = &mut reclaim {
+                run_reclaim_due(dispatcher, driver, *config, stop, active_reclaim, wal)?;
             }
             let launched = match (config, scan_limits) {
                 (Some(config), Some(scan_limits)) if !stop.load(Ordering::Acquire) => scan_round(
@@ -554,7 +557,7 @@ fn pump_loop(
                 .ok_or(IndexError::ResourceLimited)?;
             let deadline = reclaim
                 .as_ref()
-                .map_or(deadline, |(driver, _)| deadline.min(driver.next_due()));
+                .map_or(deadline, |(driver, _, _)| deadline.min(driver.next_due()));
             let deadline = retention
                 .as_ref()
                 .map_or(deadline, |(_, next_due)| deadline.min(*next_due));
@@ -762,6 +765,7 @@ fn run_reclaim_due(
     config: NativeReclaimConfig,
     stop: &AtomicBool,
     active_reclaim: &Arc<Mutex<Option<CancelHandleV1>>>,
+    wal: &mut NativeWalReclaimSchedule,
 ) -> Result<(), IndexError> {
     let now = Instant::now();
     if now < driver.next_due() || stop.load(Ordering::Acquire) {
@@ -796,20 +800,11 @@ fn run_reclaim_due(
     let recover_sessions = driver.read_recovery_due();
     let recovery_after = driver.read_recovery_after();
     let mut recovery_page = None;
-    let mut wal_checked = false;
     let round = driver.run_attempt_round(now, &mut budget, |after, child_limit, budget| {
         if stop.load(Ordering::Acquire) {
             budget.request().cancel_handle().cancel();
         }
         budget.checkpoint()?;
-        if !wal_checked {
-            let _checkpointed = dispatcher.catalog.checkpoint_wal_for_reclaim(
-                dispatcher.wal_checkpoint_bytes,
-                dispatcher.control_need.io_bytes,
-                budget,
-            )?;
-            wal_checked = true;
-        }
         // One bounded page shares this round's reservation, deadline and held
         // physical parent. The driver schedules cadence before this work.
         if recover_sessions && recovery_page.is_none() {
@@ -832,6 +827,32 @@ fn run_reclaim_due(
         // following object step failed; retain its authoritative cursor.
         driver.record_read_recovery(page);
     }
+    let wal_result: Result<(), IndexError> = (|| {
+        // GC goes first. A physical refusal may leave enough original budget
+        // to free WAL headroom for a later round; never retry GC in this one.
+        if matches!(&round, Ok(_) | Err(IndexError::ResourceLimited)) {
+            if stop.load(Ordering::Acquire) {
+                budget.request().cancel_handle().cancel();
+            }
+            budget.checkpoint()?;
+            if wal.try_begin(Instant::now())? {
+                let _wal_outcome = dispatcher.catalog.checkpoint_wal_for_reclaim(
+                    config.wal_reclaim.trigger_bytes,
+                    dispatcher.control_need.io_bytes,
+                    &mut budget,
+                )?;
+            }
+        }
+        Ok(())
+    })();
+    let round = match (round, wal_result) {
+        (round, Ok(())) => round,
+        (Ok(_), Err(error)) | (Err(_), Err(error @ IndexError::Cancelled)) => Err(error),
+        (Err(original), Err(IndexError::ResourceLimited)) => Err(original),
+        (Err(original), Err(cleanup)) => Err(IndexError::Storage(format!(
+            "native GC round failed: {original}; optional WAL reclaim failed: {cleanup}"
+        ))),
+    };
     finish_maintenance_round(span, &round);
     finish_reclaim_round(round, stop)
 }
@@ -1016,6 +1037,34 @@ fn scan_round(
     Ok(launched)
 }
 
+/// Observe a synchronous Catalog renewal linked to its worker.
+///
+/// Worker execution may already be closed, so use a link instead of a parent.
+/// Observation never changes the renewal result.
+fn observe_owned_renewal<T>(
+    parent: Option<&DiagnosticContextV1>,
+    worker_trace: Option<DiagnosticTraceRefV1>,
+    renew: impl FnOnce(Option<&DiagnosticContextV1>) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    let span = parent.and_then(|context| {
+        crate::runtime_diagnostic_span(
+            context,
+            context.enter(DiagnosticStageV1::SqliteWork, DiagnosticLaneV1(29)),
+        )
+    });
+    if let (Some(context), Some(span), Some(trace)) = (parent, span.as_ref(), worker_trace) {
+        context.link(span, trace);
+    }
+    let child = parent
+        .zip(span.as_ref())
+        .map(|(context, span)| context.child_context(span));
+    let result = renew(child.as_ref());
+    if let Some(span) = span {
+        let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
+    }
+    result
+}
+
 fn await_run(
     dispatcher: &Arc<NativePumpServices>,
     run: OwnedRunHandle,
@@ -1088,7 +1137,11 @@ fn await_run(
                 Arc::clone(&dispatcher.pump_control_scheduler),
                 dispatcher.control_need,
             ) {
-                dispatcher.kernel.renew_owned_work(&started.grant)
+                observe_owned_renewal(
+                    dispatcher.diagnostic_context.as_ref(),
+                    started.trace,
+                    |child| dispatcher.kernel.renew_owned_work(&started.grant, child),
+                )
             } else {
                 phase = "scheduler_admission";
                 Err(dispatcher.pump_control_scheduler.denial())
@@ -1395,6 +1448,10 @@ mod renewal_tests {
     fn reclaim_budget_refusal_preserves_cadence_cursor_and_errors() -> Result<(), IndexError> {
         let config = NativeReclaimConfig {
             interval: Duration::from_millis(20),
+            wal_reclaim: crate::native_wal_reclaim::NativeWalReclaimPolicy {
+                trigger_bytes: 8 * 1024 * 1024,
+                min_interval: Duration::from_secs(1),
+            },
             max_steps_per_round: 1,
             child_limit: 1,
             work_limits: WorkLimits {
@@ -2154,6 +2211,111 @@ mod maintenance_diagnostic_tests {
     use quanta_index_searchd::{DiagnosticCaptureLimitsV1, DiagnosticCaptureV1};
     use serde_json::Value;
 
+    fn trace_rows(path: &std::path::Path) -> Result<Vec<Value>> {
+        let rows: Vec<Value> = std::fs::read_to_string(path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<std::result::Result<_, _>>()?;
+        let schema_version = rows
+            .first()
+            .and_then(|row| row.get("schema_version"))
+            .and_then(Value::as_u64)
+            .context("capture schema version absent")?;
+        rows.into_iter()
+            .map(|row| {
+                quanta_index_searchd::trace_wire::normalize_record(schema_version, row)
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn renewal_links_closed_worker_and_preserves_success_failure_off() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("renewal.jsonl");
+        let mut recorder =
+            DiagnosticCaptureV1::start(path.clone(), DiagnosticCaptureLimitsV1::default())?;
+        let lease = recorder.lease().context("capture lease absent")?;
+        let root = lease
+            .context()
+            .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+        let root_id = root.span_id().get();
+        let parent = lease.context().child_context(&root);
+        let worker = parent.enter(DiagnosticStageV1::Operation, DiagnosticLaneV1(1))?;
+        let worker_trace = worker.trace_ref();
+        worker.finish(DiagnosticTerminalV1::Ok)?;
+        let mut child_ids = Vec::new();
+        let success = observe_owned_renewal(Some(&parent), Some(worker_trace), |child| {
+            let Some(child) = child else {
+                return Err(IndexError::Storage("renewal child absent".into()));
+            };
+            let nested = child
+                .enter(DiagnosticStageV1::CatalogLockWait, DiagnosticLaneV1(0))
+                .map_err(|error| IndexError::Storage(format!("renewal child span: {error:?}")))?;
+            child_ids.push(nested.span_id().get());
+            nested
+                .finish(DiagnosticTerminalV1::Ok)
+                .map_err(|error| IndexError::Storage(format!("renewal child end: {error:?}")))?;
+            Ok(())
+        });
+        success?;
+        let failure: std::result::Result<(), IndexError> =
+            observe_owned_renewal(Some(&parent), Some(worker_trace), |_child| {
+                Err(IndexError::WorkFenceLost)
+            });
+        ensure!(matches!(failure, Err(IndexError::WorkFenceLost)));
+        let off: std::result::Result<(), IndexError> = observe_owned_renewal(None, None, |child| {
+            if child.is_some() {
+                return Err(IndexError::Storage("off renewal gained context".into()));
+            }
+            Ok(())
+        });
+        off?;
+        drop(parent);
+        root.finish(DiagnosticTerminalV1::Ok)?;
+        drop(lease);
+        let closed = recorder.close(Duration::from_secs(2))?;
+        ensure!(closed.status == quanta_index_searchd::DiagnosticCaptureStatusV1::Complete);
+        let rows = trace_rows(&path)?;
+        let renewals: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                row.pointer("/kind/type").and_then(Value::as_str) == Some("span_begin")
+                    && row.pointer("/kind/stage").and_then(Value::as_str) == Some("sqlite_work")
+                    && row.pointer("/kind/lane_id").and_then(Value::as_u64) == Some(29)
+            })
+            .collect();
+        ensure!(
+            renewals.len() == 2,
+            "success and failure renewals must both be visible"
+        );
+        for (ordinal, renewal) in renewals.into_iter().enumerate() {
+            let expected = if ordinal == 0 { "ok" } else { "error" };
+            let id = renewal
+                .pointer("/kind/span_id")
+                .and_then(Value::as_u64)
+                .context("renewal span id absent")?;
+            ensure!(
+                renewal
+                    .pointer("/kind/parent_span_id")
+                    .and_then(Value::as_u64)
+                    == Some(root_id)
+            );
+            ensure!(rows.iter().any(|row| {
+                row.pointer("/kind/type").and_then(Value::as_str) == Some("link")
+                    && row.pointer("/kind/span_id").and_then(Value::as_u64) == Some(id)
+                    && row.pointer("/kind/target_span_id").and_then(Value::as_u64)
+                        == Some(worker_trace.span_id.get())
+            }));
+            ensure!(rows.iter().any(|row| {
+                row.pointer("/kind/type").and_then(Value::as_str) == Some("span_end")
+                    && row.pointer("/kind/span_id").and_then(Value::as_u64) == Some(id)
+                    && row.pointer("/kind/outcome").and_then(Value::as_str) == Some(expected)
+            }));
+        }
+        ensure!(child_ids.len() == 1);
+        Ok(())
+    }
     #[test]
     fn maintenance_round_keeps_operation_parent_and_raw_refusal_terminal() -> Result<()> {
         let directory = tempfile::tempdir()?;
@@ -2215,10 +2377,7 @@ mod maintenance_diagnostic_tests {
             closed.status == quanta_index_searchd::DiagnosticCaptureStatusV1::Complete,
             "maintenance diagnostic capture incomplete"
         );
-        let rows: Vec<Value> = std::fs::read_to_string(path)?
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<std::result::Result<_, _>>()?;
+        let rows = trace_rows(&path)?;
         ensure!(rows.iter().any(|row| {
             row.pointer("/kind/type").and_then(Value::as_str) == Some("span_begin")
                 && row.pointer("/kind/stage").and_then(Value::as_str) == Some("runtime_maintenance")

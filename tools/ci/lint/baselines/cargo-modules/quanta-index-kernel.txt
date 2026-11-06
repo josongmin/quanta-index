@@ -11,6 +11,7 @@ crate quanta_index_kernel
 │   ├── struct BuildFuture: pub(crate)
 │   └── struct PreparedBaseMember: pub(crate)
 ├── mod diagnostic: pub(crate)
+│   ├── enum SourceOwnerStep: pub(crate)
 │   └── struct WorkStage: pub(crate)
 ├── mod frontier: pub(crate)
 │   ├── struct FrontierEdits: pub(crate)

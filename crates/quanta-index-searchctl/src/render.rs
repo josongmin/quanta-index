@@ -3,12 +3,12 @@ use crate::{
 };
 use quanta_index_contract::{
     AuxEpochV1, ContinuationTokenV2, EarlyStopReason, EngineTouched, GenerationPin,
-    HybridQueryResponse, HybridSeedQueryResponse, PlannerTraceEntry, ProcessReadinessV1,
-    ProcessRequestEventsV1, QueryErrorRepair, QueryResultWindowV2, SearchExplanation,
-    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneStructuralQueryResponse, SymbolCandidate, SymbolQueryResponse, TextQueryResponse,
-    TextRankUnit,
+    GoTestTraceFileQueryResponseV1, HybridQueryResponse, HybridSeedQueryResponse,
+    PlannerTraceEntry, ProcessReadinessV1, ProcessRequestEventsV1, QueryErrorRepair,
+    QueryResultWindowV2, SearchExplanation, SearchPlaneHistoryQueryResponse,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse, SymbolCandidate,
+    SymbolQueryResponse, TextQueryResponse, TextRankUnit,
     ipc::{
         GenerationStatusReport, MetricHistogramV1, MetricsSnapshotV1, QuarantineDiscardAck,
         QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
@@ -31,6 +31,7 @@ pub(super) fn validate_response_kind(
         | (CommandKind::Symbol, SearchPlaneQueryIpcResponse::Symbol(_))
         | (CommandKind::Semantic, SearchPlaneQueryIpcResponse::Semantic(_))
         | (CommandKind::Hybrid, SearchPlaneQueryIpcResponse::Hybrid(_))
+        | (CommandKind::GoTestTraceFileV1, SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_))
         | (CommandKind::HybridSeed, SearchPlaneQueryIpcResponse::HybridSeed(_))
         | (CommandKind::Explain, SearchPlaneQueryIpcResponse::Explain(_))
         | (CommandKind::RepoMap, SearchPlaneQueryIpcResponse::RepoMapQuery(_))
@@ -609,6 +610,9 @@ fn render_pretty(
             "CLI does not issue work-bounded semantic queries".to_string(),
         )),
         SearchPlaneQueryIpcResponse::Hybrid(payload) => render_hybrid_payload(payload, rendered),
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(payload) => {
+            render_go_test_trace_file_payload(payload, rendered)
+        }
         SearchPlaneQueryIpcResponse::HybridSeed(payload) => {
             render_hybrid_seed_payload(payload, rendered)
         }
@@ -744,6 +748,47 @@ fn render_hybrid_payload(payload: &HybridQueryResponse, rendered: &mut String) -
         for line in row.candidate.snippet.lines() {
             fmt_ok(writeln!(rendered, "   {line}"))?;
         }
+    }
+    render_explanation(&payload.explanation, rendered)?;
+    Ok(())
+}
+
+fn render_go_test_trace_file_payload(
+    payload: &GoTestTraceFileQueryResponseV1,
+    rendered: &mut String,
+) -> CliResult<()> {
+    fmt_ok(writeln!(rendered, "kind: go-test-trace-file"))?;
+    render_generation(&payload.generation, rendered)?;
+    fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
+    fmt_ok(writeln!(
+        rendered,
+        "frame_class: {}",
+        payload.frame_class.as_str()
+    ))?;
+    fmt_ok(writeln!(rendered, "lexical_window:"))?;
+    render_window_line(&payload.lexical_window, rendered)?;
+    fmt_ok(writeln!(rendered, "dense_window:"))?;
+    render_window_line(&payload.dense_window, rendered)?;
+    for (index, row) in payload.results.iter().enumerate() {
+        let rank = index
+            .checked_add(1)
+            .ok_or_else(|| CliError::protocol("file result index overflow".to_string()))?;
+        fmt_ok(writeln!(
+            rendered,
+            "{}. source_repo_id={} path={} file_rrf_score={} production_source={} source_frame={} lexical={:?} dense={:?}",
+            rank,
+            row.file.source_repo_id.as_str(),
+            row.file.repo_relative_path.as_str(),
+            row.file_rrf_score,
+            row.production_source,
+            row.source_frame,
+            row.lexical
+                .as_ref()
+                .map(|lane| (lane.file_rank, lane.chunk_rank)),
+            row.dense
+                .as_ref()
+                .map(|lane| (lane.file_rank, lane.chunk_rank)),
+        ))?;
     }
     render_explanation(&payload.explanation, rendered)?;
     Ok(())
@@ -1179,6 +1224,7 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic",
         SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => "SemanticWorkBoundedV1",
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid",
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => "GoTestTraceFileV1",
         SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed",
         SearchPlaneQueryIpcResponse::History(_) => "History",
         SearchPlaneQueryIpcResponse::Structural(_) => "Structural",
@@ -1196,6 +1242,7 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::Symbol => "symbol",
         CommandKind::Semantic => "semantic",
         CommandKind::Hybrid => "hybrid",
+        CommandKind::GoTestTraceFileV1 => "go-test-trace-file",
         CommandKind::HybridSeed => "hybrid-seed",
         CommandKind::Explain => "explain",
         CommandKind::RepoMap => "repomap",

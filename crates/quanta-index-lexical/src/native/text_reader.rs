@@ -846,6 +846,45 @@ mod tests {
         )?;
         let port: &dyn IndexQueryPort<PlannedTextRead, TextReadResult> = &reader;
         let valid = spec(recipe);
+        // Fixed digests independently bind both retired policies and the
+        // current positional inventory plus occurrence dictionary bounds.
+        check!(
+            recipe.output_policy()
+                == Digest([
+                    178, 193, 223, 24, 180, 82, 72, 93, 105, 239, 78, 104, 123, 122, 53, 25, 240,
+                    124, 255, 247, 111, 226, 95, 10, 102, 93, 135, 6, 37, 141, 125, 149
+                ])
+        );
+        let prior_block_layout = InstanceSpec {
+            policy: Digest([
+                238, 241, 88, 98, 162, 10, 241, 27, 249, 231, 23, 55, 71, 223, 46, 21, 88, 151,
+                215, 89, 19, 71, 91, 197, 235, 74, 46, 232, 86, 189, 243, 62,
+            ]),
+            ..valid
+        };
+        let prior_leaf_layout = InstanceSpec {
+            policy: Digest([
+                85, 158, 4, 130, 19, 223, 227, 249, 120, 224, 253, 10, 163, 37, 82, 213, 222, 248,
+                87, 48, 64, 55, 234, 104, 102, 169, 87, 75, 225, 178, 194, 198,
+            ]),
+            ..valid
+        };
+        check!(matches!(
+            port.validate_instance(&prior_block_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check!(matches!(
+            crate::native::NativeTextIndex::new(recipe).validate_instance(&prior_block_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check!(matches!(
+            port.validate_instance(&prior_leaf_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check!(matches!(
+            crate::native::NativeTextIndex::new(recipe).validate_instance(&prior_leaf_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
         port.validate_instance(&valid)?;
         check!(
             crate::native::NativeTextIndex::new(recipe)

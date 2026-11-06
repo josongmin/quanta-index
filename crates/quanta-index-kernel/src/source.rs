@@ -184,39 +184,55 @@ fn read_record(
     reference: ObjectRef,
     context: &mut AttemptContext<'_>,
 ) -> Result<SourceRecordOwner, IndexError> {
-    let stored = context.objects.get(reference, context.budget)?;
-    if stored.registration.reference != reference {
-        return Err(IndexError::CorruptObject(
-            "source record object reference mismatch".into(),
-        ));
-    }
-    let record = SourceRecordOwner::decode_json(
-        &stored.payload,
+    use crate::diagnostic::{SourceOwnerStep, source_owner_step};
+
+    let objects = context.objects;
+    let stored = source_owner_step(context.budget, SourceOwnerStep::RecordGet, |budget| {
+        objects.get(reference, budget)
+    })?;
+    let record = source_owner_step(
         context.budget,
-        quanta_index_core::index::MemoryLifetime::Temporary,
+        SourceOwnerStep::RecordDecodePathEdges,
+        |budget| {
+            if stored.registration.reference != reference {
+                return Err(IndexError::CorruptObject(
+                    "source record object reference mismatch".into(),
+                ));
+            }
+            let record = SourceRecordOwner::decode_json(
+                &stored.payload,
+                budget,
+                quanta_index_core::index::MemoryLifetime::Temporary,
+            )?;
+            validate_path(&record.path)?;
+            if stored.registration.children.as_slice() != [record.bytes] {
+                return Err(IndexError::CorruptObject(
+                    "source record must directly own exactly its byte object".into(),
+                ));
+            }
+            Ok(record)
+        },
     )?;
-    validate_path(&record.path)?;
-    if stored.registration.children.as_slice() != [record.bytes] {
-        return Err(IndexError::CorruptObject(
-            "source record must directly own exactly its byte object".into(),
-        ));
-    }
     if matches!(record.text, SourceTextAdmission::Utf8 { .. }) {
-        let body = context.objects.get(record.bytes, context.budget)?;
-        if body.registration.reference != record.bytes
-            || !body.registration.children.is_empty()
-            || u64::try_from(body.payload.len()).map_err(|_error| IndexError::ResourceLimited)?
-                != record.byte_len
-        {
-            return Err(IndexError::CorruptObject(
-                "text-admitted source body identity, edges or length mismatch".into(),
-            ));
-        }
-        if std::str::from_utf8(&body.payload).is_err() {
-            return Err(IndexError::InvalidInput(
-                "source text admission requires UTF-8".into(),
-            ));
-        }
+        source_owner_step(context.budget, SourceOwnerStep::BodyGetValidate, |budget| {
+            let body = objects.get(record.bytes, budget)?;
+            if body.registration.reference != record.bytes
+                || !body.registration.children.is_empty()
+                || u64::try_from(body.payload.len())
+                    .map_err(|_error| IndexError::ResourceLimited)?
+                    != record.byte_len
+            {
+                return Err(IndexError::CorruptObject(
+                    "text-admitted source body identity, edges or length mismatch".into(),
+                ));
+            }
+            if std::str::from_utf8(&body.payload).is_err() {
+                return Err(IndexError::InvalidInput(
+                    "source text admission requires UTF-8".into(),
+                ));
+            }
+            Ok(())
+        })?;
     }
     // Next record byte objects were fully verified and adopted atomically at
     // admission. Prior record bytes are protected by the exact base ticket.
@@ -298,9 +314,12 @@ impl PathScratch {
                 "source path scratch allocation changed its envelope".into(),
             ));
         }
-        let owned_connection =
-            ScratchConnection::open(&allocation.path().join("paths.sqlite"), allocation.as_ref())?;
-        let connection = owned_connection.scoped()?;
+        let owned_connection = ScratchConnection::open(
+            &allocation.path().join("paths.sqlite"),
+            allocation.as_ref(),
+            budget,
+        )?;
+        let connection = owned_connection.scoped(budget)?;
         connection
             .execute_batch(
                 "PRAGMA page_size=4096; PRAGMA journal_mode=OFF; \
@@ -345,6 +364,65 @@ impl PathScratch {
         })
     }
 
+    fn reserve_owner_transition(
+        &self,
+        db: &rusqlite::Connection,
+        old_path: Option<&str>,
+        new_path: Option<&str>,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        // One mutation can claim at most two paths and append one owner edit.
+        // The same private transaction and installed SQLite page cap cover all
+        // three writes. Keep the input on the stack and within the shared
+        // scratch admission batch bound. If B-tree growth exceeds the estimate,
+        // SQLite's hard cap refuses it and the caller discards this attempt.
+        let mut incoming = [160_u64; 3];
+        let mut count = 1;
+        for path in [old_path, new_path].into_iter().flatten() {
+            *incoming.get_mut(count).ok_or(IndexError::ResourceLimited)? =
+                u64::try_from(path.len())
+                    .map_err(|_error| IndexError::ResourceLimited)?
+                    .checked_add(160)
+                    .ok_or(IndexError::ResourceLimited)?;
+            count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        }
+        quanta_index_scratch_sqlite::reserve_for_write_batch(
+            db,
+            self.allocation.as_ref(),
+            incoming.get(..count).ok_or(IndexError::ResourceLimited)?,
+            budget,
+        )
+    }
+
+    fn append_owner_transition(
+        &self,
+        mutation: &OwnerMutation,
+        old_path: Option<&str>,
+        new_path: Option<&str>,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        if old_path == new_path {
+            return Err(IndexError::BackendViolation(
+                "owner path transition requires a changed path".into(),
+            ));
+        }
+        let db = self.connection.scoped(budget)?;
+        if db.is_autocommit() {
+            return Err(IndexError::BackendViolation(
+                "owner path transition requires an active spool transaction".into(),
+            ));
+        }
+        self.reserve_owner_transition(&db, old_path, new_path, budget)?;
+        if let Some(path) = old_path {
+            Self::mark_reserved(&db, path, mutation.owner, true, budget)?;
+        }
+        if let Some(path) = new_path {
+            Self::mark_reserved(&db, path, mutation.owner, false, budget)?;
+        }
+        Self::append_owner_edit_reserved(&db, mutation, budget)
+    }
+
+    #[cfg(test)]
     fn mark(
         &self,
         path: &str,
@@ -356,12 +434,24 @@ impl PathScratch {
             .map_err(|_error| IndexError::ResourceLimited)?
             .checked_add(160)
             .ok_or(IndexError::ResourceLimited)?;
+        let db = self.connection.scoped(budget)?;
         quanta_index_scratch_sqlite::reserve_for_write(
-            &*self.connection.scoped()?,
+            &db,
             self.allocation.as_ref(),
             incoming,
             budget,
         )?;
+        Self::mark_reserved(&db, path, owner, leaving, budget)
+    }
+
+    fn mark_reserved(
+        db: &rusqlite::Connection,
+        path: &str,
+        owner: OwnerKey,
+        leaving: bool,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        budget.checkpoint()?;
         // One guarded upsert keeps the two independent path claims. A second
         // claimant must fail even when its owner identity is identical.
         let query = if leaving {
@@ -373,7 +463,6 @@ impl PathScratch {
              ON CONFLICT(path) DO UPDATE SET incoming=excluded.incoming \
              WHERE path_edits.incoming IS NULL"
         };
-        let db = self.connection.scoped()?;
         let changed = db
             .prepare_cached(query)
             .map_err(|error| scratch_error(&error))?
@@ -391,7 +480,7 @@ impl PathScratch {
 
     fn page(&self, after: Option<&str>, budget: &mut WorkBudget) -> Result<PathPage, IndexError> {
         budget.checkpoint()?;
-        let io_scope = self.connection.scoped()?;
+        let io_scope = self.connection.scoped(budget)?;
         // Separate the first page from the seek so SQLite can use the path
         // index rather than rescan the entire preceding prefix on every page.
         let query = if after.is_some() {
@@ -422,6 +511,7 @@ impl PathScratch {
 
     fn set_refs(
         &self,
+        tx: &rusqlite::Transaction<'_>,
         path: &str,
         expected: Option<quanta_index_core::index::MapValue>,
         next: Option<quanta_index_core::index::MapValue>,
@@ -432,7 +522,7 @@ impl PathScratch {
             .checked_add(256)
             .ok_or(IndexError::ResourceLimited)?;
         quanta_index_scratch_sqlite::reserve_for_write(
-            &*self.connection.scoped()?,
+            tx,
             self.allocation.as_ref(),
             incoming,
             budget,
@@ -445,9 +535,7 @@ impl PathScratch {
             .as_ref()
             .map(quanta_index_scratch_sqlite::map_value)
             .transpose()?;
-        let changed = self
-            .connection
-            .scoped()?
+        let changed = tx
             .execute(
                 "UPDATE path_edits SET expected=?2,next=?3 WHERE path=?1",
                 params![path, expected, next],
@@ -660,23 +748,25 @@ pub(crate) fn apply_source(
     authority: &dyn SourceAuthorityPort,
     context: &mut AttemptContext<'_>,
 ) -> Result<AppliedSource, IndexError> {
-    let span = crate::diagnostic::begin(
+    crate::diagnostic::WorkStage::begin(
         context.budget,
         quanta_index_core::DiagnosticStageV1::NativeSourceApply,
-    );
-    let result = apply_source_inner(
-        operation, base_view, base, transition, mode, authority, context,
     )
-    .map(|delta| AppliedSource {
-        delta,
-        attempt: context.attempt,
-    });
-    crate::diagnostic::finish_work(
-        context.budget,
-        quanta_index_core::DiagnosticStageV1::NativeSourceApply,
-        span,
-        result,
-    )
+    .run(context, |phase_context| {
+        apply_source_inner(
+            operation,
+            base_view,
+            base,
+            transition,
+            mode,
+            authority,
+            phase_context,
+        )
+        .map(|delta| AppliedSource {
+            delta,
+            attempt: phase_context.attempt,
+        })
+    })
 }
 
 fn apply_source_inner(
@@ -717,174 +807,259 @@ fn apply_source_inner(
             .map_err(|_conversion_error| IndexError::ResourceLimited)?,
         ..WorkUsage::default()
     })?;
-    let scratch = PathScratch::open(context.scratch, context.budget)?;
-    scratch.begin_owner_spool(context.budget)?;
-    let mut mutations = OwnerMutationCursor::new(transition.owners, context.maps, context.objects);
-    let mut producer_owners = resync_producer
-        .map(|producer| ProducerOwnerCursor::new(context.maps, base.owners, producer));
-    let mut next_existing = match producer_owners.as_mut() {
-        Some(cursor) => cursor.next_owner(context.budget)?,
-        None => None,
+    // Child spans describe elapsed work; SourceApply retains failed_stage
+    // ownership for pre-map refusals.
+    let owner_stage = quanta_index_core::DiagnosticStageV1::NativeSourceOwnerPrepare;
+    let owner_span = crate::diagnostic::begin(context.budget, owner_stage);
+    let scratch_result = {
+        let mut phase_budget = crate::diagnostic::phase_budget(context.budget, owner_span.as_ref());
+        PathScratch::open(context.scratch, &mut phase_budget)
     };
-    while let Some(mutation) = mutations.next_mutation(context.budget)? {
-        if transition
-            .events
-            .binary_search_by_key(&mutation.owner.producer, |event| event.producer)
-            .is_err()
-        {
-            return Err(IndexError::InvalidInput(
-                "mutated owner has no source event".into(),
-            ));
+    let scratch = match scratch_result {
+        Ok(scratch) => scratch,
+        Err(error) => {
+            return crate::diagnostic::finish(owner_span, Err(error));
         }
-        if let Some(producer) = resync_producer {
-            if mutation.owner.producer != producer {
-                return Err(IndexError::InvalidInput(
-                    "source resync mutation crosses producer authority".into(),
-                ));
-            }
-            if let Some(existing) = next_existing {
-                if existing < mutation.owner {
-                    return Err(IndexError::Conflict);
-                }
-                if existing == mutation.owner {
-                    next_existing = match producer_owners.as_mut() {
-                        Some(cursor) => cursor.next_owner(context.budget)?,
-                        None => {
-                            return Err(IndexError::BackendViolation(
-                                "source resync owner cursor absent".into(),
-                            ));
-                        }
-                    };
-                }
-            }
-        }
-        let key = owner_map_key(mutation.owner);
-        let actual = context
-            .maps
-            .lookup_object(base.owners, &key, context.budget)?;
-        if actual != mutation.expected {
-            return Err(IndexError::Conflict);
-        }
-        if actual.is_none() && mutation.next.is_none() {
-            return Err(IndexError::InvalidInput(
-                "delete requires existing owner".into(),
-            ));
-        }
-        let prior = actual
-            .map(|reference| read_record(reference, context).map(|record| (reference, record)))
-            .transpose()?;
-        let next = mutation
-            .next
-            .map(|reference| read_record(reference, context).map(|record| (reference, record)))
-            .transpose()?;
-        if let Some((_, prior)) = &prior {
-            let key = PathKey::copy(&prior.path, context.budget)?;
-            let marker = context
-                .maps
-                .lookup(base.paths, key.as_slice(), context.budget)?;
-            let recorded_owner = marker
-                .map(|reference| read_path_owner(reference, context))
-                .transpose()?;
-            if recorded_owner != Some(mutation.owner) {
-                return Err(IndexError::CorruptObject(
-                    "source owner/path reverse entry mismatch".into(),
-                ));
-            }
-        }
-        let old_path = prior.as_ref().map(|(_, record)| record.path.as_str());
-        let new_path = next.as_ref().map(|(_, record)| record.path.as_str());
-        if old_path != new_path {
-            if let Some(path) = old_path {
-                scratch.mark(path, mutation.owner, true, context.budget)?;
-            }
-            if let Some(path) = new_path {
-                scratch.mark(path, mutation.owner, false, context.budget)?;
-            }
-        }
-        scratch.append_owner_edit(&mutation, context.budget)?;
-    }
-    if next_existing.is_some() {
-        return Err(IndexError::Conflict);
-    }
-    let owners = scratch.validated_owner_edits(&mutations, transition.owners, context.budget)?;
-    drop(mutations);
-
-    let mut after: Option<PathRow> = None;
-    loop {
-        let page = scratch.page(after.as_ref().map(|row| row.path.as_str()), context.budget)?;
-        if page.is_empty() {
-            break;
-        }
-        for row in page {
-            let key = PathKey::copy(&row.path, context.budget)?;
-            let expected = context
-                .maps
-                .lookup(base.paths, key.as_slice(), context.budget)?;
-            let current_owner = expected
-                .map(|reference| read_path_owner(reference, context))
-                .transpose()?;
-            if let Some(leaver) = row.leaving {
-                if current_owner != Some(leaver) {
-                    return Err(IndexError::CorruptObject(
-                        "owner/path reverse entry mismatch".into(),
+    };
+    let owners_result = {
+        let mut phase_budget = crate::diagnostic::phase_budget(context.budget, owner_span.as_ref());
+        let mut phase_context = AttemptContext {
+            attempt: context.attempt,
+            objects: context.objects,
+            maps: context.maps,
+            custody: context.custody,
+            scratch: context.scratch,
+            budget: &mut phase_budget,
+        };
+        let context = &mut phase_context;
+        (|| {
+            scratch.begin_owner_spool(context.budget)?;
+            let mut mutations =
+                OwnerMutationCursor::new(transition.owners, context.maps, context.objects);
+            let mut producer_owners = resync_producer
+                .map(|producer| ProducerOwnerCursor::new(context.maps, base.owners, producer));
+            let mut next_existing = match producer_owners.as_mut() {
+                Some(cursor) => cursor.next_owner(context.budget)?,
+                None => None,
+            };
+            while let Some(mutation) = crate::diagnostic::source_owner_step(
+                context.budget,
+                crate::diagnostic::SourceOwnerStep::ManifestCursor,
+                |budget| mutations.next_mutation(budget),
+            )? {
+                if transition
+                    .events
+                    .binary_search_by_key(&mutation.owner.producer, |event| event.producer)
+                    .is_err()
+                {
+                    return Err(IndexError::InvalidInput(
+                        "mutated owner has no source event".into(),
                     ));
                 }
-            } else if current_owner.is_some() {
+                if let Some(producer) = resync_producer {
+                    if mutation.owner.producer != producer {
+                        return Err(IndexError::InvalidInput(
+                            "source resync mutation crosses producer authority".into(),
+                        ));
+                    }
+                    if let Some(existing) = next_existing {
+                        if existing < mutation.owner {
+                            return Err(IndexError::Conflict);
+                        }
+                        if existing == mutation.owner {
+                            next_existing = match producer_owners.as_mut() {
+                                Some(cursor) => cursor.next_owner(context.budget)?,
+                                None => {
+                                    return Err(IndexError::BackendViolation(
+                                        "source resync owner cursor absent".into(),
+                                    ));
+                                }
+                            };
+                        }
+                    }
+                }
+                let key = owner_map_key(mutation.owner);
+                let actual = crate::diagnostic::source_owner_step(
+                    context.budget,
+                    crate::diagnostic::SourceOwnerStep::BaseLookup,
+                    |budget| context.maps.lookup_object(base.owners, &key, budget),
+                )?;
+                if actual != mutation.expected {
+                    return Err(IndexError::Conflict);
+                }
+                if actual.is_none() && mutation.next.is_none() {
+                    return Err(IndexError::InvalidInput(
+                        "delete requires existing owner".into(),
+                    ));
+                }
+                let prior = actual
+                    .map(|reference| {
+                        read_record(reference, context).map(|record| (reference, record))
+                    })
+                    .transpose()?;
+                let next = mutation
+                    .next
+                    .map(|reference| {
+                        read_record(reference, context).map(|record| (reference, record))
+                    })
+                    .transpose()?;
+                if let Some((_, prior)) = &prior {
+                    let key = PathKey::copy(&prior.path, context.budget)?;
+                    let marker = context
+                        .maps
+                        .lookup(base.paths, key.as_slice(), context.budget)?;
+                    let recorded_owner = marker
+                        .map(|reference| read_path_owner(reference, context))
+                        .transpose()?;
+                    if recorded_owner != Some(mutation.owner) {
+                        return Err(IndexError::CorruptObject(
+                            "source owner/path reverse entry mismatch".into(),
+                        ));
+                    }
+                }
+                let old_path = prior.as_ref().map(|(_, record)| record.path.as_str());
+                let new_path = next.as_ref().map(|(_, record)| record.path.as_str());
+                if old_path == new_path {
+                    scratch.append_owner_edit(&mutation, context.budget)?;
+                } else {
+                    scratch.append_owner_transition(
+                        &mutation,
+                        old_path,
+                        new_path,
+                        context.budget,
+                    )?;
+                }
+            }
+            if next_existing.is_some() {
                 return Err(IndexError::Conflict);
             }
-            // This is attempt-local scratch, not an installed path marker.
-            // Once the base path is validated, retain its final inline value
-            // here so map application needs no second scratch rewrite pass.
-            let next = row
-                .incoming
-                .map(quanta_index_core::index::path_owner_map_value)
-                .transpose()?;
-            scratch.set_refs(&row.path, expected, next, context.budget)?;
-            after = Some(row);
-        }
-    }
+            let owners =
+                scratch.validated_owner_edits(&mutations, transition.owners, context.budget)?;
+            drop(mutations);
+            Ok(owners)
+        })()
+    };
+    let owners = crate::diagnostic::finish(owner_span, owners_result)?;
 
-    // Complete all base-path and frontier validation before installing any
-    // immutable map or frontier object, including a collision in a later
-    // scratch page. The scratch values above have no publication authority.
-    let frontier_preparation = crate::frontier::PreparedFrontiers::prepare(
-        operation,
-        base.frontiers,
-        &transition.events,
-        context,
-    )?;
+    let path_stage = quanta_index_core::DiagnosticStageV1::NativeSourcePathValidate;
+    let path_span = crate::diagnostic::begin(context.budget, path_stage);
+    let path_result = {
+        let mut phase_budget = crate::diagnostic::phase_budget(context.budget, path_span.as_ref());
+        let mut phase_context = AttemptContext {
+            attempt: context.attempt,
+            objects: context.objects,
+            maps: context.maps,
+            custody: context.custody,
+            scratch: context.scratch,
+            budget: &mut phase_budget,
+        };
+        let context = &mut phase_context;
+        (|| {
+            let mut after: Option<PathRow> = None;
+            loop {
+                let page =
+                    scratch.page(after.as_ref().map(|row| row.path.as_str()), context.budget)?;
+                if page.is_empty() {
+                    break;
+                }
+                // The page is bounded at 128 rows. Keep one scratch I/O scope
+                // through BEGIN, per-row admission, UPDATE, and COMMIT.
+                // Journal mode is OFF: rollback is not a recovery boundary.
+                // Any error aborts the attempt and discards this scratch before
+                // persistent map installation.
+                let page_scope = scratch.connection.scoped(context.budget)?;
+                let page_tx = page_scope
+                    .unchecked_transaction()
+                    .map_err(|error| scratch_error(&error))?;
+                for row in page {
+                    let key = PathKey::copy(&row.path, context.budget)?;
+                    let expected =
+                        context
+                            .maps
+                            .lookup(base.paths, key.as_slice(), context.budget)?;
+                    let current_owner = expected
+                        .map(|reference| read_path_owner(reference, context))
+                        .transpose()?;
+                    if let Some(leaver) = row.leaving {
+                        if current_owner != Some(leaver) {
+                            return Err(IndexError::CorruptObject(
+                                "owner/path reverse entry mismatch".into(),
+                            ));
+                        }
+                    } else if current_owner.is_some() {
+                        return Err(IndexError::Conflict);
+                    }
+                    // This is attempt-local scratch, not an installed path marker.
+                    // Once the base path is validated, retain its final inline value
+                    // here so map application needs no second scratch rewrite pass.
+                    let next = row
+                        .incoming
+                        .map(quanta_index_core::index::path_owner_map_value)
+                        .transpose()?;
+                    scratch.set_refs(&page_tx, &row.path, expected, next, context.budget)?;
+                    after = Some(row);
+                }
+                page_tx.commit().map_err(|error| scratch_error(&error))?;
+            }
+
+            // Complete all base-path and frontier validation before installing any
+            // immutable map or frontier object, including a collision in a later
+            // scratch page. The scratch values above have no publication authority.
+            let frontier_preparation = crate::frontier::PreparedFrontiers::prepare(
+                operation,
+                base.frontiers,
+                &transition.events,
+                context,
+            )?;
+            Ok(frontier_preparation)
+        })()
+    };
+    let frontier_preparation = crate::diagnostic::finish(path_span, path_result)?;
 
     let map_span = crate::diagnostic::begin(
         context.budget,
         quanta_index_core::DiagnosticStageV1::NativeSourceMapApply,
     );
-    let result = (|| {
-        // Next frontier objects share the attempt's custody and are installed
-        // only after every immutable-base precondition has passed.
-        let frontier_edits = frontier_preparation.stage(context)?;
-        let mut edits = SourceEditCursor {
-            owners,
-            paths: &scratch,
-            path_page: PathPageCursor::default(),
-            after_path: None,
-            frontier_edits,
-            phase: 0,
+    let result = {
+        let mut phase_budget = crate::diagnostic::phase_budget(context.budget, map_span.as_ref());
+        let mut phase_context = AttemptContext {
+            attempt: context.attempt,
+            objects: context.objects,
+            maps: context.maps,
+            custody: context.custody,
+            scratch: context.scratch,
+            budget: &mut phase_budget,
         };
-        let roots = context.apply_stream(&[base.owners, base.paths, base.frontiers], &mut edits)?;
-        let [owners, paths, frontiers]: [MapRoot; 3] =
-            roots.as_slice().try_into().map_err(|_roots| {
-                IndexError::BackendViolation("source map stream lost ordinal output".into())
-            })?;
-        Ok(SourceDelta {
-            prior: base,
-            next: SourceCut {
+        let context = &mut phase_context;
+        (|| {
+            // Next frontier objects share the attempt's custody and are installed
+            // only after every immutable-base precondition has passed.
+            let frontier_edits = frontier_preparation.stage(context)?;
+            let mut edits = SourceEditCursor {
                 owners,
-                paths,
-                frontiers,
-            },
-            changed: transition.owners,
-        })
-    })();
+                paths: &scratch,
+                path_page: PathPageCursor::default(),
+                after_path: None,
+                frontier_edits,
+                phase: 0,
+            };
+            let roots =
+                context.apply_stream(&[base.owners, base.paths, base.frontiers], &mut edits)?;
+            let [owners, paths, frontiers]: [MapRoot; 3] =
+                roots.as_slice().try_into().map_err(|_roots| {
+                    IndexError::BackendViolation("source map stream lost ordinal output".into())
+                })?;
+            Ok(SourceDelta {
+                prior: base,
+                next: SourceCut {
+                    owners,
+                    paths,
+                    frontiers,
+                },
+                changed: transition.owners,
+            })
+        })()
+    };
     crate::diagnostic::finish_work(
         context.budget,
         quanta_index_core::DiagnosticStageV1::NativeSourceMapApply,
@@ -956,7 +1131,12 @@ mod tests {
                 !incoming_first,
                 &mut work,
             )?;
-            paths.set_refs(path, Some(expected), Some(replacement), &mut work)?;
+            let page_scope = paths.connection.scoped(&work)?;
+            let page_tx = page_scope
+                .unchecked_transaction()
+                .map_err(|error| scratch_error(&error))?;
+            paths.set_refs(&page_tx, path, Some(expected), Some(replacement), &mut work)?;
+            page_tx.commit().map_err(|error| scratch_error(&error))?;
             paths.mark(
                 path,
                 if incoming_first { prior } else { next },
@@ -989,7 +1169,7 @@ mod tests {
         ));
         let count: i64 = paths
             .connection
-            .scoped()?
+            .scoped(&work)?
             .query_row("SELECT COUNT(*) FROM path_edits", [], |row| row.get(0))
             .map_err(|error| scratch_error(&error))?;
         check_eq!(count, 2);
@@ -1057,12 +1237,12 @@ mod tests {
         ] {
             let _rows_changed = paths
                 .connection
-                .scoped()?
+                .scoped(&denied)?
                 .execute("DELETE FROM path_edits", [])
                 .map_err(|error| scratch_error(&error))?;
             let _rows_changed = paths
                 .connection
-                .scoped()?
+                .scoped(&denied)?
                 .execute(
                     &format!(
                         "INSERT INTO path_edits(path,leaving,incoming,expected,next) VALUES({row})"
@@ -1078,12 +1258,12 @@ mod tests {
         }
         let _rows_changed = paths
             .connection
-            .scoped()?
+            .scoped(&denied)?
             .execute("DELETE FROM path_edits", [])
             .map_err(|error| scratch_error(&error))?;
         let _rows_changed = paths
             .connection
-            .scoped()?
+            .scoped(&denied)?
             .execute(
                 "INSERT INTO path_edits(path) VALUES(?1)",
                 params![
@@ -1101,12 +1281,12 @@ mod tests {
         ));
         let _rows_changed = paths
             .connection
-            .scoped()?
+            .scoped(&denied)?
             .execute("DELETE FROM path_edits", [])
             .map_err(|error| scratch_error(&error))?;
         let _rows_changed = paths
             .connection
-            .scoped()?
+            .scoped(&denied)?
             .execute("INSERT INTO path_edits(path) VALUES('a')", [])
             .map_err(|error| scratch_error(&error))?;
         check!(matches!(
@@ -1120,6 +1300,7 @@ mod tests {
     #[test]
     fn path_row_fixed_fields_match_independent_identity_gold() -> Result<(), IndexError> {
         let (_home, paths) = path_fixture()?;
+        let (mut budget, ledger) = crate::path_staging::tests::budget(u64::MAX)?;
         let mut leaving = [1u8; 32];
         leaving
             .get_mut(16..)
@@ -1130,11 +1311,10 @@ mod tests {
             .get_mut(16..)
             .ok_or(IndexError::ResourceLimited)?
             .fill(6);
-        let _rows_changed = paths.connection.scoped()?.execute(
+        let _rows_changed = paths.connection.scoped(&budget)?.execute(
             "INSERT INTO path_edits(path,leaving,incoming,expected,next) VALUES(?1,?2,?3,?4,?5)",
             params!["a", leaving.as_slice(), incoming.as_slice(), quanta_index_scratch_sqlite::map_value(&MapValue::Object(ObjectRef(Digest([7;32]))))?, quanta_index_scratch_sqlite::map_value(&MapValue::Object(ObjectRef(Digest([8;32]))))?],
         ).map_err(|error| scratch_error(&error))?;
-        let (mut budget, ledger) = crate::path_staging::tests::budget(u64::MAX)?;
         let page = paths.page(None, &mut budget)?;
         let row = page
             .as_slice()
@@ -1166,10 +1346,11 @@ mod tests {
     fn path_pages_keep_position_custody_and_refund_partial_copy_refusal() -> Result<(), IndexError>
     {
         let (_home, paths) = path_fixture()?;
+        let (mut budget, ledger) = crate::path_staging::tests::budget(u64::MAX)?;
         for ordinal in 0..129 {
             let _rows_changed = paths
                 .connection
-                .scoped()?
+                .scoped(&budget)?
                 .execute(
                     "INSERT INTO path_edits(path) VALUES(?1)",
                     params![format!("a{ordinal:03}")],
@@ -1178,7 +1359,7 @@ mod tests {
         }
         let plan: String = paths
             .connection
-            .scoped()?
+            .scoped(&budget)?
             .query_row(
                 &format!("EXPLAIN QUERY PLAN {PATH_PAGE_AFTER_SQL}"),
                 params!["a127"],
@@ -1186,7 +1367,6 @@ mod tests {
             )
             .map_err(|error| scratch_error(&error))?;
         check!(plan.contains("SEARCH path_edits") && plan.contains("path>?"));
-        let (mut budget, ledger) = crate::path_staging::tests::budget(u64::MAX)?;
         let mut page = paths.page(None, &mut budget)?.into_iter();
         let mut after = None;
         for ordinal in 0..128 {
@@ -1299,17 +1479,17 @@ mod tests {
         let scratch = PathScratch::open(&scratch_space, &mut budget)?;
         let page_size: u32 = scratch
             .connection
-            .scoped()?
+            .scoped(&budget)?
             .query_row("PRAGMA page_size", [], |row| row.get(0))
             .map_err(|error| scratch_error(&error))?;
         let max_pages: u32 = scratch
             .connection
-            .scoped()?
+            .scoped(&budget)?
             .query_row("PRAGMA max_page_count", [], |row| row.get(0))
             .map_err(|error| scratch_error(&error))?;
         let temp_store: u32 = scratch
             .connection
-            .scoped()?
+            .scoped(&budget)?
             .query_row("PRAGMA temp_store", [], |row| row.get(0))
             .map_err(|error| scratch_error(&error))?;
         if page_size != SCRATCH_PAGE_SIZE {

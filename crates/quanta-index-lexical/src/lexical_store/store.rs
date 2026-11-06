@@ -28,13 +28,18 @@ mod control_reader;
 mod gc_lifetime;
 mod hard_scan_checkpoint;
 mod object_reader;
+mod packed_records;
 mod pool_accounting;
+mod prepared_batch;
 
 use control_reader::ControlReader;
 pub(crate) use gc_lifetime::GcDeleteCustody;
 #[cfg(test)]
 pub(crate) use gc_lifetime::tests::fake_gc_delete_ticket;
 use object_reader::ObjectReader;
+pub(crate) use packed_records::MAX_PACKED_RECORDS;
+pub(crate) const MAX_RECORD_GROUP_BYTES: usize = BLOCK_BYTES;
+use prepared_batch::{PendingOutput, PreparedBatch};
 
 pub(crate) use hard_scan_checkpoint::{
     Authority, CandidateWitness, CheckpointPayload, EligibilityWitness, IndependentWindowOracle,
@@ -134,6 +139,7 @@ mod admitted_pool_output_tests {
         events: Vec<&'static str>,
         race_gate: bool,
         winner_inode: Option<u64>,
+        corrupt_pool_object: bool,
     }
 
     struct Admission(Arc<Mutex<Calls>>);
@@ -369,6 +375,17 @@ mod admitted_pool_output_tests {
                 .map_err(|error| fixture_io("read staged bytes", error))?;
             check(bytes.as_slice() == GOLD, "staged fixed bytes")?;
             check(absent(self.target()?)?, "target absent before rename")?;
+            if self
+                .calls
+                .lock()
+                .map_err(|error| fixture_io("lock calls", error))?
+                .corrupt_pool_object
+            {
+                let mut corrupted = GOLD.to_vec();
+                *corrupted.last_mut().ok_or_else(unexpected)? = b'X';
+                std::fs::write(self.staging()?, corrupted)
+                    .map_err(|error| fixture_io("corrupt staged object", error))?;
+            }
             self.record("before")
         }
 
@@ -907,6 +924,7 @@ mod admitted_pool_output_tests {
             events: Vec::new(),
             race_gate: false,
             winner_inode: None,
+            corrupt_pool_object: false,
         }));
         let store = ObjectStore::open_observed_with_control(
             dir.path(),
@@ -958,6 +976,7 @@ mod admitted_pool_output_tests {
             events: Vec::new(),
             race_gate: true,
             winner_inode: None,
+            corrupt_pool_object: false,
         }));
         let store = ObjectStore::open_observed_with_control(
             dir.path(),
@@ -1195,6 +1214,7 @@ mod admitted_pool_output_tests {
             events: Vec::new(),
             race_gate: false,
             winner_inode: None,
+            corrupt_pool_object: false,
         }));
         let store = ObjectStore::open(dir.path())
             .expect("pool")
@@ -1232,6 +1252,103 @@ mod admitted_pool_output_tests {
         );
         drop(calls);
     }
+
+    #[test]
+    fn admitted_batch_barrier_failure_retires_original_writer_without_committing() {
+        use crate::publication_faults::{Cut, Side, with_error_at};
+        let dir = tempfile::tempdir().expect("state root");
+        let calls = Arc::new(Mutex::new(Calls {
+            available: 24,
+            ..Calls::default()
+        }));
+        let store = ObjectStore::open(dir.path())
+            .expect("pool")
+            .with_work_output_admission(Some(work_admission(Arc::clone(&calls))));
+        let binding = AttemptBinding {
+            root_incarnation: [1; 16],
+            repository_sha256: [2; 32],
+            revision_sha256: [3; 32],
+            source_event_sha256: [4; 32],
+            target_generation: 1,
+            base_root_sha256: None,
+            operations_sha256: [5; 32],
+            format: 1,
+        };
+        let lease = store.begin_attempt(&binding, &[]).expect("attempt");
+        let (failed, fired) = with_error_at(Cut::PoolFullBarrier, Side::Before, 1, || {
+            store.with_adoption_batch(&lease, |scoped| {
+                let reference =
+                    scoped.put_adopted_object(&lease, ObjectKind::Record, &[], b"abc")?;
+                assert_eq!(scoped.read_object(&reference, None)?.1, b"abc");
+                assert!(calls.lock().expect("calls").events.is_empty());
+                Ok(reference)
+            })
+        });
+        assert!(fired);
+        assert!(failed.is_err());
+        assert!(store.adopted_roots().expect("roots").is_empty());
+        let calls = calls.lock().expect("calls");
+        assert_eq!(calls.available, 0, "uncertain output must keep its charge");
+        assert_eq!(
+            calls.events,
+            [
+                "reserved",
+                "bound",
+                "started",
+                "created",
+                "before",
+                "retired pending"
+            ]
+        );
+    }
+
+    #[test]
+    fn admitted_batch_rejects_same_width_corruption_on_original_writer_before_adoption() {
+        let dir = tempfile::tempdir().expect("state root");
+        let calls = Arc::new(Mutex::new(Calls {
+            available: 24,
+            corrupt_pool_object: true,
+            ..Calls::default()
+        }));
+        let store = ObjectStore::open(dir.path())
+            .expect("pool")
+            .with_work_output_admission(Some(work_admission(Arc::clone(&calls))));
+        let binding = AttemptBinding {
+            root_incarnation: [1; 16],
+            repository_sha256: [2; 32],
+            revision_sha256: [3; 32],
+            source_event_sha256: [4; 32],
+            target_generation: 1,
+            base_root_sha256: None,
+            operations_sha256: [5; 32],
+            format: 1,
+        };
+        let lease = store.begin_attempt(&binding, &[]).expect("attempt");
+        let failed = store.with_adoption_batch(&lease, |scoped| {
+            scoped.put_adopted_object(&lease, ObjectKind::Record, &[], b"abc")
+        });
+        assert!(matches!(
+            failed,
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ));
+        assert!(store.adopted_roots().expect("roots").is_empty());
+        let calls = calls.lock().expect("calls");
+        assert_eq!(calls.available, 0);
+        assert_eq!(
+            calls.events,
+            [
+                "reserved",
+                "bound",
+                "started",
+                "created",
+                "before",
+                "retired pending"
+            ]
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1252,6 +1369,11 @@ enum AtomicSync {
 struct AtomicWriteAdmission {
     pool: Option<Box<dyn quanta_index_core::pool_write_admission::PoolWritePermit>>,
     output: Option<Box<dyn PublicationOutputPermit>>,
+}
+
+enum AtomicWriteOutcome {
+    Completed,
+    AwaitingBarrier(PendingOutput),
 }
 
 #[cfg(test)]
@@ -1322,6 +1444,15 @@ fn ensure_dir(
     name: &str,
     sync_totals: Option<&crate::causal_profile::SyncTotalsV1>,
 ) -> Result<File, CoreError> {
+    ensure_dir_with_sync(parent, name, sync_totals, AtomicSync::Full)
+}
+
+fn ensure_dir_with_sync(
+    parent: &File,
+    name: &str,
+    sync_totals: Option<&crate::causal_profile::SyncTotalsV1>,
+    sync: AtomicSync,
+) -> Result<File, CoreError> {
     let created = match mkdirat(parent, name, Mode::RUSR | Mode::WUSR | Mode::XUSR) {
         Ok(()) => true,
         Err(rustix::io::Errno::EXIST) => false,
@@ -1332,6 +1463,25 @@ fn ensure_dir(
             .map_err(|error| storage("open nofollow directory", error))?,
     );
     if created {
+        // The pool's bounded adoption group drains these metadata writes with
+        // its data files before settling any output or publishing its head.
+        // Boot/control directory creation still completes the full protocol.
+        if cfg!(target_vendor = "apple") && matches!(sync, AtomicSync::BatchedPoolData) {
+            crate::causal_profile::observed_sync_legacy(
+                sync_totals,
+                quanta_index_core::DiagnosticSyncLabelV1::PoolNewDirectoryPosix,
+                || {
+                    #[cfg(test)]
+                    crate::publication_faults::reach(
+                        crate::publication_faults::Cut::PoolNewDirectorySyncCall,
+                        crate::publication_faults::Side::Before,
+                    )?;
+                    fsync(&directory).map_err(std::io::Error::from)
+                },
+            )
+            .map_err(|error| storage("sync batched new directory", error))?;
+            return Ok(directory);
+        }
         crate::causal_profile::observed_sync_legacy(
             sync_totals,
             quanta_index_core::DiagnosticSyncLabelV1::PoolNewDirectoryFull,
@@ -1588,6 +1738,7 @@ pub(crate) struct ObjectStore {
     attempts: Arc<File>,
     read_meter: Option<Arc<ObjectReadMeter>>,
     adoption_batch: Option<Arc<Mutex<BatchState>>>,
+    prepared_batch: Option<Arc<Mutex<PreparedBatch>>>,
     sync_totals: Option<Arc<crate::causal_profile::SyncTotalsV1>>,
     pool_write_admission:
         Option<Arc<dyn quanta_index_core::pool_write_admission::PoolWriteAdmissionPort>>,
@@ -1619,6 +1770,14 @@ impl Drop for BatchScope<'_> {
             };
             state.closed = true;
             state.gate = None;
+            drop(state);
+            if let Some(prepared) = &self.store.prepared_batch {
+                let mut prepared = match prepared.lock() {
+                    Ok(prepared) => prepared,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                prepared.close();
+            }
         }
     }
 }
@@ -1673,6 +1832,7 @@ struct CachedObject {
     // Only this request/proof meter owns the decoded Arc. An evicted Arc held
     // briefly by a caller is traversal scratch, not retained cache capacity.
     decoded: Option<DecodedMapPage>,
+    record_group: Option<Arc<packed_records::RecordGroupIndex>>,
     charged_bytes: usize,
     last_used: u64,
 }
@@ -1790,14 +1950,34 @@ impl RequestObjectCache {
         let Some(extra) = Self::decoded_charge(descriptor, page) else {
             return Ok(());
         };
+        if self.reserve_attachment(&descriptor.object, extra)? {
+            self.entries
+                .get_mut(&descriptor.object)
+                .ok_or_else(|| invalid("request object cache entry disappeared"))?
+                .decoded = Some(DecodedMapPage {
+                descriptor: descriptor.clone(),
+                page: Arc::clone(page),
+            });
+        }
+        Ok(())
+    }
+
+    fn reserve_attachment(
+        &mut self,
+        reference: &ObjectRef,
+        extra: usize,
+    ) -> Result<bool, CoreError> {
+        let Some(entry) = self.entries.get(reference) else {
+            return Ok(false);
+        };
         if entry
             .charged_bytes
             .checked_add(extra)
             .is_none_or(|bytes| bytes > self.limit_bytes)
         {
-            return Ok(());
+            return Ok(false);
         }
-        self.touch(&descriptor.object)?;
+        self.touch(reference)?;
         while self
             .retained_bytes
             .checked_add(extra)
@@ -1806,7 +1986,7 @@ impl RequestObjectCache {
             let Some((_, oldest)) = self.lru.pop_first() else {
                 return Err(invalid("request object cache eviction order is empty"));
             };
-            if oldest == descriptor.object {
+            if &oldest == reference {
                 return Err(invalid("request object cache evicted the current page"));
             }
             let removed = self
@@ -1818,13 +1998,9 @@ impl RequestObjectCache {
                 .checked_sub(removed.charged_bytes)
                 .ok_or_else(|| invalid("request object cache accounting underflow"))?;
         }
-        let Some(entry) = self.entries.get_mut(&descriptor.object) else {
+        let Some(entry) = self.entries.get_mut(reference) else {
             return Err(invalid("request object cache entry disappeared"));
         };
-        entry.decoded = Some(DecodedMapPage {
-            descriptor: descriptor.clone(),
-            page: Arc::clone(page),
-        });
         entry.charged_bytes = entry
             .charged_bytes
             .checked_add(extra)
@@ -1833,6 +2009,40 @@ impl RequestObjectCache {
             .retained_bytes
             .checked_add(extra)
             .ok_or_else(|| invalid("request object cache accounting overflow"))?;
+        Ok(true)
+    }
+
+    fn get_record_group(
+        &mut self,
+        reference: &ObjectRef,
+    ) -> Result<Option<Arc<packed_records::RecordGroupIndex>>, CoreError> {
+        let index = self
+            .entries
+            .get(reference)
+            .and_then(|entry| entry.record_group.as_ref())
+            .map(Arc::clone);
+        if index.is_some() {
+            self.touch(reference)?;
+        }
+        Ok(index)
+    }
+
+    fn attach_record_group(
+        &mut self,
+        reference: &ObjectRef,
+        index: &Arc<packed_records::RecordGroupIndex>,
+    ) -> Result<(), CoreError> {
+        if self.get_record_group(reference)?.is_some() {
+            return Ok(());
+        }
+        if let Some(extra) = index.charge()
+            && self.reserve_attachment(reference, extra)?
+        {
+            self.entries
+                .get_mut(reference)
+                .ok_or_else(|| invalid("request object cache entry disappeared"))?
+                .record_group = Some(Arc::clone(index));
+        }
         Ok(())
     }
 
@@ -1893,6 +2103,7 @@ impl RequestObjectCache {
                 dependencies,
                 payload,
                 decoded: None,
+                record_group: None,
                 charged_bytes,
                 last_used: use_number,
             },
@@ -2061,6 +2272,16 @@ impl BlobCursor {
                     let Some((&tag, rest)) = payload.split_first() else {
                         return Err(corrupt("blob cursor node has no payload tag"));
                     };
+                    if tag == 2 {
+                        if !root || reference.kind != ObjectKind::Record || !dependencies.is_empty()
+                        {
+                            return Err(corrupt("packed record has invalid kind or dependencies"));
+                        }
+                        let index = store.record_group_index(&reference, rest)?;
+                        let selected =
+                            index.select(rest, self.expected_len, &self.expected_sha256)?;
+                        return self.emit(selected.to_vec(), charged).map(Some);
+                    }
                     if tag == 0 {
                         if !root
                             || rest.len() > BLOCK_BYTES
@@ -2302,6 +2523,10 @@ impl ObjectStore {
             return operation(self);
         }
         let mut scoped = self.clone();
+        scoped.prepared_batch = self
+            .work_output_admission
+            .as_ref()
+            .map(|_| Arc::new(Mutex::new(PreparedBatch::default())));
         scoped.adoption_batch = Some(Arc::new(Mutex::new(BatchState {
             lease_name: lease.name.clone(),
             binding: lease.binding.clone(),
@@ -2346,6 +2571,7 @@ impl ObjectStore {
         reason: DiagnosticAdoptionFlushReasonV1,
     ) -> Result<(), CoreError> {
         if !state.references.is_empty() {
+            let installed_prepared = self.install_prepared_batch(state)?;
             let refs = crate::causal_profile::occupancy_bucket(
                 u64::try_from(state.references.len())
                     .map_err(|_overflow| invalid("adoption reference count overflow"))?,
@@ -2359,7 +2585,9 @@ impl ObjectStore {
             // The batched macOS object path uses POSIX fsync on each file and
             // shard. Drain the drive before any adoption head can name them.
             let result = (|| {
-                self.sync_pool_before_adoption()?;
+                if !installed_prepared {
+                    self.sync_pool_before_adoption()?;
+                }
                 let lease = AttemptLease {
                     store: self.clone(),
                     name: state.lease_name.clone(),
@@ -2513,6 +2741,7 @@ impl ObjectStore {
             attempts: Arc::new(attempts),
             read_meter: None,
             adoption_batch: None,
+            prepared_batch: None,
             sync_totals,
             pool_write_admission: None,
             control_output_admission,
@@ -2601,6 +2830,7 @@ impl ObjectStore {
             attempts: Arc::new(attempts),
             read_meter: None,
             adoption_batch: None,
+            prepared_batch: None,
             sync_totals: None,
             pool_write_admission: None,
             control_output_admission: None,
@@ -3861,14 +4091,19 @@ impl ObjectStore {
                 )?)
             })
             .transpose()?;
-        self.write_atomic_at_inner(
+        match self.write_atomic_at_inner(
             parent,
             name,
             bytes,
             purpose,
             AtomicSync::Full,
             AtomicWriteAdmission { pool: None, output },
-        )
+        )? {
+            AtomicWriteOutcome::Completed => Ok(()),
+            AtomicWriteOutcome::AwaitingBarrier(_) => {
+                Err(invalid("Control output cannot await a pool barrier"))
+            }
+        }
     }
 
     fn write_atomic_at_inner(
@@ -3879,14 +4114,16 @@ impl ObjectStore {
         purpose: AtomicPurpose,
         sync: AtomicSync,
         admission: AtomicWriteAdmission,
-    ) -> Result<(), CoreError> {
+    ) -> Result<AtomicWriteOutcome, CoreError> {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let AtomicWriteAdmission {
             pool: mut permit,
             mut output,
         } = admission;
-        if output.is_some() && !matches!(sync, AtomicSync::Full) {
-            return Err(invalid("admitted output requires full object sync"));
+        if matches!(sync, AtomicSync::BatchedPoolData)
+            && !matches!(purpose, AtomicPurpose::PoolObject)
+        {
+            return Err(invalid("only pool objects may await a batch barrier"));
         }
         let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let temp = format!(".{name}.tmp-{}-{sequence}", std::process::id());
@@ -3932,7 +4169,14 @@ impl ObjectStore {
         let opened = openat(
             parent,
             temp.as_str(),
-            OFlags::WRONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::CREATE | OFlags::EXCL,
+            (if matches!(purpose, AtomicPurpose::PoolObject) {
+                OFlags::RDWR
+            } else {
+                OFlags::WRONLY
+            }) | OFlags::CLOEXEC
+                | OFlags::NOFOLLOW
+                | OFlags::CREATE
+                | OFlags::EXCL,
             Mode::RUSR | Mode::WUSR,
         );
         let mut file = match opened {
@@ -4105,14 +4349,29 @@ impl ObjectStore {
             reach_atomic_cut(purpose, 3, crate::publication_faults::Side::After)?;
             #[cfg(not(test))]
             let _: AtomicPurpose = purpose;
+            if matches!(purpose, AtomicPurpose::PoolObject)
+                && (!matches!(sync, AtomicSync::BatchedPoolData) || output.is_none())
+            {
+                self.verify_pool_writer(&file, bytes)?;
+                self.verify_pool_writer_name(parent, name, &file)?;
+            }
             Ok::<(), CoreError>(())
         })();
         match operation {
             Ok(()) => {
+                if matches!(sync, AtomicSync::BatchedPoolData)
+                    && let Some(admitted) = output.take()
+                {
+                    return Ok(AtomicWriteOutcome::AwaitingBarrier(PendingOutput::new(
+                        admitted,
+                        file,
+                        encoded_width,
+                    )));
+                }
                 if let Some(admitted) = &mut output {
                     admitted.committed(file, encoded_width)?;
                 }
-                Ok(())
+                Ok(AtomicWriteOutcome::Completed)
             }
             Err(error) => {
                 let mut primary = error;
@@ -4162,7 +4421,7 @@ impl ObjectStore {
                         // admitting a reader for the competing canonical gate.
                         drop(output.take());
                         match self.existing_regular_gate(parent) {
-                            Ok(true) => return Ok(()),
+                            Ok(true) => return Ok(AtomicWriteOutcome::Completed),
                             Ok(false) => {
                                 primary = with_custody_context(
                                     primary,
@@ -4186,7 +4445,16 @@ impl ObjectStore {
             .get(..2)
             .ok_or_else(|| invalid("object digest prefix"))?;
         let directory = if create {
-            ensure_dir(self.objects.as_ref(), prefix, self.sync_totals.as_deref())?
+            ensure_dir_with_sync(
+                self.objects.as_ref(),
+                prefix,
+                self.sync_totals.as_deref(),
+                if self.adoption_batch.is_some() {
+                    AtomicSync::BatchedPoolData
+                } else {
+                    AtomicSync::Full
+                },
+            )?
         } else {
             File::from(
                 openat(self.objects.as_ref(), prefix, dir_flags(), Mode::empty()).map_err(
@@ -4202,6 +4470,24 @@ impl ObjectStore {
             )
         };
         self.check_object_shard_device(&directory)?;
+        if create {
+            // Queue the shard's parent entry even when a previous create
+            // returned an error after mkdir. EXIST alone is not durability.
+            // The selected file/batch full barrier then drains this metadata.
+            crate::causal_profile::observed_sync_legacy(
+                self.sync_totals.as_deref(),
+                quanta_index_core::DiagnosticSyncLabelV1::PoolNewParentPosix,
+                || {
+                    #[cfg(test)]
+                    crate::publication_faults::reach(
+                        crate::publication_faults::Cut::PoolNewParentSyncCall,
+                        crate::publication_faults::Side::Before,
+                    )?;
+                    fsync(self.objects.as_ref()).map_err(std::io::Error::from)
+                },
+            )
+            .map_err(|error| storage("sync object shard parent metadata", error))?;
+        }
         Ok(directory)
     }
 
@@ -4300,6 +4586,27 @@ impl ObjectStore {
         prepared: &PreparedObject,
         dependencies: &[ObjectRef],
     ) -> Result<(ObjectRef, bool), CoreError> {
+        let sync = if self.adoption_batch.is_some()
+            && prepared.reference.kind != ObjectKind::AttemptBatch
+        {
+            AtomicSync::BatchedPoolData
+        } else {
+            AtomicSync::Full
+        };
+        let (reference, newly_written, pending) =
+            self.install_prepared_object(prepared, dependencies, sync)?;
+        if pending.is_some() {
+            return Err(invalid("admitted pool output escaped its prepared batch"));
+        }
+        Ok((reference, newly_written))
+    }
+
+    fn install_prepared_object(
+        &self,
+        prepared: &PreparedObject,
+        dependencies: &[ObjectRef],
+        sync: AtomicSync,
+    ) -> Result<(ObjectRef, bool, Option<PendingOutput>), CoreError> {
         let reference = &prepared.reference;
         validate_object_lifetime(
             self.work_output_admission.as_ref(),
@@ -4318,7 +4625,7 @@ impl ObjectStore {
         let name = hex_digest(&reference.sha256);
         match rustix::fs::statat(&directory, name.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
             Ok(_present) => {
-                let (existing, _) = self.read_object_for_adoption(reference)?;
+                let (existing, _) = self.read_object_from_pool(reference, None, true, None)?;
                 if existing != canonical_deps(dependencies)? {
                     return Err(corrupt("existing digest object has different dependencies"));
                 }
@@ -4328,7 +4635,7 @@ impl ObjectStore {
                 if let Some(permit) = &mut permit {
                     permit.reused_verified()?;
                 }
-                return Ok((reference.clone(), false));
+                return Ok((reference.clone(), false, None));
             }
             Err(rustix::io::Errno::NOENT) => {}
             Err(error) => return Err(storage("probe referenced object", error)),
@@ -4344,17 +4651,7 @@ impl ObjectStore {
                 )?)
             })
             .transpose()?;
-        // A child may settle only after the shard's full durability barrier;
-        // the unqualified pool keeps its existing batched data-sync path.
-        let sync = if output.is_none()
-            && self.adoption_batch.is_some()
-            && reference.kind != ObjectKind::AttemptBatch
-        {
-            AtomicSync::BatchedPoolData
-        } else {
-            AtomicSync::Full
-        };
-        self.write_atomic_at_inner(
+        let outcome = self.write_atomic_at_inner(
             &directory,
             &name,
             &prepared.encoded,
@@ -4365,11 +4662,14 @@ impl ObjectStore {
                 output,
             },
         )?;
-        let _verified = self.read_object(reference, None)?;
+        let pending = match outcome {
+            AtomicWriteOutcome::Completed => None,
+            AtomicWriteOutcome::AwaitingBarrier(pending) => Some(pending),
+        };
         if let Some(totals) = self.sync_totals.as_deref() {
             totals.record_new_object(diagnostic_object_kind(reference.kind));
         }
-        Ok((reference.clone(), true))
+        Ok((reference.clone(), true, pending))
     }
 
     pub(super) fn record_map_page_mutation(&self) {
@@ -4394,9 +4694,11 @@ impl ObjectStore {
             // objects conservatively trigger a flush near the byte bound.
             let prepared = PreparedObject::new(kind, dependencies, payload)?;
             let encoded_bytes = prepared.reference.bytes;
+            let staged_bytes = self
+                .prepared_batch_bytes()?
+                .unwrap_or_else(|| state.encoded_new_bytes);
             if state.references.len() == MAX_ADOPTION_BATCH_REFS
-                || state.encoded_new_bytes.saturating_add(encoded_bytes)
-                    > MAX_ADOPTION_BATCH_DATA_BYTES
+                || staged_bytes.saturating_add(encoded_bytes) > MAX_ADOPTION_BATCH_DATA_BYTES
             {
                 let reason = if state.references.len() == MAX_ADOPTION_BATCH_REFS {
                     DiagnosticAdoptionFlushReasonV1::RefLimit
@@ -4406,9 +4708,18 @@ impl ObjectStore {
                 self.flush_adoption_batch_locked(&mut state, reason)?;
             }
             self.start_batch_locked(&mut state)?;
-            let (reference, newly_written) =
-                self.put_prepared_object_locked_with_status(&prepared, dependencies)?;
-            lease.record_write_cost(&reference, newly_written)?;
+            let (reference, newly_written) = if self.prepared_batch.is_some() {
+                let (reference, queued) = self.stage_prepared_object(prepared)?;
+                if !queued {
+                    lease.record_write_cost(&reference, false)?;
+                }
+                (reference, false)
+            } else {
+                let (reference, newly_written) =
+                    self.put_prepared_object_locked_with_status(&prepared, dependencies)?;
+                lease.record_write_cost(&reference, newly_written)?;
+                (reference, newly_written)
+            };
             self.queue_batch_reference(
                 &mut state,
                 &reference,
@@ -4474,6 +4785,7 @@ impl ObjectStore {
         &self,
         descriptor: &PageRef,
     ) -> Result<Option<Arc<Page>>, CoreError> {
+        self.require_prepared_batch_open()?;
         self.read_meter.as_ref().map_or(Ok(None), |meter| {
             meter
                 .objects_cache
@@ -4488,6 +4800,7 @@ impl ObjectStore {
         descriptor: &PageRef,
         page: &Arc<Page>,
     ) -> Result<(), CoreError> {
+        self.require_prepared_batch_open()?;
         if let Some(meter) = &self.read_meter {
             meter
                 .objects_cache
@@ -4503,6 +4816,7 @@ impl ObjectStore {
         reference: &ObjectRef,
         budget: Option<&RequestBudgetV1>,
     ) -> Result<(Vec<ObjectRef>, Vec<u8>), CoreError> {
+        self.require_prepared_batch_open()?;
         if request_cache_eligible(reference.kind)
             && let Some(meter) = &self.read_meter
         {
@@ -4547,6 +4861,20 @@ impl ObjectStore {
     }
 
     fn read_object_inner(
+        &self,
+        reference: &ObjectRef,
+        budget: Option<&RequestBudgetV1>,
+        repair_for_adoption: bool,
+        closure_totals: Option<&mut crate::causal_profile::ClosureReadTotalsV1>,
+    ) -> Result<(Vec<ObjectRef>, Vec<u8>), CoreError> {
+        checkpoint(budget, "lexical:object:read")?;
+        if let Some(value) = self.read_prepared_object(reference)? {
+            return Ok(value);
+        }
+        self.read_object_from_pool(reference, budget, repair_for_adoption, closure_totals)
+    }
+
+    fn read_object_from_pool(
         &self,
         reference: &ObjectRef,
         budget: Option<&RequestBudgetV1>,
@@ -4833,7 +5161,7 @@ impl ObjectStore {
         output
             .try_reserve_exact(len)
             .map_err(|error| storage("reserve blob body", error))?;
-        self.read_blob_node(&blob.root, true, len, 0, &mut output, budget)?;
+        self.read_blob_node(&blob.root, Some(&blob.sha256), len, 0, &mut output, budget)?;
         if output.len() != len || <[u8; 32]>::from(Sha256::digest(&output)) != blob.sha256 {
             return Err(corrupt(
                 "logical blob bytes differ from committed length or digest",
@@ -4870,13 +5198,14 @@ impl ObjectStore {
     fn read_blob_node(
         &self,
         reference: &ObjectRef,
-        root: bool,
+        logical_digest: Option<&[u8; 32]>,
         max_len: usize,
         depth: u8,
         output: &mut Vec<u8>,
         budget: Option<&RequestBudgetV1>,
     ) -> Result<(), CoreError> {
         checkpoint(budget, "lexical:blob:read")?;
+        let root = logical_digest.is_some();
         if depth > 16 {
             return Err(corrupt("blob tree exceeds maximum depth"));
         }
@@ -4902,6 +5231,18 @@ impl ObjectStore {
         let Some((&tag, rest)) = payload.split_first() else {
             return Err(corrupt("blob root has no payload tag"));
         };
+        if tag == 2 {
+            if reference.kind != ObjectKind::Record || !deps.is_empty() {
+                return Err(corrupt("packed record has invalid kind or dependencies"));
+            }
+            let digest =
+                logical_digest.ok_or_else(|| corrupt("packed record is not a blob root"))?;
+            let length =
+                u64::try_from(max_len).map_err(|error| storage("packed record length", error))?;
+            let index = self.record_group_index(reference, rest)?;
+            output.extend_from_slice(index.select(rest, length, digest)?);
+            return Ok(());
+        }
         if tag == 0 {
             if !root || rest.len() > BLOCK_BYTES {
                 return Err(corrupt("inline blob node is not a root"));
@@ -4939,7 +5280,7 @@ impl ObjectStore {
             let before = output.len();
             self.read_blob_node(
                 &child,
-                false,
+                None,
                 max_len,
                 depth
                     .checked_add(1)

@@ -222,7 +222,10 @@ impl PersistentMapPort for ScopedReads<'_> {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<MapPage, IndexError> {
-        self.store.scan(root, after, limit, budget)
+        self.store
+            .scan_with(root, after, limit, budget, |reference, budget| {
+                self.read_node(root, reference, budget)
+            })
     }
 
     fn visit_diff(

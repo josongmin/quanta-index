@@ -1446,8 +1446,15 @@ def test_ingest_preparation_file_children_require_observations_and_parent_bounds
         "prep_coverage_write_ns",
         "file_authority_source_write_ns",
     )
+    paged = copy.deepcopy(raw)
+    paged["observation"]["lexical_stages"]["file_authority_source_write_ns"] = None
+    validate(paged)
+    assert paged["observation"]["lexical_stages"]["file_authority_source_write_ns"] is None
     for key in children:
-        for invalid in (None, True, -1, 2**64, "0"):
+        invalid_values = (True, -1, 2**64, "0")
+        if key != "file_authority_source_write_ns":
+            invalid_values += (None,)
+        for invalid in invalid_values:
             forged = copy.deepcopy(raw)
             forged["observation"]["lexical_stages"][key] = invalid
             with pytest.raises(pairrun.RunError):
@@ -9492,8 +9499,8 @@ def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monke
         )
 
 
-def test_qualified_verdict_rejects_handcrafted_linux_v2_on_wrong_host(tmp_path, monkeypatch):
-    from tools.benchmark.retrieval.test_linux_resource_integration import _valid_qualified_v2
+def test_qualified_verdict_rejects_handcrafted_linux_v3_on_wrong_host(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval.test_linux_resource_integration import _valid_qualified_v3
 
     _allow_minimal_speed_fixture(monkeypatch)
     st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True})
@@ -9501,9 +9508,18 @@ def test_qualified_verdict_rejects_handcrafted_linux_v2_on_wrong_host(tmp_path, 
     parent.mkdir()
     resource_path = st["stage"] / "rep-00" / "semble-resource-metrics.json"
     original = json.loads(resource_path.read_text(encoding="utf-8"))
-    forged = _valid_qualified_v2(parent)
+    forged = _valid_qualified_v3(parent)
     forged["subject_sha256"] = original["subject_sha256"]
     forged["storage"] = original["storage"]
+    pairrun._validate_resource_metrics(forged, "forged Linux fixture")
+    with pytest.raises(pairrun.RunError, match="resource schema does not match capture host"):
+        pairrun._validate_resource_capture_binding(
+            forged,
+            host_system="Darwin",
+            scope="qualified",
+            manifest_parent=forged["delegated_cgroup_parent"],
+            protocol_parent=forged["delegated_cgroup_parent"],
+        )
     resource_path.write_text(json.dumps(forged), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
@@ -12401,6 +12417,54 @@ def test_v5_query_identity_tampering_is_rejected(tmp_path, mutation, match):
     mutation(suite, run, files)
     with pytest.raises(ev.EvidenceError, match=match):
         record_v3(repo, suite, run, suite_path, runner_path)
+
+
+def test_go_trace_semantic_input_binds_blind_pack_and_runner_identity(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    task = next(task for task in suite["tasks"] if task["split"] == "eval")
+    text = "panic: index out of range\nserver.go:17"
+    task["semantic_input"] = {
+        "profile": "go_test_excerpt_v1",
+        "text": text,
+        "text_sha256": ev.digest(text.encode()),
+        "failure_excerpt": text,
+        "failure_excerpt_sha256": ev.digest(text.encode()),
+    }
+    jsonschema.validate(suite, _load_schema("suite.schema.json"))
+    pack, run = _repack(repo, suite, run)
+    packed_task = next(row for row in pack["tasks"] if row["task_id"] == task["task_id"])
+    assert packed_task["semantic_input"] == task["semantic_input"]
+    profile = qp.execution_profile("natural_language")
+    run["captures"]["q0"]["execution_profile"] = profile
+    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    packed_tasks = {row["task_id"]: row for row in pack["tasks"]}
+    for result in run["results"]:
+        packed = packed_tasks[result["task_id"]]
+        ordinary = qp.derive_query_identity("natural_language", packed["query"])
+        result["query_identity"] = ordinary
+        if result["task_id"] == task["task_id"]:
+            result["query_identity"] = {
+                **ordinary,
+                "semantic_text_sha256": task["semantic_input"]["text_sha256"],
+            }
+    record_v3(repo, suite, run, suite_path, runner_path)
+
+    first = next(result for result in run["results"] if result["task_id"] == task["task_id"])
+    first["query_identity"]["semantic_text_sha256"] = task["query_sha256"]
+    with pytest.raises(ev.EvidenceError, match="does not match the independently re-derived plan"):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+    for invalid in (
+        None,
+        {**task["semantic_input"], "text": text + "!"},
+        {**task["semantic_input"], "profile": "unknown"},
+        {**task["semantic_input"], "gold": []},
+    ):
+        original = task["semantic_input"]
+        task["semantic_input"] = invalid
+        with pytest.raises(ev.EvidenceError, match="invalid semantic input"):
+            ev.validate_suite(repo, suite)
+        task["semantic_input"] = original
 
 
 def test_v5_literal_and_nl_policies_replay_through_the_python_oracle(tmp_path):

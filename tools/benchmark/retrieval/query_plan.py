@@ -576,8 +576,38 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
     raise QueryPlanError(f"unsupported query input policy: {policy}")
 
 
+GO_TRACE_SEMANTIC_PROFILE = "go_test_excerpt_v1"
+GO_TRACE_SEMANTIC_MAX_BYTES = 16 * 1024
+
+
+def go_trace_semantic_digest(value: object) -> str:
+    if not isinstance(value, dict) or set(value) != {
+        "profile", "text", "text_sha256", "failure_excerpt", "failure_excerpt_sha256"
+    }:
+        raise QueryPlanError("invalid Go trace semantic input fields")
+    if value["profile"] != GO_TRACE_SEMANTIC_PROFILE:
+        raise QueryPlanError("invalid Go trace semantic input profile")
+    for field in ("text", "failure_excerpt"):
+        text = value[field]
+        if not isinstance(text, str):
+            raise QueryPlanError(f"Go trace {field} must be text")
+        try:
+            encoded = text.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise QueryPlanError(f"Go trace {field} must be UTF-8") from exc
+        if not text.strip() or "\0" in text or len(encoded) > GO_TRACE_SEMANTIC_MAX_BYTES:
+            raise QueryPlanError(f"Go trace {field} is empty or outside its byte contract")
+        if value[field + "_sha256"] != _sha256_hex(encoded):
+            raise QueryPlanError(f"Go trace {field} hash mismatch")
+    return value["text_sha256"]
+
+
 def derive_query_identity(
-    policy: str, raw: str, config: dict[str, int] | None = None
+    policy: str,
+    raw: str,
+    config: dict[str, int] | None = None,
+    *,
+    semantic_input: dict | None = None,
 ) -> dict[str, str]:
     """Re-derive the three per-task identity digests of a current v5 result."""
     if policy not in SUPPORTED_POLICIES:
@@ -588,10 +618,15 @@ def derive_query_identity(
         if policy in CODE_SEARCH_FILE_POLICIES
         else _sha256_hex(lexical_request.encode())
     )
+    semantic_digest = _sha256_hex(raw.encode())
+    if semantic_input is not None:
+        if policy != "natural_language":
+            raise QueryPlanError("Go trace semantic input requires the natural-language policy")
+        semantic_digest = go_trace_semantic_digest(semantic_input)
     return {
         "original_query_sha256": _sha256_hex(raw.encode()),
         "effective_lexical_request_sha256": effective_digest,
-        "semantic_text_sha256": _sha256_hex(raw.encode()),
+        "semantic_text_sha256": semantic_digest,
     }
 
 

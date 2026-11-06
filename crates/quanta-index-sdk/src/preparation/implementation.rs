@@ -3,11 +3,11 @@ use std::io::{self, Write};
 
 use quanta_index_contract::lex::{LanguageCode, SymbolRecord};
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusReplaceScope, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
-    SourceFileCoverage, SourceFileKey, SourceFileRevision, SymbolCoverage,
-    SymbolNameSourcePolicyV1, batch_digest_token_v1, source_file_unit_set_sha256,
-    validate_lexical_file_mutations_v1, validate_semantic_source_record_v1,
+    ChunkId, ChunkRecord, ManifestGeneration, RepoId, RevisionId, SearchCorpusReplaceScope,
+    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceFileCoverage, SourceFileKey,
+    SourceFileRevision, SymbolCoverage, SymbolNameSourcePolicyV1, batch_digest_token_v1,
+    source_file_unit_set_sha256, validate_lexical_file_mutations_v1,
+    validate_semantic_source_record_v1,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest as _, Sha256};
@@ -200,7 +200,6 @@ pub enum PreparationError {
     LimitExceeded(&'static str),
     InvalidContribution(String),
     DuplicateSource,
-    PathOwnershipConflict,
     ManifestConflict,
 }
 
@@ -524,6 +523,14 @@ impl PreparedSource {
     ) -> Result<Self, PreparationError> {
         context.validate(&bytes)?;
         let budget = context.profile.budgets();
+        if chunks.iter().any(|chunk| {
+            chunk.source_repo_id.as_ref() != Some(&context.source.file.source_repo_id)
+                || chunk.repo_relative_path != context.source.file.repo_relative_path
+        }) {
+            return Err(PreparationError::InvalidContribution(
+                "prepared chunk source file differs from declared owner".into(),
+            ));
+        }
         if chunks.len() > budget.chunks
             || chunks
                 .iter()
@@ -567,6 +574,7 @@ impl PreparedSource {
         let mut semantic_keys = BTreeSet::new();
         for item in &semantic {
             if invalid_semantic_key(&item.scope)
+                || item.scope.source_file != context.source.file
                 || item.scope_digest.is_empty()
                 || !item.scope_digest.bytes().all(|b| b.is_ascii_graphic())
                 || !semantic_keys.insert(semantic_key(&item.scope))
@@ -578,7 +586,7 @@ impl PreparedSource {
             for record in &item.sources {
                 validate_semantic_source_record_v1(record)
                     .map_err(|error| PreparationError::InvalidContribution(error.into()))?;
-                if record.repo_relative_path != context.source.file.repo_relative_path
+                if record.source_file != context.source.file
                     || record.corpus_kind != item.scope.corpus_kind
                     || record.owner_kind != item.scope.owner_kind
                     || record.owner_id != item.scope.owner_id
@@ -766,7 +774,6 @@ impl PriorSourceManifest {
     pub fn new(mut entries: Vec<PriorSourceEntry>) -> Result<Self, PreparationError> {
         let mut keys = BTreeSet::new();
         let mut stable_keys = BTreeSet::new();
-        let mut paths = BTreeMap::new();
         let mut semantic = BTreeSet::new();
         for entry in &entries {
             validate_stable_key(&entry.stable_key)?;
@@ -781,10 +788,12 @@ impl PriorSourceManifest {
             if !keys.insert(entry.source().file.clone()) {
                 return Err(PreparationError::DuplicateSource);
             }
-            check_path_owner(&mut paths, &entry.source().file)?;
             validate_semantic_stamps(&entry.semantic_scopes)?;
             for (scope, _) in &entry.semantic_scopes {
-                if invalid_semantic_key(scope) || !semantic.insert(semantic_key(scope)) {
+                if invalid_semantic_key(scope)
+                    || scope.source_file != entry.source().file
+                    || !semantic.insert(semantic_key(scope))
+                {
                     return Err(PreparationError::ManifestConflict);
                 }
             }
@@ -796,18 +805,6 @@ impl PriorSourceManifest {
     #[must_use]
     pub fn entries(&self) -> &[PriorSourceEntry] {
         &self.entries
-    }
-}
-
-fn check_path_owner(
-    paths: &mut BTreeMap<RepoRelativePath, quanta_index_contract::RepoId>,
-    key: &SourceFileKey,
-) -> Result<(), PreparationError> {
-    match paths.insert(key.repo_relative_path.clone(), key.source_repo_id.clone()) {
-        Some(previous) if previous != key.source_repo_id => {
-            Err(PreparationError::PathOwnershipConflict)
-        }
-        _ => Ok(()),
     }
 }
 
@@ -985,13 +982,7 @@ pub fn reconcile_complete_universe(
         .collect();
     let mut current = BTreeMap::new();
     let mut stable_keys = BTreeSet::new();
-    let mut prior_paths = BTreeMap::new();
-    for entry in prior.entries() {
-        check_path_owner(&mut prior_paths, &entry.source().file)?;
-    }
-    let mut current_paths = BTreeMap::new();
     for source in current_set.sources {
-        check_path_owner(&mut current_paths, &source.source().file)?;
         if !stable_keys.insert(source.context.stable_key.clone()) {
             return Err(PreparationError::DuplicateSource);
         }
@@ -1066,16 +1057,19 @@ pub fn reconcile_complete_universe(
     })
 }
 
-fn semantic_key(scope: &SemanticSourceScopeKeyV1) -> (String, String, String) {
+fn semantic_key(scope: &SemanticSourceScopeKeyV1) -> (String, String, String, SourceFileKey) {
     (
         scope.corpus_kind.as_code_str().into(),
         scope.owner_kind.as_code_str().into(),
         scope.owner_id.clone(),
+        scope.source_file.clone(),
     )
 }
 
 fn invalid_semantic_key(scope: &SemanticSourceScopeKeyV1) -> bool {
-    scope.owner_id.is_empty() || scope.owner_id.chars().any(char::is_control)
+    scope.owner_id.is_empty()
+        || scope.owner_id.chars().any(char::is_control)
+        || scope.source_file.validate().is_err()
 }
 
 fn validate_semantic_stamps(

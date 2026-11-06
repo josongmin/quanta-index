@@ -31,7 +31,13 @@ pub trait ScratchNamespaceLease: Debug + Send + Sync {
 /// No database handle, publication authority or execution grant crosses this port.
 pub trait ScratchIoBinding: Debug + Send + Sync {
     fn driver_name(&self) -> &str;
-    fn enter_scope(&self) -> Box<dyn ScratchIoScope>;
+    /// Observe only this synchronous operation under its current caller.
+    /// None denotes lifecycle cleanup or an explicitly unobserved operation.
+    /// Diagnostic context grants no I/O or publication authority.
+    fn enter_scope(
+        &self,
+        diagnostics: Option<&crate::DiagnosticContextV1>,
+    ) -> Box<dyn ScratchIoScope>;
     /// Prepare and exclusively lock the namespace through the same file authority.
     /// Handle admission must precede open; failure retains uncertain custody.
     fn acquire_namespace(&self, path: &Path) -> Result<Box<dyn ScratchNamespaceLease>, IndexError>;

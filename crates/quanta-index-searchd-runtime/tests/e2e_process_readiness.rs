@@ -171,8 +171,18 @@ fn large_fixture_capture_records_internal_publication_stages() -> TestResult {
         "fixture capture completion",
     )?;
     let mut stages = std::collections::BTreeSet::new();
-    for line in std::io::BufReader::new(std::fs::File::open(&path)?).lines() {
+    let reader = std::io::BufReader::new(std::fs::File::open(&path)?);
+    let mut lines = reader.lines();
+    let header: serde_json::Value =
+        serde_json::from_str(&lines.next().ok_or("fixture capture header absent")??)?;
+    let schema_version = header
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("fixture capture schema version absent")?;
+    let _header = quanta_index_searchd::trace_wire::normalize_record(schema_version, header)?;
+    for line in lines {
         let row: serde_json::Value = serde_json::from_str(&line?)?;
+        let row = quanta_index_searchd::trace_wire::normalize_record(schema_version, row)?;
         let Some(kind) = row.get("kind") else {
             continue;
         };

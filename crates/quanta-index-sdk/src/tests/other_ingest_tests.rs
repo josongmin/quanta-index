@@ -737,7 +737,10 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
     )
     .tombstone_scope(SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
-        repo_relative_path: RepoRelativePath::new("src/old.rs"),
+        source_file: quanta_index_contract::SourceFileKey {
+            source_repo_id: repo_id(),
+            repo_relative_path: RepoRelativePath::new("src/old.rs"),
+        },
     });
     let ingest = Arc::new(StubIngestTransport::new(
         SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt {

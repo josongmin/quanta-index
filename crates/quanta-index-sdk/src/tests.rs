@@ -25,8 +25,8 @@ use quanta_index_contract::{
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneStructuralQueryResponse, SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1,
-    SemanticQueryResponse, SemanticSourceRecordV1, SemanticSourceScopeKeyV1, SourceRoleV1,
-    StructuralQueryRequest, SymbolId, TextQueryResponse,
+    SemanticQueryResponse, SemanticSourceRecordV1, SemanticSourceScopeKeyV1, SourceFileKey,
+    SourceRoleV1, StructuralQueryRequest, SymbolId, TextQueryResponse,
 };
 
 use crate::config::{EnvLookup, EnvLookupError};
@@ -90,6 +90,9 @@ impl StubQueryTransport {
             SearchPlaneQueryIpcResponse::Semantic(page) => page.selected_active_head = Some(head),
             SearchPlaneQueryIpcResponse::Hybrid(page) => page.selected_active_head = Some(head),
             SearchPlaneQueryIpcResponse::HybridSeed(page) => page.selected_active_head = Some(head),
+            SearchPlaneQueryIpcResponse::GoTestTraceFileV1(page) => {
+                page.selected_active_head = Some(head);
+            }
             SearchPlaneQueryIpcResponse::History(page) => page.selected_active_head = Some(head),
             SearchPlaneQueryIpcResponse::RuntimeMetadata(page) => {
                 page.selected_active_head = Some(head);
@@ -665,7 +668,10 @@ fn sample_chunk() -> ChunkRecord {
 fn sample_search_scope() -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::File,
-        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        source_file: SourceFileKey {
+            source_repo_id: repo_id(),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        },
     }
 }
 
@@ -709,6 +715,10 @@ fn sample_semantic_scope(owner_id: &str) -> SemanticSourceScopeKeyV1 {
         corpus_kind: SemanticCorpusKindV1::SymbolCard,
         owner_kind: OwnerDocKind::Symbol,
         owner_id: owner_id.to_string(),
+        source_file: SourceFileKey {
+            source_repo_id: repo_id(),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        },
     }
 }
 
@@ -720,7 +730,10 @@ fn sample_semantic_source(owner_id: &str) -> SemanticSourceRecordV1 {
         owner_id: owner_id.to_string(),
         source_doc_id: format!("doc-{owner_id}"),
         parent_owner_id: None,
-        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        source_file: SourceFileKey {
+            source_repo_id: repo_id(),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        },
         language: Some("rust".to_string()),
         package: Some("crate".to_string()),
         symbol_kind: Some("function".to_string()),
@@ -741,6 +754,10 @@ fn sample_cluster_semantic_scope(owner_id: &str) -> SemanticSourceScopeKeyV1 {
         corpus_kind: SemanticCorpusKindV1::ClusterCard,
         owner_kind: OwnerDocKind::Module,
         owner_id: owner_id.to_string(),
+        source_file: SourceFileKey {
+            source_repo_id: repo_id(),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        },
     }
 }
 

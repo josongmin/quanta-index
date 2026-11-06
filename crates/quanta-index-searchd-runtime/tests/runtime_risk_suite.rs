@@ -2,6 +2,7 @@
 
 use quanta_index_searchd_harness as e2e_harness;
 
+#[cfg(debug_assertions)]
 #[path = "common/searchd_binary_process.rs"]
 mod searchd_binary_process;
 

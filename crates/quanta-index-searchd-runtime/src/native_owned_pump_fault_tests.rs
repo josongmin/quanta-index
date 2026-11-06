@@ -78,7 +78,7 @@ fn owned_renewal_storage_failure_returns_error_after_provider_quiescence() -> Te
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         Some(pump_config),
     )?;
     let observation = service.resource_observation();
@@ -157,7 +157,7 @@ fn owned_renewal_storage_failure_returns_error_after_provider_quiescence() -> Te
         &socket,
         limits(),
         registry(&gate)?,
-        resources(),
+        &resources(),
         None,
     )?;
     drop(reopened);
@@ -174,7 +174,7 @@ fn fatal_catalog_failure_stops_listener_and_returns_pump_error() -> TestResult {
         &socket,
         limits(),
         AdapterRegistry::new(),
-        resources(),
+        &resources(),
         Some(config()),
     )?;
     let io = Arc::clone(&service.dispatcher.io);

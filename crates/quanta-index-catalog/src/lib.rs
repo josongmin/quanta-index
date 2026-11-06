@@ -31,6 +31,7 @@ mod io_admission;
 mod native;
 mod open;
 mod sequence;
+mod writer_cache;
 
 pub use backup::{
     CatalogSnapshotReceiptV1, CatalogSnapshotSessionV1, catalog_content_digest, fsync_directory,
@@ -41,10 +42,14 @@ pub use candidate::{
     RepoMapQuarantineIncidentRowV1, SealOutcomeV1,
 };
 pub use connection::{
-    CATALOG_FILE_NAME, CatalogClockPort, SqliteCatalog, SystemCatalogClock, catalog_dir,
+    CATALOG_FILE_NAME, CatalogClockPort, SqliteCatalog, SystemCatalogClock, WalReclaimOutcome,
+    catalog_dir,
 };
 pub use io_admission::{CatalogIoAdmission, CatalogIoScope, CatalogReadOnlyIoAdmission};
 pub use native::{
     NativeBootCatalogCandidate, NativeBootCatalogSnapshot, NativeBootManifest,
     verify_native_boot_candidate, verify_native_boot_catalog,
+};
+pub use writer_cache::{
+    CatalogWriterCacheObservation, CatalogWriterCachePolicy, CatalogWriterSettings,
 };

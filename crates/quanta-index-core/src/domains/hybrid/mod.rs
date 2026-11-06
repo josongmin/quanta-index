@@ -4,6 +4,7 @@
 mod dense_admission;
 mod inbound;
 mod service;
+mod trace_file_rank;
 
 pub use dense_admission::{
     DenseAdmissionOutcomeV1, DenseLaneFilterClassV1, HYBRID_FILTER_UNSUPPORTED_CODE,
@@ -12,3 +13,7 @@ pub use dense_admission::{
 };
 pub use inbound::{ExplainQueryPort, HybridQueryPort};
 pub use service::{FusedKeyV1, FusedLaneRankV1, HybridFetchFloorPolicy, HybridOrchestratorPolicy};
+pub use trace_file_rank::{
+    TraceFileEvidenceV1, TraceFileHitV1, TraceFileKeyV1, TraceFileLaneWitnessV1,
+    TraceFileRankPolicyV1, TraceSourceFrameClassV1,
+};

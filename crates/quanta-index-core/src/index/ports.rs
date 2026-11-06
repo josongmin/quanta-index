@@ -88,6 +88,10 @@ pub trait ObjectWriteTicket: Send {
     fn synced(self: Box<Self>) -> Result<(), IndexError>;
 }
 
+/// Shared object-count envelope for one child-first durable installation.
+/// Byte/work/memory limits are independently admitted by the original budget.
+pub const MAX_OBJECT_INSTALL_BATCH: usize = 256;
+
 pub trait ImmutableObjectPort: Send + Sync {
     /// Computes the canonical immutable identity without storage access or
     /// requiring child objects to exist. Charges encoding work before allocation.
@@ -111,7 +115,7 @@ pub trait ImmutableObjectPort: Send + Sync {
         sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<RegisteredObject, IndexError>;
-    /// Bounded child-first durable group. Results retain input order; identical
+    /// At most `MAX_OBJECT_INSTALL_BATCH` child-first objects. Results retain input order; identical
     /// immutable wire objects may share one physical installation. Returned slots
     /// and registration children retain data-only allocation custody after
     /// execution ends; consuming iteration must preserve the slot reservation.

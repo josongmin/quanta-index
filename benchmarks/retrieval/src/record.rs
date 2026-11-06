@@ -22,8 +22,8 @@ use crate::chunking::count_tokens;
 use crate::corpus::SourceFile;
 use crate::published_units::{PublishedUnitKind, PublishedUnitRegistry};
 use crate::query_plan::{
-    NlPlanConfig, QueryInputPolicy, QueryPlan, execution_profile_sha256, execution_profile_value,
-    ordering_contract, plan_query,
+    NlPlanConfig, QueryInputPolicy, QueryPlan, QueryPlanError, execution_profile_sha256,
+    execution_profile_value, ordering_contract, plan_query,
 };
 use crate::sdk::{QueryOutcome, RankedHit};
 use crate::{BenchError, BenchResult, sha256_hex};
@@ -116,6 +116,93 @@ pub struct PackTask {
     pub task_id: String,
     pub query: String,
     pub query_sha256: String,
+    pub semantic_input: Option<GoTraceSemanticInput>,
+}
+
+const GO_TRACE_SEMANTIC_PROFILE: &str = "go_test_excerpt_v1";
+const GO_TRACE_SEMANTIC_MAX_BYTES: usize = 16 * 1024;
+
+/// Validated semantic input carried by a blind Go test trace task.
+#[derive(Debug, Clone)]
+pub struct GoTraceSemanticInput {
+    text: String,
+    text_sha256: String,
+    failure_excerpt: String,
+}
+
+impl GoTraceSemanticInput {
+    #[must_use]
+    pub fn failure_excerpt(&self) -> &str {
+        &self.failure_excerpt
+    }
+
+    fn parse(value: &Value, task_id: &str) -> BenchResult<Self> {
+        let invalid = || BenchError::Protocol(format!("invalid semantic input: {task_id}"));
+        let input = value.as_object().ok_or_else(invalid)?;
+        exact_keys(
+            input,
+            &[
+                "profile",
+                "text",
+                "text_sha256",
+                "failure_excerpt",
+                "failure_excerpt_sha256",
+            ],
+            "semantic input",
+        )?;
+        if input["profile"].as_str() != Some(GO_TRACE_SEMANTIC_PROFILE) {
+            return Err(invalid());
+        }
+        let text = input["text"]
+            .as_str()
+            .filter(|text| {
+                !text.trim().is_empty()
+                    && text.len() <= GO_TRACE_SEMANTIC_MAX_BYTES
+                    && !text.contains('\0')
+            })
+            .ok_or_else(invalid)?;
+        let text_sha256 = sha256_hex(text.as_bytes());
+        if input["text_sha256"].as_str() != Some(text_sha256.as_str()) {
+            return Err(invalid());
+        }
+        let failure_excerpt = input["failure_excerpt"]
+            .as_str()
+            .filter(|text| {
+                !text.trim().is_empty()
+                    && text.len() <= GO_TRACE_SEMANTIC_MAX_BYTES
+                    && !text.contains('\0')
+            })
+            .ok_or_else(invalid)?;
+        if input["failure_excerpt_sha256"].as_str()
+            != Some(sha256_hex(failure_excerpt.as_bytes()).as_str())
+        {
+            return Err(invalid());
+        }
+        Ok(Self {
+            text: text.to_string(),
+            text_sha256,
+            failure_excerpt: failure_excerpt.to_string(),
+        })
+    }
+}
+
+impl PackTask {
+    /// Re-derive the exact SDK inputs from this validated blind task.
+    pub fn plan(
+        &self,
+        policy: QueryInputPolicy,
+        config: &NlPlanConfig,
+    ) -> Result<QueryPlan, QueryPlanError> {
+        let mut plan = plan_query(policy, &self.query, config)?;
+        if let Some(input) = &self.semantic_input {
+            if policy != QueryInputPolicy::NaturalLanguage {
+                return Err(QueryPlanError::SemanticInputRequiresNaturalLanguage);
+            }
+            plan.semantic_text.clone_from(&input.text);
+            plan.semantic_text_sha256.clone_from(&input.text_sha256);
+        }
+        Ok(plan)
+    }
 }
 
 /// Validated blind query pack plus its canonical digest.
@@ -386,11 +473,12 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
         let item = task
             .as_object()
             .ok_or_else(|| BenchError::Protocol("query pack task must be an object".to_string()))?;
-        exact_keys(
-            item,
-            &["task_id", "query", "query_sha256"],
-            "query pack task",
-        )?;
+        let keys: &[_] = if item.contains_key("semantic_input") {
+            &["task_id", "query", "query_sha256", "semantic_input"]
+        } else {
+            &["task_id", "query", "query_sha256"]
+        };
+        exact_keys(item, keys, "query pack task")?;
         let task_id = item
             .get("task_id")
             .and_then(Value::as_str)
@@ -424,6 +512,10 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
             task_id: task_id.to_string(),
             query: query.to_string(),
             query_sha256: query_sha.to_string(),
+            semantic_input: item
+                .get("semantic_input")
+                .map(|value| GoTraceSemanticInput::parse(value, task_id))
+                .transpose()?,
         });
     }
     let pack_sha256 = sha256_hex(canonical_json(&value)?.as_bytes());
@@ -1349,7 +1441,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
                 task.task_id
             )));
         }
-        let derived_plan = plan_query(plan.policy, &task.query, nl_config).map_err(|error| {
+        let derived_plan = task.plan(plan.policy, nl_config).map_err(|error| {
             BenchError::Protocol(format!(
                 "query plan for task {} cannot be re-derived: {error}",
                 task.task_id
@@ -2006,6 +2098,58 @@ mod tests {
         std::fs::write(&path, serde_json::to_string(pack).expect("pack renders"))
             .expect("pack writes");
         load_query_pack(&path)
+    }
+
+    #[test]
+    fn go_trace_pack_binds_semantic_bytes_without_changing_lexical_request() {
+        let mut pack = v3_pack_fixture();
+        let text = "panic: index out of range\nserver.go:17";
+        let digest = sha256_hex(text.as_bytes());
+        let input = serde_json::json!({
+            "profile": GO_TRACE_SEMANTIC_PROFILE,
+            "text": text,
+            "text_sha256": digest,
+            "failure_excerpt": text,
+            "failure_excerpt_sha256": digest,
+        });
+        pack["tasks"][0]["semantic_input"] = input.clone();
+        let loaded = load_fixture(&pack).expect("Go trace pack");
+        let config = NlPlanConfig::default();
+        let plan = loaded.tasks[0]
+            .plan(QueryInputPolicy::NaturalLanguage, &config)
+            .expect("Go trace plan");
+        let legacy = plan_query(QueryInputPolicy::NaturalLanguage, "needle", &config)
+            .expect("original plan");
+        assert_eq!(plan.original, legacy.original);
+        assert_eq!(plan.lexical_request, legacy.lexical_request);
+        assert_eq!(plan.semantic_text, text);
+        assert_eq!(plan.semantic_text_sha256, digest);
+        assert!(matches!(
+            loaded.tasks[0].plan(QueryInputPolicy::Native, &config),
+            Err(QueryPlanError::SemanticInputRequiresNaturalLanguage)
+        ));
+
+        for (field, value) in [
+            ("text", serde_json::json!("forged trace")),
+            ("profile", serde_json::json!("unknown")),
+            ("text_sha256", Value::Null),
+            (
+                "failure_excerpt",
+                serde_json::json!("substituted raw trace"),
+            ),
+            ("gold", serde_json::json!([])),
+        ] {
+            pack["tasks"][0]["semantic_input"] = input.clone();
+            pack["tasks"][0]["semantic_input"][field] = value;
+            assert!(load_fixture(&pack).is_err(), "accepted malformed {field}");
+        }
+        let oversized = "한".repeat(GO_TRACE_SEMANTIC_MAX_BYTES / 3 + 1);
+        pack["tasks"][0]["semantic_input"] = serde_json::json!({
+            "profile": GO_TRACE_SEMANTIC_PROFILE,
+            "text_sha256": sha256_hex(oversized.as_bytes()),
+            "text": oversized,
+        });
+        assert!(load_fixture(&pack).is_err());
     }
 
     fn completed_results_fixture(

@@ -113,6 +113,26 @@ pub(crate) struct MapCursor<'a> {
 }
 
 impl MapCursor<'_> {
+    /// Advance this forward-only authenticated walk to the next requested key.
+    /// Existing frames are retained; subtrees wholly below the lower bound are
+    /// skipped by their authenticated extents. This never rewinds consumed rows.
+    pub(crate) fn next_at_or_after(
+        &mut self,
+        lower: &[u8],
+    ) -> Result<Option<(Vec<u8>, BlobRef)>, CoreError> {
+        checkpoint(self.budget)?;
+        check_key(lower)?;
+        if lower < self.lower.as_slice() {
+            return Err(invalid("map cursor cannot move its lower bound backward"));
+        }
+        self.lower
+            .try_reserve_exact(lower.len().saturating_sub(self.lower.len()))
+            .map_err(|error| storage("reserve cursor lower bound", error))?;
+        self.lower.clear();
+        self.lower.extend_from_slice(lower);
+        self.next()
+    }
+
     pub(crate) fn next(&mut self) -> Result<Option<(Vec<u8>, BlobRef)>, CoreError> {
         loop {
             if let Some(reference) = self.pending.take() {

@@ -4,12 +4,15 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use quanta_index_contract::{
-    EarlyStopReason, HybridQueryRequest, HybridQueryResponse, LexicalCandidate, QueryStageKindV1,
+    CandidateCountV1, EarlyStopReason, GoTestTraceFileHitV1, GoTestTraceFileLaneWitnessV1,
+    GoTestTraceFileQueryRequestV1, GoTestTraceFileQueryResponseV1, GoTestTraceFrameClassV1,
+    HybridQueryRequest, HybridQueryResponse, LaneTraceV1, LexicalCandidate, QueryStageKindV1,
     TextQueryRequest,
 };
 use quanta_index_core::{
     CoreError, HybridOrchestratorPolicy, HybridQueryPort, LexicalPageSpec, QueryRouteV1,
-    RequestBudgetV1,
+    RequestBudgetV1, TraceFileEvidenceV1, TraceFileLaneWitnessV1, TraceFileRankPolicyV1,
+    TraceSourceFrameClassV1,
 };
 
 use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
@@ -58,6 +61,112 @@ fn hybrid_lane_traces(
 }
 
 impl SearchPlaneDispatcher {
+    pub(crate) fn go_test_trace_file(
+        &self,
+        request: &GoTestTraceFileQueryRequestV1,
+        budget: &RequestBudgetV1,
+    ) -> Result<GoTestTraceFileQueryResponseV1, CoreError> {
+        request.validate_v1().map_err(CoreError::InvalidContract)?;
+        budget.checkpoint("go-test-trace-file:entry")?;
+        let selection =
+            resolve_hybrid_request_selection(self.activation_catalog.as_ref(), &request.query)?;
+        let mut fusion = self.execute_hybrid_fusion(
+            &selection,
+            &request.query.text_query,
+            &request.query.semantic_query_text,
+            request.query.top_k,
+            "go test trace file",
+            budget,
+        )?;
+        let lane_top_k = request.query.top_k;
+        let lane_limit = usize::try_from(lane_top_k).map_err(|error| {
+            CoreError::InvalidContract(format!("trace lane limit exceeds usize: {error}"))
+        })?;
+        let internal_limit = usize::try_from(fusion.internal_top_k).map_err(|error| {
+            CoreError::InvalidContract(format!("trace probe limit exceeds usize: {error}"))
+        })?;
+        let lexical_count = fusion.lexical_rows.len();
+        let dense_count = fusion.dense_rows.len();
+        let lexical_window = fused_window_v2(
+            lane_top_k,
+            lexical_count.min(lane_limit),
+            lexical_count,
+            lexical_count == internal_limit,
+            None,
+            fusion.internal_top_k,
+            vec![
+                LaneTraceV1::new(
+                    "go_test_trace.lexical",
+                    fusion.execution.lexical_executed(),
+                    fusion.execution.lexical_contributed,
+                )
+                .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(lexical_count)?)),
+            ],
+        )?;
+        let dense_window = fused_window_v2(
+            lane_top_k,
+            dense_count.min(lane_limit),
+            dense_count,
+            dense_count == internal_limit,
+            Some(fusion.dense_outcome),
+            fusion.internal_top_k,
+            vec![
+                LaneTraceV1::new(
+                    "go_test_trace.dense",
+                    fusion.execution.semantic_executed(),
+                    fusion.execution.semantic_contributed,
+                )
+                .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(dense_count)?))
+                .with_filtered_out(lane_count_u64(
+                    fusion.dense_examined.saturating_sub(dense_count),
+                )?)
+                .with_cost(lane_count_u64(fusion.dense_examined)?),
+            ],
+        )?;
+        fusion.lexical_rows.truncate(lane_limit);
+        fusion.dense_rows.truncate(lane_limit);
+        let evidence = TraceFileEvidenceV1::from_go_test_failure_text(
+            &request.failure_excerpt,
+            request.failure_source_repo_id.clone(),
+        );
+        budget.checkpoint("go-test-trace-file:rank")?;
+        let ranked = TraceFileRankPolicyV1::rank_go_test_failure(
+            &fusion.pin,
+            &fusion.lexical_rows,
+            &fusion.dense_rows,
+            &evidence,
+            request.top_k,
+        )?;
+        let frame_class = match evidence.frame_class() {
+            TraceSourceFrameClassV1::Unresolved => GoTestTraceFrameClassV1::Unresolved,
+            TraceSourceFrameClassV1::Exact => GoTestTraceFrameClassV1::Exact,
+            TraceSourceFrameClassV1::Ambiguous => GoTestTraceFrameClassV1::Ambiguous,
+        };
+        let response = GoTestTraceFileQueryResponseV1 {
+            generation: fusion.pin,
+            selected_active_head: selection.active_head,
+            results: ranked
+                .into_iter()
+                .map(|hit| GoTestTraceFileHitV1 {
+                    file: hit.key.file,
+                    lexical: hit.lexical.map(trace_witness),
+                    dense: hit.dense.map(trace_witness),
+                    file_rrf_score: hit.file_rrf_score,
+                    production_source: hit.production_source,
+                    source_frame: hit.source_frame,
+                })
+                .collect(),
+            lexical_window,
+            dense_window,
+            frame_class,
+            explanation: fusion.explanation,
+        };
+        response
+            .validate_against_v1(request)
+            .map_err(CoreError::InvalidContract)?;
+        Ok(response)
+    }
+
     /// The hybrid route: two independent, bounded lanes fused by RRF
     /// (QI-BB-018).
     ///
@@ -276,6 +385,12 @@ impl SearchPlaneDispatcher {
         Ok(HybridFusion {
             pin,
             fused,
+            lexical_rows: lex_results,
+            dense_rows: sem_results,
+            dense_outcome,
+            dense_examined,
+            internal_top_k,
+            execution: summary,
             window_v2,
             explanation,
         })
@@ -305,6 +420,14 @@ impl SearchPlaneDispatcher {
             window: fusion.window_v2,
             explanation: fusion.explanation,
         })
+    }
+}
+
+fn trace_witness(witness: TraceFileLaneWitnessV1) -> GoTestTraceFileLaneWitnessV1 {
+    GoTestTraceFileLaneWitnessV1 {
+        file_rank: witness.file_rank,
+        chunk_rank: witness.chunk_rank,
+        candidate: witness.candidate,
     }
 }
 

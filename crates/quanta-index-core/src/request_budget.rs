@@ -501,6 +501,12 @@ impl RequestBudgetV1 {
         self
     }
 
+    /// Mask only the diagnostic context in an otherwise identical work scope.
+    pub(crate) fn without_diagnostic_context(mut self) -> Self {
+        self.diagnostic_context = None;
+        self
+    }
+
     /// Borrow the request trace context when one was explicitly injected.
     #[must_use]
     pub fn diagnostic_context(&self) -> Option<&DiagnosticContextV1> {

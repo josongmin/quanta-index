@@ -25,7 +25,7 @@ use crate::text_authority::paged_writer::{
 };
 
 type TermDocs = BTreeMap<String, Vec<(u32, Vec<u32>)>>;
-type PageRoutes = BTreeMap<ObjectRef, (BlobRef, BTreeSet<(u8, Vec<u8>)>)>;
+type PageRoutes = BTreeMap<ObjectRef, (BlobRef, BTreeSet<Vec<u8>>)>;
 
 /// In-process semantic scrub progress. A restart begins a new pass; no
 /// partially checked state is persisted as a proof.
@@ -77,7 +77,7 @@ struct PendingBlob {
 enum PendingPurpose {
     Body { local: u32, record: CurrentRecord },
     Inventory,
-    Page { keys: BTreeSet<(u8, Vec<u8>)> },
+    Page { keys: BTreeSet<Vec<u8>> },
 }
 
 pub(crate) struct NativeScrubStep {
@@ -363,7 +363,7 @@ impl NativeScrubCursor {
             self.phase = NativeScrubPhase::Page;
             return Ok(());
         };
-        let (surface, posting_key) = route_posting_key(route, segment.descriptor.id)?;
+        let (surface, _posting_key) = route_posting_key(route, segment.descriptor.id)?;
         let (map, kind) = match surface {
             GRAM_RAW | GRAM_FOLDED => (&self.root.gram_routes, ObjectKind::NativeTrigrams),
             TERM_RAW | TERM_FOLDED => (&self.root.term_routes, ObjectKind::NativePositions),
@@ -379,7 +379,7 @@ impl NativeScrubCursor {
             .pages
             .entry(reference.root.clone())
             .or_insert_with(|| (reference.clone(), BTreeSet::new()));
-        if group.0 != reference || !group.1.insert((surface, posting_key.to_vec())) {
+        if group.0 != reference || !group.1.insert(route.clone()) {
             return Err(corrupt("scrub page route repeats or reference differs"));
         }
         segment.next_route = segment.next_route.saturating_add(1);
@@ -499,7 +499,11 @@ impl NativeScrubCursor {
                     .copied()
                     .collect::<BTreeSet<_>>();
                 for row in page.rows {
-                    if !keys.contains(&(row.surface, row.key.to_vec())) {
+                    if !keys.contains(&route_for_posting_row(
+                        row.surface,
+                        row.key,
+                        segment.descriptor.id,
+                    )?) {
                         return Err(corrupt("scrub page has unreferenced row"));
                     }
                     if matches!(row.surface, GRAM_RAW | GRAM_FOLDED) {
@@ -681,29 +685,35 @@ fn verify_changed_segments_for_seal_inner(
                 "new segment route inventory differs from raw documents",
             ));
         }
-        let mut pages = BTreeMap::<ObjectRef, (BlobRef, BTreeMap<(u8, Vec<u8>), Vec<u8>>)>::new();
+        let mut pages = BTreeMap::<ObjectRef, (BlobRef, BTreeMap<Vec<u8>, Vec<u8>>)>::new();
+        let mut cursor_kind = None;
+        let mut route_cursor = None;
         for (key, kind, expected_bytes) in expected {
             let routes = if kind == ObjectKind::NativeTrigrams {
                 &root.gram_routes
             } else {
                 &root.term_routes
             };
-            let reference = store
-                .map_get(routes, &key, None)?
+            if cursor_kind != Some(kind) {
+                route_cursor = Some(store.map_cursor(routes, &key, None, None)?);
+                cursor_kind = Some(kind);
+            }
+            let (actual_key, reference) = route_cursor
+                .as_mut()
+                .ok_or_else(|| corrupt("new segment route cursor is missing"))?
+                .next_at_or_after(&key)?
                 .ok_or_else(|| corrupt("new segment route is missing"))?;
+            if actual_key != key {
+                return Err(corrupt("new segment route is missing"));
+            }
             if reference.root.kind != kind {
                 return Err(corrupt("new segment posting kind differs"));
             }
-            let (surface, posting_key) = route_posting_key(&key, segment_key)?;
+            let (_surface, _posting_key) = route_posting_key(&key, segment_key)?;
             let group = pages
                 .entry(reference.root.clone())
                 .or_insert_with(|| (reference.clone(), BTreeMap::new()));
-            if group.0 != reference
-                || group
-                    .1
-                    .insert((surface, posting_key.to_vec()), expected_bytes)
-                    .is_some()
-            {
+            if group.0 != reference || group.1.insert(key.clone(), expected_bytes).is_some() {
                 return Err(corrupt(
                     "new segment posting page route repeats or reference differs",
                 ));
@@ -712,17 +722,18 @@ fn verify_changed_segments_for_seal_inner(
         for (_, (reference, expected_rows)) in pages {
             let actual_bytes = store.read_blob(&reference, MAX_POSTING_BYTES, None)?;
             let actual = PostingPage::decode(&actual_bytes, segment_key)?;
-            if actual.rows.len() != expected_rows.len()
-                || actual.rows.iter().any(|row| {
-                    expected_rows
-                        .get(&(row.surface, row.key.to_vec()))
-                        .map(Vec::as_slice)
-                        != Some(row.payload)
-                })
-            {
+            if actual.rows.len() != expected_rows.len() {
                 return Err(corrupt(
                     "new segment posting page differs from raw documents",
                 ));
+            }
+            for row in actual.rows {
+                let route = route_for_posting_row(row.surface, row.key, segment_key)?;
+                if expected_rows.get(&route).map(Vec::as_slice) != Some(row.payload) {
+                    return Err(corrupt(
+                        "new segment posting page differs from raw documents",
+                    ));
+                }
             }
         }
         if let Some(proof) = merge_proof.as_mut() {
@@ -897,10 +908,10 @@ pub(crate) fn verify_all_for_scrub(
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let mut page_routes = BTreeMap::<ObjectRef, (BlobRef, BTreeSet<(u8, Vec<u8>)>)>::new();
+        let mut page_routes = BTreeMap::<ObjectRef, (BlobRef, BTreeSet<Vec<u8>>)>::new();
         for route in read_route_inventory_budget(store, &descriptor, budget)? {
             checkpoint(budget, "lexical:native:scrub-posting-route")?;
-            let (surface, posting_key) = route_posting_key(&route, segment_key)?;
+            let (surface, _posting_key) = route_posting_key(&route, segment_key)?;
             let (map, kind) = match surface {
                 GRAM_RAW | GRAM_FOLDED => (&root.gram_routes, ObjectKind::NativeTrigrams),
                 TERM_RAW | TERM_FOLDED => (&root.term_routes, ObjectKind::NativePositions),
@@ -915,7 +926,7 @@ pub(crate) fn verify_all_for_scrub(
             let group = page_routes
                 .entry(reference.root.clone())
                 .or_insert_with(|| (reference.clone(), BTreeSet::new()));
-            if group.0 != reference || !group.1.insert((surface, posting_key.to_vec())) {
+            if group.0 != reference || !group.1.insert(route.clone()) {
                 return Err(corrupt("posting page route repeats or reference differs"));
             }
         }
@@ -929,7 +940,7 @@ pub(crate) fn verify_all_for_scrub(
             for row in page.rows {
                 checkpoint(budget, "lexical:native:scrub-posting-row")?;
                 let surface = row.surface;
-                if !expected_keys.contains(&(surface, row.key.to_vec())) {
+                if !expected_keys.contains(&route_for_posting_row(surface, row.key, segment_key)?) {
                     return Err(corrupt("posting page contains unreferenced row"));
                 }
                 if matches!(surface, GRAM_RAW | GRAM_FOLDED) {
@@ -1034,6 +1045,38 @@ pub(crate) fn independently_count_segment_index(
     reference: &BlobRef,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<u64, CoreError> {
+    count_segment_index_with_routes(store, root, key, reference, None, budget)
+}
+
+/// The caller has independently diffed the authenticated route maps and
+/// matched every new route key against this segment's inventory by count and
+/// digest. The supplied roots come only from those authenticated map rows.
+pub(super) fn independently_count_segment_index_from_verified_route_diff(
+    store: &ObjectStore,
+    root: &NativeRoot,
+    key: &[u8],
+    reference: &BlobRef,
+    witness: &super::paged_transition::RouteWitness,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<u64, CoreError> {
+    let id = u64::from_be_bytes(
+        key.try_into()
+            .map_err(|_width| corrupt("verified route witness segment key width differs"))?,
+    );
+    let roots = witness
+        .roots(id)
+        .ok_or_else(|| corrupt("verified route witness lacks segment"))?;
+    count_segment_index_with_routes(store, root, key, reference, Some(roots), budget)
+}
+
+fn count_segment_index_with_routes(
+    store: &ObjectStore,
+    root: &NativeRoot,
+    key: &[u8],
+    reference: &BlobRef,
+    verified_roots: Option<&BTreeSet<ObjectRef>>,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<u64, CoreError> {
     let id = u64::from_be_bytes(
         key.try_into()
             .map_err(|_error| corrupt("run verifier segment key width differs"))?,
@@ -1050,23 +1093,30 @@ pub(crate) fn independently_count_segment_index(
         .as_ref()
         .ok_or_else(|| corrupt("run verifier route inventory absent"))?;
     let mut roots = BTreeSet::from([reference.root.clone(), inventory.root.clone()]);
-    for route in read_route_inventory_budget(store, &descriptor, budget)? {
-        let surface = route
-            .first()
-            .copied()
-            .ok_or_else(|| corrupt("empty route"))?;
-        let (map, kind) = match surface {
-            GRAM_RAW | GRAM_FOLDED => (&root.gram_routes, ObjectKind::NativeTrigrams),
-            TERM_RAW | TERM_FOLDED => (&root.term_routes, ObjectKind::NativePositions),
-            _ => return Err(corrupt("run verifier route surface differs")),
-        };
-        let posting = store
-            .map_get(map, &route, budget)?
-            .ok_or_else(|| corrupt("run verifier posting route absent"))?;
-        if posting.root.kind != kind {
-            return Err(corrupt("run verifier posting kind differs"));
+    let routes = read_route_inventory_budget(store, &descriptor, budget)?;
+    if let Some(verified_roots) = verified_roots {
+        // The producer cannot supply this set. The transition verifier just
+        // proved the complete route-key inventory against its own map diff.
+        roots.extend(verified_roots.iter().cloned());
+    } else {
+        for route in routes {
+            let surface = route
+                .first()
+                .copied()
+                .ok_or_else(|| corrupt("empty route"))?;
+            let (map, kind) = match surface {
+                GRAM_RAW | GRAM_FOLDED => (&root.gram_routes, ObjectKind::NativeTrigrams),
+                TERM_RAW | TERM_FOLDED => (&root.term_routes, ObjectKind::NativePositions),
+                _ => return Err(corrupt("run verifier route surface differs")),
+            };
+            let posting = store
+                .map_get(map, &route, budget)?
+                .ok_or_else(|| corrupt("run verifier posting route absent"))?;
+            if posting.root.kind != kind {
+                return Err(corrupt("run verifier posting kind differs"));
+            }
+            let _inserted = roots.insert(posting.root);
         }
-        let _inserted = roots.insert(posting.root);
     }
     crate::lexical_runs::segment_index_encoded_bytes(
         store,
@@ -1305,6 +1355,24 @@ fn encode_expected_posting(
     )
 }
 
+fn route_for_posting_row(surface: u8, key: &[u8], segment_key: u64) -> Result<Vec<u8>, CoreError> {
+    let prefix = match surface {
+        GRAM_RAW | GRAM_FOLDED => {
+            let gram: [u8; 3] = key
+                .try_into()
+                .map_err(|_width| corrupt("posting gram key width differs"))?;
+            gram_prefix(surface, gram).to_vec()
+        }
+        TERM_RAW | TERM_FOLDED => {
+            let term =
+                std::str::from_utf8(key).map_err(|_utf8| corrupt("posting term UTF-8 differs"))?;
+            term_prefix(surface, term)?
+        }
+        _ => return Err(corrupt("posting surface differs")),
+    };
+    Ok(route_key(&prefix, segment_key))
+}
+
 fn corrupt(reason: &str) -> CoreError {
     CoreError::Typed {
         code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
@@ -1319,16 +1387,19 @@ mod cursor_tests {
 
     use super::{
         NativeScrubCursor, finish_native_output, independently_count_segment_index,
-        observe_verified_native_output, verify_all_for_scrub, verify_changed_segments_for_seal,
+        independently_count_segment_index_from_verified_route_diff, observe_verified_native_output,
+        verify_all_for_scrub, verify_changed_segments_for_seal,
         verify_changed_segments_for_seal_with_merge_facts,
     };
     use crate::lexical_allocation::DocVersionReservation;
     use crate::lexical_runs::SegmentRemoval;
-    use crate::lexical_store::{AttemptBinding, MapEdit, ObjectStore};
+    use crate::lexical_store::{AttemptBinding, MapEdit, MapRoot, ObjectStore};
     use crate::maintenance_merge_facts::{NativeMergeOutputFacts, NativeRunMergeFacts};
+    use crate::text_authority::paged_manifest::NativeRoot;
     use crate::text_authority::paged_merge_proof::NativeMergeProof;
     use crate::text_authority::paged_transition::{
-        verify_transition_for_seal, verify_transition_for_seal_with_policy,
+        verify_route_diff_for_test, verify_transition_for_seal,
+        verify_transition_for_seal_with_policy,
     };
     use crate::text_authority::paged_writer::publish_delta_prepared_with_policy;
     use crate::text_authority::{AddedTextDoc, NativeAuthority, NativeSourceEdit, publish_delta};
@@ -1473,6 +1544,55 @@ mod cursor_tests {
             );
             verify_changed_segments_for_seal(&store, &root, 1)?;
             verify_all_for_scrub(&store, &root, None)?;
+
+            let empty = NativeRoot::empty([9; 32]);
+            let witnessed = verify_route_diff_for_test(
+                &store,
+                &empty,
+                &root,
+                1,
+                &BTreeSet::new(),
+                4 * 1024 * 1024,
+            )?
+            .ok_or("small transition exceeded route witness budget")?;
+            let fallback =
+                verify_route_diff_for_test(&store, &empty, &root, 1, &BTreeSet::new(), 0)?;
+            assert!(fallback.is_none());
+            let mut segments = store.map_cursor(&root.segments, &[], None, None)?;
+            while let Some((key, reference)) = segments.next()? {
+                let ordinary =
+                    independently_count_segment_index(&store, &root, &key, &reference, None)?;
+                let optimized = independently_count_segment_index_from_verified_route_diff(
+                    &store, &root, &key, &reference, &witnessed, None,
+                )?;
+                assert_eq!(optimized, ordinary);
+            }
+            let mut missing = root.clone();
+            missing.gram_routes = MapRoot::default();
+            assert!(
+                verify_route_diff_for_test(
+                    &store,
+                    &empty,
+                    &missing,
+                    1,
+                    &BTreeSet::new(),
+                    4 * 1024 * 1024,
+                )
+                .is_err()
+            );
+            let mut wrong_kind = root.clone();
+            wrong_kind.gram_routes = root.term_routes.clone();
+            assert!(
+                verify_route_diff_for_test(
+                    &store,
+                    &empty,
+                    &wrong_kind,
+                    1,
+                    &BTreeSet::new(),
+                    4 * 1024 * 1024,
+                )
+                .is_err()
+            );
 
             // A producer-scoped authenticated page can remain cached after
             // the durable bytes change. Both seal proofs must use independent
@@ -1640,6 +1760,106 @@ mod cursor_tests {
             Ok(())
         };
         run().expect("bounded Native scrub oracle");
+    }
+
+    #[test]
+    fn long_indexable_terms_survive_independent_native_seal_and_scrub() {
+        let run = || -> Result<(), Box<dyn std::error::Error>> {
+            let directory = tempfile::tempdir()?;
+            let store = ObjectStore::open(directory.path())?;
+            let source_file = SourceFileKey {
+                source_repo_id: RepoId::new("long-term-source")?,
+                repo_relative_path: RepoRelativePath::new("src/long.rs"),
+            };
+            let terms = ["a".repeat(245), "b".repeat(246), "c".repeat(256)];
+            let text = terms.join(" ");
+            let indexed = crate::normalize::tokenize(&text, crate::normalize::CaseMode::Sensitive);
+            assert_eq!(
+                indexed
+                    .indexable()
+                    .map(|token| token.text.len())
+                    .collect::<Vec<_>>(),
+                vec![245, 246, 256]
+            );
+            let coverage = SourceFileCoverage {
+                source: SourceFileRevision {
+                    file: source_file.clone(),
+                    revision_id: RevisionId::new("long-term-r1")?,
+                    source_sha256: Sha256::digest(text.as_bytes()).into(),
+                },
+                language: quanta_index_contract::lex::LanguageCode::new("rust")?,
+                producer_policy_sha256: [1; 32],
+                symbol_name_source_policy: SymbolNameSourcePolicyV1::Unspecified,
+                unit_set_sha256: [2; 32],
+                text_admitted: true,
+                symbols: SymbolCoverage::Complete { symbol_count: 0 },
+            };
+            let binding = AttemptBinding {
+                root_incarnation: [1; 16],
+                repository_sha256: [2; 32],
+                revision_sha256: [5; 32],
+                source_event_sha256: [3; 32],
+                target_generation: 1,
+                base_root_sha256: None,
+                operations_sha256: [4; 32],
+                format: 1,
+            };
+            let lease = store.begin_attempt(&binding, &[])?;
+            let (root, _) = publish_delta(
+                &store,
+                &lease,
+                None,
+                &[NativeSourceEdit::Upsert(coverage)],
+                &[],
+                &[AddedTextDoc {
+                    doc_id: 1,
+                    source_file,
+                    candidate_id: "long-terms".into(),
+                    text,
+                }],
+                false,
+                ManifestGeneration::new(1),
+                [9; 32],
+            )?;
+            for (term, expected_width) in terms.iter().zip([256, 45, 45]) {
+                for surface in [3, 4] {
+                    let route = crate::text_authority::paged_wire::route_key(
+                        &crate::text_authority::paged_wire::term_prefix(surface, term)?,
+                        1,
+                    );
+                    assert_eq!(route.len(), expected_width);
+                    assert!(store.map_get(&root.term_routes, &route, None)?.is_some());
+                }
+            }
+            verify_changed_segments_for_seal(&store, &root, 1)?;
+            verify_all_for_scrub(&store, &root, None)?;
+
+            // A well-formed authenticated map missing one inventoried long
+            // route must still fail the independent body/posting oracle.
+            let removed_route = crate::text_authority::paged_wire::route_key(
+                &crate::text_authority::paged_wire::term_prefix(3, &terms[1])?,
+                1,
+            );
+            let mut forged = root.clone();
+            forged.term_routes = store.map_apply(
+                &lease,
+                &root.term_routes,
+                std::iter::once(Ok(MapEdit {
+                    key: removed_route,
+                    value: None,
+                })),
+            )?;
+            forged.validate()?;
+            assert!(matches!(
+                verify_changed_segments_for_seal(&store, &forged, 1),
+                Err(quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    ..
+                })
+            ));
+            Ok(())
+        };
+        run().expect("long Native term seal oracle");
     }
 
     #[test]

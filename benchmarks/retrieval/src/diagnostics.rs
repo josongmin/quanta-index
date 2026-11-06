@@ -624,6 +624,7 @@ mod tests {
                 task_id: "T1".to_string(),
                 query: "find symbol".to_string(),
                 query_sha256: "c".repeat(64),
+                semantic_input: None,
             }],
             pack_sha256: "d".repeat(64),
             comparison_contract: json!({}),

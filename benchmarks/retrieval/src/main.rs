@@ -9,6 +9,7 @@
 
 mod rank_study;
 mod request_events;
+mod trace_profile;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -37,7 +38,7 @@ use quanta_index_retrieval_bench::profile::EmbedderProfile;
 use quanta_index_retrieval_bench::published_units::PublishedUnitRegistry;
 use quanta_index_retrieval_bench::query_plan::{
     MAX_NL_PLAN_TOKENS, NlPlanConfig, QueryInputPolicy, QueryPlan, QueryPlanError,
-    execution_profile_sha256, execution_profile_value, plan_query,
+    execution_profile_sha256, execution_profile_value,
 };
 use quanta_index_retrieval_bench::record::{
     CaptureProvenance, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
@@ -65,10 +66,12 @@ fn usage_error(mut message: String) -> BenchError {
 fn print_help() -> BenchResult<()> {
     std::io::stdout()
         .write_all(
-            b"quanta-index-retrieval-bench run|chunk|preflight|capabilities [flags]\n\
+            b"quanta-index-retrieval-bench run|chunk|preflight|trace-profile|capabilities [flags]\n\
          \n\
          run: manifest -> chunks -> real searchd publish/activate -> SDK queries -> v5 record\n\
          chunk: manifest -> chunks + coverage JSON (no daemon)\n\
+         trace-profile: --query-pack PATH --state-root PATH --repo-id ID --generation N --out PATH\n\
+           Paired SDK quality replay at top_k=100 on an existing sealed generation.\n\
          preflight: --repo PATH --manifest PATH --out PATH (all-file symbol census; no daemon)\n\
          [--symbol-coverage require-complete|allow-incomplete] (default require-complete)\n\
          [--symbol-timeout-ms N] [--max-symbols-per-file N]\n\
@@ -336,6 +339,7 @@ fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
         QueryPlanError::UnsupportedPolicy(policy) => serde_json::json!({"policy": policy}),
         QueryPlanError::InvalidSymbolName
         | QueryPlanError::EmptyTokenPlan
+        | QueryPlanError::SemanticInputRequiresNaturalLanguage
         | QueryPlanError::InvalidKeyword
         | QueryPlanError::InvalidCodeSearch
         | QueryPlanError::InvalidCodeSearchExactContent
@@ -472,7 +476,7 @@ fn plan_query_pack(
     let execution_profile_sha256 = execution_profile_sha256(policy, &config);
     let mut plans = BTreeMap::new();
     for task in &pack.tasks {
-        let plan = match plan_query(policy, task.query.as_str(), &config) {
+        let plan = match task.plan(policy, &config) {
             Ok(plan) => plan,
             Err(error) => {
                 write_query_plan_refusal(
@@ -1168,6 +1172,13 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         source_event,
         selected.contains("semantic") || selected.contains("hybrid"),
     )?;
+    if assembly.semantic_tokenless_chunks > 0 {
+        let _diagnostic = writeln!(
+            std::io::stderr().lock(),
+            "Semantic publication omitted {} tokenless chunks from the dense lane",
+            assembly.semantic_tokenless_chunks
+        );
+    }
     let published_units = PublishedUnitRegistry::from_chunks_and_symbols(
         &selection.chunks,
         symbol_preflight.symbols(),
@@ -2011,13 +2022,15 @@ fn run_cli(argv: &[String]) -> BenchResult<()> {
     if parsed.positional.len() != 1 {
         print_help()?;
         return Err(usage_error(
-            "expected exactly one subcommand: run|chunk|preflight|capabilities".to_string(),
+            "expected exactly one subcommand: run|chunk|preflight|trace-profile|capabilities"
+                .to_string(),
         ));
     }
     match parsed.positional.first().map(String::as_str) {
         Some("run") => run_capture(&parsed),
         Some("chunk") => run_chunk(&parsed),
         Some("preflight") => run_symbol_preflight(&parsed),
+        Some("trace-profile") => trace_profile::run(&parsed),
         Some("capabilities") if parsed.flags.is_empty() => print_runner_capabilities(),
         Some("capabilities") => Err(usage_error("capabilities takes no flags".to_string())),
         Some(other) => {
@@ -2243,6 +2256,7 @@ mod tests {
                 task_id: "T01".to_string(),
                 query: "---".to_string(),
                 query_sha256: sha256_hex(b"---"),
+                semantic_input: None,
             }],
             pack_sha256: "e".repeat(64),
             comparison_contract: serde_json::json!({"top_k": 10}),
@@ -2311,6 +2325,7 @@ mod tests {
                 task_id: "T48".to_string(),
                 query: raw.clone(),
                 query_sha256: sha256_hex(raw.as_bytes()),
+                semantic_input: None,
             }],
             pack_sha256: "e".repeat(64),
             comparison_contract: serde_json::json!({"top_k": 10}),

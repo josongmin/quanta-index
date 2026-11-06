@@ -60,9 +60,12 @@ fn open(
             "kernel scratch allocation changed its envelope".into(),
         ));
     }
-    let owned_connection =
-        ScratchConnection::open(&allocation.path().join("spool.sqlite"), allocation.as_ref())?;
-    let connection = owned_connection.scoped()?;
+    let owned_connection = ScratchConnection::open(
+        &allocation.path().join("spool.sqlite"),
+        allocation.as_ref(),
+        budget,
+    )?;
+    let connection = owned_connection.scoped(budget)?;
     connection
         .execute_batch("PRAGMA page_size=4096; PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE; PRAGMA mmap_size=0; PRAGMA cache_size=-1024;")
         .map_err(|error| sql_error(&error))?;
@@ -188,7 +191,7 @@ impl EditSpool {
             ..WorkUsage::default()
         })?;
         quanta_index_scratch_sqlite::reserve_for_write(
-            &*self.connection.scoped()?,
+            &*self.connection.scoped(budget)?,
             self.allocation.as_ref(),
             bytes
                 .checked_add(fields)
@@ -205,7 +208,7 @@ impl EditSpool {
             .transpose()?;
         let inserted = self
             .connection
-            .scoped()?
+            .scoped(budget)?
             .execute(
                 "INSERT OR IGNORE INTO edits(root,key,expected,next) VALUES(?1,?2,?3,?4)",
                 params![root, key, expected, next],
@@ -247,7 +250,7 @@ impl EditSpool {
                 .get_mut(slot)
                 .ok_or(IndexError::ResourceLimited)? = bytes;
         }
-        let db = self.connection.scoped()?;
+        let db = self.connection.scoped(budget)?;
         quanta_index_scratch_sqlite::write_map_edit_batch(
             &db,
             self.allocation.as_ref(),
@@ -282,7 +285,7 @@ impl EditSpool {
         after: Option<(u32, &[u8])>,
         budget: &WorkBudget,
     ) -> Result<EditPage, IndexError> {
-        let io_scope = self.connection.scoped()?;
+        let io_scope = self.connection.scoped(budget)?;
         let query = if after.is_some() {
             EDIT_PAGE_AFTER_SQL
         } else {
@@ -480,7 +483,7 @@ impl WorkSpool {
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         let row = Self::encode_action(action, budget)?;
-        let db = self.connection.scoped()?;
+        let db = self.connection.scoped(budget)?;
         quanta_index_scratch_sqlite::reserve_for_write(
             &db,
             self.allocation.as_ref(),
@@ -575,7 +578,7 @@ impl WorkSpool {
             }
             query.push_str("(?,?)");
         }
-        let db = self.connection.scoped()?;
+        let db = self.connection.scoped(budget)?;
         quanta_index_scratch_sqlite::reserve_for_write_batch(
             &db,
             self.allocation.as_ref(),
@@ -614,7 +617,7 @@ impl WorkSpool {
     }
 
     fn page(&self, after: Option<&[u8]>, budget: &mut WorkBudget) -> Result<WorkPage, IndexError> {
-        let io_scope = self.connection.scoped()?;
+        let io_scope = self.connection.scoped(budget)?;
         let query = if after.is_some() {
             WORK_PAGE_AFTER_SQL
         } else {
@@ -968,7 +971,7 @@ mod tests {
             .as_ref()
             .ok_or("missing flushed work spool")?
             .connection
-            .scoped()?;
+            .scoped(&work)?;
         let count: i64 = db.query_row("SELECT count(*) FROM actions", [], |row| row.get(0))?;
         require(count == 64)?;
         let query = format!(
@@ -1030,11 +1033,11 @@ mod tests {
             Err(IndexError::ResourceLimited)
         ))?;
         require(unopened.is_none() && ledger.live.load(Ordering::SeqCst) == 0)?;
-        let count: i64 =
-            spool
-                .connection
-                .scoped()?
-                .query_row("SELECT count(*) FROM actions", [], |row| row.get(0))?;
+        let count: i64 = spool.connection.scoped(&work)?.query_row(
+            "SELECT count(*) FROM actions",
+            [],
+            |row| row.get(0),
+        )?;
         require(count == 0)?;
         Ok(())
     }
@@ -1098,7 +1101,7 @@ mod tests {
                 expected.push(item);
             }
             expected.sort_by_key(|item| item.key().expect("valid fixed identity"));
-            let (page_bytes, largest_payload): (i64, i64) = spool.connection.scoped()?.query_row(
+            let (page_bytes, largest_payload): (i64, i64) = spool.connection.scoped(&work)?.query_row(
                 "SELECT COALESCE(sum(length(payload)),0),COALESCE(max(length(payload)),0) FROM (SELECT payload FROM actions ORDER BY key LIMIT 128)",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -1149,7 +1152,7 @@ mod tests {
             .as_ref()
             .ok_or("missing owned spool")?
             .connection
-            .scoped()?
+            .scoped(&work)?
             .execute("DELETE FROM actions WHERE key=?1", params![key.as_slice()])?;
         require(removed == 1)?;
         require(cursor.next_action(&mut work)?.is_some())?;
@@ -1176,7 +1179,7 @@ mod tests {
             if corrupt_key {
                 let original = item.key()?;
                 let bad = [255_u8; 33];
-                let changed = spool.connection.scoped()?.execute(
+                let changed = spool.connection.scoped(&work)?.execute(
                     "UPDATE actions SET key=?2 WHERE key=?1",
                     params![original.as_slice(), bad.as_slice()],
                 )?;
@@ -1184,7 +1187,7 @@ mod tests {
             } else {
                 let changed = spool
                     .connection
-                    .scoped()?
+                    .scoped(&work)?
                     .execute("UPDATE actions SET payload=?1", params![b"{}".as_slice()])?;
                 require(changed == 1)?;
             }
@@ -1216,7 +1219,7 @@ mod tests {
             .as_ref()
             .ok_or("missing owned spool")?
             .connection
-            .scoped()?
+            .scoped(&work)?
             .execute(
                 "INSERT INTO actions(key,payload) VALUES(?1,?2)",
                 params![key.as_slice(), payload.bytes.as_slice()],
@@ -1259,7 +1262,7 @@ mod tests {
         let mut work = work_budget()?;
         let spool = WorkSpool::open(&space, &mut work)?;
         let key = [1_u8; 33];
-        let _inserted = spool.connection.scoped()?.execute(
+        let _inserted = spool.connection.scoped(&work)?.execute(
             "INSERT INTO actions(key,payload) VALUES(?1,?2)",
             params![key.as_slice(), b"{}".as_slice()],
         )?;
@@ -1295,7 +1298,7 @@ mod tests {
         for number in 0..129_u8 {
             let mut key = [0_u8; 33];
             key[32] = number;
-            let _inserted = spool.connection.scoped()?.execute(
+            let _inserted = spool.connection.scoped(&work)?.execute(
                 "INSERT INTO actions(key,payload) VALUES(?1,?2)",
                 params![key.as_slice(), b"{}".as_slice()],
             )?;
@@ -1320,13 +1323,13 @@ mod tests {
         let denied = bind(&mut work, 0);
         let _removed = spool
             .connection
-            .scoped()?
+            .scoped(&work)?
             .execute("DELETE FROM actions", [])?;
         for (key, payload) in [
             (vec![0_u8; 32], b"{}".to_vec()),
             (vec![0_u8; 33], vec![0_u8; MAX_WORK_ACTION_BYTES + 1]),
         ] {
-            let _inserted = spool.connection.scoped()?.execute(
+            let _inserted = spool.connection.scoped(&work)?.execute(
                 "INSERT INTO actions(key,payload) VALUES(?1,?2)",
                 params![key, payload],
             )?;
@@ -1336,7 +1339,7 @@ mod tests {
             ))?;
             let _removed = spool
                 .connection
-                .scoped()?
+                .scoped(&work)?
                 .execute("DELETE FROM actions", [])?;
         }
         require(denied.peak.load(Ordering::SeqCst) == 0)?;
@@ -1407,7 +1410,7 @@ mod tests {
         let count: i64 =
             spool
                 .connection
-                .scoped()?
+                .scoped(&work)?
                 .query_row("SELECT COUNT(*) FROM edits", [], |row| row.get(0))?;
         require(count == 64)?;
         // A collision is a producer/backend violation and must not masquerade
@@ -1443,7 +1446,7 @@ mod tests {
             &space,
             &mut work,
         )?;
-        let db = connection.scoped()?;
+        let db = connection.scoped(&work)?;
         quanta_index_scratch_sqlite::reserve_for_write(
             &db,
             allocation.as_ref(),
@@ -1562,7 +1565,7 @@ mod tests {
             &mut budget,
         )?;
         let temp_store: u32 = connection
-            .scoped()?
+            .scoped(&budget)?
             .query_row("PRAGMA temp_store", [], |row| row.get(0))
             .map_err(|error| sql_error(&error))?;
         if temp_store != 1 {
@@ -1571,7 +1574,7 @@ mod tests {
             )));
         }
         let max_pages: u32 = connection
-            .scoped()?
+            .scoped(&budget)?
             .query_row("PRAGMA max_page_count", [], |row| row.get(0))
             .map_err(|error| sql_error(&error))?;
         let maximum_page_bytes = u64::from(max_pages)
@@ -1584,7 +1587,7 @@ mod tests {
             )));
         }
         let refused = quanta_index_scratch_sqlite::reserve_for_write(
-            &*connection.scoped()?,
+            &*connection.scoped(&budget)?,
             allocation.as_ref(),
             SCRATCH_MAX_BYTES,
             &mut budget,
@@ -1592,16 +1595,16 @@ mod tests {
         require(matches!(refused, Err(IndexError::ResourceLimited)))?;
         require(allocation.reserved_bytes()? == reserved_bytes)?;
         let untouched_rows: i64 = connection
-            .scoped()?
+            .scoped(&budget)?
             .query_row("SELECT count(*) FROM payloads", [], |row| row.get(0))
             .map_err(|error| sql_error(&error))?;
         require(untouched_rows == 0)?;
         let _changed: u32 = connection
-            .scoped()?
+            .scoped(&budget)?
             .query_row("PRAGMA max_page_count=4", [], |row| row.get(0))
             .map_err(|error| sql_error(&error))?;
         let full = connection
-            .scoped()?
+            .scoped(&budget)?
             .execute("INSERT INTO payloads(value) VALUES(zeroblob(1048576))", []);
         // The page guard must still reject the write. A raw SQLITE_FULL has no
         // operation-scoped admission witness, so preserve its storage outcome.

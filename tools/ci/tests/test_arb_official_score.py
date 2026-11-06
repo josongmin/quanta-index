@@ -284,6 +284,74 @@ def test_fixed_identity_accepts_separate_original_and_adapted_queries():
     ) == ["cause.go", "test.go"]
 
 
+def go_transfer_fixture():
+    case, sample, suite, pack, spec, manifest, index = fixture()
+    sample["repo"] = case["source_repo"] = "caddyserver/caddy"
+    sample["task_type"] = "trace2code"
+    sample["query"] = {
+        "command": "go test ./modules/caddyhttp",
+        "failure_excerpt": "$ go test ./modules/caddyhttp\n--- FAIL: TestHandler\n    handler_test.go:42: expected 200, got 500\nFAIL",
+    }
+    original_sha = digest(FixedOfficial.query_text_for_eval(sample))
+    case["original_query_sha256"] = index[case["sample_id"]]["query_sha256"] = original_sha
+    text = scorer.arb_adapter.prepare_go_trace_semantic_text(sample["query"])
+    semantic = {
+        "profile": "go_test_excerpt_v1",
+        "text": text,
+        "text_sha256": digest(text),
+        "failure_excerpt": sample["query"]["failure_excerpt"],
+        "failure_excerpt_sha256": digest(sample["query"]["failure_excerpt"]),
+    }
+    case["semantic_input_sha256"] = semantic["text_sha256"]
+    suite["tasks"][0]["semantic_input"] = semantic
+    pack["tasks"][0]["semantic_input"] = copy.deepcopy(semantic)
+    return case, sample, suite, pack, spec, manifest, index
+
+
+def test_go_transfer_binds_pinned_raw_trace_and_explicit_semantic_bytes():
+    values = go_transfer_fixture()
+    assert scorer.bind_identity(*values, FixedOfficial, scorer.GO_TRANSFER_PROFILE) == [
+        "cause.go", "test.go"
+    ]
+    for mutate in (
+        lambda c, s, u, p: u["tasks"][0]["semantic_input"].update(text="gold.go"),
+        lambda c, s, u, p: p["tasks"][0]["semantic_input"].update(text_sha256="0" * 64),
+        lambda c, s, u, p: c.update(semantic_input_sha256="0" * 64),
+        lambda c, s, u, p: c.update(source_repo="etcd-io/etcd"),
+        lambda c, s, u, p: s["query"].update(failure_excerpt="changed"),
+    ):
+        changed = copy.deepcopy(values)
+        mutate(*changed[:4])
+        with pytest.raises(scorer.ScoringRefusal):
+            scorer.bind_identity(*changed, FixedOfficial, scorer.GO_TRANSFER_PROFILE)
+
+
+def test_gin_trace_semantic_marker_binds_raw_query_and_rejects_unmarked_pack():
+    values = list(go_transfer_fixture())
+    case, sample, suite, pack, *_ = values
+    sample["repo"] = "gin-gonic/gin"
+    del case["source_repo"]
+    case["repo"] = "/frozen/gin-checkout"
+    raw_sha = digest(FixedOfficial.query_text_for_eval(sample))
+    case["original_query_sha256"] = values[6][case["sample_id"]]["query_sha256"] = raw_sha
+    assert scorer.bind_identity(*values, FixedOfficial) == ["cause.go", "test.go"]
+    del case["semantic_input_sha256"]
+    with pytest.raises(scorer.ScoringRefusal, match="unmarked semantic input"):
+        scorer.bind_identity(*values, FixedOfficial)
+
+
+def test_transfer_denominator_is_exact_eleven():
+    arm = {
+        "requested_denominator": 11,
+        "current_v3_plan_accepted": 9,
+        "current_v3_plan_refused": 2,
+    }
+    assert scorer.arm_denominators(arm, 9, scorer.GO_TRANSFER_PROFILE) == (11, 9, 2)
+    arm["requested_denominator"] = 10
+    with pytest.raises(scorer.ScoringRefusal, match="denominator/refusal"):
+        scorer.arm_denominators(arm, 9, scorer.GO_TRANSFER_PROFILE)
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -384,7 +452,12 @@ def test_valid_old_record_cannot_be_replayed_into_new_arm():
             "isolation_method": "query-pack-only",
             "access_block_log": "runner-was-not-given-gold",
         },
-        "captures": {"one": {"system": "quanta", "execution_profile": profile}},
+        "route_provenance": {"semantic": {"capture_id": "one"}},
+        "captures": {"one": {
+            "system": "quanta", "execution_profile": profile,
+            "model": "model2vec:minishlab/potion-code-16M-v2",
+            "model_revision": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1",
+        }},
     }
     scorer.bind_record_identity(record, spec, arm)
     record["runner"]["revision"] = "sha256:" + "o" * 64
@@ -393,6 +466,30 @@ def test_valid_old_record_cannot_be_replayed_into_new_arm():
     record["runner"]["revision"] = "sha256:" + "n" * 64
     record["captures"]["one"]["execution_profile"] = {**profile, "profile_id": "changed"}
     with pytest.raises(scorer.ScoringRefusal, match="execution profile mismatch"):
+        scorer.bind_record_identity(record, spec, arm)
+
+    # The same executable can select either encoder. Its digest and query
+    # profile alone must never admit V1 vectors into an explicitly V2 arm.
+    record["captures"]["one"]["execution_profile"] = profile
+    spec.update(embedder="potion-code-full-v2", routes=["semantic"])
+    record["route_provenance"] = {"semantic": {"capture_id": "one"}}
+    capture = record["captures"]["one"]
+    capture["model"] = "model2vec:minishlab/potion-code-16M-v2"
+    revision = "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:"
+    capture["model_revision"] = revision + "full-length-v2"
+    scorer.bind_record_identity(record, spec, arm)
+    for wrong in (revision + "full-length-v1", None, "not-applicable"):
+        capture["model_revision"] = wrong
+        with pytest.raises(scorer.ScoringRefusal, match="encoder model revision"):
+            scorer.bind_record_identity(record, spec, arm)
+    spec["embedder"] = "potion-code"
+    capture["model_revision"] = revision + "full-length-v1"
+    scorer.bind_record_identity(record, spec, arm)
+    capture["model_revision"] = revision + "full-length-v2"
+    with pytest.raises(scorer.ScoringRefusal, match="encoder model revision"):
+        scorer.bind_record_identity(record, spec, arm)
+    del spec["embedder"]
+    with pytest.raises(scorer.ScoringRefusal, match="encoder model revision"):
         scorer.bind_record_identity(record, spec, arm)
 
 
@@ -413,7 +510,14 @@ def test_actual_native_record_uses_binary_digest_not_source_commit():
     )
     first_capture = next(iter(record["captures"].values()))
     assert first_capture["execution_profile"]["profile_id"] == "quanta-code-search-typo-file-v1"
-    one = {"runner": record["runner"], "captures": {"first": first_capture}}
+    first_route = next(
+        route for route, binding in record["route_provenance"].items()
+        if record["captures"][binding["capture_id"]] is first_capture
+    )
+    one = {
+        "runner": record["runner"], "captures": {"first": first_capture},
+        "route_provenance": {first_route: {"capture_id": "first"}},
+    }
     spec = {
         "runner_name": "quanta-sdk-runner",
         "run_id": "scanner-bat338-f606-fresh-closed-diagnostic",
@@ -428,6 +532,7 @@ def test_actual_native_record_uses_binary_digest_not_source_commit():
             "pack blindness verified by freeze"
         ),
         "execution_profiles": {"quanta": first_capture["execution_profile"]},
+        "routes": [first_route],
     }
     arm = {
         "runner_binary_sha256": expected_binary,

@@ -101,11 +101,21 @@ struct Spans {
     request_roots: BTreeSet<u64>,
     identified_requests: BTreeSet<u64>,
     evidence: BTreeSet<Evidence>,
-    operation_root: Option<u64>,
-    sync: BTreeMap<SyncCounter, u64>,
+    operation_roots: BTreeSet<u64>,
+    boot_roots: BTreeSet<u64>,
+    sync: BTreeMap<u64, BTreeMap<SyncCounter, u64>>,
 }
 
 impl Spans {
+    fn operation_ancestor(&self, mut span: u64) -> Option<u64> {
+        loop {
+            if self.operation_roots.contains(&span) {
+                return Some(span);
+            }
+            span = self.parents.get(&span).copied().flatten()?;
+        }
+    }
+
     // IPC Request roots are independent of the daemon's Operation root.
     // Caller evidence belongs under a root with an emitted request identity.
     fn beneath_identified_request_root(&self, mut span: u64) -> bool {
@@ -154,14 +164,16 @@ impl Spans {
                 if kind.get("stage").and_then(Value::as_str) == Some("operation")
                     && parent.is_none()
                 {
-                    anyhow::ensure!(
-                        self.operation_root.replace(span).is_none(),
-                        "duplicate operation root"
-                    );
+                    let _new = self.operation_roots.insert(span);
                 }
                 match kind.get("stage").and_then(Value::as_str) {
                     Some("runtime_boot") => {
                         let _new = self.evidence.insert(Evidence::Boot);
+                        if let Some(root) =
+                            parent.and_then(|parent| self.operation_ancestor(parent))
+                        {
+                            let _new = self.boot_roots.insert(root);
+                        }
                     }
                     Some("build_prepare") => {
                         let _previous = self.witnesses.insert(span, Evidence::Build);
@@ -204,10 +216,10 @@ impl Spans {
     }
 
     fn counter(&mut self, kind: &Value) -> Result<()> {
-        let Some(root) = self.operation_root else {
+        let Some(root) = kind.get("span_id").and_then(Value::as_u64) else {
             return Ok(());
         };
-        if kind.get("span_id").and_then(Value::as_u64) != Some(root) {
+        if !self.operation_roots.contains(&root) {
             return Ok(());
         }
         let key = match kind.get("key").and_then(Value::as_str) {
@@ -222,13 +234,17 @@ impl Spans {
             .and_then(Value::as_u64)
             .context("IO counter value absent")?;
         anyhow::ensure!(
-            self.sync.insert(key, value).is_none(),
+            self.sync
+                .entry(root)
+                .or_default()
+                .insert(key, value)
+                .is_none(),
             "duplicate IO summary counter"
         );
         Ok(())
     }
 
-    fn finish(&self, footer: &Value, publication: bool) -> Result<()> {
+    fn finish(&self, footer: &Value, publication: bool) -> Result<&BTreeMap<SyncCounter, u64>> {
         anyhow::ensure!(footer.get("status").and_then(Value::as_str) == Some("complete"));
         anyhow::ensure!(footer.get("close_reason").and_then(Value::as_str) == Some("normal"));
         for key in [
@@ -265,23 +281,39 @@ impl Spans {
                     && self.evidence.contains(&Evidence::Publish)),
             "successful Native build/publication spans beneath identified request root absent"
         );
-        let calls = self
-            .sync
+        let mut selected = None;
+        for (root, counters) in &self.sync {
+            anyhow::ensure!(
+                self.boot_roots.contains(root),
+                "quiescent IO root lacks runtime boot"
+            );
+            anyhow::ensure!(
+                counters.len() == 3
+                    && counters.contains_key(&SyncCounter::Calls)
+                    && counters.contains_key(&SyncCounter::Failures)
+                    && counters.contains_key(&SyncCounter::ElapsedNs),
+                "quiescent IO summary is split or incomplete"
+            );
+            anyhow::ensure!(
+                selected.replace(counters).is_none(),
+                "duplicate complete IO root"
+            );
+        }
+        let sync = selected.context("quiescent IO summary absent")?;
+        let calls = sync
             .get(&SyncCounter::Calls)
             .context("quiescent IO calls absent")?;
-        let failures = self
-            .sync
+        let failures = sync
             .get(&SyncCounter::Failures)
             .context("quiescent IO failures absent")?;
-        let _elapsed = self
-            .sync
+        let _elapsed = sync
             .get(&SyncCounter::ElapsedNs)
             .context("quiescent IO elapsed absent")?;
         anyhow::ensure!(
             *failures == 0 && (!publication || *calls > 0),
             "child install IO did not complete successfully"
         );
-        Ok(())
+        Ok(sync)
     }
 }
 
@@ -327,7 +359,7 @@ pub(super) fn verify(path: &Path, publication: bool, max_bytes: u64) -> Result<V
         .and_then(Value::as_u64)
         .context("child capture header schema version absent")?;
     anyhow::ensure!(
-        matches!(schema_version, 2..=4),
+        matches!(schema_version, 2..=5),
         "unsupported child capture schema version"
     );
     let id = header
@@ -354,6 +386,7 @@ pub(super) fn verify(path: &Path, publication: bool, max_bytes: u64) -> Result<V
             .context("child capture byte count overflow")?;
         anyhow::ensure!(footer.is_none(), "invalid child capture record boundary");
         let row: Value = serde_json::from_slice(&line)?;
+        let row = quanta_index_searchd::trace_wire::normalize_record(schema_version, row)?;
         anyhow::ensure!(
             row.get("capture_id").and_then(Value::as_str) == Some(id),
             "child capture ID mismatch"
@@ -369,7 +402,7 @@ pub(super) fn verify(path: &Path, publication: bool, max_bytes: u64) -> Result<V
         footer.get("schema_version").and_then(Value::as_u64) == Some(schema_version),
         "child capture footer schema version mismatch"
     );
-    spans.finish(&footer, publication)?;
+    let sync = spans.finish(&footer, publication)?;
     let descriptor_after = reader
         .get_ref()
         .get_ref()
@@ -387,9 +420,9 @@ pub(super) fn verify(path: &Path, publication: bool, max_bytes: u64) -> Result<V
         "capture_id":id,
         "sha256":format!("{:x}", hash.finalize()),
         "bytes":bytes,
-        "sync_calls":spans.sync.get(&SyncCounter::Calls).context("IO calls absent")?,
-        "sync_failures":spans.sync.get(&SyncCounter::Failures).context("IO failures absent")?,
-        "sync_elapsed_ns":spans.sync.get(&SyncCounter::ElapsedNs).context("IO elapsed absent")?,
+        "sync_calls":sync.get(&SyncCounter::Calls).context("IO calls absent")?,
+        "sync_failures":sync.get(&SyncCounter::Failures).context("IO failures absent")?,
+        "sync_elapsed_ns":sync.get(&SyncCounter::ElapsedNs).context("IO elapsed absent")?,
     }))
 }
 
@@ -542,6 +575,212 @@ mod tests {
         Ok(())
     }
 
+    fn v5_literal_rows() -> Vec<Value> {
+        let id = "11111111111111111111111111111111";
+        vec![
+            json!({"record_type":"header","schema_version":5,"capture_id":id,
+                "stream_id":id,"clock_domain":id,"process_instance":id,
+                "started_ns":0,"max_record_bytes":4096,
+                "max_counters_per_event":1,"coverage":[]}),
+            json!(["e", 1, id, 100, ["b", 1, null, "operation", 1, "operation"]]),
+            json!(["e", 2, id, 101, ["b", 2, 1, "runtime_boot", 1, null]]),
+            json!(["e", 3, id, 102, ["e", 2, "ok", null]]),
+            json!(["e", 4, id, 103, ["b", 3, null, "request", 1, "request"]]),
+            json!(["e",5,id,104,{"type":"request_identity","span_id":3,
+                "request_id":1,"plane":"query","connection_id":1}]),
+            json!(["e", 6, id, 105, ["b", 4, 3, "build_prepare", 1, null]]),
+            json!(["e", 7, id, 106, ["e", 4, "ok", null]]),
+            json!(["e", 8, id, 107, ["b", 5, 3, "native_publish", 1, null]]),
+            json!(["e", 9, id, 108, ["e", 5, "ok", null]]),
+            json!(["e", 10, id, 109, ["e", 3, "ok", null]]),
+            json!(["e", 11, id, 110, ["c", 1, "sync_calls", 3]]),
+            json!(["e", 12, id, 111, ["c", 1, "sync_failures", 0]]),
+            json!(["e", 13, id, 112, ["c", 1, "sync_elapsed_ns", 27]]),
+            json!(["e", 14, id, 113, ["e", 1, "ok", null]]),
+            json!({"record_type":"footer","schema_version":5,"capture_id":id,
+                "closed_ns":114,"status":"complete","close_reason":"normal","events_dropped":0,
+                "events_unwritten":0,"open_spans":0,"producer_leases":0,
+                "events_attempted":14,"events_accepted":14,"events_written":14,
+                "last_output_seq":14}),
+        ]
+    }
+
+    fn write_v5_rows(path: &Path, rows: &[Value]) -> Result<()> {
+        let mut text = rows
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .join("\n");
+        text.push('\n');
+        std::fs::write(path, text)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+
+    fn v5_rows_with_extra_tail(extras: &[Value], final_seq: u64) -> Result<Vec<Value>> {
+        let mut rows = v5_literal_rows();
+        let mut footer = rows.pop().context("literal footer absent")?;
+        let _original_terminal = rows.pop().context("literal operation terminal absent")?;
+        rows.extend_from_slice(extras);
+        rows.push(json!([
+            "e",
+            final_seq,
+            "11111111111111111111111111111111",
+            160,
+            ["e", 1, "ok", null]
+        ]));
+        let fields = footer
+            .as_object_mut()
+            .context("literal footer is not an object")?;
+        for name in [
+            "events_attempted",
+            "events_accepted",
+            "events_written",
+            "last_output_seq",
+        ] {
+            let _old = fields.insert(name.into(), json!(final_seq));
+        }
+        let _old = fields.insert("closed_ns".into(), json!(161));
+        rows.push(footer);
+        Ok(rows)
+    }
+
+    fn v5_kinds() -> Result<Vec<Value>> {
+        let rows = v5_literal_rows();
+        rows.get(1..rows.len().saturating_sub(1))
+            .context("literal events absent")?
+            .iter()
+            .map(|row| row.get(4).cloned().context("literal event kind absent"))
+            .collect()
+    }
+
+    fn v5_rows_from_kinds(kinds: &[Value]) -> Result<Vec<Value>> {
+        let id = "11111111111111111111111111111111";
+        let mut original = v5_literal_rows();
+        let mut footer = original.pop().context("literal footer absent")?;
+        let header = original.remove(0);
+        let mut rows = vec![header];
+        for (index, kind) in kinds.iter().enumerate() {
+            let seq = u64::try_from(index)?
+                .checked_add(1)
+                .context("event overflow")?;
+            let ts = 100_u64.checked_add(seq).context("event time overflow")?;
+            rows.push(json!(["e", seq, id, ts, kind]));
+        }
+        let count = u64::try_from(kinds.len())?;
+        let fields = footer.as_object_mut().context("literal footer malformed")?;
+        for name in [
+            "events_attempted",
+            "events_accepted",
+            "events_written",
+            "last_output_seq",
+        ] {
+            let _old = fields.insert(name.into(), json!(count));
+        }
+        let closed_ns = 101_u64
+            .checked_add(count)
+            .context("capture close time overflow")?;
+        let _old = fields.insert("closed_ns".into(), json!(closed_ns));
+        rows.push(footer);
+        Ok(rows)
+    }
+
+    #[test]
+    fn v5_independent_settings_roots_preserve_one_lifecycle_io_summary() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("aux-settings-v5.jsonl");
+        let auxiliary = [
+            json!(["b", 6, null, "operation", 1, "operation"]),
+            json!(["b", 7, 6, "sqlite_work", 27, null]),
+            json!(["e", 7, "ok", null]),
+            json!(["b", 8, 6, "sqlite_work", 28, null]),
+            json!(["e", 8, "ok", null]),
+            json!(["e", 6, "ok", null]),
+        ];
+        for before_io_root in [true, false] {
+            let mut kinds = v5_kinds()?;
+            if before_io_root {
+                drop(kinds.splice(0..0, auxiliary.iter().cloned()));
+            } else {
+                kinds.extend(auxiliary.iter().cloned());
+            }
+            write_v5_rows(&path, &v5_rows_from_kinds(&kinds)?)?;
+            let verified = verify(&path, true, MAX_BYTES)?;
+            anyhow::ensure!(verified.get("sync_calls").and_then(Value::as_u64) == Some(3));
+            anyhow::ensure!(verified.get("sync_failures").and_then(Value::as_u64) == Some(0));
+            anyhow::ensure!(verified.get("sync_elapsed_ns").and_then(Value::as_u64) == Some(27));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn v5_io_summary_cannot_split_duplicate_or_come_from_closed_root() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("io-roots-v5.jsonl");
+        let base = v5_kinds()?;
+        let auxiliary_open = [
+            json!(["b", 6, null, "operation", 1, "operation"]),
+            json!(["b", 7, 6, "runtime_boot", 1, null]),
+            json!(["e", 7, "ok", null]),
+        ];
+        let mut split = base.clone();
+        drop(split.splice(1..1, auxiliary_open.iter().cloned()));
+        let elapsed = split
+            .iter_mut()
+            .find(|kind| kind.get(2).and_then(Value::as_str) == Some("sync_elapsed_ns"))
+            .context("literal elapsed counter absent")?;
+        *elapsed = json!(["c", 6, "sync_elapsed_ns", 27]);
+        split.push(json!(["e", 6, "ok", null]));
+        write_v5_rows(&path, &v5_rows_from_kinds(&split)?)?;
+        anyhow::ensure!(
+            verify(&path, true, MAX_BYTES).is_err(),
+            "split IO roots accepted"
+        );
+
+        let mut duplicate = base.clone();
+        duplicate.extend(auxiliary_open.iter().cloned());
+        duplicate.extend([
+            json!(["c", 6, "sync_calls", 1]),
+            json!(["c", 6, "sync_failures", 0]),
+            json!(["c", 6, "sync_elapsed_ns", 1]),
+            json!(["e", 6, "ok", null]),
+        ]);
+        write_v5_rows(&path, &v5_rows_from_kinds(&duplicate)?)?;
+        anyhow::ensure!(
+            verify(&path, true, MAX_BYTES).is_err(),
+            "duplicate complete IO root accepted"
+        );
+
+        let mut closed = base;
+        let elapsed = closed.remove(12);
+        closed.push(elapsed);
+        write_v5_rows(&path, &v5_rows_from_kinds(&closed)?)?;
+        anyhow::ensure!(
+            verify(&path, true, MAX_BYTES).is_err(),
+            "closed operation root accepted IO counter"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn v5_request_or_child_counter_cannot_impersonate_operation_io_root() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("foreign-io-v5.jsonl");
+        for (target, insertion) in [(2, 2), (3, 5)] {
+            let mut kinds = v5_kinds()?;
+            let elapsed = kinds.remove(12);
+            let mut elapsed = elapsed;
+            *elapsed.get_mut(1).context("literal counter owner absent")? = json!(target);
+            kinds.insert(insertion, elapsed);
+            write_v5_rows(&path, &v5_rows_from_kinds(&kinds)?)?;
+            anyhow::ensure!(
+                verify(&path, true, MAX_BYTES).is_err(),
+                "non-operation counter replaced quiescent IO summary"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn child_capture_requires_balanced_events_and_independent_footer_counts() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -584,6 +823,103 @@ mod tests {
             anyhow::ensure!(
                 verify(&path, true, MAX_BYTES).is_err(),
                 "unsupported or mismatched child schema accepted: {header}/{footer}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn v5_child_capture_preserves_literal_flow_and_rejects_tuple_aliases() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("child-v5.jsonl");
+        let rows = v5_literal_rows();
+        write_v5_rows(&path, &rows)?;
+        let verified = verify(&path, true, MAX_BYTES)?;
+        anyhow::ensure!(verified.get("sync_calls").and_then(Value::as_u64) == Some(3));
+        anyhow::ensure!(verified.get("sync_elapsed_ns").and_then(Value::as_u64) == Some(27));
+
+        for malformed in [
+            json!([
+                "e",
+                1,
+                "11111111111111111111111111111111",
+                100,
+                ["b", 1, null, "operation", 1]
+            ]),
+            json!({"record_type":"event","output_seq":1,"capture_id":"11111111111111111111111111111111",
+                "ts_ns":100,"kind":{"type":"span_begin","span_id":1,"stage":"operation"}}),
+            json!([
+                "e",
+                1,
+                "22222222222222222222222222222222",
+                100,
+                ["b", 1, null, "operation", 1, "operation"]
+            ]),
+            json!([
+                "e",
+                2,
+                "11111111111111111111111111111111",
+                100,
+                ["b", 1, null, "operation", 1, "operation"]
+            ]),
+        ] {
+            let mut changed = rows.clone();
+            let first_event = changed.get_mut(1).context("literal event absent")?;
+            *first_event = malformed;
+            write_v5_rows(&path, &changed)?;
+            anyhow::ensure!(
+                verify(&path, true, MAX_BYTES).is_err(),
+                "malformed V5 tuple or alias bypassed child capture validation"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn v5_child_rejects_unknown_common_vocabulary_with_valid_flow_controls() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("child-v5-vocabulary.jsonl");
+        let id = "11111111111111111111111111111111";
+        for (extra, final_seq, accepted) in [
+            (
+                vec![json!(["e", 14, id, 114, ["c", 1, "files_read", 1]])],
+                15,
+                true,
+            ),
+            (
+                vec![json!([
+                    "e",
+                    14,
+                    id,
+                    114,
+                    ["c", 1, "unknown_counter_key", 1]
+                ])],
+                15,
+                false,
+            ),
+            (
+                vec![
+                    json!(["e", 14, id, 114, ["b", 6, 1, "query_plan", 1, null]]),
+                    json!(["e", 15, id, 115, ["e", 6, "ok", null]]),
+                ],
+                16,
+                true,
+            ),
+            (
+                vec![
+                    json!(["e", 14, id, 114, ["b", 6, 1, "unknown_stage", 1, null]]),
+                    json!(["e", 15, id, 115, ["e", 6, "ok", null]]),
+                ],
+                16,
+                false,
+            ),
+        ] {
+            let rows = v5_rows_with_extra_tail(&extra, final_seq)?;
+            write_v5_rows(&path, &rows)?;
+            let result = verify(&path, true, MAX_BYTES);
+            anyhow::ensure!(
+                result.is_ok() == accepted,
+                "V5 vocabulary decision differed from fixed independent flow control"
             );
         }
         Ok(())

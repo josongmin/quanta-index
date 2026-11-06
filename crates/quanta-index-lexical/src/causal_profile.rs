@@ -190,7 +190,15 @@ pub(crate) fn enter_span(
     context: &DiagnosticContextV1,
     stage: DiagnosticStageV1,
 ) -> Option<DiagnosticSpanGuardV1> {
-    context.enter(stage, DiagnosticLaneV1(2)).map_or_else(
+    enter_span_on_lane(context, stage, DiagnosticLaneV1(2))
+}
+
+pub(crate) fn enter_span_on_lane(
+    context: &DiagnosticContextV1,
+    stage: DiagnosticStageV1,
+    lane: DiagnosticLaneV1,
+) -> Option<DiagnosticSpanGuardV1> {
+    context.enter(stage, lane).map_or_else(
         |trace_error| {
             context.health(match trace_error {
                 quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
@@ -451,11 +459,30 @@ pub(crate) fn observe_result<T, E>(
     stage: DiagnosticStageV1,
     operation: impl FnOnce(Option<&DiagnosticContextV1>) -> Result<T, E>,
 ) -> Result<T, E> {
-    let span = diagnostic.and_then(|context| enter_span(context, stage));
+    observe_result_on_lane(diagnostic, stage, DiagnosticLaneV1(2), operation)
+}
+
+pub(crate) fn observe_result_on_lane<T, E>(
+    diagnostic: Option<&DiagnosticContextV1>,
+    stage: DiagnosticStageV1,
+    lane: DiagnosticLaneV1,
+    operation: impl FnOnce(Option<&DiagnosticContextV1>) -> Result<T, E>,
+) -> Result<T, E> {
+    observe_result_with_span_on_lane(diagnostic, stage, lane, |child, _span| operation(child))
+}
+
+/// Borrow the open span for bounded counters before its terminal event.
+pub(crate) fn observe_result_with_span_on_lane<T, E>(
+    diagnostic: Option<&DiagnosticContextV1>,
+    stage: DiagnosticStageV1,
+    lane: DiagnosticLaneV1,
+    operation: impl FnOnce(Option<&DiagnosticContextV1>, Option<&DiagnosticSpanGuardV1>) -> Result<T, E>,
+) -> Result<T, E> {
+    let span = diagnostic.and_then(|context| enter_span_on_lane(context, stage, lane));
     let child = diagnostic
         .zip(span.as_ref())
         .map(|(context, span)| context.child_context(span));
-    let result = operation(child.as_ref());
+    let result = operation(child.as_ref(), span.as_ref());
     if let Some(span) = span {
         let outcome = DiagnosticTerminalV1::from_result(&result);
         let _finished = span.finish(outcome);
@@ -529,6 +556,26 @@ pub(crate) fn timed_work<T, E>(
         );
     }
     result
+}
+
+/// Mark bounded publication phases even when the process stops inside one.
+#[expect(clippy::print_stderr, reason = "Opt-in publication phase diagnosis.")]
+pub(crate) fn begin_phase(label: &'static str) -> Option<Instant> {
+    let started = enabled().then(Instant::now);
+    if started.is_some() {
+        eprintln!("QI_INGEST_PHASE_V1 label={label} event=started");
+    }
+    started
+}
+
+#[expect(clippy::print_stderr, reason = "Opt-in publication phase diagnosis.")]
+pub(crate) fn finish_phase(label: &'static str, started: Option<Instant>) {
+    if let Some(started) = started {
+        eprintln!(
+            "QI_INGEST_PHASE_V1 label={label} event=completed elapsed_ns={}",
+            started.elapsed().as_nanos()
+        );
+    }
 }
 
 #[cfg(test)]

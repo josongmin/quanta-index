@@ -433,6 +433,15 @@ fn trace_witness(path: &Path) -> TestResult {
         .filter(|line| !line.is_empty())
     {
         let row: serde_json::Value = serde_json::from_slice(raw)?;
+        let row = if let Some(schema_version) = header
+            .as_ref()
+            .and_then(|row: &serde_json::Value| row.get("schema_version"))
+            .and_then(serde_json::Value::as_u64)
+        {
+            quanta_index_searchd::trace_wire::normalize_record(schema_version, row)?
+        } else {
+            row
+        };
         match row.get("record_type").and_then(serde_json::Value::as_str) {
             Some("header") if header.is_none() && event_count == 0 => {
                 let _capture_id = required_capture_id(&row)?;
@@ -520,8 +529,15 @@ fn trace_witness(path: &Path) -> TestResult {
         &header
             .get("schema_version")
             .and_then(serde_json::Value::as_u64),
-        &Some(4),
+        &Some(5),
         "small UDS query trace schema",
+    )?;
+    require_equal(
+        &footer
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64),
+        &Some(5),
+        "small UDS query footer schema",
     )?;
     require_equal(
         &required_capture_id(&footer)?,

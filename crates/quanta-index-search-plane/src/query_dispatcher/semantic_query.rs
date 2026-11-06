@@ -42,6 +42,12 @@ fn dense_lane_trace_entry_v1(dense_lane: &DenseLaneContractV1) -> PlannerTraceEn
 pub(super) struct HybridFusion {
     pub(super) pin: GenerationPin,
     pub(super) fused: Vec<HybridCandidateV1>,
+    pub(super) lexical_rows: Vec<LexicalCandidate>,
+    pub(super) dense_rows: Vec<LexicalCandidate>,
+    pub(super) dense_outcome: quanta_index_core::DenseAdmissionOutcomeV1,
+    pub(super) dense_examined: usize,
+    pub(super) internal_top_k: u32,
+    pub(super) execution: LaneExecutionSummaryV1,
     /// Typed outcome and coverage (S21-06): the dense admission outcome
     /// survives fusion here instead of collapsing into row counts.
     pub(super) window_v2: QueryResultWindowV2,

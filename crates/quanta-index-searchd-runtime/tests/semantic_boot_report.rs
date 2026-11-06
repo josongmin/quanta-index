@@ -16,7 +16,7 @@ use quanta_index_contract::{
     EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ManifestGeneration,
     OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchPlaneTrackKind, SearchScopeKey,
     SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
-    SourceRoleV1, lex::LanguageCode,
+    SourceFileKey, SourceRoleV1, lex::LanguageCode,
 };
 use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_core::domains::generation::GenerationQuarantineReasonV1;
@@ -73,7 +73,11 @@ fn fixture_batch(generation: ManifestGeneration) -> Result<SemanticIngestBatch, 
         replace_scopes: vec![SemanticReplaceScope {
             scope: SearchScopeKey {
                 doc_surface: SearchScopeSurface::Chunk,
-                repo_relative_path: RepoRelativePath::new("x.rs"),
+                source_file: SourceFileKey {
+                    source_repo_id: RepoId::new("repo-bootrep")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    repo_relative_path: RepoRelativePath::new("x.rs"),
+                },
             },
             scope_digest: "scope:x.rs".to_string(),
             embeddings: vec![EmbeddingRecord {
@@ -84,7 +88,11 @@ fn fixture_batch(generation: ManifestGeneration) -> Result<SemanticIngestBatch, 
                 corpus_kind: SemanticCorpusKindV1::SymbolCard,
                 parent_owner_id: None,
                 source_doc_id: "doc-1".to_string().into_boxed_str(),
-                repo_relative_path: RepoRelativePath::new("x.rs"),
+                source_file: SourceFileKey {
+                    source_repo_id: RepoId::new("repo-bootrep")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    repo_relative_path: RepoRelativePath::new("x.rs"),
+                },
                 language,
                 package: None,
                 symbol_kind: None,

@@ -4,6 +4,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod first_pass_counts;
+mod packed_stream;
+#[cfg(test)]
+mod packed_stream_tests;
+mod page_wire;
+#[cfg(test)]
+mod page_wire_tests;
+use first_pass_counts::{CountingPages, FirstPassCounts};
+use packed_stream::{PackedEdits, RecordEdit};
+
 use quanta_index_core::{CoreError, RequestBudgetV1};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::Digest as _;
@@ -18,7 +28,6 @@ use super::{
     BoundedVec, MAX_POSTING_PAGE_BYTES, MAX_RECORD_BYTES, MAX_SEGMENT_DOCS, PostingPage, Segment,
 };
 
-const PAGE_WIRE_VERSION: u8 = 1;
 const ROOT_WIRE_VERSION: u8 = 1;
 const GRAM_COUNT_WIRE_VERSION: u8 = 1;
 const ID_BUCKET_BITS: u32 = 8;
@@ -198,41 +207,6 @@ pub(crate) struct RunPostingPage {
     pub(crate) rows: Vec<RunPostingRow>,
 }
 
-impl Serialize for RunPostingPage {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        (
-            PAGE_WIRE_VERSION,
-            self.surface,
-            self.gram,
-            self.bucket,
-            &self.rows,
-        )
-            .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for RunPostingPage {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (version, surface, gram, bucket, BoundedVec(rows)) =
-            <(
-                u8,
-                u8,
-                [u8; 3],
-                u64,
-                BoundedVec<RunPostingRow, MAX_BUCKET_ROWS>,
-            )>::deserialize(deserializer)?;
-        if version != PAGE_WIRE_VERSION {
-            return Err(serde::de::Error::custom("run posting page version differs"));
-        }
-        Ok(Self {
-            surface,
-            gram,
-            bucket,
-            rows,
-        })
-    }
-}
-
 impl RunPostingPage {
     pub(crate) fn new(
         surface: u8,
@@ -281,7 +255,7 @@ impl RunPostingPage {
 
     pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
         self.validate()?;
-        let bytes = encode_cbor(self, "file run posting page")?;
+        let bytes = page_wire::encode_v2(self)?;
         if bytes.len() > MAX_POSTING_PAGE_BYTES {
             return Err(invalid("page exceeds encoded-byte admission"));
         }
@@ -292,13 +266,9 @@ impl RunPostingPage {
         if bytes.len() > MAX_POSTING_PAGE_BYTES {
             return Err(corrupt("page exceeds encoded-byte admission"));
         }
-        let page: Self =
-            decode_cbor_exact(bytes).map_err(|error| corrupt(&format!("page decode: {error}")))?;
+        let page = page_wire::decode(bytes)?;
         page.validate()
             .map_err(|error| corrupt(&error.to_string()))?;
-        if page.encode()? != bytes {
-            return Err(corrupt("page encoding is not canonical"));
-        }
         Ok(page)
     }
 }
@@ -313,7 +283,8 @@ pub(crate) struct RunPostingRoot {
     pub(crate) gram_counts: MapRoot,
     pub(crate) path_rows: u64,
     pub(crate) content_rows: u64,
-    /// Encoded Record object widths for values in `pages` and `gram_counts`.
+    /// Encoded Record root widths per logical map value. Shared roots remain
+    /// fully charged even when delta edits leave only one member in the map.
     /// `MapPage` structure and this root Record are accounted separately.
     pub(crate) page_record_encoded_bytes: u64,
     pub(crate) gram_count_record_encoded_bytes: u64,
@@ -504,13 +475,17 @@ pub(crate) fn apply_run_page_edits(
             if reference.root.kind != ObjectKind::Record {
                 return Err(corrupt("old run posting page kind differs"));
             }
-            let encoded = page
-                .encode()
-                .map_err(|error| corrupt(&format!("old run posting page invalid: {error}")))?;
-            if reference.bytes
-                != u64::try_from(encoded.len()).map_err(|_width| corrupt("old page width"))?
-                || reference.sha256 != <[u8; 32]>::from(sha2::Sha256::digest(&encoded))
-            {
+            // The prior BlobRef authenticates its original wire. A v1 page
+            // must not be re-encoded as v2 to prove the old physical bytes.
+            let actual = RunPostingPage::decode(
+                &store.read_blob(
+                    reference,
+                    u64::try_from(MAX_POSTING_PAGE_BYTES)
+                        .map_err(|_width| invalid("page bound width"))?,
+                    None,
+                )?,
+            )?;
+            if &actual != page {
                 return Err(corrupt("old run posting page bytes differ from reference"));
             }
         }
@@ -861,7 +836,6 @@ struct NewRunSegmentCursor<'a> {
 /// rows is staged at a time.
 struct NewRunPageStream<'a> {
     store: &'a ObjectStore,
-    lease: &'a AttemptLease,
     sources: Vec<NewRunSegmentCursor<'a>>,
     surface: u8,
     pending_gram: Option<[u8; 3]>,
@@ -872,7 +846,7 @@ struct NewRunPageStream<'a> {
 impl<'a> NewRunPageStream<'a> {
     fn new(
         store: &'a ObjectStore,
-        lease: &'a AttemptLease,
+        _lease: &'a AttemptLease,
         references: &[&BlobRef],
         seen_ids: &mut BTreeSet<u64>,
     ) -> Result<Self, CoreError> {
@@ -911,7 +885,6 @@ impl<'a> NewRunPageStream<'a> {
         }
         Ok(Self {
             store,
-            lease,
             sources,
             surface: 1,
             pending_gram: None,
@@ -920,7 +893,7 @@ impl<'a> NewRunPageStream<'a> {
         })
     }
 
-    fn emit_bucket(&mut self) -> Result<Option<MapEdit>, CoreError> {
+    fn emit_bucket(&mut self) -> Result<Option<RecordEdit>, CoreError> {
         let Some((bucket, mut rows)) = self.pending_buckets.pop_first() else {
             self.pending_gram = None;
             return Ok(None);
@@ -937,16 +910,13 @@ impl<'a> NewRunPageStream<'a> {
         }
         let page = RunPostingPage::new(self.surface, gram, bucket, rows)?;
         let key = page.key()?.to_vec();
-        let reference =
-            self.store
-                .put_blob(self.lease, ObjectKind::Record, &[], &page.encode()?)?;
-        Ok(Some(MapEdit {
+        Ok(Some(RecordEdit {
             key,
-            value: Some(reference),
+            bytes: page.encode()?,
         }))
     }
 
-    fn next_edit(&mut self) -> Result<Option<MapEdit>, CoreError> {
+    fn next_edit(&mut self) -> Result<Option<RecordEdit>, CoreError> {
         if !self.pending_buckets.is_empty() {
             return self.emit_bucket();
         }
@@ -1041,7 +1011,7 @@ impl<'a> NewRunPageStream<'a> {
 }
 
 impl Iterator for NewRunPageStream<'_> {
-    type Item = Result<MapEdit, CoreError>;
+    type Item = Result<RecordEdit, CoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.failed {
@@ -1060,16 +1030,18 @@ impl Iterator for NewRunPageStream<'_> {
 
 struct RunPageMergeStream<'a> {
     store: &'a ObjectStore,
-    lease: &'a AttemptLease,
     cursors: Vec<MapCursor<'a>>,
     ready: Vec<Option<(Vec<u8>, BlobRef)>>,
     failed: bool,
-    record_encoded_bytes: u64,
 }
 
 /// Minimum stream staging charge: one decoded leaf frame per input cursor.
 ///
 /// The execution gate adds branch frames from each supplied map descriptor.
+/// Five page frames cover the retained merged page, raw next-page bytes,
+/// decoded v2 dictionary/indices/rows, and canonical re-encode scratch. The
+/// worst bounded overlap is about 111 KiB before allocator overhead; five
+/// 32 KiB frames leave headroom without increasing the caller's staging cap.
 /// This charge does not include the caller-owned roots or shared store cache.
 pub(crate) fn run_merge_stage_bytes(fan_in: usize) -> Result<u64, CoreError> {
     let count = u64::try_from(fan_in).map_err(|_width| invalid("run merge fan-in width"))?;
@@ -1079,7 +1051,7 @@ pub(crate) fn run_merge_stage_bytes(fan_in: usize) -> Result<u64, CoreError> {
     let cursor_bytes =
         u64::try_from(cursor_bytes).map_err(|_width| invalid("run merge cursor width"))?;
     let page_bytes = MAX_POSTING_PAGE_BYTES
-        .checked_mul(3)
+        .checked_mul(5)
         .ok_or_else(|| invalid("run merge page charge overflow"))?;
     let page_bytes = u64::try_from(page_bytes).map_err(|_width| invalid("page charge width"))?;
     count
@@ -1127,7 +1099,7 @@ impl<'a> RunPageMergeStream<'a> {
 
     fn new_page_roots(
         store: &'a ObjectStore,
-        lease: &'a AttemptLease,
+        _lease: &'a AttemptLease,
         pages: &[&MapRoot],
         max_staging_bytes: u64,
     ) -> Result<Self, CoreError> {
@@ -1150,15 +1122,13 @@ impl<'a> RunPageMergeStream<'a> {
         }
         Ok(Self {
             store,
-            lease,
             cursors,
             ready,
             failed: false,
-            record_encoded_bytes: 0,
         })
     }
 
-    fn next_edit(&mut self) -> Result<Option<MapEdit>, CoreError> {
+    fn next_edit(&mut self) -> Result<Option<RecordEdit>, CoreError> {
         let Some(key) = self
             .ready
             .iter()
@@ -1213,22 +1183,13 @@ impl<'a> RunPageMergeStream<'a> {
             }
         }
         let merged = merged.ok_or_else(|| corrupt("run page merge has no selected page"))?;
-        let reference =
-            self.store
-                .put_blob(self.lease, ObjectKind::Record, &[], &merged.encode()?)?;
-        self.record_encoded_bytes = self
-            .record_encoded_bytes
-            .checked_add(reference.root.bytes)
-            .ok_or_else(|| invalid("merged page Record bytes overflow"))?;
-        Ok(Some(MapEdit {
-            key,
-            value: Some(reference),
-        }))
+        let bytes = merged.encode()?;
+        Ok(Some(RecordEdit { key, bytes }))
     }
 }
 
 impl Iterator for RunPageMergeStream<'_> {
-    type Item = Result<MapEdit, CoreError>;
+    type Item = Result<RecordEdit, CoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.failed {
@@ -1247,38 +1208,34 @@ impl Iterator for RunPageMergeStream<'_> {
 
 struct RunGramCountStream<'a> {
     store: &'a ObjectStore,
-    lease: &'a AttemptLease,
     cursor: MapCursor<'a>,
     ready: Option<(Vec<u8>, BlobRef)>,
     path_rows: u64,
     content_rows: u64,
     failed: bool,
     page_record_encoded_bytes: u64,
-    record_encoded_bytes: u64,
 }
 
 impl<'a> RunGramCountStream<'a> {
     fn new(
         store: &'a ObjectStore,
-        lease: &'a AttemptLease,
+        _lease: &'a AttemptLease,
         pages: &MapRoot,
     ) -> Result<Self, CoreError> {
         let mut cursor = store.map_cursor(pages, &[], None, None)?;
         let ready = cursor.next()?;
         Ok(Self {
             store,
-            lease,
             cursor,
             ready,
             path_rows: 0,
             content_rows: 0,
             failed: false,
             page_record_encoded_bytes: 0,
-            record_encoded_bytes: 0,
         })
     }
 
-    fn next_edit(&mut self) -> Result<Option<MapEdit>, CoreError> {
+    fn next_edit(&mut self) -> Result<Option<RecordEdit>, CoreError> {
         let Some((first_key, _)) = &self.ready else {
             return Ok(None);
         };
@@ -1338,22 +1295,16 @@ impl<'a> RunGramCountStream<'a> {
             gram,
             count,
         };
-        let value = self
-            .store
-            .put_blob(self.lease, ObjectKind::Record, &[], &record.encode()?)?;
-        self.record_encoded_bytes = self
-            .record_encoded_bytes
-            .checked_add(value.root.bytes)
-            .ok_or_else(|| invalid("merged gram-count Record bytes overflow"))?;
-        Ok(Some(MapEdit {
+        let bytes = record.encode()?;
+        Ok(Some(RecordEdit {
             key: prefix.to_vec(),
-            value: Some(value),
+            bytes,
         }))
     }
 }
 
 impl Iterator for RunGramCountStream<'_> {
-    type Item = Result<MapEdit, CoreError>;
+    type Item = Result<RecordEdit, CoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.failed {
@@ -1416,6 +1367,24 @@ pub(crate) fn bootstrap_new_run_postings(
     references: &[&BlobRef],
     max_staging_bytes: u64,
 ) -> Result<(RunPostingRoot, BlobRef), CoreError> {
+    bootstrap_new_run_postings_with_count_cache_limit(
+        store,
+        lease,
+        run_id,
+        references,
+        max_staging_bytes,
+        first_pass_counts::MAX_BYTES,
+    )
+}
+
+fn bootstrap_new_run_postings_with_count_cache_limit(
+    store: &ObjectStore,
+    lease: &AttemptLease,
+    run_id: u64,
+    references: &[&BlobRef],
+    max_staging_bytes: u64,
+    count_cache_limit: u64,
+) -> Result<(RunPostingRoot, BlobRef), CoreError> {
     if run_id == 0 || references.is_empty() {
         return Err(invalid("new run ID or leaf set is empty"));
     }
@@ -1424,19 +1393,38 @@ pub(crate) fn bootstrap_new_run_postings(
     if reference_count > super::super::policy().source_files {
         return Err(invalid("new run leaf set exceeds source policy"));
     }
-    if new_run_stage_charge()? > max_staging_bytes {
+    let required = new_run_stage_charge()?;
+    if required > max_staging_bytes {
         return Err(invalid("new run bootstrap exceeds staging admission"));
     }
+    // Only one final leaf group can supply final counts directly. Larger runs
+    // retain the original independent read pass after their merge levels.
+    let cache_limit = if references.len() <= NEW_RUN_SEGMENT_FAN_IN {
+        count_cache_limit.min(max_staging_bytes - required)
+    } else {
+        0
+    };
+    let mut first_pass_counts = FirstPassCounts::new(cache_limit);
+    let mut first_pass_page_bytes = 0_u64;
     let mut level = Vec::new();
     let mut seen_ids = BTreeSet::new();
+    let leaves_phase = crate::causal_profile::begin_phase("file_run_leaf_maps");
     for group in references.chunks(NEW_RUN_SEGMENT_FAN_IN) {
-        let mut stream = NewRunPageStream::new(store, lease, group, &mut seen_ids)?;
-        let pages = store.map_bootstrap(lease, &mut stream)?;
+        let stream = NewRunPageStream::new(store, lease, group, &mut seen_ids)?;
+        let counted = CountingPages::new(stream, &mut first_pass_counts);
+        let mut packed = PackedEdits::new(store, lease, counted);
+        let pages = store.map_bootstrap(lease, &mut packed)?;
+        first_pass_page_bytes = first_pass_page_bytes
+            .checked_add(packed.record_encoded_bytes)
+            .ok_or_else(|| invalid("first-pass page ledger overflow"))?;
+        drop(packed);
         level
             .try_reserve(1)
             .map_err(|error| CoreError::Storage(format!("reserve partial run map: {error}")))?;
         level.push(pages);
     }
+    crate::causal_profile::finish_phase("file_run_leaf_maps", leaves_phase);
+    let merge_phase = crate::causal_profile::begin_phase("file_run_merge_maps");
     while level.len() > 1 {
         let mut next = Vec::new();
         for group in level.chunks(NEW_RUN_PAGE_FAN_IN) {
@@ -1457,7 +1445,7 @@ pub(crate) fn bootstrap_new_run_postings(
                     &page_roots,
                     max_staging_bytes,
                 )?;
-                store.map_bootstrap(lease, &mut stream)?
+                store.map_bootstrap(lease, PackedEdits::new(store, lease, &mut stream))?
             };
             next.try_reserve(1)
                 .map_err(|error| CoreError::Storage(format!("reserve merged run map: {error}")))?;
@@ -1465,19 +1453,49 @@ pub(crate) fn bootstrap_new_run_postings(
         }
         level = next;
     }
+    crate::causal_profile::finish_phase("file_run_merge_maps", merge_phase);
+    let counts_phase = crate::causal_profile::begin_phase("file_run_counts");
     let pages = level
         .pop()
         .ok_or_else(|| corrupt("new run produced no page map"))?;
-    let mut counts = RunGramCountStream::new(store, lease, &pages)?;
-    let gram_counts = store.map_bootstrap(lease, &mut counts)?;
+    let (
+        gram_counts,
+        gram_count_record_encoded_bytes,
+        path_rows,
+        content_rows,
+        page_record_encoded_bytes,
+    ) = if let Some((counts, path_rows, content_rows)) = first_pass_counts.into_records() {
+        let mut packed = PackedEdits::new(store, lease, counts);
+        let root = store.map_bootstrap(lease, &mut packed)?;
+        (
+            root,
+            packed.record_encoded_bytes,
+            path_rows,
+            content_rows,
+            first_pass_page_bytes,
+        )
+    } else {
+        let mut counts = RunGramCountStream::new(store, lease, &pages)?;
+        let mut packed = PackedEdits::new(store, lease, &mut counts);
+        let root = store.map_bootstrap(lease, &mut packed)?;
+        let bytes = packed.record_encoded_bytes;
+        drop(packed);
+        (
+            root,
+            bytes,
+            counts.path_rows,
+            counts.content_rows,
+            counts.page_record_encoded_bytes,
+        )
+    };
     let root = RunPostingRoot {
         run_id,
         pages,
         gram_counts,
-        path_rows: counts.path_rows,
-        content_rows: counts.content_rows,
-        page_record_encoded_bytes: counts.page_record_encoded_bytes,
-        gram_count_record_encoded_bytes: counts.record_encoded_bytes,
+        path_rows,
+        content_rows,
+        page_record_encoded_bytes,
+        gram_count_record_encoded_bytes,
     };
     let reference = store.put_blob(
         lease,
@@ -1485,6 +1503,7 @@ pub(crate) fn bootstrap_new_run_postings(
         &root.object_roots(),
         &root.encode()?,
     )?;
+    crate::causal_profile::finish_phase("file_run_counts", counts_phase);
     Ok((root, reference))
 }
 
@@ -1510,11 +1529,16 @@ pub(crate) fn merge_run_posting_roots(
         return Err(invalid("run merge IDs are not sorted old cohorts"));
     }
     let mut page_stream = RunPageMergeStream::new(store, lease, inputs, max_staging_bytes)?;
-    let pages = store.map_bootstrap(lease, &mut page_stream)?;
-    let page_record_encoded_bytes = page_stream.record_encoded_bytes;
+    let mut packed_pages = PackedEdits::new(store, lease, &mut page_stream);
+    let pages = store.map_bootstrap(lease, &mut packed_pages)?;
+    let page_record_encoded_bytes = packed_pages.record_encoded_bytes;
+    drop(packed_pages);
     drop(page_stream);
     let mut count_stream = RunGramCountStream::new(store, lease, &pages)?;
-    let gram_counts = store.map_bootstrap(lease, &mut count_stream)?;
+    let mut packed_counts = PackedEdits::new(store, lease, &mut count_stream);
+    let gram_counts = store.map_bootstrap(lease, &mut packed_counts)?;
+    let gram_count_record_encoded_bytes = packed_counts.record_encoded_bytes;
+    drop(packed_counts);
     let root = RunPostingRoot {
         run_id: new_run_id,
         pages,
@@ -1522,7 +1546,7 @@ pub(crate) fn merge_run_posting_roots(
         path_rows: count_stream.path_rows,
         content_rows: count_stream.content_rows,
         page_record_encoded_bytes,
-        gram_count_record_encoded_bytes: count_stream.record_encoded_bytes,
+        gram_count_record_encoded_bytes,
     };
     let reference = store.put_blob(
         lease,
@@ -1738,6 +1762,72 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(page.rows, expected);
         }
+    }
+
+    #[test]
+    fn first_pass_counts_match_cold_reread_and_reduce_producer_object_reads() {
+        fn build(cache_limit: u64) -> (RunPostingRoot, BlobRef, u64) {
+            let directory = tempfile::tempdir().expect("temporary store");
+            let store = ObjectStore::open(directory.path()).expect("object store");
+            let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+            let leaves = (0_u64..5)
+                .map(|lane| {
+                    let ids = (0_u64..64).map(|local| local * 5 + lane + 256).collect();
+                    physical_segment_rows(&store, &lease, ids, 0xaaaa_aaaa_aaaa_aaaa)
+                })
+                .collect::<Vec<_>>();
+            let references = leaves.iter().collect::<Vec<_>>();
+            let producer = store.metered_clone();
+            let (root, reference) = bootstrap_new_run_postings_with_count_cache_limit(
+                &producer,
+                &lease,
+                1,
+                &references,
+                super::super::super::policy().bucket_scratch_bytes,
+                cache_limit,
+            )
+            .expect("bootstrap");
+            let reads = producer.read_meter_snapshot().1;
+            // A new meter has no producer cache. Its authoritative page scan
+            // must reproduce every persisted gram count and both row totals.
+            let verifier = store.metered_clone();
+            let mut independent =
+                RunGramCountStream::new(&verifier, &lease, &root.pages).expect("cold count stream");
+            for entry in independent.by_ref() {
+                let expected = entry.expect("independent page-derived count");
+                let value = verifier
+                    .map_get(&root.gram_counts, &expected.key, None)
+                    .expect("count lookup")
+                    .expect("count value");
+                assert_eq!(
+                    verifier
+                        .read_blob(&value, MAX_RECORD_BYTES as u64, None)
+                        .expect("authenticated count"),
+                    expected.bytes
+                );
+            }
+            assert_eq!(
+                (independent.path_rows, independent.content_rows),
+                (320, 160)
+            );
+            assert_eq!((root.path_rows, root.content_rows), (320, 160));
+            assert_eq!(
+                root.page_record_encoded_bytes,
+                independent.page_record_encoded_bytes
+            );
+            (root, reference, reads)
+        }
+        let fast = build(first_pass_counts::MAX_BYTES);
+        let fallback = build(0);
+        let overflow = build(64); // fewer than two distinct gram entries fit.
+        assert_eq!(fast.0, fallback.0);
+        assert_eq!(fast.1, fallback.1);
+        assert_eq!(overflow.0, fallback.0);
+        assert_eq!(overflow.1, fallback.1);
+        assert!(
+            fast.2 < fallback.2,
+            "first pass must remove real producer reads"
+        );
     }
 
     #[test]

@@ -3,14 +3,18 @@
 
 use std::{
     fs::{self, File},
-    os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
-    sync::{Arc, Mutex},
+    io::Write as _,
+    os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _, symlink},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use quanta_index_core::{
     RequestBudgetV1,
-    index::{MemoryScope, MemoryScopePort, WorkLimits},
+    index::{MemoryLeaseOwner, MemoryScope, MemoryScopePort, WorkLimits},
 };
 
 use super::*;
@@ -81,6 +85,104 @@ impl ObjectReadIoPort for Reads {
 fn reader(root: &Path, reads: Arc<Reads>) -> Result<FileObjectReader, IndexError> {
     let lock = reads.open(&root.join(".object-namespace.lease"), &mut budget(100)?)?;
     FileObjectReader::open_existing(root, lock, reads, &mut budget(100)?)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum NamespaceTamper {
+    RootReplacement,
+    RootSymlink,
+    RootMode,
+    ObjectsReplacement,
+    ObjectsSymlink,
+    ObjectsMode,
+}
+
+impl NamespaceTamper {
+    fn apply(self, root: &Path) -> Result<(), std::io::Error> {
+        let objects = root.join("objects");
+        match self {
+            Self::RootReplacement => {
+                fs::rename(root, root.with_file_name("moved-root"))?;
+                fs::create_dir(root)?;
+                fs::set_permissions(root, fs::Permissions::from_mode(0o700))
+            }
+            Self::RootSymlink => {
+                fs::rename(root, root.with_file_name("moved-root"))?;
+                symlink(root.with_file_name("moved-root"), root)
+            }
+            Self::RootMode => fs::set_permissions(root, fs::Permissions::from_mode(0o755)),
+            Self::ObjectsReplacement => {
+                fs::rename(&objects, root.join("objects-moved"))?;
+                fs::create_dir(&objects)?;
+                fs::set_permissions(objects, fs::Permissions::from_mode(0o700))
+            }
+            Self::ObjectsSymlink => {
+                fs::rename(&objects, root.join("objects-moved"))?;
+                symlink(root.join("objects-moved"), objects)
+            }
+            Self::ObjectsMode => fs::set_permissions(objects, fs::Permissions::from_mode(0o755)),
+        }
+    }
+
+    fn restore(self, root: &Path) -> Result<(), std::io::Error> {
+        let objects = root.join("objects");
+        match self {
+            Self::RootReplacement => {
+                fs::remove_dir(root)?;
+                fs::rename(root.with_file_name("moved-root"), root)
+            }
+            Self::RootSymlink => {
+                fs::remove_file(root)?;
+                fs::rename(root.with_file_name("moved-root"), root)
+            }
+            Self::RootMode => fs::set_permissions(root, fs::Permissions::from_mode(0o700)),
+            Self::ObjectsReplacement => {
+                fs::remove_dir(&objects)?;
+                fs::rename(root.join("objects-moved"), objects)
+            }
+            Self::ObjectsSymlink => {
+                fs::remove_file(&objects)?;
+                fs::rename(root.join("objects-moved"), objects)
+            }
+            Self::ObjectsMode => fs::set_permissions(objects, fs::Permissions::from_mode(0o700)),
+        }
+    }
+}
+
+#[test]
+fn reader_rechecks_live_root_and_objects_before_opening_data_fd() -> TestResult {
+    for tamper in [
+        NamespaceTamper::RootReplacement,
+        NamespaceTamper::RootSymlink,
+        NamespaceTamper::RootMode,
+        NamespaceTamper::ObjectsReplacement,
+        NamespaceTamper::ObjectsSymlink,
+        NamespaceTamper::ObjectsMode,
+    ] {
+        let parent = private_root()?;
+        let root = parent.path().join("store");
+        let store = FileObjectStore::open(&root)?;
+        let object = store.put(b"held namespace", &[], &mut budget(100)?)?;
+        drop(store);
+        let reads = Arc::new(Reads::default());
+        let reader = reader(&root, Arc::clone(&reads))?;
+        let opened_before = reads.0.lock().map_err(|_error| IndexError::Conflict)?.len();
+        require(opened_before == 1)?; // Only the held namespace-lock FD.
+
+        tamper.apply(&root)?;
+        let mut work = budget(100)?;
+        require(matches!(
+            reader.get(object.reference, &mut work),
+            Err(IndexError::Storage(_))
+        ))?;
+        require(work.usage().reads == 1)?;
+        require(reads.0.lock().map_err(|_error| IndexError::Conflict)?.len() == opened_before)?;
+
+        tamper.restore(&root)?;
+        require(reader.get(object.reference, &mut budget(100)?)?.payload == b"held namespace")?;
+        require(reads.0.lock().map_err(|_error| IndexError::Conflict)?.len() == opened_before + 1)?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -196,5 +298,102 @@ fn closure_frontier_memory_work_and_original_cancel_refuse_without_reset() -> Te
         Err(IndexError::Cancelled)
     ))?;
     require(reads.0.lock().map_err(|_error| IndexError::Conflict)?.len() == before)?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ReadMutation {
+    Truncate,
+    Append,
+}
+
+#[derive(Default)]
+struct ReadMemory(AtomicU64);
+
+impl MemoryLeaseOwner for ReadMemory {
+    fn release(&self, bytes: u64) {
+        let _previous = self.0.fetch_sub(bytes, Ordering::SeqCst);
+    }
+}
+
+struct MutateOnWireReserve {
+    path: PathBuf,
+    mutation: ReadMutation,
+    calls: AtomicUsize,
+    memory: Arc<ReadMemory>,
+}
+
+impl MemoryScopePort for MutateOnWireReserve {
+    fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+        // read_wire reserves path memory first, then the wire after fstat.
+        // Mutate the same opened inode at the second reservation, before read_exact.
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            match self.mutation {
+                ReadMutation::Truncate => {
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .open(&self.path)
+                        .and_then(|file| file.set_len(super::super::HEADER_LEN as u64))
+                        .map_err(|error| IndexError::Storage(error.to_string()))?;
+                }
+                ReadMutation::Append => {
+                    fs::OpenOptions::new()
+                        .append(true)
+                        .open(&self.path)
+                        .and_then(|mut file| file.write_all(b"!"))
+                        .map_err(|error| IndexError::Storage(error.to_string()))?;
+                }
+            }
+        }
+        let _previous = self.memory.0.fetch_add(bytes, Ordering::SeqCst);
+        Ok(MemoryLease::new(bytes, self.memory.clone()))
+    }
+}
+
+#[test]
+fn physical_get_refuses_short_read_and_appended_eof_after_opened_metadata() -> TestResult {
+    for read_only in [false, true] {
+        for mutation in [ReadMutation::Truncate, ReadMutation::Append] {
+            let root = private_root()?;
+            let store = FileObjectStore::open(root.path())?;
+            let reference = store
+                .put(b"immutable payload", &[], &mut budget(100)?)?
+                .reference;
+            let path = super::super::read_io::object_path(&root.path().join("objects"), reference);
+            let original_len = fs::metadata(&path)?.len();
+            let memory = Arc::new(ReadMemory::default());
+            let hook = Arc::new(MutateOnWireReserve {
+                path: path.clone(),
+                mutation,
+                calls: AtomicUsize::new(0),
+                memory: Arc::clone(&memory),
+            });
+            let mut work = budget(100)?;
+            work.bind_memory_scope(Some(MemoryScope::new(hook.clone())));
+            let result = if read_only {
+                drop(store);
+                let reader = reader(root.path(), Arc::new(Reads::default()))?;
+                reader.get(reference, &mut work)
+            } else {
+                store.get(reference, &mut work)
+            };
+            require(match (mutation, result) {
+                (ReadMutation::Truncate, Err(IndexError::CorruptObject(message))) => {
+                    message == "object truncated during read"
+                }
+                (ReadMutation::Append, Err(IndexError::CorruptObject(message))) => {
+                    message == "object digest or size mismatch"
+                }
+                _ => false,
+            })?;
+            require(hook.calls.load(Ordering::SeqCst) == 2)?;
+            require(memory.0.load(Ordering::SeqCst) == 0)?;
+            let observed_len = fs::metadata(path)?.len();
+            require(match mutation {
+                ReadMutation::Truncate => observed_len == super::super::HEADER_LEN as u64,
+                ReadMutation::Append => observed_len == original_len + 1,
+            })?;
+        }
+    }
     Ok(())
 }

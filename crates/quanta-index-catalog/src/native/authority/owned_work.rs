@@ -845,8 +845,8 @@ impl SqliteCatalog {
         ) {
             match (&validated, &request.kind) {
                 (Some((work, assignment)), UpdateKind::Materialize { claim }) => {
-                    validate_live_claim_row(work, claim, now)?;
-                    validate_owned_live_claim(assignment, claim, now)?;
+                    validate_live_claim_row(work, claim, now, None)?;
+                    validate_owned_live_claim(assignment, claim, now, None)?;
                     if assignment.request.operation != request.operation {
                         return Err(IndexError::WorkFenceLost);
                     }

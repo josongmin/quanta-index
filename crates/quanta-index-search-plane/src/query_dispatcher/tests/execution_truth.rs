@@ -275,6 +275,11 @@ fn lane_flags(
         SearchPlaneQueryIpcResponse::HybridSeed(response) => {
             Ok(flags(response.window.coverage().lanes()))
         }
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(response) => {
+            let mut lanes = flags(response.lexical_window.coverage().lanes());
+            lanes.extend(flags(response.dense_window.coverage().lanes()));
+            Ok(lanes)
+        }
         // The explain response carries no window: its truth chain is the
         // explanation plus the adapter counts, asserted by the caller.
         SearchPlaneQueryIpcResponse::Explain(_) => Ok(Vec::new()),
@@ -1277,6 +1282,7 @@ fn one_correlation_reaches_every_route_explanation() -> TestResult {
             }
             SearchPlaneQueryIpcResponse::Hybrid(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::HybridSeed(r) => Ok(r.explanation.request_id),
+            SearchPlaneQueryIpcResponse::GoTestTraceFileV1(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::Explain(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
             | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)

@@ -92,12 +92,20 @@ def _member_name(raw: str) -> str:
     return name.rstrip("/")
 
 
-def _safe_chunk_name(release: str, commit: str) -> str:
+def _safe_chunk_name(release: str, commit: str, repo: str = REPO) -> str:
     _require(
         len(commit) == 40 and all(c in "0123456789abcdef" for c in commit),
         f"invalid base commit: {commit}",
     )
-    return f"corpus/{release}/{SLUG}/{commit}.chunks.jsonl"
+    _require(type(repo) is str, "invalid repository identity")
+    parts = repo.split("/")
+    _require(
+        len(parts) == 2
+        and all(part and part not in (".", "..") and all(c.isascii() and (c.isalnum() or c in "-_.") for c in part) for part in parts),
+        f"invalid repository identity: {repo}",
+    )
+    slug = "__".join(parts)
+    return f"corpus/{release}/{slug}/{commit}.chunks.jsonl"
 
 
 def _sidecar(b06: Path, release: str, expected: str) -> None:
@@ -182,20 +190,23 @@ def _extract_selected(archive: Path, destination: Path, selected: set[str]) -> d
     return found
 
 
-def _validate_manifest(path: Path, release: str, commits: set[str]) -> dict[str, dict[str, Any]]:
-    rows: dict[str, dict[str, Any]] = {}
+def _validate_manifest(
+    path: Path, release: str, selected: dict[str, set[str]]
+) -> dict[tuple[str, str], dict[str, Any]]:
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
             row = evidence.parse_json(line)
             evidence.canonical_json(row)
             _require(isinstance(row, dict), "invalid corpus manifest row")
-            if row.get("repo") != REPO or row.get("base_commit") not in commits:
+            repo, commit = row.get("repo"), row.get("base_commit")
+            if repo not in selected or commit not in selected[repo]:
                 continue
-            commit = row["base_commit"]
-            _require(commit not in rows, f"duplicate corpus manifest base commit: {commit}")
+            key = (repo, commit)
+            _require(key not in rows, f"duplicate corpus manifest snapshot: {repo}@{commit}")
             _require(row.get("status") == "ok", f"corpus manifest status not ok: {commit}")
             declared = row.get("chunks_path")
-            canonical = _safe_chunk_name(release, commit)
+            canonical = _safe_chunk_name(release, commit, repo)
             _require(
                 type(declared) is str
                 and "\\" not in declared
@@ -203,8 +214,9 @@ def _validate_manifest(path: Path, release: str, commits: set[str]) -> dict[str,
                 and (declared == canonical or declared.endswith("/" + canonical)),
                 f"corpus manifest path mismatch: {commit}",
             )
-            rows[commit] = row
-    _require(set(rows) == commits, f"corpus manifest missing selected base commits: {release}")
+            rows[key] = row
+    expected = {(repo, commit) for repo, commits in selected.items() for commit in commits}
+    _require(set(rows) == expected, f"corpus manifest missing selected snapshots: {release}")
     return rows
 
 
@@ -259,7 +271,10 @@ def _validate_chunk_file(path: Path, manifest_row: dict[str, Any]) -> None:
 
 
 def restore(
-    b06: Path, policy: dict[str, Any], selected_by_release: dict[str, set[str]], work_root: Path
+    b06: Path,
+    policy: dict[str, Any],
+    selected_by_release: dict[str, set[str] | dict[str, set[str]]],
+    work_root: Path,
 ) -> VerifiedCorpus:
     """Restore selected commit chunks into a fresh child of the OS temp directory."""
     advertised_temp = Path(tempfile.gettempdir())
@@ -275,8 +290,17 @@ def restore(
     _require(
         not work_root.exists() and not work_root.is_symlink(), "corpus work root already exists"
     )
+    selection = {
+        release: ({REPO: commits} if isinstance(commits, set) else commits)
+        for release, commits in selected_by_release.items()
+    }
     _require(
-        sum(map(len, selected_by_release.values())) <= MAX_SELECTED, "too many selected commits"
+        all(isinstance(repos, dict) and all(isinstance(commits, set) for commits in repos.values()) for repos in selection.values()),
+        "invalid corpus selection",
+    )
+    _require(
+        sum(len(commits) for repos in selection.values() for commits in repos.values()) <= MAX_SELECTED,
+        "too many selected commits",
     )
     _require(
         set(selected_by_release) == set(policy["arb"]["releases"]),
@@ -288,7 +312,7 @@ def restore(
     digests_by_snapshot: dict[tuple[str, str], str] = {}
     receipt: dict[str, Any] = {}
     try:
-        for release, commits in selected_by_release.items():
+        for release, repos in selection.items():
             pinned = policy["arb"]["releases"][release]
             expected_archive = pinned["tar_zst_sha256"]
             _require(
@@ -302,7 +326,11 @@ def restore(
             private_copy = work_root / f"{release}.tar.zst"
             _digest_file(archive_path, expected_archive, private_copy)
             manifest = f"corpus/{release}/corpus_manifest.jsonl"
-            selected = {manifest} | {_safe_chunk_name(release, commit) for commit in commits}
+            selected = {manifest} | {
+                _safe_chunk_name(release, commit, repo)
+                for repo, commits in repos.items()
+                for commit in commits
+            }
             found = _extract_selected(private_copy, work_root, selected)
             _digest_file(private_copy, expected_archive)
             private_copy.unlink()
@@ -310,24 +338,26 @@ def restore(
                 found[manifest] == pinned["corpus_manifest_sha256"],
                 f"corpus manifest digest mismatch: {release}",
             )
-            manifest_rows = _validate_manifest(work_root / manifest, release, commits)
-            for commit in commits:
+            manifest_rows = _validate_manifest(work_root / manifest, release, repos)
+            for repo, commit in manifest_rows:
+                chunk_name = _safe_chunk_name(release, commit, repo)
                 _validate_chunk_file(
-                    work_root / _safe_chunk_name(release, commit), manifest_rows[commit]
+                    work_root / chunk_name, manifest_rows[(repo, commit)]
                 )
-                key = (REPO, commit)
-                digest = found[_safe_chunk_name(release, commit)]
+                key = (repo, commit)
+                digest = found[chunk_name]
                 _require(
                     key not in digests_by_snapshot or digests_by_snapshot[key] == digest,
                     f"different official corpus bytes for shared base commit: {commit}",
                 )
-                files.setdefault(key, work_root / _safe_chunk_name(release, commit))
+                files.setdefault(key, work_root / chunk_name)
                 digests_by_snapshot[key] = digest
             receipt[release] = {
                 "archive_sha256": expected_archive,
                 "corpus_manifest_sha256": found[manifest],
                 "selected_chunks_sha256": {
-                    str(commit): found[_safe_chunk_name(release, commit)]
+                    (commit if repo == REPO else f"{repo}@{commit}"): found[_safe_chunk_name(release, commit, repo)]
+                    for repo, commits in sorted(repos.items())
                     for commit in sorted(commits)
                 },
             }
@@ -349,7 +379,8 @@ def verify_extracted(corpus: VerifiedCorpus) -> None:
             root / f"corpus/{release}/corpus_manifest.jsonl", receipt["corpus_manifest_sha256"]
         )
         for commit, digest in receipt["selected_chunks_sha256"].items():
-            _digest_file(root / _safe_chunk_name(release, commit), digest)
+            repo, sha = commit.rsplit("@", 1) if "@" in commit else (REPO, commit)
+            _digest_file(root / _safe_chunk_name(release, sha, repo), digest)
 
 
 def _load_verified_texts(path: Path, expected: str, official_loader: Any, work_root: Path):

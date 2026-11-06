@@ -98,6 +98,7 @@ fn cluster_source(reversed: bool, changed_member: bool) -> PreparedSource {
         corpus_kind: SemanticCorpusKindV1::ClusterCard,
         owner_kind: OwnerDocKind::Module,
         owner_id: "cluster".into(),
+        source_file: context.source().file.clone(),
     };
     let mut sources = Vec::new();
     let mut memberships = Vec::new();
@@ -109,7 +110,7 @@ fn cluster_source(reversed: bool, changed_member: bool) -> PreparedSource {
             owner_id: scope.owner_id.clone(),
             source_doc_id: format!("doc-{id}"),
             parent_owner_id: None,
-            repo_relative_path: context.source().file.repo_relative_path.clone(),
+            source_file: context.source().file.clone(),
             language: Some("text".into()),
             package: None,
             symbol_kind: None,

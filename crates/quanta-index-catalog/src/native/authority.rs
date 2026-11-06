@@ -5,6 +5,9 @@
 //! committed view, its work, custody transfer, and original operation receipt
 //! are one `SQLite` transaction. This module never scans a corpus on admission
 //! or publication.
+//! Hot object-custody relations store a private `SQLite` operation row id. Every
+//! access resolves it from the canonical operation key in the same connection;
+//! the id is never an operation identity, digest input or caller-held authority.
 
 use std::{path::Path, time::Duration};
 
@@ -23,12 +26,13 @@ mod managed_install;
 mod object_install;
 mod owned_work;
 mod reclaim;
+mod registration_codec;
+mod renewal_diagnostic;
 mod retention;
 mod source_authority;
 mod terminal_custody;
 mod terminal_work;
 
-use quanta_index_core::CoreError;
 use quanta_index_core::index::ports::{
     CatalogGenesisPort, CatalogPublicationPort, CatalogReclaimPort, ImmutableObjectPort,
     InputStagingPort, ManagedObjectAuthority, ManagedObjectInstallPort, ObjectCustodyPort,
@@ -43,6 +47,8 @@ use quanta_index_core::index::{
     TicketId, UpdateKind, UpdateRequest, ViewRef, WorkAction, WorkActionDigest, WorkBudget,
     WorkClaim, WorkIntent, WorkScope, WorkStatus, WorkUsage, WorkspaceKey,
 };
+use quanta_index_core::{CoreError, DiagnosticOwnedRenewalRefusalReasonV1};
+use renewal_diagnostic::fence_lost;
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -58,6 +64,7 @@ CREATE TABLE IF NOT EXISTS native_capture_format_v1 (
     state_version INTEGER NOT NULL CHECK(state_version > 0),
     capture_version INTEGER NOT NULL CHECK(capture_version > 0),
     hash_domain BLOB NOT NULL,
+    registration_codec INTEGER NOT NULL CHECK(registration_codec = 1),
     root_nonce BLOB NOT NULL CHECK(typeof(root_nonce) = 'blob' AND length(root_nonce) = 32),
     boot_manifest BLOB,
     boot_manifest_digest BLOB,
@@ -91,18 +98,19 @@ CREATE TABLE IF NOT EXISTS native_exact_history_floor_v1 (
     FOREIGN KEY(workspace) REFERENCES native_workspace_v1(workspace)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS native_operation_v1 (
-    operation BLOB PRIMARY KEY NOT NULL,
+    operation_id INTEGER PRIMARY KEY NOT NULL CHECK(operation_id > 0),
+    operation BLOB UNIQUE NOT NULL,
     workspace BLOB NOT NULL,
     epoch INTEGER NOT NULL CHECK(epoch >= 0),
     payload BLOB NOT NULL,
     row_digest BLOB NOT NULL
-) WITHOUT ROWID;
+);
 CREATE TABLE IF NOT EXISTS native_operation_object_v1 (
-    operation BLOB NOT NULL,
+    operation_id INTEGER NOT NULL CHECK(typeof(operation_id) = 'integer' AND operation_id > 0),
     object BLOB NOT NULL,
     row_digest BLOB NOT NULL,
-    PRIMARY KEY(operation, object),
-    FOREIGN KEY(operation) REFERENCES native_operation_v1(operation),
+    PRIMARY KEY(operation_id, object),
+    FOREIGN KEY(operation_id) REFERENCES native_operation_v1(operation_id),
     FOREIGN KEY(object) REFERENCES native_object_v1(object)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS native_terminal_custody_v1 (
@@ -173,7 +181,7 @@ CREATE TABLE IF NOT EXISTS native_object_v1 (
     object BLOB PRIMARY KEY NOT NULL,
     payload BLOB NOT NULL,
     row_digest BLOB NOT NULL
-) WITHOUT ROWID;
+);
 CREATE TABLE IF NOT EXISTS native_object_edge_v1 (
     parent BLOB NOT NULL,
     child BLOB NOT NULL,
@@ -186,7 +194,7 @@ CREATE TABLE IF NOT EXISTS native_object_install_v1 (
     object BLOB PRIMARY KEY NOT NULL,
     payload BLOB NOT NULL,
     row_digest BLOB NOT NULL
-) WITHOUT ROWID;
+);
 CREATE TABLE IF NOT EXISTS native_object_install_edge_v1 (
     parent BLOB NOT NULL,
     child BLOB NOT NULL,
@@ -211,23 +219,23 @@ CREATE TABLE IF NOT EXISTS native_bootstrap_object_v1 (
     FOREIGN KEY(workspace) REFERENCES native_bootstrap_v1(workspace)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS native_attempt_object_v1 (
-    operation BLOB NOT NULL,
+    operation_id INTEGER NOT NULL CHECK(typeof(operation_id) = 'integer' AND operation_id > 0),
     fence INTEGER NOT NULL CHECK(fence > 0),
     object BLOB NOT NULL,
     row_digest BLOB NOT NULL,
-    PRIMARY KEY(operation, fence, object),
-    FOREIGN KEY(operation) REFERENCES native_operation_v1(operation),
+    PRIMARY KEY(operation_id, fence, object),
+    FOREIGN KEY(operation_id) REFERENCES native_operation_v1(operation_id),
     FOREIGN KEY(object) REFERENCES native_object_v1(object)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS native_object_intent_v1 (
-    operation BLOB NOT NULL,
+    operation_id INTEGER NOT NULL CHECK(typeof(operation_id) = 'integer' AND operation_id > 0),
     fence INTEGER NOT NULL CHECK(fence > 0),
     object BLOB NOT NULL,
     payload BLOB NOT NULL,
     row_digest BLOB NOT NULL,
-    PRIMARY KEY(operation, fence, object),
-    FOREIGN KEY(operation) REFERENCES native_operation_v1(operation)
-) WITHOUT ROWID;
+    PRIMARY KEY(operation_id, fence, object),
+    FOREIGN KEY(operation_id) REFERENCES native_operation_v1(operation_id)
+);
 CREATE TABLE IF NOT EXISTS native_view_root_v1 (
     workspace BLOB NOT NULL,
     epoch INTEGER NOT NULL,
@@ -355,11 +363,11 @@ CREATE INDEX IF NOT EXISTS native_owned_claim_idx_v1
 CREATE INDEX IF NOT EXISTS native_owned_due_idx_v1
     ON native_owned_work_v1(workspace, epoch, due_ms, work);
 CREATE INDEX IF NOT EXISTS native_view_root_object_idx_v1 ON native_view_root_v1(object,workspace,epoch,sequence);
-CREATE INDEX IF NOT EXISTS native_operation_object_object_idx_v1 ON native_operation_object_v1(object,operation);
+CREATE INDEX IF NOT EXISTS native_operation_object_object_idx_v1 ON native_operation_object_v1(object,operation_id);
 CREATE INDEX IF NOT EXISTS native_ingress_intent_object_idx_v1 ON native_ingress_intent_v1(object,operation);
 CREATE INDEX IF NOT EXISTS native_ingress_object_object_idx_v1 ON native_ingress_object_v1(object,operation);
-CREATE INDEX IF NOT EXISTS native_attempt_object_object_idx_v1 ON native_attempt_object_v1(object,operation,fence);
-CREATE INDEX IF NOT EXISTS native_object_intent_object_idx_v1 ON native_object_intent_v1(object,operation,fence);
+CREATE INDEX IF NOT EXISTS native_attempt_object_object_idx_v1 ON native_attempt_object_v1(object,operation_id,fence);
+CREATE INDEX IF NOT EXISTS native_object_intent_object_idx_v1 ON native_object_intent_v1(object,operation_id,fence);
 CREATE INDEX IF NOT EXISTS native_work_object_object_idx_v1 ON native_work_object_v1(object,work);
 CREATE INDEX IF NOT EXISTS native_bootstrap_object_object_idx_v1 ON native_bootstrap_object_v1(object,workspace);
 CREATE INDEX IF NOT EXISTS native_bootstrap_profile_idx_v1 ON native_bootstrap_v1(profile,workspace);
@@ -840,43 +848,51 @@ fn canonical_object(object: &RegisteredObject) -> Result<RegisteredObject, Index
 }
 
 /// Insert canonical metadata after this transaction has authenticated its children.
+fn insert_prepared_object(
+    connection: &Connection,
+    canonical: &RegisteredObject,
+) -> Result<(), IndexError> {
+    let payload = registration_codec::encode(canonical)?;
+    let key = object_key(canonical.reference);
+    let inserted = cached_execute(
+        connection,
+        "INSERT INTO native_object_v1(object,payload,row_digest) VALUES (?1,?2,?3)",
+        params![
+            key,
+            payload,
+            digest(b"qidx.native.object.v1", &payload).to_vec()
+        ],
+    )
+    .map_err(|error| sql(&error))?;
+    exactly_one(inserted, "register object")?;
+    let mut physical_children = canonical.children.clone();
+    physical_children.sort_unstable_by_key(|reference| reference.0.0);
+    physical_children.dedup();
+    for child in &physical_children {
+        let inserted = cached_execute(
+            connection,
+            "INSERT INTO native_object_edge_v1(parent,child,row_digest) VALUES (?1,?2,?3)",
+            params![
+                object_key(canonical.reference),
+                object_key(*child),
+                fields_digest(
+                    b"qidx.native.edge.v1",
+                    &(object_key(canonical.reference), object_key(*child))
+                )?
+            ],
+        )
+        .map_err(|error| sql(&error))?;
+        exactly_one(inserted, "register object edge")?;
+    }
+    Ok(())
+}
+
 fn register_prepared_object(
     connection: &Connection,
     canonical: &RegisteredObject,
 ) -> Result<(), IndexError> {
     if !object_install::registered_matches(connection, canonical)? {
-        let payload = encode(canonical)?;
-        let key = object_key(canonical.reference);
-        let inserted = cached_execute(
-            connection,
-            "INSERT INTO native_object_v1(object,payload,row_digest) VALUES (?1,?2,?3)",
-            params![
-                key,
-                payload,
-                digest(b"qidx.native.object.v1", &payload).to_vec()
-            ],
-        )
-        .map_err(|error| sql(&error))?;
-        exactly_one(inserted, "register object")?;
-        let mut physical_children = canonical.children.clone();
-        physical_children.sort_unstable_by_key(|reference| reference.0.0);
-        physical_children.dedup();
-        for child in &physical_children {
-            let inserted = cached_execute(
-                connection,
-                "INSERT INTO native_object_edge_v1(parent,child,row_digest) VALUES (?1,?2,?3)",
-                params![
-                    object_key(canonical.reference),
-                    object_key(*child),
-                    fields_digest(
-                        b"qidx.native.edge.v1",
-                        &(object_key(canonical.reference), object_key(*child))
-                    )?
-                ],
-            )
-            .map_err(|error| sql(&error))?;
-            exactly_one(inserted, "register object edge")?;
-        }
+        insert_prepared_object(connection, canonical)?;
     }
     Ok(())
 }
@@ -952,8 +968,10 @@ impl<'tx, 'conn> RegisteredBatchInTransaction<'tx, 'conn> {
         }
         for (pending, object) in provisional.iter().zip(objects) {
             if *pending {
-                let canonical = object_install::checked_object(object)?;
-                register_prepared_object(transaction, &canonical)?;
+                // The complete same-transaction preflight proved this exact
+                // input canonical and its permanent key absent. Unique parent
+                // keys keep earlier inserts from changing that proof.
+                insert_prepared_object(transaction, object)?;
             }
             // A replay's permanent registration was already fully checked in
             // this transaction. Unique parent keys and these fixed writes
@@ -1048,7 +1066,7 @@ fn reserve_object_intent(
     canonical: &RegisteredObject,
 ) -> Result<(), IndexError> {
     object_install::reserve(connection, canonical)?;
-    let payload = encode(canonical)?;
+    let payload = registration_codec::encode(canonical)?;
     if !try_insert_object_intent(connection, attempt, canonical, &payload)? {
         require_reserved_intent(connection, attempt, canonical, &payload)?;
     }
@@ -1063,8 +1081,8 @@ fn try_insert_object_intent(
 ) -> Result<bool, IndexError> {
     let changed = cached_execute(
         connection,
-        "INSERT INTO native_object_intent_v1(operation,fence,object,payload,row_digest)
-         VALUES (?1,?2,?3,?4,?5) ON CONFLICT(operation,fence,object) DO NOTHING",
+        "INSERT INTO native_object_intent_v1(operation_id,fence,object,payload,row_digest)
+         VALUES ((SELECT operation_id FROM native_operation_v1 WHERE operation=?1),?2,?3,?4,?5) ON CONFLICT(operation_id,fence,object) DO NOTHING",
         params![
             operation_key(attempt.operation)?,
             int(attempt.fence)?,
@@ -1105,7 +1123,7 @@ fn require_reserved_intent(
         connection,
         "SELECT CASE WHEN typeof(payload)='blob' AND length(payload) BETWEEN 1 AND ?4 THEN payload END,
                 CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
-         FROM native_object_intent_v1 WHERE operation=?1 AND fence=?2 AND object=?3",
+         FROM native_object_intent_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND fence=?2 AND object=?3",
         params![
             operation_key(attempt.operation)?,
             int(attempt.fence)?,
@@ -1183,7 +1201,7 @@ fn require_intent_with_attempt_key(
     attempt_key: &mut Option<(Vec<u8>, i64)>,
 ) -> Result<(), IndexError> {
     let canonical = canonical_object(object)?;
-    let payload = encode(&canonical)?;
+    let payload = registration_codec::encode(&canonical)?;
     if attempt_key.is_none() {
         *attempt_key = Some((operation_key(attempt.operation)?, int(attempt.fence)?));
     }
@@ -1194,7 +1212,7 @@ fn require_intent_with_attempt_key(
         connection,
         "SELECT CASE WHEN typeof(payload)='blob' AND length(payload) BETWEEN 1 AND ?4 THEN payload END,
                 CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
-         FROM native_object_intent_v1 WHERE operation=?1 AND fence=?2 AND object=?3",
+         FROM native_object_intent_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND fence=?2 AND object=?3",
         params![
             operation,
             fence,
@@ -1460,13 +1478,22 @@ fn renew_claim(
     };
     let tx = begin(&mut guard)?;
     let now = catalog_now_ms(&tx, catalog.clock.now_unix_ms())?;
-    let (mut row, validated_owned) = live_claim_with_assignment(&tx, &claim, now)?;
+    let observer = grant.map(|_grant| catalog);
+    let (mut row, validated_owned) = live_claim_with_assignment(&tx, &claim, now, observer)?;
     let owned = if let Some(grant) = grant {
         let assigned = match validated_owned {
             Some(assignment) => assignment,
             // Preserve the original owned-row error priority for a malformed
             // grant supplied against a manual claim.
-            None => owned_work::read_owned(&tx, &claim.intent)?.ok_or(IndexError::WorkFenceLost)?,
+            None => owned_work::read_owned(&tx, &claim.intent)?.ok_or_else(|| {
+                fence_lost(
+                    observer,
+                    DiagnosticOwnedRenewalRefusalReasonV1::MissingAssignment,
+                    now,
+                    None,
+                    None,
+                )
+            })?,
         };
         if row.ownership != WorkOwnership::Managed
             || !assigned.active
@@ -1476,7 +1503,18 @@ fn renew_claim(
             || assigned.dispatches != grant.ordinal
             || assigned.dispatches != grant.assignment.dispatches
         {
-            return Err(IndexError::WorkFenceLost);
+            let lease_until_ms = if let WorkStatus::Claimed(current) = row.status {
+                Some(current.lease_until_ms)
+            } else {
+                None
+            };
+            return Err(fence_lost(
+                observer,
+                DiagnosticOwnedRenewalRefusalReasonV1::GrantMismatch,
+                now,
+                lease_until_ms,
+                Some(assigned.deadline_ms),
+            ));
         }
         Some(assigned)
     } else if row.ownership == WorkOwnership::Managed {
@@ -1487,7 +1525,13 @@ fn renew_claim(
         None
     };
     let WorkStatus::Claimed(current) = row.status else {
-        return Err(IndexError::WorkFenceLost);
+        return Err(fence_lost(
+            observer,
+            DiagnosticOwnedRenewalRefusalReasonV1::NotClaimed,
+            now,
+            None,
+            None,
+        ));
     };
     let renewed = WorkClaim {
         intent: claim.intent,
@@ -1579,7 +1623,7 @@ fn read_work_by_key(
 ) -> Result<Option<WorkRow>, IndexError> {
     let (selected, decoded) = {
         let mut statement = connection
-            .prepare(
+            .prepare_cached(
                 "SELECT operation,workspace,epoch,sequence,status,owner_mode,ready_since_ms,lease_until_ms,payload,row_digest
                  FROM native_work_v1 WHERE work=?1",
             )
@@ -1715,10 +1759,10 @@ fn validate_work_sql_row(
         | WorkStatus::Blocked(_) => {}
     }
     for reference in work_roots(&decoded.intent) {
-        verify_work_root(connection, &decoded.intent, reference)?;
+        verify_work_root(connection, key, reference)?;
     }
     if let Some(prepared) = &decoded.prepared {
-        verify_work_root(connection, &decoded.intent, prepared.artifact)?;
+        verify_work_root(connection, key, prepared.artifact)?;
     }
     Ok(decoded)
 }
@@ -1905,19 +1949,14 @@ fn validate_work_scope(connection: &Connection, intent: &WorkIntent) -> Result<(
     Ok(())
 }
 
-fn work_roots(intent: &WorkIntent) -> Vec<ObjectRef> {
-    match intent.scope {
-        WorkScope::Owner { expected, .. } => [expected.source, expected.projection]
-            .into_iter()
-            .flatten()
-            .collect(),
+fn work_roots(intent: &WorkIntent) -> impl Iterator<Item = ObjectRef> {
+    let roots = match intent.scope {
+        WorkScope::Owner { expected, .. } => [expected.source, expected.projection, None],
         WorkScope::ProjectionDomain { source, .. } => {
             [source.owners.0, source.paths.0, source.frontiers.0]
-                .into_iter()
-                .flatten()
-                .collect()
         }
-    }
+    };
+    roots.into_iter().flatten()
 }
 
 fn protect_work_root(
@@ -1956,23 +1995,24 @@ fn protect_work_root(
     Ok(())
 }
 
+// The caller has already compared this selected key with the decoded intent.
+// Reuse only that local identity; each custody row is still read and checked.
 fn verify_work_root(
     connection: &Connection,
-    intent: &WorkIntent,
+    key: &[u8],
     reference: ObjectRef,
 ) -> Result<(), IndexError> {
-    let key = work_key(intent)?;
     let object = object_key(reference);
-    let stored: Vec<u8> = connection
-        .query_row(
-            "SELECT row_digest FROM native_work_object_v1 WHERE work=?1 AND object=?2",
-            params![&key, &object],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| sql(&error))?
-        .ok_or_else(|| IndexError::Storage("work root custody missing".into()))?;
-    if stored != fields_digest(b"qidx.native.workobject.v1", &(&key, &object))? {
+    let stored: Vec<u8> = cached_query_row(
+        connection,
+        "SELECT row_digest FROM native_work_object_v1 WHERE work=?1 AND object=?2",
+        params![key, &object],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| sql(&error))?
+    .ok_or_else(|| IndexError::Storage("work root custody missing".into()))?;
+    if stored != fields_digest(b"qidx.native.workobject.v1", &(key, &object))? {
         return Err(IndexError::Storage(
             "work root custody digest mismatch".into(),
         ));
@@ -1981,20 +2021,36 @@ fn verify_work_root(
 }
 
 fn live_claim(connection: &Connection, claim: &WorkClaim, now: u64) -> Result<WorkRow, IndexError> {
-    live_claim_with_assignment(connection, claim, now).map(|(row, _assignment)| row)
+    live_claim_with_assignment(connection, claim, now, None).map(|(row, _assignment)| row)
 }
 
 fn live_claim_with_assignment(
     connection: &Connection,
     claim: &WorkClaim,
     now: u64,
+    observer: Option<&SqliteCatalog>,
 ) -> Result<(WorkRow, Option<OwnedWorkAssignment>), IndexError> {
-    let row = read_work(connection, &claim.intent)?.ok_or(IndexError::WorkFenceLost)?;
-    validate_live_claim_row(&row, claim, now)?;
+    let row = read_work(connection, &claim.intent)?.ok_or_else(|| {
+        fence_lost(
+            observer,
+            DiagnosticOwnedRenewalRefusalReasonV1::MissingClaim,
+            now,
+            None,
+            None,
+        )
+    })?;
+    validate_live_claim_row(&row, claim, now, observer)?;
     let assignment = if row.ownership == WorkOwnership::Managed {
-        let assignment =
-            owned_work::read_owned(connection, &claim.intent)?.ok_or(IndexError::WorkFenceLost)?;
-        validate_owned_live_claim(&assignment, claim, now)?;
+        let assignment = owned_work::read_owned(connection, &claim.intent)?.ok_or_else(|| {
+            fence_lost(
+                observer,
+                DiagnosticOwnedRenewalRefusalReasonV1::MissingAssignment,
+                now,
+                None,
+                None,
+            )
+        })?;
+        validate_owned_live_claim(&assignment, claim, now, observer)?;
         Some(assignment)
     } else {
         None
@@ -2002,33 +2058,65 @@ fn live_claim_with_assignment(
     Ok((row, assignment))
 }
 
-fn validate_live_claim_row(row: &WorkRow, claim: &WorkClaim, now: u64) -> Result<(), IndexError> {
+fn validate_live_claim_row(
+    row: &WorkRow,
+    claim: &WorkClaim,
+    now: u64,
+    observer: Option<&SqliteCatalog>,
+) -> Result<(), IndexError> {
     let WorkStatus::Claimed(persisted) = row.status else {
-        return Err(IndexError::WorkFenceLost);
+        return Err(fence_lost(
+            observer,
+            DiagnosticOwnedRenewalRefusalReasonV1::NotClaimed,
+            now,
+            None,
+            None,
+        ));
     };
-    if persisted.intent != claim.intent
-        || persisted.fence != claim.fence
-        || now >= persisted.lease_until_ms
-    {
-        return Err(IndexError::WorkFenceLost);
-    }
-    Ok(())
+    let reason = if persisted.intent != claim.intent {
+        DiagnosticOwnedRenewalRefusalReasonV1::ClaimIdentity
+    } else if persisted.fence != claim.fence {
+        DiagnosticOwnedRenewalRefusalReasonV1::ClaimFence
+    } else if now >= persisted.lease_until_ms {
+        DiagnosticOwnedRenewalRefusalReasonV1::LeaseExpired
+    } else {
+        return Ok(());
+    };
+    Err(fence_lost(
+        observer,
+        reason,
+        now,
+        Some(persisted.lease_until_ms),
+        None,
+    ))
 }
 
 fn validate_owned_live_claim(
     assignment: &OwnedWorkAssignment,
     claim: &WorkClaim,
     now: u64,
+    observer: Option<&SqliteCatalog>,
 ) -> Result<(), IndexError> {
-    if !assignment.active
-        || assignment.dispatches == 0
-        || now >= assignment.deadline_ms
-        || !matches!(assignment.request.kind, UpdateKind::Materialize { claim: owned }
+    let reason = if !assignment.active {
+        DiagnosticOwnedRenewalRefusalReasonV1::InactiveAssignment
+    } else if assignment.dispatches == 0 {
+        DiagnosticOwnedRenewalRefusalReasonV1::UndispatchedAssignment
+    } else if now >= assignment.deadline_ms {
+        DiagnosticOwnedRenewalRefusalReasonV1::ExecutionExpired
+    } else if !matches!(assignment.request.kind, UpdateKind::Materialize { claim: owned }
             if owned.fence == claim.fence && owned.intent == claim.intent)
     {
-        return Err(IndexError::WorkFenceLost);
-    }
-    Ok(())
+        DiagnosticOwnedRenewalRefusalReasonV1::AssignmentClaim
+    } else {
+        return Ok(());
+    };
+    Err(fence_lost(
+        observer,
+        reason,
+        now,
+        None,
+        Some(assignment.deadline_ms),
+    ))
 }
 
 fn validate_materialization_claim(
@@ -2299,6 +2387,35 @@ fn transition_claims(
     Ok(())
 }
 
+fn has_operation_object_custody(
+    connection: &Connection,
+    operation: &[u8],
+    object: &[u8],
+) -> Result<bool, IndexError> {
+    let custody: Option<Option<Vec<u8>>> = cached_query_row(
+        connection,
+        "SELECT CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32
+           THEN row_digest END FROM native_operation_object_v1
+         WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1)
+           AND object=?2",
+        params![operation, object],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| sql(&error))?;
+    match custody {
+        None => Ok(false),
+        Some(Some(checksum))
+            if checksum == fields_digest(b"qidx.native.opobject.v1", &(operation, object))? =>
+        {
+            Ok(true)
+        }
+        Some(_) => Err(IndexError::Storage(
+            "native request custody digest mismatch".into(),
+        )),
+    }
+}
+
 fn read_operation(
     connection: &Connection,
     key: OperationKey,
@@ -2326,21 +2443,8 @@ fn read_operation(
         require_object(connection, operation.immutable.request)?;
         let operation_id = operation_key(key)?;
         let request_id = object_key(operation.immutable.request);
-        let custody: Option<Vec<u8>> = connection
-            .query_row(
-                "SELECT row_digest FROM native_operation_object_v1 WHERE operation=?1 AND object=?2",
-                params![&operation_id, &request_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| sql(&error))?;
-        let Some(custody) = custody else {
+        if !has_operation_object_custody(connection, &operation_id, &request_id)? {
             return Err(IndexError::Storage("native request custody missing".into()));
-        };
-        if custody != fields_digest(b"qidx.native.opobject.v1", &(&operation_id, &request_id))? {
-            return Err(IndexError::Storage(
-                "native request custody digest mismatch".into(),
-            ));
         }
     }
     Ok(Some(operation))
@@ -2566,7 +2670,7 @@ fn ingress_intent(
     .map_err(|error| sql(&error))?;
     row.map(|(payload, checksum)| {
         check_digest(b"qidx.native.ingressintent.v1", &payload, &checksum)?;
-        let prior: RegisteredObject = decode(&payload)?;
+        let prior = registration_codec::decode(&payload)?;
         if prior.reference != object.reference {
             return Err(IndexError::Storage(
                 "native ingress intent key mismatch".into(),
@@ -2675,7 +2779,29 @@ fn delete_ingress_rows(
                 mutations: rows,
             })?;
             for object in &batch {
-                reclaim::release_key(connection, object)?;
+                let reference = reclaim::from_key(object)?;
+                // Admission transfers confirmed objects before removing old
+                // ingress rows. Authenticate that exact current-transaction
+                // custody instead of creating a candidate for GC to dequeue.
+                // Adopted inputs may have no intent; unconfirmed intents have
+                // no operation custody and retain the original release path.
+                budget.charge(WorkUsage {
+                    reads: 1,
+                    bytes: 64,
+                    ..WorkUsage::default()
+                })?;
+                if has_operation_object_custody(connection, operation, object)? {
+                    // Keep the original cleanup fee and additionally fund the
+                    // worst-case fence/lifecycle normalization of adoption.
+                    budget.charge(WorkUsage {
+                        writes: 2,
+                        mutations: 2,
+                        ..WorkUsage::default()
+                    })?;
+                    reclaim::adopt(connection, reference)?;
+                } else {
+                    reclaim::release(connection, reference)?;
+                }
             }
         }
         after.clone_from(last);
@@ -2769,7 +2895,7 @@ fn transfer_ingress_objects(
                 ));
             }
             let changed = connection.execute(
-                "INSERT INTO native_operation_object_v1(operation,object,row_digest) VALUES (?1,?2,?3)",
+                "INSERT INTO native_operation_object_v1(operation_id,object,row_digest) VALUES ((SELECT operation_id FROM native_operation_v1 WHERE operation=?1),?2,?3)",
                 params![&operation,object,fields_digest(b"qidx.native.opobject.v1", &(&operation,object))?],
             ).map_err(|error| sql(&error))?;
             exactly_one(changed, "transfer ingress object custody")?;
@@ -2888,7 +3014,7 @@ impl InputStagingPort for SqliteCatalog {
                     "duplicate ingress reservation".into(),
                 ));
             }
-            let payload = encode(&canonical)?;
+            let payload = registration_codec::encode(&canonical)?;
             if payload.len() > 1_048_576 {
                 return Err(IndexError::ResourceLimited);
             }
@@ -2923,7 +3049,7 @@ impl InputStagingPort for SqliteCatalog {
                 ));
             }
             if ingress_intent(&tx, ingress.operation, object)?
-                != Some(encode(&canonical_object(object)?)?)
+                != Some(registration_codec::encode(&canonical_object(object)?)?)
             {
                 return Err(IndexError::BackendViolation(
                     "ingress confirmation lacks matching allocation intent".into(),
@@ -3213,7 +3339,7 @@ impl ObjectCustodyPort for SqliteCatalog {
         register_confirmed(&tx, objects)?;
         for object in objects {
             let inserted = tx.execute(
-                "INSERT OR IGNORE INTO native_attempt_object_v1(operation,fence,object,row_digest) VALUES (?1,?2,?3,?4)",
+                "INSERT OR IGNORE INTO native_attempt_object_v1(operation_id,fence,object,row_digest) VALUES ((SELECT operation_id FROM native_operation_v1 WHERE operation=?1),?2,?3,?4)",
                 params![operation_key(attempt.operation)?, int(attempt.fence)?, object_key(object.reference),
                     fields_digest(b"qidx.native.attemptobject.v1", &(operation_key(attempt.operation)?, int(attempt.fence)?, object_key(object.reference)))?],
             ).map_err(|error| sql(&error))?;
@@ -3910,7 +4036,7 @@ impl CatalogPublicationPort for SqliteCatalog {
                 }
             }
             let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
-            let (mut completed, assignment) = live_claim_with_assignment(&tx, &claim, now)?;
+            let (mut completed, assignment) = live_claim_with_assignment(&tx, &claim, now, None)?;
             if completed.ownership == WorkOwnership::Managed {
                 let assignment = assignment.as_ref().ok_or(IndexError::WorkFenceLost)?;
                 if assignment.request.operation != publication.attempt.operation {
@@ -4235,7 +4361,15 @@ mod tests {
         }};
     }
 
+    mod checked_registration;
+    mod confirmation_shadows;
+    mod operation_ref_storage;
+    mod payload_storage;
     mod prechecked_children;
+    mod protected_queue;
+    mod registration_payload_format;
+    mod renewal_diagnostics;
+    mod work_read_reuse;
 
     thread_local! {
         static OWNED_RENEW_READS: std::cell::Cell<(u64, u64)> = const {
@@ -4290,7 +4424,11 @@ mod tests {
             }
             counter.set(reads);
         });
-        if sql.starts_with("SELECT") && sql.contains("FROM native_operation_v1 WHERE operation=") {
+        // Count full operation-row reads, not the indexed physical-reference
+        // subquery inside a distinct custody statement.
+        if sql.starts_with(
+            "SELECT workspace,epoch,payload,row_digest FROM native_operation_v1 WHERE operation=",
+        ) {
             OWNED_OPERATION_READS.with(|counter| counter.set(counter.get().saturating_add(1)));
         }
     }
@@ -4564,13 +4702,13 @@ mod tests {
         check!(!released.has_more);
         let direct = Connection::open(catalog.path())?;
         let saved: i64 = direct.query_row(
-            "SELECT count(*) FROM native_operation_object_v1 WHERE operation=?1 AND object=?2",
+            "SELECT count(*) FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND object=?2",
             params![operation_key(original.key)?, object_key(original.request)],
             |row| row.get(0),
         )?;
         check_eq!(saved, 1);
         let results: i64 = direct.query_row(
-            "SELECT count(*) FROM native_attempt_object_v1 WHERE operation=?1",
+            "SELECT count(*) FROM native_attempt_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1)",
             params![operation_key(original.key)?],
             |row| row.get(0),
         )?;
@@ -4605,7 +4743,7 @@ mod tests {
         let direct = Connection::open(catalog.path())?;
         check_eq!(
             direct.query_row(
-                "SELECT count(*) FROM native_operation_object_v1 WHERE operation=?1",
+                "SELECT count(*) FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1)",
                 params![operation_key(original.key)?],
                 |row| row.get::<_, i64>(0)
             )?,
@@ -4622,7 +4760,7 @@ mod tests {
         let direct = Connection::open(catalog.path())?;
         check_eq!(
             direct.query_row(
-                "SELECT count(*) FROM native_operation_object_v1 WHERE operation=?1",
+                "SELECT count(*) FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1)",
                 params![operation_key(next_operation.key)?],
                 |row| row.get::<_, i64>(0)
             )?,
@@ -4694,7 +4832,7 @@ mod tests {
         let direct = Connection::open(catalog.path())?;
         check_eq!(
             direct.execute(
-                "DELETE FROM native_operation_object_v1 WHERE operation=?1 AND object=?2",
+                "DELETE FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND object=?2",
                 params![operation_key(first_op.key)?, object_key(first_op.request)]
             )?,
             1
@@ -5553,7 +5691,7 @@ mod tests {
                     registration.reference
                 )?);
                 let transferred: i64 = connection.query_row(
-                    "SELECT COUNT(*) FROM native_operation_object_v1 WHERE operation=?1",
+                    "SELECT COUNT(*) FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1)",
                     params![operation_key(operation.key)?],
                     |row| row.get(0),
                 )?;
@@ -7525,7 +7663,7 @@ mod tests {
         );
         let direct = Connection::open(catalog.path())?;
         let removed_custody = direct.execute(
-            "DELETE FROM native_operation_object_v1 WHERE operation=?1 AND object=?2",
+            "DELETE FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND object=?2",
             params![operation_key(operation.key)?, object_key(operation.request)],
         )?;
         check_eq!(removed_custody, 1);
@@ -8461,7 +8599,7 @@ mod tests {
         let operation_key = operation_key(operation.key)?;
         let direct = Connection::open(catalog.path())?;
         let protected: i64 = direct.query_row(
-            "SELECT COUNT(*) FROM native_operation_object_v1 WHERE operation=?1",
+            "SELECT COUNT(*) FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1)",
             params![operation_key],
             |row| row.get(0),
         )?;
@@ -8562,7 +8700,7 @@ mod tests {
             Some(ingress)
         );
         let transferred: i64 = catalog.lock()?.query_row(
-            "SELECT COUNT(*) FROM native_operation_object_v1 WHERE operation=?1",
+            "SELECT COUNT(*) FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1)",
             params![operation_key(operation.key)?],
             |row| row.get(0),
         )?;
@@ -9339,9 +9477,18 @@ mod tests {
                     .spawn()?,
             );
             let ready = root.path().join("open-phase-ready");
+            let mut reached_phase = false;
             for _ in 0..250 {
-                if ready.exists() {
-                    break;
+                // File creation precedes its payload write. Wait for the
+                // complete fixed phase before killing the crash child.
+                match std::fs::read_to_string(&ready) {
+                    Ok(observed) if observed == phase => {
+                        reached_phase = true;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
                 }
                 if child.0.try_wait()?.is_some() {
                     return Err(
@@ -9350,7 +9497,7 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            if !ready.exists() {
+            if !reached_phase {
                 return Err(format!("read session child did not reach {phase} failpoint").into());
             }
             check_eq!(std::fs::read_to_string(&ready)?, phase);
@@ -9522,7 +9669,9 @@ mod tests {
         let connection = Connection::open(catalog.path())?;
         let operation = operation_key(key)?;
         let count = |table: &str| -> Result<i64, Box<dyn Error>> {
-            let query = format!("SELECT COUNT(*) FROM {table} WHERE operation=?1");
+            let query = format!(
+                "SELECT COUNT(*) FROM {table} WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1)"
+            );
             Ok(connection.query_row(&query, params![operation], |row| row.get(0))?)
         };
         Ok((
@@ -10103,7 +10252,7 @@ mod tests {
         let connection = Connection::open(catalog.path())?;
         check_eq!(
             connection.execute(
-                "UPDATE native_object_intent_v1 SET row_digest=?1 WHERE operation=?2",
+                "UPDATE native_object_intent_v1 SET row_digest=?1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?2)",
                 params![vec![0_u8; 32], operation_key(operation.key)?],
             )?,
             1
@@ -11918,7 +12067,11 @@ mod tests {
                     // checksum; canonical bounds still have to reject it.
                     let invalid =
                         RegisteredObject::unscoped(parent.reference, 0, parent.children.clone());
-                    let payload = encode(&invalid)?;
+                    let mut payload = registration_codec::encode(&parent)?;
+                    payload
+                        .get_mut(32..40)
+                        .ok_or("missing registration bytes field")?
+                        .fill(0);
                     check_eq!(
                         connection.execute(
                             "UPDATE native_object_v1 SET payload=?1,row_digest=?2 WHERE object=?3",
@@ -12030,7 +12183,7 @@ mod tests {
                 let connection = Connection::open(catalog.path())?;
                 let operation = operation_key(request.key)?;
                 let attempt_intents: i64 = connection.query_row(
-                    "SELECT COUNT(*) FROM native_object_intent_v1 WHERE operation=?1",
+                    "SELECT COUNT(*) FROM native_object_intent_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1)",
                     params![&operation],
                     |row| row.get(0),
                 )?;

@@ -321,7 +321,8 @@ fn sdk_batch(
         parent_chunk_id: None,
         source_repo_id: None,
     };
-    let semantic_scopes = semantic_source_scopes_for_chunk_records(std::slice::from_ref(&chunk));
+    let semantic_scopes =
+        semantic_source_scopes_for_chunk_records(&rt.repo(), std::slice::from_ref(&chunk));
     let scope = rt.fixture_source_scope(
         quanta_index_contract::SourceFileKey {
             source_repo_id: rt.repo(),
@@ -416,7 +417,7 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
         source_repo_id: None,
     };
     let semantic_scopes =
-        semantic_source_scopes_for_chunk_records(std::slice::from_ref(&extra_chunk));
+        semantic_source_scopes_for_chunk_records(&rt.repo(), std::slice::from_ref(&extra_chunk));
     let extra_scope = rt.fixture_source_scope(
         quanta_index_contract::SourceFileKey {
             source_repo_id: rt.repo(),

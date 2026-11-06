@@ -1635,7 +1635,13 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         self.services.catalog.renew_work(claim, lease, budget)
     }
 
-    pub fn renew_owned_work(&self, grant: &OwnedWorkGrant) -> Result<WorkClaim, IndexError> {
+    pub fn renew_owned_work(
+        &self,
+        grant: &OwnedWorkGrant,
+        diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+    ) -> Result<WorkClaim, IndexError> {
+        // Synchronous scope binds the Catalog lock/SQL events on this renewal thread.
+        let _scope = self.services.catalog.enter_diagnostic_scope(diagnostic);
         self.services.catalog.renew_owned_work(grant)
     }
 
@@ -2157,16 +2163,26 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             context.budget,
             quanta_index_core::DiagnosticStageV1::BuildPrepare,
         );
-        let built = self
-            .build_members(
+        let built = {
+            let mut phase_budget = diagnostic::phase_budget(context.budget, build_span.as_ref());
+            let mut phase_context = AttemptContext {
+                attempt: context.attempt,
+                objects: context.objects,
+                maps: context.maps,
+                custody: context.custody,
+                scratch: context.scratch,
+                budget: &mut phase_budget,
+            };
+            self.build_members(
                 base,
                 &prior_profile,
                 &profile,
                 next_source,
                 delta.as_ref(),
-                &mut context,
+                &mut phase_context,
             )
-            .await;
+            .await
+        };
         let (members, coverage, work) = crate::diagnostic::finish_work(
             context.budget,
             DiagnosticStageV1::BuildPrepare,
@@ -2191,8 +2207,12 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             coverage,
         };
         next.identity = identity::view_identity(&next)?;
-        let (work_actions, mut actions) =
-            WorkSpool::seal_lazy(work, context.objects, context.budget)?;
+        let seal_span = diagnostic::begin(context.budget, DiagnosticStageV1::NativeWorkSeal);
+        let sealed = {
+            let mut phase_budget = diagnostic::phase_budget(context.budget, seal_span.as_ref());
+            WorkSpool::seal_lazy(work, context.objects, &mut phase_budget)
+        };
+        let (work_actions, mut actions) = diagnostic::finish(seal_span, sealed)?;
         let publication = PreparedPublication {
             attempt,
             source_mode: request.kind.source_mode(),
@@ -2631,17 +2651,14 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                             context.budget,
                             DiagnosticStageV1::NativeCoverageScan,
                         );
-                        let mut changes = match source::CoverageChanges::new(
-                            source,
-                            applied_delta,
-                            context.attempt,
-                            context.maps,
-                            context.objects,
-                        ) {
-                            Ok(changes) => changes,
-                            Err(error) => return scan.finish(context.budget, Err(error)),
-                        };
-                        let scanned = (|| -> Result<(), IndexError> {
+                        scan.run(context, |context| {
+                            let mut changes = source::CoverageChanges::new(
+                                source,
+                                applied_delta,
+                                context.attempt,
+                                context.maps,
+                                context.objects,
+                            )?;
                             while let Some(change) = changes.next_mutation(context.budget)? {
                                 if edits.is_none() {
                                     edits = Some(EditSpool::open(context.scratch, context.budget)?);
@@ -2788,13 +2805,12 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                                 }
                             }
                             Ok(())
-                        })();
-                        scan.finish(context.budget, scanned)?;
+                        })?;
                         let map_stage = diagnostic::WorkStage::begin(
                             context.budget,
                             DiagnosticStageV1::NativeCoverageMapApply,
                         );
-                        let mapped = (|| -> Result<(MapRoot, MapRoot), IndexError> {
+                        let (owners, missing) = map_stage.run(context, |context| {
                             Ok(if let Some(edits) = edits {
                                 flush_coverage_leaves(&mut pending_coverage, &edits, context)?;
                                 if pending_coverage.shared_pending_roots {
@@ -2827,8 +2843,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                                 // changes and must be published below.
                                 (prior_owners, prior_missing)
                             })
-                        })();
-                        let (owners, missing) = map_stage.finish(context.budget, mapped)?;
+                        })?;
                         let status = if missing.0.is_some() {
                             CoverageStatus::Partial { missing }
                         } else {
@@ -2838,17 +2853,28 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                             context.budget,
                             DiagnosticStageV1::NativeSearchablePrepare,
                         );
-                        let prepared = self
-                            .registry
-                            .prepare_searchable(
-                                spec,
-                                prior_coverage.as_ref(),
-                                owners,
-                                None,
-                                self.services.object_maps.as_ref(),
-                                context,
-                            )?
-                            .await;
+                        let prepared = {
+                            let mut phase_budget =
+                                diagnostic::phase_budget(context.budget, search_stage.span());
+                            let mut phase_context = AttemptContext {
+                                attempt: context.attempt,
+                                objects: context.objects,
+                                maps: context.maps,
+                                custody: context.custody,
+                                scratch: context.scratch,
+                                budget: &mut phase_budget,
+                            };
+                            self.registry
+                                .prepare_searchable(
+                                    spec,
+                                    prior_coverage.as_ref(),
+                                    owners,
+                                    None,
+                                    self.services.object_maps.as_ref(),
+                                    &mut phase_context,
+                                )?
+                                .await
+                        };
                         let searchable = search_stage.finish(context.budget, prepared)?;
                         let binding = CoverageBinding {
                             instance,
@@ -2866,8 +2892,9 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                             context.budget,
                             DiagnosticStageV1::NativeCoverageSave,
                         );
-                        let saved = save_prepared_coverage(&binding, searchable, context);
-                        Some(save_stage.finish(context.budget, saved)?)
+                        Some(save_stage.run(context, |context| {
+                            save_prepared_coverage(&binding, searchable, context)
+                        })?)
                     }
                     _ => None,
                 }
@@ -2878,7 +2905,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         }
         let assembly =
             diagnostic::WorkStage::begin(context.budget, DiagnosticStageV1::NativeMemberAssemble);
-        let assembled = (|| {
+        assembly.run(context, |context| {
             // Sorted unique member keys are required by the persistent map port.
             work_batch.flush(&mut work, context.scratch, context.budget)?;
             edits.sort();
@@ -2886,8 +2913,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             let members = context.apply(base.members, edits.as_slice())?;
             let coverage = context.apply(base.coverage, coverage_edits.as_slice())?;
             Ok((members, coverage, work))
-        })();
-        assembly.finish(context.budget, assembled)
+        })
     }
 
     async fn projection_advance(

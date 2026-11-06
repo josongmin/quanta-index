@@ -9,6 +9,7 @@ use arrow_array::{
 };
 use futures::TryStreamExt as _;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
+use quanta_index_contract::{RepoId, RepoRelativePath, SourceFileKey};
 use quanta_index_core::CoreError;
 use sha2::{Digest as _, Sha256};
 
@@ -18,8 +19,9 @@ use crate::layout::{
     COLUMN_CORPUS_KIND, COLUMN_EMBEDDING_ID, COLUMN_EMBEDDING_INPUT_DIGEST, COLUMN_END_LINE,
     COLUMN_GENERATED, COLUMN_LANGUAGE, COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_PACKAGE,
     COLUMN_PARENT_OWNER_ID, COLUMN_RECORD_ID, COLUMN_RENDER_POLICY_DIGEST,
-    COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET, COLUMN_SOURCE_DOC_ID, COLUMN_SOURCE_ROLE,
-    COLUMN_START_LINE, COLUMN_SYMBOL_KIND, COLUMN_VECTOR, COLUMN_VECTOR_DIGEST, COLUMN_VISIBILITY,
+    COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET, COLUMN_SOURCE_DOC_ID, COLUMN_SOURCE_REPO_ID,
+    COLUMN_SOURCE_ROLE, COLUMN_START_LINE, COLUMN_SYMBOL_KIND, COLUMN_VECTOR, COLUMN_VECTOR_DIGEST,
+    COLUMN_VISIBILITY,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,7 +115,8 @@ fn encode_sha256_v1(digest: impl IntoIterator<Item = u8>) -> String {
 }
 
 /// Non-nullable string columns every canonical semantic row commits to.
-const REQUIRED_NAMES: [&str; 13] = [
+const REQUIRED_NAMES: [&str; 14] = [
+    COLUMN_SOURCE_REPO_ID,
     COLUMN_REPO_RELATIVE_PATH,
     COLUMN_OWNER_ID,
     COLUMN_OWNER_KIND,
@@ -194,6 +197,8 @@ async fn semantic_row_commitment_inner_v1(
         let native_row_ids = column_as::<UInt64Array>(&batch, "_rowid", "UInt64")?;
         let embedding_ids = column_as::<StringArray>(&batch, COLUMN_EMBEDDING_ID, "Utf8")?;
         let record_ids = column_as::<StringArray>(&batch, COLUMN_RECORD_ID, "Utf8")?;
+        let source_repo_ids = column_as::<StringArray>(&batch, COLUMN_SOURCE_REPO_ID, "Utf8")?;
+        let source_paths = column_as::<StringArray>(&batch, COLUMN_REPO_RELATIVE_PATH, "Utf8")?;
         let required = REQUIRED_NAMES
             .map(|name| column_as::<StringArray>(&batch, name, "Utf8"))
             .into_iter()
@@ -231,6 +236,17 @@ async fn semantic_row_commitment_inner_v1(
                 })?;
             let embedding_id = required_str(embedding_ids, row, COLUMN_EMBEDDING_ID)?;
             let record_id = required_str(record_ids, row, COLUMN_RECORD_ID)?;
+            let source_repo_id = required_str(source_repo_ids, row, COLUMN_SOURCE_REPO_ID)?;
+            let source_path = required_str(source_paths, row, COLUMN_REPO_RELATIVE_PATH)?;
+            let source_file = SourceFileKey {
+                source_repo_id: RepoId::new(source_repo_id).map_err(|error| {
+                    CoreError::Storage(format!("semantic row root: invalid source repo: {error}"))
+                })?,
+                repo_relative_path: RepoRelativePath::new(source_path),
+            };
+            source_file.validate().map_err(|error| {
+                CoreError::Storage(format!("semantic row root: invalid source path: {error}"))
+            })?;
             let _corpus = present_corpora
                 .insert(required_str(corpus_kinds, row, COLUMN_CORPUS_KIND)?.to_owned());
             let _schema = card_schema_versions.insert(card_schema.value(row));

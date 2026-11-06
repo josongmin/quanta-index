@@ -1307,6 +1307,7 @@ def validate_suite(
                 "source_oracle",
                 "evaluation_contract",
                 "intended_name",
+                "semantic_input",
             ],
             "task",
         )
@@ -1424,6 +1425,11 @@ def validate_suite(
             oracle_query = intended
         query_hash = sha(task["query_sha256"], "query_sha256")
         require(digest(query.encode("utf-8")) == query_hash, "query hash mismatch: " + task_id)
+        if "semantic_input" in task:
+            try:
+                query_plan_contract.go_trace_semantic_digest(task["semantic_input"])
+            except query_plan_contract.QueryPlanError as exc:
+                raise EvidenceError(f"invalid semantic input for {task_id}: {exc}") from exc
         require(
             query_hash not in seen_queries, "query leakage/duplication across tasks: " + task_id
         )
@@ -1634,6 +1640,7 @@ def validate_suite(
                 "task_id": task["task_id"],
                 "query": task["query"],
                 "query_sha256": task["query_sha256"],
+                **({"semantic_input": task["semantic_input"]} if "semantic_input" in task else {}),
             }
             for task in tasks
             if task["split"] == "eval"
@@ -1766,6 +1773,10 @@ def _validate_run(
     require(
         type(version) is int and version in (RUNNER_SCHEMA_VERSION, *RUNNER_LEGACY_SCHEMA_VERSIONS),
         "unsupported runner schema",
+    )
+    require(
+        version == RUNNER_SCHEMA_VERSION or not any("semantic_input" in t for t in pack["tasks"]),
+        "Go trace input requires runner v5",
     )
     span_protocol = run.get("span_accounting_version")
     require(
@@ -2108,7 +2119,10 @@ def _validate_run(
                     )
                     try:
                         expected_identity = query_plan_contract.derive_query_identity(
-                            profile["policy"], pack_task["query"], profile["config"] or None
+                            profile["policy"],
+                            pack_task["query"],
+                            profile["config"] or None,
+                            semantic_input=pack_task.get("semantic_input"),
                         )
                     except query_plan_contract.QueryPlanError as exc:
                         # A query the policy cannot plan can never have produced
@@ -2117,6 +2131,10 @@ def _validate_run(
                             f"query cannot be planned under {profile['policy']}: {key}: {exc}"
                         ) from exc
                 else:
+                    require(
+                        "semantic_input" not in pack_task,
+                        f"Go trace input requires a Quanta capture: {key}",
+                    )
                     identity = object_keys(
                         result["query_identity"],
                         ["original_query_sha256", "submitted_query_sha256"],

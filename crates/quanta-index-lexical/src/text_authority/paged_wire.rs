@@ -210,15 +210,29 @@ pub(crate) fn term_prefix(surface: u8, term: &str) -> Result<Vec<u8>, CoreError>
         CoreError::InvalidContract(format!("lexical: Native term key width: {error}"))
     })?;
     let mut key = Vec::new();
-    let capacity = 3_usize.checked_add(term.len()).ok_or_else(|| {
+    let capacity = 5_usize.checked_add(term.len()).ok_or_else(|| {
         CoreError::InvalidContract("lexical: Native term key length overflows".into())
     })?;
     key.try_reserve(capacity).map_err(|error| {
         CoreError::Storage(format!("lexical: reserve Native term key: {error}"))
     })?;
     key.push(surface);
-    key.extend_from_slice(&length.to_be_bytes());
-    key.extend_from_slice(term.as_bytes());
+    if term.len() <= 245 {
+        key.extend_from_slice(&length.to_be_bytes());
+        key.extend_from_slice(term.as_bytes());
+    } else {
+        // The map permits at most 256 bytes including the eight-byte segment
+        // suffix. Retain the legacy exact encoding below that boundary. Long
+        // terms use a disjoint tagged route; the posting page still carries
+        // the complete term and the reader compares it exactly.
+        let mut hash = Sha256::new();
+        hash.update(b"native-long-term-route-v1");
+        hash.update([surface]);
+        hash.update(term.as_bytes());
+        key.extend_from_slice(&0_u16.to_be_bytes());
+        key.extend_from_slice(&length.to_be_bytes());
+        key.extend_from_slice(&hash.finalize());
+    }
     Ok(key)
 }
 

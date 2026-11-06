@@ -186,6 +186,10 @@ mod build_bundled {
             println!("cargo:rerun-if-changed=quanta/quanta_capacity_vfs.c");
             println!("cargo:rerun-if-changed=quanta/quanta_capacity_vfs.h");
             println!("cargo:rerun-if-changed=quanta/quanta_native_witness.inc");
+            println!("cargo:rerun-if-changed=quanta/quanta_wal_frame.inc");
+            println!("cargo:rerun-if-changed=quanta/quanta_wal_batch_tests.inc");
+            println!("cargo:rerun-if-changed=quanta/quanta_checkpoint_batch.inc");
+            println!("cargo:rerun-if-changed=quanta/quanta_checkpoint_batch_tests.inc");
             cfg.file("quanta/quanta_capacity_vfs.c")
                 .include(lib_name)
                 .include("quanta")

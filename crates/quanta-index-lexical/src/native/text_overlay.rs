@@ -180,7 +180,8 @@ impl TextOverlayCorpus {
         for owner in self.owners.as_slice() {
             context.budget.checkpoint()?;
             if let Some(inventory) = owner.old_inventory {
-                let inventory_ref = inventory.lookup(context.maps, key, context.budget)?;
+                let inventory_ref =
+                    inventory.lookup(context.objects, context.maps, key, context.budget)?;
                 if validate_overlay_term_membership(
                     self.root,
                     self.recipe,

@@ -60,7 +60,7 @@ fn read_session_service(
         socket,
         work_limits(),
         capabilities,
-        resources,
+        &resources,
         Some(test_reclaim_config()),
         Some(retention),
     )?;

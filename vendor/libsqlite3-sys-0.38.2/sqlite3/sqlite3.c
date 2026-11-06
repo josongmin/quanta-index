@@ -69746,6 +69746,10 @@ static void walRestartHdr(Wal *pWal, u32 salt1){
 ** checkpoint is running (in any other thread or process) at the same
 ** time.
 */
+#ifdef QUANTA_CAPACITY_VFS
+#include "quanta_checkpoint_batch.inc"
+#endif
+
 static int walCheckpoint(
   Wal *pWal,                      /* Wal connection */
   sqlite3 *db,                    /* Check for interrupts on this handle */
@@ -69764,8 +69768,17 @@ static int walCheckpoint(
   u32 mxPage;                     /* Max database page to write */
   int i;                          /* Loop counter */
   volatile WalCkptInfo *pInfo;    /* The checkpoint status information */
+#ifdef QUANTA_CAPACITY_VFS
+  qiv_checkpoint_batch checkpointBatch;
+  int bBatchCheckpoint;
+#endif
 
   szPage = walPagesize(pWal);
+#ifdef QUANTA_CAPACITY_VFS
+  qiv_checkpoint_batch_init(&checkpointBatch);
+  bBatchCheckpoint = szPage>0 && szPage<=QIV_CKPT_MAX_PAGE
+      && qiv_can_batch_checkpoint_pages(pWal->pDbFd, pWal->pWalFd);
+#endif
   testcase( szPage<=32768 );
   testcase( szPage>=65536 );
   pInfo = walCkptInfo(pWal);
@@ -69868,9 +69881,25 @@ static int walCheckpoint(
           if( rc!=SQLITE_OK ) break;
           iOffset = (iDbpage-1)*(i64)szPage;
           testcase( IS_BIG_INT(iOffset) );
+#ifdef QUANTA_CAPACITY_VFS
+          if( bBatchCheckpoint ){
+            /* Each page passed the original reader/safe-frame/interrupt
+            ** checks and completed its original WAL read. Only adjacent
+            ** database offsets may share one real admitted write. */
+            rc = qiv_checkpoint_batch_append(
+                &checkpointBatch, pWal->pDbFd, zBuf, szPage, iOffset);
+          }else
+#endif
           rc = sqlite3OsWrite(pWal->pDbFd, zBuf, szPage, iOffset);
           if( rc!=SQLITE_OK ) break;
         }
+#ifdef QUANTA_CAPACITY_VFS
+        if( rc==SQLITE_OK && bBatchCheckpoint ){
+          rc = qiv_checkpoint_batch_flush(&checkpointBatch, pWal->pDbFd);
+        }
+        /* On read, interrupt or write failure discard the bounded pending
+        ** prefix. The WAL remains authoritative; backfill is not published. */
+#endif
         sqlite3OsFileControl(pWal->pDbFd, SQLITE_FCNTL_CKPT_DONE, 0);
 
         /* If work was actually accomplished... */
@@ -71507,6 +71536,10 @@ static int walWriteToLog(
   return rc;
 }
 
+#ifdef QUANTA_CAPACITY_VFS
+#include "quanta_wal_frame.inc"
+#endif
+
 /*
 ** Write out a single frame of the WAL
 */
@@ -71521,6 +71554,11 @@ static int walWriteOneFrame(
   u8 aFrame[WAL_FRAME_HDRSIZE];   /* Buffer to assemble frame-header in */
   pData = pPage->pData;
   walEncodeFrame(p->pWal, pPage->pgno, nTruncate, pData, aFrame);
+#ifdef QUANTA_CAPACITY_VFS
+  if( p->szPage<=QIV_MAX_PACKED_WAL_PAGE && qiv_can_pack_wal_frame(p->pFd) ){
+    return qiv_write_packed_wal_frame(p, aFrame, pData, iOffset);
+  }
+#endif
   rc = walWriteToLog(p, aFrame, sizeof(aFrame), iOffset);
   if( rc ) return rc;
   /* Write the page data */
@@ -71711,6 +71749,30 @@ static int walFrames(
         continue;
       }
     }
+
+#ifdef QUANTA_CAPACITY_VFS
+    if( iFirst==0 && szPage>0 && szPage<=QIV_MAX_PACKED_WAL_PAGE
+        && qiv_can_pack_wal_frame(w.pFd) ){
+      PgHdr *pBatchLast = 0;
+      PgHdr *pWritten;
+      int nBatch = 0;
+      assert( iOffset==walFrameOffset(iFrame+1, szPage) );
+      rc = qiv_write_wal_append_batch(
+          &w, p, nTruncate, isCommit, iOffset, &pBatchLast, &nBatch
+      );
+      if( rc ) return rc;
+      assert( pBatchLast!=0 && nBatch>0 && nBatch<=QIV_MAX_WAL_APPEND_BATCH );
+      for(pWritten=p; pWritten; pWritten=pWritten->pDirty){
+        pWritten->flags |= PGHDR_WAL_APPEND;
+        if( pWritten==pBatchLast ) break;
+      }
+      iFrame += (u32)nBatch;
+      iOffset += (i64)nBatch*szFrame;
+      pLast = pBatchLast;
+      p = pBatchLast;
+      continue;
+    }
+#endif
 
     iFrame++;
     assert( iOffset==walFrameOffset(iFrame, szPage) );

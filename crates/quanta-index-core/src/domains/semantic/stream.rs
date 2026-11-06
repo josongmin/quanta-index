@@ -10,8 +10,8 @@
 //! in the sealed manifest.
 //!
 //! The unit a window is cut on is the *owner scope*: every embedding of one
-//! `(corpus_kind, owner_kind, owner_id)` travels in one window, because that
-//! triple is what the build deletes before it appends. A window carries at
+//! `(corpus_kind, owner_kind, owner_id, source_file)` travels in one window,
+//! because that tuple is what the build deletes before it appends. A window carries at
 //! most [`SEMANTIC_STREAM_WINDOW_SCOPES`] owner scopes and at most
 //! [`SEMANTIC_STREAM_WINDOW_VECTOR_BYTES`] of vectors; an owner scope whose
 //! vectors alone exceed the byte bound cannot be carried by any window and
@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use quanta_index_contract::{
     BatchIngestMode, EmbeddingModelContract, EmbeddingRecord, GenerationPin, ManifestGeneration,
     SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
-    SemanticTombstoneScope,
+    SemanticTombstoneScope, SourceFileKey,
 };
 
 use crate::diagnostic_trace::DiagnosticContextV1;
@@ -234,13 +234,16 @@ fn vector_bytes_of(vector: &[f32]) -> Result<u64, CoreError> {
     SemanticStreamWindowPolicy::vector_bytes(vector.len(), 1)
 }
 
-/// The `(corpus_kind, owner_kind, owner_id)` triple the build deletes by.
+/// The `(corpus_kind, owner_kind, owner_id, source_file)` key the build deletes by.
 #[must_use]
-pub fn owner_key_v1(embedding: &EmbeddingRecord) -> (&'static str, &'static str, &str) {
+pub fn owner_key_v1(
+    embedding: &EmbeddingRecord,
+) -> (&'static str, &'static str, &str, &SourceFileKey) {
     (
         embedding.corpus_kind.as_code_str(),
         embedding.owner_kind.as_code_str(),
         embedding.owner_id.as_ref(),
+        &embedding.source_file,
     )
 }
 
@@ -657,7 +660,8 @@ impl<'a> ResidentScopeSource<'a> {
         let mut pending = VecDeque::new();
         for (scope_index, scope) in scopes.iter().enumerate() {
             let mut order: Vec<ResidentOwnerGroup> = Vec::new();
-            let mut position_by_owner: BTreeMap<(&str, &str, &str), usize> = BTreeMap::new();
+            let mut position_by_owner: BTreeMap<(&str, &str, &str, &SourceFileKey), usize> =
+                BTreeMap::new();
             for (embedding_index, embedding) in scope.embeddings.iter().enumerate() {
                 let bytes = vector_bytes_of(&embedding.vector)?;
                 let key = owner_key_v1(embedding);

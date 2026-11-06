@@ -5,9 +5,21 @@ Status: `HISTORICAL RECOVERY INDEX`
 Accepted contracts live in [ADRs](adr/README.md); current Index work lives in
 [Oct-22 SSOT](plans/oct-22-finalizing/README.md).
 Historical commands, counts and receipts do not qualify newer source.
-Dated migration sections below describe their then-current paths; the Oct-22 SSOT alone owns current work.
+Dated sections describe their then-current paths. The Oct-22 epics own full-product scope;
+[Nov-5 bugbash](plans/nov-5-indexing-bugbash/README.md) owns current Native indexing performance RCA and new packets.
 
 ## Historical record recovery
+
+### 2026-11-05 Native indexing RCA consolidation
+
+Current RCA, unresolved decisions and implementation/test packets live in
+[Nov-5 bugbash](plans/nov-5-indexing-bugbash/README.md).
+The prior [E07 body](history/nov-5-indexing-bugbash/E07-performance-operations.md)
+and [E07 wave section](history/nov-5-indexing-bugbash/E07-WAVES.md) retain their
+dated content with relative links rebased to the archive location.
+The E07 contract entry retains Fixed profiles and DoD. Existing wave anchors
+resolve to their historical bodies. Source-bound VALIDATION results remain
+at their original paths. This migration adds no runtime or performance proof.
 
 ### 2026-11-05 forwarding page retirement
 
