@@ -2,7 +2,7 @@
 
 ## B03-B2 — owner-local block의 물리 설치 단위
 
-계약 확정, Kernel realstore oracle는 source 작성 중이고 통합 검증은 NOT_RUN이다. a608의 typed fee 수리와 f19 집중 회귀는
+계약과 코드 합류 완료, f20 통합 집중 검증은 admission 대기·결과 NOT_RUN이다. a608의 typed fee 수리와 f19 집중 회귀는
 통과했지만 r6 Medium도 bytes cap에서 실패했다. 다음 후보는 제품 예산을 그대로 두고
 owner-local occurrence block의 한도를 **8,192B / 512 canonical terms**로 바꾼다.
 소스 기반 seed42 투영은 Medium512→256개, Large12,288→4,096개 block이다.
@@ -24,6 +24,15 @@ owner-local occurrence block의 한도를 **8,192B / 512 canonical terms**로 �
 - 제품 수용: Medium1M/512MiB, Large dispatch120초, 기존 query work/memory/SLO를
   유지한다. query64 cache의 더 큰 metadata와 cold retained-read bytes를 보고한다.
   객체 수 감소만으로 채택하지 않으며 외부 기존 채팅의 ANN/SDK 경로를 재구현하지 않는다.
+
+합류 소스는 외부 stable `s3`의 `878be6c9e4e33dd35b9c80cc5b450c2cf3f6f099`다.
+이전 a608 대비 codec/producer/reader gold/독립 oracle의6개 파일이 달라졌고, 소유
+입력15개를 고정했다. 새 output policy(admission `[31;32]`)는
+`b2c1df18b452485d69ef4e687b7a3519f07cfff76fe25f0a665d8706258d7d95`다.
+직전 `eef15862…`(4KiB/128행)와 `559e0482…`(leaf-only)는 typed refusal
+oracle로 남긴다. 두 이전 policy의 자동 변환·fallback은 없다. f20 Native/Kernel
+batch는 queued 상태이며 아직 compiler/body/terminal 결과가 없다. r7 제품 실행은
+미시작이다. 이 source에 f19/r6 증거를 승격하지 않는다.
 
 현행 RCA와 범위는 [README](README.md)와 [RCA](RCA.md)가 소유한다.
 이 문서는 새 패킷의 계약과 완료 조건이다. B01 계약은 확정했고 B02 생산자·소비자와
@@ -749,8 +758,9 @@ profile-first 초기 Patch의130개 ASCII lowercase term/260개 canonical select
 하나의 block ref로 저장되는지, public reader의 첫 Sensitive·마지막 Folded TF/positions,
 마지막 term 변경 뒤 old/current pin·재오픈을 검증하도록 추가한다. 기존 같은 파일의
 두 source-order lifecycle case가 last-pin GC를 검증하므로 GC harness를 복제하지 않는다.
-이 oracle source의 compile/body는 아직 NOT_RUN이다. codec/producer lane의 새
-8KiB/512-term 정책과 합류한 frozen source에서 Root가 집중 검증한다.
+이 oracle와 codec/producer lane의 8KiB/512-term 정책은 frozen source
+`878be6c9…`에 합류했다. f20 compile/body는 아직 NOT_RUN이고 Root가 단일 큐에서
+집중 검증한다.
 
 Root 통합 상세: `OccurrenceReader`의 build2/query64 bounded block DATA window,
 `read_retained` reply의 registration+payload 동일성, exact `(ref,term)` 선택을 연결한다.
@@ -759,10 +769,11 @@ ref-only scalar/spill에 block count를 쓰지 않는다. prior/query의 cache h
 retained-read charge/cancel 경계를 그대로 지난다. 진단 count의 full-validation 실패와
 retained-read 거절을 혼동하지 않는다(후자는 span error로 관측).
 
-현재 policy gold(admission `[31;32]`)는
-`eef15862a20af11bf9e7173747df2e155897d75913475bc5eb4a2ee856bdf33e`다.
-직전 leaf-only `559e0482…`는 validate_instance의 typed refusal oracle로 남긴다.
-새-policy의 이전/current generation·pin/reopen은 current leaf/block reader로 검증한다.
+B1 시점 policy gold(admission `[31;32]`)는
+`eef15862a20af11bf9e7173747df2e155897d75913475bc5eb4a2ee856bdf33e`였다.
+B2 현재 policy는 위 `b2c1df18…`이고, 직전 B1·leaf-only 두 policy는
+validate_instance의 typed refusal oracle로 남긴다. 새-policy의 이전/current
+generation·pin/reopen은 current leaf/block reader로 검증한다.
 
 ### 실행 수와 완료 기준
 
@@ -780,7 +791,7 @@ retained-read 거절을 혼동하지 않는다(후자는 span error로 관측).
 | typed-fee r6 pair build | VERIFIED | `a6083fb…` normal cached build exit0; managed-fresh 아님 |
 | typed-fee mr6 Medium | FAILED | 536,864,032B+10,692B Catalog 설치 사전 charge, 원512MiB 유지. Prepare fee −54,602,568B 확인 |
 | typed-fee a608 Large | NOT_RUN | 기존 d8e Large 실패를 새 source 결과로 승격하지 않음 |
-| B03-B2 8KiB/512-term 합류 | NOT_RUN | Kernel realstore oracle source 작성; codec/producer 합류 후 집중 회귀와 원 제품 조건 검증 |
+| B03-B2 8KiB/512-term 합류 | NOT_RUN | `878be6c9…` 6변경/15소유 파일 코드 합류. f20 집중 배치 admission 대기·body/terminal 없음; r7 제품 미시작 |
 | 정식 Off/Record overhead | 상위 E07의3쌍·동일 작업·비교 가능 호스트 | 위 제품 진단의 성공으로 대체하지 않음. host 조건 부재면 BLOCKED 유지 |
 
 Large Off는 server dispatch120초, seed42, reads/writes/mutations 각각67,108,864,
